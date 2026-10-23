@@ -60,14 +60,28 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 }
 
 function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id: string) => void }) {
-  if (toasts.length === 0) return null;
-
+  // Screen readers only announce changes inside a live region that already
+  // existed, so the two announcers stay mounted even with no toasts showing.
+  // Errors go to the assertive one; the visible stack carries no live role so
+  // nothing is read twice.
+  const errors = toasts.filter((t) => t.type === 'error');
+  const others = toasts.filter((t) => t.type !== 'error');
   return (
-    <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none" aria-live="polite" aria-relevant="additions removals">
-      {toasts.map((toast) => (
-        <ToastItem key={toast.id} toast={toast} onDismiss={onDismiss} />
-      ))}
-    </div>
+    <>
+      <div className="sr-only" role="alert" aria-live="assertive" aria-atomic="false">
+        {errors.map((t) => <p key={t.id}>{t.message}</p>)}
+      </div>
+      <div className="sr-only" role="status" aria-live="polite" aria-atomic="false">
+        {others.map((t) => <p key={t.id}>{t.message}</p>)}
+      </div>
+      {toasts.length > 0 && (
+        <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
+          {toasts.map((toast) => (
+            <ToastItem key={toast.id} toast={toast} onDismiss={onDismiss} />
+          ))}
+        </div>
+      )}
+    </>
   );
 }
 
@@ -82,13 +96,14 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
 
   return (
     <div
-      role="status"
       className={`pointer-events-auto border border-border rounded-lg p-3 pr-8 border-l-[3px] bg-overlay ${BORDER_COLORS[toast.type]} transition-[transform,opacity] duration-200 ease-out min-w-[250px] max-w-sm ${visible ? 'translate-x-0 opacity-100' : 'translate-x-full opacity-0'}`}
       style={{ boxShadow: 'var(--shadow-overlay)' }}
     >
       <p className="text-sm text-text-primary">{toast.message}</p>
       <button
+        type="button"
         onClick={() => onDismiss(toast.id)}
+        aria-label="Dismiss notification"
         className="absolute top-2 right-2 text-text-tertiary hover:text-text-secondary transition-colors"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

@@ -147,7 +147,7 @@ describe('MembersTab', () => {
     const form = screen.getByRole('form', { name: /invite member/i });
     await user.type(within(form).getByLabelText(/^email/i), 'new@example.com');
     // Open the role combobox and select "Admin"
-    await user.click(within(form).getByRole('combobox', { name: /^role/i }));
+    await user.click(within(form).getByRole('button', { name: /^role/i }));
     await user.click(
       within(form).getByRole('option', { name: 'Admin' }),
     );

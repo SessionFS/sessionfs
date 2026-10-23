@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { getItem as lsGet } from '../utils/storage';
-import { Card } from '../components/ui';
+import { getTheme, type Theme } from '../utils/theme';
+import { Card, PageContainer, PageHeader } from '../components/ui';
 
 type Tool = {
   id: string;
@@ -168,22 +168,7 @@ const MCP_TICKETS: McpTool[] = [
   { name: 'add_ticket_comment', desc: 'Add a comment with optional persona attribution' },
 ];
 
-function getCurrentTheme(): 'light' | 'dark' {
-  if (typeof window === 'undefined') return 'dark';
-  // localStorage is ThemeToggle's source of truth (via src/utils/storage).
-  const stored = lsGet('sfs-theme');
-  if (stored === 'light' || stored === 'dark') return stored;
-  // Fall back to the DOM attribute (set by main.tsx before render) and finally
-  // the OS preference.
-  const domTheme = document.documentElement.getAttribute('data-theme');
-  if (domTheme === 'light' || domTheme === 'dark') return domTheme;
-  if (typeof window.matchMedia === 'function') {
-    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-  }
-  return 'dark';
-}
-
-function buildSiteHref(theme: 'light' | 'dark', path: string): string {
+function buildSiteHref(theme: Theme, path: string): string {
   const sep = path.includes('?') ? '&' : '?';
   return `https://sessionfs.dev${path}${sep}theme=${theme}`;
 }
@@ -213,19 +198,18 @@ function TerminalCopyButton({ text }: { text: string }) {
   }
 
   const color =
-    state === 'copied' ? '#86efac' : state === 'error' ? '#fca5a5' : 'rgba(255,255,255,0.7)';
+    state === 'copied'
+      ? 'text-code-well-success'
+      : state === 'error'
+        ? 'text-code-well-danger'
+        : 'text-code-well-control-fg';
 
   return (
     <button
       onClick={handleCopy}
       aria-label="Copy command"
       aria-live="polite"
-      className="inline-flex items-center gap-1.5 px-2.5 py-1 text-2xs font-medium rounded-md transition-colors"
-      style={{
-        backgroundColor: 'rgba(255,255,255,0.06)',
-        color,
-        border: '1px solid rgba(255,255,255,0.1)',
-      }}
+      className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-2xs font-medium rounded-md border border-code-well-control-border bg-code-well-control-bg transition-colors ${color}`}
     >
       {state === 'copied' && (
         <>
@@ -260,44 +244,23 @@ function TerminalCopyButton({ text }: { text: string }) {
 
 function Terminal({ command, output }: { command: string; output: string }) {
   return (
-    <div
-      className="rounded-md overflow-hidden border"
-      style={{
-        backgroundColor: '#0b0d12',
-        borderColor: 'rgba(255,255,255,0.08)',
-        boxShadow: 'var(--shadow-md)',
-      }}
-    >
+    <div className="rounded-md overflow-hidden border border-code-well-border bg-code-well-bg shadow-md">
       {/* Title bar */}
-      <div
-        className="flex items-center justify-between px-3 py-2"
-        style={{
-          backgroundColor: 'rgba(255,255,255,0.03)',
-          borderBottom: '1px solid rgba(255,255,255,0.06)',
-        }}
-      >
+      <div className="flex items-center justify-between px-3 py-2 bg-code-well-bar-bg border-b border-code-well-bar-border">
         <div className="flex items-center gap-1.5">
-          <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#ff5f57' }} />
-          <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#febc2e' }} />
-          <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: '#28c840' }} />
+          <span className="w-2.5 h-2.5 rounded-full bg-code-well-dot-red" />
+          <span className="w-2.5 h-2.5 rounded-full bg-code-well-dot-yellow" />
+          <span className="w-2.5 h-2.5 rounded-full bg-code-well-dot-green" />
         </div>
-        <span
-          className="text-2xs font-mono"
-          style={{ color: 'rgba(255,255,255,0.4)' }}
-        >
-          terminal
-        </span>
+        <span className="text-2xs font-mono text-code-well-muted">terminal</span>
         <TerminalCopyButton text={command} />
       </div>
       {/* Body */}
-      <pre
-        className="px-4 py-4 text-sm font-mono leading-relaxed overflow-x-auto whitespace-pre"
-        style={{ color: 'rgba(255,255,255,0.92)' }}
-      >
-        <span style={{ color: 'rgba(255,255,255,0.45)' }}>$ </span>
-        <span style={{ color: '#a5d6ff' }}>{command}</span>
+      <pre tabIndex={0} className="px-4 py-4 text-sm font-mono leading-relaxed overflow-x-auto whitespace-pre text-code-well-fg">
+        <span className="text-code-well-muted">$ </span>
+        <span className="text-code-well-accent">{command}</span>
         {'\n\n'}
-        <span style={{ color: 'rgba(255,255,255,0.78)' }}>{output}</span>
+        <span className="text-code-well-fg opacity-85">{output}</span>
       </pre>
     </div>
   );
@@ -313,7 +276,7 @@ function SectionHeading({ eyebrow, title, subtitle }: { eyebrow?: string; title:
           {eyebrow}
         </div>
       )}
-      <h2 className="text-[22px] font-bold text-text-primary leading-tight">
+      <h2 className="text-xl font-bold text-text-primary leading-tight">
         {title}
       </h2>
       {subtitle && (
@@ -327,7 +290,7 @@ function SectionHeading({ eyebrow, title, subtitle }: { eyebrow?: string; title:
 
 export default function HelpPage() {
   const [selectedTool, setSelectedTool] = useState<Tool>(TOOLS[0]);
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => getCurrentTheme());
+  const [theme, setTheme] = useState<Theme>(() => getTheme());
 
   // Subscribe to theme changes: ThemeToggle writes data-theme in an effect,
   // so we watch for attribute mutations to keep resource-link query params fresh.
@@ -353,22 +316,23 @@ export default function HelpPage() {
 Restart ${selectedTool.label} to activate.`;
 
   return (
-    <div className="max-w-5xl mx-auto px-5 md:px-8 py-10 md:py-12">
+    <PageContainer className="md:px-8 md:py-10">
       {/* Hero */}
-      <header className="mb-12 md:mb-16">
-        <div
-          className="text-2xs font-semibold uppercase tracking-wider mb-3 text-brand"
-        >
-          Help & Quickstart
-        </div>
-        <h1 className="text-[32px] md:text-[40px] font-bold leading-tight text-text-primary tracking-tight">
-          You don't need to memorize commands.
-        </h1>
-        <p className="mt-4 text-md md:text-lg text-text-secondary leading-relaxed max-w-3xl">
-          Install the MCP server for your AI tool, and your agent learns SessionFS automatically.
-          Just tell it what you want.
-        </p>
-      </header>
+      <PageHeader
+        className="mb-12 md:mb-16"
+        breadcrumb={
+          <span className="text-2xs font-semibold uppercase tracking-wider text-brand">
+            Help & Quickstart
+          </span>
+        }
+        title="You don't need to memorize commands."
+        description={
+          <span className="block text-md md:text-lg text-text-secondary leading-relaxed max-w-3xl">
+            Install the MCP server for your AI tool, and your agent learns SessionFS automatically.
+            Just tell it what you want.
+          </span>
+        }
+      />
 
       {/* Section 1 — Install MCP server */}
       <section className="mb-12 md:mb-16">
@@ -388,12 +352,11 @@ Restart ${selectedTool.label} to activate.`;
                 role="tab"
                 aria-selected={active}
                 onClick={() => setSelectedTool(tool)}
-                className="px-3.5 py-1.5 text-sm font-medium rounded-full border transition-colors"
-                style={{
-                  backgroundColor: active ? 'var(--brand)' : 'transparent',
-                  color: active ? 'var(--text-inverse)' : 'var(--text-secondary)',
-                  borderColor: active ? 'var(--brand)' : 'var(--border)',
-                }}
+                className={`px-3.5 py-1.5 text-sm font-medium rounded-full border transition-colors ${
+                  active
+                    ? 'bg-brand text-text-inverse border-brand'
+                    : 'bg-transparent text-text-secondary border-border'
+                }`}
               >
                 {tool.label}
               </button>
@@ -435,7 +398,7 @@ Restart ${selectedTool.label} to activate.`;
                 {useCase.prompts.map((prompt) => (
                   <li
                     key={prompt}
-                    className="text-[13.5px] italic leading-relaxed text-text-secondary"
+                    className="text-sm italic leading-relaxed text-text-secondary"
                   >
                     "{prompt}"
                   </li>
@@ -454,26 +417,15 @@ Restart ${selectedTool.label} to activate.`;
           subtitle="The full SessionFS CLI is still here when you want direct control."
         />
 
-        <div
-          className="rounded-md overflow-hidden border mb-6"
-          style={{
-            backgroundColor: '#0b0d12',
-            borderColor: 'rgba(255,255,255,0.08)',
-            boxShadow: 'var(--shadow-sm)',
-          }}
-        >
-          <pre
-            className="px-4 py-4 text-sm font-mono leading-relaxed overflow-x-auto"
-            style={{ color: 'rgba(255,255,255,0.92)' }}
-          >
-            <span style={{ color: 'rgba(255,255,255,0.45)' }}>$ </span>
-            <span style={{ color: '#a5d6ff' }}>pip install sessionfs</span>{'\n'}
-            <span style={{ color: 'rgba(255,255,255,0.45)' }}>$ </span>
-            <span style={{ color: '#a5d6ff' }}>sfs init</span>{'\n'}
-            <span style={{ color: 'rgba(255,255,255,0.45)' }}>$ </span>
-            <span style={{ color: '#a5d6ff' }}>sfs list</span>{'\n'}
-            <span style={{ color: 'rgba(255,255,255,0.45)' }}>$ </span>
-            <span style={{ color: '#a5d6ff' }}>sfs push ses_abc123</span>
+        <div className="rounded-md overflow-hidden border border-code-well-border bg-code-well-bg shadow-sm mb-6">
+          <pre className="px-4 py-4 text-sm font-mono leading-relaxed overflow-x-auto text-code-well-fg">
+            {['pip install sessionfs', 'sfs init', 'sfs list', 'sfs push ses_abc123'].map((cmd, idx, all) => (
+              <span key={cmd}>
+                <span className="text-code-well-muted">$ </span>
+                <span className="text-code-well-accent">{cmd}</span>
+                {idx < all.length - 1 ? '\n' : null}
+              </span>
+            ))}
           </pre>
         </div>
 
@@ -487,7 +439,7 @@ Restart ${selectedTool.label} to activate.`;
                 className="grid grid-cols-1 sm:grid-cols-[minmax(0,14rem)_1fr] gap-1 sm:gap-4 px-4 py-3"
               >
                 <code
-                  className="text-[12.5px] font-mono text-text-primary"
+                  className="text-xs font-mono text-text-primary"
                 >
                   {row.cmd}
                 </code>
@@ -542,7 +494,7 @@ Restart ${selectedTool.label} to activate.`;
           <ResourceLink href={siteHref('/changelog/')} icon="📝" label="Changelog" />
         </div>
       </section>
-    </div>
+    </PageContainer>
   );
 }
 
@@ -556,12 +508,12 @@ function McpToolGroup({ label, tools }: { label: string; tools: McpTool[] }) {
         {tools.map((tool) => (
           <li key={tool.name}>
             <code
-              className="block text-[12.5px] font-mono mb-0.5 text-text-primary"
+              className="block text-xs font-mono mb-0.5 text-text-primary"
             >
               {tool.name}
             </code>
             <span
-              className="block text-[12.5px] leading-snug text-text-secondary"
+              className="block text-xs leading-snug text-text-secondary"
             >
               {tool.desc}
             </span>

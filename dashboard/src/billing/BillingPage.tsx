@@ -2,7 +2,8 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import { formatBytes } from '../utils/format';
 import { isOrgAdminRole } from '../utils/roles';
-import { Card, Button } from '../components/ui';
+import { Card, Button, PageContainer, PageHeader } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 const TIERS = [
   {
@@ -132,8 +133,8 @@ export default function BillingPage() {
     : 0;
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold tracking-tight text-text-primary mb-6">Billing</h1>
+    <PageContainer>
+      <PageHeader title="Billing" />
 
       {/* Current plan info */}
       <Card level="elevated" className="p-6 mb-8">
@@ -188,7 +189,7 @@ export default function BillingPage() {
               View Invoices
             </Button>
             {portalMutation.isError && (
-              <p className="text-red-500 text-sm self-center">{String(portalMutation.error)}</p>
+              <p className="text-danger text-sm self-center">{errorMessage(portalMutation.error)}</p>
             )}
           </div>
         )}
@@ -198,8 +199,8 @@ export default function BillingPage() {
           </p>
         )}
         {isOrgMember && hasPersonalSub && (
-          <div className="mt-4 p-4 rounded-lg border border-yellow-500/30 bg-yellow-500/5">
-            <p className="text-sm text-yellow-600 font-medium mb-2">
+          <div className="mt-4 p-4 rounded-lg border border-warning/30 bg-warning/5">
+            <p className="text-sm text-warning font-medium mb-2">
               You have a personal subscription that is still active
             </p>
             <p className="text-xs text-text-tertiary mb-3">
@@ -213,7 +214,7 @@ export default function BillingPage() {
               Manage Personal Subscription
             </Button>
             {portalMutation.isError && (
-              <p className="text-red-500 text-xs mt-2">{String(portalMutation.error)}</p>
+              <p className="text-danger text-xs mt-2">{errorMessage(portalMutation.error)}</p>
             )}
           </div>
         )}
@@ -237,7 +238,7 @@ export default function BillingPage() {
               {isPro && (
                 <span className="text-xs font-medium text-brand uppercase tracking-wide">Popular</span>
               )}
-              <h3 className="text-xl font-semibold text-text-primary mt-1">{t.name}</h3>
+              <h2 className="text-xl font-semibold text-text-primary mt-1">{t.name}</h2>
               <p className="text-3xl font-bold text-text-primary mt-2">
                 {t.price}
                 <span className="text-sm font-normal text-text-tertiary">{t.period}</span>
@@ -287,8 +288,8 @@ export default function BillingPage() {
       </div>
 
       {(checkoutMutation.isError || portalMutation.isError) && (
-        <p className="text-center text-sm text-red-500 mt-4">
-          {String(checkoutMutation.error || portalMutation.error)}
+        <p className="text-center text-sm text-danger mt-4">
+          {errorMessage(checkoutMutation.error || portalMutation.error)}
         </p>
       )}
 
@@ -314,6 +315,6 @@ export default function BillingPage() {
           </p>
         </div>
       )}
-    </div>
+    </PageContainer>
   );
 }

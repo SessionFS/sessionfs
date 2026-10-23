@@ -17,14 +17,39 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.20.0 -->
+      <!-- v0.21.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
-            <span class="text-brand font-semibold">v0.20.0</span>
+            <span class="text-brand font-semibold">v0.21.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 22, 2026</span>
           <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">A Reorganized Dashboard That Works on Phones &middot; GitLab CI Trusted Publishing &middot; Audited Operator Overrides</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>A reorganized dashboard.</strong> The project page&rsquo;s 12 tabs are now 5 sections &mdash; <strong>Overview</strong>, <strong>Knowledge</strong>, <strong>Work</strong>, <strong>Rules &amp; Skills</strong> and <strong>Settings</strong> &mdash; kept in the address bar so links and the back button work, and old links still open the right place. Project rename, repos, merge, transfer and delete live under <strong>Settings</strong>. Account settings are split into Account, Preferences, Integrations, Data protection and Sync, each with its own address. The Organization page has tabs (Members, Personas, Policies, Security). The sidebar is grouped into Library, Inbox and Manage, the marketplace pages share one sub-navigation, and the project-level Marketplace tab is now called <strong>Skills</strong>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>The dashboard works on phones.</strong> Every page fits a 375&nbsp;px screen without sideways scrolling, and tab bars scroll instead of spilling out of their card (GitHub #86, #87).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Colours and accessibility.</strong> Status colours in the light theme meet WCAG AA contrast, the light-theme brand blue is slightly darker, and filled brand-coloured buttons in the dark theme use dark text. Tabs follow the standard keyboard pattern (arrow keys, Home, End), notifications are announced reliably to screen readers, and error messages use one wording.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Trusted publishing from GitLab CI (GitHub #82).</strong> GitLab CI jobs can exchange a GitLab ID token (<span class="font-mono text-accent text-sm">id_tokens:</span>) for the same single-use, 15-minute publish token GitHub Actions gets, so no stored <span class="font-mono text-accent text-sm">skills:admin</span> key is needed in CI. A trust binds to the numeric GitLab project (optionally the namespace), requires a protected ref, matches the ref pattern and environment, and can require a protected GitLab environment. Only push, web and API pipelines publish; merge request, scheduled, trigger and downstream pipelines never do. Set it up with <span class="font-mono text-accent text-sm">sfs skill publisher trust --gitlab-project ID [--gitlab-host HOST]</span> and publish with <span class="font-mono text-accent text-sm">sfs skill publish --trusted-publishing --ci-provider gitlab</span>. See <a href="/skills-marketplace/#trusted-publishing-from-gitlab-ci" class="text-brand hover:underline">Trusted Publishing from GitLab CI</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>An audit trail for operator overrides (GitHub #84).</strong> Admin actions now record a reason, the state before and after, and whether they went through the API or were recorded by hand. A new force-transfer moves a project into an organization without the owner&rsquo;s consent, under the same safety checks as a normal transfer; the new owner must be an active member of the destination organization, and a retried request can&rsquo;t move a project twice. Changes made by hand can be recorded, and the audit log filters by target, action, source and admin. User and org tier changes and forced owner transfers accept a reason. CLI: <span class="font-mono text-accent text-sm">sfs admin audit-log</span>, <span class="font-mono text-accent text-sm">sfs admin override project-transfer|record</span>. See <a href="/self-hosted/#auditing-operator-overrides" class="text-brand hover:underline">Auditing Operator Overrides</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong><span class="font-mono text-accent text-sm">sfs --version</span>, <span class="font-mono text-accent text-sm">sfs -V</span> and <span class="font-mono text-accent text-sm">sfs version</span> (GitHub #85)</strong> print the installed version with the Python version and platform.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed: <span class="font-mono text-accent text-sm">/health/ready</span> through the Helm chart&rsquo;s ingress (GitHub #83).</strong> The dashboard&rsquo;s web server answered <span class="font-mono text-accent text-sm">/health/ready</span> itself, so readiness probes through the ingress always saw 200 even when the database schema was behind. It is now passed to the API, and other paths under <span class="font-mono text-accent text-sm">/health/</span> return 404.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed:</strong> verifying an SSO domain no longer reports an error when the domain is deleted at the same moment.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Upgrading a self-hosted server:</strong> run migrations 081 and 082. 081 adds reason, before/after state and source columns (plus indexes) to the admin audit log; 082 lets trusted publishers hold GitLab trusts (downgrading it removes GitLab trusts and their tokens). Self-hosted GitLab users who want trusted publishing: add your instance URL to <span class="font-mono text-accent text-sm">SFS_GITLAB_OIDC_ISSUERS</span>, exactly as GitLab&rsquo;s <span class="font-mono text-accent text-sm">external_url</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;082 (081&ndash;082 new; 067 and 068 unused). 7591 backend tests + 789 dashboard UI tests passing. 81 MCP tools (unchanged).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.20.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.20.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 22, 2026</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Org Personas That Represent a Member &middot; Project Tools Accept a Folder</h2>
         <ul class="space-y-2 text-base text-muted">

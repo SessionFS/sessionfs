@@ -2,12 +2,13 @@ import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import { Select, Table } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 const STATUS_STYLES: Record<string, string> = {
-  active: 'bg-green-500/10 text-green-500 border-green-500/30',
-  expired: 'bg-red-500/10 text-red-500 border-red-500/30',
+  active: 'bg-success/10 text-success border-success/30',
+  expired: 'bg-danger/10 text-danger border-danger/30',
   revoked: 'bg-neutral-500/10 text-neutral-400 border-neutral-500/30',
-  trial: 'bg-yellow-500/10 text-yellow-500 border-yellow-500/30',
+  trial: 'bg-warning/10 text-warning border-warning/30',
 };
 
 export default function LicensesTab() {
@@ -46,8 +47,8 @@ export default function LicensesTab() {
       </div>
 
       {error && (
-        <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-500 text-sm">
-          Failed to load licenses: {String(error)}
+        <div className="mb-4 p-3 bg-danger/10 border border-danger/30 rounded-lg text-danger text-sm">
+          Failed to load licenses: {errorMessage(error)}
         </div>
       )}
 
@@ -136,7 +137,7 @@ export default function LicensesTab() {
                       if (reason) revokeMutation.mutate({ key: lic.id, reason });
                     }}
                     disabled={revokeMutation.isPending}
-                    className="text-xs text-red-500 hover:underline disabled:opacity-50"
+                    className="text-xs text-danger hover:underline disabled:opacity-50"
                   >
                     Revoke
                   </button>

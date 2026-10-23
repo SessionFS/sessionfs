@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react';
-import { getItem as lsGet, setItem as lsSet } from '../utils/storage';
+import { getStoredTheme, setTheme as persistTheme } from '../utils/theme';
 
 function getInitialTheme(): 'light' | 'dark' {
-  const stored = lsGet('sfs-theme');
-  if (stored === 'light' || stored === 'dark') return stored;
+  const stored = getStoredTheme();
+  if (stored) return stored;
   // No stored preference — default to dark. System preference is ignored
   // because the dashboard ships dark-first; users toggle explicitly.
   return 'dark';
@@ -36,8 +36,7 @@ export default function ThemeToggle({ theme: controlledTheme, onToggle }: ThemeT
   };
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-    lsSet('sfs-theme', theme);
+    persistTheme(theme);
   }, [theme]);
 
   return (

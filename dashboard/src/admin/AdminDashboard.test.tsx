@@ -195,6 +195,48 @@ describe('AdminDashboard', () => {
     });
   });
 
+  it('activity shows the reason and flags operator-recorded entries', async () => {
+    hooks.useAdminActionLog.mockReturnValue({
+      data: {
+        actions: [
+          {
+            id: 'act_api',
+            admin_id: 'admin_xyz',
+            action: 'project_transfer_override',
+            target_type: 'project',
+            target_id: 'proj_1',
+            details: null,
+            reason: 'owner offline, team needs access',
+            source: 'api',
+            created_at: '2026-10-22T12:00:00Z',
+          },
+          {
+            id: 'act_manual',
+            admin_id: 'admin_xyz',
+            action: 'user_merge',
+            target_type: 'user',
+            target_id: 'user_dup',
+            details: null,
+            reason: '<b>typo</b> signup',
+            source: 'operator_record',
+            created_at: '2026-10-22T13:00:00Z',
+          },
+        ],
+      },
+    });
+
+    renderPage();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('tab', { name: /^activity$/i }));
+
+    expect(await screen.findByText('owner offline, team needs access')).toBeInTheDocument();
+    // Reasons render as text, never as markup.
+    expect(screen.getByText('<b>typo</b> signup')).toBeInTheDocument();
+    const badges = screen.getAllByText('recorded by operator');
+    expect(badges).toHaveLength(1);
+    expect(badges[0].closest('tr')).toHaveTextContent('user_merge');
+  });
+
   it('delete user flow shows confirm dialog then calls deleteUser mutation', async () => {
     const deleteMut = makeMutation();
     hooks.useAdminDeleteUser.mockReturnValue(deleteMut);

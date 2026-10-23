@@ -23,8 +23,9 @@ import { useToast } from '../hooks/useToast';
 import { TOOL_COLORS } from '../utils/tools';
 import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
-import { Tabs } from '../components/ui/Tabs';
+import { Tabs, TabPanel } from '../components/ui/Tabs';
 import { Dropdown } from '../components/ui/Dropdown';
+import { errorMessage } from '../utils/errorMessage';
 
 type Tab = 'messages' | 'summary' | 'audit';
 
@@ -103,7 +104,7 @@ export default function SessionDetail() {
       setMetaError(null);
       refetch();
     } catch (err) {
-      setMetaError(String(err));
+      setMetaError(errorMessage(err));
     }
   }, [auth, session, titleInput, aliasInput, refetch]);
 
@@ -139,7 +140,7 @@ export default function SessionDetail() {
         <button onClick={() => navigate('/')} className="text-brand text-sm mb-4 hover:underline">
           &larr; Back
         </button>
-        <p className="text-red-400">Failed to load session: {String(error)}</p>
+        <p className="text-danger">Failed to load session: {errorMessage(error)}</p>
       </div>
     );
   }
@@ -416,7 +417,7 @@ export default function SessionDetail() {
                   <div key={i} className="flex gap-2 text-sm">
                     <span className={`shrink-0 text-xs font-medium px-1.5 py-0.5 rounded ${
                       m.role === 'assistant'
-                        ? 'bg-green-500/10 text-green-400'
+                        ? 'bg-success/10 text-success'
                         : m.role === 'user'
                           ? 'bg-blue-500/10 text-blue-400'
                           : 'bg-gray-500/10 text-gray-400'
@@ -441,18 +442,20 @@ export default function SessionDetail() {
             activeKey={activeTab}
             onChange={(key) => setActiveTab(key as Tab)}
             bare
+            idPrefix="session"
+            aria-label="Session views"
           />
         </div>
       </Card>
 
       {/* Tab content */}
-      <div className="flex-1 overflow-y-auto">
+      <TabPanel idPrefix="session" tabKey={activeTab} className="flex-1 overflow-y-auto">
         {activeTab === 'messages' && <ConversationView sessionId={session.id} initialPage={jumpToPage} />}
         {activeTab === 'summary' && <SummaryTab sessionId={session.id} />}
         {activeTab === 'audit' && (
           <AuditTab sessionId={session.id} messageCount={session.message_count} sessionTitle={session.title || undefined} onJumpToMessage={handleJumpToMessage} />
         )}
-      </div>
+      </TabPanel>
 
       {showShare && (
         <ShareDialog sessionId={session.id} open={showShare} onClose={() => setShowShare(false)} />
@@ -481,7 +484,7 @@ export default function SessionDetail() {
                   navigate('/');
                 },
                 onError: (err) => {
-                  addToast('error', `Delete failed: ${String(err)}`);
+                  addToast('error', `Delete failed: ${errorMessage(err)}`);
                   setShowDeleteDialog(false);
                 },
               },
@@ -582,9 +585,9 @@ function DLPScanSection({ session }: { session: object }) {
 
   return (
     <div className="px-5 mt-3">
-      <div className="border border-red-500/20 bg-red-500/5 rounded-lg p-3">
+      <div className="border border-danger/20 bg-danger/5 rounded-lg p-3">
         <div className="flex items-center gap-2 mb-2">
-          <svg className="w-4 h-4 text-red-500 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg className="w-4 h-4 text-danger shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
           </svg>
           <span className="text-sm font-semibold text-text-primary">DLP Scan</span>
@@ -596,7 +599,7 @@ function DLPScanSection({ session }: { session: object }) {
         </div>
         <div className="flex flex-wrap gap-1.5">
           {scanResult.finding_types.map((type) => (
-            <span key={type} className="px-2 py-0.5 text-xs font-mono bg-red-500/10 text-red-500 rounded">
+            <span key={type} className="px-2 py-0.5 text-xs font-mono bg-danger/10 text-danger rounded">
               {type}
             </span>
           ))}
@@ -609,9 +612,9 @@ function DLPScanSection({ session }: { session: object }) {
 function AuditScoreBar({ score }: { score: number }) {
   const pct = Math.round(score * 100);
   const color =
-    pct >= 90 ? 'bg-green-500' : pct >= 70 ? 'bg-yellow-500' : 'bg-red-500';
+    pct >= 90 ? 'bg-success' : pct >= 70 ? 'bg-warning' : 'bg-danger';
   const textColor =
-    pct >= 90 ? 'text-green-400' : pct >= 70 ? 'text-yellow-400' : 'text-red-400';
+    pct >= 90 ? 'text-success' : pct >= 70 ? 'text-warning' : 'text-danger';
 
   return (
     <div className="flex items-center gap-2">

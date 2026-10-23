@@ -18,9 +18,10 @@ import {
   useUpdateOrgPersona,
 } from '../hooks/usePersonas';
 import RelativeDate from '../components/RelativeDate';
-import { ApiError, type Persona } from '../api/client';
+import { type Persona } from '../api/client';
 import { Button, Select, Table } from '../components/ui';
 import { DeleteConfirmModal, PersonaEditModal, type EditState } from '../projects/PersonasTab';
+import { errorMessage } from '../utils/errorMessage';
 
 export interface OrgPersonaMember {
   user_id: string;
@@ -35,10 +36,6 @@ interface OrgPersonasSectionProps {
   members?: OrgPersonaMember[];
   /** Wrapper classes; the section renders nothing for a member with no persona. */
   className?: string;
-}
-
-function errorMessage(exc: unknown): string {
-  return exc instanceof ApiError ? `${exc.status}: ${exc.message}` : String(exc);
 }
 
 export default function OrgPersonasSection({
@@ -80,7 +77,7 @@ export default function OrgPersonasSection({
           : `"${p.name}" no longer represents anyone`,
       );
     } catch (exc) {
-      addToast('error', errorMessage(exc));
+      addToast('error', `Update failed: ${errorMessage(exc)}`);
     }
   }
 
@@ -105,7 +102,7 @@ export default function OrgPersonasSection({
       </div>
 
       {isLoading && <p>Loading org personas…</p>}
-      {error && <p role="alert">Failed to load org personas: {String(error)}</p>}
+      {error && <p role="alert">Failed to load org personas: {errorMessage(error)}</p>}
       {data && data.length === 0 && (
         <div className="border border-border rounded-lg p-6 text-center text-sm text-text-tertiary">
           No org personas yet.
@@ -197,7 +194,7 @@ export default function OrgPersonasSection({
               }
               setEdit(null);
             } catch (exc) {
-              addToast('error', errorMessage(exc));
+              addToast('error', `Save failed: ${errorMessage(exc)}`);
             }
           }}
         />
@@ -213,7 +210,7 @@ export default function OrgPersonasSection({
               addToast('success', `Deleted "${deleting.name}"`);
               setDeleting(null);
             } catch (exc) {
-              addToast('error', errorMessage(exc));
+              addToast('error', `Delete failed: ${errorMessage(exc)}`);
             }
           }}
         />

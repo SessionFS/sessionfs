@@ -68,7 +68,7 @@ describe('TransferPanel', () => {
         availableOrgs={ORGS}
       />,
     );
-    const combobox = screen.getByRole('combobox', { name: 'Destination' });
+    const combobox = screen.getByRole('button', { name: 'Destination' });
     await user.click(combobox);
     const listbox = screen.getByRole('listbox');
     const options = Array.from(listbox.querySelectorAll('[role="option"]')).map((o) => o.textContent);
@@ -85,7 +85,7 @@ describe('TransferPanel', () => {
         availableOrgs={ORGS}
       />,
     );
-    const combobox = screen.getByRole('combobox', { name: 'Destination' });
+    const combobox = screen.getByRole('button', { name: 'Destination' });
     await user.click(combobox);
     const listbox = screen.getByRole('listbox');
     const options = Array.from(listbox.querySelectorAll('[role="option"]')).map((o) => o.textContent);
@@ -101,7 +101,7 @@ describe('TransferPanel', () => {
       />,
     );
     expect(screen.getByText(/no transfer destinations available/i)).toBeInTheDocument();
-    expect(screen.queryByRole('combobox', { name: 'Destination' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Destination' })).toBeNull();
   });
 
   it('initiate fires the mutation with the chosen destination', async () => {
@@ -116,7 +116,7 @@ describe('TransferPanel', () => {
       />,
     );
     const user = userEvent.setup();
-    await user.click(screen.getByRole('combobox', { name: 'Destination' }));
+    await user.click(screen.getByRole('button', { name: 'Destination' }));
     await user.click(
       screen.getByRole('option', { name: 'Beta Co' }),
     );
@@ -144,7 +144,7 @@ describe('TransferPanel', () => {
       />,
     );
     const user = userEvent.setup();
-    await user.click(screen.getByRole('combobox', { name: 'Destination' }));
+    await user.click(screen.getByRole('button', { name: 'Destination' }));
     await user.click(
       screen.getByRole('option', { name: 'Beta Co' }),
     );
@@ -191,7 +191,7 @@ describe('TransferPanel', () => {
       />,
     );
     // The destination form is hidden while a pending transfer exists.
-    expect(screen.queryByRole('combobox', { name: 'Destination' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Destination' })).toBeNull();
     expect(screen.getByText(/pending transfer to beta co/i)).toBeInTheDocument();
 
     const user = userEvent.setup();
@@ -218,7 +218,7 @@ describe('TransferPanel', () => {
       />,
     );
     const user = userEvent.setup();
-    await user.click(screen.getByRole('combobox', { name: 'Destination' }));
+    await user.click(screen.getByRole('button', { name: 'Destination' }));
     await user.click(
       screen.getByRole('option', { name: 'Beta Co' }),
     );

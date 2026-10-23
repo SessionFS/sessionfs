@@ -104,10 +104,11 @@ def capability_flags(risk_summary: Any) -> str:
 
 def provenance_attested(signature_metadata: Any) -> bool:
     """Verified publication provenance: a trusted-publishing (GitHub Actions
-    OIDC) publish, or a verified attestation once those exist."""
+    or GitLab CI OIDC) publish, or a verified attestation once those exist."""
     signature = _obj(signature_metadata)
     return bool(signature.get("attested")) or (
-        signature.get("kind") == "github_oidc" and signature.get("verification") == "oidc_token"
+        signature.get("kind") in ("github_oidc", "gitlab_oidc")
+        and signature.get("verification") == "oidc_token"
     )
 
 

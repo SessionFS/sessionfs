@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import { Button, Input } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 /**
  * Guided self-service license activation (v0.11.0).
@@ -35,7 +36,7 @@ interface ActivationResult {
   verification_method?: string;
 }
 
-function errorMessage(body: unknown, fallback: string): string {
+function envelopeMessage(body: unknown, fallback: string): string {
   const b = body as { error?: { message?: string }; detail?: string } | null;
   return b?.error?.message || b?.detail || fallback;
 }
@@ -67,7 +68,7 @@ export default function ActivateLicensePanel() {
       );
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(errorMessage(body, 'Could not look up that license.'));
+        throw new Error(envelopeMessage(body, 'Could not look up that license.'));
       }
       if (!body?.valid) {
         // Non-oracular: the server never says WHY, so neither do we.
@@ -77,7 +78,7 @@ export default function ActivateLicensePanel() {
       setOrgNameOverride((body.org_name as string) || '');
       setStep('review');
     } catch (e) {
-      setError((e as Error).message);
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -97,7 +98,7 @@ export default function ActivateLicensePanel() {
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(errorMessage(body, 'Activation could not be started.'));
+        throw new Error(envelopeMessage(body, 'Activation could not be started.'));
       }
       if (body?.org_id) {
         // Exact-match email shortcut — Phase A completed activation directly.
@@ -107,7 +108,7 @@ export default function ActivateLicensePanel() {
       // Standard path: a verification code was emailed to the license contact.
       setStep('code');
     } catch (e) {
-      setError((e as Error).message);
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -125,7 +126,7 @@ export default function ActivateLicensePanel() {
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(
-          errorMessage(
+          envelopeMessage(
             body,
             'That code is invalid, expired, or already used. Start activation again.',
           ),
@@ -133,7 +134,7 @@ export default function ActivateLicensePanel() {
       }
       finish(body as ActivationResult);
     } catch (e) {
-      setError((e as Error).message);
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -161,7 +162,7 @@ export default function ActivateLicensePanel() {
       {error && (
         <div
           role="alert"
-          className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400"
+          className="mb-4 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-sm text-danger"
         >
           {error}
         </div>
@@ -250,7 +251,7 @@ export default function ActivateLicensePanel() {
 
       {step === 'done' && result && (
         <div className="space-y-4">
-          <div className="rounded-lg border border-green-500/30 bg-green-500/10 px-4 py-3">
+          <div className="rounded-lg border border-success/30 bg-success/10 px-4 py-3">
             <div className="text-base font-semibold text-text-primary">
               {result.name} is activated
             </div>

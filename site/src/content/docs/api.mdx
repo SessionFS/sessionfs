@@ -274,7 +274,7 @@ All package versions are immutable and addressed by `content_hash`. Visibility f
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/health` | None | Health check |
-| GET | `/health/ready` | None | Readiness: reports whether the database schema is migrated for the running version (used by the Helm readiness probe) |
+| GET | `/health/ready` | None | Readiness: `200 {"status":"ready","schema":"current"}` (or `"ahead"`) once the database schema is migrated for the running version, else `503 {"status":"not_ready","schema":"behind"}` (or `"missing"` / `"unknown"`) (used by the Helm readiness probe) |
 
 ## OpenAPI
 

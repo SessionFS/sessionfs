@@ -23,6 +23,7 @@ import {
   useTransfers,
 } from '../transfers/useTransfers';
 import { Button, Card, Select } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 interface OrgOption {
   org_id: string;
@@ -85,7 +86,7 @@ export default function TransferPanel({
             );
           }
         },
-        onError: (err) => addToast('error', `Transfer failed: ${err.message}`),
+        onError: (err) => addToast('error', `Transfer failed: ${errorMessage(err)}`),
       },
     );
   };
@@ -96,7 +97,7 @@ export default function TransferPanel({
       { transferId: pendingForThisProject.id },
       {
         onSuccess: () => addToast('success', 'Transfer cancelled'),
-        onError: (err) => addToast('error', `Cancel failed: ${err.message}`),
+        onError: (err) => addToast('error', `Cancel failed: ${errorMessage(err)}`),
       },
     );
   };

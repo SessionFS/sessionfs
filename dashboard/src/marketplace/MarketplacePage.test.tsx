@@ -1,4 +1,4 @@
-import { render as rtlRender, screen } from '@testing-library/react';
+import { render as rtlRender, screen, within } from '@testing-library/react';
 import type { ReactElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
@@ -307,15 +307,19 @@ describe('MarketplacePage publishing and moderation entry points', () => {
     expect(screen.getByTestId('held-queues')).toHaveTextContent('org_9');
   });
 
-  it('links the moderation queue for org owners (owners count as admins) but not members', () => {
+  it('shows the shared sub-nav, with Moderation and Usage only for org owners/admins', () => {
     hooks.useMyOrgs.mockReturnValue({ data: [{ org_id: 'org_1', name: 'Acme', role: 'owner' }], isLoading: false });
     const first = render(<MarketplacePage />);
-    expect(screen.getByRole('link', { name: 'Moderation queue' })).toHaveAttribute('href', '/marketplace/moderation');
+    const nav = screen.getByRole('navigation', { name: 'Marketplace sections' });
+    expect(within(nav).getByRole('link', { name: 'Moderation' })).toHaveAttribute('href', '/marketplace/moderation');
+    expect(within(nav).getByRole('link', { name: 'Usage' })).toHaveAttribute('href', '/marketplace/usage');
     first.unmount();
 
     hooks.useMyOrgs.mockReturnValue({ data: [{ org_id: 'org_1', name: 'Acme', role: 'member' }], isLoading: false });
     render(<MarketplacePage />);
-    expect(screen.queryByRole('link', { name: 'Moderation queue' })).not.toBeInTheDocument();
+    const memberNav = screen.getByRole('navigation', { name: 'Marketplace sections' });
+    expect(within(memberNav).queryByRole('link', { name: 'Moderation' })).not.toBeInTheDocument();
+    expect(within(memberNav).queryByRole('link', { name: 'Usage' })).not.toBeInTheDocument();
   });
 
   it('badges a yanked version from the revocations feed and blocks download and requests', async () => {
@@ -366,7 +370,7 @@ describe('Report dialog', () => {
     const user = await openReport();
     const submit = screen.getByRole('button', { name: 'Submit report' });
     expect(submit).toBeDisabled();
-    await user.click(screen.getByRole('combobox', { name: /Reason/ }));
+    await user.click(screen.getByRole('button', { name: /Reason/ }));
     await user.click(screen.getByRole('option', { name: /Leaks secrets/ }));
     await user.type(screen.getByLabelText('Details (optional)'), 'API key in skills/x/SKILL.md');
     await user.click(submit);
@@ -383,7 +387,7 @@ describe('Report dialog', () => {
     const mutateAsync = vi.fn().mockResolvedValue({ id: 'spr_1' });
     hooks.useReportMarketplacePackage.mockReturnValue({ mutateAsync, isPending: false });
     const user = await openReport();
-    await user.click(screen.getByRole('combobox', { name: /Reason/ }));
+    await user.click(screen.getByRole('button', { name: /Reason/ }));
     await user.click(screen.getByRole('option', { name: /Spam/ }));
     await user.click(screen.getByRole('checkbox', { name: /Only version/ }));
     await user.click(screen.getByRole('button', { name: 'Submit report' }));
@@ -406,7 +410,7 @@ describe('Report dialog', () => {
       isPending: false,
     });
     const user = await openReport();
-    await user.click(screen.getByRole('combobox', { name: /Reason/ }));
+    await user.click(screen.getByRole('button', { name: /Reason/ }));
     await user.click(screen.getByRole('option', { name: /Broken/ }));
     await user.click(screen.getByRole('button', { name: 'Submit report' }));
     expect(screen.getByText('You already have an open report for this package.')).toBeInTheDocument();
@@ -420,7 +424,7 @@ describe('Report dialog', () => {
       isPending: false,
     });
     const user = await openReport();
-    await user.click(screen.getByRole('combobox', { name: /Reason/ }));
+    await user.click(screen.getByRole('button', { name: /Reason/ }));
     await user.click(screen.getByRole('option', { name: /Something else/ }));
     await user.click(screen.getByRole('button', { name: 'Submit report' }));
     expect(screen.getByText('Too many reports right now.')).toBeInTheDocument();

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useMessages } from '../hooks/useMessages';
 import MessageBlock from './MessageBlock';
 import { Button } from '../components/ui/Button';
+import { errorMessage } from '../utils/errorMessage';
 
 const PAGE_SIZE = 50;
 
@@ -41,8 +42,8 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
 
   if (error) {
     return (
-      <div className="p-4 text-red-400 text-sm">
-        Failed to load messages: {String(error)}
+      <div className="p-4 text-danger text-sm">
+        Failed to load messages: {errorMessage(error)}
       </div>
     );
   }

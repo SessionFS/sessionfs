@@ -96,7 +96,7 @@ describe('TicketsTab', () => {
   it('filters by status', async () => {
     const user = userEvent.setup();
     render(<TicketsTab projectId="proj_1" />);
-    await user.click(screen.getByRole('combobox', { name: /Filter by status/i }));
+    await user.click(screen.getByRole('button', { name: /Filter by status/i }));
     await user.click(
       screen.getByRole('option', { name: 'Review' }),
     );
@@ -157,7 +157,7 @@ describe('TicketsTab', () => {
   it('filters by kind', async () => {
     const user = userEvent.setup();
     render(<TicketsTab projectId="proj_1" />);
-    await user.click(screen.getByRole('combobox', { name: /Filter by kind/i }));
+    await user.click(screen.getByRole('button', { name: /Filter by kind/i }));
     await user.click(
       screen.getByRole('option', { name: 'Issues' }),
     );
@@ -181,7 +181,7 @@ describe('TicketsTab', () => {
     const user = userEvent.setup();
     hooks.useTickets.mockReturnValue({ data: [], isLoading: false, error: null });
     render(<TicketsTab projectId="proj_1" />);
-    await user.click(screen.getByRole('combobox', { name: /Filter by kind/i }));
+    await user.click(screen.getByRole('button', { name: /Filter by kind/i }));
     await user.click(
       screen.getByRole('option', { name: 'Issues' }),
     );
@@ -307,17 +307,17 @@ describe('TicketsTab', () => {
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByRole('button', { name: /New ticket/i }));
     // Kind selector shows "Task" selected by default
-    const kindTrigger = screen.getByRole('combobox', { name: 'Kind' });
+    const kindTrigger = screen.getByRole('button', { name: 'Kind' });
     expect(kindTrigger).toHaveTextContent('Task');
     // Parent Issue picker is visible when kind is task
-    expect(screen.getByRole('combobox', { name: /Parent Issue/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Parent Issue/ })).toBeInTheDocument();
     // Switch to Issue
     await user.click(kindTrigger);
     await user.click(
       screen.getByRole('option', { name: 'Issue' }),
     );
     // Parent Issue picker hidden for Issues
-    expect(screen.queryByRole('combobox', { name: /Parent Issue/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Parent Issue/ })).toBeNull();
   });
 
   /* ── Board view drawer (phase 3 fix C2) ── */

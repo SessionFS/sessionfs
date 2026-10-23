@@ -32,13 +32,19 @@ export interface PublisherVerification {
 
 export interface TrustedPublisher {
   id: string;
-  provider: 'github';
+  provider: 'github' | 'gitlab';
   repository: string;
-  repository_id: number;
-  repository_owner_id: number;
-  workflow: string;
+  // GitHub only (null on GitLab rows).
+  repository_id: number | null;
+  repository_owner_id: number | null;
+  workflow: string | null;
   reusable_workflow: string | null;
   allow_workflow_run: boolean;
+  // GitLab only (null/absent on GitHub rows).
+  gitlab_host?: string | null;
+  gitlab_project_id?: number | null;
+  gitlab_namespace_id?: number | null;
+  require_protected_environment?: boolean;
   environment: string | null;
   ref_pattern: string | null;
   package_name: string | null;
@@ -88,6 +94,33 @@ export interface AddTrustedPublisherInput {
  *  PUBLICATION provenance (which workflow run published it), not build
  *  provenance. `build_provenance` stays null until a verified attestation
  *  binds the archive digest to a build. */
+/** Same, for a GitLab CI publish (kind gitlab_oidc). Its own id fields: a
+ *  GitLab project id is never put where a GitHub repository id goes. */
+export interface GitlabOidcProvenance {
+  kind: 'gitlab_oidc';
+  claim: 'publication';
+  verification: 'oidc_token';
+  build_provenance: null;
+  attestation: null;
+  issuer: string;
+  published_from_repo: string | null;
+  published_from_project_id: number | null;
+  published_from_namespace: string | null;
+  published_from_namespace_id: number | null;
+  publishing_ref: string | null;
+  publishing_ref_protected: boolean;
+  publishing_environment_protected?: boolean | null;
+  publishing_run_sha: string | null;
+  publishing_environment: string | null;
+  publishing_event: string | null;
+  publishing_pipeline_id: string | null;
+  publishing_job_id: string | null;
+  publishing_ci_config_ref_uri: string | null;
+  runner_environment: string | null;
+  publishing_run_url: string | null;
+  verified_at: string;
+}
+
 export interface GithubOidcProvenance {
   kind: 'github_oidc';
   claim: 'publication';

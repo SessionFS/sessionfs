@@ -124,10 +124,12 @@ export function Select({
   const [activeIndex, setActiveIndex] = useState(-1);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
-  const close = useCallback(() => {
+  const close = useCallback((restoreFocus = false) => {
     setOpen(false);
     setActiveIndex(-1);
+    if (restoreFocus) triggerRef.current?.focus();
   }, []);
 
   // Outside click
@@ -142,10 +144,10 @@ export function Select({
     return () => document.removeEventListener('mousedown', handleClick);
   }, [open, close]);
 
-  // Single keyboard handler on the combobox trigger (which retains focus —
-  // the listbox uses aria-activedescendant, not roving focus). Handles both
-  // the closed-and-focused case (open on Arrow/Enter/Space) and navigation
-  // while open — matching the native <select> keyboard contract it replaces.
+  // One keyboard handler shared by the trigger button (closed: open on
+  // Arrow/Enter/Space) and the listbox (open: navigation). Focus moves to the
+  // listbox while open and the active option is exposed with
+  // aria-activedescendant, matching the native <select> keyboard contract.
   const selectedIndex = options.findIndex((o) => o.value === value);
   function openAt(index: number) {
     setActiveIndex(index < 0 ? 0 : index);
@@ -176,7 +178,7 @@ export function Select({
     switch (e.key) {
       case 'Escape':
         e.preventDefault();
-        close();
+        close(true);
         break;
       case 'Tab':
         close();
@@ -202,11 +204,16 @@ export function Select({
         e.preventDefault();
         if (activeIndex >= 0 && options[activeIndex]) {
           onValueChange(options[activeIndex].value);
-          close();
+          close(true);
         }
         break;
     }
   }
+
+  // Hand focus to the listbox once it mounts so it owns aria-activedescendant.
+  useEffect(() => {
+    if (open) listRef.current?.focus();
+  }, [open]);
 
   // Scroll active into view
   useEffect(() => {
@@ -226,12 +233,11 @@ export function Select({
           id={controlId}
           type="button"
           disabled={disabled}
-          role="combobox"
+          ref={triggerRef}
           aria-haspopup="listbox"
           aria-expanded={open}
           aria-controls={open ? listId : undefined}
-          aria-activedescendant={open && activeIndex >= 0 ? optionId(activeIndex) : undefined}
-          aria-label={ariaLabel}
+          aria-label={ariaLabel ?? (selectedLabel || placeholder ? undefined : title || 'Select option')}
           className={`${baseField} flex items-center justify-between gap-2 text-left ${!selectedLabel ? 'text-text-tertiary' : ''} ${error ? errorField : ''} ${className}`}
           onClick={() => !disabled && setOpen((v) => !v)}
           onKeyDown={handleTriggerKeyDown}
@@ -256,8 +262,17 @@ export function Select({
             style={{ boxShadow: 'var(--shadow-overlay)' }}
           >
             {/* Listbox popup with aria-activedescendant — options are NOT
-                separately focusable; focus stays on the combobox trigger. */}
-            <ul ref={listRef} id={listId} role="listbox" aria-label={title || 'Select option'}>
+                separately focusable; the listbox itself takes focus. */}
+            <ul
+              ref={listRef}
+              id={listId}
+              role="listbox"
+              tabIndex={-1}
+              aria-label={title || ariaLabel || 'Select option'}
+              aria-activedescendant={activeIndex >= 0 ? optionId(activeIndex) : undefined}
+              onKeyDown={handleTriggerKeyDown}
+              className="outline-none"
+            >
               {options.map((opt, i) => {
                 const isSelected = opt.value === value;
                 const isActive = i === activeIndex;
@@ -269,10 +284,10 @@ export function Select({
                     aria-selected={isSelected}
                     data-option-index={i}
                     onMouseEnter={() => setActiveIndex(i)}
-                    onMouseDown={(e) => e.preventDefault() /* keep focus on the trigger */}
+                    onMouseDown={(e) => e.preventDefault() /* keep focus on the listbox */}
                     onClick={() => {
                       onValueChange(opt.value);
-                      close();
+                      close(true);
                     }}
                     className={`cursor-pointer mx-1 px-2 py-1.5 text-sm flex items-center gap-2 transition-colors duration-150 rounded-sm ${
                       isActive

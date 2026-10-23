@@ -84,13 +84,13 @@ Click **New Project** to create one. Provide a name and optionally link a git re
 
 ### Project Detail
 
-Inside a project you will find:
+A project is organized into five sections. The current section and sub-tab are kept in the address bar, so you can link straight to them and the back button works.
 
-- **Context Editor** — a markdown editor for the project's context document. This document is injected into sessions via MCP or `--append-system-prompt-file`.
-- **Knowledge Entries** — structured facts (decisions, patterns, bugs, conventions, dependencies, discoveries) captured with `add_knowledge`. Each entry shows its type, text, and creation date.
-- **Compile** — generates a compiled context document from all knowledge entries, organized by type.
-- **Wiki Pages** — longer-form articles with backlinks. Use these for architecture guides, onboarding docs, or deep dives.
-- **Health** — shows sync status and entry counts.
+- **Overview** — the project's context document, with a markdown editor. This document is injected into sessions via MCP or `--append-system-prompt-file`.
+- **Knowledge** — **Entries** (structured facts captured with `add_knowledge`, with type, text, confidence and creation date), **Pages** (wiki pages with backlinks, including compiled section pages) and **History** (past compilations).
+- **Work** — **Tickets**, **Agent runs** and **Personas** for the project's agent team.
+- **Rules & Skills** — **Rules** (canonical project rules compiled into each tool's instruction file) and **Skills** (the project's installed skills and pending install requests from the marketplace).
+- **Settings** — rename the project, the narrative summary toggle, linked **Repositories**, merging another project into this one, transferring the project, and deleting it.
 
 ---
 
@@ -110,13 +110,13 @@ Each handoff shows a three-step progress indicator: **Created**, **Claimed**, **
 
 ## Settings
 
-The Settings page (`/settings`) controls your account and sync preferences.
+Account settings live at `/settings`, split into sections that each have their own address (for example `/settings/sync`). On a phone the section list becomes a menu.
 
-- **Sync Mode** — choose between `off` (local only), `all` (sync every session), or `selective` (sync only sessions matching your watchlist patterns).
-- **LLM Judge** — enable or disable automatic audit on sync, set the confidence threshold, and choose which model to use for judge calls.
-- **GitHub Integration** — connect a GitHub App installation to enable PR-linked sessions and the GitHub Checks integration.
-- **GitLab Integration** — connect a GitLab project for MR-linked sessions.
-- **Capture Health** — a status card showing, per watched AI tool, whether capture is healthy. If a tool ships a format change that silently breaks capture, the daemon detects it (an idle tool is never flagged) and the card surfaces it here — the same signal reported by `sfs doctor`.
+- **Account** (`/settings/account`) — your account and plan, last sync, and the **Capture Health** card. If a tool ships a format change that silently breaks capture, the daemon detects it (an idle tool is never flagged) and the card surfaces it here — the same signal reported by `sfs doctor`.
+- **Preferences** (`/settings/preferences`) — appearance, including light or dark theme.
+- **Integrations** (`/settings/integrations`) — your server URL and API key, and the **GitHub Integration** for PR-linked sessions and PR comments.
+- **Data protection** (`/settings/data-protection`) — automatic audit on sync (LLM Judge) and your DLP secret-scanning policy.
+- **Sync** (`/settings/sync`) — autosync mode: `off` (local only), `all` (sync every session), or `selective` (sync only sessions on your watchlist).
 
 ---
 
@@ -133,7 +133,7 @@ The Billing page (`/settings/billing`) shows your current tier and usage.
 
 ## Organization
 
-The Organization page (`/settings/organization`) lets org admins manage members, invite new users, and set the org-wide tier. Members inherit the org tier for all sync and feature limits.
+The Organization page (`/settings/organization`) has four tabs: **Members** (members, roles and invites), **Personas** (org-wide agent personas), **Policies** (organization defaults) and, for admins, **Security** (single sign-on). Members inherit the org tier for all sync and feature limits.
 
 ---
 
@@ -158,12 +158,14 @@ The Admin page (`/admin`) is only visible to users with the **admin** tier.
 
 ---
 
-## Sessions Sidebar and Layout
+## Sidebar and Layout
 
-The dashboard uses a dark-first, design-token UI with a grouped left sidebar for fast navigation across sessions, projects, handoffs, and settings. The session list supports both list and grid layouts — toggle between them to scan many sessions at a glance or focus on detail.
+The left sidebar puts **Sessions**, **Projects** and **Handoffs** first, then groups the rest into **Library** (Marketplace), **Inbox** (Invites, Transfers) and **Manage** (Organization, Billing). The marketplace pages share one sub-navigation. The session list supports both list and grid layouts — toggle between them to scan many sessions at a glance or focus on detail.
+
+The dashboard works on phones: every page fits a 375 px screen without sideways scrolling, the sidebar becomes a menu, and tab bars scroll instead of overflowing. Tabs follow the standard keyboard pattern (arrow keys, Home, End), and notifications are announced to screen readers.
 
 ---
 
 ## Light and Dark Mode
 
-The dashboard is dark-first and supports both light and dark themes. It follows your system preference by default. You can override the theme from the layout header.
+The dashboard is dark-first and supports both light and dark themes. It follows your system preference by default. You can override the theme from the layout header or in **Settings → Preferences**.

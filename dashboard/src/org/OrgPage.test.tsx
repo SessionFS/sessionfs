@@ -1,7 +1,8 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 import OrgPage from './OrgPage';
 
 /**
@@ -61,11 +62,13 @@ function makeQueryClient() {
   });
 }
 
-function renderPage() {
+function renderPage(initialUrl = '/settings/organization') {
   const qc = makeQueryClient();
   return render(
     <QueryClientProvider client={qc}>
-      <OrgPage />
+      <MemoryRouter initialEntries={[initialUrl]}>
+        <OrgPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -183,7 +186,8 @@ describe('OrgPage', () => {
     expect(screen.getByText('member@example.com')).toBeInTheDocument();
     // Admin sees the invite button
     expect(screen.getByRole('button', { name: /invite member/i })).toBeInTheDocument();
-    // GH #70 — admins get the org personas section.
+    // GH #70 — admins get the org personas section (its own tab).
+    await userEvent.setup().click(screen.getByRole('tab', { name: 'Personas' }));
     expect(screen.getByTestId('org-personas-stub-org_x')).toBeInTheDocument();
   });
 
@@ -222,6 +226,9 @@ describe('OrgPage', () => {
     });
     expect(screen.queryByRole('button', { name: /invite member/i })).not.toBeInTheDocument();
     expect(screen.queryByTestId('org-personas-stub-org_x')).not.toBeInTheDocument();
+    // Admin-only Security tab is not offered; the policies tab stays visible.
+    expect(screen.queryByRole('tab', { name: 'Security' })).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Policies' })).toBeInTheDocument();
   });
 
   it('clicking Invite Member opens the invite form and submits the POST', async () => {
@@ -308,5 +315,60 @@ describe('OrgPage', () => {
     await waitFor(() => {
       expect(screen.getByText(/seat limit reached/i)).toBeInTheDocument();
     });
+  });
+
+  function adminOrg(extraMembers: object[] = []) {
+    return (url: string) => {
+      if (url.endsWith('/api/v1/org')) {
+        return jsonOk({
+          org: { id: 'org_x', name: 'SessionFS', slug: 'sessionfs', tier: 'enterprise', seats_used: 2, seats_limit: 100 },
+          members: [
+            { user_id: 'u_1', email: 'admin@example.com', display_name: null, role: 'admin', joined_at: '2026-03-01T12:00:00Z' },
+            ...extraMembers,
+          ],
+          current_user_role: 'admin',
+        });
+      }
+      if (url.endsWith('/api/v1/org/invites')) return jsonOk({ invites: [] });
+      throw new Error(`unexpected url: ${url}`);
+    };
+  }
+
+  it('shows the tab named in ?tab= and falls back to Members for unknown values', async () => {
+    stubFetch(adminOrg());
+    renderPage('/settings/organization?tab=security');
+    expect(await screen.findByTestId('sso-stub-org_x')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Security' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('unknown ?tab= value selects Members', async () => {
+    stubFetch(adminOrg());
+    renderPage('/settings/organization?tab=bogus');
+    expect(await screen.findByText('admin@example.com')).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Members' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('removing a member asks for confirmation in a dialog before the DELETE', async () => {
+    const member = { user_id: 'u_2', email: 'member@example.com', display_name: null, role: 'member', joined_at: '2026-03-02T12:00:00Z' };
+    const base = adminOrg([member]);
+    let deleted = false;
+    stubFetch((url, init) => {
+      if (url.endsWith('/api/v1/org/members/u_2') && init?.method === 'DELETE') {
+        deleted = true;
+        return jsonOk({});
+      }
+      return base(url);
+    });
+    const confirmSpy = vi.spyOn(window, 'confirm');
+    renderPage();
+    const user = userEvent.setup();
+    const removeButtons = await screen.findAllByRole('button', { name: 'Remove' });
+    await user.click(removeButtons[removeButtons.length - 1]);
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveTextContent('Remove member@example.com from the organization?');
+    expect(deleted).toBe(false);
+    await user.click(within(dialog).getByRole('button', { name: 'Remove' }));
+    await waitFor(() => expect(deleted).toBe(true));
+    expect(confirmSpy).not.toHaveBeenCalled();
   });
 });

@@ -5,7 +5,7 @@ import { isTierGate } from './tierGate';
 import type { MarketplaceCategory, MarketplacePackage } from '../api/client';
 import { Badge } from '../components/Badge';
 import EmptyState from '../components/EmptyState';
-import { Button, Card, Dialog, DialogFooter, DialogHeader, Input, Select, Tabs } from '../components/ui';
+import { Button, Card, Dialog, DialogFooter, DialogHeader, Input, Select, TableShell, Tabs, TabPanel } from '../components/ui';
 import {
   MARKETPLACE_TOOLS,
   type MarketplaceFilterState,
@@ -24,11 +24,12 @@ import { installsLabel } from './discoveryUtils';
 import { SafeReadme } from './SafeReadme';
 import { useMarketplaceDisclosure } from '../hooks/useMarketplaceDisclosure';
 import { useMe } from '../hooks/useMe';
+import MarketplaceNav from './MarketplaceNav';
 import { useProjects } from '../hooks/useProjects';
 import { useToast } from '../hooks/useToast';
 import { useMyOrgs } from '../transfers/useTransfers';
 import { formatBytes } from '../utils/format';
-import { STATE_COPY, adminOrgs, canModerate, canPublishPersonal, listingState, type ModerationState } from './moderationState';
+import { STATE_COPY, adminOrgs, canPublishPersonal, listingState, type ModerationState } from './moderationState';
 import { ModerationStateBadge, RevocationIncompleteNotice } from './parts';
 import { DisclosureCard } from './DisclosureCard';
 import { UseInYourTool, WorksInMatrix } from './NativeCatalogs';
@@ -37,6 +38,7 @@ import { RegistryList } from './RegistryList';
 import PublishDialog from './PublishDialog';
 import { ListingReviewBadge, ProvenancePanel, PublisherBadge } from './publisherParts';
 import ReportDialog from './ReportDialog';
+import { errorMessage } from '../utils/errorMessage';
 
 const TOOL_OPTIONS = [
   { value: '', label: 'All tools' },
@@ -147,7 +149,7 @@ function PackageDisclosure({ versionId, enabled }: { versionId: string; enabled:
   const disclosure = useMarketplaceDisclosure(versionId, [], 'project', enabled);
   if (!enabled) return null;
   if (disclosure.isLoading) return <p className="mt-4 text-sm text-text-tertiary">Loading install disclosure…</p>;
-  if (disclosure.error) return <p role="alert" className="mt-4 text-sm text-warning">Install disclosure unavailable: {String(disclosure.error)}</p>;
+  if (disclosure.error) return <p role="alert" className="mt-4 text-sm text-warning">Install disclosure unavailable: {errorMessage(disclosure.error)}</p>;
   if (!disclosure.data) return null;
   return <div className="mt-4"><DisclosureCard disclosure={disclosure.data} /></div>;
 }
@@ -155,7 +157,7 @@ function PackageDisclosure({ versionId, enabled }: { versionId: string; enabled:
 function ReadmeTab({ item, enabled }: { item: MarketplacePackage; enabled: boolean }) {
   const readme = useMarketplaceReadme(item.package_id, item.version_id, enabled);
   if (readme.isLoading) return <p className="text-sm text-text-tertiary">Loading README…</p>;
-  if (readme.error) return <p role="alert" className="text-sm text-warning">README unavailable: {String(readme.error)}</p>;
+  if (readme.error) return <p role="alert" className="text-sm text-warning">README unavailable: {errorMessage(readme.error)}</p>;
   if (!readme.data) return null;
   return <SafeReadme readme={readme.data} versionId={item.version_id} />;
 }
@@ -181,7 +183,7 @@ function PackageDialog({ item, state, onClose }: { item: MarketplacePackage; sta
       addToast('success', `Deleted immutable version ${item.version || item.version_id}.`);
       onClose();
     } catch (error) {
-      addToast('error', `Delete failed: ${String(error)}`);
+      addToast('error', `Delete failed: ${errorMessage(error)}`);
     } finally {
       setConfirmDelete(false);
     }
@@ -200,7 +202,7 @@ function PackageDialog({ item, state, onClose }: { item: MarketplacePackage; sta
       URL.revokeObjectURL(url);
       addToast('success', `Downloaded immutable version ${item.version || item.version_id}`);
     } catch (error) {
-      addToast('error', `Download failed: ${String(error)}`);
+      addToast('error', `Download failed: ${errorMessage(error)}`);
     } finally {
       setDownloading(false);
     }
@@ -233,11 +235,14 @@ function PackageDialog({ item, state, onClose }: { item: MarketplacePackage; sta
         <div className="mb-4">
           <Tabs
             bare
+            idPrefix="mp-item"
+            aria-label="Item details"
             tabs={[{ key: 'overview', label: 'Overview' }, { key: 'readme', label: 'README' }]}
             activeKey={tab}
             onChange={(key) => setTab(key as 'overview' | 'readme')}
           />
         </div>
+        <TabPanel idPrefix="mp-item" tabKey={tab}>
         {tab === 'readme' && (deliverable
           ? <ReadmeTab item={item} enabled={deliverable} />
           : <p className="text-sm text-text-tertiary">The README is shown only for deliverable versions.</p>)}
@@ -259,8 +264,7 @@ function PackageDialog({ item, state, onClose }: { item: MarketplacePackage; sta
 
         <section className="mt-6" aria-labelledby="compatibility-heading">
           <h3 id="compatibility-heading" className="text-sm font-semibold text-text-primary">Expected compatibility (via sfs skill)</h3>
-          <div className="mt-2 overflow-x-auto rounded-lg border border-border">
-            <table className="w-full min-w-[560px] text-left text-sm">
+          <TableShell minWidth={560} bordered wrapperClassName="mt-2">
               <thead className="bg-bg-sunken text-xs uppercase tracking-wider text-text-tertiary">
                 <tr><th className="px-3 py-2">Tool</th><th className="px-3 py-2">Instructions</th><th className="px-3 py-2">Deliberate omissions</th></tr>
               </thead>
@@ -273,18 +277,18 @@ function PackageDialog({ item, state, onClose }: { item: MarketplacePackage; sta
                   </tr>
                 ))}
               </tbody>
-            </table>
-          </div>
+          </TableShell>
         </section>
         <ToolFreshnessTable item={item} />
         </>)}
+        </TabPanel>
 
         {showPreview && (
           <section className="mt-6 rounded-xl border border-warning/30 bg-[rgba(240,192,64,0.05)] p-4" aria-live="polite">
             <h3 className="text-sm font-semibold text-warning">Untrusted instruction preview</h3>
             <p className="mt-1 text-xs text-text-secondary">Reading a preview does not approve, install, or execute the package.</p>
             {preview.isLoading && <p className="mt-3 text-sm text-text-tertiary">Loading preview…</p>}
-            {preview.error && <p role="alert" className="mt-3 text-sm text-danger">Preview failed: {String(preview.error)}</p>}
+            {preview.error && <p role="alert" className="mt-3 text-sm text-danger">Preview failed: {errorMessage(preview.error)}</p>}
             <div className="mt-3 space-y-3">
               {preview.data?.instruction_preview?.map((entry) => (
                 <div key={entry.path}>
@@ -347,7 +351,7 @@ function InstallRequestDialog({ item, onClose }: { item: MarketplacePackage; onC
       addToast('success', 'Install request submitted for approval.');
       onClose();
     } catch (error) {
-      addToast('error', `Request failed: ${String(error)}`);
+      addToast('error', `Request failed: ${errorMessage(error)}`);
     }
   }
 
@@ -423,7 +427,7 @@ function ManagedLibrary() {
               <p className="mt-1 text-xs text-text-secondary">Organization skill registries and managed assignments are a Team-tier feature. Ask your organization owner to upgrade to enable them.</p>
             </div>
           ) : org.registries.error ? (
-            <p role="alert" className="mt-3 text-sm text-danger">Registries unavailable: {String(org.registries.error)}</p>
+            <p role="alert" className="mt-3 text-sm text-danger">Registries unavailable: {errorMessage(org.registries.error)}</p>
           ) : registries.length === 0 ? (
             <p className="mt-3 text-sm text-text-tertiary">No organization registries configured.</p>
           ) : (
@@ -559,12 +563,12 @@ export default function MarketplacePage() {
   const me = useMe();
   const myOrgs = useMyOrgs();
   const canPublish = canPublishPersonal(me.data) || adminOrgs(myOrgs.data, me.data).length > 0;
-  const moderator = canModerate(me.data, myOrgs.data);
   const items = packages.data?.pages.flatMap((page) => page.items) ?? [];
   const loadedCount = items.length;
 
   return (
-    <main className="mx-auto w-full max-w-6xl px-4 py-7 sm:px-6">
+    <div className="mx-auto w-full max-w-6xl px-4 py-7 sm:px-6">
+      <MarketplaceNav />
       <header className="relative overflow-hidden rounded-2xl border border-border bg-bg-elevated px-5 py-7 sm:px-8">
         <div className="pointer-events-none absolute -right-16 -top-24 h-64 w-64 rounded-full bg-[radial-gradient(circle,var(--brand-glow),transparent_68%)]" />
         <p className="text-2xs font-semibold uppercase tracking-[0.2em] text-brand">SessionFS Marketplace</p>
@@ -579,21 +583,6 @@ export default function MarketplacePage() {
               <Link to="/settings/billing" className="font-semibold text-brand hover:underline">View plans</Link>
             </p>
           ) : null}
-          {canPublish && (
-            <Link to="/marketplace/publishers" className="rounded-lg border border-border px-3 py-1.5 text-xs text-text-secondary hover:border-border-strong hover:text-text-primary">
-              Publishers and trusted publishing
-            </Link>
-          )}
-          {moderator && (
-            <Link to="/marketplace/moderation" className="rounded-lg border border-border px-3 py-1.5 text-xs text-text-secondary hover:border-border-strong hover:text-text-primary">
-              Moderation queue
-            </Link>
-          )}
-          {adminOrgs(myOrgs.data, me.data).length > 0 && (
-            <Link to="/marketplace/usage" className="rounded-lg border border-border px-3 py-1.5 text-xs text-text-secondary hover:border-border-strong hover:text-text-primary">
-              Organization usage
-            </Link>
-          )}
         </div>
         <div className="mt-6 grid gap-3 sm:grid-cols-[1fr_220px]">
           <Input aria-label="Search marketplace" placeholder="Search by package, namespace, or capability" value={query} onChange={(event) => setQuery(event.target.value)} />
@@ -621,7 +610,7 @@ export default function MarketplacePage() {
           {[0, 1, 2].map((item) => <div key={item} className="h-44 animate-pulse rounded-xl border border-border bg-bg-elevated" />)}
         </div>
       )}
-      {packages.error && <p role="alert" className="mt-5 rounded-lg border border-danger/30 bg-[rgba(240,64,96,0.06)] p-4 text-sm text-danger">Marketplace unavailable: {String(packages.error)}</p>}
+      {packages.error && <p role="alert" className="mt-5 rounded-lg border border-danger/30 bg-[rgba(240,64,96,0.06)] p-4 text-sm text-danger">Marketplace unavailable: {errorMessage(packages.error)}</p>}
       {packages.data && loadedCount === 0 && (
         <EmptyState title="No packages match" description="Try a broader search or another target tool. Private organization packages appear only for authorized members." />
       )}
@@ -648,6 +637,6 @@ export default function MarketplacePage() {
       <ManagedLibrary />
       {selected && <PackageDialog item={selected} state={listingState(selected, revocations.data)} onClose={() => setSelected(null)} />}
       {publishOpen && <PublishDialog onClose={() => setPublishOpen(false)} />}
-    </main>
+    </div>
   );
 }

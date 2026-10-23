@@ -116,8 +116,8 @@ function TaskToasts({ tasks, onDismiss }: { tasks: BackgroundTask[]; onDismiss: 
           className={`
             flex items-start gap-3 px-4 py-3 rounded-lg border shadow-lg backdrop-blur-sm
             ${task.status === 'running' ? 'bg-bg-secondary/95 border-accent/30' : ''}
-            ${task.status === 'completed' ? 'bg-bg-secondary/95 border-green-500/30' : ''}
-            ${task.status === 'failed' ? 'bg-bg-secondary/95 border-red-500/30' : ''}
+            ${task.status === 'completed' ? 'bg-bg-secondary/95 border-success/30' : ''}
+            ${task.status === 'failed' ? 'bg-bg-secondary/95 border-danger/30' : ''}
           `}
         >
           {/* Icon */}
@@ -126,12 +126,12 @@ function TaskToasts({ tasks, onDismiss }: { tasks: BackgroundTask[]; onDismiss: 
               <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
             )}
             {task.status === 'completed' && (
-              <svg className="w-4 h-4 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="w-4 h-4 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
               </svg>
             )}
             {task.status === 'failed' && (
-              <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <svg className="w-4 h-4 text-danger" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             )}

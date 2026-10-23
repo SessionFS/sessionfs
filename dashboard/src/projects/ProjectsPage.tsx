@@ -4,7 +4,8 @@ import { useProjects } from '../hooks/useProjects';
 import type { ProjectContext } from '../api/client';
 import RelativeDate from '../components/RelativeDate';
 import CreateProjectModal from './CreateProjectModal';
-import { Card, Button } from '../components/ui';
+import { Card, Button, PageContainer, PageHeader } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 // v0.10.0 added `projects.org_id` (migration 035). The generated
 // ProjectContext type predates that; responses carry an extra org_id.
@@ -86,8 +87,8 @@ function ProjectCard({ project, onClick }: { project: ProjectContext; onClick: (
 
         {/* Auto-narrative badge */}
         {project.auto_narrative && (
-          <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+          <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-success/10 text-success">
+            <span className="w-1.5 h-1.5 rounded-full bg-success inline-block" />
             Auto-narrative
           </span>
         )}
@@ -118,10 +119,11 @@ export default function ProjectsPage() {
     : 'space-y-3';
 
   return (
-    <div className={`${viewMode === 'grid' ? 'max-w-7xl' : 'max-w-4xl'} mx-auto px-4 py-6`}>
-      <div className="flex items-center justify-between mb-5">
-        <h1 className="text-3xl font-bold tracking-tight text-text-primary">Projects</h1>
-        <div className="flex items-center gap-3">
+    <PageContainer width={viewMode === 'grid' ? 'wide' : 'default'}>
+      <PageHeader
+        title="Projects"
+        actions={
+          <>
           {/* List/Grid view toggle (mirrors Sessions) */}
           <div className="flex items-center rounded-lg border border-border bg-surface overflow-hidden">
             <button
@@ -150,12 +152,13 @@ export default function ProjectsPage() {
             </button>
           </div>
           <Button onClick={() => setShowCreate(true)}>+ New Project</Button>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {error && (
-        <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-500 text-sm">
-          Failed to load projects: {String(error)}
+        <div className="mb-4 p-3 bg-danger/10 border border-danger/30 rounded-lg text-danger text-sm">
+          Failed to load projects: {errorMessage(error)}
         </div>
       )}
 
@@ -263,6 +266,6 @@ export default function ProjectsPage() {
           }}
         />
       )}
-    </div>
+    </PageContainer>
   );
 }

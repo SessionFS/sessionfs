@@ -140,7 +140,7 @@ describe('ModerationPage', () => {
   it('switches the status filter', async () => {
     const user = userEvent.setup();
     renderPage();
-    await user.click(screen.getByRole('combobox', { name: 'Filter reports by status' }));
+    await user.click(screen.getByRole('button', { name: 'Filter reports by status' }));
     await user.click(screen.getByRole('option', { name: 'All reports' }));
     expect(hooks.useMarketplaceReports).toHaveBeenLastCalledWith('all', true);
   });
@@ -208,9 +208,9 @@ describe('ModerationPage', () => {
     const user = userEvent.setup();
     renderPage();
     const dialog = await openReview(user);
-    await user.click(within(dialog).getByRole('combobox', { name: /Target/ }));
+    await user.click(within(dialog).getByRole('button', { name: /Target/ }));
     await user.click(within(dialog).getByRole('option', { name: /Whole package/ }));
-    await user.click(within(dialog).getByRole('combobox', { name: /Action/ }));
+    await user.click(within(dialog).getByRole('button', { name: /Action/ }));
     await user.click(within(dialog).getByRole('option', { name: /Block/ }));
     await user.type(within(dialog).getByLabelText(/^Reason \(required/), 'Malware');
     await user.click(within(dialog).getByRole('button', { name: 'Block…' }));
@@ -229,7 +229,7 @@ describe('ModerationPage', () => {
     }));
     renderPage();
     const dialog = await openReview(user);
-    await user.click(within(dialog).getByRole('combobox', { name: /Action/ }));
+    await user.click(within(dialog).getByRole('button', { name: /Action/ }));
     await user.click(within(dialog).getByRole('option', { name: 'Restore' }));
     await user.type(within(dialog).getByLabelText(/^Reason \(required/), 'False positive');
     await user.click(within(dialog).getByRole('button', { name: 'Restore…' }));
@@ -251,7 +251,7 @@ describe('ModerationPage', () => {
     }));
     renderPage();
     const dialog = await openReview(user);
-    await user.click(within(dialog).getByRole('combobox', { name: /Action/ }));
+    await user.click(within(dialog).getByRole('button', { name: /Action/ }));
     await user.click(within(dialog).getByRole('option', { name: 'Restore' }));
     await user.type(within(dialog).getByLabelText(/^Reason \(required/), 'Vendor installer');
     await user.click(within(dialog).getByRole('button', { name: 'Restore…' }));
@@ -282,7 +282,7 @@ describe('ModerationPage', () => {
     }));
     renderPage();
     const dialog = await openReview(user);
-    await user.click(within(dialog).getByRole('combobox', { name: /Action/ }));
+    await user.click(within(dialog).getByRole('button', { name: /Action/ }));
     await user.click(within(dialog).getByRole('option', { name: 'Restore' }));
     await user.type(within(dialog).getByLabelText(/^Reason \(required/), 'Vendor installer');
     await user.click(within(dialog).getByRole('button', { name: 'Restore…' }));
@@ -290,12 +290,12 @@ describe('ModerationPage', () => {
     await within(dialog).findByRole('region', { name: 'Critical findings to clear' });
     // Switching to Block hides the findings: "Restore and clear" cannot run
     // Block (or anything else) without its own confirmation.
-    await user.click(within(dialog).getByRole('combobox', { name: /Action/ }));
+    await user.click(within(dialog).getByRole('button', { name: /Action/ }));
     await user.click(within(dialog).getByRole('option', { name: /^Block/ }));
     expect(within(dialog).queryByRole('region', { name: 'Critical findings to clear' })).not.toBeInTheDocument();
     expect(within(dialog).queryByRole('button', { name: /Restore and clear/ })).not.toBeInTheDocument();
     // Switching back does not resurrect them either.
-    await user.click(within(dialog).getByRole('combobox', { name: /Action/ }));
+    await user.click(within(dialog).getByRole('button', { name: /Action/ }));
     await user.click(within(dialog).getByRole('option', { name: 'Restore' }));
     expect(within(dialog).queryByRole('region', { name: 'Critical findings to clear' })).not.toBeInTheDocument();
     expect(hooks.moderate.mutateAsync).toHaveBeenCalledTimes(1);
@@ -313,13 +313,13 @@ describe('ModerationPage', () => {
     }));
     renderPage();
     const dialog = await openReview(user);
-    await user.click(within(dialog).getByRole('combobox', { name: /Action/ }));
+    await user.click(within(dialog).getByRole('button', { name: /Action/ }));
     await user.click(within(dialog).getByRole('option', { name: 'Restore' }));
     await user.type(within(dialog).getByLabelText(/^Reason \(required/), 'Vendor installer');
     await user.click(within(dialog).getByRole('button', { name: 'Restore…' }));
     await user.click(within(dialog).getByRole('button', { name: 'Confirm restore' }));
     await within(dialog).findByRole('region', { name: 'Critical findings to clear' });
-    await user.click(within(dialog).getByRole('combobox', { name: /Target/ }));
+    await user.click(within(dialog).getByRole('button', { name: /Target/ }));
     await user.click(within(dialog).getByRole('option', { name: /Whole package/ }));
     expect(within(dialog).queryByRole('button', { name: /Restore and clear/ })).not.toBeInTheDocument();
     expect(hooks.moderate.mutateAsync).toHaveBeenCalledTimes(1);

@@ -552,8 +552,9 @@ class TestRound9Fixes:
         assert src.count("if not _result_is_error(result):") == 3
 
     def test_installer_verifies_with_help_not_version(self):
-        """sfs has no --version option (exit 2) — verification must use --help,
-        which works on every published version."""
+        """sfs gained --version only in 0.21 (GitHub #85); older published
+        versions exit 2 on it, so verification must use --help, which works
+        on every published version."""
         sh = Path("install/install.sh").read_text()
         assert "--version >/dev/null" not in sh
         assert "--help >/dev/null 2>&1" in sh

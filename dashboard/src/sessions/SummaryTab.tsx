@@ -72,7 +72,7 @@ export default function SummaryTab({ sessionId }: Props) {
   }
 
   if (error && !is404) {
-    return <div className="p-4 text-red-400 text-sm">Failed to load summary.</div>;
+    return <div className="p-4 text-danger text-sm">Failed to load summary.</div>;
   }
 
   if (!summary) return null;
@@ -90,7 +90,7 @@ export default function SummaryTab({ sessionId }: Props) {
         <MetricCard label="Tool calls" value={String(summary.tool_call_count)} />
         <MetricCard label="Tests"
           value={summary.tests_run > 0 ? `${summary.tests_passed}/${summary.tests_run}` : '-'}
-          color={summary.tests_failed > 0 ? 'text-warning' : summary.tests_run > 0 ? 'text-green-400' : undefined}
+          color={summary.tests_failed > 0 ? 'text-warning' : summary.tests_run > 0 ? 'text-success' : undefined}
         />
       </div>
 
@@ -148,13 +148,13 @@ export default function SummaryTab({ sessionId }: Props) {
           {summary.errors_encountered.length > 0 && (
             <>
               <button onClick={() => setShowErrors(!showErrors)}
-                className="text-red-400 hover:underline">
+                className="text-danger hover:underline">
                 {summary.errors_encountered.length} errors encountered
               </button>
               {showErrors && (
                 <div className="mt-1 space-y-1">
                   {summary.errors_encountered.map((e, i) => (
-                    <pre key={i} className="text-xs text-red-400/80 bg-red-500/10 rounded px-2 py-1 overflow-x-auto">
+                    <pre key={i} className="text-xs text-danger/80 bg-danger/10 rounded px-2 py-1 overflow-x-auto">
                       {e}
                     </pre>
                   ))}

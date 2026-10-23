@@ -108,7 +108,7 @@ describe('PublishersPage', () => {
     hooks.start.mutateAsync.mockResolvedValue({ ...publisher.verifications[0], status: 'verified', subject_display: 'github.com/acme' });
     renderPage();
     const form = screen.getByRole('form', { name: 'Verify acme' });
-    await user.click(within(form).getByRole('combobox', { name: 'Method' }));
+    await user.click(within(form).getByRole('button', { name: 'Method' }));
     await user.click(screen.getByRole('option', { name: 'GitHub organization' }));
     await user.type(within(form).getByLabelText('GitHub App installation id'), '4242');
     await user.click(within(form).getByRole('button', { name: 'Verify' }));
@@ -194,6 +194,43 @@ describe('publisher parts', () => {
     expect(screen.getByRole('heading', { name: 'Published from' })).toBeInTheDocument();
     expect(screen.getByText(/not how it was built/)).toBeInTheDocument();
     expect(screen.queryByText(/Build provenance/)).toBeNull();
+  });
+
+  it('renders GitLab CI provenance with GitLab links from validated fields', () => {
+    render(
+      <ProvenancePanel
+        item={pkg({
+          signature: {
+            kind: 'gitlab_oidc', claim: 'publication', verification: 'oidc_token',
+            published_from_repo: 'gitlab.com/acme/sub/skills', published_from_project_id: 4242,
+            publishing_run_sha: '0123456789abcdef0123456789abcdef01234567', publishing_ref: 'refs/tags/v1.0.0',
+            publishing_ref_protected: true, publishing_environment: 'production', publishing_event: 'push',
+            publishing_job_id: '77', runner_environment: 'gitlab-hosted', build_provenance: null,
+          },
+        })}
+      />,
+    );
+    expect(screen.getByRole('link', { name: 'gitlab.com/acme/sub/skills' })).toHaveAttribute('href', 'https://gitlab.com/acme/sub/skills');
+    expect(screen.getByRole('link', { name: '0123456789ab' })).toHaveAttribute(
+      'href', 'https://gitlab.com/acme/sub/skills/-/commit/0123456789abcdef0123456789abcdef01234567',
+    );
+    expect(screen.getByRole('link', { name: '#77' })).toHaveAttribute('href', 'https://gitlab.com/acme/sub/skills/-/jobs/77');
+    expect(screen.getByText(/trusted GitLab CI job/)).toBeInTheDocument();
+    expect(screen.queryByText(/Uploaded with an API key/)).toBeNull();
+  });
+
+  it('does not link a hostile GitLab project value', () => {
+    render(
+      <ProvenancePanel
+        item={pkg({
+          signature: {
+            kind: 'gitlab_oidc', claim: 'publication', published_from_repo: 'evil.example/a/b?x=javascript:1',
+            publishing_job_id: '77', build_provenance: null,
+          },
+        })}
+      />,
+    );
+    expect(screen.queryAllByRole('link')).toHaveLength(0);
   });
 
   it('refuses to link a hostile repository value', () => {

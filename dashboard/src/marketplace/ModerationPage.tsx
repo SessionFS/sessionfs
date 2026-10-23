@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 import type { MarketplaceReport, ModerationAction, ModerationTargetKind, QuarantineFinding, ReportReason, ScanFindingKey } from '../api/client';
 import { Badge } from '../components/Badge';
 import EmptyState from '../components/EmptyState';
@@ -13,6 +12,7 @@ import {
   useRevocationIndex,
 } from '../hooks/useMarketplace';
 import { useMe } from '../hooks/useMe';
+import MarketplaceNav from './MarketplaceNav';
 import { useToast } from '../hooks/useToast';
 import { useMyOrgs } from '../transfers/useTransfers';
 import { envelopeOf, explainModerationError, type Explanation } from './marketplaceErrors';
@@ -344,28 +344,26 @@ export default function ModerationPage() {
   const selected = items.find((item) => item.id === selectedId) ?? null;
 
   if (me.isLoading || orgs.isLoading) {
-    return <main className="mx-auto w-full max-w-6xl px-4 py-7 text-sm text-text-tertiary sm:px-6">Loading…</main>;
+    return <div className="mx-auto w-full max-w-6xl px-4 py-7 text-sm text-text-tertiary sm:px-6">Loading…</div>;
   }
 
   if (!allowed) {
     return (
-      <main className="mx-auto w-full max-w-6xl px-4 py-7 sm:px-6">
+      <div className="mx-auto w-full max-w-6xl px-4 py-7 sm:px-6">
         <EmptyState
           title="Moderation is limited to admins"
           description="The marketplace moderation queue is available to platform admins and to owners and admins of an organization."
         />
-      </main>
+      </div>
     );
   }
 
   return (
-    <main className="mx-auto w-full max-w-6xl px-4 py-7 sm:px-6">
+    <div className="mx-auto w-full max-w-6xl px-4 py-7 sm:px-6">
+      <MarketplaceNav />
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <p className="text-2xs font-semibold uppercase tracking-[0.2em] text-brand">
-            <Link to="/marketplace" className="hover:underline">Marketplace</Link> / Moderation
-          </p>
-          <h1 className="mt-2 text-2xl font-semibold tracking-tight text-text-primary">Moderation queue</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-text-primary">Moderation queue</h1>
           <p className="mt-1 max-w-2xl text-sm text-text-secondary">
             {isPlatformAdmin(me.data)
               ? 'Reports on public and personal listings, plus any organization you administer.'
@@ -418,6 +416,6 @@ export default function ModerationPage() {
         </div>
       )}
       {selected && <ReportDetail report={selected} index={revocations.data} feedIncomplete={isRevocationFeedIncomplete(revocations.error)} onClose={() => setSelectedId(null)} />}
-    </main>
+    </div>
   );
 }

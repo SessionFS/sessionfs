@@ -13,7 +13,7 @@ const SsoCallback = React.lazy(() => import('./auth/SsoCallback'));
 const SessionList = React.lazy(() => import('./sessions/SessionList'));
 const SessionDetail = React.lazy(() => import('./sessions/SessionDetail'));
 const SearchResults = React.lazy(() => import('./sessions/SearchResults'));
-const SettingsPage = React.lazy(() => import('./sessions/SettingsPage'));
+const SettingsPage = React.lazy(() => import('./settings/SettingsPage'));
 const HandoffList = React.lazy(() => import('./handoffs/HandoffList'));
 const HandoffDetail = React.lazy(() => import('./handoffs/HandoffDetail'));
 const HandoffClaimLanding = React.lazy(() => import('./handoffs/HandoffClaimLanding'));
@@ -94,6 +94,7 @@ export default function App() {
               <Route path="/transfers" element={<TransferInbox />} />
               <Route path="/invites" element={<InvitesPage />} />
               <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/settings/:section" element={<SettingsPage />} />
               <Route path="/settings/billing" element={<BillingPage />} />
               <Route path="/settings/organization" element={<OrgPage />} />
               <Route path="/help" element={<HelpPage />} />

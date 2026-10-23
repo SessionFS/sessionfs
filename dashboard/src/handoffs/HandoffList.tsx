@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { useHandoffInbox, useHandoffSent } from '../hooks/useHandoffs';
 import RelativeDate from '../components/RelativeDate';
 import { Badge, ToolBadge } from '../components/Badge';
-import { Tabs } from '../components/ui';
+import { Tabs, TabPanel, PageContainer, PageHeader } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 type Tab = 'inbox' | 'sent';
 
@@ -45,20 +46,23 @@ export default function HandoffList() {
   ];
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-6">
-      <h1 className="text-2xl font-bold tracking-tight text-text-primary mb-5">Handoffs</h1>
+    <PageContainer>
+      <PageHeader title="Handoffs" />
 
       <Tabs
         tabs={tabItems}
         activeKey={tab}
         bare
+        idPrefix="handoffs"
+        aria-label="Handoff folders"
         onChange={(key) => setTab(key as Tab)}
       />
 
+      <TabPanel idPrefix="handoffs" tabKey={tab}>
       {/* Error */}
       {error && (
         <div className="mt-4 mb-4 p-3 rounded-lg text-sm text-danger" style={{ backgroundColor: 'rgba(240,64,96,0.1)', border: '1px solid rgba(240,64,96,0.3)' }}>
-          Failed to load handoffs: {String(error)}
+          Failed to load handoffs: {errorMessage(error)}
         </div>
       )}
 
@@ -162,6 +166,7 @@ export default function HandoffList() {
           )}
         </div>
       )}
-    </div>
+      </TabPanel>
+    </PageContainer>
   );
 }

@@ -1,10 +1,4 @@
-import {
-  forwardRef,
-  useEffect,
-  useImperativeHandle,
-  useRef,
-  useState,
-} from 'react';
+import { useRef, useState } from 'react';
 import {
   useProjectRules,
   useUpdateProjectRules,
@@ -15,9 +9,16 @@ import {
 } from '../hooks/useRules';
 import { useToast } from '../hooks/useToast';
 import RelativeDate from '../components/RelativeDate';
-import CopyButton from '../components/CopyButton';
-import type { ProjectRules, RulesVersion } from '../api/client';
-import { Button, Input, Textarea, Dialog, DialogHeader } from '../components/ui';
+import type { ProjectRules } from '../api/client';
+import { Button, Checkbox, Textarea } from '../components/ui';
+import { CORE_TOOLS, CONTEXT_SECTIONS, KNOWLEDGE_TYPES } from './rules/constants';
+import { VersionBadge } from './rules/VersionBadge';
+import { DebouncedTokenInput, type DebouncedTokenInputHandle } from './rules/DebouncedTokenInput';
+import { CompiledOutputsList } from './rules/CompiledOutputsList';
+import { ToolOutputViewer, VersionViewerModal } from './rules/OutputViewers';
+import { errorMessage } from '../utils/errorMessage';
+
+export type { DebouncedTokenInputHandle };
 
 /**
  * Rules tab — v0.9.9.
@@ -34,319 +35,6 @@ import { Button, Input, Textarea, Dialog, DialogHeader } from '../components/ui'
  *
  * Deferred (per brief): rich diff viewer, suggestion moderation, tool-override editor.
  */
-
-const CORE_TOOLS: { value: string; label: string }[] = [
-  { value: 'claude-code', label: 'Claude Code' },
-  { value: 'codex', label: 'Codex' },
-  { value: 'cursor', label: 'Cursor' },
-  { value: 'copilot', label: 'Copilot' },
-  { value: 'gemini', label: 'Gemini' },
-];
-
-const KNOWLEDGE_TYPES: { value: string; label: string }[] = [
-  { value: 'decision', label: 'Decision' },
-  { value: 'pattern', label: 'Pattern' },
-  { value: 'convention', label: 'Convention' },
-  { value: 'discovery', label: 'Discovery' },
-  { value: 'bug', label: 'Bug' },
-  { value: 'dependency', label: 'Dependency' },
-];
-
-const CONTEXT_SECTIONS: { value: string; label: string }[] = [
-  { value: 'overview', label: 'Overview' },
-  { value: 'architecture', label: 'Architecture' },
-  { value: 'conventions', label: 'Conventions' },
-  { value: 'patterns', label: 'Patterns' },
-  { value: 'dependencies', label: 'Dependencies' },
-];
-
-function VersionBadge({ version }: { version: number }) {
-  return (
-    <span
-      className="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold"
-      style={{
-        backgroundColor: 'var(--brand)',
-        color: 'white',
-      }}
-    >
-      v{version}
-    </span>
-  );
-}
-
-interface CompiledOutputModalProps {
-  tool: string;
-  filename: string;
-  content: string;
-  tokenCount: number;
-  onClose: () => void;
-}
-
-function CompiledOutputModal({ tool, filename, content, tokenCount, onClose }: CompiledOutputModalProps) {
-  return (
-    <Dialog open onClose={onClose} titleId="compiled-output-title" className="max-w-3xl max-h-[80vh] flex flex-col !p-0">
-      <div className="flex items-center justify-between px-5 py-3 border-b border-border">
-        <div className="min-w-0">
-          <DialogHeader titleId="compiled-output-title">{filename}</DialogHeader>
-          <p className="text-xs text-text-tertiary -mt-3">
-            {tool} &middot; {tokenCount.toLocaleString()} tokens
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <CopyButton text={content} label="Copy" />
-          <Button variant="ghost" onClick={onClose}>Close</Button>
-        </div>
-      </div>
-      <pre className="flex-1 overflow-auto px-5 py-4 text-xs font-mono text-text-secondary whitespace-pre-wrap">
-        {content}
-      </pre>
-    </Dialog>
-  );
-}
-
-interface VersionViewerModalProps {
-  version: RulesVersion;
-  onClose: () => void;
-}
-
-function VersionViewerModal({ version, onClose }: VersionViewerModalProps) {
-  const entries = Object.entries(version.compiled_outputs || {});
-  const [activeTool, setActiveTool] = useState<string | null>(entries[0]?.[0] ?? null);
-  const active = activeTool ? version.compiled_outputs[activeTool] : null;
-  return (
-    <Dialog open onClose={onClose} titleId="version-viewer-title" className="max-w-4xl max-h-[85vh] flex flex-col !p-0">
-      <div className="flex items-center justify-between px-5 py-3 border-b border-border">
-        <div className="min-w-0">
-          <DialogHeader titleId="version-viewer-title">
-            <span className="inline-flex items-center gap-2">
-              <VersionBadge version={version.version} />
-              <span className="text-sm text-text-tertiary font-mono font-normal">
-                {version.content_hash?.slice(0, 8)}
-              </span>
-            </span>
-          </DialogHeader>
-          <p className="text-xs text-text-tertiary -mt-3">
-            Compiled <RelativeDate iso={version.compiled_at} />
-          </p>
-        </div>
-        <Button variant="ghost" onClick={onClose}>Close</Button>
-      </div>
-      {entries.length === 0 ? (
-        <p className="p-8 text-center text-sm text-text-tertiary">
-          No compiled outputs in this version.
-        </p>
-      ) : (
-        <>
-          <div className="flex gap-1 px-5 pt-3 border-b border-border overflow-x-auto">
-            {entries.map(([tool, out]) => (
-              <button
-                key={tool}
-                onClick={() => setActiveTool(tool)}
-                className={`px-3 py-2 text-sm font-medium whitespace-nowrap transition-colors ${
-                  activeTool === tool
-                    ? 'text-brand border-b-2 border-[var(--brand)]'
-                    : 'text-text-tertiary hover:text-text-secondary'
-                }`}
-              >
-                {tool}
-                <span className="ml-1.5 text-2xs text-text-tertiary">
-                  ({out.token_count.toLocaleString()}t)
-                </span>
-              </button>
-            ))}
-          </div>
-          {active && (
-            <>
-              <div className="flex items-center justify-between px-5 py-2 text-xs text-text-tertiary border-b border-border">
-                <span className="font-mono">{active.filename}</span>
-                <CopyButton text={active.content} label="Copy" />
-              </div>
-              <pre className="flex-1 overflow-auto px-5 py-4 text-xs font-mono text-text-secondary whitespace-pre-wrap">
-                {active.content}
-              </pre>
-            </>
-          )}
-        </>
-      )}
-    </Dialog>
-  );
-}
-
-interface DebouncedTokenInputProps {
-  value: number;
-  disabled: boolean;
-  ariaLabel: string;
-  /**
-   * Commit a confirmed value. Returns a Promise resolving to `true`
-   * when the server-side mutation succeeds, `false` when it fails
-   * (the failure has already been surfaced to the user via a toast,
-   * so the caller just needs to know whether to proceed with a
-   * follow-up action). May also return `void` for callers that don't
-   * round-trip to a server.
-   */
-  onCommit: (n: number) => Promise<boolean> | void;
-}
-
-export interface DebouncedTokenInputHandle {
-  /**
-   * Force-commit any pending draft immediately, cancelling the timer.
-   * Returns `Promise<true>` if nothing was pending OR the commit
-   * succeeded; `Promise<false>` if the commit failed. Compile and
-   * other gated follow-ups should treat a `false` resolution as
-   * "skip — the rules update did not land".
-   */
-  flush: () => Promise<boolean>;
-}
-
-// Local-draft + 600ms debounce around `<input type="number">`. Each
-// keystroke previously fired patchRules → PUT /rules with an ETag,
-// so typing "8000" produced four sequential mutations: the first
-// succeeded with a new etag and the next three 409'd with stale
-// etag, surfaced as a cascade of "refresh and try again" toasts.
-// The debounce coalesces typing into one mutation per pause.
-//
-// Flush points (added post-Codex round-1 review on this fix):
-//   - onBlur:  commit immediately when focus leaves the input
-//   - unmount: commit pending change on tab-switch / navigation
-//   - parent:  flush() exposed via ref so Compile can drain pending
-//              edits before invoking the compile mutation
-const DebouncedTokenInput = forwardRef<DebouncedTokenInputHandle, DebouncedTokenInputProps>(
-  function DebouncedTokenInput({ value, disabled, ariaLabel, onCommit }, ref) {
-    const [draft, setDraft] = useState<string>(String(value));
-    const lastCommittedRef = useRef<number>(value);
-    const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-    const pendingRef = useRef<number | null>(null);
-
-    // Tracks the most recent in-flight onCommit promise so `flush()`
-    // can resolve only when the backend has actually accepted the
-    // value — not just when the local mutate() call was issued. This
-    // is what lets Compile await a freshly-typed value's PUT to land
-    // before its POST goes out, instead of racing it on HTTP/2.
-    //
-    // Resolves to `true` on success, `false` on failure (the caller
-    // gates follow-up actions on this). `Promise.resolve(true)` is
-    // the initial value so flush() with nothing pending is a no-op.
-    const lastCommitPromiseRef = useRef<Promise<boolean>>(Promise.resolve(true));
-
-    // `onCommit` may be an inline arrow at the parent and so change
-    // each render. Capture the latest in a ref so the unmount-only
-    // effect can call it without resubscribing the cleanup.
-    const onCommitRef = useRef(onCommit);
-    useEffect(() => {
-      onCommitRef.current = onCommit;
-    }, [onCommit]);
-
-    function clearTimer() {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-        timerRef.current = null;
-      }
-    }
-
-    function commit(n: number) {
-      pendingRef.current = null;
-      lastCommittedRef.current = n;
-      const result = onCommitRef.current(n);
-      // Normalize to Promise<boolean>:
-      //  - synchronous void return → success (true)
-      //  - resolved with `false` → failure (callers will short-circuit)
-      //  - rejected (defensive — onCommit shouldn't throw, but a buggy
-      //    callback shouldn't crash the dashboard) → treated as failure
-      lastCommitPromiseRef.current = Promise.resolve(result).then(
-        (ok) => ok !== false,
-        () => false,
-      );
-    }
-
-    useImperativeHandle(
-      ref,
-      () => ({
-        flush() {
-          clearTimer();
-          if (pendingRef.current !== null) {
-            commit(pendingRef.current);
-          }
-          return lastCommitPromiseRef.current;
-        },
-      }),
-      [],
-    );
-
-    // Re-sync local draft when the server-confirmed value changes
-    // (e.g. another tab edited the rules, or a successful commit
-    // rounds the value). Skip when the draft already matches to
-    // avoid disrupting in-progress typing.
-    useEffect(() => {
-      if (value !== lastCommittedRef.current) {
-        lastCommittedRef.current = value;
-        setDraft(String(value));
-        pendingRef.current = null;
-        clearTimer();
-      }
-    }, [value]);
-
-    // Debounce: schedule a commit 600ms after the user stops typing.
-    useEffect(() => {
-      const n = parseInt(draft, 10);
-      // v0.10.24 tk_d4a13a68b6724ba6 — pinning the max here too
-      // (not just on the input attribute) because users can paste
-      // values that the up/down arrows would block. Server cap is
-      // 20000; we mirror that here so the debounced PUT never fires
-      // an over-cap request → no opaque 422 toast.
-      if (
-        Number.isNaN(n)
-        || n < 0
-        || n > 20000
-        || n === lastCommittedRef.current
-      ) {
-        pendingRef.current = null;
-        return;
-      }
-      pendingRef.current = n;
-      clearTimer();
-      timerRef.current = setTimeout(() => {
-        timerRef.current = null;
-        if (pendingRef.current !== null) {
-          commit(pendingRef.current);
-        }
-      }, 600);
-      return clearTimer;
-    }, [draft]);
-
-    // Unmount-only flush. Empty deps so this cleanup runs only when
-    // the component leaves the tree (tab switch, navigation, etc.) —
-    // not on every re-render. Uses onCommitRef.current to stay
-    // current without depending on `onCommit`.
-    useEffect(() => {
-      return () => {
-        if (pendingRef.current !== null) {
-          onCommitRef.current(pendingRef.current);
-        }
-      };
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-
-    return (
-      <Input
-        type="number"
-        min={0}
-        max={20000}
-        step={500}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => {
-          clearTimer();
-          if (pendingRef.current !== null) {
-            commit(pendingRef.current);
-          }
-        }}
-        disabled={disabled}
-        aria-label={ariaLabel}
-        className="w-24 text-xs px-2 py-1 rounded"
-      />
-    );
-  },
-);
 
 export default function RulesTab({ projectId }: { projectId: string }) {
   const { data: rulesResp, isLoading, error } = useProjectRules(projectId);
@@ -397,7 +85,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
             'Rules have changed since you loaded them — refresh and try again.',
           );
         } else {
-          addToast('error', `Update failed: ${String(err)}`);
+          addToast('error', `Update failed: ${errorMessage(err)}`);
         }
         return false;
       },
@@ -420,7 +108,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
               'Rules have changed since you loaded them — refresh and try again.',
             );
           } else {
-            addToast('error', `Save failed: ${String(err)}`);
+            addToast('error', `Save failed: ${errorMessage(err)}`);
           }
         },
       },
@@ -458,7 +146,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
           addToast('success', `Compiled v${result.version}.`);
         }
       },
-      onError: (err) => addToast('error', `Compile failed: ${String(err)}`),
+      onError: (err) => addToast('error', `Compile failed: ${errorMessage(err)}`),
     });
   }
 
@@ -493,8 +181,8 @@ export default function RulesTab({ projectId }: { projectId: string }) {
   if (error || !rules) {
     return (
       <div className="p-5">
-        <p className="text-red-400 text-sm">
-          Failed to load rules{error ? `: ${String(error)}` : ''}.
+        <p className="text-danger text-sm">
+          Failed to load rules{error ? `: ${errorMessage(error)}` : ''}.
         </p>
       </div>
     );
@@ -585,23 +273,22 @@ export default function RulesTab({ projectId }: { projectId: string }) {
           {CORE_TOOLS.map((tool) => {
             const checked = rules.enabled_tools.includes(tool.value);
             return (
-              <label
+              <Checkbox
                 key={tool.value}
-                className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-bg-primary cursor-pointer hover:bg-surface-hover transition-colors"
-              >
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={(e) => toggleTool(tool.value, e.target.checked)}
-                  disabled={updateRules.isPending}
-                  className="accent-[var(--brand)]"
-                  aria-label={`Enable ${tool.label}`}
-                />
-                <span className="text-sm text-text-primary">{tool.label}</span>
-                <span className="text-2xs text-text-tertiary font-mono">
-                  {tool.value}
-                </span>
-              </label>
+                checked={checked}
+                onChange={(e) => toggleTool(tool.value, e.target.checked)}
+                disabled={updateRules.isPending}
+                aria-label={`Enable ${tool.label}`}
+                className="!items-center px-3 py-2 border border-border rounded-lg bg-bg-primary hover:bg-surface-hover transition-colors"
+                label={
+                  <>
+                    {tool.label}
+                    <span className="ml-2 text-2xs text-text-tertiary font-mono">
+                      {tool.value}
+                    </span>
+                  </>
+                }
+              />
             );
           })}
         </div>
@@ -612,16 +299,13 @@ export default function RulesTab({ projectId }: { projectId: string }) {
         <h3 id="knowledge-heading" className="text-sm font-semibold text-text-primary mb-2">
           Knowledge injection
         </h3>
-        <label className="flex items-center gap-2 text-sm text-text-secondary mb-3">
-          <input
-            type="checkbox"
-            checked={rules.include_knowledge}
-            onChange={(e) => patchRules({ include_knowledge: e.target.checked })}
-            disabled={updateRules.isPending}
-            className="accent-[var(--brand)]"
-          />
-          Include knowledge claims in compiled rules
-        </label>
+        <Checkbox
+          checked={rules.include_knowledge}
+          onChange={(e) => patchRules({ include_knowledge: e.target.checked })}
+          disabled={updateRules.isPending}
+          label="Include knowledge claims in compiled rules"
+          className="!items-center mb-3"
+        />
         {rules.include_knowledge && (
           <>
             <p className="text-xs text-text-tertiary mb-2">
@@ -631,20 +315,15 @@ export default function RulesTab({ projectId }: { projectId: string }) {
               {KNOWLEDGE_TYPES.map((kt) => {
                 const checked = rules.knowledge_types.includes(kt.value);
                 return (
-                  <label
+                  <Checkbox
                     key={kt.value}
-                    className="flex items-center gap-1.5 px-2.5 py-1 text-xs border border-border rounded-full bg-bg-primary cursor-pointer hover:bg-surface-hover transition-colors"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(e) => toggleKnowledgeType(kt.value, e.target.checked)}
-                      disabled={updateRules.isPending}
-                      className="accent-[var(--brand)]"
-                      aria-label={`Knowledge type ${kt.label}`}
-                    />
-                    <span className="text-text-primary">{kt.label}</span>
-                  </label>
+                    checked={checked}
+                    onChange={(e) => toggleKnowledgeType(kt.value, e.target.checked)}
+                    disabled={updateRules.isPending}
+                    aria-label={`Knowledge type ${kt.label}`}
+                    className="!items-center px-2.5 py-1 border border-border rounded-full bg-bg-primary hover:bg-surface-hover transition-colors"
+                    label={kt.label}
+                  />
                 );
               })}
             </div>
@@ -667,16 +346,13 @@ export default function RulesTab({ projectId }: { projectId: string }) {
         <h3 id="context-heading" className="text-sm font-semibold text-text-primary mb-2">
           Context injection
         </h3>
-        <label className="flex items-center gap-2 text-sm text-text-secondary mb-3">
-          <input
-            type="checkbox"
-            checked={rules.include_context}
-            onChange={(e) => patchRules({ include_context: e.target.checked })}
-            disabled={updateRules.isPending}
-            className="accent-[var(--brand)]"
-          />
-          Include project context sections in compiled rules
-        </label>
+        <Checkbox
+          checked={rules.include_context}
+          onChange={(e) => patchRules({ include_context: e.target.checked })}
+          disabled={updateRules.isPending}
+          label="Include project context sections in compiled rules"
+          className="!items-center mb-3"
+        />
         {rules.include_context && (
           <>
             <p className="text-xs text-text-tertiary mb-2">
@@ -686,20 +362,15 @@ export default function RulesTab({ projectId }: { projectId: string }) {
               {CONTEXT_SECTIONS.map((s) => {
                 const checked = rules.context_sections.includes(s.value);
                 return (
-                  <label
+                  <Checkbox
                     key={s.value}
-                    className="flex items-center gap-1.5 px-2.5 py-1 text-xs border border-border rounded-full bg-bg-primary cursor-pointer hover:bg-surface-hover transition-colors"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(e) => toggleContextSection(s.value, e.target.checked)}
-                      disabled={updateRules.isPending}
-                      className="accent-[var(--brand)]"
-                      aria-label={`Context section ${s.label}`}
-                    />
-                    <span className="text-text-primary">{s.label}</span>
-                  </label>
+                    checked={checked}
+                    onChange={(e) => toggleContextSection(s.value, e.target.checked)}
+                    disabled={updateRules.isPending}
+                    aria-label={`Context section ${s.label}`}
+                    className="!items-center px-2.5 py-1 border border-border rounded-full bg-bg-primary hover:bg-surface-hover transition-colors"
+                    label={s.label}
+                  />
                 );
               })}
             </div>
@@ -745,12 +416,9 @@ export default function RulesTab({ projectId }: { projectId: string }) {
             )}
           </h3>
           {!showingLatest && latestOutputsVersion !== null && (
-            <button
-              onClick={() => setSelectedVersion(null)}
-              className="text-xs text-brand hover:underline"
-            >
+            <Button variant="ghost" size="sm" onClick={() => setSelectedVersion(null)}>
               Show latest
-            </button>
+            </Button>
           )}
         </div>
         {latestOutputsVersion === null ? (
@@ -812,103 +480,5 @@ export default function RulesTab({ projectId }: { projectId: string }) {
         <VersionViewerModal version={versionDetail} onClose={() => setSelectedVersion(null)} />
       )}
     </div>
-  );
-}
-
-/**
- * Loads a single version (cache-shared with the version viewer) and renders
- * one card per enabled tool with filename + token count + View.
- */
-function CompiledOutputsList({
-  projectId,
-  version,
-  enabledTools,
-  onView,
-}: {
-  projectId: string;
-  version: number;
-  enabledTools: string[];
-  onView: (tool: string) => void;
-}) {
-  const { data: detail, isLoading } = useRulesVersion(projectId, version);
-
-  if (isLoading) {
-    return <p className="text-xs text-text-tertiary">Loading compiled outputs…</p>;
-  }
-  if (!detail) {
-    return <p className="text-xs text-text-tertiary italic">No compiled outputs found.</p>;
-  }
-
-  const outputs = detail.compiled_outputs || {};
-  const cards = enabledTools
-    .map((tool) => ({ tool, output: outputs[tool] }))
-    .filter((c) => c.output);
-
-  if (cards.length === 0) {
-    return (
-      <p className="text-xs text-text-tertiary italic">
-        No compiled outputs for the enabled tools in this version.
-      </p>
-    );
-  }
-
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-      {cards.map(({ tool, output }) => (
-        <div
-          key={tool}
-          className="px-3 py-3 rounded-lg border border-border bg-bg-primary"
-        >
-          <div className="flex items-start justify-between gap-2">
-            <div className="min-w-0">
-              <p className="text-sm font-medium text-text-primary truncate">{tool}</p>
-              <p className="text-xs font-mono text-text-tertiary truncate">
-                {output!.filename}
-              </p>
-            </div>
-            <span className="text-2xs text-text-tertiary shrink-0">
-              {output!.token_count.toLocaleString()} tokens
-            </span>
-          </div>
-          <div className="mt-2 flex justify-end">
-            <button
-              onClick={() => onView(tool)}
-              className="text-xs text-brand hover:underline"
-            >
-              View
-            </button>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/**
- * Fetches the version once more (query cache will hit) and renders the
- * CompiledOutputModal for the chosen tool.
- */
-function ToolOutputViewer({
-  projectId,
-  version,
-  tool,
-  onClose,
-}: {
-  projectId: string;
-  version: number;
-  tool: string;
-  onClose: () => void;
-}) {
-  const { data: detail } = useRulesVersion(projectId, version);
-  const output = detail?.compiled_outputs?.[tool];
-  if (!output) return null;
-  return (
-    <CompiledOutputModal
-      tool={tool}
-      filename={output.filename}
-      content={output.content}
-      tokenCount={output.token_count}
-      onClose={onClose}
-    />
   );
 }

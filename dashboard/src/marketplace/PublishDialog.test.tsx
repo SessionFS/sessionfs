@@ -96,14 +96,14 @@ describe('PublishDialog', () => {
     });
     renderDialog();
     expect(screen.getByText(/personal library needs the Starter plan/)).toBeInTheDocument();
-    await user.click(screen.getByRole('combobox', { name: /Publish to/ }));
+    await user.click(screen.getByRole('button', { name: /Publish to/ }));
     expect(screen.getByRole('option', { name: 'Organization: Owned Co' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'Organization: Admin Co' })).toBeInTheDocument();
     expect(screen.queryByRole('option', { name: 'Organization: Member Co' })).not.toBeInTheDocument();
     expect(screen.queryByRole('option', { name: 'My personal library' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('option', { name: 'Organization: Admin Co' }));
     expect(screen.getByLabelText('Namespace')).toHaveAttribute('placeholder', 'org');
-    expect(screen.queryByRole('combobox', { name: /Visibility/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Visibility/ })).not.toBeInTheDocument();
     await chooseArchive(user);
     await user.type(screen.getByLabelText('Namespace'), 'Acme.Tools');
     await user.click(screen.getByRole('button', { name: 'Publish' }));
@@ -118,9 +118,9 @@ describe('PublishDialog', () => {
     hooks.useMe.mockReturnValue({ data: { user_id: 'user_1', tier: 'admin', effective_tier: 'free' }, isLoading: false });
     hooks.useMyOrgs.mockReturnValue({ data: [{ org_id: 'org_1', name: 'Platform', role: 'member' }], isLoading: false });
     renderDialog();
-    await user.click(screen.getByRole('combobox', { name: /Publish to/ }));
+    await user.click(screen.getByRole('button', { name: /Publish to/ }));
     await user.click(screen.getByRole('option', { name: 'Organization: Platform' }));
-    await user.click(screen.getByRole('combobox', { name: /Visibility/ }));
+    await user.click(screen.getByRole('button', { name: /Visibility/ }));
     await user.click(screen.getByRole('option', { name: /Public marketplace/ }));
     await chooseArchive(user);
     await user.click(screen.getByRole('button', { name: 'Publish' }));

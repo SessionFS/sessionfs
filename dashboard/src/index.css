@@ -30,7 +30,7 @@
 
   --text-primary:   oklch(93% 0 0);
   --text-secondary: oklch(75% 0 0);
-  --text-tertiary:  oklch(66% 0 0);
+  --text-tertiary:  oklch(68% 0 0);
   --text-inverse:   oklch(16% 0 0);
 
   /* Dark-mode shadows: surface steps do the work; only overlay gets a faint ambient lift */
@@ -38,8 +38,9 @@
   --shadow-md: 0 4px 8px rgba(0,0,0,0.2);
   --shadow-lg: 0 0 0 1px rgba(255,255,255,0.03), 0 8px 24px rgba(0,0,0,0.4);
 
-  --brand:       #4f9cf7;
-  --brand-hover: #3d8ce6;
+  --brand:       #5ca6f9;
+  --brand-hover: #4793ec;
+  --text-on-brand: oklch(16% 0 0);        /* white on #4f9cf7 is only 2.8:1 */
 }
 
 /* ── Light override — OKLCH inverted ── */
@@ -66,12 +67,12 @@
   --shadow-md: 0 4px 12px rgba(0,0,0,0.1), 0 2px 4px rgba(0,0,0,0.06);
   --shadow-lg: 0 8px 24px rgba(0,0,0,0.12), 0 4px 8px rgba(0,0,0,0.08);
 
-  --brand:       #1a73e8;
-  --brand-hover: #1557b0;
+  --brand:       #1558ae;
+  --brand-hover: #0f4690;
+  --text-on-brand: #ffffff;
 
   /* Light-mode overlays: edge highlight is negative (shadow at top) */
   --edge-highlight: rgba(0, 0, 0, 0.05);
-  --shadow-overlay: inset 0 1px 0 var(--edge-highlight), var(--shadow-lg);
 }
 
 /* ── Shared tokens (theme-independent) ── */
@@ -81,9 +82,11 @@
   --font-mono:   'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
   --accent: #3ddc84;
-  --danger: #f04060;
+  --success: #3ddc84;
+  --danger: #fc7189;
+  --danger-solid: #d6304f;  /* fill behind white text */
   --warning: #f0c040;
-  --info: #4f9cf7;
+  --info: #5ca6f9;
 
   --tool-claude:  #d97706;
   --tool-codex:   #10b981;
@@ -99,6 +102,12 @@
   --severity-high:     #f59e0b;
   --severity-low:      #6b7280;
 
+  --role-discovery: #b388fa;  /* knowledge 'discovery' entries; light override below */
+  --role-user:      #4f9cf7;
+  --role-assistant: #3ddc84;
+  --role-tool:      #b1b8c1;
+  --role-system:    #d29922;
+
   --radius-sm: 6px;
   --radius-md: 8px;
   --radius-lg: 12px;
@@ -109,6 +118,40 @@
   --brand-glow: color-mix(in srgb, var(--brand) 25%, transparent);
   --edge-highlight: rgba(255, 255, 255, 0.06);
   --shadow-overlay: inset 0 1px 0 var(--edge-highlight), var(--shadow-lg);
+}
+
+/* ── Light semantic colours ──
+   Dark values above are tuned for dark surfaces. These darker variants keep
+   text in the colour at >= 4.5:1 (WCAG AA) on --surface and on the 12-15%
+   tints Badge lays over the page/tertiary backgrounds. Must stay after the
+   shared :root block (same specificity, later wins). */
+[data-theme="light"] {
+  --accent: #086834;
+  --success: #086834;
+  --danger: #ac1333;
+  --danger-solid: #ac1333;
+  --warning: #7c5100;
+  --info: #1757ae;
+
+  --tool-claude:  #8a4a00;
+  --tool-codex:   #03674b;
+  --tool-gemini:  #4941d5;
+  --tool-copilot: #1c4cd2;
+  --tool-cursor:  #6d33d1;
+  --tool-amp:     #a91553;
+  --tool-cline:   #0d655f;
+  --tool-roo:     #9f350a;
+  --tool-antigravity: #035e91;
+
+  --severity-critical: #ac1a1a;
+  --severity-high:     #844e00;
+  --severity-low:      #545c67;
+
+  --role-user:      #1757ae;
+  --role-assistant: #086834;
+  --role-tool:      #4b5563;
+  --role-system:    #7c5100;
+  --role-discovery: #6d33d1;
 }
 
 /* Dialog/Drawer enter animation — scale(0.95) + fade, 150ms ease-out */
@@ -132,10 +175,10 @@
   --color-accent-hover: var(--brand-hover);
 
   /* Role colors (kept for ConversationView/MessageBlock) */
-  --color-role-user: #4f9cf7;
-  --color-role-assistant: #3ddc84;
-  --color-role-tool: #b1b8c1;
-  --color-role-system: #d29922;
+  --color-role-user: var(--role-user);
+  --color-role-assistant: var(--role-assistant);
+  --color-role-tool: var(--role-tool);
+  --color-role-system: var(--role-system);
 
   /* Code/thinking backgrounds */
   --color-code-bg: var(--bg-sunken);
@@ -154,8 +197,27 @@
   --color-brand: var(--brand);
   --color-brand-hover: var(--brand-hover);
   --color-brand-glow: var(--brand-glow);
+  --color-text-on-brand: var(--text-on-brand);
+  --color-success: var(--success);
   --color-danger: var(--danger);
   --color-warning: var(--warning);
+
+  /* Always-dark code well (see --code-well-* in :root) */
+  --color-code-well-bg: var(--code-well-bg);
+  --color-code-well-fg: var(--code-well-fg);
+  --color-code-well-muted: var(--code-well-muted);
+  --color-code-well-border: var(--code-well-border);
+  --color-code-well-bar-bg: var(--code-well-bar-bg);
+  --color-code-well-bar-border: var(--code-well-bar-border);
+  --color-code-well-control-bg: var(--code-well-control-bg);
+  --color-code-well-control-border: var(--code-well-control-border);
+  --color-code-well-control-fg: var(--code-well-control-fg);
+  --color-code-well-accent: var(--code-well-accent);
+  --color-code-well-success: var(--code-well-success);
+  --color-code-well-danger: var(--code-well-danger);
+  --color-code-well-dot-red: var(--code-well-dot-red);
+  --color-code-well-dot-yellow: var(--code-well-dot-yellow);
+  --color-code-well-dot-green: var(--code-well-dot-green);
   --color-info: var(--info);
 
   /* === Canonical type scale ===
@@ -190,6 +252,12 @@
 /* bookmark-pop removed — elastic/overshoot violates motion guidelines.
    Bookmark toggles now use a 150ms color + opacity transition only. */
 
+/* Filled brand surfaces hard-code text-white; route them through the
+   theme-aware on-brand token so contrast holds in both themes. */
+.bg-brand.text-white {
+  color: var(--text-on-brand);
+}
+
 body {
   margin: 0;
   background-color: var(--bg-primary);
@@ -211,6 +279,14 @@ body::before {
     radial-gradient(58rem 28rem at 12% -8%, color-mix(in srgb, var(--brand) 8%, transparent), transparent 72%),
     radial-gradient(42rem 24rem at 92% 0%, color-mix(in srgb, var(--accent) 4%, transparent), transparent 74%);
   z-index: 0;
+}
+
+/* The brand wash is decorative; on the light page it reads as a visible tint,
+   so halve its strength there. */
+[data-theme="light"] body::before {
+  background:
+    radial-gradient(58rem 28rem at 12% -8%, color-mix(in srgb, var(--brand) 4%, transparent), transparent 72%),
+    radial-gradient(42rem 24rem at 92% 0%, color-mix(in srgb, var(--accent) 2%, transparent), transparent 74%);
 }
 
 h1, h2, h3, h4, h5, h6 {

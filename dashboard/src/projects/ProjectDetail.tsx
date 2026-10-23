@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import {
@@ -6,953 +6,99 @@ import {
   useUpdateProjectContext,
   useDeleteProject,
   useKnowledgeEntries,
-  useDismissEntry,
   useCompileProject,
-  useCompilations,
-  useWikiPages,
-  useWikiPage,
-  useUpdateWikiPage,
-  useDeleteWikiPage,
-  useRegenerateWikiPage,
-  useUpdateProjectSettings,
-  useProjectHealth,
-  useDismissStaleEntries,
-  usePromoteEntry,
-  useSupersedeEntry,
-  useRebuildProject,
-  useRefreshEntry,
-  useUpdateProjectName,
 } from '../hooks/useProjects';
 import { useToast } from '../hooks/useToast';
 import RelativeDate from '../components/RelativeDate';
-import type { KnowledgeEntry, WikiPage } from '../api/client';
 import RulesTab from './RulesTab';
-import TransferPanel from './TransferPanel';
 import PersonasTab from './PersonasTab';
 import TicketsTab from './TicketsTab';
 import AgentRunsTab from './AgentRunsTab';
 import MarketplaceTab from './MarketplaceTab';
-import ReposTab from './ReposTab';
-import MergeSurface from './MergeSurface';
-import { useMyOrgs } from '../transfers/useTransfers';
-import { Tabs, Card, Button, Input, Textarea, Select, Dialog, DialogHeader, DialogFooter, Dropdown } from '../components/ui';
+import ProjectSettings from './ProjectSettings';
+import ProjectHeader from './ProjectHeader';
+import KnowledgeEntriesTab from './knowledge/EntriesTab';
+import PagesTab from './knowledge/PagesTab';
+import HistoryTab from './knowledge/HistoryTab';
+import { Card, Button, Textarea, Dialog, DialogHeader, DialogFooter, Tabs, TabPanel } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
-type ProjectTab =
-  | 'context'
-  | 'pages'
-  | 'rules'
-  | 'entries'
-  | 'personas'
-  | 'tickets'
-  | 'agent-runs'
-  | 'marketplace'
-  | 'repos'
-  | 'merge'
-  | 'history'
-  | 'transfer';
+// The page has five sections. The active one lives in the URL as
+// `?tab=<section>`, and the active sub-tab of the sections that have them as
+// `&sub=<subtab>`, so a refresh or a shared link lands on the same view.
+// Two params rather than one `tab=knowledge/entries` value: the section is
+// what the header tabs read, the sub-tab only matters inside its section, and
+// each can fall back to its default independently when a value is unknown.
+type Section = 'context' | 'knowledge' | 'work' | 'config' | 'settings';
 
-// v0.10.0 added `projects.org_id` (migration 035). The current dashboard
-// `ProjectContext` type was generated before that change. Until the type
-// is regenerated, project responses may carry an extra optional `org_id`.
-type ProjectContextWithOrg = { org_id?: string | null };
+const SECTIONS: { key: Section; label: string }[] = [
+  { key: 'context', label: 'Overview' },
+  { key: 'knowledge', label: 'Knowledge' },
+  { key: 'work', label: 'Work' },
+  { key: 'config', label: 'Rules & Skills' },
+  { key: 'settings', label: 'Settings' },
+];
 
-const ENTRY_TYPE_COLORS: Record<string, { bg: string; text: string; border: string }> = {
-  decision: { bg: 'rgba(34,197,94,0.12)', text: '#22c55e', border: 'rgba(34,197,94,0.3)' },
-  pattern: { bg: 'rgba(59,130,246,0.12)', text: '#3b82f6', border: 'rgba(59,130,246,0.3)' },
-  discovery: { bg: 'rgba(168,85,247,0.12)', text: '#a855f7', border: 'rgba(168,85,247,0.3)' },
-  convention: { bg: 'rgba(20,184,166,0.12)', text: '#14b8a6', border: 'rgba(20,184,166,0.3)' },
-  bug: { bg: 'rgba(239,68,68,0.12)', text: '#ef4444', border: 'rgba(239,68,68,0.3)' },
-  dependency: { bg: 'rgba(249,115,22,0.12)', text: '#f97316', border: 'rgba(249,115,22,0.3)' },
+const SUB_TABS: Partial<Record<Section, { key: string; label: string }[]>> = {
+  knowledge: [
+    { key: 'entries', label: 'Entries' },
+    { key: 'pages', label: 'Pages' },
+    { key: 'history', label: 'History' },
+  ],
+  work: [
+    { key: 'tickets', label: 'Tickets' },
+    { key: 'agent-runs', label: 'Agent runs' },
+    { key: 'personas', label: 'Personas' },
+  ],
+  config: [
+    { key: 'rules', label: 'Rules' },
+    // Not "Marketplace": that is the org-wide catalog in the sidebar; this
+    // sub-tab is the project's own skill installs and requests (GitHub #87).
+    { key: 'marketplace', label: 'Skills' },
+  ],
 };
 
-function EntryTypeBadge({ type }: { type: string }) {
-  const colors = ENTRY_TYPE_COLORS[type] || {
-    bg: 'var(--bg-tertiary)',
-    text: 'var(--text-secondary)',
-    border: 'var(--border)',
-  };
-  return (
-    <span
-      className="inline-block rounded-full px-1.5 py-0.5 text-xs font-medium"
-      style={{
-        backgroundColor: colors.bg,
-        color: colors.text,
-        border: `1px solid ${colors.border}`,
-      }}
-    >
-      {type}
-    </span>
-  );
-}
-
-const CLAIM_CLASS_STYLES: Record<string, { bg: string; text: string; border: string; outline: boolean }> = {
-  claim: { bg: 'var(--brand)', text: '#fff', border: 'var(--brand)', outline: false },
-  note: { bg: 'transparent', text: 'var(--text-tertiary)', border: 'var(--border)', outline: true },
-  evidence: { bg: 'transparent', text: '#3b82f6', border: 'rgba(59,130,246,0.4)', outline: true },
+// Before the restructure every tab key was top-level; old links still work.
+const LEGACY_TABS: Record<string, [Section, string?]> = {
+  entries: ['knowledge', 'entries'],
+  pages: ['knowledge', 'pages'],
+  history: ['knowledge', 'history'],
+  tickets: ['work', 'tickets'],
+  'agent-runs': ['work', 'agent-runs'],
+  personas: ['work', 'personas'],
+  rules: ['config', 'rules'],
+  marketplace: ['config', 'marketplace'],
+  repos: ['settings'],
+  merge: ['settings'],
+  transfer: ['settings'],
+  context: ['context'],
 };
 
-function ClaimClassBadge({ claimClass }: { claimClass: string }) {
-  const style = CLAIM_CLASS_STYLES[claimClass] || CLAIM_CLASS_STYLES.note;
-  return (
-    <span
-      className="inline-block rounded-full px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-wide"
-      style={{
-        backgroundColor: style.outline ? 'transparent' : style.bg,
-        color: style.text,
-        border: `1px solid ${style.border}`,
-      }}
-    >
-      {claimClass}
-    </span>
-  );
+function resolveView(tabParam: string | null, subParam: string | null): { section: Section; sub: string | undefined } {
+  let section: Section = 'context';
+  let legacySub: string | undefined;
+  if (tabParam && SECTIONS.some((s) => s.key === tabParam)) {
+    section = tabParam as Section;
+  } else if (tabParam && Object.prototype.hasOwnProperty.call(LEGACY_TABS, tabParam)) {
+    [section, legacySub] = LEGACY_TABS[tabParam];
+  }
+  const subs = SUB_TABS[section];
+  if (!subs) return { section, sub: undefined };
+  const wanted = legacySub ?? subParam;
+  const sub = subs.find((t) => t.key === wanted)?.key ?? subs[0].key;
+  return { section, sub };
 }
 
-const FRESHNESS_DOT_COLORS: Record<string, string> = {
-  current: '#22c55e',
-  aging: '#eab308',
-  stale: '#ef4444',
-  superseded: 'var(--text-tertiary)',
-};
-
-function FreshnessDot({ freshnessClass }: { freshnessClass: string }) {
-  const color = FRESHNESS_DOT_COLORS[freshnessClass] || 'var(--text-tertiary)';
+// One wrapper for every section body, so panels look the same whichever
+// section or sub-tab is showing. `padded` is for bodies that do not pad
+// themselves; the knowledge bodies already do.
+function Panel({ children, padded = false, sub }: { children: ReactNode; padded?: boolean; sub: string }) {
   return (
-    <span
-      className="inline-block w-2 h-2 rounded-full shrink-0"
-      style={{ backgroundColor: color }}
-      title={freshnessClass}
-    />
-  );
-}
-
-function SupersedeDialog({
-  entryId,
-  onConfirm,
-  onCancel,
-  isPending,
-}: {
-  entryId: number;
-  onConfirm: (supersedingId: number, reason: string) => void;
-  onCancel: () => void;
-  isPending: boolean;
-}) {
-  const [supersedingId, setSupersedingId] = useState('');
-  const [reason, setReason] = useState('');
-  return (
-    <div className="mt-2 p-3 rounded-lg border border-border bg-bg-primary">
-      <p className="text-xs font-medium text-text-secondary mb-2">
-        Supersede entry #{entryId}
-      </p>
-      <div className="flex gap-2 mb-2">
-        <input
-          type="number"
-          value={supersedingId}
-          onChange={(e) => setSupersedingId(e.target.value)}
-          placeholder="Superseding entry ID"
-          className="flex-1 px-2 py-1 text-xs bg-bg-primary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] placeholder:text-text-tertiary"
-        />
-      </div>
-      <input
-        value={reason}
-        onChange={(e) => setReason(e.target.value)}
-        placeholder="Reason for supersession"
-        className="w-full px-2 py-1 text-xs bg-bg-primary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] placeholder:text-text-tertiary mb-2"
-      />
-      <div className="flex gap-2 justify-end">
-        <button
-          onClick={onCancel}
-          className="text-xs text-text-tertiary hover:text-text-secondary px-2 py-1"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={() => {
-            const id = parseInt(supersedingId, 10);
-            if (!id || !reason.trim()) return;
-            onConfirm(id, reason.trim());
-          }}
-          disabled={isPending || !supersedingId || !reason.trim()}
-          className="text-xs font-medium text-white bg-brand px-3 py-1 rounded hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
-        >
-          {isPending ? 'Saving…' : 'Confirm'}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ------------------------------------------------------------------
-// Knowledge Entries Tab
-// ------------------------------------------------------------------
-function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
-  const [pendingOnly, setPendingOnly] = useState(false);
-  const [typeFilter, setTypeFilter] = useState<string>('');
-  const [claimFilter, setClaimFilter] = useState<string>('');
-  const [freshnessFilter, setFreshnessFilter] = useState<string>('');
-  const [supersedeTarget, setSupersedeTarget] = useState<number | null>(null);
-  const [staleQueueOpen, setStaleQueueOpen] = useState(true);
-  const { data, isLoading } = useKnowledgeEntries(projectId, {
-    pending: pendingOnly || undefined,
-    type: typeFilter || undefined,
-    limit: 50,
-  });
-  const dismissEntry = useDismissEntry(projectId);
-  const compile = useCompileProject(projectId);
-  const rebuild = useRebuildProject(projectId);
-  const promote = usePromoteEntry(projectId);
-  const supersede = useSupersedeEntry(projectId);
-  const refreshEntry = useRefreshEntry(projectId);
-  const { data: health } = useProjectHealth(projectId);
-  const dismissStale = useDismissStaleEntries(projectId);
-  const { addToast } = useToast();
-
-  function handleCompile() {
-    compile.mutate(undefined, {
-      onSuccess: (result) => {
-        const n = result.entries_compiled;
-        if (n === 0) {
-          addToast('info', 'No pending entries to compile.');
-        } else {
-          addToast('success', `Project context updated. ${n} entries compiled.`);
-        }
-      },
-      onError: (err) => addToast('error', `Compile failed: ${String(err)}`),
-    });
-  }
-
-  function handleRebuild() {
-    rebuild.mutate(undefined, {
-      onSuccess: () => addToast('success', 'Full rebuild completed.'),
-      onError: (err) => addToast('error', `Rebuild failed: ${String(err)}`),
-    });
-  }
-
-  function handleDismiss(entry: KnowledgeEntry) {
-    dismissEntry.mutate(entry.id, {
-      onSuccess: () => addToast('success', `Entry ${entry.id} dismissed.`),
-      onError: (err) => addToast('error', `Dismiss failed: ${String(err)}`),
-    });
-  }
-
-  function handlePromote(entry: KnowledgeEntry) {
-    promote.mutate(entry.id, {
-      onSuccess: () => addToast('success', `Entry ${entry.id} promoted to claim.`),
-      onError: (err) => addToast('error', `Promote failed: ${String(err)}`),
-    });
-  }
-
-  function handleSupersede(entryId: number, supersedingId: number, reason: string) {
-    supersede.mutate(
-      { entryId, superseding_id: supersedingId, reason },
-      {
-        onSuccess: () => {
-          addToast('success', `Entry ${entryId} marked as superseded.`);
-          setSupersedeTarget(null);
-        },
-        onError: (err) => addToast('error', `Supersede failed: ${String(err)}`),
-      },
-    );
-  }
-
-  function handleStillValid(entry: KnowledgeEntry) {
-    refreshEntry.mutate(entry.id, {
-      onSuccess: () => addToast('success', `Entry ${entry.id} marked as still valid.`),
-      onError: (err) => addToast('error', `Update failed: ${String(err)}`),
-    });
-  }
-
-  const entryTypes = ['decision', 'pattern', 'discovery', 'convention', 'bug', 'dependency'];
-
-  // Filter entries by claim_class and freshness_class client-side
-  const filteredEntries = (data?.entries || []).filter((entry) => {
-    if (claimFilter && entry.claim_class !== claimFilter) return false;
-    if (freshnessFilter && entry.freshness_class !== freshnessFilter) return false;
-    return true;
-  });
-
-  // Stale claims for review queue
-  const staleClaims = (data?.entries || []).filter(
-    (e) => e.freshness_class === 'stale' && e.claim_class === 'claim' && !e.dismissed,
-  );
-
-  // Compute health distribution from entries
-  const allEntries = data?.entries || [];
-  const claimCount = allEntries.filter((e) => e.claim_class === 'claim').length;
-  const noteCount = allEntries.filter((e) => e.claim_class === 'note').length;
-  const evidenceCount = allEntries.filter((e) => e.claim_class === 'evidence').length;
-  const currentCount = allEntries.filter((e) => e.freshness_class === 'current').length;
-  const agingCount = allEntries.filter((e) => e.freshness_class === 'aging').length;
-  const staleCount = allEntries.filter((e) => e.freshness_class === 'stale').length;
-  const supersededCount = allEntries.filter((e) => e.freshness_class === 'superseded').length;
-  const activeClaimCount = allEntries.filter(
-    (e) => e.claim_class === 'claim' && (e.freshness_class === 'current' || e.freshness_class === 'aging'),
-  ).length;
-
-  return (
-    <div className="p-5">
-      {/* Health banner */}
-      {health && (
-        <div
-          className="mb-4 rounded-lg border p-4"
-          style={{
-            backgroundColor: (health.stale_entry_count > 10) ? 'rgba(239,68,68,0.06)' : 'rgba(250,204,21,0.06)',
-            borderColor: (health.stale_entry_count > 10) ? 'rgba(239,68,68,0.2)' : 'rgba(250,204,21,0.2)',
-          }}
-        >
-          {/* Summary counters */}
-          <div className="flex flex-wrap items-center gap-4 text-xs mb-2">
-            <span className="text-text-secondary">
-              {health.total_entries} total
-            </span>
-            <span className="text-brand">
-              {claimCount} claims
-            </span>
-            <span className="text-text-tertiary">
-              {noteCount} notes
-            </span>
-            <span style={{ color: '#3b82f6' }}>
-              {evidenceCount} evidence
-            </span>
-            <span className="text-text-secondary">
-              {activeClaimCount} active claims
-            </span>
-          </div>
-
-          {/* Freshness distribution */}
-          <div className="flex flex-wrap items-center gap-3 text-xs mb-2">
-            <span className="flex items-center gap-1">
-              <FreshnessDot freshnessClass="current" />
-              <span className="text-text-tertiary">{currentCount} current</span>
-            </span>
-            <span className="flex items-center gap-1">
-              <FreshnessDot freshnessClass="aging" />
-              <span className="text-text-tertiary">{agingCount} aging</span>
-            </span>
-            <span className="flex items-center gap-1">
-              <FreshnessDot freshnessClass="stale" />
-              <span className="text-text-tertiary">{staleCount} stale</span>
-            </span>
-            <span className="flex items-center gap-1">
-              <FreshnessDot freshnessClass="superseded" />
-              <span className="text-text-tertiary">{supersededCount} superseded</span>
-            </span>
-          </div>
-
-          {/* Stale/low-confidence/decayed warnings */}
-          {(health.stale_entry_count > 0 || health.low_confidence_count > 0 || health.decayed_count > 0) && (
-            <div className="flex flex-wrap items-center gap-4 text-sm mb-2">
-              {health.stale_entry_count > 0 && (
-                <span className="text-warning">
-                  {health.stale_entry_count} stale {health.stale_entry_count === 1 ? 'entry' : 'entries'}
-                </span>
-              )}
-              {health.low_confidence_count > 0 && (
-                <span className="text-text-tertiary">
-                  {health.low_confidence_count} low-confidence
-                </span>
-              )}
-              {health.decayed_count > 0 && (
-                <span className="text-text-tertiary">
-                  {health.decayed_count} decayed
-                </span>
-              )}
-            </div>
-          )}
-
-          {health.recommendations.length > 0 && (
-            <ul className="space-y-1">
-              {health.recommendations.map((r, i) => (
-                <li key={i} className="text-xs text-text-secondary">
-                  {r}
-                </li>
-              ))}
-            </ul>
-          )}
-          {health.stale_entry_count > 0 && (
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => dismissStale.mutate(undefined, {
-                onSuccess: (result) => addToast('success', `Dismissed ${result.dismissed_count} stale entries.`),
-                onError: (err) => addToast('error', `Failed to dismiss: ${String(err)}`),
-              })}
-              disabled={dismissStale.isPending}
-              loading={dismissStale.isPending}
-              className="mt-2"
-            >
-              Dismiss {health.stale_entry_count} stale
-            </Button>
-          )}
-        </div>
-      )}
-
-      {/* Stale review queue */}
-      {staleClaims.length > 0 && (
-        <div className="mb-4 rounded-lg border border-border bg-bg-primary">
-          <button
-            onClick={() => setStaleQueueOpen(!staleQueueOpen)}
-            className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-text-secondary hover:bg-surface-hover transition-colors"
-          >
-            <span>Stale Claims Review ({staleClaims.length})</span>
-            <span className="text-2xs">{staleQueueOpen ? '\u25B2' : '\u25BC'}</span>
-          </button>
-          {staleQueueOpen && (
-            <div className="border-t border-border px-4 py-3 space-y-2">
-              {staleClaims.map((entry) => (
-                <div
-                  key={`stale-${entry.id}`}
-                  className="flex items-start gap-3 px-3 py-2 rounded border border-border bg-bg-elevated"
-                >
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-text-primary">{entry.content}</p>
-                    <p className="text-xs text-text-tertiary mt-0.5">
-                      #{entry.id} &middot; {entry.entry_type}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      onClick={() => handleStillValid(entry)}
-                      disabled={refreshEntry.isPending}
-                      className="text-xs text-brand hover:underline px-2 py-1"
-                    >
-                      Still Valid
-                    </button>
-                    <button
-                      onClick={() => setSupersedeTarget(entry.id)}
-                      className="text-xs text-text-tertiary hover:text-text-secondary px-2 py-1"
-                    >
-                      Supersede
-                    </button>
-                    <button
-                      onClick={() => handleDismiss(entry)}
-                      disabled={dismissEntry.isPending}
-                      className="text-xs text-text-tertiary hover:text-red-400 px-2 py-1"
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                  {supersedeTarget === entry.id && (
-                    <SupersedeDialog
-                      entryId={entry.id}
-                      onConfirm={(sid, reason) => handleSupersede(entry.id, sid, reason)}
-                      onCancel={() => setSupersedeTarget(null)}
-                      isPending={supersede.isPending}
-                    />
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-        <div className="flex items-center gap-3 flex-wrap">
-          <label className="flex items-center gap-1.5 text-sm text-text-secondary">
-            <input
-              type="checkbox"
-              checked={pendingOnly}
-              onChange={(e) => setPendingOnly(e.target.checked)}
-              className="accent-[var(--brand)]"
-            />
-            Pending only
-          </label>
-          <Select
-            aria-label="Filter by entry type"
-            value={typeFilter}
-            onValueChange={setTypeFilter}
-            options={[
-              { value: '', label: 'All types' },
-              ...entryTypes.map((t) => ({ value: t, label: t })),
-            ]}
-            className="!w-auto !px-2 !py-1 bg-bg-primary text-sm"
-          />
-          <Select
-            aria-label="Filter by claim class"
-            value={claimFilter}
-            onValueChange={setClaimFilter}
-            options={[
-              { value: '', label: 'All classes' },
-              { value: 'claim', label: 'Claim' },
-              { value: 'note', label: 'Note' },
-              { value: 'evidence', label: 'Evidence' },
-            ]}
-            className="!w-auto !px-2 !py-1 bg-bg-primary text-sm"
-          />
-          <Select
-            aria-label="Filter by freshness"
-            value={freshnessFilter}
-            onValueChange={setFreshnessFilter}
-            options={[
-              { value: '', label: 'All freshness' },
-              { value: 'current', label: 'Current' },
-              { value: 'aging', label: 'Aging' },
-              { value: 'stale', label: 'Stale' },
-            ]}
-            className="!w-auto !px-2 !py-1 bg-bg-primary text-sm"
-          />
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            onClick={handleRebuild}
-            disabled={rebuild.isPending}
-            loading={rebuild.isPending}
-          >
-            Rebuild
-          </Button>
-          <Button
-            onClick={handleCompile}
-            disabled={compile.isPending}
-            loading={compile.isPending}
-          >
-            Compile Now
-          </Button>
-        </div>
-      </div>
-
-      {/* Entries list */}
-      {isLoading ? (
-        <p className="text-text-tertiary text-sm py-4">Loading entries…</p>
-      ) : !filteredEntries.length ? (
-        <p className="text-text-tertiary text-sm py-8 text-center">
-          No knowledge entries found. Entries are auto-extracted from sessions.
-        </p>
-      ) : (
-        <div className="space-y-2">
-          {filteredEntries.map((entry) => (
-            <div
-              key={entry.id}
-              className={`px-4 py-3 rounded-lg border transition-colors ${
-                entry.freshness_class === 'superseded'
-                  ? 'border-border bg-bg-primary opacity-50'
-                  : entry.dismissed
-                    ? 'border-border bg-bg-primary opacity-60'
-                    : 'border-border bg-bg-elevated'
-              }`}
-            >
-              <div className="flex items-start gap-3">
-                <div className="shrink-0 pt-0.5 flex items-center gap-1.5">
-                  <FreshnessDot freshnessClass={entry.freshness_class} />
-                  <EntryTypeBadge type={entry.entry_type} />
-                  <ClaimClassBadge claimClass={entry.claim_class} />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p
-                    className={`text-sm text-text-primary ${
-                      entry.dismissed || entry.freshness_class === 'superseded'
-                        ? 'line-through text-text-tertiary'
-                        : ''
-                    }`}
-                  >
-                    {entry.content}
-                  </p>
-                  {/* Provenance block */}
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-text-tertiary">
-                    <span>
-                      <RelativeDate iso={entry.created_at} />
-                    </span>
-                    {entry.session_id && (
-                      <>
-                        <span>&middot;</span>
-                        <span className="font-mono">
-                          {entry.session_id.length > 14
-                            ? entry.session_id.slice(0, 14) + '..'
-                            : entry.session_id}
-                        </span>
-                      </>
-                    )}
-                    {entry.entity_ref && (
-                      <>
-                        <span>&middot;</span>
-                        <span className="font-mono">{entry.entity_type}: {entry.entity_ref}</span>
-                      </>
-                    )}
-                    {entry.compiled_at && (
-                      <>
-                        <span>&middot;</span>
-                        <span className="text-green-500">compiled</span>
-                      </>
-                    )}
-                    {entry.confidence !== undefined && entry.confidence < 1 && (
-                      <>
-                        <span>&middot;</span>
-                        <span>{Math.round(entry.confidence * 100)}% confidence</span>
-                      </>
-                    )}
-                    <span>&middot;</span>
-                    <span>
-                      retrieved: {entry.retrieved_count} / used: {entry.used_in_answer_count} / compiled: {entry.compiled_count}
-                    </span>
-                    {entry.superseded_by && (
-                      <>
-                        <span>&middot;</span>
-                        <span style={{ color: '#ef4444' }}>superseded by #{entry.superseded_by}</span>
-                      </>
-                    )}
-                    {entry.supersession_reason && (
-                      <>
-                        <span>&middot;</span>
-                        <span className="text-text-tertiary">{entry.supersession_reason}</span>
-                      </>
-                    )}
-                  </div>
-                </div>
-                {/* Actions */}
-                <div className="flex items-center gap-1 shrink-0">
-                  {!entry.dismissed && entry.claim_class === 'note' && entry.freshness_class !== 'superseded' && (
-                    <button
-                      onClick={() => handlePromote(entry)}
-                      disabled={promote.isPending}
-                      className="text-xs text-brand hover:underline px-2 py-1"
-                      title="Promote to Claim"
-                    >
-                      Promote
-                    </button>
-                  )}
-                  {!entry.dismissed && entry.freshness_class !== 'superseded' && (
-                    <button
-                      onClick={() => setSupersedeTarget(supersedeTarget === entry.id ? null : entry.id)}
-                      className="text-xs text-text-tertiary hover:text-text-secondary px-2 py-1"
-                      title="Mark Superseded"
-                    >
-                      Supersede
-                    </button>
-                  )}
-                  {!entry.dismissed && !entry.compiled_at && entry.freshness_class !== 'superseded' && (
-                    <button
-                      onClick={() => handleDismiss(entry)}
-                      disabled={dismissEntry.isPending}
-                      className="shrink-0 text-xs text-text-tertiary hover:text-red-400 transition-colors px-2 py-1"
-                      title="Dismiss this entry"
-                    >
-                      Dismiss
-                    </button>
-                  )}
-                </div>
-              </div>
-              {/* Supersede dialog inline */}
-              {supersedeTarget === entry.id && (
-                <SupersedeDialog
-                  entryId={entry.id}
-                  onConfirm={(sid, reason) => handleSupersede(entry.id, sid, reason)}
-                  onCancel={() => setSupersedeTarget(null)}
-                  isPending={supersede.isPending}
-                />
-              )}
-            </div>
-          ))}
-          <p className="text-xs text-text-tertiary pt-2">
-            {data && data.total > filteredEntries.length
-              ? `Showing ${filteredEntries.length} of ${data.total} entries`
-              : `${filteredEntries.length} ${filteredEntries.length === 1 ? 'entry' : 'entries'}`}
-          </p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ------------------------------------------------------------------
-// Pages Tab
-// ------------------------------------------------------------------
-function PagesTab({ projectId }: { projectId: string }) {
-  const { data, isLoading } = useWikiPages(projectId);
-  const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
-  const [editingSlug, setEditingSlug] = useState<string | null>(null);
-  const [editDraft, setEditDraft] = useState('');
-  const [showNewPage, setShowNewPage] = useState(false);
-  const [newSlug, setNewSlug] = useState('');
-  const [newTitle, setNewTitle] = useState('');
-  const [newContent, setNewContent] = useState('');
-  const { addToast } = useToast();
-
-  const { data: pageDetail } = useWikiPage(projectId, selectedSlug);
-  const updatePage = useUpdateWikiPage(projectId);
-  const deletePage = useDeleteWikiPage(projectId);
-  const regeneratePage = useRegenerateWikiPage(projectId);
-
-  function handleSaveEdit(slug: string) {
-    updatePage.mutate(
-      { slug, content: editDraft },
-      {
-        onSuccess: () => {
-          addToast('success', 'Page saved.');
-          setEditingSlug(null);
-          setEditDraft('');
-        },
-        onError: (err) => addToast('error', `Save failed: ${String(err)}`),
-      },
-    );
-  }
-
-  function handleDelete(slug: string) {
-    deletePage.mutate(slug, {
-      onSuccess: () => {
-        addToast('success', 'Page deleted.');
-        if (selectedSlug === slug) setSelectedSlug(null);
-      },
-      onError: (err) => addToast('error', `Delete failed: ${String(err)}`),
-    });
-  }
-
-  function handleRegenerate(slug: string) {
-    regeneratePage.mutate(slug, {
-      onSuccess: (result) => {
-        addToast('success', `Article regenerated (${result.word_count} words from ${result.entries_used} entries).`);
-      },
-      onError: (err) => addToast('error', `Regenerate failed: ${String(err)}`),
-    });
-  }
-
-  function handleCreatePage() {
-    if (!newSlug.trim()) {
-      addToast('error', 'Slug is required.');
-      return;
-    }
-    updatePage.mutate(
-      { slug: newSlug.trim(), content: newContent, title: newTitle || undefined },
-      {
-        onSuccess: () => {
-          addToast('success', `Page "${newSlug.trim()}" created.`);
-          setShowNewPage(false);
-          setNewSlug('');
-          setNewTitle('');
-          setNewContent('');
-        },
-        onError: (err) => addToast('error', `Create failed: ${String(err)}`),
-      },
-    );
-  }
-
-  if (isLoading) {
-    return <p className="p-5 text-text-tertiary text-sm">Loading pages…</p>;
-  }
-
-  const pages = data?.pages || [];
-
-  return (
-    <div className="p-5">
-      {/* Toolbar */}
-      <div className="flex items-center justify-between mb-4">
-        <span className="text-sm text-text-tertiary">
-          {pages.length} {pages.length === 1 ? 'page' : 'pages'}
-        </span>
-        <Button onClick={() => setShowNewPage(true)}>+ New Page</Button>
-      </div>
-
-      {/* New page form */}
-      {showNewPage && (
-        <div className="mb-4 px-4 py-3 rounded-lg border border-[var(--brand)] bg-bg-primary">
-          <div className="flex gap-3 mb-2">
-            <Input
-              value={newSlug}
-              onChange={(e) => setNewSlug(e.target.value)}
-              placeholder="page-slug"
-              className="flex-1"
-              autoFocus
-            />
-            <Input
-              value={newTitle}
-              onChange={(e) => setNewTitle(e.target.value)}
-              placeholder="Page Title (optional)"
-              className="flex-1"
-            />
-          </div>
-          <Textarea
-            value={newContent}
-            onChange={(e) => setNewContent(e.target.value)}
-            placeholder="Page content (markdown)…"
-            className="min-h-[120px] font-mono"
-          />
-          <div className="flex justify-end gap-3 mt-2">
-            <Button variant="ghost" onClick={() => { setShowNewPage(false); setNewSlug(''); setNewTitle(''); setNewContent(''); }}>
-              Cancel
-            </Button>
-            <Button onClick={handleCreatePage} disabled={updatePage.isPending} loading={updatePage.isPending}>
-              Create
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Page list */}
-      {!pages.length ? (
-        <p className="text-text-tertiary text-sm py-8 text-center">
-          No wiki pages yet. Create one to start documenting project knowledge.
-        </p>
-      ) : (
-        <div className="space-y-2">
-          {pages.map((page: WikiPage) => {
-            const isSelected = selectedSlug === page.slug;
-            const isEditing = editingSlug === page.slug;
-
-            return (
-              <div
-                key={page.slug}
-                className="rounded-lg border border-border bg-bg-elevated overflow-hidden"
-              >
-                {/* Card header */}
-                <button
-                  onClick={() => setSelectedSlug(isSelected ? null : page.slug)}
-                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-hover transition-colors"
-                >
-                  <span className="shrink-0 text-base" title={page.auto_generated ? 'Auto-generated' : 'User-written'}>
-                    {page.auto_generated ? '\uD83D\uDCA1' : '\uD83D\uDCC4'}
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <span className="text-sm font-medium text-text-primary">
-                      {page.title || page.slug}
-                    </span>
-                    {page.title && (
-                      <span className="ml-2 text-xs text-text-tertiary font-mono">
-                        {page.slug}
-                      </span>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-3 shrink-0 text-xs text-text-tertiary">
-                    <span>{page.word_count} words</span>
-                    <span>{page.entry_count} entries</span>
-                    <span className="text-2xs">{isSelected ? '\u25B2' : '\u25BC'}</span>
-                  </div>
-                </button>
-
-                {/* Expanded detail */}
-                {isSelected && (
-                  <div className="border-t border-border px-4 py-3">
-                    {page.auto_generated && !isEditing && (
-                      <div className="mb-3 px-3 py-2 rounded-lg bg-[rgba(249,115,22,0.08)] border border-[rgba(249,115,22,0.2)] text-xs text-[#f97316]">
-                        Auto-maintained. Manual edits may be overwritten during compilation.
-                      </div>
-                    )}
-
-                    {isEditing ? (
-                      <div>
-                        <Textarea
-                          value={editDraft}
-                          onChange={(e) => setEditDraft(e.target.value)}
-                          className="min-h-[300px] font-mono text-base"
-                          autoFocus
-                        />
-                        <div className="flex justify-end gap-3 mt-3">
-                          <Button variant="ghost" onClick={() => { setEditingSlug(null); setEditDraft(''); }}>
-                            Cancel
-                          </Button>
-                          <Button onClick={() => handleSaveEdit(page.slug)} disabled={updatePage.isPending} loading={updatePage.isPending}>
-                            Save
-                          </Button>
-                        </div>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="prose prose-sm dark:prose-invert max-w-[65ch] text-text-secondary">
-                          <ReactMarkdown>{pageDetail?.content ?? page.content ?? ''}</ReactMarkdown>
-                        </div>
-
-                        {/* Backlinks */}
-                        {pageDetail?.backlinks && pageDetail.backlinks.length > 0 && (
-                          <div className="mt-4 pt-3 border-t border-border">
-                            <span className="text-xs font-medium text-text-tertiary">Backlinks:</span>
-                            <div className="flex flex-wrap gap-2 mt-1">
-                              {pageDetail.backlinks.map((bl, idx) => (
-                                <span
-                                  key={`${bl.source_type}-${bl.source_id}-${idx}`}
-                                  className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full border border-border bg-bg-primary text-text-secondary"
-                                >
-                                  <span className="text-text-tertiary">[{bl.source_type}]</span>
-                                  <span className="font-mono">{bl.source_id.length > 20 ? bl.source_id.slice(0, 20) + '..' : bl.source_id}</span>
-                                  <span className="text-text-tertiary">({bl.link_type})</span>
-                                </span>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Actions */}
-                        <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border">
-                          <button
-                            onClick={() => { setEditingSlug(page.slug); setEditDraft(pageDetail?.content ?? page.content ?? ''); }}
-                            className="text-xs text-brand hover:underline"
-                          >
-                            Edit
-                          </button>
-                          {page.auto_generated && (
-                            <button
-                              onClick={() => handleRegenerate(page.slug)}
-                              disabled={regeneratePage.isPending}
-                              className="text-xs text-brand hover:underline disabled:opacity-50"
-                            >
-                              {regeneratePage.isPending ? 'Regenerating…' : 'Regenerate'}
-                            </button>
-                          )}
-                          <button
-                            onClick={() => handleDelete(page.slug)}
-                            disabled={deletePage.isPending}
-                            className="text-xs text-red-400 hover:underline disabled:opacity-50"
-                          >
-                            Delete
-                          </button>
-                          <span className="text-xs text-text-tertiary ml-auto">
-                            Updated <RelativeDate iso={page.updated_at} />
-                          </span>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ------------------------------------------------------------------
-// History Tab
-// ------------------------------------------------------------------
-function HistoryTab({ projectId }: { projectId: string }) {
-  const { data, isLoading } = useCompilations(projectId);
-
-  if (isLoading) {
-    return <p className="p-5 text-text-tertiary text-sm">Loading history…</p>;
-  }
-
-  const compilations = data?.compilations || [];
-
-  if (!compilations.length) {
-    return (
-      <p className="p-5 text-text-tertiary text-sm text-center py-8">
-        No compilations yet. Compile pending entries to create the first compilation.
-      </p>
-    );
-  }
-
-  return (
-    <div className="p-5 space-y-3">
-      {compilations.map((c) => (
-        <div
-          key={c.id}
-          className="px-4 py-3 rounded-lg border border-border bg-bg-elevated"
-        >
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-text-primary">
-              {c.entries_compiled} {c.entries_compiled === 1 ? 'entry' : 'entries'} compiled
-            </span>
-            <span className="text-xs text-text-tertiary">
-              <RelativeDate iso={c.compiled_at} />
-            </span>
-          </div>
-          {c.context_after && c.context_before && (
-            <p className="text-xs text-text-tertiary mt-1">
-              Context: {c.context_before.length} chars &rarr; {c.context_after.length} chars
-            </p>
-          )}
-        </div>
-      ))}
-    </div>
+    <TabPanel idPrefix="project-sub" tabKey={sub}>
+      <Card level="elevated" className={`mt-4 min-w-0 rounded-xl shadow-[var(--shadow-sm)] ${padded ? 'p-4' : ''}`}>
+        {children}
+      </Card>
+    </TabPanel>
   );
 }
 
@@ -963,69 +109,42 @@ export default function ProjectDetail() {
   const { id } = useParams<{ id: string }>();
   const remote = decodeURIComponent(id || '');
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { data: project, isLoading, error } = useProject(remote);
   const updateContext = useUpdateProjectContext();
   const deleteProject = useDeleteProject();
   const { addToast } = useToast();
-  const myOrgs = useMyOrgs();
 
-  const [activeTab, setActiveTab] = useState<ProjectTab>('context');
-  const [tabKey, setTabKey] = useState(0);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
-  const [workflowHintDismissed, setWorkflowHintDismissed] = useState(
-    () => sessionStorage.getItem('sfs-workflow-hint-dismissed') === '1',
-  );
-  const [autoNarrative, setAutoNarrative] = useState(project?.auto_narrative ?? false);
-  const updateSettings = useUpdateProjectSettings(project?.id);
-  const updateName = useUpdateProjectName(project?.id);
-
-  // Inline project rename
-  const [editingName, setEditingName] = useState(false);
-  const [nameDraft, setNameDraft] = useState(project?.name || '');
 
   // Fetch pending entries count for workflow hint
   const { data: pendingData } = useKnowledgeEntries(project?.id, { pending: true, limit: 1 });
   const pendingCount = pendingData?.total ?? 0;
   const compile = useCompileProject(project?.id);
 
-  const repoCount = project?.repos?.length;
+  const { section, sub } = resolveView(searchParams.get('tab'), searchParams.get('sub'));
 
-  function handleRenameSave() {
-    const trimmed = nameDraft.trim();
-    if (!trimmed || trimmed === project?.name) {
-      setEditingName(false);
-      return;
-    }
-    updateName.mutate(trimmed, {
-      onSuccess: () => {
-        addToast('success', `Project renamed to "${trimmed}"`);
-        setEditingName(false);
-      },
-      onError: (err) => {
-        addToast('error', `Rename failed: ${String(err)}`);
-      },
+  // A section change is a navigation (Back returns to the previous section);
+  // a sub-tab change replaces the entry so browsing sub-tabs does not bury it.
+  // Other params, such as ?edit=1, are kept.
+  const switchSection = useCallback((next: string) => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      params.set('tab', next);
+      params.delete('sub');
+      return params;
     });
-  }
+  }, [setSearchParams]);
 
-  const switchTab = useCallback((tab: string) => {
-    setActiveTab(tab as ProjectTab);
-    setTabKey((k) => k + 1);
-  }, []);
-
-  function dismissWorkflowHint() {
-    setWorkflowHintDismissed(true);
-    sessionStorage.setItem('sfs-workflow-hint-dismissed', '1');
-  }
-
-  // Sync auto_narrative state when project data loads
-  useEffect(() => {
-    if (project) {
-      setAutoNarrative(project.auto_narrative ?? false);
-    }
-  }, [project]);
+  const switchSub = useCallback((next: string) => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      params.set('sub', next);
+      return params;
+    }, { replace: true });
+  }, [setSearchParams]);
 
   // Enter edit mode if ?edit=1
   useEffect(() => {
@@ -1054,7 +173,7 @@ export default function ProjectDetail() {
           setEditing(false);
         },
         onError: (err) => {
-          addToast('error', `Failed to save: ${String(err)}`);
+          addToast('error', `Save failed: ${errorMessage(err)}`);
         },
       },
     );
@@ -1068,7 +187,7 @@ export default function ProjectDetail() {
         navigate('/projects');
       },
       onError: (err) => {
-        addToast('error', `Failed to delete: ${String(err)}`);
+        addToast('error', `Delete failed: ${errorMessage(err)}`);
       },
     });
   }
@@ -1086,26 +205,11 @@ export default function ProjectDetail() {
           </svg>
           Back to Projects
         </Button>
-        <p className="text-red-400 mt-4">Failed to load project: {String(error)}</p>
+        <p className="text-danger mt-4">Failed to load project: {errorMessage(error)}</p>
       </div>
     );
   }
 
-  // Brief §Dashboard: place Rules between Pages and Entries.
-  const tabs: { key: ProjectTab; label: string; step?: number }[] = [
-    { key: 'entries', label: 'Entries', step: 1 },
-    { key: 'context', label: 'Context', step: 2 },
-    { key: 'pages', label: 'Pages', step: 3 },
-    { key: 'rules', label: 'Rules' },
-    { key: 'personas', label: 'Personas' },
-    { key: 'tickets', label: 'Tickets' },
-    { key: 'agent-runs', label: 'Agent runs' },
-    { key: 'marketplace', label: 'Marketplace' },
-    { key: 'repos', label: 'Repos' },
-    { key: 'merge', label: 'Merge' },
-    { key: 'transfer', label: 'Transfer' },
-    { key: 'history', label: 'History', step: 4 },
-  ];
   function handleCompileFromContext() {
     compile.mutate(undefined, {
       onSuccess: (result) => {
@@ -1116,12 +220,14 @@ export default function ProjectDetail() {
           addToast('success', `Project context updated. ${n} entries compiled.`);
         }
       },
-      onError: (err) => addToast('error', `Compile failed: ${String(err)}`),
+      onError: (err) => addToast('error', `Compile failed: ${errorMessage(err)}`),
     });
   }
 
+  const subTabs = SUB_TABS[section];
+
   return (
-    <div className="max-w-4xl mx-auto px-4 py-6">
+    <div className="max-w-6xl w-full mx-auto px-4 py-6">
       {/* Back link */}
       <Button variant="ghost" onClick={() => navigate('/projects')} className="mb-4">
         <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1130,175 +236,32 @@ export default function ProjectDetail() {
         Back to Projects
       </Button>
 
-      {/* Header card */}
-      <Card level="elevated" className="rounded-xl shadow-[var(--shadow-sm)]">
-        <div className="px-5 pt-4 flex items-start justify-between">
-          <div className="min-w-0 flex-1">
-            {/* Project name (editable) */}
-            {editingName ? (
-              <div className="flex items-center gap-2 mb-1">
-                <input
-                  value={nameDraft}
-                  onChange={(e) => setNameDraft(e.target.value)}
-                  className="text-2xl font-semibold bg-bg-sunken border border-[var(--brand)] rounded-lg px-3 py-1 text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] min-w-0 flex-1"
-                  autoFocus
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleRenameSave();
-                    if (e.key === 'Escape') setEditingName(false);
-                  }}
-                  placeholder={project.git_remote_normalized}
-                />
-                <Button size="sm" onClick={handleRenameSave} disabled={updateName.isPending} loading={updateName.isPending}>
-                  Save
-                </Button>
-                <Button variant="ghost" size="sm" onClick={() => setEditingName(false)}>
-                  Cancel
-                </Button>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 mb-1">
-                <h1 className="text-2xl font-semibold text-text-primary break-all">
-                  {project.name || project.git_remote_normalized}
-                </h1>
-                <button
-                  onClick={() => { setNameDraft(project.name || ''); setEditingName(true); }}
-                  className="shrink-0 p-1 text-text-tertiary hover:text-text-secondary hover:bg-surface-hover rounded transition-colors"
-                  title="Rename project"
-                  aria-label="Rename project"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                  </svg>
-                </button>
-              </div>
-            )}
-            {/* Repo path (when name differs) */}
-            {project.name && project.name !== project.git_remote_normalized && (
-              <p className="text-xs text-text-tertiary font-mono truncate -mt-0.5 mb-1">
-                {project.git_remote_normalized}
-              </p>
-            )}
-            <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-text-tertiary">
-              <span>
-                Created <RelativeDate iso={project.created_at} />
-              </span>
-              <span>&middot;</span>
-              <span>
-                Updated <RelativeDate iso={project.updated_at} />
-              </span>
-              {repoCount !== undefined && repoCount > 0 && (
-                <>
-                  <span>&middot;</span>
-                  <span>{repoCount} {repoCount === 1 ? 'repo' : 'repos'}</span>
-                </>
-              )}
-            </div>
-            <label className="flex items-center gap-2 text-sm text-text-tertiary mt-1">
-              <input
-                type="checkbox"
-                checked={autoNarrative}
-                onChange={(e) => {
-                  const val = e.target.checked;
-                  setAutoNarrative(val);
-                  updateSettings.mutate(
-                    { auto_narrative: val },
-                    {
-                      onSuccess: () => addToast('success', `Auto-narrative ${val ? 'enabled' : 'disabled'}.`),
-                      onError: (err) => { setAutoNarrative(!val); addToast('error', `Failed: ${String(err)}`); },
-                    },
-                  );
-                }}
-                className="accent-[var(--brand)]"
-              />
-              Auto-narrative on sync
-            </label>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <Dropdown
-              trigger={
-                <button className="p-1.5 text-text-tertiary hover:text-text-secondary hover:bg-surface-hover rounded-lg transition-colors">
-                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
-                    <circle cx="12" cy="5" r="2" />
-                    <circle cx="12" cy="12" r="2" />
-                    <circle cx="12" cy="19" r="2" />
-                  </svg>
-                </button>
-              }
-              items={[
-                { key: 'delete', label: 'Delete Project', danger: true },
-              ]}
-              onSelect={(key) => {
-                if (key === 'delete') setShowDeleteConfirm(true);
-              }}
-              menuLabel="Project actions"
-            />
-          </div>
-        </div>
+      <ProjectHeader
+        project={project}
+        activeTab={section}
+        badgeTab="knowledge"
+        tabs={SECTIONS}
+        onTabChange={switchSection}
+        pendingCount={pendingCount}
+        compilePending={compile.isPending}
+        onCompile={handleCompileFromContext}
+      />
 
-        {/* Workflow hint — pending entries don't compile themselves; the
-            user (or an agent acting on their behalf) has to trigger a
-            compile pass. The banner now carries an inline CTA so users
-            don't have to navigate to the Entries tab to act. */}
-        {!workflowHintDismissed && pendingCount > 0 && (
-          <div className="mx-5 mt-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-[rgba(26,115,232,0.06)] border border-[rgba(26,115,232,0.15)]">
-            <div className="flex items-center gap-1 text-xs text-text-tertiary">
-              {['Entries', 'Compile', 'Context', 'Pages'].map((step, i) => (
-                <span key={step} className="flex items-center gap-1">
-                  <span className={`font-medium ${
-                    (i === 0 && activeTab === 'entries') ||
-                    (i === 2 && activeTab === 'context') ||
-                    (i === 3 && activeTab === 'pages')
-                      ? 'text-brand' : ''
-                  }`}>{step}</span>
-                  {i < 3 && <span className="text-text-tertiary mx-0.5">&rarr;</span>}
-                </span>
-              ))}
-            </div>
-            <span className="text-xs text-brand font-medium ml-1">
-              {pendingCount} pending {pendingCount === 1 ? 'entry' : 'entries'} — not yet in context
-            </span>
-            <Button
-              size="sm"
-              onClick={handleCompileFromContext}
-              disabled={compile.isPending}
-              className="ml-2"
-              title="Run a compile pass — promotes pending claims into the project context document"
-            >
-              {compile.isPending ? 'Compiling…' : 'Compile now'}
-            </Button>
-            <Button variant="ghost" size="sm" onClick={dismissWorkflowHint} title="Dismiss">
-              &times;
-            </Button>
-          </div>
-        )}
-
-        {/* Repo reclaimed notice */}
-        {project.repo_reclaimed_at && (
-          <div className="mx-5 mt-3 flex items-center gap-2 px-3 py-2 rounded-lg bg-[rgba(239,68,68,0.06)] border border-[rgba(239,68,68,0.15)]">
-            <svg className="shrink-0 w-4 h-4 text-[var(--danger)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <line x1="12" y1="8" x2="12" y2="12" />
-              <line x1="12" y1="16" x2="12.01" y2="16" />
-            </svg>
-            <span className="text-xs text-[var(--danger)] font-medium">
-              All repos were reclaimed. Link a new repo to revive this project.
-            </span>
-          </div>
-        )}
-
-        {/* Tabs */}
-        <div className="px-5 mt-2 border-t border-border pt-2">
+      <TabPanel idPrefix="project-section" tabKey={section}>
+      {subTabs && (
+        <div className="mt-4">
           <Tabs
             bare
-            activeKey={activeTab}
-            onChange={switchTab}
-            tabs={tabs.map((tab) => ({
-              key: tab.key,
+            idPrefix="project-sub"
+            aria-label="Section views"
+            activeKey={sub ?? subTabs[0].key}
+            onChange={switchSub}
+            tabs={subTabs.map((t) => ({
+              key: t.key,
               label: (
                 <span className="inline-flex items-center gap-1.5">
-                  {tab.label}
-                  {tab.key === 'entries' && pendingCount > 0 && (
+                  {t.label}
+                  {section === 'knowledge' && t.key === 'entries' && pendingCount > 0 && (
                     <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-2xs font-semibold bg-brand text-white leading-none">
                       {pendingCount > 99 ? '99+' : pendingCount}
                     </span>
@@ -1308,11 +271,10 @@ export default function ProjectDetail() {
             }))}
           />
         </div>
-      </Card>
+      )}
 
-      {/* Tab content */}
-      {activeTab === 'context' && (
-        <div key={`context-${tabKey}`} className="mt-4 tab-panel-enter">
+      {section === 'context' && (
+        <div className="mt-4">
           {/* Context hero header card */}
           {!editing && (
             <Card level="elevated" className="mb-3 rounded-xl shadow-[var(--shadow-sm)] px-5 py-4">
@@ -1332,13 +294,6 @@ export default function ProjectDetail() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <Button
-                    onClick={handleCompileFromContext}
-                    disabled={compile.isPending}
-                    loading={compile.isPending}
-                  >
-                    Compile Now
-                  </Button>
                   <Button variant="secondary" onClick={handleEdit}>Edit</Button>
                 </div>
               </div>
@@ -1390,77 +345,40 @@ export default function ProjectDetail() {
         </div>
       )}
 
-      {activeTab === 'pages' && (
-        <Card key={`pages-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)]">
-          <PagesTab projectId={project.id} />
-        </Card>
+      {section === 'knowledge' && sub === 'entries' && (
+        <Panel sub={sub}><KnowledgeEntriesTab projectId={project.id} /></Panel>
+      )}
+      {section === 'knowledge' && sub === 'pages' && (
+        <Panel sub={sub}><PagesTab projectId={project.id} /></Panel>
+      )}
+      {section === 'knowledge' && sub === 'history' && (
+        <Panel sub={sub}><HistoryTab projectId={project.id} /></Panel>
       )}
 
-      {activeTab === 'rules' && (
-        <Card key={`rules-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)]">
-          <RulesTab projectId={project.id} />
-        </Card>
+      {section === 'work' && sub === 'tickets' && (
+        <Panel padded sub={sub}><TicketsTab projectId={project.id} /></Panel>
+      )}
+      {section === 'work' && sub === 'agent-runs' && (
+        <Panel padded sub={sub}><AgentRunsTab projectId={project.id} /></Panel>
+      )}
+      {section === 'work' && sub === 'personas' && (
+        <Panel padded sub={sub}><PersonasTab projectId={project.id} /></Panel>
       )}
 
-      {activeTab === 'personas' && (
-        <Card key={`personas-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)] p-4">
-          <PersonasTab projectId={project.id} />
-        </Card>
+      {section === 'config' && sub === 'rules' && (
+        <Panel sub={sub}><RulesTab projectId={project.id} /></Panel>
+      )}
+      {section === 'config' && sub === 'marketplace' && (
+        <Panel padded sub={sub}><MarketplaceTab projectId={project.id} /></Panel>
       )}
 
-      {activeTab === 'tickets' && (
-        <Card key={`tickets-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)] p-4">
-          <TicketsTab projectId={project.id} />
-        </Card>
+      {section === 'settings' && (
+        <div className="mt-4">
+          <ProjectSettings project={project} onRequestDelete={() => setShowDeleteConfirm(true)} />
+        </div>
       )}
 
-      {activeTab === 'agent-runs' && (
-        <Card key={`agent-runs-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)] p-4">
-          <AgentRunsTab projectId={project.id} />
-        </Card>
-      )}
-
-      {activeTab === 'marketplace' && (
-        <Card key={`marketplace-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)] p-4">
-          <MarketplaceTab projectId={project.id} />
-        </Card>
-      )}
-
-      {activeTab === 'entries' && (
-        <Card key={`entries-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)]">
-          <KnowledgeEntriesTab projectId={project.id} />
-        </Card>
-      )}
-
-      {activeTab === 'repos' && (
-        <Card key={`repos-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)]">
-          <ReposTab projectId={project.id} />
-        </Card>
-      )}
-
-      {activeTab === 'merge' && (
-        <Card key={`merge-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)]">
-          <MergeSurface projectId={project.id} projectName={project.name || project.git_remote_normalized} />
-        </Card>
-      )}
-
-      {activeTab === 'transfer' && (
-        <Card key={`transfer-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)] p-4">
-          <TransferPanel
-            projectId={project.id}
-            currentScope={
-              (project as ProjectContextWithOrg).org_id ?? 'personal'
-            }
-            availableOrgs={myOrgs.data ?? []}
-          />
-        </Card>
-      )}
-
-      {activeTab === 'history' && (
-        <Card key={`history-${tabKey}`} level="elevated" className="mt-4 tab-panel-enter rounded-xl shadow-[var(--shadow-sm)]">
-          <HistoryTab projectId={project.id} />
-        </Card>
-      )}
+      </TabPanel>
 
       {/* Delete confirmation modal */}
       <Dialog open={showDeleteConfirm} onClose={() => setShowDeleteConfirm(false)} titleId="delete-project-title">

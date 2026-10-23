@@ -172,14 +172,14 @@ describe('HeldUpdates', () => {
     const user = userEvent.setup();
     render(<HeldUpdateQueues orgs={[{ org_id: 'org_1', name: 'Acme' }, { org_id: 'org_2', name: 'Beta' }]} />);
     expect(hooks.useHeldUpdates).toHaveBeenLastCalledWith('org_1');
-    await user.click(screen.getByRole('combobox', { name: 'Organization for updates to review' }));
+    await user.click(screen.getByRole('button', { name: 'Organization for updates to review' }));
     await user.click(screen.getByRole('option', { name: 'Beta' }));
     expect(hooks.useHeldUpdates).toHaveBeenLastCalledWith('org_2');
   });
 
   it('shows no selector for a single administered org', () => {
     render(<HeldUpdateQueues orgs={[{ org_id: 'org_1', name: 'Acme' }]} />);
-    expect(screen.queryByRole('combobox', { name: 'Organization for updates to review' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Organization for updates to review' })).not.toBeInTheDocument();
     expect(hooks.useHeldUpdates).toHaveBeenLastCalledWith('org_1');
   });
 

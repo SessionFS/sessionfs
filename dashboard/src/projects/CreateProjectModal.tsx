@@ -4,6 +4,7 @@ import { useToast } from '../hooks/useToast';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 import { createProjectSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
 import FieldError from '../components/FieldError';
+import { errorMessage } from '../utils/errorMessage';
 
 function nameFromRemote(remote: string): string {
   // "github.com/acme/repo" -> "acme/repo"
@@ -65,7 +66,7 @@ export default function CreateProjectModal({ onClose, onCreated }: Props) {
           onCreated(trimmed);
         },
         onError: (err) => {
-          addToast('error', `Failed to create project: ${String(err)}`);
+          addToast('error', `Create failed: ${errorMessage(err)}`);
         },
       },
     );

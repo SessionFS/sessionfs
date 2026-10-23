@@ -1,8 +1,10 @@
 import type { MarketplacePackage } from '../api/client';
-import type { GithubOidcProvenance } from '../api/publisherTypes';
+import type { GithubOidcProvenance, GitlabOidcProvenance } from '../api/publisherTypes';
 import { Badge } from '../components/Badge';
 
 const REPO_RE = /^github\.com\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
+// host[:port][/root]/group[/subgroup...]/project, as the server writes it.
+const GITLAB_REPO_RE = /^[a-z0-9.-]+(?::[0-9]{1,5})?(?:\/[A-Za-z0-9_][A-Za-z0-9._-]{0,254}){2,22}$/;
 const SHA_RE = /^[0-9a-f]{40}$/;
 const DIGITS_RE = /^[0-9]{1,20}$/;
 
@@ -47,8 +49,54 @@ function isProvenance(value: unknown): value is GithubOidcProvenance {
  * Links are constructed only from validated fields (repository shape, 40-hex
  * SHA, numeric run id), never from a server-supplied URL.
  */
+function isGitlabProvenance(value: unknown): value is GitlabOidcProvenance {
+  return !!value && typeof value === 'object' && (value as { kind?: unknown }).kind === 'gitlab_oidc';
+}
+
+function GitlabProvenancePanel({ signature }: { signature: GitlabOidcProvenance }) {
+  const repo = signature.published_from_repo && GITLAB_REPO_RE.test(signature.published_from_repo) ? signature.published_from_repo : null;
+  const commit = signature.publishing_run_sha && SHA_RE.test(signature.publishing_run_sha) ? signature.publishing_run_sha : null;
+  const jobId = signature.publishing_job_id && DIGITS_RE.test(signature.publishing_job_id) ? signature.publishing_job_id : null;
+  const repoUrl = repo ? `https://${repo}` : null;
+  const rows: [string, React.ReactNode][] = [
+    ['Project', repoUrl ? <a href={repoUrl} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">{repo}</a> : 'unknown'],
+    ['Project id', signature.published_from_project_id ?? 'unknown'],
+    ['Run commit', repoUrl && commit
+      ? <a href={`${repoUrl}/-/commit/${commit}`} target="_blank" rel="noopener noreferrer" className="font-mono text-brand hover:underline">{commit.slice(0, 12)}</a>
+      : 'unknown'],
+    ['Pipeline source', signature.publishing_event || 'unknown'],
+    ['Ref', <span className="font-mono">{signature.publishing_ref || 'unknown'}{signature.publishing_ref_protected ? ' (protected)' : ''}</span>],
+    ['Environment', signature.publishing_environment ? `${signature.publishing_environment}${signature.publishing_environment_protected ? ' (protected)' : ' (not protected)'}` : 'none'],
+    ['Publishing job', repoUrl && jobId
+      ? <a href={`${repoUrl}/-/jobs/${jobId}`} target="_blank" rel="noopener noreferrer" className="text-brand hover:underline">#{jobId}</a>
+      : 'unknown'],
+    ['Runner', signature.runner_environment || 'unknown'],
+  ];
+  return (
+    <section className="mt-4 rounded-lg border border-accent/30 bg-bg-sunken px-3 py-2" aria-labelledby="provenance-heading">
+      <h3 id="provenance-heading" className="text-2xs uppercase tracking-wider text-text-tertiary">Published from</h3>
+      <p className="mt-1 text-xs text-text-secondary">
+        Published by a trusted GitLab CI job; SessionFS verified GitLab&apos;s signed ID token for it.
+        This shows where the version was published from, not how it was built: no build attestation binds this
+        archive to the commit yet.
+      </p>
+      <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+        {rows.map(([label, value]) => (
+          <div key={label} className="flex gap-2">
+            <dt className="text-text-tertiary">{label}</dt>
+            <dd className="break-all text-text-primary">{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
 export function ProvenancePanel({ item }: { item: MarketplacePackage }) {
   const signature = item.signature;
+  if (isGitlabProvenance(signature)) {
+    return <GitlabProvenancePanel signature={signature} />;
+  }
   if (!isProvenance(signature)) {
     return (
       <section className="mt-4 rounded-lg border border-border bg-bg-sunken px-3 py-2" aria-labelledby="provenance-heading">

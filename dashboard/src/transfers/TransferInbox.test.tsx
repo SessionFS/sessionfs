@@ -97,6 +97,7 @@ describe('TransferInbox', () => {
 
   it('renders incoming and outgoing rows with scope labels and counts', () => {
     render(<TransferInbox />);
+    expect(screen.getByRole('heading', { level: 1, name: /project transfers/i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 3, name: /incoming \(1\)/i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 3, name: /outgoing \(1\)/i })).toBeInTheDocument();
     expect(screen.getByTestId('incoming-xfer_in1')).toHaveTextContent(/acme-x/);

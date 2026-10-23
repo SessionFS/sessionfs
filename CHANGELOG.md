@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] - 2026-10-22
+
+**A reorganized dashboard that works on phones, GitLab CI trusted publishing for the marketplace, and an audit trail for operator overrides.** Server migrations 081–082. No new MCP tools (81).
+
+### Added
+- **GitLab CI trusted publishing (GitHub #82).** GitLab CI jobs can exchange a GitLab ID token (`id_tokens:`) for the same single-use, 15-minute publish token GitHub Actions gets, so no stored `skills:admin` key is needed in CI. A trust binds to the numeric GitLab project (optionally the namespace), requires a protected ref, matches the ref pattern and environment, and only accepts push, web and API pipelines; merge request, scheduled, trigger and downstream pipelines never publish. A trust can also require a protected GitLab environment. Accepted GitLab instances come from `SFS_GITLAB_OIDC_ISSUERS` (default `https://gitlab.com`, `none` disables). Set it up with `sfs skill publisher trust --gitlab-project ID [--gitlab-host HOST]` and publish with `sfs skill publish --trusted-publishing --ci-provider gitlab`. Example pipeline: `docs/integrations/gitlab-ci-skill-publish.yml`.
+- **Audit trail for operator overrides (GitHub #84).** Admin actions now record a reason, the before and after state, and whether they went through the API or were recorded by hand. `POST /api/v1/admin/projects/{id}/force-transfer` moves a project into an organization without the owner's consent, under the same safety checks as a normal transfer; the new owner must be an active member of the destination org, and `expected_org_id` stops a retried request from moving a project twice. `POST /api/v1/admin/audit-log` records a change made by hand, and `GET /api/v1/admin/audit-log` filters by target, action, source and admin. User and org tier changes and forced owner transfers accept a reason. CLI: `sfs admin audit-log`, `sfs admin override project-transfer|record`.
+- **`sfs --version`, `sfs -V` and `sfs version` (GitHub #85)** print the installed version with the Python version and platform.
+
+### Changed
+- **Dashboard reorganized.** The project page's 12 tabs are now 5 sections (Overview, Knowledge, Work, Rules & Skills, Settings), kept in the URL so links and the back button work; old links still open the right place. Project rename, repos, merge, transfer and delete live under **Settings**. Account settings are split into Account, Preferences, Integrations, Data protection and Sync, each with its own address. The Organization page has tabs (Members, Personas, Policies, Security). The sidebar is grouped into Library, Inbox and Manage, and the marketplace pages share one sub-navigation. The project-level Marketplace tab is now called **Skills**.
+- **Dashboard works on phones.** Every page fits a 375 px screen without sideways scrolling, and tab bars scroll instead of spilling out of their card (GitHub #86, #87).
+- **Dashboard colours and accessibility.** Status colours in the light theme meet WCAG AA contrast; the light-theme brand blue is slightly darker, and filled brand-coloured buttons in the dark theme use dark text. Tabs follow the standard keyboard pattern (arrow keys, Home, End), notifications are announced reliably to screen readers, and error messages use one wording.
+
+### Fixed
+- **`/health/ready` through the Helm chart's ingress (GitHub #83).** The dashboard's nginx answered `/health/ready` with its own `{"status":"ok"}`, so readiness probes through the ingress always saw 200 even when the database schema was behind. `/health/ready` is now passed to the API, and other paths under `/health/` return 404.
+- Verifying an SSO domain no longer reports an error when the domain is deleted at the same moment.
+
+### Upgrade notes
+- **Self-hosted servers: run migrations 081 and 082.** 081 adds reason, before/after state and source columns to `admin_actions`, plus indexes. 082 lets `skill_trusted_publishers` hold GitLab trusts (GitHub-only columns become nullable, with a check that keeps each provider's row consistent); downgrading it removes GitLab trusts and their tokens.
+- Self-hosted GitLab users who want trusted publishing: add your instance URL to `SFS_GITLAB_OIDC_ISSUERS`, exactly as GitLab's `external_url`.
+
 ## [0.20.0] - 2026-10-22
 
 **An org persona can stand for a person, who can then keep it up to date without being an org admin. Plus project tools that accept the folder your agent is working in.** Server migration 080. No new MCP tools (81).

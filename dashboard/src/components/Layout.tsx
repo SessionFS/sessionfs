@@ -1,11 +1,11 @@
 import { useState, useEffect, type ReactNode } from 'react';
+import { getStoredTheme, type Theme } from '../utils/theme';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useHandoffInbox } from '../hooks/useHandoffs';
 import { useMe } from '../hooks/useMe';
-import { useMyOrgs, useTransfers } from '../transfers/useTransfers';
+import { useTransfers } from '../transfers/useTransfers';
 import { useMyInvites } from '../invites/useInvites';
-import { canModerate } from '../marketplace/moderationState';
 import SearchBar from './SearchBar';
 import ThemeToggle from './ThemeToggle';
 import { Badge } from './Badge';
@@ -55,9 +55,6 @@ const settingsIcon = mkIcon(
 const helpIcon = mkIcon(
   <><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .9-1 1.7" /><line x1="12" y1="17" x2="12" y2="17.01" /></>
 );
-const moderationIcon = mkIcon(
-  <><path d="M4 21V4" /><path d="M4 4h12l-2 4 2 4H4" /></>
-);
 const adminIcon = mkIcon(
   <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></>
 );
@@ -76,8 +73,6 @@ interface NavItem {
   match: (p: string) => boolean;
   orgOnly?: boolean;
   adminOnly?: boolean;
-  /** Platform admins and org owners/admins (marketplace moderation). */
-  moderatorOnly?: boolean;
   badgeKey?: 'pending' | 'transfers' | 'invites';
 }
 
@@ -91,16 +86,25 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/', label: 'Sessions', icon: sessionsIcon, match: (p: string) => p === '/' },
       { to: '/projects', label: 'Projects', icon: projectsIcon, match: (p: string) => p.startsWith('/projects') },
-      { to: '/marketplace', label: 'Marketplace', icon: marketplaceIcon, match: (p: string) => p.startsWith('/marketplace') && !p.startsWith('/marketplace/moderation') },
-      { to: '/marketplace/moderation', label: 'Moderation', icon: moderationIcon, match: (p: string) => p.startsWith('/marketplace/moderation'), moderatorOnly: true },
       { to: '/handoffs', label: 'Handoffs', icon: handoffsIcon, match: (p: string) => p.startsWith('/handoffs'), badgeKey: 'pending' },
     ],
   },
   {
-    label: 'Organization',
+    label: 'Library',
     items: [
-      { to: '/transfers', label: 'Transfers', icon: transfersIcon, match: (p: string) => p.startsWith('/transfers'), badgeKey: 'transfers' },
+      { to: '/marketplace', label: 'Marketplace', icon: marketplaceIcon, match: (p: string) => p.startsWith('/marketplace') },
+    ],
+  },
+  {
+    label: 'Inbox',
+    items: [
       { to: '/invites', label: 'Invites', icon: invitesIcon, match: (p: string) => p.startsWith('/invites'), badgeKey: 'invites' },
+      { to: '/transfers', label: 'Transfers', icon: transfersIcon, match: (p: string) => p.startsWith('/transfers'), badgeKey: 'transfers' },
+    ],
+  },
+  {
+    label: 'Manage',
+    items: [
       { to: '/settings/organization', label: 'Organization', icon: orgIcon, match: (p: string) => p === '/settings/organization', orgOnly: true },
       { to: '/settings/billing', label: 'Billing', icon: billingIcon, match: (p: string) => p === '/settings/billing' },
     ],
@@ -185,8 +189,6 @@ export default function Layout() {
   const me = useMe();
   const isAdmin = me.data?.tier === 'admin';
   const hasOrg = !!me.data?.org_id;
-  const myOrgs = useMyOrgs();
-  const isModerator = canModerate(me.data, myOrgs.data);
   const pendingCount = inbox.data?.handoffs.filter((h) => h.status === 'pending').length ?? 0;
   const incomingTransfers = useTransfers('incoming', 'pending');
   const transfersPendingCount = incomingTransfers.data?.transfers.length ?? 0;
@@ -209,10 +211,7 @@ export default function Layout() {
   }
 
   // Theme
-  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    const stored = (() => { try { return localStorage.getItem('sfs-theme'); } catch { return null; } })();
-    return stored === 'light' || stored === 'dark' ? stored : 'dark';
-  });
+  const [theme, setTheme] = useState<Theme>(() => getStoredTheme() ?? 'dark');
 
   const toggleTheme = () => {
     document.documentElement.classList.add('theme-switching');
@@ -251,7 +250,6 @@ export default function Layout() {
   function isItemVisible(item: NavItem): boolean {
     if (item.orgOnly && !hasOrg) return false;
     if (item.adminOnly && !isAdmin) return false;
-    if (item.moderatorOnly && !isModerator) return false;
     return true;
   }
 
@@ -476,7 +474,7 @@ export default function Layout() {
           />
           {/* Drawer panel */}
           <nav
-            aria-label="Primary"
+            aria-label="Primary (mobile)"
             className={`absolute top-0 left-0 bottom-0 w-64 flex flex-col transition-transform duration-200 ease-in-out bg-bg-secondary border-r border-border ${
               drawerOpen ? 'translate-x-0' : '-translate-x-full'
             }`}

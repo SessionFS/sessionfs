@@ -5,6 +5,7 @@ import { signup, ApiError } from '../api/client';
 import { loginSchema, signupSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
 import Wordmark from '../components/Wordmark';
 import { Card, Button, Input } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -76,7 +77,7 @@ export default function LoginPage() {
       await login(baseUrl, apiKey);
       navigate('/');
     } catch (err) {
-      setError(err instanceof ApiError ? `Auth failed (${err.status})` : String(err));
+      setError(err instanceof ApiError ? `Auth failed (${err.status})` : errorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -105,7 +106,7 @@ export default function LoginPage() {
       if (err instanceof ApiError && err.status === 409) {
         setError('Email already registered. Use Login instead.');
       } else {
-        setError(err instanceof ApiError ? `Signup failed (${err.status})` : String(err));
+        setError(err instanceof ApiError ? `Signup failed (${err.status})` : errorMessage(err));
       }
     } finally {
       setLoading(false);

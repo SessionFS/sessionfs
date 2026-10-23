@@ -11,6 +11,7 @@ sfs [OPTIONS] COMMAND [ARGS]...
 | Option | Description |
 |--------|-------------|
 | `--help` | Show help and exit |
+| `--version`, `-V` | Show the installed version (`sessionfs X.Y.Z (python …, platform arch)`) and exit. Also available as `sfs version`. |
 
 ---
 
@@ -1881,6 +1882,65 @@ Prints one line per registry (`ok`, `partial` when some packages were refused, `
 
 ---
 
+## `sfs admin audit-log`
+
+Show the platform admin audit log (`GET /api/v1/admin/audit-log`), newest first. Platform admin only. Each entry shows the action, its target, the admin who performed or recorded it, the reason, and the before/after state when one was captured. Entries with source `operator_record` were recorded by an operator with `sfs admin override record`: the server did not perform or verify those changes.
+
+```
+sfs admin audit-log [--target-type TYPE] [--target-id ID] [--action NAME] [--source api|operator_record] [--admin-id USER_ID] [--limit N] [--page N] [--json]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--admin-id` | string | — | Only entries performed or recorded by this admin user id |
+| `--target-type` | string | — | Only entries for this target type (`project`, `user`, `org`, `organization`, ...) |
+| `--target-id` | string | — | Only entries for this target id |
+| `--action` | string | — | Only entries with this action (`project_transfer_override`, `tier_change`, ...) |
+| `--source` | string | — | `api` (the server performed the action) or `operator_record` |
+| `--limit` | int | 50 | Entries per page (1-200) |
+| `--page` | int | 1 | Page number |
+| `--json` | flag | off | Print the raw JSON response, including the full before/after state |
+
+---
+
+## `sfs admin override project-transfer`
+
+Move a project into an organization without the owner's consent (platform admin only). Calls `POST /api/v1/admin/projects/{project_id}/force-transfer`. The server takes the same project and org locks as a normal transfer, refuses a merged project (`409 project_merged`) or a project already in that org (`409 already_in_org`), refuses when open tickets, agent runs or handoffs use org personas the destination lacks (`409 personas_stranded`, unless `--force`), and cancels any pending transfer for the project. The owner of an organization project must be a member of that organization, so when the current owner is not a member the server refuses with `409 owner_not_member` unless `--new-owner` names an active member, who becomes the owner (`409 new_owner_not_member` otherwise). The move, any owner change, an accepted transfer record, an audit entry with the reason and before/after state, and organization audit events are committed in one transaction. Prompts for confirmation unless `--yes`.
+
+```
+sfs admin override project-transfer PROJECT_ID --to-org ORG_ID --reason "..." [--new-owner USER_ID] [--expect-from ORG_ID|personal] [--force] [--yes]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--to-org` | string | required | Destination organization id |
+| `--reason`, `-r` | string | required | Why the override is needed (1-500 characters), stored in the audit log |
+| `--new-owner` | string | — | User id of an active member of the destination org to own the project. Required when the current owner is not a member; may also be used to reassign ownership with the move |
+| `--expect-from` | string | — | Refuse (`409 unexpected_source_scope`) unless the project is currently in this org id, or `personal`. Use it in scripts so a retried command cannot move a project that has moved since |
+| `--force` | flag | off | Move even when open work uses org personas the destination does not have |
+| `--yes`, `-y` | flag | off | Skip the confirmation prompt |
+
+---
+
+## `sfs admin override record`
+
+Record an action an operator performed outside the API, for example with raw SQL (platform admin only). Calls `POST /api/v1/admin/audit-log`. The entry is stored with source `operator_record`: the server records who logged it and when, but did not perform or verify the change.
+
+```
+sfs admin override record --action NAME --target-type TYPE --target-id ID --reason "..." [--before-file before.json] [--after-file after.json]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--action` | string | required | Action name: lowercase letters, digits and `_`, starting with a letter, at most 50 characters (for example `user_merge`) |
+| `--target-type` | string | required | Target type: same rules, at most 20 characters (`user`, `project`, `org`) |
+| `--target-id` | string | required | Target id, 1-64 characters |
+| `--reason`, `-r` | string | required | Why the action was taken (1-500 characters) |
+| `--before-file` | path | — | JSON object describing the state before the change (at most 64 KiB serialized) |
+| `--after-file` | path | — | JSON object describing the state after the change (at most 64 KiB serialized) |
+
+---
+
 ## `sfs admin service-keys`
 
 *v0.10.11+ — org-scoped service key management. Org admin + Team-or-above tier required.*
@@ -2820,7 +2880,7 @@ Risky capabilities require explicit flags bound to the exact package hash: `--al
 |---------|-------------|
 | `sfs skill validate SOURCE [--visibility personal\|org\|public] [--json]` | Validate a package directory or `.tar.gz` exactly as the server would. Prints each problem with its file and line (when known), why it fails, and how to fix it, then exits 1. On success it prints the content hash, risk flags, sizes, and the checks that only the server can make |
 | `sfs skill publish SOURCE [--org ORG_ID] [--visibility personal\|org\|public] [--namespace NS] [--collection NAME] [--yes] [--json]` | Validate locally, show a summary (name, version, license, risk flags, size, target), confirm, then upload. Prints the listing, package, and version IDs and the package URL |
-| `sfs skill publish SOURCE --trusted-publishing --namespace NS [--package NAME] [--visibility public] [--audience AUD]` | Publish from a GitHub Actions job without an API key: reads the server's OIDC audience, requests the job's OIDC token, exchanges it for a single-use publish token, and uploads. See [Trusted publishing](#trusted-publishing-from-github-actions) |
+| `sfs skill publish SOURCE --trusted-publishing --namespace NS [--package NAME] [--visibility public] [--audience AUD] [--ci-provider github\|gitlab] [--id-token-env VAR]` | Publish from a GitHub Actions or GitLab CI job without an API key: reads the server's OIDC audience, gets the job's OIDC token (GitHub: requested for that audience; GitLab: read from `$SFS_ID_TOKEN` or `--id-token-env`, declared with `id_tokens:`), exchanges it for a single-use publish token, and uploads. The provider defaults to `gitlab` when `GITLAB_CI=true`, else `github`. See [Trusted publishing](#trusted-publishing-from-github-actions) and [GitLab CI](#trusted-publishing-from-gitlab-ci) |
 
 How it works:
 
@@ -2864,6 +2924,7 @@ A publisher owns a globally unique marketplace namespace. Verification proves wh
 | `sfs skill publisher verify PUBLISHER_ID --github-org INSTALLATION_ID` / `--github-user INSTALLATION_ID` | Verify a GitHub organization or account through one of **your own** SessionFS GitHub App installations. The installation must be linked to your account through the verified GitHub sign-in flow; an installation linked only by its id is refused with `409 installation_claim_unverified`. The badge is bound to GitHub's numeric account id, so a renamed or re-registered login does not inherit it |
 | `sfs skill publisher check PUBLISHER_ID VERIFICATION_ID` | Re-check a verification now |
 | `sfs skill publisher trust PUBLISHER_ID --repo OWNER/REPO --workflow FILE [--environment ENV] [--ref-pattern REF] [--package NAME] [--reusable-workflow OWNER/REPO/.github/workflows/FILE] [--allow-workflow-run]` | Allow a GitHub Actions workflow to publish for this publisher (see below) |
+| `sfs skill publisher trust PUBLISHER_ID --gitlab-project ID [--gitlab-host ORIGIN] [--gitlab-project-path GROUP/PROJECT] [--gitlab-namespace-id ID] [--environment ENV [--require-protected-environment]] [--ref-pattern REF] [--package NAME]` | Allow a GitLab CI project to publish for this publisher (see [Trusted publishing from GitLab CI](#trusted-publishing-from-gitlab-ci)). Mutually exclusive with the GitHub options. `--gitlab-host` defaults to `https://gitlab.com` and must be enabled on the server |
 | `sfs skill publisher untrust PUBLISHER_ID TRUSTED_ID` | Remove a trusted publisher. Publish tokens already issued under it stop working |
 | `sfs skill publisher stats PUBLISHER_ID [--days 7\|30\|90] [--json]` | Publisher analytics (`GET /api/v1/publishers/{id}/analytics`): installs by tool, version and day, active installs, uninstall rate, translation failures, update adoption, works-in regressions, scan findings and open reports. Counts under 10 show as `<10`; when any underlying count in the window is under 10, the other counts are rounded down to a multiple of 10 (`40+`), and rates need at least 10 on both sides; the organizations installs come from are never shown. Personal publishers need Starter or above, org publishers the Team plan |
 | `sfs skill publisher package PUBLISHER_ID PACKAGE_ID [--category SLUG ...] [--clear-categories] [--deprecate\|--undeprecate] [--message TEXT] [--successor PACKAGE_ID] [--readme-path PATH] [--json]` | Set a package's categories (up to 3, replaces the set), deprecation (the successor must be a package of the same publisher) and README path inside the package (`PATCH /api/v1/publishers/{id}/packages/{package_id}`) |
@@ -2885,6 +2946,40 @@ Trusted publishing lets a GitHub Actions workflow publish without a SessionFS AP
 4. The upload (`POST /api/v1/marketplace/trusted-publishing/publish`) records where the version was **published from**: repository, workflow, event, ref, environment, run and the run's commit. The listing shows it under "Published from". This is publication provenance, not build provenance: nothing yet binds the archive to that commit, and your declared `source_commit` is left as you set it.
 
 The audience defaults to the server's `SFS_PUBLIC_API_URL`; `SFS_TRUSTED_PUBLISHING_AUDIENCE` overrides it. Outside development a server without either has trusted publishing disabled, and one configured with a generic audience such as `sessionfs` refuses to start, so a token minted for one deployment cannot be replayed against another.
+
+### Trusted publishing from GitLab CI
+
+GitLab CI jobs publish the same way, with a GitLab CI ID token instead of a stored API key. GitLab issues the token through the `id_tokens:` keyword; the deprecated `CI_JOB_JWT` / `CI_JOB_JWT_V2` variables (removed in GitLab 17.0) are not supported.
+
+1. Claim a publisher and run `sfs skill publisher trust PUBLISHER_ID --gitlab-project ID` with the numeric project id (Settings > General), ideally a `--ref-pattern` such as `refs/tags/v*` and an `--environment`. The trust is bound to that project id on one GitLab instance (`--gitlab-host`, default `https://gitlab.com`), so a renamed, transferred-and-recreated or forked project does not inherit it. `--gitlab-namespace-id` also pins the owning group, so moving the project to another group stops publishing.
+
+   On GitLab, `--environment` alone is a weak pin: a job declares its own `environment:`, so anyone who can run a job on a protected ref can name it. It only adds security when the environment is **protected** in GitLab (Settings > CI/CD > Protected environments, GitLab Premium), which limits who may deploy to it. Add `--require-protected-environment` to make SessionFS refuse the token unless GitLab reports the environment as protected (`environment_protected` is `"true"`). Whether the environment was protected is recorded in the version's provenance either way.
+2. Protect the refs you publish from (Settings > Repository > Protected tags / branches). SessionFS only accepts tokens from jobs on a **protected** ref (`ref_protected` is `"true"`); this is always required.
+3. In `.gitlab-ci.yml`, declare an ID token whose `aud` is the server's audience (the `audience` from `GET /api/v1/marketplace/trusted-publishing/config`) and run `sfs skill publish . --trusted-publishing --namespace NS`:
+
+   ```yaml
+   publish-skill:
+     environment: production
+     id_tokens:
+       SFS_ID_TOKEN:
+         aud: https://api.sessionfs.dev
+     rules:
+       - if: $CI_COMMIT_TAG =~ /^v/ && $CI_PIPELINE_SOURCE == "push"
+     script:
+       # Exact, hash-pinned release; the ID token is kept out of pip's environment.
+       - env -u SFS_ID_TOKEN python -m pip install --require-hashes --only-binary=:all: -r requirements-publish.txt
+       - sfs skill publish . --trusted-publishing --namespace acme
+   ```
+
+   The ID token is a live credential from the first line of `script:`: declare `id_tokens:` only on the publish job, install an exact release (`sessionfs==<version you tested>`) with `--require-hashes`, and keep other tooling out of that job. A complete example is in [`docs/integrations/gitlab-ci-skill-publish.yml`](integrations/gitlab-ci-skill-publish.yml). The CLI detects GitLab from `GITLAB_CI=true` (or pass `--ci-provider gitlab`) and reads the token from `$SFS_ID_TOKEN` (`--id-token-env` for another name); it checks the token's audience locally first and explains a mismatch. It also refuses an audience whose origin differs from the API URL's unless you pass `--audience` explicitly (the same check applies on GitHub). The exchange request carries `"provider": "gitlab"`.
+4. The server accepts only GitLab instances the operator lists in `SFS_GITLAB_OIDC_ISSUERS` (default `https://gitlab.com`); a token or trust naming any other instance is refused before anything is fetched. The entry must equal the token's `iss` exactly; GitLab takes `iss` from its `external_url`, so configure that with a lowercase host, no `:443` and no trailing slash, or list the exact value. A token from an allowed instance whose `iss` is written differently is refused with a hint naming the expected form. Removing an instance from the list also stops publish tokens already issued under its trusts. It verifies the token's signature against the instance's JWKS (`<instance>/oauth/discovery/keys`, the `jwks_uri` GitLab publishes; RS256 and other asymmetric algorithms only) and checks:
+   - the issuer (exact), the audience, the token's age (GitLab mints the token when the job starts; SessionFS accepts it for 60 minutes after that, so publish from its own short job);
+   - the numeric project id (and namespace id when pinned);
+   - a protected ref, matched against the full ref (`ref_path`, e.g. `refs/tags/v1.2.0`) with the trust's ref pattern;
+   - the environment, exactly (GitLab environment names are case-sensitive), and that it is protected when the trust sets `--require-protected-environment`;
+   - the pipeline source: `push`, `web` (Run pipeline in the UI) or `api` only. Merge request (`merge_request_event`), external pull request, child / downstream (`parent_pipeline`, `pipeline`), trigger-token, scheduled and any other pipelines never publish, whatever their ref.
+   It returns the same 15-minute, single-use publish token as GitHub. Each ID token (`iss`, `jti`) can be exchanged once.
+5. The listing shows where the version was **published from**: the GitLab project, ref, pipeline source, job URL and commit. GitLab provenance counts as trusted-publishing provenance in search (`--attested`), but an org skills policy `source` entry (a GitHub repository) never matches a GitLab publish.
 
 Build provenance (a Sigstore / PEP 740 attestation that binds the archive digest, verified against a transparency log) is not implemented yet.
 

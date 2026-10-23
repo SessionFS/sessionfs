@@ -538,7 +538,7 @@ Migrations run automatically on `helm install` and `helm upgrade`. On upgrades t
 
 If you deploy SessionFS with ArgoCD (through its Helm source, or by rendering the chart with `helm template`), the chart orders the rollout with ArgoCD sync waves: the database and its credentials come up first, then the migration job runs, then (in local license mode) the license is seeded, and only after those succeed do the API and MCP deployments roll to the new version.
 
-Nothing to configure: the annotations ship in the chart. As a safety net, API pods only report ready (`/health/ready`) once the database schema has been migrated for their version, so they never take traffic against an old schema, and the API logs a clear error at startup if the schema does not match.
+Nothing to configure: the annotations ship in the chart. As a safety net, API pods only report ready (`/health/ready`) once the database schema has been migrated for their version, so they never take traffic against an old schema, and the API logs a clear error at startup if the schema does not match. `/health/ready` returns `200 {"status":"ready","schema":"current"}` (or `"ahead"` after an image rollback) and `503 {"status":"not_ready","schema":"behind"}` (or `"missing"`, or `"unknown"` while a new pod cannot reach the database). It is served on the API pod and, through the chart's ingress, at `https://<your-host>/health/ready`; `/health` on the ingress host is the dashboard's own liveness check.
 
 If you ever run `alembic upgrade head` by hand, restart the API deployment afterwards (`kubectl rollout restart deployment/sessionfs-api`) so its database connections pick up the new schema.
 
@@ -557,6 +557,38 @@ kubectl logs job/sessionfs-migrate-<revision> -n sessionfs
 ```
 
 If the schema does not match the running code (for example, a migration was skipped), the API logs a clear error at startup naming both revisions and the fix. Check the API logs if authenticated routes start failing with "column ... does not exist".
+
+## Auditing Operator Overrides
+
+Operators sometimes need to act without the normal consent flows: move a user's personal project into the organization while the owner is unavailable, merge a duplicate account, or change a tier. Every platform-admin action the API performs writes a row to the `admin_actions` table with the admin, the time, an optional reason and, for overrides, the state before and after the change. Use the paved paths below so the audit trail answers "who changed this, when, and why" without reconstructing terminal history.
+
+**Move a project into an organization** (the owner does not need to initiate or accept):
+
+```bash
+sfs admin override project-transfer proj_abc123 --to-org org_xyz --expect-from personal \
+  --reason "Owner on leave; care team needs access (ticket OPS-412)"
+```
+
+The move, an accepted transfer record, the audit entry and organization audit events commit in one transaction. Merged projects are refused, open work assigned to org personas the destination lacks is refused unless `--force`, and any pending transfer for the project is cancelled. The owner of an organization project must be a member of that organization: if the current owner is not (for example, they have left), add `--new-owner <user-id>` with an active member, and ownership changes in the same transaction. `--expect-from` makes a retried command safe: it refuses if the project is no longer where you expected it.
+
+**Record a change made by hand.** When you have to change data directly in the database, record it afterwards:
+
+```bash
+sfs admin override record --action user_merge --target-type user --target-id <kept-user-id> \
+  --reason "Duplicate signup with a typo in the email domain; 62 rows reassigned" \
+  --before-file before.json --after-file after.json
+```
+
+Recorded entries are stored with source `operator_record`: the server attests who recorded them and when, not that the described change happened.
+
+**Review the log:**
+
+```bash
+sfs admin audit-log --target-type project --target-id proj_abc123
+sfs admin audit-log --source operator_record --json
+```
+
+`PUT /api/v1/admin/users/{id}/tier`, `PUT /api/v1/admin/orgs/{id}/tier` and `POST /api/v1/admin/orgs/{id}/force-transfer-owner` also accept an optional `reason` in their request body and record the before and after values. The audit log does not protect against someone with direct database access; restrict who holds database credentials, and use database-level logging if you need that guarantee.
 
 ## Rate Limiting
 
@@ -623,7 +655,7 @@ SessionFS supports GitLab merge request comments (cloud and self-hosted instance
    - URL: `https://your-sessionfs-domain/webhooks/gitlab`
    - Secret token: set in your Helm values or `SFS_GITLAB_WEBHOOK_SECRET` env var
    - Events: "Merge request events"
-3. Configure in the dashboard Settings page or via Helm:
+3. Save your access token and instance URL with `PUT /api/v1/settings/gitlab`, and set the webhook secret via Helm:
 
 ```yaml
 api:

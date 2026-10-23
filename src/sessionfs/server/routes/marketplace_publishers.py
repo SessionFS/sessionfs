@@ -18,8 +18,10 @@ change):
 Trusted publishing (no API key):
 
 - ``POST /api/v1/marketplace/trusted-publishing/token`` exchanges a GitHub
-  Actions OIDC token for a 15-minute, single-use, package-scoped publish
-  token (Cloud Armor sensitive tier + app-layer limits).
+  Actions OIDC token (``provider`` "github", the default) or a GitLab CI ID
+  token (``provider`` "gitlab", from an allowlisted GitLab instance) for a
+  15-minute, single-use, package-scoped publish token (Cloud Armor sensitive
+  tier + app-layer limits).
 - ``POST /api/v1/marketplace/trusted-publishing/publish`` uploads with that
   token; the version records the verified build provenance.
 
@@ -73,6 +75,7 @@ from sessionfs.server.db.models import (
 from sessionfs.server.routes import marketplace as mp
 from sessionfs.server.services import domain_verification
 from sessionfs.server.services import github_oidc
+from sessionfs.server.services import gitlab_oidc
 from sessionfs.server.services import publishers as svc
 from sessionfs.server.services.oidc_token import TokenValidationError
 from sessionfs.server.tier_gate import get_effective_tier
@@ -108,8 +111,18 @@ class VerificationCreate(BaseModel):
 
 
 class TrustedPublisherCreate(BaseModel):
-    repository: str = Field(..., max_length=200)
-    workflow: str = Field(..., max_length=255)
+    provider: Literal["github", "gitlab"] = "github"
+    # GitHub: owner/repo (required). GitLab: optional display path of the
+    # project (group/project); matching uses gitlab_project_id.
+    repository: str | None = Field(None, max_length=200)
+    # GitHub only (required there).
+    workflow: str | None = Field(None, max_length=255)
+    # GitLab only.
+    gitlab_project_id: int | None = Field(None, ge=1, le=2**63 - 1)
+    gitlab_host: str | None = Field(None, max_length=255)
+    gitlab_namespace_id: int | None = Field(None, ge=1, le=2**63 - 1)
+    # GitLab only, needs environment: GitLab must report it as protected.
+    require_protected_environment: bool = False
     environment: str | None = Field(None, max_length=255)
     ref_pattern: str | None = Field(None, max_length=255)
     package_name: str | None = Field(None, max_length=100)
@@ -121,6 +134,8 @@ class TrustedPublisherCreate(BaseModel):
 
 class TokenExchange(BaseModel):
     token: str = Field(..., min_length=1, max_length=16384)
+    # Which CI issued the token; existing GitHub clients omit it.
+    provider: Literal["github", "gitlab"] = "github"
     namespace: str | None = Field(None, max_length=64)
     package: str | None = Field(None, max_length=100)
 
@@ -356,6 +371,10 @@ def _trusted_response(row: SkillTrustedPublisher) -> dict:
         "workflow": row.workflow_path,
         "reusable_workflow": row.reusable_workflow,
         "allow_workflow_run": row.allow_workflow_run,
+        "gitlab_host": row.issuer,
+        "gitlab_project_id": row.gitlab_project_id,
+        "gitlab_namespace_id": row.gitlab_namespace_id,
+        "require_protected_environment": bool(row.require_protected_environment),
         "environment": row.environment,
         "ref_pattern": row.ref_pattern,
         "package_name": row.package_name,
@@ -907,54 +926,34 @@ async def list_trusted_publishers(
     return {"items": [_trusted_response(row) for row in rows], "count": len(rows)}
 
 
-@router.post("/publishers/{publisher_id}/trusted-publishers", status_code=201)
-async def add_trusted_publisher(
-    publisher_id: str,
-    body: TrustedPublisherCreate,
-    auth: AuthContext = Depends(require_scope("marketplace:write")),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    # Authorize, validate and resolve the repository on GitHub with NO lock
-    # held; then take the publisher lock and fence the caller's membership
-    # and re-check everything before inserting.
-    publisher, _, _ = await _manage(db, auth, publisher_id, write=False)
-    if publisher.owner_type == "system":
-        raise HTTPException(409, detail={"code": "system_publisher", "message": "The platform publisher does not use trusted publishing."})
-    repository, workflow, environment, ref_pattern = svc.validate_trusted_publisher_input(
-        repository=body.repository,
-        workflow=body.workflow,
-        environment=body.environment,
-        ref_pattern=body.ref_pattern,
+def _invalid_trust_fields(provider: str, fields: list[str]) -> HTTPException:
+    return HTTPException(
+        422,
+        detail={
+            "code": "invalid_trusted_publisher_fields",
+            "message": f"Not valid for a {provider} trusted publisher: {', '.join(fields)}",
+        },
     )
-    reusable_workflow = svc.validate_reusable_workflow(body.reusable_workflow)
-    package_name = (body.package_name or "").strip() or None
+
+
+def _validate_package_name(value: str | None) -> str | None:
+    package_name = (value or "").strip() or None
     if package_name is not None and (
         set(package_name) - _PACKAGE_NAME_CHARS
         or package_name[0] in ".-"
         or package_name[-1] in ".-"
     ):
         raise HTTPException(422, detail={"code": "invalid_package_name", "message": "package_name must be a lowercase package name"})
-    if body.repository_id is not None and body.repository_owner_id is not None:
-        repo_id, owner_id, display = body.repository_id, body.repository_owner_id, repository
-    else:
-        owner, name = repository.split("/", 1)
-        try:
-            resolved = await github_app.resolve_repository(db, auth.user.id, owner, name)
-        except Exception:
-            resolved = None
-        if resolved is None:
-            raise HTTPException(
-                422,
-                detail={
-                    "code": "repository_not_found",
-                    "message": "Could not resolve the repository on GitHub. Install the SessionFS "
-                    "GitHub App on it, or pass repository_id and repository_owner_id.",
-                },
-            )
-        repo_id, owner_id, display = int(resolved["id"]), int(resolved["owner_id"]), str(resolved["full_name"])
-    # Fenced section: publisher lock, then the caller's membership FOR SHARE
-    # (a concurrent removal / demotion either committed first and is seen,
-    # or waits for this insert), then status, tier and trust count again.
+    return package_name
+
+
+async def _fenced_trust_owner(
+    db: AsyncSession, auth: AuthContext, publisher_id: str
+) -> tuple[SkillPublisher, str | None, Organization | None]:
+    """Fenced section shared by both providers: publisher lock, then the
+    caller's membership FOR SHARE (a concurrent removal / demotion either
+    committed first and is seen, or waits for this insert), then status,
+    tier and trust count again."""
     publisher, role, org = await _manage(db, auth, publisher_id)
     # No delegation (platform administrators included): a trust publishes AS
     # its creator, so only the owning user (personal) or a fenced owner /
@@ -978,6 +977,147 @@ async def add_trusted_publisher(
     ).scalars().all()
     if len(active) >= MAX_TRUSTED_PUBLISHERS:
         raise HTTPException(409, detail={"code": "trusted_publisher_limit", "message": f"At most {MAX_TRUSTED_PUBLISHERS} trusted publishers per publisher."})
+    return publisher, role, org
+
+
+async def _add_gitlab_trusted_publisher(
+    request: Request, publisher_id: str, body: TrustedPublisherCreate, auth: AuthContext, db: AsyncSession
+) -> dict:
+    github_only = [
+        name
+        for name, value in (
+            ("workflow", body.workflow),
+            ("reusable_workflow", body.reusable_workflow),
+            ("repository_id", body.repository_id),
+            ("repository_owner_id", body.repository_owner_id),
+        )
+        if value is not None
+    ]
+    if body.allow_workflow_run:
+        github_only.append("allow_workflow_run")
+    if github_only:
+        raise _invalid_trust_fields("gitlab", github_only)
+    if body.gitlab_project_id is None:
+        raise HTTPException(
+            422,
+            detail={
+                "code": "gitlab_project_required",
+                "message": "gitlab_project_id (the numeric project id) is required",
+            },
+        )
+    # The host must be on the operator allowlist NOW; the exchange re-checks it.
+    issuer, project_path, environment, ref_pattern = svc.validate_gitlab_trust_input(
+        host=body.gitlab_host,
+        issuers=_trusted_publishing_settings(request).gitlab_issuers,
+        project_path=body.repository,
+        environment=body.environment,
+        ref_pattern=body.ref_pattern,
+    )
+    if body.require_protected_environment and environment is None:
+        raise HTTPException(
+            422,
+            detail={
+                "code": "environment_required",
+                "message": "require_protected_environment needs an environment",
+            },
+        )
+    package_name = _validate_package_name(body.package_name)
+    publisher, role, org = await _fenced_trust_owner(db, auth, publisher_id)
+    project_id = body.gitlab_project_id
+    row = SkillTrustedPublisher(
+        id=f"stp_{secrets.token_hex(12)}",
+        publisher_id=publisher.id,
+        package_name=package_name,
+        provider="gitlab",
+        issuer=issuer,
+        gitlab_project_id=project_id,
+        gitlab_namespace_id=body.gitlab_namespace_id,
+        require_protected_environment=body.require_protected_environment,
+        # Display only: the path the creator typed, else the numeric id.
+        repository=(project_path or f"project {project_id}")[:200],
+        allow_workflow_run=False,
+        environment=environment,
+        ref_pattern=ref_pattern,
+        created_by_user_id=auth.user.id,
+    )
+    db.add(row)
+    _org_audit(
+        db, org=org, auth=auth, role=role, event_type="skill_trusted_publisher_added",
+        target_type="skill_publisher", target_id=publisher.id,
+        after={"trusted_publisher_id": row.id, "provider": "gitlab", "gitlab_host": issuer,
+               "gitlab_project_id": project_id, "gitlab_namespace_id": body.gitlab_namespace_id,
+               "environment": environment,
+               "require_protected_environment": body.require_protected_environment,
+               "ref_pattern": ref_pattern, "package_name": package_name},
+    )
+    await db.commit()
+    return _trusted_response(row)
+
+
+@router.post("/publishers/{publisher_id}/trusted-publishers", status_code=201)
+async def add_trusted_publisher(
+    request: Request,
+    publisher_id: str,
+    body: TrustedPublisherCreate,
+    auth: AuthContext = Depends(require_scope("marketplace:write")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    # Authorize, validate and resolve the repository on GitHub with NO lock
+    # held; then take the publisher lock and fence the caller's membership
+    # and re-check everything before inserting.
+    publisher, _, _ = await _manage(db, auth, publisher_id, write=False)
+    if publisher.owner_type == "system":
+        raise HTTPException(409, detail={"code": "system_publisher", "message": "The platform publisher does not use trusted publishing."})
+    if body.provider == "gitlab":
+        return await _add_gitlab_trusted_publisher(request, publisher_id, body, auth, db)
+    gitlab_only = [
+        name
+        for name, value in (
+            ("gitlab_project_id", body.gitlab_project_id),
+            ("gitlab_host", body.gitlab_host),
+            ("gitlab_namespace_id", body.gitlab_namespace_id),
+        )
+        if value is not None
+    ]
+    if body.require_protected_environment:
+        gitlab_only.append("require_protected_environment")
+    if gitlab_only:
+        raise _invalid_trust_fields("github", gitlab_only)
+    if body.repository is None or body.workflow is None:
+        raise HTTPException(
+            422,
+            detail={
+                "code": "invalid_repository",
+                "message": "repository (owner/repo) and workflow are required",
+            },
+        )
+    repository, workflow, environment, ref_pattern = svc.validate_trusted_publisher_input(
+        repository=body.repository,
+        workflow=body.workflow,
+        environment=body.environment,
+        ref_pattern=body.ref_pattern,
+    )
+    reusable_workflow = svc.validate_reusable_workflow(body.reusable_workflow)
+    package_name = _validate_package_name(body.package_name)
+    if body.repository_id is not None and body.repository_owner_id is not None:
+        repo_id, owner_id, display = body.repository_id, body.repository_owner_id, repository
+    else:
+        owner, name = repository.split("/", 1)
+        try:
+            resolved = await github_app.resolve_repository(db, auth.user.id, owner, name)
+        except Exception:
+            resolved = None
+        if resolved is None:
+            raise HTTPException(
+                422,
+                detail={
+                    "code": "repository_not_found",
+                    "message": "Could not resolve the repository on GitHub. Install the SessionFS "
+                    "GitHub App on it, or pass repository_id and repository_owner_id.",
+                },
+            )
+        repo_id, owner_id, display = int(resolved["id"]), int(resolved["owner_id"]), str(resolved["full_name"])
+    publisher, role, org = await _fenced_trust_owner(db, auth, publisher_id)
     row = SkillTrustedPublisher(
         id=f"stp_{secrets.token_hex(12)}",
         publisher_id=publisher.id,
@@ -1052,12 +1192,20 @@ def _trusted_publishing_settings(request: Request) -> github_oidc.TrustedPublish
 async def trusted_publishing_config(request: Request) -> dict:
     """Public: the OIDC audience and issuer this server accepts, so CI (the
     CLI, the example workflow) requests a token for exactly this deployment."""
-    audience = _trusted_publishing_settings(request).audience
+    settings = _trusted_publishing_settings(request)
+    audience = settings.audience
     return {
         "enabled": audience is not None,
         "audience": audience,
         "issuer": github_oidc.GITHUB_ACTIONS_ISSUER,
         "allowed_events": sorted(svc.PUBLISH_EVENTS),
+        # GitLab CI: the same audience goes in .gitlab-ci.yml `id_tokens: aud:`.
+        "gitlab": {
+            "enabled": audience is not None and bool(settings.gitlab_issuers),
+            "issuers": list(settings.gitlab_issuers),
+            "allowed_pipeline_sources": sorted(svc.GITLAB_PUBLISH_SOURCES),
+            "requires_protected_ref": True,
+        },
     }
 
 
@@ -1067,16 +1215,21 @@ async def exchange_token(
     body: TokenExchange,
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Exchange a GitHub Actions OIDC token (``aud`` = this server's trusted
-    publishing audience) for a short-lived publish token. Unauthenticated
-    except for the OIDC token itself; every failure is a 401/403 with a
-    stable code and no detail about which binding failed."""
+    """Exchange a GitHub Actions OIDC token or a GitLab CI ID token (``aud``
+    = this server's trusted publishing audience) for a short-lived publish
+    token. Unauthenticated except for the OIDC token itself; every failure
+    is a 401/403 with a stable code and no detail about which binding
+    failed."""
     if not _exchange_ip_limiter.is_allowed(_client_ip(request)):
         raise HTTPException(429, detail={"code": "rate_limited", "message": "Too many token exchanges; retry shortly."})
+    settings = _trusted_publishing_settings(request)
     try:
-        claims = await github_oidc.verify_github_actions_token(
-            body.token, _trusted_publishing_settings(request).audience
-        )
+        if body.provider == "gitlab":
+            claims = await gitlab_oidc.verify_gitlab_ci_token(
+                body.token, settings.audience, settings.gitlab_issuers
+            )
+        else:
+            claims = await github_oidc.verify_github_actions_token(body.token, settings.audience)
     except TokenValidationError as exc:
         if exc.reason == "not_configured":
             raise HTTPException(
@@ -1086,17 +1239,32 @@ async def exchange_token(
                     "message": "Trusted publishing is not configured on this server.",
                 },
             ) from None
-        raise HTTPException(
-            401,
-            detail={"code": "invalid_oidc_token", "message": "The OIDC token was rejected.", "reason": exc.reason},
-        ) from None
-    if not _exchange_repo_limiter.is_allowed(f"repo:{claims['repository_id']}"):
+        rejected: dict[str, Any] = {
+            "code": "invalid_oidc_token",
+            "message": "The OIDC token was rejected.",
+            "reason": exc.reason,
+        }
+        hint = getattr(exc, "public_hint", None)
+        if isinstance(hint, str):
+            rejected["hint"] = hint
+        raise HTTPException(401, detail=rejected) from None
+    limiter_key = (
+        f"gitlab:{claims['iss']}:{claims['project_id']}"
+        if body.provider == "gitlab"
+        else f"repo:{claims['repository_id']}"
+    )
+    if not _exchange_repo_limiter.is_allowed(limiter_key):
         raise HTTPException(429, detail={"code": "rate_limited", "message": "Too many token exchanges; retry shortly."})
     namespace = (body.namespace or "").strip().lower() or None
     package = (body.package or "").strip().lower() or None
-    raw, token, trusted, publisher = await svc.exchange_oidc_claims(
-        db, claims, requested_package=package, namespace=namespace
-    )
+    if body.provider == "gitlab":
+        raw, token, trusted, publisher = await svc.exchange_gitlab_claims(
+            db, claims, issuers=settings.gitlab_issuers, requested_package=package, namespace=namespace
+        )
+    else:
+        raw, token, trusted, publisher = await svc.exchange_oidc_claims(
+            db, claims, requested_package=package, namespace=namespace
+        )
     await db.commit()
     return {
         "token": raw,
@@ -1200,6 +1368,9 @@ async def trusted_publish(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     token, trusted, publisher = await svc.load_publish_token(db, _bearer(request))
+    gitlab_issuers = _trusted_publishing_settings(request).gitlab_issuers
+    if not _trust_issuer_allowed(trusted, gitlab_issuers):
+        raise svc._invalid_publish_token()
     default_visibility = "user" if publisher.owner_type == "user" else "org"
     target = visibility or default_visibility
     if target not in (default_visibility, "public"):
@@ -1229,7 +1400,7 @@ async def trusted_publish(
             .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()  # type: ignore[assignment]
-    if not _trust_still_valid(publisher, trusted, generation):
+    if not _trust_still_valid(publisher, trusted, generation, gitlab_issuers):
         await db.rollback()
         raise svc._invalid_publish_token()
     auth = TrustedPublisherAuth(
@@ -1266,17 +1437,31 @@ async def trusted_publish(
             token_generation=generation, publisher_owner_type=publisher.owner_type,
             publisher_org_id=publisher.org_id, publisher_user_id=publisher.user_id,
             trusted_creator_id=trusted.created_by_user_id, attributed_user_id=user.id,
+            gitlab_issuers=gitlab_issuers,
         ),
     )
     return result
 
 
+def _trust_issuer_allowed(trusted: SkillTrustedPublisher | None, gitlab_issuers: tuple[str, ...]) -> bool:
+    """A GitLab trust's instance must STILL be on the operator allowlist: an
+    instance removed from SFS_GITLAB_OIDC_ISSUERS stops publish tokens that
+    were already minted under it, not only new exchanges."""
+    if trusted is None or trusted.provider != "gitlab":
+        return True
+    return trusted.issuer is not None and trusted.issuer in gitlab_issuers
+
+
 def _trust_still_valid(
-    publisher: SkillPublisher | None, trusted: SkillTrustedPublisher | None, generation: int
+    publisher: SkillPublisher | None,
+    trusted: SkillTrustedPublisher | None,
+    generation: int,
+    gitlab_issuers: tuple[str, ...] = (),
 ) -> bool:
-    """The token's publisher is active, its trust is not revoked, and the
-    publisher's authorization generation is still the one the token was
-    minted at (trust removal and suspension move it on)."""
+    """The token's publisher is active, its trust is not revoked (and, for
+    GitLab, its instance is still allowlisted), and the publisher's
+    authorization generation is still the one the token was minted at
+    (trust removal and suspension move it on)."""
     return (
         publisher is not None
         and trusted is not None
@@ -1284,6 +1469,7 @@ def _trust_still_valid(
         and trusted.revoked_at is None
         and trusted.publisher_id == publisher.id
         and (publisher.auth_generation or 0) == generation
+        and _trust_issuer_allowed(trusted, gitlab_issuers)
     )
 
 
@@ -1298,6 +1484,7 @@ async def _reauthorize_trusted(
     publisher_user_id: str | None,
     trusted_creator_id: str | None,
     attributed_user_id: str,
+    gitlab_issuers: tuple[str, ...] = (),
 ) -> None:
     """Attribution + paid-feature fence held by the FINAL publish transaction
     (re-run after any collision-recovery rollback).
@@ -1329,7 +1516,7 @@ async def _reauthorize_trusted(
             .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
-    if not _trust_still_valid(current_publisher, current_trust, token_generation):
+    if not _trust_still_valid(current_publisher, current_trust, token_generation, gitlab_issuers):
         raise svc._invalid_publish_token()
     user_id = publisher_user_id if publisher_owner_type == "user" else trusted_creator_id
     if not user_id or user_id != attributed_user_id:

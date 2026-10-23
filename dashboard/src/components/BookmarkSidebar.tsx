@@ -232,7 +232,7 @@ export default function BookmarkSidebar({
                 </button>
                 <button
                   onClick={() => handleDelete(f.id)}
-                  className="w-full text-left px-3 py-1 text-sm text-red-400 hover:bg-bg-tertiary"
+                  className="w-full text-left px-3 py-1 text-sm text-danger hover:bg-bg-tertiary"
                 >
                   Delete
                 </button>

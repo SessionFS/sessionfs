@@ -6,6 +6,7 @@ import CopyButton from '../components/CopyButton';
 import EmptyState from '../components/EmptyState';
 import { Button, Card, Input, Select } from '../components/ui';
 import { useMe } from '../hooks/useMe';
+import MarketplaceNav from './MarketplaceNav';
 import {
   useAddTrustedPublisher,
   useCheckVerification,
@@ -20,6 +21,7 @@ import { useToast } from '../hooks/useToast';
 import { useMyOrgs } from '../transfers/useTransfers';
 import { adminOrgs } from './moderationState';
 import { workflowSnippet } from './publisherWorkflow';
+import { errorMessage } from '../utils/errorMessage';
 
 const NAMESPACE_RE = /^[a-z0-9](?:[a-z0-9-]{1,37})[a-z0-9]$/;
 
@@ -53,7 +55,7 @@ function ClaimForm() {
       setNamespace('');
       setDisplayName('');
     } catch (error) {
-      addToast('error', `Claim failed: ${String(error)}`);
+      addToast('error', `Claim failed: ${errorMessage(error)}`);
     }
   }
 
@@ -95,7 +97,7 @@ function VerificationRow({ publisher, row }: { publisher: PublisherDetail; row: 
       const result = await mutation.mutateAsync({ publisherId: publisher.id, verificationId: row.id });
       addToast(result.status === 'verified' ? 'success' : 'info', `${row.subject_display}: ${result.status}`);
     } catch (error) {
-      addToast('error', String(error));
+      addToast('error', `${kind === 'check' ? 'Check' : 'Revoke'} failed: ${errorMessage(error)}`);
     }
   }
   return (
@@ -156,7 +158,7 @@ function AddVerification({ publisher }: { publisher: PublisherDetail }) {
       addToast(row.status === 'verified' ? 'success' : 'info', row.status === 'verified' ? `Verified ${row.subject_display}` : 'Add the TXT record shown, then check.');
       setValue('');
     } catch (error) {
-      addToast('error', `Verification failed: ${String(error)}`);
+      addToast('error', `Verification failed: ${errorMessage(error)}`);
     }
   }
 
@@ -211,7 +213,7 @@ function TrustedPublishers({ publisher }: { publisher: PublisherDetail }) {
       addToast('success', `Trusted ${repository.trim()}`);
       setRepository('');
     } catch (error) {
-      addToast('error', `Could not add trusted publisher: ${String(error)}`);
+      addToast('error', `Add trusted publisher failed: ${errorMessage(error)}`);
     }
   }
 
@@ -220,7 +222,7 @@ function TrustedPublishers({ publisher }: { publisher: PublisherDetail }) {
       await remove.mutateAsync({ publisherId: publisher.id, trustedId });
       addToast('success', 'Trusted publisher removed.');
     } catch (error) {
-      addToast('error', String(error));
+      addToast('error', `Remove failed: ${errorMessage(error)}`);
     }
   }
 
@@ -237,9 +239,12 @@ function TrustedPublishers({ publisher }: { publisher: PublisherDetail }) {
           {rows.map((row) => (
             <li key={row.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-bg-sunken p-3 text-xs">
               <span className="font-mono text-text-primary">
-                {row.repository} (#{row.repository_id}) · {row.workflow}
+                {row.provider === 'gitlab'
+                  ? `GitLab ${row.gitlab_host ?? ''} · ${row.repository} (project #${row.gitlab_project_id})`
+                  : `${row.repository} (#${row.repository_id}) · ${row.workflow}`}
                 {row.reusable_workflow ? ` → ${row.reusable_workflow}` : ''}
                 {row.environment ? ` · env ${row.environment}` : ''}
+                {row.require_protected_environment ? ' (must be protected)' : ''}
                 {row.ref_pattern ? ` · ${row.ref_pattern}` : ''}
                 {row.package_name ? ` · ${row.package_name}` : ''}
               </span>
@@ -342,10 +347,10 @@ export default function PublishersPage() {
   const publishers = useMyPublishers();
   const items = publishers.data?.items || [];
   return (
-    <main className="mx-auto w-full max-w-5xl space-y-5 px-4 py-7 sm:px-6">
+    <div className="mx-auto w-full max-w-5xl space-y-5 px-4 py-7 sm:px-6">
+      <MarketplaceNav />
       <header>
-        <Link to="/marketplace" className="text-xs text-text-tertiary hover:text-text-primary">Marketplace</Link>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-text-primary">Publishers</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-text-primary">Publishers</h1>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-text-secondary">
           Claim a namespace, prove who you are with a DNS record or a GitHub account, and let a GitHub Actions
           workflow publish without a stored API key. Verified publishers can be invited to publish public packages;
@@ -354,11 +359,11 @@ export default function PublishersPage() {
       </header>
       <ClaimForm />
       {publishers.isLoading && <p className="text-sm text-text-tertiary">Loading publishers…</p>}
-      {publishers.error && <p role="alert" className="text-sm text-danger">Could not load publishers: {String(publishers.error)}</p>}
+      {publishers.error && <p role="alert" className="text-sm text-danger">Could not load publishers: {errorMessage(publishers.error)}</p>}
       {!publishers.isLoading && !publishers.error && items.length === 0 && (
         <EmptyState title="No publishers yet" description="Claim a namespace above to start." />
       )}
       {items.map((publisher) => <PublisherCard key={publisher.id} publisher={publisher} />)}
-    </main>
+    </div>
   );
 }

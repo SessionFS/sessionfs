@@ -24,8 +24,9 @@ import {
   useUpdatePersona,
 } from '../hooks/usePersonas';
 import RelativeDate from '../components/RelativeDate';
-import { ApiError, type Persona } from '../api/client';
+import { type Persona } from '../api/client';
 import { Button, Dialog, DialogHeader, DialogFooter, Input, Table, Textarea } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 interface PersonasTabProps {
   projectId: string;
@@ -51,7 +52,7 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
   const [deleting, setDeleting] = useState<Persona | null>(null);
 
   if (isLoading) return <p>Loading personas…</p>;
-  if (error) return <p role="alert">Failed to load personas: {String(error)}</p>;
+  if (error) return <p role="alert">Failed to load personas: {errorMessage(error)}</p>;
   if (!data) return null;
 
   return (
@@ -187,9 +188,7 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
               }
               setEdit(null);
             } catch (exc) {
-              const msg =
-                exc instanceof ApiError ? `${exc.status}: ${exc.message}` : String(exc);
-              addToast('error', msg);
+              addToast('error', `Save failed: ${errorMessage(exc)}`);
             }
           }}
         />
@@ -205,9 +204,7 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
               addToast('success', `Deleted "${deleting.name}"`);
               setDeleting(null);
             } catch (exc) {
-              const msg =
-                exc instanceof ApiError ? `${exc.status}: ${exc.message}` : String(exc);
-              addToast('error', msg);
+              addToast('error', `Delete failed: ${errorMessage(exc)}`);
             }
           }}
         />

@@ -1,13 +1,12 @@
-import { useState, useMemo, useRef, useEffect } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { FOLDER_COLORS as PRESET_COLORS, DEFAULT_FOLDER_COLOR } from '../utils/folderColors';
-import { useSessions, useDeletedSessions, useRestoreSession } from '../hooks/useSessions';
-import { useFolders, useAddBookmark, useFolderSessions, useCreateFolder, useUpdateFolder, useDeleteFolder } from '../hooks/useBookmarks';
-import type { SessionSummary, SessionDetail, HandoffListResponse } from '../api/client';
+import { useSessions } from '../hooks/useSessions';
+import { useFolders, useFolderSessions } from '../hooks/useBookmarks';
+import type { SessionSummary, HandoffListResponse } from '../api/client';
 import DeleteScopeDialog from './DeleteScopeDialog';
 import type { DeleteScope } from './DeleteScopeDialog';
-import { abbreviateModel, fullToolName } from '../utils/models';
+import { fullToolName } from '../utils/models';
 import { formatTokens } from '../utils/tokens';
 import RelativeDate from '../components/RelativeDate';
 import { MobileNavChips } from '../components/BookmarkSidebar';
@@ -15,134 +14,18 @@ import type { NavFilter } from '../components/BookmarkSidebar';
 import { useToast } from '../hooks/useToast';
 import { useAuth } from '../auth/AuthContext';
 import { TOOL_COLORS } from '../utils/tools';
-import { Button, Card, Select } from '../components/ui';
-
-const CAPTURE_ONLY_TOOLS = new Set(['cursor', 'cline', 'roo-code', 'amp', 'antigravity']);
-
-interface SessionSummaryWithAudit extends SessionSummary {
-  audit_trust_score?: number | null;
-}
-
-const TOOLS = ['all', 'claude-code', 'codex', 'gemini', 'copilot', 'cursor', 'amp', 'cline', 'roo-code', 'antigravity'] as const;
-const DATE_RANGES = [
-  { label: 'All time', value: '' },
-  { label: 'Last 24h', value: '24h' },
-  { label: 'Last 7d', value: '7d' },
-  { label: 'Last 30d', value: '30d' },
-] as const;
-
-type SortKey = 'date' | 'messages' | 'tokens' | 'title' | 'tool';
-type SortDir = 'desc' | 'asc';
-
-interface LineageGroup {
-  root: SessionSummary;
-  children: SessionSummary[];
-}
-
-function groupByLineage(sessions: SessionSummary[]): LineageGroup[] {
-  const byId = new Map(sessions.map(s => [s.id, s]));
-
-  // Find the root of each session's chain (walk up parent links)
-  function findRoot(id: string, visited = new Set<string>()): string {
-    const s = byId.get(id);
-    if (!s || !s.parent_session_id || !byId.has(s.parent_session_id) || visited.has(id)) return id;
-    visited.add(id);
-    return findRoot(s.parent_session_id, visited);
-  }
-
-  // Group all sessions by their root
-  const rootToChildren = new Map<string, SessionSummary[]>();
-  for (const s of sessions) {
-    const rootId = findRoot(s.id);
-    if (rootId === s.id) continue; // this IS the root
-    if (!rootToChildren.has(rootId)) rootToChildren.set(rootId, []);
-    rootToChildren.get(rootId)!.push(s);
-  }
-
-  // Build groups: roots with all descendants, ordered by updated_at
-  const childIds = new Set<string>();
-  for (const kids of rootToChildren.values()) {
-    for (const k of kids) childIds.add(k.id);
-  }
-
-  const groups: LineageGroup[] = [];
-  for (const s of sessions) {
-    if (!childIds.has(s.id)) {
-      const kids = rootToChildren.get(s.id) || [];
-      kids.sort((a, b) => new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime());
-      groups.push({ root: s, children: kids });
-    }
-  }
-  return groups;
-}
-
-function findDuplicateGroups(sessions: SessionSummary[]): Map<string, SessionSummary[]> {
-  const groups = new Map<string, SessionSummary[]>();
-  for (const s of sessions) {
-    // Strong key: title + message_count + source_tool + etag (content hash)
-    // etag is the SHA-256 of the session archive — identical content = identical etag
-    const key = `${s.title || ''}:${s.message_count}:${s.source_tool}:${(s as any).etag || ''}`;
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(s);
-  }
-  const dupes = new Map<string, SessionSummary[]>();
-  for (const [key, group] of groups) {
-    if (group.length >= 2) dupes.set(key, group);
-  }
-  return dupes;
-}
-
-function isToday(dateStr: string): boolean {
-  const d = new Date(dateStr);
-  const now = new Date();
-  return d.getFullYear() === now.getFullYear() &&
-    d.getMonth() === now.getMonth() &&
-    d.getDate() === now.getDate();
-}
-
-function isThisWeek(dateStr: string): boolean {
-  const d = new Date(dateStr);
-  const now = new Date();
-  const weekAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 7);
-  return d >= weekAgo && !isToday(dateStr);
-}
-
-function compareByDate(a: SessionSummary, b: SessionSummary): number {
-  return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
-}
-
-function compareByMessages(a: SessionSummary, b: SessionSummary): number {
-  return b.message_count - a.message_count;
-}
-
-function compareByTokens(a: SessionSummary, b: SessionSummary): number {
-  return (
-    b.total_input_tokens + b.total_output_tokens -
-    (a.total_input_tokens + a.total_output_tokens)
-  );
-}
-
-function compareByTitle(a: SessionSummary, b: SessionSummary): number {
-  const titleCmp = (a.title || '').localeCompare(b.title || '');
-  return titleCmp !== 0 ? titleCmp : compareByDate(a, b);
-}
-
-function compareByTool(a: SessionSummary, b: SessionSummary): number {
-  const toolCmp = fullToolName(a.source_tool).localeCompare(fullToolName(b.source_tool));
-  return toolCmp !== 0 ? toolCmp : compareByDate(a, b);
-}
-
-function sortSessions(list: SessionSummary[], sortBy: SortKey, sortDir: SortDir = 'desc'): SessionSummary[] {
-  const sorted = [...list];
-  if (sortBy === 'messages') sorted.sort(compareByMessages);
-  else if (sortBy === 'tokens') sorted.sort(compareByTokens);
-  else if (sortBy === 'title') sorted.sort(compareByTitle);
-  else if (sortBy === 'tool') sorted.sort(compareByTool);
-  else sorted.sort(compareByDate);
-  // Default comparators sort desc (most/newest first). Reverse for asc.
-  if (sortDir === 'asc') sorted.reverse();
-  return sorted;
-}
+import { Alert, Button, IconButton, PageContainer, PageHeader, Select } from '../components/ui';
+import { CAPTURE_ONLY_TOOLS, TOOLS, DATE_RANGES } from './list/constants';
+import {
+  computeInsights, filterByDateRange, findDuplicateGroups, findMostRecent, groupByLineage, groupSessions, sortSessions,
+} from './list/sessionSort';
+import type { SortKey, SortDir } from './list/sessionSort';
+import { GridGroup } from './list/GridView';
+import { DateGroup } from './list/DateGroup';
+import { TrashView } from './list/TrashView';
+import { FolderDropdown } from './list/FolderDropdown';
+import { NoSessionsCard, SessionListSkeleton } from './list/EmptyState';
+import { errorMessage } from '../utils/errorMessage';
 
 export default function SessionList() {
   const navigate = useNavigate();
@@ -263,27 +146,14 @@ export default function SessionList() {
   const sessions = useMemo(() => {
     // If a folder is selected, show folder sessions instead
     if (selectedFolderId && folderSessionsData) {
-      let list: SessionSummary[] = folderSessionsData.sessions;
-      if (dateRange) {
-        const now = Date.now();
-        const ms = dateRange === '24h' ? 86400000 : dateRange === '7d' ? 604800000 : 2592000000;
-        list = list.filter((s) => now - new Date(s.updated_at).getTime() < ms);
-      }
-      return sortSessions(list, sortBy, sortDir);
+      return sortSessions(filterByDateRange(folderSessionsData.sessions, dateRange), sortBy, sortDir);
     }
 
     if (!data?.sessions) return [];
-    let list = data.sessions;
 
-    // Date range filter (client-side on current page)
-    if (dateRange) {
-      const now = Date.now();
-      const ms = dateRange === '24h' ? 86400000 : dateRange === '7d' ? 604800000 : 2592000000;
-      list = list.filter((s) => now - new Date(s.updated_at).getTime() < ms);
-    }
-
-    // Sort (client-side on current page -- server sorts by date by default)
-    return sortSessions(list, sortBy);
+    // Date range filter (client-side on current page), then sort
+    // (client-side on current page -- server sorts by date by default)
+    return sortSessions(filterByDateRange(data.sessions, dateRange), sortBy);
   }, [data, dateRange, sortBy, sortDir, selectedFolderId, folderSessionsData]);
 
   // Clear selection when filters change
@@ -292,12 +162,7 @@ export default function SessionList() {
   }, [toolFilter, dateRange, sortBy, sortDir, selectedFolderId, navFilter, page]);
 
   // Most recent session (for hero + repo detection)
-  const mostRecent = useMemo(() => {
-    if (!data?.sessions || data.sessions.length === 0) return null;
-    return [...data.sessions].sort(
-      (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
-    )[0];
-  }, [data]);
+  const mostRecent = useMemo(() => findMostRecent(data?.sessions ?? []), [data]);
 
   // Clear folder selection when switching to "all"
   useEffect(() => {
@@ -307,10 +172,7 @@ export default function SessionList() {
   // Auto-expand group if the most recent session is a child
   useEffect(() => {
     if (!data?.sessions || data.sessions.length === 0) return;
-    const sorted = [...data.sessions].sort(
-      (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
-    );
-    const mostRecentId = sorted[0]?.id;
+    const mostRecentId = findMostRecent(data.sessions)?.id;
     if (!mostRecentId) return;
     const allGroups = groupByLineage(data.sessions);
     for (const group of allGroups) {
@@ -324,42 +186,7 @@ export default function SessionList() {
   const filteredSessions = sessions;
 
   // Grouping: default is date buckets, but "Sort: Tool" switches to tool buckets.
-  const grouped = useMemo(() => {
-    if (sortBy === 'tool') {
-      const toolGroups = new Map<string, SessionSummary[]>();
-      for (const s of filteredSessions) {
-        const label = fullToolName(s.source_tool);
-        if (!toolGroups.has(label)) toolGroups.set(label, []);
-        toolGroups.get(label)!.push(s);
-      }
-
-      return {
-        mode: 'tool' as const,
-        toolGroups: Array.from(toolGroups.entries()).map(([label, sessions]) => ({ label, sessions })),
-        today: [] as SessionSummary[],
-        thisWeek: [] as SessionSummary[],
-        earlier: [] as SessionSummary[],
-      };
-    }
-
-    const today: SessionSummary[] = [];
-    const thisWeek: SessionSummary[] = [];
-    const earlier: SessionSummary[] = [];
-
-    for (const s of filteredSessions) {
-      if (isToday(s.updated_at)) today.push(s);
-      else if (isThisWeek(s.updated_at)) thisWeek.push(s);
-      else earlier.push(s);
-    }
-
-    return {
-      mode: 'date' as const,
-      toolGroups: [] as Array<{ label: string; sessions: SessionSummary[] }>,
-      today,
-      thisWeek,
-      earlier,
-    };
-  }, [filteredSessions, sortBy]);
+  const grouped = useMemo(() => groupSessions(filteredSessions, sortBy), [filteredSessions, sortBy]);
 
   const hasMore = selectedFolderId ? false : (data?.has_more ?? false);
   // totalSessions for analytics = current view count
@@ -368,41 +195,7 @@ export default function SessionList() {
   const allSessionsCount = data?.total ?? 0;
 
   // Insights strip data
-  const insights = useMemo(() => {
-    if (filteredSessions.length === 0) return null;
-    const toolCounts: Record<string, number> = {};
-    let totalTokensToday = 0;
-    const hourCounts = new Array(24).fill(0);
-
-    for (const s of filteredSessions) {
-      toolCounts[s.source_tool] = (toolCounts[s.source_tool] || 0) + 1;
-      if (isToday(s.created_at)) {
-        totalTokensToday += s.total_input_tokens + s.total_output_tokens;
-      }
-      const h = new Date(s.created_at).getHours();
-      hourCounts[h]++;
-    }
-
-    const total = filteredSessions.length;
-    const sortedTools = Object.entries(toolCounts).sort((a, b) => b[1] - a[1]).slice(0, 3);
-    const toolMix = sortedTools.map(([tool, count]) =>
-      `${fullToolName(tool)} ${Math.round((count / total) * 100)}%`
-    ).join(' / ');
-
-    let peakHour = 0;
-    let peakCount = 0;
-    for (let h = 0; h < 24; h++) {
-      const windowCount = hourCounts[h] + hourCounts[(h + 1) % 24];
-      if (windowCount > peakCount) { peakCount = windowCount; peakHour = h; }
-    }
-    const fmtHour = (h: number) => {
-      const ampm = h >= 12 ? 'PM' : 'AM';
-      return `${h % 12 || 12} ${ampm}`;
-    };
-    const peak = peakCount > 0 ? `${fmtHour(peakHour)}-${fmtHour((peakHour + 2) % 24)}` : null;
-
-    return { toolMix, tokensToday: totalTokensToday, peak };
-  }, [filteredSessions]);
+  const insights = useMemo(() => computeInsights(filteredSessions), [filteredSessions]);
 
   function handleRowClick(id: string) {
     navigate(`/sessions/${id}`);
@@ -410,6 +203,31 @@ export default function SessionList() {
 
   function handleRowKeyDown(e: React.KeyboardEvent, id: string) {
     if (e.key === 'Enter') navigate(`/sessions/${id}`);
+  }
+
+  function handleToggleSelect() {
+    if (selectMode) clearSelection();
+    else { setSelectMode(true); if (viewMode === 'grid') handleViewMode('list'); }
+  }
+
+  function handleFindDuplicates() {
+    const dupes = findDuplicateGroups(sessions);
+    if (dupes.size === 0) {
+      addToast('info', 'No duplicates found');
+      return;
+    }
+    setSelectMode(true);
+    const toSelect = new Set<string>();
+    for (const group of dupes.values()) {
+      const sorted = [...group].sort((a, b) =>
+        new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+      );
+      for (let i = 1; i < sorted.length; i++) {
+        toSelect.add(sorted[i].id);
+      }
+    }
+    setSelectedIds(toSelect);
+    addToast('warning', `Found ${toSelect.size} duplicate(s) across ${dupes.size} group(s) — oldest copies selected for review`);
   }
 
   function handleResume(s: SessionSummary) {
@@ -420,7 +238,55 @@ export default function SessionList() {
   }
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4">
+    <div className="flex-1 min-h-0 overflow-y-auto">
+      <PageContainer width="full" className="!py-4">
+        <PageHeader
+          title="Sessions"
+          className="mb-4"
+          actions={
+            <div className="flex flex-wrap items-center gap-3">
+              {/* List/Grid view toggle */}
+              <div className="flex items-center rounded-lg border border-border bg-surface overflow-hidden">
+                <IconButton
+                  label="List view"
+                  onClick={() => handleViewMode('list')}
+                  aria-pressed={viewMode === 'list'}
+                  className={`!rounded-none ${viewMode === 'list' ? 'bg-bg-elevated text-text-primary' : ''}`}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
+                    <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
+                  </svg>
+                </IconButton>
+                <IconButton
+                  label="Grid view"
+                  onClick={() => handleViewMode('grid')}
+                  aria-pressed={viewMode === 'grid'}
+                  className={`!rounded-none ${viewMode === 'grid' ? 'bg-bg-elevated text-text-primary' : ''}`}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
+                    <rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" />
+                  </svg>
+                </IconButton>
+              </div>
+              <Button variant="secondary" className="font-normal text-text-tertiary" onClick={handleToggleSelect}>
+                {selectMode ? 'Cancel' : 'Select'}
+              </Button>
+              <Button variant="secondary" className="font-normal text-text-tertiary" onClick={handleFindDuplicates}>
+                Find Duplicates
+              </Button>
+              <Button
+                variant="secondary"
+                aria-pressed={showTrash}
+                className={`font-normal ${showTrash ? 'text-text-primary border-brand bg-brand/10' : 'text-text-tertiary'}`}
+                onClick={() => { setShowTrash(!showTrash); clearSelection(); }}
+              >
+                {showTrash ? 'Active' : 'Trash'}
+              </Button>
+            </div>
+          }
+        />
 
         {/* Mobile nav chips */}
         <MobileNavChips
@@ -436,13 +302,13 @@ export default function SessionList() {
 
         {/* ── Compact resume bar ── */}
         {!isLoading && !showTrash && mostRecent && (
-          <div className="flex items-center gap-3 px-4 h-16 bg-bg-elevated border border-border rounded-lg mb-5">
+          <div className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:py-0 sm:h-16 bg-bg-elevated border border-border rounded-lg mb-5">
             {/* Left: eyebrow + title + meta */}
             <div className="flex-1 min-w-0 flex flex-col justify-center gap-0.5">
               <span className="text-micro uppercase font-semibold text-text-tertiary">Continue where you left off</span>
-              <div className="flex items-center gap-2 min-w-0">
+              <div className="flex items-center gap-x-2 gap-y-1 min-w-0 flex-wrap sm:flex-nowrap">
                 <span
-                  className="text-md font-semibold text-text-primary truncate cursor-pointer hover:text-brand transition-colors"
+                  className="text-md font-semibold text-text-primary truncate max-w-full cursor-pointer hover:text-brand transition-colors"
                   onClick={() => navigate(`/sessions/${mostRecent.id}`)}
                 >
                   {mostRecent.title || 'Untitled session'}
@@ -459,7 +325,7 @@ export default function SessionList() {
             </div>
 
             {/* Right: pending handoff badge + actions */}
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center gap-2 flex-wrap sm:shrink-0">
               {pendingHandoffs.length > 0 && (
                 <Link
                   to="/handoffs"
@@ -521,118 +387,32 @@ export default function SessionList() {
             ]}
             className="!w-auto bg-surface text-base font-medium text-text-secondary transition-colors"
           />
-          <button
-            onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}
-            className="p-2 rounded-lg border border-border bg-surface text-text-secondary hover:text-text-primary transition-colors"
+          <IconButton
+            label={`Sort direction: ${sortDir === 'desc' ? 'descending' : 'ascending'}`}
+            variant="secondary"
             title={sortDir === 'desc' ? 'Showing most first — click for least first' : 'Showing least first — click for most first'}
-            aria-label={`Sort direction: ${sortDir === 'desc' ? 'descending' : 'ascending'}`}
+            onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}
           >
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               {sortDir === 'desc' ? (
                 <path d="M12 5v14M5 12l7 7 7-7" />
               ) : (
                 <path d="M12 19V5M5 12l7-7 7 7" />
               )}
             </svg>
-          </button>
-          {/* List/Grid view toggle */}
-          <div className="flex items-center rounded-lg border border-border bg-surface overflow-hidden">
-            <button
-              onClick={() => handleViewMode('list')}
-              className={`p-2 transition-colors ${viewMode === 'list' ? 'bg-bg-elevated text-text-primary' : 'text-text-tertiary hover:text-text-primary'}`}
-              title="List view"
-              aria-label="List view"
-              aria-pressed={viewMode === 'list'}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
-                <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
-              </svg>
-            </button>
-            <button
-              onClick={() => handleViewMode('grid')}
-              className={`p-2 transition-colors ${viewMode === 'grid' ? 'bg-bg-elevated text-text-primary' : 'text-text-tertiary hover:text-text-primary'}`}
-              title="Grid view"
-              aria-label="Grid view"
-              aria-pressed={viewMode === 'grid'}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
-                <rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" />
-              </svg>
-            </button>
-          </div>
-          <button
-            onClick={() => {
-              if (selectMode) clearSelection();
-              else { setSelectMode(true); if (viewMode === 'grid') handleViewMode('list'); }
-            }}
-            className="text-sm text-text-tertiary hover:text-text-primary px-3 py-2 border border-border rounded-lg"
-          >
-            {selectMode ? 'Cancel' : 'Select'}
-          </button>
-          <button
-            onClick={() => {
-              const dupes = findDuplicateGroups(sessions);
-              if (dupes.size === 0) {
-                addToast('info', 'No duplicates found');
-                return;
-              }
-              setSelectMode(true);
-              const toSelect = new Set<string>();
-              for (const group of dupes.values()) {
-                const sorted = [...group].sort((a, b) =>
-                  new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
-                );
-                for (let i = 1; i < sorted.length; i++) {
-                  toSelect.add(sorted[i].id);
-                }
-              }
-              setSelectedIds(toSelect);
-              addToast('warning', `Found ${toSelect.size} duplicate(s) across ${dupes.size} group(s) — oldest copies selected for review`);
-            }}
-            className="text-sm text-text-tertiary hover:text-text-primary px-3 py-2 border border-border rounded-lg"
-          >
-            Find Duplicates
-          </button>
-          <button
-            onClick={() => { setShowTrash(!showTrash); clearSelection(); }}
-            className={`text-sm px-3 py-2 border rounded-lg transition-colors ${
-              showTrash
-                ? 'text-text-primary border-[var(--brand)] bg-brand/10'
-                : 'text-text-tertiary hover:text-text-primary border-border'
-            }`}
-          >
-            {showTrash ? 'Active' : 'Trash'}
-          </button>
+          </IconButton>
         </div>
 
         {/* Error */}
         {error && (
-          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm">
-            Failed to load sessions: {String(error)}
-          </div>
+          <Alert variant="danger" className="mb-4">
+            Failed to load sessions: {errorMessage(error)}
+          </Alert>
         )}
 
         {/* Loading */}
         {isLoading && (
-          <div className="space-y-3">
-            {Array.from({length: 6}).map((_, i) => (
-              <div key={i} className="bg-[var(--bg-elevated,var(--surface))] border border-border rounded-xl p-4 animate-pulse">
-                <div className="flex items-center gap-3">
-                  <div className="w-3 h-3 rounded-full bg-bg-tertiary" />
-                  <div className="h-4 w-24 rounded bg-bg-tertiary" />
-                  <div className="h-3 w-32 rounded bg-bg-tertiary" />
-                  <div className="flex-1" />
-                  <div className="h-3 w-16 rounded bg-bg-tertiary" />
-                </div>
-                <div className="mt-2 flex items-center gap-3 pl-6">
-                  <div className="h-3 w-16 rounded bg-bg-tertiary" />
-                  <div className="h-3 w-64 rounded bg-bg-tertiary" />
-                </div>
-              </div>
-            ))}
-          </div>
+          <SessionListSkeleton />
         )}
 
         {/* ── Session list ── */}
@@ -684,25 +464,19 @@ export default function SessionList() {
             {/* Pagination */}
             <div className="flex items-center justify-between mt-4 text-sm text-text-tertiary">
               <span>
-                Page {page} -- {filteredSessions.length} sessions
+                Page {page} · {filteredSessions.length} sessions
                 {totalSessions > 0 && ` (${totalSessions} total)`}
               </span>
               <div className="flex gap-2">
                 {page > 1 && (
-                  <button
-                    onClick={() => setPage((p) => p - 1)}
-                    className="px-3 py-1.5 bg-surface border border-border rounded-lg hover:border-border-strong transition-colors text-text-secondary"
-                  >
+                  <Button variant="secondary" size="sm" onClick={() => setPage((p) => p - 1)}>
                     Previous
-                  </button>
+                  </Button>
                 )}
                 {hasMore && (
-                  <button
-                    onClick={() => setPage((p) => p + 1)}
-                    className="px-3 py-1.5 bg-surface border border-border rounded-lg hover:border-border-strong transition-colors text-text-secondary"
-                  >
+                  <Button variant="secondary" size="sm" onClick={() => setPage((p) => p + 1)}>
                     Next
-                  </button>
+                  </Button>
                 )}
               </div>
             </div>
@@ -728,96 +502,14 @@ export default function SessionList() {
               </p>
             </div>
           ) : (
-            <div className="flex items-center justify-center py-10">
-              <Card
-                level="elevated"
-                className="max-w-[560px] w-full overflow-hidden"
-              >
-                {/* Dot-grid banner */}
-                <div
-                  className="relative flex items-center justify-center py-10"
-                  style={{
-                    backgroundImage: 'var(--dot-grid)',
-                    backgroundSize: '16px 16px',
-                  }}
-                >
-                  {/* Session card illustration — two overlapping cards with a plus */}
-                  <svg
-                    width="88"
-                    height="72"
-                    viewBox="0 0 88 72"
-                    fill="none"
-                    xmlns="http://www.w3.org/2000/svg"
-                    role="img"
-                    aria-label="Session cards illustration"
-                  >
-                    {/* Back card */}
-                    <rect
-                      x="4" y="2" width="56" height="60" rx="6"
-                      stroke="var(--text-tertiary)" strokeWidth="1.5"
-                      strokeDasharray="4 3"
-                    />
-                    {/* Front card */}
-                    <rect
-                      x="18" y="10" width="56" height="60" rx="6"
-                      stroke="var(--text-secondary)" strokeWidth="1.5"
-                    />
-                    {/* Plus circle */}
-                    <circle
-                      cx="64" cy="26" r="10"
-                      stroke="var(--brand)" strokeWidth="1.5"
-                    />
-                    <line
-                      x1="64" y1="21" x2="64" y2="31"
-                      stroke="var(--brand)" strokeWidth="1.5" strokeLinecap="round"
-                    />
-                    <line
-                      x1="59" y1="26" x2="69" y2="26"
-                      stroke="var(--brand)" strokeWidth="1.5" strokeLinecap="round"
-                    />
-                    {/* Accent line on front card */}
-                    <line
-                      x1="31" y1="28" x2="52" y2="28"
-                      stroke="var(--text-tertiary)" strokeWidth="1" strokeLinecap="round"
-                    />
-                    <line
-                      x1="31" y1="36" x2="44" y2="36"
-                      stroke="var(--text-tertiary)" strokeWidth="1" strokeLinecap="round"
-                      opacity="0.6"
-                    />
-                  </svg>
-                </div>
-                {/* Content area */}
-                <div className="text-center px-6 pb-7 pt-5">
-                  <h2 className="text-title text-text-primary mb-1.5">
-                    No sessions yet
-                  </h2>
-                  <p className="text-caption max-w-sm mx-auto mb-5 leading-relaxed">
-                    SessionFS captures sessions automatically from your AI tools.
-                    Get started by installing the MCP server for your tool.
-                  </p>
-                  <div className="flex items-center justify-center gap-3">
-                    <Link
-                      to="/getting-started"
-                      className="px-4 py-2 text-sm font-semibold bg-brand text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors"
-                    >
-                      Get Started
-                    </Link>
-                    <Link
-                      to="/help"
-                      className="px-4 py-2 text-sm font-medium text-text-secondary border border-border rounded-lg hover:text-text-primary transition-colors"
-                    >
-                      View Help
-                    </Link>
-                  </div>
-                </div>
-              </Card>
-            </div>
+            <NoSessionsCard />
           )
         )}
 
         {/* Trash view */}
         {showTrash && <TrashView />}
+
+      </PageContainer>
 
       {/* ── Bulk selection toolbar ── */}
       {selectedIds.size > 0 && (
@@ -825,18 +517,15 @@ export default function SessionList() {
           <span className="text-base font-medium text-text-primary">
             {selectedIds.size} selected
           </span>
-          <button onClick={selectAll} className="text-sm text-brand hover:underline">
+          <Button variant="ghost" size="sm" onClick={selectAll} className="text-brand hover:text-brand">
             Select all
-          </button>
-          <button
-            onClick={handleBulkDelete}
-            className="px-4 py-2 bg-red-500 text-white rounded-lg text-sm font-semibold hover:bg-red-600 transition-colors"
-          >
+          </Button>
+          <Button variant="danger" onClick={handleBulkDelete}>
             Delete selected
-          </button>
-          <button onClick={clearSelection} className="text-sm text-text-tertiary hover:text-text-primary">
+          </Button>
+          <Button variant="ghost" size="sm" onClick={clearSelection}>
             Cancel
-          </button>
+          </Button>
         </div>
       )}
 
@@ -850,857 +539,5 @@ export default function SessionList() {
         />
       )}
     </div>
-  );
-}
-
-/* ── Grid-grouped session section ── */
-
-function GridGroup({
-  label,
-  sessions,
-  isFirst,
-  onRowClick,
-  onResume,
-  isInFolder,
-}: {
-  label: string;
-  sessions: SessionSummary[];
-  isFirst?: boolean;
-  onRowClick: (id: string) => void;
-  onResume: (s: SessionSummary) => void;
-  isInFolder?: boolean;
-}) {
-  if (sessions.length === 0) return null;
-
-  return (
-    <div className={`mb-5 ${isFirst ? 'mt-0' : 'mt-8'}`}>
-      <h3 className="text-micro font-semibold uppercase text-text-tertiary pt-3 pb-2 mb-3 border-b border-border col-span-full">
-        {label}
-      </h3>
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-        {sessions.map((s) => (
-          <SessionGridCard
-            key={s.id}
-            session={s}
-            onClick={() => onRowClick(s.id)}
-            onResume={() => onResume(s)}
-            isBookmarked={!!isInFolder}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/* ── Grid-view session card ── */
-
-function SessionGridCard({
-  session: s,
-  onClick,
-  onResume,
-  isBookmarked,
-}: {
-  session: SessionSummary;
-  onClick: () => void;
-  onResume: () => void;
-  isBookmarked?: boolean;
-}) {
-  const toolColor = TOOL_COLORS[s.source_tool] || 'var(--text-tertiary)';
-
-  return (
-    <div
-      role="button"
-      onClick={onClick}
-      onKeyDown={(e) => { if (e.key === 'Enter') onClick(); }}
-      tabIndex={0}
-      className="group bg-surface border border-border rounded-lg cursor-pointer hover:bg-bg-elevated hover:border-border-strong transition-[background-color,border-color] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] flex flex-col"
-    >
-      {/* Body */}
-      <div className="px-4 pt-[14px] pb-2 flex-1 min-w-0">
-        <h4 className="text-md font-semibold text-text-primary truncate mb-1.5">
-          {s.title || <span className="text-text-tertiary italic">Untitled session</span>}
-        </h4>
-        <div className="flex flex-wrap items-center gap-1 text-xs text-text-tertiary">
-          <span
-            className="w-2 h-2 rounded-full shrink-0"
-            style={{ backgroundColor: toolColor }}
-          />
-          <span className="text-mono-chip">{fullToolName(s.source_tool)}</span>
-          <span className="text-mono-chip">{s.id.slice(0, 12)}</span>
-          <span className="opacity-40">&middot;</span>
-          <span className="tabular-nums">{s.message_count} msgs</span>
-          {(s.total_input_tokens + s.total_output_tokens) > 0 && (
-            <>
-              <span className="opacity-40">&middot;</span>
-              <span className="tabular-nums">{formatTokens(s.total_input_tokens + s.total_output_tokens)}</span>
-            </>
-          )}
-          {s.model_id && s.model_id !== '<synthetic>' && (
-            <>
-              <span className="opacity-40">&middot;</span>
-              <span>{abbreviateModel(s.model_id)}</span>
-            </>
-          )}
-        </div>
-      </div>
-      {/* Footer */}
-      <div className="px-4 pb-3 flex items-center justify-between">
-        <span className="text-xs text-text-tertiary">
-          <RelativeDate iso={s.updated_at} />
-        </span>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={(e) => { e.stopPropagation(); onResume(); }}
-            className="px-2.5 py-1 text-xs font-semibold text-white bg-brand rounded-md hover:opacity-90 transition-opacity opacity-0 group-hover:opacity-100 group-focus:opacity-100"
-          >
-            Resume
-          </button>
-          <div onClick={(e) => e.stopPropagation()}>
-            <BookmarkDropdown sessionId={s.id} isBookmarked={isBookmarked} />
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ── Trash view ── */
-
-function TrashView() {
-  const { data, isLoading, error } = useDeletedSessions();
-  const restoreSession = useRestoreSession();
-  const { addToast } = useToast();
-
-  if (isLoading) {
-    return (
-      <div className="py-8 text-center text-text-tertiary">
-        Loading deleted sessions...
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm">
-        Failed to load trash: {String(error)}
-      </div>
-    );
-  }
-
-  const deletedSessions = data?.sessions ?? [];
-
-  if (deletedSessions.length === 0) {
-    return (
-      <div className="text-center py-16">
-        <p className="text-text-secondary mb-2">Trash is empty</p>
-        <p className="text-text-tertiary text-sm">
-          Deleted sessions appear here for 30 days before being permanently removed.
-        </p>
-      </div>
-    );
-  }
-
-  function handleRestore(id: string) {
-    restoreSession.mutate(id, {
-      onSuccess: (data) => {
-        if (data?.local_copy_may_be_missing) {
-          addToast(
-            'success',
-            'Session restored on server. If this device deleted the local copy, run: sfs pull ' + id.slice(0, 12),
-          );
-        } else {
-          addToast('success', 'Session restored');
-        }
-      },
-      onError: (err) => addToast('error', `Restore failed: ${String(err)}`),
-    });
-  }
-
-  return (
-    <div className="space-y-2">
-      <p className="text-xs text-text-tertiary mb-3">
-        {deletedSessions.length} deleted session{deletedSessions.length !== 1 ? 's' : ''}. Sessions are permanently removed after 30 days.
-      </p>
-      {deletedSessions.map((s: SessionSummary) => {
-        const sd = s as unknown as SessionDetail;
-        const scopeLabel = sd.delete_scope === 'both' ? 'everywhere' : (sd.delete_scope || 'cloud');
-        return (
-          <div
-            key={s.id}
-            className="bg-bg-primary border border-border rounded-lg px-4 py-3 flex items-center gap-3 opacity-75 hover:opacity-100 transition-opacity"
-          >
-            <span
-              className="w-2 h-2 rounded-full shrink-0"
-              style={{ backgroundColor: TOOL_COLORS[s.source_tool] || '#6B7280' }}
-            />
-            <div className="flex-1 min-w-0">
-              <span
-                className="text-sm font-medium text-text-secondary truncate block"
-                title="Restore to view session details"
-              >
-                {s.title || 'Untitled session'}
-              </span>
-              <div className="flex items-center gap-2 text-2xs text-text-tertiary mt-0.5">
-                <span>{fullToolName(s.source_tool)}</span>
-                <span className="opacity-40">&middot;</span>
-                <span>Deleted <RelativeDate iso={sd.deleted_at} /></span>
-                {sd.purge_after && (
-                  <>
-                    <span className="opacity-40">&middot;</span>
-                    <span>Purges <RelativeDate iso={sd.purge_after} /></span>
-                  </>
-                )}
-              </div>
-            </div>
-            <span className={`px-2 py-0.5 text-2xs font-medium rounded-full ${
-              scopeLabel === 'everywhere'
-                ? 'bg-red-500/10 text-red-400'
-                : 'bg-yellow-500/10 text-yellow-400'
-            }`}>
-              {scopeLabel}
-            </span>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => handleRestore(s.id)}
-              loading={restoreSession.isPending}
-            >
-              Restore
-            </Button>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/* ── Date-grouped session section with lineage grouping ── */
-
-function DateGroup({
-  label,
-  sessions,
-  onRowClick,
-  onRowKeyDown,
-  onResume,
-  expandedGroups,
-  onToggleGroup,
-  isFirst,
-  isInFolder,
-  selectMode,
-  selectedIds,
-  onToggleSelect,
-}: {
-  label: string;
-  sessions: SessionSummary[];
-  onRowClick: (id: string) => void;
-  onRowKeyDown: (e: React.KeyboardEvent, id: string) => void;
-  onResume: (s: SessionSummary) => void;
-  expandedGroups: Set<string>;
-  onToggleGroup: (rootId: string) => void;
-  isFirst?: boolean;
-  isInFolder?: boolean;
-  selectMode: boolean;
-  selectedIds: Set<string>;
-  onToggleSelect: (id: string) => void;
-}) {
-  if (sessions.length === 0) return null;
-
-  const lineageGroups = groupByLineage(sessions);
-
-  return (
-    <div className={`mb-5 ${isFirst ? 'mt-0' : 'mt-8'}`}>
-      <h3 className="text-micro font-semibold uppercase text-text-tertiary pt-3 pb-2 mb-3 border-b border-border">
-        {label}
-      </h3>
-      <div className="flex flex-col gap-1.5">
-        {lineageGroups.map((group) => {
-          const isExpanded = expandedGroups.has(group.root.id);
-          const hasChildren = group.children.length > 0;
-
-          return (
-            <div key={group.root.id}>
-              <SessionRow
-                session={group.root}
-                onClick={() => {
-                  if (selectMode) {
-                    onToggleSelect(group.root.id);
-                  } else if (hasChildren) {
-                    onToggleGroup(group.root.id);
-                  } else {
-                    onRowClick(group.root.id);
-                  }
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    if (selectMode) {
-                      onToggleSelect(group.root.id);
-                    } else if (hasChildren) {
-                      onToggleGroup(group.root.id);
-                    } else {
-                      onRowClick(group.root.id);
-                    }
-                  }
-                }}
-                onResume={() => onResume(group.root)}
-                onNavigate={hasChildren ? () => onRowClick(group.root.id) : undefined}
-                isBookmarked={!!isInFolder}
-                selectMode={selectMode}
-                selected={selectedIds.has(group.root.id)}
-                onToggleSelect={() => onToggleSelect(group.root.id)}
-                lineageBadge={hasChildren ? (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onToggleGroup(group.root.id); }}
-                    className="flex items-center gap-1.5 px-2 py-1 rounded-md text-sm font-medium text-brand hover:bg-brand/10 transition-colors"
-                    title={isExpanded ? 'Collapse follow-ups' : 'Expand follow-ups'}
-                  >
-                    <span>{group.children.length === 1 ? '1 follow-up' : `${group.children.length} follow-ups`}</span>
-                    <svg
-                      className={`w-3.5 h-3.5 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <polyline points="6 9 12 15 18 9" />
-                    </svg>
-                  </button>
-                ) : undefined}
-              />
-              {hasChildren && isExpanded && (
-                <div className="flex flex-col gap-1 mt-1 ml-6 border-l border-border pl-3">
-                  {group.children.map((child) => (
-                    <SessionRow
-                      key={child.id}
-                      session={child}
-                      onClick={() => selectMode ? onToggleSelect(child.id) : onRowClick(child.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          if (selectMode) onToggleSelect(child.id);
-                          else onRowKeyDown(e, child.id);
-                        }
-                      }}
-                      onResume={() => onResume(child)}
-                      isChild
-                      isBookmarked={!!isInFolder}
-                      selectMode={selectMode}
-                      selected={selectedIds.has(child.id)}
-                      onToggleSelect={() => onToggleSelect(child.id)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-/* ── Individual session row with hover actions ── */
-
-function SessionRow({
-  session: s,
-  onClick,
-  onKeyDown,
-  onResume,
-  onNavigate,
-  lineageBadge,
-  isChild,
-  isBookmarked,
-  selectMode,
-  selected,
-  onToggleSelect,
-}: {
-  session: SessionSummary;
-  onClick: () => void;
-  onKeyDown: (e: React.KeyboardEvent) => void;
-  onResume: () => void;
-  onNavigate?: () => void;
-  lineageBadge?: React.ReactNode;
-  isChild?: boolean;
-  isBookmarked?: boolean;
-  selectMode?: boolean;
-  selected?: boolean;
-  onToggleSelect?: () => void;
-}) {
-  return (
-    <div
-      role="button"
-      onClick={onClick}
-      onKeyDown={(e) => { if (e.key === ' ') { e.preventDefault(); onClick(); } else { onKeyDown(e); } }}
-      tabIndex={0}
-      className={`group bg-surface border border-border rounded-lg cursor-pointer hover:bg-bg-elevated hover:border-border-strong transition-[background-color,border-color] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${isChild ? 'px-3 py-3' : 'px-4 py-[14px]'} ${selected ? 'ring-1 ring-[var(--brand)] bg-brand/5' : ''}`}
-    >
-      {/* Line 1: Title + hover actions + timestamp */}
-      <div className="flex items-center gap-3 mb-1">
-        {selectMode && (
-          <input
-            type="checkbox"
-            checked={selected || false}
-            onChange={() => onToggleSelect?.()}
-            className="w-4 h-4 rounded border-border accent-[var(--brand)] mr-3 shrink-0"
-            onClick={(e) => e.stopPropagation()}
-          />
-        )}
-        <span
-          className={`font-semibold text-text-primary truncate flex-1 ${isChild ? 'text-sm' : 'text-md'}`}
-          onClick={onNavigate ? (e) => { e.stopPropagation(); onNavigate(); } : undefined}
-          style={onNavigate ? { cursor: 'pointer' } : undefined}
-        >
-          {isChild && <span className="text-text-tertiary mr-1">&#8627;</span>}
-          {s.title || <span className="text-text-tertiary italic">Untitled session</span>}
-          {s.parent_session_id && !isChild && (
-            <span className="text-text-tertiary text-xs ml-1.5">&crarr; fork</span>
-          )}
-        </span>
-        <div className="ml-auto flex items-center gap-2 shrink-0">
-          {/* Row actions */}
-          <div className="flex items-center gap-1.5">
-            {onNavigate && (
-              <button
-                onClick={(e) => { e.stopPropagation(); onNavigate(); }}
-                className="px-2 py-0.5 text-xs font-medium text-text-secondary bg-surface border border-border rounded hover:bg-surface-hover transition-colors opacity-0 group-hover:opacity-100"
-              >
-                View
-              </button>
-            )}
-            <button
-              onClick={(e) => { e.stopPropagation(); onResume(); }}
-              className="px-2.5 py-1 text-xs font-semibold text-white bg-brand rounded-md hover:opacity-90 transition-opacity opacity-0 group-hover:opacity-100 group-focus:opacity-100"
-            >
-              Resume
-            </button>
-          </div>
-          {lineageBadge}
-          <TrustBadge score={(s as SessionSummaryWithAudit).audit_trust_score} />
-          <span className={`text-text-tertiary ${isChild ? 'text-xs' : 'text-sm'}`}>
-            <RelativeDate iso={s.updated_at} />
-          </span>
-          <div onClick={(e) => e.stopPropagation()}>
-            <BookmarkDropdown sessionId={s.id} isBookmarked={isBookmarked} />
-          </div>
-        </div>
-      </div>
-      {/* Line 2: tool name + session id as mono-chips; counts + model as text-tertiary */}
-      <div className={`flex items-center gap-1.5 ${isChild ? 'text-xs' : 'text-sm'} text-text-tertiary`}>
-        <span
-          className="w-2 h-2 rounded-full shrink-0"
-          style={{ backgroundColor: TOOL_COLORS[s.source_tool] || 'var(--text-tertiary)' }}
-        />
-        <span className="text-mono-chip">{fullToolName(s.source_tool)}</span>
-        <span className="text-mono-chip">{s.id.slice(0, 12)}</span>
-        <span className="opacity-40">&middot;</span>
-        <span className="tabular-nums">{s.message_count} msgs</span>
-        {!isChild && (s.total_input_tokens + s.total_output_tokens) > 0 && (
-          <>
-            <span className="opacity-40">&middot;</span>
-            <span className="tabular-nums">{formatTokens(s.total_input_tokens + s.total_output_tokens)}</span>
-          </>
-        )}
-        {s.model_id && s.model_id !== '<synthetic>' && (
-          <>
-            <span className="opacity-40">&middot;</span>
-            <span>{abbreviateModel(s.model_id)}</span>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ── Folder scope dropdown (replaces desktop BookmarkSidebar rail) ── */
-
-function FolderDropdown({
-  navFilter,
-  selectedFolderId,
-  onSelectFilter,
-  onSelectFolder,
-  totalCount,
-  bookmarkedCount,
-}: {
-  navFilter: NavFilter;
-  selectedFolderId: string | null;
-  onSelectFilter: (f: NavFilter) => void;
-  onSelectFolder: (id: string | null) => void;
-  totalCount: number;
-  bookmarkedCount: number;
-}) {
-  const { data } = useFolders();
-  const createFolder = useCreateFolder();
-  const updateFolder = useUpdateFolder();
-  const deleteFolder = useDeleteFolder();
-
-  const [open, setOpen] = useState(false);
-  const [showCreate, setShowCreate] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [newColor, setNewColor] = useState(PRESET_COLORS[0]);
-  const [editingFolder, setEditingFolder] = useState<string | null>(null);
-  const [editName, setEditName] = useState('');
-  const [editColor, setEditColor] = useState('');
-  const wrapperRef = useRef<HTMLDivElement>(null);
-
-  const folders = data?.folders ?? [];
-
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return;
-    function handleClick(e: MouseEvent) {
-      if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
-        setOpen(false);
-        setShowCreate(false);
-        setEditingFolder(null);
-      }
-    }
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [open]);
-
-  function handleCreate() {
-    if (!newName.trim()) return;
-    createFolder.mutate({ name: newName.trim(), color: newColor }, {
-      onSuccess: () => {
-        setNewName('');
-        setNewColor(PRESET_COLORS[0]);
-        setShowCreate(false);
-      },
-    });
-  }
-
-  function handleStartEdit(folderId: string, name: string, color: string) {
-    setEditingFolder(folderId);
-    setEditName(name);
-    setEditColor(color || PRESET_COLORS[0]);
-  }
-
-  function handleSaveEdit(folderId: string) {
-    if (!editName.trim()) return;
-    updateFolder.mutate({
-      folderId,
-      updates: { name: editName.trim(), color: editColor },
-    }, {
-      onSuccess: () => setEditingFolder(null),
-    });
-  }
-
-  function handleDelete(folderId: string) {
-    deleteFolder.mutate(folderId, {
-      onSuccess: () => {
-        if (selectedFolderId === folderId) {
-          onSelectFolder(null);
-          onSelectFilter('all');
-        }
-      },
-    });
-  }
-
-  // Resolve current label
-  let currentLabel = 'All Sessions';
-  if (navFilter === 'bookmarked') {
-    currentLabel = 'Bookmarked';
-  } else if (selectedFolderId) {
-    const f = folders.find((f) => f.id === selectedFolderId);
-    if (f) currentLabel = f.name;
-  }
-
-  return (
-    <div ref={wrapperRef} className="relative">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="appearance-none bg-surface border border-border rounded-lg px-3 py-2 pr-8 text-base font-medium text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] cursor-pointer transition-colors flex items-center gap-2"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-text-tertiary">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-        </svg>
-        <span className="truncate max-w-[140px]">{currentLabel}</span>
-        <svg className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-tertiary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
-      </button>
-
-      {open && (
-        <div
-          className="absolute top-full left-0 mt-1 z-40 min-w-[220px] rounded-lg py-1"
-          style={{
-            backgroundColor: 'var(--overlay)',
-            border: '1px solid var(--border)',
-            boxShadow: 'var(--shadow-overlay)',
-          }}
-        >
-          {/* All Sessions */}
-          <button
-            onClick={() => { onSelectFilter('all'); onSelectFolder(null); setOpen(false); }}
-            className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 transition-colors duration-150 ${
-              navFilter === 'all' && !selectedFolderId
-                ? 'bg-surface-active text-text-primary font-semibold'
-                : 'text-text-secondary hover:bg-surface-hover'
-            }`}
-          >
-            <span className="flex-1">All Sessions</span>
-            <span className="text-xs font-medium text-text-tertiary tabular-nums">{totalCount}</span>
-          </button>
-
-          {/* Bookmarked */}
-          <button
-            onClick={() => { onSelectFilter('bookmarked'); onSelectFolder(null); setOpen(false); }}
-            className={`w-full text-left px-3 py-1.5 text-sm flex items-center gap-2 transition-colors duration-150 ${
-              navFilter === 'bookmarked' && !selectedFolderId
-                ? 'bg-surface-active text-text-primary font-semibold'
-                : 'text-text-secondary hover:bg-surface-hover'
-            }`}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-              <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-            </svg>
-            <span className="flex-1">Bookmarked</span>
-            <span className="text-xs font-medium text-text-tertiary tabular-nums">{bookmarkedCount}</span>
-          </button>
-
-          {/* Divider */}
-          <div className="border-t border-border my-1" />
-
-          {/* Folders */}
-          {folders.map((f) => (
-            <div key={f.id}>
-              {editingFolder === f.id ? (
-                <div className="px-3 py-1.5 space-y-1.5">
-                  <input
-                    type="text"
-                    value={editName}
-                    onChange={(e) => setEditName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') handleSaveEdit(f.id);
-                      if (e.key === 'Escape') setEditingFolder(null);
-                    }}
-                    autoFocus
-                    className="w-full px-1.5 py-0.5 text-sm bg-bg-primary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
-                  />
-                  <div className="flex gap-1">
-                    {PRESET_COLORS.map((c) => (
-                      <button
-                        key={c}
-                        onClick={() => setEditColor(c)}
-                        className={`w-4 h-4 rounded-full border-2 ${editColor === c ? 'border-white' : 'border-transparent'}`}
-                        style={{ backgroundColor: c }}
-                      />
-                    ))}
-                  </div>
-                  <div className="flex gap-1">
-                    <button
-                      onClick={() => handleSaveEdit(f.id)}
-                      className="px-2 py-0.5 text-xs bg-brand text-white rounded hover:opacity-90"
-                    >
-                      Save
-                    </button>
-                    <button
-                      onClick={() => setEditingFolder(null)}
-                      className="px-2 py-0.5 text-xs text-text-tertiary hover:text-text-secondary"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex items-center group">
-                  <button
-                    onClick={() => { onSelectFolder(f.id); onSelectFilter(f.id); setOpen(false); }}
-                    className={`flex-1 flex items-center gap-2 px-3 py-1.5 text-sm transition-colors duration-150 text-left ${
-                      selectedFolderId === f.id
-                        ? 'bg-surface-active text-text-primary font-semibold'
-                        : 'text-text-secondary hover:bg-surface-hover'
-                    }`}
-                  >
-                    <span
-                      className="w-2.5 h-2.5 rounded-full shrink-0"
-                      style={{ backgroundColor: f.color || DEFAULT_FOLDER_COLOR }}
-                    />
-                    <span className="truncate flex-1">{f.name}</span>
-                    <span className="text-text-tertiary text-xs font-medium tabular-nums">{f.bookmark_count}</span>
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleStartEdit(f.id, f.name, f.color || '');
-                    }}
-                    className="px-1 text-text-tertiary hover:text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity text-xs mr-1"
-                    title="Rename folder"
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                    </svg>
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelete(f.id);
-                    }}
-                    className="px-1 text-text-tertiary hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity text-xs"
-                    title="Delete folder"
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="3 6 5 6 21 6" />
-                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
-
-          {folders.length === 0 && !showCreate && (
-            <div className="px-3 py-1.5 text-xs text-text-tertiary">No folders yet</div>
-          )}
-
-          {/* Create folder inline */}
-          {showCreate && (
-            <div className="mx-2 mt-1 p-2 bg-bg-primary border border-border rounded space-y-2">
-              <input
-                type="text"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleCreate();
-                  if (e.key === 'Escape') setShowCreate(false);
-                }}
-                placeholder="Folder name"
-                autoFocus
-                className="w-full px-2 py-1 text-sm bg-bg-secondary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
-              />
-              <div className="flex gap-1">
-                {PRESET_COLORS.map((c) => (
-                  <button
-                    key={c}
-                    onClick={() => setNewColor(c)}
-                    className={`w-4 h-4 rounded-full border-2 ${newColor === c ? 'border-white' : 'border-transparent'}`}
-                    style={{ backgroundColor: c }}
-                  />
-                ))}
-              </div>
-              <div className="flex gap-1">
-                <button
-                  onClick={handleCreate}
-                  disabled={!newName.trim() || createFolder.isPending}
-                  className="px-2 py-0.5 text-xs bg-brand text-white rounded hover:opacity-90 disabled:opacity-50"
-                >
-                  Create
-                </button>
-                <button
-                  onClick={() => setShowCreate(false)}
-                  className="px-2 py-0.5 text-xs text-text-tertiary hover:text-text-secondary"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Footer actions */}
-          <div className="border-t border-border mt-1 pt-1">
-            {!showCreate && (
-              <button
-                onClick={() => setShowCreate(true)}
-                className="w-full text-left px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-hover flex items-center gap-2 transition-colors duration-150"
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-                New Folder
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ── Bookmark dropdown (unchanged logic) ── */
-
-function BookmarkDropdown({ sessionId, isBookmarked: initialBookmarked }: { sessionId: string; isBookmarked?: boolean }) {
-  const [open, setOpen] = useState(false);
-  const [popping, setPopping] = useState(false);
-  const [bookmarked, setBookmarked] = useState(initialBookmarked ?? false);
-  const ref = useRef<HTMLDivElement>(null);
-  const { data: foldersData } = useFolders();
-  const addBookmark = useAddBookmark();
-
-  const folders = foldersData?.folders ?? [];
-
-  // Update when prop changes
-  useEffect(() => {
-    if (initialBookmarked !== undefined) setBookmarked(initialBookmarked);
-  }, [initialBookmarked]);
-
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
-    }
-    if (open) document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [open]);
-
-  function handleIconClick() {
-    setPopping(true);
-    setTimeout(() => setPopping(false), 200);
-    setOpen(!open);
-  }
-
-  return (
-    <div className="relative" ref={ref}>
-      <button
-        onClick={handleIconClick}
-        className={`transition-[transform,color,background-color] duration-150 text-sm p-1 rounded hover:bg-surface-hover ${bookmarked ? 'text-brand' : 'text-text-tertiary hover:text-brand'} ${popping ? 'scale-125' : ''}`}
-        title="Bookmark"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill={bookmarked ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-        </svg>
-      </button>
-      {open && (
-        <div className="absolute right-0 top-8 z-20 bg-[var(--bg-elevated,var(--surface))] border border-border rounded-lg shadow-[var(--shadow-md)] py-1 min-w-[140px]">
-          {folders.length === 0 && (
-            <div className="px-3 py-1.5 text-sm text-text-tertiary">No folders yet</div>
-          )}
-          {folders.map((f) => (
-            <button
-              key={f.id}
-              onClick={() => {
-                addBookmark.mutate({ folderId: f.id, sessionId }, {
-                  onSuccess: () => { setOpen(false); setBookmarked(true); },
-                  onError: () => setOpen(false),
-                });
-              }}
-              className="w-full text-left px-3 py-1.5 text-sm text-text-secondary hover:bg-surface-hover flex items-center gap-2 transition-colors"
-            >
-              <span
-                className="w-2 h-2 rounded-full shrink-0"
-                style={{ backgroundColor: f.color || DEFAULT_FOLDER_COLOR }}
-              />
-              {f.name}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TrustBadge({ score }: { score?: number | null }) {
-  if (score == null) return null;
-  const pct = Math.round(score * 100);
-  const color =
-    pct >= 90
-      ? 'bg-green-500'
-      : pct >= 70
-        ? 'bg-yellow-500'
-        : 'bg-red-500';
-  return (
-    <span
-      className={`inline-block w-2 h-2 rounded-full shrink-0 ${color}`}
-      title={`Trust score: ${pct}%`}
-    />
   );
 }

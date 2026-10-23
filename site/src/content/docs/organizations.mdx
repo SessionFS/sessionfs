@@ -147,7 +147,7 @@ PUT /api/v1/orgs/{org_id}/settings          # {"auto_join_domains": ["example.co
   organization (accepted, declined or pending), are never added by auto-join.
 
 The dashboard exposes a checkbox per verified domain under
-**Settings > Organization**, and the CLI mirrors it:
+**Organization → Policies**, and the CLI mirrors it:
 
 ```bash
 sfs org auto-join list
@@ -187,7 +187,7 @@ Storage is pooled across all org members. The `GET /api/v1/org` response include
 
 ## Dashboard
 
-Org settings are in **Settings > Organization** in the web dashboard. From there, admins can view members, send invites, and access subscription management. Members see the org info and their role but cannot modify settings.
+Open **Organization** (under **Manage** in the sidebar) in the web dashboard. It has four tabs: **Members** (view members, change roles, send invites), **Personas** (org-wide agent personas), **Policies** (organization defaults and domain auto-join) and, for admins, **Security** (single sign-on). Subscription management is under **Billing**. Members see the org info and their role but cannot modify settings.
 
 ## Multi-org membership (v0.10.0)
 

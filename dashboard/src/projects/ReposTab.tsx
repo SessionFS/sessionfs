@@ -6,14 +6,14 @@ import {
 } from '../hooks/useProjects';
 import { useToast } from '../hooks/useToast';
 import type { ProjectRepoResponse } from '../api/client';
-import { ApiError } from '../api/client';
-import { Button, Input, Dialog, DialogHeader, DialogFooter } from '../components/ui';
+import { Button, Input, Dialog, DialogHeader, DialogFooter, MonoText } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 function VerifiedBadge({ repo }: { repo: ProjectRepoResponse }) {
   if (repo.verified && repo.verification_method === 'github_app') {
     return (
       <span
-        className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+        className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-success/10 text-success"
         title="Verified via GitHub App"
       >
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -25,7 +25,7 @@ function VerifiedBadge({ repo }: { repo: ProjectRepoResponse }) {
   }
   return (
     <span
-      className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400"
+      className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-warning/10 text-warning"
       title={repo.verification_method === 'owner_attested' ? 'Owner-attested — install the GitHub App for verified linking' : 'Legacy — verified status unknown'}
     >
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -79,17 +79,7 @@ function AddRepoModal({ projectId, onClose, onLinked }: AddRepoModalProps) {
           onLinked();
         },
         onError: (err) => {
-          if (err instanceof ApiError) {
-            if (err.code === 'repo_already_linked') {
-              setError(err.message);
-            } else if (err.code === 'cross_org_denied') {
-              setError(err.message);
-            } else {
-              setError(err.message);
-            }
-          } else {
-            setError(String(err));
-          }
+          setError(errorMessage(err));
         },
       },
     );
@@ -187,11 +177,7 @@ export default function ReposTab({ projectId }: { projectId: string }) {
         setUnlinkTarget(null);
       },
       onError: (err) => {
-        if (err instanceof ApiError) {
-          setUnlinkError(err.message);
-        } else {
-          setUnlinkError(String(err));
-        }
+        setUnlinkError(errorMessage(err));
       },
     });
   }
@@ -201,7 +187,7 @@ export default function ReposTab({ projectId }: { projectId: string }) {
   }
 
   if (error) {
-    return <p className="p-5 text-red-400 text-sm">Failed to load repos: {String(error)}</p>;
+    return <p className="p-5 text-danger text-sm">Failed to load repos: {errorMessage(error)}</p>;
   }
 
   const repoList = repos || [];
@@ -228,7 +214,9 @@ export default function ReposTab({ projectId }: { projectId: string }) {
               key={repo.id}
               className="px-4 py-3 rounded-lg border border-border bg-bg-elevated"
             >
-              <div className="flex items-center gap-3">
+              {/* Wraps on narrow screens so the remote keeps its own line
+                  instead of being squeezed by the badges. */}
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
                 {/* Git icon */}
                 <svg
                   className="shrink-0 w-4 h-4 text-text-tertiary"
@@ -246,18 +234,20 @@ export default function ReposTab({ projectId }: { projectId: string }) {
                   <path d="M18 9v1a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9" />
                   <path d="M12 3v4" />
                 </svg>
-                <div className="flex-1 min-w-0">
-                  <span className="text-sm font-medium text-text-primary font-mono truncate block">
-                    {repo.git_remote_normalized}
-                  </span>
+                <div className="flex-1 min-w-[10rem]">
+                  <MonoText
+                    value={repo.git_remote_normalized}
+                    copyable
+                    className="text-sm font-medium text-text-primary"
+                  />
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex items-center gap-2 shrink-0 ml-auto">
                   {repo.is_primary && <PrimaryMarker />}
                   <VerifiedBadge repo={repo} />
                   {/* Unlink button — separate from expand/collapse (a11y: sibling, not nested) */}
                   <button
                     onClick={() => setUnlinkTarget(unlinkTarget === repo.id ? null : repo.id)}
-                    className="text-xs text-text-tertiary hover:text-red-400 transition-colors px-2 py-1"
+                    className="text-xs text-text-tertiary hover:text-danger transition-colors px-2 py-1"
                     title={`Unlink ${repo.git_remote_normalized}`}
                     aria-label={`Unlink ${repo.git_remote_normalized}`}
                   >

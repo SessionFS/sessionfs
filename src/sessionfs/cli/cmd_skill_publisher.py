@@ -75,7 +75,11 @@ def _show(publisher: dict, json_output: bool) -> None:
         constraint = ", ".join(
             f"{key}={row[key]}" for key in ("environment", "ref_pattern", "package_name") if row.get(key)
         )
-        console.print(Text(f"  * trusts {row.get('repository')} {row.get('workflow')} {constraint}".rstrip()))
+        if row.get("provider") == "gitlab":
+            source = f"GitLab {row.get('gitlab_host')} project #{row.get('gitlab_project_id')} ({row.get('repository')})"
+        else:
+            source = f"{row.get('repository')} {row.get('workflow')}"
+        console.print(Text(f"  * trusts {source} {constraint}".rstrip()))
 
 
 @publisher_app.command("claim")
@@ -173,9 +177,37 @@ def check(publisher_id: str, verification_id: str) -> None:
 @handle_errors
 def trust(
     publisher_id: str,
-    repo: str = typer.Option(..., "--repo", help="GitHub repository, owner/repo"),
-    workflow: str = typer.Option(..., "--workflow", help="Workflow file, e.g. release.yml"),
-    environment: str | None = typer.Option(None, "--environment", help="Require this GitHub environment"),
+    repo: str | None = typer.Option(None, "--repo", help="GitHub repository, owner/repo"),
+    workflow: str | None = typer.Option(None, "--workflow", help="GitHub workflow file, e.g. release.yml"),
+    gitlab_project: int | None = typer.Option(
+        None,
+        "--gitlab-project",
+        min=1,
+        help="GitLab CI instead of GitHub: the numeric project id (Settings > General)",
+    ),
+    gitlab_host: str | None = typer.Option(
+        None,
+        "--gitlab-host",
+        help="GitLab instance origin (default https://gitlab.com; must be enabled on the server)",
+    ),
+    gitlab_project_path: str | None = typer.Option(
+        None, "--gitlab-project-path", help="group/project, shown next to the trust (matching uses the id)"
+    ),
+    gitlab_namespace_id: int | None = typer.Option(
+        None, "--gitlab-namespace-id", min=1, help="Also pin the project's numeric group/namespace id"
+    ),
+    environment: str | None = typer.Option(
+        None,
+        "--environment",
+        help="Require this deployment environment. On GitLab the job names its own environment, so "
+        "this only adds security when the environment is protected in GitLab",
+    ),
+    require_protected_environment: bool = typer.Option(
+        False,
+        "--require-protected-environment",
+        help="GitLab only, with --environment: also require GitLab to report the environment as "
+        "protected (protected environments are a GitLab Premium feature)",
+    ),
     ref_pattern: str | None = typer.Option(None, "--ref-pattern", help="Require a matching ref, e.g. refs/tags/v*"),
     package: str | None = typer.Option(None, "--package", help="Limit to one package name"),
     reusable_workflow: str | None = typer.Option(
@@ -189,9 +221,65 @@ def trust(
     repository_id: int | None = typer.Option(None, "--repository-id", help="Numeric repository id (skips lookup)"),
     repository_owner_id: int | None = typer.Option(None, "--repository-owner-id", help="Numeric owner id"),
 ) -> None:
-    """Allow a GitHub Actions workflow to publish for this publisher. The
-    trust binds to the repository's numeric ids, so a renamed or recreated
-    repository does not inherit it."""
+    """Allow a GitHub Actions workflow (--repo/--workflow) or a GitLab CI
+    project (--gitlab-project) to publish for this publisher. The trust binds
+    to numeric ids, so a renamed or recreated repository or project does not
+    inherit it. GitLab jobs must run on a protected ref and never from a
+    merge request pipeline."""
+    github_flags = [
+        flag
+        for flag, value in (
+            ("--repo", repo),
+            ("--workflow", workflow),
+            ("--reusable-workflow", reusable_workflow),
+            ("--repository-id", repository_id),
+            ("--repository-owner-id", repository_owner_id),
+        )
+        if value is not None
+    ] + (["--allow-workflow-run"] if allow_workflow_run else [])
+    gitlab_flags = [
+        flag
+        for flag, value in (
+            ("--gitlab-project", gitlab_project),
+            ("--gitlab-host", gitlab_host),
+            ("--gitlab-project-path", gitlab_project_path),
+            ("--gitlab-namespace-id", gitlab_namespace_id),
+        )
+        if value is not None
+    ] + (["--require-protected-environment"] if require_protected_environment else [])
+    if require_protected_environment and environment is None:
+        raise typer.BadParameter("--require-protected-environment needs --environment.")
+    if gitlab_flags:
+        if github_flags:
+            raise typer.BadParameter(
+                f"GitHub and GitLab options are mutually exclusive ({', '.join(github_flags + gitlab_flags)})."
+            )
+        if gitlab_project is None:
+            raise typer.BadParameter("--gitlab-project (the numeric project id) is required for GitLab.")
+        gitlab_payload: dict[str, Any] = {"provider": "gitlab", "gitlab_project_id": gitlab_project}
+        if require_protected_environment:
+            gitlab_payload["require_protected_environment"] = True
+        for key, value in (
+            ("gitlab_host", gitlab_host),
+            ("repository", gitlab_project_path),
+            ("gitlab_namespace_id", gitlab_namespace_id),
+            ("environment", environment),
+            ("ref_pattern", ref_pattern),
+            ("package_name", package),
+        ):
+            if value is not None:
+                gitlab_payload[key] = value
+        row = _request("POST", f"/publishers/{_segment(publisher_id)}/trusted-publishers", gitlab_payload)
+        console.print(
+            Text(
+                f"Trusted GitLab project #{row.get('gitlab_project_id')} ({row.get('repository')}) "
+                f"on {row.get('gitlab_host')} as {row.get('id')}",
+                style="green",
+            )
+        )
+        return
+    if repo is None or workflow is None:
+        raise typer.BadParameter("Pass --repo and --workflow (GitHub) or --gitlab-project (GitLab).")
     payload: dict[str, Any] = {"repository": repo, "workflow": workflow}
     for key, value in (
         ("environment", environment),

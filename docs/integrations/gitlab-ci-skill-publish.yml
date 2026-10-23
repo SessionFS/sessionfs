@@ -1,0 +1,101 @@
+# EXAMPLE GitLab CI pipeline: publish a skill or plugin to the SessionFS
+# marketplace with TRUSTED PUBLISHING (GitLab CI ID token, no stored API key).
+#
+# This is reference documentation, not an active pipeline in this repository.
+# Copy the job into `.gitlab-ci.yml` in the project that holds your package
+# and adapt the namespace, the audience and the API URL.
+#
+# One-time setup (as the publisher's owner or an org owner/admin):
+#
+#   sfs skill publisher claim acme          # or --org <org_id>
+#   sfs skill publisher trust <publisher_id> \
+#       --gitlab-project 12345678 \
+#       --gitlab-project-path acme/skills \
+#       --ref-pattern 'refs/tags/v*' \
+#       --environment production --require-protected-environment
+#
+# --gitlab-project is the numeric Project ID (Settings > General);
+# --gitlab-project-path is for display only.
+#
+# Self-managed GitLab: add --gitlab-host https://gitlab.example.com. The
+# SessionFS server must list that instance in SFS_GITLAB_OIDC_ISSUERS (the
+# default allows only https://gitlab.com), and the entry must equal the
+# token's `iss` exactly: GitLab sets `iss` from its external_url, so use a
+# lowercase host with no :443 and no trailing slash there, or list the exact
+# value. A near miss is refused with a hint naming the expected form.
+#
+# Then protect the tags (Settings > Repository > Protected tags, e.g. `v*`).
+# SessionFS only accepts tokens from jobs on a PROTECTED ref
+# (`ref_protected: "true"`), so a developer who can push an unprotected tag or
+# branch cannot publish.
+#
+# The environment pin is weak on its own: a job declares its own
+# `environment:`, so anyone who can run a job on a protected ref can name
+# `production`. It only adds security when `production` is a PROTECTED
+# environment in GitLab (Settings > CI/CD > Protected environments, GitLab
+# Premium), which limits who may deploy to it. --require-protected-environment
+# makes SessionFS refuse the token unless GitLab reports the environment as
+# protected; leave it off if you are on GitLab Free (and rely on the protected
+# tags instead).
+#
+# How it works:
+#   1. GitLab mints an ID token for this job because of the `id_tokens:` block
+#      below, with `aud` set to the SessionFS server's trusted-publishing
+#      audience: its public API origin (see
+#      GET /api/v1/marketplace/trusted-publishing/config -> "audience").
+#      CI_JOB_JWT / CI_JOB_JWT_V2 are NOT used (removed in GitLab 17.0).
+#   2. `sfs skill publish --trusted-publishing` reads the token from
+#      $SFS_ID_TOKEN (change with --id-token-env) and sends it to SessionFS,
+#      which verifies GitLab's signature against the instance's JWKS
+#      (<instance>/oauth/discovery/keys) and checks: the issuer is an allowed
+#      instance, the audience, the NUMERIC project id (and namespace id, if
+#      pinned), the protected ref and the ref pattern (on the full ref, e.g.
+#      refs/tags/v1.2.0), the environment, and the pipeline source (push, web
+#      or api only; merge request, external pull request, parent / downstream,
+#      trigger and scheduled pipelines never publish). It returns a publish
+#      token that expires in 15 minutes, works once, and only for this
+#      namespace / package. Each ID token can be exchanged once.
+#   3. The package is uploaded with that token. The listing shows
+#      "Published from": the project, ref, pipeline source, job and commit.
+#
+# GitLab mints the ID token when the JOB STARTS, and SessionFS accepts it for
+# up to 60 minutes after that: keep publishing in its own short job (as here)
+# rather than at the end of a long build.
+#
+# Nothing here is a secret: there is no SESSIONFS_API_KEY CI/CD variable.
+# The ID token itself IS a short-lived credential, though, and it sits in the
+# job's environment from the first line of `script:`. So:
+#   - only the publish job declares `id_tokens:` (no other job gets a token);
+#   - install an EXACT, hash-pinned SessionFS release, and run the install
+#     with the token removed from its environment (`env -u SFS_ID_TOKEN`), so
+#     no package install script can read it;
+#   - do not run other tooling in this job.
+# requirements-publish.txt holds the pinned release and its hashes, e.g.
+# generated with `pip-compile --generate-hashes` from a line such as
+#   sessionfs==<version you tested>
+# (replace <version you tested> with a real release, e.g. from PyPI).
+
+publish-skill:
+  stage: deploy
+  image: python:3.12-slim
+  # Must match the trusted publisher's --environment. Only a PROTECTED
+  # environment restricts who can run this job (see above).
+  environment: production
+  id_tokens:
+    SFS_ID_TOKEN:
+      # This server's trusted-publishing audience (its public API origin).
+      aud: https://api.sessionfs.dev
+  variables:
+    SESSIONFS_API_URL: https://api.sessionfs.dev
+  rules:
+    # Version tags only. Protect them, or SessionFS refuses the token.
+    - if: $CI_COMMIT_TAG =~ /^v/ && $CI_PIPELINE_SOURCE == "push"
+  script:
+    # Exact, hash-pinned release ("sessionfs==<version you tested>" plus its
+    # hashes in requirements-publish.txt), installed without the ID token in
+    # the environment. Never `pip install --upgrade sessionfs` here.
+    - env -u SFS_ID_TOKEN python -m pip install --require-hashes --only-binary=:all: -r requirements-publish.txt
+    - sfs skill validate . --visibility org
+    # Add `--visibility public` once SessionFS has enabled public publishing
+    # for your verified publisher.
+    - sfs skill publish . --trusted-publishing --ci-provider gitlab --namespace acme

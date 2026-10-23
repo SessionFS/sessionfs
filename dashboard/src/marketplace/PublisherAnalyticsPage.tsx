@@ -1,12 +1,14 @@
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
+import MarketplaceNav from './MarketplaceNav';
 import type { FlooredCount, PublisherAnalytics, PublisherAnalyticsPackage } from '../api/client';
 import { Badge } from '../components/Badge';
 import EmptyState from '../components/EmptyState';
-import { Button, Card, Dialog, DialogFooter, DialogHeader, Input, Select } from '../components/ui';
+import { Button, Card, Dialog, DialogFooter, DialogHeader, Input, Select, TableShell } from '../components/ui';
 import { useMarketplaceCategories, usePublisherAnalytics, useUpdatePackageSettings } from '../hooks/useMarketplace';
 import { useToast } from '../hooks/useToast';
 import { isTierGate } from './MarketplacePage';
+import { errorMessage } from '../utils/errorMessage';
 
 const DAY_OPTIONS = [
   { value: '7', label: 'Last 7 days' },
@@ -61,8 +63,7 @@ export function InstallsByDay({ days }: { days: PublisherAnalytics['by_day'] }) 
 function ToolBars({ rows }: { rows: PublisherAnalytics['by_tool'] }) {
   const max = Math.max(1, ...rows.map((row) => row.installs.count ?? 0));
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[640px] text-left text-sm">
+    <TableShell minWidth={640}>
         <thead className="text-xs uppercase tracking-wider text-text-tertiary">
           <tr>
             <th className="py-2">Tool</th>
@@ -90,8 +91,7 @@ function ToolBars({ rows }: { rows: PublisherAnalytics['by_tool'] }) {
             </tr>
           ))}
         </tbody>
-      </table>
-    </div>
+    </TableShell>
   );
 }
 
@@ -139,7 +139,7 @@ function SettingsDialog({
       addToast('success', `Updated ${item.name}.`);
       onClose();
     } catch (error) {
-      addToast('error', `Update failed: ${String(error)}`);
+      addToast('error', `Update failed: ${errorMessage(error)}`);
     }
   }
 
@@ -227,7 +227,8 @@ export default function PublisherAnalyticsPage() {
   const analytics = usePublisherAnalytics(publisherId, days);
   const data = analytics.data;
   return (
-    <main className="mx-auto w-full max-w-6xl space-y-5 px-4 py-7 sm:px-6">
+    <div className="mx-auto w-full max-w-6xl space-y-5 px-4 py-7 sm:px-6">
+      <MarketplaceNav />
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <Link to="/marketplace/publishers" className="text-xs text-text-tertiary hover:text-text-primary">Publishers</Link>
@@ -248,7 +249,7 @@ export default function PublisherAnalyticsPage() {
           <p className="mt-1 text-xs text-text-secondary">Personal publishers need Starter or above; organization publishers need the Team plan.</p>
         </Card>
       ) : (
-        <p role="alert" className="text-sm text-danger">Analytics unavailable: {String(analytics.error)}</p>
+        <p role="alert" className="text-sm text-danger">Analytics unavailable: {errorMessage(analytics.error)}</p>
       ))}
       {data && (
         <>
@@ -272,8 +273,7 @@ export default function PublisherAnalyticsPage() {
             {data.packages.length === 0 ? (
               <EmptyState title="No packages yet" description="Publish under this namespace to see analytics." />
             ) : (
-              <div className="mt-2 overflow-x-auto">
-                <table className="w-full min-w-[900px] text-left text-sm">
+              <TableShell minWidth={900} wrapperClassName="mt-2">
                   <thead className="text-xs uppercase tracking-wider text-text-tertiary">
                     <tr>
                       <th className="py-2">Package</th>
@@ -290,8 +290,7 @@ export default function PublisherAnalyticsPage() {
                   <tbody>
                     {data.packages.map((item) => <PackageRow key={item.package_id} item={item} onEdit={() => setEditing(item)} />)}
                   </tbody>
-                </table>
-              </div>
+                </TableShell>
             )}
           </Card>
         </>
@@ -299,6 +298,6 @@ export default function PublisherAnalyticsPage() {
       {editing && publisherId && data && (
         <SettingsDialog publisherId={publisherId} item={editing} siblings={data.packages} onClose={() => setEditing(null)} />
       )}
-    </main>
+    </div>
   );
 }

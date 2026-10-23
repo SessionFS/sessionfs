@@ -31,7 +31,7 @@ Before anything is installed, every surface shows the same **disclosure card**, 
 - **Shell commands** the instructions tell the agent to run (from fenced shell blocks), with file and line.
 - **Scanner findings**, and **hidden or bidirectional Unicode and control characters**, shown visibly as `⟦U+202E⟧` with file, line and column.
 
-The card appears in `sfs skill inspect` and `sfs skill add`, in the dashboard package view and on the project **Marketplace** tab next to every pending approval, in MCP `get_marketplace_package` (display only; MCP never grants consent), and at `GET /api/v1/marketplace/versions/{id}/disclosure?tools=codex,claude-code&scope=project`.
+The card appears in `sfs skill inspect` and `sfs skill add`, in the dashboard package view and on the project **Skills** tab next to every pending approval, in MCP `get_marketplace_package` (display only; MCP never grants consent), and at `GET /api/v1/marketplace/versions/{id}/disclosure?tools=codex,claude-code&scope=project`.
 
 A local install of a package that contains the hidden-character classes the publish gate refuses (bidirectional overrides or zero-width characters in `SKILL.md` or scripts, Unicode tag characters, raw control characters) needs `--allow-hidden-unicode`.
 
@@ -131,7 +131,7 @@ The harness runs each tool's installer in an isolated, short-lived sandbox with 
 Agents can search and preview packages over MCP. To load instruction text into a live agent context:
 
 1. Call `request_skill_install` with the exact `version_id`, `content_hash`, project, target tool, and scope.
-2. A project owner/admin approves the exact hash from the dashboard **Marketplace** tab (or `POST .../skill-install-requests/{id}/approve` with `approved_capabilities`), confirming each elevated capability, or an organization admin creates a matching assignment. Approval is not available over MCP. If the approver is the same principal that filed the request, the server also requires a single-use confirmation code emailed to that account (`POST .../skill-install-requests/{id}/challenge`, 10-minute lifetime).
+2. A project owner/admin approves the exact hash from the project **Skills** tab in the dashboard (or `POST .../skill-install-requests/{id}/approve` with `approved_capabilities`), confirming each elevated capability, or an organization admin creates a matching assignment. Approval is not available over MCP. If the approver is the same principal that filed the request, the server also requires a single-use confirmation code emailed to that account (`POST .../skill-install-requests/{id}/challenge`, 10-minute lifetime).
 3. Call `load_marketplace_skill` for that project and tool.
 
 The load response is instruction-only. It explicitly reports `executable_components_included: false` and `untrusted: true` with a fixed preamble marking the text as third-party data. MCP cannot write device paths or activate scripts, hooks, executable extensions, or local MCP servers.
@@ -148,7 +148,7 @@ Assignments are desired state. Clients still perform local preflight and install
 
 ## Dashboard Workflow
 
-Open **Marketplace** in the dashboard to search everything visible to your identity. Package detail shows the trust dossier, the install disclosure card and the compatibility matrix. Choose **Request for project** to create an instruction-only request. Project owners/admins decide pending requests from the project's **Marketplace** tab, which shows the disclosure for the requested tools and, when the request updates a version already approved there, the changes to approve.
+Open **Marketplace** in the dashboard to search everything visible to your identity. Package detail shows the trust dossier, the install disclosure card and the compatibility matrix. Choose **Request for project** to create an instruction-only request. Project owners/admins decide pending requests from the project's **Skills** tab, which shows the disclosure for the requested tools and, when the request updates a version already approved there, the changes to approve.
 
 Organization members also see registry policy, each registry's poll status (last and next poll, failures and the error summary) and effective assignments; owners and admins can **Poll now**. Organization owners and admins also get **Updates to review**: every assigned package with a newer version, its update diff and the full disclosure of the new version, with an acknowledgement (bound to the disclosure shown) and an **Advance** button. Private packages remain hidden from users outside the owning organization; unauthorized detail and download requests return `404` rather than disclosing existence.
 
@@ -278,6 +278,45 @@ Trusted publishing lets a GitHub Actions workflow publish without a SessionFS AP
    ```
 
 The CLI exchanges the job's OIDC token for a single-use publish token that expires after 15 minutes. Pull-request events never publish. Each listing shows where the version was **published from**: repository, workflow, ref, environment and run. Remove a trust with `sfs skill publisher untrust`; tokens already issued under it stop working.
+
+## Trusted Publishing from GitLab CI
+
+GitLab CI jobs can publish the same way, using a GitLab CI ID token (the `id_tokens:` keyword; the removed `CI_JOB_JWT` variables are not supported).
+
+1. Allow a GitLab project by its numeric id (Settings > General), with a ref pattern and, ideally, an environment:
+
+   ```bash
+   sfs skill publisher trust pub_abc --gitlab-project 12345678 \
+     --gitlab-project-path acme/review-helper \
+     --ref-pattern 'refs/tags/v*' \
+     --environment production --require-protected-environment
+   ```
+
+   For self-managed GitLab add `--gitlab-host https://gitlab.example.com`; the server operator must list that instance in `SFS_GITLAB_OIDC_ISSUERS` (only `https://gitlab.com` is allowed by default), exactly as it appears in the token's `iss` (GitLab's `external_url`: lowercase host, no `:443`, no trailing slash).
+
+   A job names its own environment, so `--environment` only adds security when that environment is **protected** in GitLab (a GitLab Premium feature). `--require-protected-environment` refuses tokens unless GitLab reports the environment as protected; leave it off on GitLab Free and rely on protected tags.
+
+2. Protect the tags or branches you publish from. SessionFS only accepts jobs running on a protected ref.
+
+3. In `.gitlab-ci.yml`, request an ID token for this server's audience (the `audience` from `GET /api/v1/marketplace/trusted-publishing/config`) and publish:
+
+   ```yaml
+   publish-skill:
+     environment: production
+     id_tokens:
+       SFS_ID_TOKEN:
+         aud: https://api.sessionfs.dev
+     rules:
+       - if: $CI_COMMIT_TAG =~ /^v/ && $CI_PIPELINE_SOURCE == "push"
+     script:
+       # sessionfs==<version you tested>, hash-pinned; token kept out of pip.
+       - env -u SFS_ID_TOKEN python -m pip install --require-hashes --only-binary=:all: -r requirements-publish.txt
+       - sfs skill publish . --trusted-publishing --namespace acme
+   ```
+
+   The ID token is live for the whole job, so declare `id_tokens:` only on the publish job and install an exact, hash-pinned SessionFS release.
+
+The server checks the token's signature against the instance's published keys, the audience, the numeric project id, the protected ref and ref pattern, the environment, and the pipeline source: only `push`, `web` and `api` pipelines publish. Merge request, external pull request, child and downstream, trigger-token and scheduled pipelines never publish. GitLab mints the token when the job starts and SessionFS accepts it for 60 minutes, so keep publishing in its own short job. The token exchange returns the same single-use, 15-minute publish token, and each ID token can be exchanged once.
 
 ## Launch Catalog
 

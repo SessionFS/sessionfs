@@ -522,7 +522,19 @@ class UserJudgeSettings(Base):
 
 
 class AdminAction(Base):
+    """Platform-admin audit log (migration 007; operator context 081, GH #84).
+
+    ``source`` is 'api' when the server performed the action and wrote the
+    row, 'operator_record' when an operator recorded an action they took
+    outside the API (raw SQL in a pinch) — the server did not verify those.
+    ``before_state`` / ``after_state`` are JSON text, like ``details``.
+    """
+
     __tablename__ = "admin_actions"
+    __table_args__ = (
+        Index("idx_admin_actions_created_at", "created_at"),
+        Index("idx_admin_actions_target", "target_type", "target_id"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     admin_id: Mapped[str] = mapped_column(
@@ -532,6 +544,12 @@ class AdminAction(Base):
     target_type: Mapped[str] = mapped_column(String(20), nullable=False)
     target_id: Mapped[str] = mapped_column(String(64), nullable=False)
     details: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    before_state: Mapped[str | None] = mapped_column(Text, nullable=True)
+    after_state: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="api", server_default="api"
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -4709,17 +4727,36 @@ class SkillReservedName(Base):
 
 
 class SkillTrustedPublisher(Base):
-    """A GitHub Actions workflow allowed to publish for a publisher.
+    """A CI identity allowed to publish for a publisher.
 
-    Bound to the NUMERIC repository id and owner id (immutable across renames
-    and never reused by a re-registered name), the workflow file, and
-    optionally a deployment environment and a ref pattern."""
+    provider 'github': a GitHub Actions workflow, bound to the NUMERIC
+    repository id and owner id (immutable across renames and never reused by
+    a re-registered name) and the workflow file.
+
+    provider 'gitlab' (migration 082): a GitLab CI project on one allowlisted
+    GitLab instance (``issuer``), bound to the NUMERIC project id and,
+    optionally, the namespace id.
+
+    Either may add a deployment environment and a ref pattern."""
 
     __tablename__ = "skill_trusted_publishers"
     __table_args__ = (
         Index("idx_skill_trusted_publishers_repo", "provider", "repository_id"),
         Index("idx_skill_trusted_publishers_publisher", "publisher_id"),
-        CheckConstraint("provider IN ('github')", name="ck_skill_trusted_publisher_provider"),
+        Index("idx_skill_trusted_publishers_gitlab", "provider", "gitlab_project_id"),
+        CheckConstraint(
+            "provider IN ('github', 'gitlab')", name="ck_skill_trusted_publisher_provider"
+        ),
+        CheckConstraint(
+            "(provider = 'github' AND repository_id IS NOT NULL AND repository_owner_id IS NOT NULL "
+            "AND workflow_path IS NOT NULL AND issuer IS NULL AND gitlab_project_id IS NULL "
+            "AND gitlab_namespace_id IS NULL AND require_protected_environment = false) OR "
+            "(provider = 'gitlab' AND issuer IS NOT NULL AND gitlab_project_id IS NOT NULL "
+            "AND repository_id IS NULL AND repository_owner_id IS NULL AND workflow_path IS NULL "
+            "AND reusable_workflow IS NULL AND allow_workflow_run = false "
+            "AND (require_protected_environment = false OR environment IS NOT NULL))",
+            name="ck_skill_trusted_publisher_shape",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -4729,12 +4766,25 @@ class SkillTrustedPublisher(Base):
     # NULL = any package in the publisher's namespace.
     package_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     provider: Mapped[str] = mapped_column(String(20), nullable=False, server_default="github")
-    repository_owner_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    repository_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    # Display only ("owner/repo" when configured); matching uses the ids.
+    # GitHub only (NULL on GitLab rows).
+    repository_owner_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    repository_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # Display only ("owner/repo", or the GitLab project path); matching uses the ids.
     repository: Mapped[str] = mapped_column(String(200), nullable=False)
-    # The CALLER workflow file (matched against the token's workflow_ref).
-    workflow_path: Mapped[str] = mapped_column(String(255), nullable=False)
+    # GitHub only: the CALLER workflow file (matched against workflow_ref).
+    workflow_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # GitLab only: the instance origin (the token's exact ``iss``; on the
+    # SFS_GITLAB_OIDC_ISSUERS allowlist), and the numeric project id (the
+    # immutable pin) and optional namespace id.
+    issuer: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    gitlab_project_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    gitlab_namespace_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    # GitLab only: also require GitLab to report the job's environment as
+    # protected. A job names its own environment, so the name alone binds
+    # nothing unless the environment is protected in GitLab.
+    require_protected_environment: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     # Optional reusable (callee) workflow, "owner/repo/.github/workflows/x.yml",
     # matched independently against job_workflow_ref.
     reusable_workflow: Mapped[str | None] = mapped_column(String(300), nullable=True)
@@ -4758,7 +4808,7 @@ class SkillTrustedPublisher(Base):
 
 class SkillPublishToken(Base):
     """Short-lived, single-use publish token minted from a verified GitHub
-    Actions OIDC token. Only the SHA-256 of the raw token is stored. The
+    Actions or GitLab CI OIDC token. Only the SHA-256 of the raw token is stored. The
     (issuer, jti) unique constraint is the OIDC replay guard."""
 
     __tablename__ = "skill_publish_tokens"

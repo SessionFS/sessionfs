@@ -68,7 +68,7 @@ afterEach(() => {
 describe('ReposTab', () => {
   it('renders repo rows with primary marker and verified badge', () => {
     render(<ReposTab projectId="proj_1" />);
-    expect(screen.getByText('github.com/acme/frontend')).toBeInTheDocument();
+    expect(screen.getByTitle('github.com/acme/frontend')).toBeInTheDocument();
     expect(screen.getByText('primary')).toBeInTheDocument();
     expect(screen.getByText('verified')).toBeInTheDocument();
   });
@@ -128,7 +128,7 @@ describe('ReposTab', () => {
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Link repo' }));
-    expect(await screen.findByText(/repo_already_linked/i)).toBeInTheDocument();
+    expect(await screen.findByText(/already linked to another project/i)).toBeInTheDocument();
   });
 
   it('shows cross-org error in modal', async () => {
@@ -152,7 +152,7 @@ describe('ReposTab', () => {
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'Link repo' }));
-    expect(await screen.findByText(/cross_org_denied/i)).toBeInTheDocument();
+    expect(await screen.findByText(/different organization/i)).toBeInTheDocument();
   });
 
   it('shows unlink confirmation and blocks last repo', () => {

@@ -43,9 +43,28 @@ data:
       }
       {{- end }}
 
-      location /health {
+      # Exact match: the dashboard pod's own liveness/readiness probe. A
+      # prefix match here used to answer /health/ready for the API with this
+      # stub, so a probe through the ingress always saw 200 (GitHub #83).
+      location = /health {
+        default_type application/json;
         return 200 '{"status":"ok"}';
-        add_header Content-Type application/json;
+      }
+
+      # The API's readiness (schema migrated for this version), so external
+      # monitors and upgrade scripts going through the ingress get the real
+      # answer, 503 included.
+      location = /health/ready {
+        proxy_pass http://{{ include "sessionfs.fullname" . }}-api:{{ .Values.api.service.port }}/health/ready;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+      }
+
+      # Anything else under /health/ (e.g. /health/ready/ with a trailing
+      # slash) must not fall through to the SPA and look healthy.
+      location ^~ /health/ {
+        return 404;
       }
     }
 {{- end }}

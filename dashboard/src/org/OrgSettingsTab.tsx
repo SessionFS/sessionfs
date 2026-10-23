@@ -35,6 +35,7 @@ import {
 } from './useOrgSettings';
 import { useDomains } from './useSso';
 import { Button, Input } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 interface OrgSettingsTabProps {
   orgId: string;
@@ -80,7 +81,7 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
   }, [data]);
 
   if (isLoading) return <p>Loading settings…</p>;
-  if (error) return <p role="alert">Failed to load settings: {String(error)}</p>;
+  if (error) return <p role="alert">Failed to load settings: {errorMessage(error)}</p>;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -105,7 +106,7 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
     }
     update.mutate(payload, {
       onSuccess: () => addToast('success', 'Settings saved'),
-      onError: (err) => addToast('error', `Save failed: ${err.message}`),
+      onError: (err) => addToast('error', `Save failed: ${errorMessage(err)}`),
     });
   };
 

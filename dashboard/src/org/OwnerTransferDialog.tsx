@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { Dialog, DialogHeader, DialogFooter, Button, Select } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 /**
  * Owner-only "Transfer ownership" dialog (v0.11.0).
@@ -28,7 +29,7 @@ interface OwnerTransferDialogProps {
   onInitiated: () => void;
 }
 
-function errorMessage(body: unknown, fallback: string): string {
+function envelopeMessage(body: unknown, fallback: string): string {
   const b = body as { error?: { message?: string }; detail?: string } | null;
   return b?.error?.message || b?.detail || fallback;
 }
@@ -65,13 +66,13 @@ export default function OwnerTransferDialog({
       });
       const body = await res.json().catch(() => ({}));
       if (!res.ok) {
-        throw new Error(errorMessage(body, 'Could not start the transfer.'));
+        throw new Error(envelopeMessage(body, 'Could not start the transfer.'));
       }
       setTarget('');
       onInitiated();
       onClose();
     } catch (e) {
-      setError((e as Error).message);
+      setError(errorMessage(e));
     } finally {
       setBusy(false);
     }
@@ -102,7 +103,7 @@ export default function OwnerTransferDialog({
             options={admins.map((a) => ({ value: a.user_id, label: a.email }))}
           />
           {error && (
-            <div role="alert" className="text-sm text-red-400">
+            <div role="alert" className="text-sm text-danger">
               {error}
             </div>
           )}

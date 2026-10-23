@@ -15,6 +15,7 @@ import { Button } from '../components/ui/Button';
 import { Card } from '../components/ui/Card';
 import Skeleton from '../components/Skeleton';
 import { Dropdown } from '../components/ui/Dropdown';
+import { errorMessage } from '../utils/errorMessage';
 
 interface Props {
   sessionId: string;
@@ -115,7 +116,7 @@ export default function AuditTab({ sessionId, messageCount, sessionTitle, onJump
   }
 
   if (error && !is404) {
-    return <div className="p-4 text-red-400 text-sm">Failed to load audit: {String(error)}</div>;
+    return <div className="p-4 text-danger text-sm">Failed to load audit: {errorMessage(error)}</div>;
   }
 
   if (!report) return null;
@@ -203,8 +204,8 @@ function AuditReportView({
     <div className="p-4 max-w-3xl mx-auto">
       {/* Warnings banner */}
       {report.warnings && report.warnings.length > 0 && (
-        <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3 mb-4">
-          <p className="text-yellow-400 text-sm font-medium">Warning</p>
+        <div className="bg-warning/10 border border-warning/20 rounded-lg p-3 mb-4">
+          <p className="text-warning text-sm font-medium">Warning</p>
           {report.warnings.map((w, i) => (
             <p key={i} className="text-text-muted text-sm mt-1">{w}</p>
           ))}
@@ -216,13 +217,13 @@ function AuditReportView({
         <MetricCard
           label="Trust Score"
           value={`${pct}%`}
-          color={pct >= 85 ? 'text-green-400' : pct >= 60 ? 'text-yellow-400' : 'text-red-400'}
+          color={pct >= 85 ? 'text-success' : pct >= 60 ? 'text-warning' : 'text-danger'}
         />
         <MetricCard label="Claims" value={String(report.summary.total_claims)} color="text-text-secondary" />
-        <MetricCard label="Contradictions" value={String(contradictions.length)} color={contradictions.length > 0 ? 'text-red-400' : 'text-green-400'} />
+        <MetricCard label="Contradictions" value={String(contradictions.length)} color={contradictions.length > 0 ? 'text-danger' : 'text-success'} />
         <MetricCard label="Unverified" value={String(unverified.length)} color="text-text-muted" />
         {avgConfidence !== null && (
-          <MetricCard label="Confidence" value={`${avgConfidence}%`} color={avgConfidence >= 80 ? 'text-green-400' : avgConfidence >= 50 ? 'text-yellow-400' : 'text-red-400'} />
+          <MetricCard label="Confidence" value={`${avgConfidence}%`} color={avgConfidence >= 80 ? 'text-success' : avgConfidence >= 50 ? 'text-warning' : 'text-danger'} />
         )}
         {uniqueCweCount > 0 && (
           <MetricCard label="CWE IDs" value={String(uniqueCweCount)} color="text-orange-400" />
@@ -244,13 +245,13 @@ function AuditReportView({
           <span className="text-xs text-text-secondary tabular-nums w-7">{minConfidence}%</span>
         </div>
         {contradictions.length > 0 && (
-          <span className="px-2 py-0.5 text-xs rounded-full bg-red-500/20 text-red-400">{contradictions.length} contradictions</span>
+          <span className="px-2 py-0.5 text-xs rounded-full bg-danger/20 text-danger">{contradictions.length} contradictions</span>
         )}
         {unverified.length > 0 && (
-          <span className="px-2 py-0.5 text-xs rounded-full bg-yellow-500/20 text-yellow-400">{unverified.length} unverified</span>
+          <span className="px-2 py-0.5 text-xs rounded-full bg-warning/20 text-warning">{unverified.length} unverified</span>
         )}
         {verified.length > 0 && (
-          <span className="px-2 py-0.5 text-xs rounded-full bg-green-500/20 text-green-400">{verified.length} verified</span>
+          <span className="px-2 py-0.5 text-xs rounded-full bg-success/20 text-success">{verified.length} verified</span>
         )}
         <div className="flex-1" />
         <Button variant="secondary" size="sm" onClick={() => setShowModal(true)}>
@@ -262,7 +263,7 @@ function AuditReportView({
       {/* Contradictions */}
       {activeContradictions.length > 0 && (
         <section className="mb-6">
-          <h3 className="text-sm font-medium text-red-400 mb-1">Contradictions</h3>
+          <h3 className="text-sm font-medium text-danger mb-1">Contradictions</h3>
           <p className="text-xs text-text-muted mb-3">Claims that directly contradict tool outputs</p>
           <div className="flex flex-col gap-2">
             {activeContradictions.map(({ finding, key }) => (
@@ -273,7 +274,7 @@ function AuditReportView({
       )}
 
       {contradictions.length === 0 && report.summary.total_claims > 0 && (
-        <div className="mb-6 p-3 bg-green-500/10 border border-green-500/20 rounded-lg text-sm text-green-400">
+        <div className="mb-6 p-3 bg-success/10 border border-success/20 rounded-lg text-sm text-success">
           No contradictions found across {report.summary.total_claims} claims.
         </div>
       )}
@@ -349,24 +350,24 @@ function AuditReportView({
 /* ── FindingCard ── */
 
 const SEVERITY_STYLES: Record<string, string> = {
-  critical: 'bg-red-500/20 text-red-400',
+  critical: 'bg-danger/20 text-danger',
   high: 'bg-orange-500/20 text-orange-400',
   low: 'bg-bg-tertiary text-text-muted',
-  major: 'bg-red-500/20 text-red-400',
+  major: 'bg-danger/20 text-danger',
   moderate: 'bg-orange-500/20 text-orange-400',
   minor: 'bg-bg-tertiary text-text-muted',
 };
 
 const VERDICT_STYLES: Record<string, string> = {
-  verified: 'border-green-500/40 bg-green-500/5',
-  hallucination: 'border-red-500/40 bg-red-500/5',
-  unverified: 'border-yellow-500/40 bg-yellow-500/5',
+  verified: 'border-success/40 bg-success/5',
+  hallucination: 'border-danger/40 bg-danger/5',
+  unverified: 'border-warning/40 bg-warning/5',
 };
 
 const VERDICT_BADGE_STYLES: Record<string, string> = {
-  verified: 'bg-green-500/20 text-green-400',
-  hallucination: 'bg-red-500/20 text-red-400',
-  unverified: 'bg-yellow-500/20 text-yellow-400',
+  verified: 'bg-success/20 text-success',
+  hallucination: 'bg-danger/20 text-danger',
+  unverified: 'bg-warning/20 text-warning',
 };
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -396,7 +397,7 @@ function VerdictBadge({ verdict }: { verdict: string }) {
 }
 
 function ConfidenceBar({ confidence }: { confidence: number }) {
-  const color = confidence >= 80 ? 'bg-green-400' : confidence >= 50 ? 'bg-yellow-400' : 'bg-red-400';
+  const color = confidence >= 80 ? 'bg-success' : confidence >= 50 ? 'bg-warning' : 'bg-danger';
   return (
     <div className="flex items-center gap-1.5">
       <div className="w-12 h-1.5 bg-bg-tertiary rounded-full overflow-hidden">
@@ -526,7 +527,7 @@ function FindingCard({
             <div className="flex-1" />
             <button
               onClick={handleConfirm}
-              className="inline-flex items-center gap-1 px-2 py-1 text-xs text-green-400 border border-green-500/30 rounded hover:bg-green-500/10 transition-colors"
+              className="inline-flex items-center gap-1 px-2 py-1 text-xs text-success border border-success/30 rounded hover:bg-success/10 transition-colors"
               title="Confirm finding"
             >
               <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -633,7 +634,7 @@ function AuditHistory({ sessionId }: { sessionId: string }) {
       <div className="space-y-1">
         {history.map((h) => {
           const pct = h.trust_score;
-          const color = pct >= 85 ? 'text-green-400' : pct >= 60 ? 'text-yellow-400' : 'text-red-400';
+          const color = pct >= 85 ? 'text-success' : pct >= 60 ? 'text-warning' : 'text-danger';
           return (
             <div key={h.id} className="flex items-center gap-3 text-xs text-text-muted py-1 border-b border-border/50 last:border-0">
               <span className="w-24">{new Date(h.created_at).toLocaleDateString()}</span>

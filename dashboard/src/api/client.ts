@@ -180,6 +180,13 @@ export interface AdminActionLog {
   target_type: string;
   target_id: string;
   details: Record<string, unknown> | null;
+  // GH #84 (migration 081). Optional so older servers still type-check.
+  reason?: string | null;
+  before_state?: unknown;
+  after_state?: unknown;
+  // 'api' = the server performed the action; 'operator_record' = an
+  // operator recorded a change made outside the API (not verified).
+  source?: string;
   created_at: string;
 }
 

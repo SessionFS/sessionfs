@@ -129,7 +129,7 @@ describe('AgentRunsTab', () => {
   it('filters by status', async () => {
     const user = userEvent.setup();
     render(<AgentRunsTab projectId="proj_1" />);
-    await user.click(screen.getByRole('combobox', { name: /Filter by status/i }));
+    await user.click(screen.getByRole('button', { name: /Filter by status/i }));
     await user.click(
       screen.getByRole('option', { name: 'Failed' }),
     );

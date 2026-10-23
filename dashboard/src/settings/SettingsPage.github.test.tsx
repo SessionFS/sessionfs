@@ -1,12 +1,13 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { BrowserRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import SettingsPage from './SettingsPage';
 
 /**
  * Full-page tests: the GitHub link flow returns to /settings?github=...,
  * and the outcome notices + installation chooser must actually be visible
- * (they live in the Connection tab, not the default Account tab).
+ * (they live in the Integrations section, not the default Account tab).
  */
 
 const mockAuth = vi.fn();
@@ -38,7 +39,12 @@ function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
   return render(
     <QueryClientProvider client={qc}>
-      <SettingsPage />
+      <BrowserRouter>
+        <Routes>
+          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/settings/:section" element={<SettingsPage />} />
+        </Routes>
+      </BrowserRouter>
     </QueryClientProvider>,
   );
 }
@@ -63,7 +69,7 @@ describe('SettingsPage GitHub return handling', () => {
     window.history.replaceState({}, '', '/settings');
   });
 
-  it('opens the Connection tab and shows the chooser on ?github=choose', async () => {
+  it('lands on Integrations and shows the chooser on ?github=choose', async () => {
     window.history.replaceState({}, '', '/settings?github=choose');
     client.getGitHubClaimChoices.mockResolvedValue({
       choices: [
@@ -107,7 +113,7 @@ describe('SettingsPage GitHub return handling', () => {
     expect(await screen.findByText(/couldn't link the github installation/i)).toBeInTheDocument();
   });
 
-  it('stays on the Account tab without a github outcome', async () => {
+  it('stays on Account without a github outcome', async () => {
     renderPage();
     await waitFor(() => expect(client.getMe).toHaveBeenCalled());
     expect(screen.queryByText(/GitHub Integration/)).not.toBeInTheDocument();

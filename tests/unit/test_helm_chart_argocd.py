@@ -192,3 +192,24 @@ def test_api_proxy_timeout_zero_or_false_is_rejected_not_defaulted(bad):
     result = subprocess.run(cmd, capture_output=True, text=True)
     assert result.returncode != 0
     assert "apiProxyTimeout must be whole seconds" in result.stderr
+
+
+def test_ingress_health_ready_reaches_the_api_not_the_dashboard_stub():
+    """GitHub #83: the single ingress sends every path to the dashboard nginx.
+    Its own /health stub must be an exact match, and /health/ready must be
+    proxied to the API, or a probe through the ingress always sees 200."""
+    conf = _doc(_render(), "ConfigMap", "-dashboard-nginx")["data"]["default.conf"]
+    assert "location = /health {" in conf
+    assert "location /health {" not in conf
+    block = conf.split("location = /health/ready {", 1)[1].split("}", 1)[0]
+    assert "proxy_pass http://sessionfs-api:8000/health/ready;" in block
+
+
+def test_ingress_health_ready_follows_the_api_service_port():
+    conf = _doc(_render("--set", "api.service.port=9000"), "ConfigMap", "-dashboard-nginx")[
+        "data"
+    ]["default.conf"]
+    block = conf.split("location = /health/ready {", 1)[1].split("}", 1)[0]
+    assert "proxy_pass http://sessionfs-api:9000/health/ready;" in block
+    # Near-miss paths under /health/ are a 404, never the SPA's 200.
+    assert "location ^~ /health/ {" in conf

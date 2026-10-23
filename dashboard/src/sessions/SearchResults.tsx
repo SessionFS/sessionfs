@@ -6,6 +6,7 @@ import { renderSnippet } from '../utils/highlight';
 import RelativeDate from '../components/RelativeDate';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 import { Select } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 const TOOLS = [
   { label: 'All Tools', value: '' },
@@ -189,7 +190,7 @@ export default function SearchResults() {
   const activeToolLabel = TOOLS.find((t) => t.value === tool)?.label;
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-4 flex gap-6">
+    <div className="max-w-7xl w-full mx-auto px-4 py-4 flex gap-6">
       {/* Filters sidebar */}
       <aside className="w-48 shrink-0 hidden md:block">
         <h3 className="text-sm uppercase tracking-wider text-text-muted mb-2">Filters</h3>
@@ -283,8 +284,8 @@ export default function SearchResults() {
 
         {/* Error: other */}
         {error && !isPaywalled && (
-          <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded text-red-400 text-sm">
-            Search failed: {String(error)}
+          <div className="mb-4 p-3 bg-danger/10 border border-danger/30 rounded text-danger text-sm">
+            Search failed: {errorMessage(error)}
           </div>
         )}
 

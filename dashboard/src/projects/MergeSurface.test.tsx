@@ -152,7 +152,7 @@ describe('MergeSurface', () => {
     render(<MergeSurface projectId="proj_frontend" projectName="Frontend App" />);
 
     // Select source project via the Select combobox
-    const select = screen.getByRole('combobox', { name: 'Source project' });
+    const select = screen.getByRole('button', { name: 'Source project' });
     fireEvent.click(select);
     // Pick "Backend API"
     fireEvent.click(screen.getByText('Backend API'));
@@ -185,7 +185,7 @@ describe('MergeSurface', () => {
     render(<MergeSurface projectId="proj_frontend" projectName="Frontend App" />);
 
     // Select source
-    const select = screen.getByRole('combobox', { name: 'Source project' });
+    const select = screen.getByRole('button', { name: 'Source project' });
     fireEvent.click(select);
     fireEvent.click(screen.getByText('Backend API'));
 
@@ -226,7 +226,7 @@ describe('MergeSurface', () => {
     render(<MergeSurface projectId="proj_frontend" projectName="Frontend App" />);
 
     // Select source
-    const select = screen.getByRole('combobox', { name: 'Source project' });
+    const select = screen.getByRole('button', { name: 'Source project' });
     fireEvent.click(select);
     fireEvent.click(screen.getByText('Backend API'));
 
@@ -272,7 +272,7 @@ describe('MergeSurface', () => {
     render(<MergeSurface projectId="proj_frontend" projectName="Frontend App" />);
 
     // Select source
-    const select = screen.getByRole('combobox', { name: 'Source project' });
+    const select = screen.getByRole('button', { name: 'Source project' });
     fireEvent.click(select);
     fireEvent.click(screen.getByText('Backend API'));
 
@@ -316,7 +316,7 @@ describe('MergeSurface', () => {
 
     render(<MergeSurface projectId="proj_frontend" projectName="Frontend App" />);
 
-    const select = screen.getByRole('combobox', { name: 'Source project' });
+    const select = screen.getByRole('button', { name: 'Source project' });
     fireEvent.click(select);
     fireEvent.click(screen.getByText('Backend API'));
 

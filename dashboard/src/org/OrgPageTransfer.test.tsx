@@ -2,6 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 import OrgPage from './OrgPage';
 
 /**
@@ -37,10 +38,12 @@ function makeQueryClient() {
     },
   });
 }
-function renderPage() {
+function renderPage(initialUrl = '/settings/organization') {
   return render(
     <QueryClientProvider client={makeQueryClient()}>
-      <OrgPage />
+      <MemoryRouter initialEntries={[initialUrl]}>
+        <OrgPage />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -96,7 +99,7 @@ describe('OrgPage — ownership transfer', () => {
     await user.click(transferBtn);
 
     // Dialog open — pick the admin from the custom Select listbox.
-    await user.click(await screen.findByRole('combobox', { name: /select the new owner/i }));
+    await user.click(await screen.findByRole('button', { name: /select the new owner/i }));
     await user.click(await screen.findByRole('option', { name: 'admin@example.com' }));
 
     // Confirm — the dialog's submit button.

@@ -2,9 +2,10 @@ import { useState } from 'react';
 import type { NativeCatalog, WorksIn, WorksInBadge } from '../api/client';
 import { Badge } from '../components/Badge';
 import CopyButton from '../components/CopyButton';
-import { Card } from '../components/ui';
+import { Card, TableShell } from '../components/ui';
 import { useNativeCatalogs, useWorksIn } from '../hooks/useNativeCatalogs';
 import { isTierGate } from './tierGate';
+import { errorMessage } from '../utils/errorMessage';
 
 const TOOL_LABELS: Record<string, string> = {
   'claude-code': 'Claude Code',
@@ -132,7 +133,7 @@ export function WorksInMatrix({ versionId, enabled }: { versionId: string; enabl
       <p role="status" className="mt-4 text-sm text-text-tertiary">
         {isTierGate(worksIn.error)
           ? 'Works-in verification of private packages is available on Team and above.'
-          : `Works-in evidence unavailable: ${String(worksIn.error)}`}
+          : `Works-in evidence unavailable: ${errorMessage(worksIn.error)}`}
       </p>
     );
   }
@@ -145,8 +146,7 @@ export function WorksInMatrix({ versionId, enabled }: { versionId: string; enabl
         Verified = the tool&apos;s own installer accepted it. Format valid = the generated catalog entry matches the tool&apos;s
         documented format (checked {worksIn.data.vendor_docs_checked}).
       </p>
-      <div className="mt-2 overflow-x-auto rounded-lg border border-border">
-        <table className="w-full min-w-[560px] text-left text-sm">
+      <TableShell minWidth={560} bordered wrapperClassName="mt-2">
           <thead className="bg-bg-sunken text-xs uppercase tracking-wider text-text-tertiary">
             <tr><th className="px-3 py-2">Tool</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Evidence</th></tr>
           </thead>
@@ -174,8 +174,7 @@ export function WorksInMatrix({ versionId, enabled }: { versionId: string; enabl
               </tr>
             ))}
           </tbody>
-        </table>
-      </div>
+      </TableShell>
     </section>
   );
 }

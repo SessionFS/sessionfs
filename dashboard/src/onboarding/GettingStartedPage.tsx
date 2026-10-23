@@ -5,7 +5,7 @@ import { useAuth } from '../auth/AuthContext';
 import { setItem } from '../utils/storage';
 import CopyButton from '../components/CopyButton';
 import Wordmark from '../components/Wordmark';
-import { Card, Button } from '../components/ui';
+import { Card, Button, Alert } from '../components/ui';
 
 /**
  * Scope the dismissal flag to (baseUrl, apiKey-hash) so different accounts
@@ -85,19 +85,23 @@ export default function GettingStartedPage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto px-5 py-10 md:py-16">
+    <div className="max-w-2xl w-full mx-auto px-5 py-10 md:py-16">
       {/* API key banner — shown once after signup */}
       {showKeyBanner && signupApiKey && (
-        <div className="mb-6 p-4 bg-bg-elevated border border-[var(--brand)]/30 rounded-lg">
-          <div className="flex items-center justify-between gap-3 mb-1">
-            <p className="text-sm font-medium text-text-primary">Your API key</p>
+        <Alert
+          variant="info"
+          title="Your API key"
+          className="mb-6"
+          action={
             <button
+              type="button"
               onClick={() => setShowKeyBanner(false)}
               className="text-xs text-text-tertiary hover:text-text-secondary"
             >
               Dismiss
             </button>
-          </div>
+          }
+        >
           <p className="text-xs text-text-tertiary mb-2">Save this now — you will not see it again.</p>
           <div className="flex items-center gap-2">
             <code className="flex-1 text-xs font-mono bg-bg-primary px-3 py-1.5 rounded border border-border truncate">
@@ -105,7 +109,7 @@ export default function GettingStartedPage() {
             </code>
             <CopyButton text={signupApiKey} />
           </div>
-        </div>
+        </Alert>
       )}
 
       {/* Header */}
@@ -151,10 +155,10 @@ export default function GettingStartedPage() {
               );
             })}
           </div>
-          <div className="rounded-lg border overflow-hidden" style={{ backgroundColor: '#0b0d12', borderColor: 'rgba(255,255,255,0.08)' }}>
-            <pre className="px-4 py-3 text-sm font-mono overflow-x-auto" style={{ color: 'rgba(255,255,255,0.92)' }}>
-              <span style={{ color: 'rgba(255,255,255,0.45)' }}>$ </span>
-              <span style={{ color: '#a5d6ff' }}>{selectedTool.command}</span>
+          <div className="rounded-lg border border-border bg-bg-sunken overflow-hidden">
+            <pre className="px-4 py-3 text-sm font-mono overflow-x-auto text-text-primary">
+              <span className="text-text-tertiary">$ </span>
+              <span className="text-info">{selectedTool.command}</span>
             </pre>
           </div>
           <p className="mt-3 text-xs text-text-tertiary">
@@ -175,10 +179,10 @@ export default function GettingStartedPage() {
           <p className="text-sm text-text-secondary">
             Or push an existing session manually:
           </p>
-          <div className="mt-2 rounded-lg border overflow-hidden" style={{ backgroundColor: '#0b0d12', borderColor: 'rgba(255,255,255,0.08)' }}>
-            <pre className="px-4 py-3 text-sm font-mono overflow-x-auto" style={{ color: 'rgba(255,255,255,0.92)' }}>
-              <span style={{ color: 'rgba(255,255,255,0.45)' }}>$ </span>
-              <span style={{ color: '#a5d6ff' }}>sfs push {'<session_id>'}</span>
+          <div className="mt-2 rounded-lg border border-border bg-bg-sunken overflow-hidden">
+            <pre className="px-4 py-3 text-sm font-mono overflow-x-auto text-text-primary">
+              <span className="text-text-tertiary">$ </span>
+              <span className="text-info">sfs push {'<session_id>'}</span>
             </pre>
           </div>
         </StepCard>

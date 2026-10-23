@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
+from typing import Optional
+from urllib.parse import quote, urlencode
+
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from sessionfs.cli.common import console, err_console
+from sessionfs.cli.cmd_keys import _parse_error
+from sessionfs.cli.cmd_rules import _api_request, _get_api_config
 
 admin_app = typer.Typer(name="admin", help="Server administration commands.")
 
@@ -327,3 +335,240 @@ def registries_poll(
     console.print(f"[green]Registry poll:[/green] {total} registr{'y' if total == 1 else 'ies'} polled, {partial} partial, {errors} failed")
     if errors:
         raise SystemExit(2)
+
+
+# ---------------------------------------------------------------------------
+# Audit log + operator overrides (GH #84)
+# ---------------------------------------------------------------------------
+
+override_app = typer.Typer(
+    name="override",
+    help="Audited operator overrides (platform admin).",
+)
+admin_app.add_typer(override_app, name="override")
+
+
+def _call(method: str, path: str, payload: dict | None = None) -> tuple[int, object]:
+    api_url, api_key = _get_api_config()
+    status, body, _ = asyncio.run(
+        _api_request(method, path, api_url, api_key, json_data=payload)
+    )
+    return status, body
+
+
+def _e(value: object) -> str:
+    """Escape a server-echoed or user-supplied value for Rich markup: ids,
+    reasons and error text can contain '[...]', which Rich would otherwise
+    style or reject (MarkupError) after the server already acted."""
+    return escape(str(value))
+
+
+def _fail(status: int, body: object) -> None:
+    err_console.print(f"[red]Error[/red]: {_e(_parse_error(status, body))}")
+    raise typer.Exit(1)
+
+
+def _summarize_state(state: object, width: int = 60) -> str:
+    if state is None:
+        return ""
+    text = state if isinstance(state, str) else json.dumps(state, sort_keys=True)
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+@admin_app.command("audit-log")
+def audit_log(
+    target_type: Optional[str] = typer.Option(None, "--target-type", help="Filter by target type (project, user, org, ...)"),
+    target_id: Optional[str] = typer.Option(None, "--target-id", help="Filter by target id"),
+    action: Optional[str] = typer.Option(None, "--action", help="Filter by action name"),
+    source: Optional[str] = typer.Option(None, "--source", help="Filter by source: api or operator_record"),
+    admin_id: Optional[str] = typer.Option(None, "--admin-id", help="Filter by the admin user id who acted or recorded"),
+    limit: int = typer.Option(50, "--limit", min=1, max=200, help="Number of entries to show"),
+    page: int = typer.Option(1, "--page", min=1, help="Page number"),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw JSON response"),
+) -> None:
+    """Show the admin audit log, newest first (platform admin)."""
+    params: dict[str, object] = {"page": page, "page_size": limit}
+    for key, value in (
+        ("target_type", target_type),
+        ("target_id", target_id),
+        ("action", action),
+        ("source", source),
+        ("admin_id", admin_id),
+    ):
+        if value:
+            params[key] = value
+    status, body = _call("GET", f"/api/v1/admin/audit-log?{urlencode(params)}")
+    if status >= 400 or not isinstance(body, dict):
+        _fail(status, body)
+    assert isinstance(body, dict)
+    if as_json:
+        typer.echo(json.dumps(body, indent=2, sort_keys=True))
+        return
+
+    actions = body.get("actions") or []
+    if not actions:
+        console.print("[dim]No matching audit entries.[/dim]")
+        return
+    for row in actions:
+        if not isinstance(row, dict):
+            continue
+        source_value = str(row.get("source") or "api")
+        source_note = (
+            " [yellow](operator-recorded, not verified by the server)[/yellow]"
+            if source_value != "api"
+            else ""
+        )
+        console.print(
+            f"[bold]{_e(str(row.get('created_at') or '')[:19])}[/bold]  "
+            f"[cyan]{_e(row.get('action'))}[/cyan]  "
+            f"{_e(row.get('target_type'))}:{_e(row.get('target_id'))}"
+            f"{source_note}",
+            soft_wrap=True,
+        )
+        console.print(
+            f"  by {row.get('admin_id')}  (entry {row.get('id')})",
+            soft_wrap=True, markup=False,
+        )
+        if row.get("reason"):
+            console.print(f"  reason: {row.get('reason')}", soft_wrap=True, markup=False)
+        if row.get("before_state") is not None:
+            console.print(
+                f"  before: {_summarize_state(row.get('before_state'), 200)}",
+                soft_wrap=True, markup=False,
+            )
+        if row.get("after_state") is not None:
+            console.print(
+                f"  after:  {_summarize_state(row.get('after_state'), 200)}",
+                soft_wrap=True, markup=False,
+            )
+    total = body.get("total", len(actions))
+    console.print(f"[dim]{len(actions)} of {total} entr{'y' if total == 1 else 'ies'} shown; --json for full state[/dim]")
+
+
+@override_app.command("project-transfer")
+def override_project_transfer(
+    project_id: str = typer.Argument(..., help="Project id to move"),
+    to_org: str = typer.Option(..., "--to-org", help="Destination org id"),
+    reason: str = typer.Option(..., "--reason", "-r", help="Why this override is needed (stored in the audit log)"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Move even if open tickets/runs/handoffs use org personas the destination lacks",
+    ),
+    new_owner: Optional[str] = typer.Option(
+        None,
+        "--new-owner",
+        help=(
+            "User id of an active member of the destination org to own the project. "
+            "Required when the current owner is not a member of that org"
+        ),
+    ),
+    expect_from: Optional[str] = typer.Option(
+        None,
+        "--expect-from",
+        help=(
+            "Refuse unless the project is currently in this org id, or 'personal' "
+            "(guards against a retry moving a project that has moved since)"
+        ),
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt"),
+) -> None:
+    """Move a project into an org without the owner's consent (platform admin).
+
+    Cancels any pending transfer for the project and writes an audit entry
+    with the reason and before/after state in the same transaction."""
+    reason = reason.strip()
+    if not reason:
+        err_console.print("[red]Error[/red]: --reason must not be blank.")
+        raise typer.Exit(2)
+    payload: dict = {"to_org_id": to_org, "reason": reason, "force": force}
+    if new_owner:
+        payload["new_owner_id"] = new_owner
+    if expect_from is not None:
+        expect_from = expect_from.strip()
+        if not expect_from:
+            err_console.print("[red]Error[/red]: --expect-from must be an org id or 'personal'.")
+            raise typer.Exit(2)
+        payload["expected_org_id"] = None if expect_from == "personal" else expect_from
+    prompt = f"Move project {project_id} into org {to_org} without the owner's consent"
+    if new_owner:
+        prompt += f", making {new_owner} the owner"
+    if not yes and not typer.confirm(prompt + "?"):
+        console.print("Cancelled.")
+        raise typer.Exit(0)
+    status, body = _call(
+        "POST",
+        f"/api/v1/admin/projects/{quote(project_id, safe='')}/force-transfer",
+        payload,
+    )
+    if status >= 400 or not isinstance(body, dict):
+        _fail(status, body)
+    assert isinstance(body, dict)
+    console.print(
+        f"[green]Project transferred[/green]: {_e(body.get('project_id'))} "
+        f"{_e(body.get('from_scope'))} → {_e(body.get('to_org_id'))}"
+    )
+    if body.get("owner_id") and body.get("owner_id") != body.get("previous_owner_id"):
+        console.print(
+            f"  Owner: {_e(body.get('previous_owner_id'))} → {_e(body.get('owner_id'))}"
+        )
+    cancelled = body.get("cancelled_transfer_ids") or []
+    if cancelled:
+        console.print(f"  Cancelled pending transfer(s): {_e(', '.join(map(str, cancelled)))}")
+    console.print(
+        f"  Transfer: {_e(body.get('transfer_id'))}  Audit entry: {_e(body.get('admin_action_id'))}"
+    )
+
+
+def _read_state_file(path: Optional[Path], flag: str) -> dict | None:
+    if path is None:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        err_console.print(f"[red]Error[/red]: could not read {flag} {_e(path)}: {_e(exc)}")
+        raise typer.Exit(2)
+    if not isinstance(data, dict):
+        err_console.print(f"[red]Error[/red]: {flag} must contain a JSON object.")
+        raise typer.Exit(2)
+    return data
+
+
+@override_app.command("record")
+def override_record(
+    action: str = typer.Option(..., "--action", help="Action name, e.g. user_merge (lowercase, digits, _)"),
+    target_type: str = typer.Option(..., "--target-type", help="Target type, e.g. user, project, org"),
+    target_id: str = typer.Option(..., "--target-id", help="Target id"),
+    reason: str = typer.Option(..., "--reason", "-r", help="Why the action was taken"),
+    before_file: Optional[Path] = typer.Option(None, "--before-file", help="JSON object describing the state before"),
+    after_file: Optional[Path] = typer.Option(None, "--after-file", help="JSON object describing the state after"),
+) -> None:
+    """Record an action performed outside the API (for example raw SQL).
+
+    The entry is stored with source=operator_record: the server records who
+    logged it and when, but did not perform or verify the change."""
+    reason = reason.strip()
+    if not reason:
+        err_console.print("[red]Error[/red]: --reason must not be blank.")
+        raise typer.Exit(2)
+    payload: dict = {
+        "action": action,
+        "target_type": target_type,
+        "target_id": target_id,
+        "reason": reason,
+    }
+    before = _read_state_file(before_file, "--before-file")
+    after = _read_state_file(after_file, "--after-file")
+    if before is not None:
+        payload["before_state"] = before
+    if after is not None:
+        payload["after_state"] = after
+    status, body = _call("POST", "/api/v1/admin/audit-log", payload)
+    if status >= 400 or not isinstance(body, dict):
+        _fail(status, body)
+    assert isinstance(body, dict)
+    console.print(
+        f"[green]Recorded[/green] {_e(body.get('action'))} on "
+        f"{_e(body.get('target_type'))}:{_e(body.get('target_id'))} "
+        f"(audit entry {_e(body.get('id'))})"
+    )

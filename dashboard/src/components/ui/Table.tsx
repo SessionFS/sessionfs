@@ -17,12 +17,49 @@ interface TableProps<T> {
   onRowClick?: (row: T) => void;
   /** Extract a unique key per row for React keys. */
   rowKey: (row: T) => string;
+  /** Minimum table width in px; below it the table scrolls inside its wrapper instead of the page. */
+  minWidth?: number;
+  /** Shown in place of the rows when data is empty. Defaults to "No data". */
+  emptyState?: ReactNode;
 }
 
-export function Table<T>({ columns, data, onRowClick, rowKey }: TableProps<T>) {
+interface TableShellProps {
+  children: ReactNode;
+  /** Minimum table width in px; below it the wrapper scrolls horizontally. */
+  minWidth?: number;
+  /** Draw a rounded border around the scroll container. */
+  bordered?: boolean;
+  /** Extra classes for the <table> element. */
+  className?: string;
+  /** Wrapper classes (e.g. spacing). */
+  wrapperClassName?: string;
+}
+
+/**
+ * Scroll container + <table> for callers that render their own thead/tbody
+ * (expandable rows, bespoke cells). Keeps wide tables from overflowing the
+ * page at narrow widths.
+ */
+export function TableShell({ children, minWidth, bordered = false, className = '', wrapperClassName = '' }: TableShellProps) {
+  return (
+    <div className={`overflow-x-auto ${bordered ? 'rounded-lg border border-border' : ''} ${wrapperClassName}`.trim()}>
+      <table
+        className={`w-full text-left text-sm ${className}`.trim()}
+        style={minWidth ? { minWidth: `${minWidth}px` } : undefined}
+      >
+        {children}
+      </table>
+    </div>
+  );
+}
+
+export function Table<T>({ columns, data, onRowClick, rowKey, minWidth, emptyState }: TableProps<T>) {
   return (
     <div className="overflow-x-auto">
-      <table className="w-full border-separate border-spacing-0">
+      <table
+        className="w-full border-separate border-spacing-0"
+        style={minWidth ? { minWidth: `${minWidth}px` } : undefined}
+      >
         <thead>
           <tr>
             {columns.map((col) => (
@@ -62,7 +99,7 @@ export function Table<T>({ columns, data, onRowClick, rowKey }: TableProps<T>) {
       </table>
       {data.length === 0 && (
         <div className="px-3 py-8 text-center text-sm text-text-tertiary">
-          No data
+          {emptyState ?? 'No data'}
         </div>
       )}
     </div>

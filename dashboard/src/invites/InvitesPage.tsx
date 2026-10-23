@@ -21,8 +21,9 @@ import { useSearchParams } from 'react-router-dom';
 
 import { useToast } from '../hooks/useToast';
 import { useAcceptInvite, useDeclineInvite, useMyInvites } from './useInvites';
-import { Button, Card, Textarea } from '../components/ui';
+import { Button, Card, Textarea, PageContainer, PageHeader } from '../components/ui';
 import { Badge } from '../components/Badge';
+import { errorMessage } from '../utils/errorMessage';
 
 export default function InvitesPage() {
   const invites = useMyInvites();
@@ -36,7 +37,7 @@ export default function InvitesPage() {
 
   if (invites.isLoading) return <p className="text-text-tertiary p-4 text-sm">Loading invites…</p>;
   if (invites.error)
-    return <p role="alert" className="text-danger p-4 text-sm">Failed to load invites: {String(invites.error)}</p>;
+    return <p role="alert" className="text-danger p-4 text-sm">Failed to load invites: {errorMessage(invites.error)}</p>;
 
   const rows = invites.data?.invites ?? [];
   const busy = accept.isPending || decline.isPending;
@@ -46,7 +47,7 @@ export default function InvitesPage() {
       { inviteId },
       {
         onSuccess: () => addToast('success', `Joined ${orgName}`),
-        onError: (err) => addToast('error', `Accept failed: ${err.message}`),
+        onError: (err) => addToast('error', `Accept failed: ${errorMessage(err)}`),
       },
     );
   };
@@ -60,18 +61,17 @@ export default function InvitesPage() {
           setDecliningId(null);
           setDeclineReason('');
         },
-        onError: (err) => addToast('error', `Decline failed: ${err.message}`),
+        onError: (err) => addToast('error', `Decline failed: ${errorMessage(err)}`),
       },
     );
   };
 
   return (
-    <section aria-labelledby="invites-heading" className="max-w-2xl mx-auto px-4 py-6">
-      <h2 id="invites-heading" className="text-xl font-bold tracking-tight text-text-primary mb-2">Organization invites</h2>
-      <p className="text-sm text-text-tertiary mb-5">
-        Invites sent to your email address. Accept to join the org, or decline
-        if you weren't expecting it.
-      </p>
+    <PageContainer width="narrow">
+      <PageHeader
+        title="Organization invites"
+        description="Invites sent to your email address. Accept to join the org, or decline if you weren't expecting it."
+      />
 
       {rows.length === 0 ? (
         <div className="text-center py-12">
@@ -170,6 +170,6 @@ export default function InvitesPage() {
           })}
         </div>
       )}
-    </section>
+    </PageContainer>
   );
 }

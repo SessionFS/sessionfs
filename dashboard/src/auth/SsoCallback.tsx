@@ -95,7 +95,7 @@ export default function SsoCallback() {
         </div>
         {error ? (
           <>
-            <p className="text-red-500 text-sm" role="alert">
+            <p className="text-danger text-sm" role="alert">
               {error}
             </p>
             <Button onClick={() => navigate('/login', { replace: true })}>

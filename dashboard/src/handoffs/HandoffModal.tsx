@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useCreateHandoff } from '../hooks/useHandoffs';
 import { handoffSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
 import { Dialog, DialogHeader, DialogFooter, Input, Textarea, Button } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 interface HandoffModalProps {
   sessionId: string;
@@ -92,7 +93,7 @@ export default function HandoffModal({ sessionId, onClose }: HandoffModalProps) 
 
           {createHandoff.isError && (
             <div className="mb-4 p-2 rounded text-sm" style={{ backgroundColor: 'rgba(240,64,96,0.1)', color: 'var(--danger)', border: '1px solid rgba(240,64,96,0.3)' }}>
-              Failed to create handoff: {String(createHandoff.error)}
+              Failed to create handoff: {errorMessage(createHandoff.error)}
             </div>
           )}
 

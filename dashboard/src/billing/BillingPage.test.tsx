@@ -353,8 +353,8 @@ describe('BillingPage', () => {
     renderPage();
 
     await waitFor(() => {
-      // Tier headers use <h3>
-      const headings = screen.getAllByRole('heading', { level: 3 });
+      // Tier headers use <h2>
+      const headings = screen.getAllByRole('heading', { level: 2 });
       const names = headings.map((h) => h.textContent?.trim());
       for (const t of ['Free', 'Starter', 'Pro', 'Team']) {
         expect(names).toContain(t);

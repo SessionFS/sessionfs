@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import delete, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import (
@@ -29,6 +31,8 @@ from sessionfs.server.db.models import (
     Organization,
     OrgAuditEvent,
     OrgMember,
+    Project,
+    ProjectTransfer,
     Session,
     SsoExchangeCode,
     User,
@@ -44,6 +48,52 @@ router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 VALID_TIERS = {"free", "starter", "pro", "team", "enterprise", "admin"}
 
 
+# GH #84 — admin_actions.source values (migration 081).
+SOURCE_API = "api"  # the server performed the action and wrote the row
+SOURCE_OPERATOR_RECORD = "operator_record"  # operator-recorded, not verified
+
+REASON_MAX_CHARS = 500
+STATE_MAX_BYTES = 64 * 1024  # serialized before_state / after_state cap
+
+
+def _dump_state(state: dict | None) -> str | None:
+    if state is None:
+        return None
+    return json.dumps(state, sort_keys=True, default=str)
+
+
+def _load_json(raw: str | None) -> Any:
+    """Parse a stored JSON column for display. Rows can be written by hand
+    (raw SQL), so a malformed value is returned as the raw string rather
+    than failing the whole listing."""
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except ValueError:
+        return raw
+
+
+def _clean_reason(value: Any, *, required: bool) -> str | None:
+    """Validate an operator-supplied reason: a string of 1..REASON_MAX_CHARS
+    characters after trimming. An optional reason may be omitted, null or
+    blank (all stored as NULL)."""
+    if value is None:
+        if required:
+            raise HTTPException(422, "reason is required")
+        return None
+    if not isinstance(value, str):
+        raise HTTPException(422, "reason must be a string")
+    value = value.strip()
+    if not value:
+        if required:
+            raise HTTPException(422, "reason must not be blank")
+        return None
+    if len(value) > REASON_MAX_CHARS:
+        raise HTTPException(422, f"reason must be at most {REASON_MAX_CHARS} characters")
+    return value
+
+
 async def _log_action(
     db: AsyncSession,
     admin_id: str,
@@ -51,8 +101,16 @@ async def _log_action(
     target_type: str,
     target_id: str,
     details: dict | None = None,
+    *,
+    reason: str | None = None,
+    before_state: dict | None = None,
+    after_state: dict | None = None,
+    source: str = SOURCE_API,
 ) -> AdminAction:
-    """Record an admin action in the audit log."""
+    """Record an admin action in the audit log.
+
+    Only adds the row to the session: it commits (or rolls back) together
+    with the change it describes, in the caller's transaction."""
     entry = AdminAction(
         id=str(uuid.uuid4()),
         admin_id=admin_id,
@@ -60,9 +118,29 @@ async def _log_action(
         target_type=target_type,
         target_id=target_id,
         details=json.dumps(details) if details else None,
+        reason=reason,
+        before_state=_dump_state(before_state),
+        after_state=_dump_state(after_state),
+        source=source,
     )
     db.add(entry)
     return entry
+
+
+def _serialize_action(a: AdminAction) -> dict:
+    return {
+        "id": a.id,
+        "admin_id": a.admin_id,
+        "action": a.action,
+        "target_type": a.target_type,
+        "target_id": a.target_id,
+        "details": _load_json(a.details),
+        "reason": a.reason,
+        "before_state": _load_json(a.before_state),
+        "after_state": _load_json(a.after_state),
+        "source": a.source or SOURCE_API,
+        "created_at": a.created_at.isoformat() if a.created_at else None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +265,7 @@ async def change_user_tier(
     new_tier = body.get("tier")
     if new_tier not in VALID_TIERS:
         raise HTTPException(status_code=400, detail=f"Invalid tier. Must be one of: {', '.join(sorted(VALID_TIERS))}")
+    reason = _clean_reason(body.get("reason"), required=False)
 
     if user_id == admin.id and new_tier != "admin":
         raise HTTPException(status_code=400, detail="Cannot demote your own admin account")
@@ -212,9 +291,13 @@ async def change_user_tier(
             db=db,
         )
 
-    await _log_action(db, admin.id, "tier_change", "user", user_id, {
-        "old_tier": old_tier, "new_tier": new_tier,
-    })
+    await _log_action(
+        db, admin.id, "tier_change", "user", user_id,
+        {"old_tier": old_tier, "new_tier": new_tier},
+        reason=reason,
+        before_state={"tier": old_tier},
+        after_state={"tier": new_tier},
+    )
     await db.commit()
 
     return {"user_id": user_id, "old_tier": old_tier, "new_tier": new_tier}
@@ -861,6 +944,7 @@ async def admin_change_org_tier(
     """
     # Billing lock order shared with the Stripe webhooks (Stripe customer ->
     # org row -> entitlement): see services/entitlements.lock_billing_owner.
+    reason = _clean_reason(body.get("reason"), required=False)
     org = await lock_billing_owner(db, "org", org_id)
     if org is None:
         raise HTTPException(404, "Organization not found")
@@ -879,6 +963,7 @@ async def admin_change_org_tier(
     if not changes:
         raise HTTPException(400, "No changes provided")
 
+    before = {key: getattr(org, key) for key in changes}
     await db.execute(update(Organization).where(Organization.id == org_id).values(**changes))
 
     # P2: write-through — keep the entitlement in sync with admin tier change.
@@ -894,7 +979,10 @@ async def admin_change_org_tier(
             db=db,
         )
 
-    await _log_action(db, admin.id, "admin_update_org", "org", org_id, changes)
+    await _log_action(
+        db, admin.id, "admin_update_org", "org", org_id, changes,
+        reason=reason, before_state=before, after_state=dict(changes),
+    )
     await db.commit()
 
     return {"org_id": org_id, "updated": changes}
@@ -906,6 +994,9 @@ async def admin_change_org_tier(
 
 class ForceTransferRequest(BaseModel):
     to_user_id: str
+    # GH #84 — optional (existing clients omit it); recorded on the
+    # AdminAction row.
+    reason: str | None = Field(None, max_length=REASON_MAX_CHARS)
 
 
 @router.post("/orgs/{org_id}/force-transfer-owner")
@@ -1013,6 +1104,15 @@ async def force_transfer_owner(
     await _log_action(
         db, admin.id, "force_transfer_owner", "organization", org_id,
         {"from_user_id": old_owner_id, "to_user_id": new_owner_id},
+        reason=_clean_reason(body.reason, required=False),
+        before_state={
+            "owner_user_id": old_owner_id,
+            "target_user_role": displaced_owner_resulting_role,
+        },
+        after_state={
+            "owner_user_id": new_owner_id,
+            "displaced_owner_role": displaced_owner_resulting_role,
+        },
     )
 
     # OrgAuditEvent.
@@ -1230,36 +1330,113 @@ async def get_stats(
 async def get_audit_log(
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
+    target_type: str | None = Query(None, max_length=20),
+    target_id: str | None = Query(None, max_length=64),
+    action: str | None = Query(None, max_length=50),
+    source: str | None = Query(None, max_length=20),
+    admin_id: str | None = Query(None, max_length=36),
     admin: User = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """List recent admin actions."""
-    count_q = select(func.count()).select_from(AdminAction)
+    """List recent admin actions, newest first.
+
+    Optional exact-match filters: target_type, target_id, action, source
+    ('api' | 'operator_record') and admin_id."""
+    filters = []
+    if target_type:
+        filters.append(AdminAction.target_type == target_type)
+    if target_id:
+        filters.append(AdminAction.target_id == target_id)
+    if action:
+        filters.append(AdminAction.action == action)
+    if source:
+        filters.append(AdminAction.source == source)
+    if admin_id:
+        filters.append(AdminAction.admin_id == admin_id)
+
+    count_q = select(func.count()).select_from(AdminAction).where(*filters)
     total = (await db.execute(count_q)).scalar() or 0
 
     offset = (page - 1) * page_size
     query = (
         select(AdminAction)
-        .order_by(AdminAction.created_at.desc())
+        .where(*filters)
+        .order_by(AdminAction.created_at.desc(), AdminAction.id.desc())
         .offset(offset)
         .limit(page_size)
     )
     result = await db.execute(query)
-    actions = result.scalars().all()
-
-    items = []
-    for a in actions:
-        items.append({
-            "id": a.id,
-            "admin_id": a.admin_id,
-            "action": a.action,
-            "target_type": a.target_type,
-            "target_id": a.target_id,
-            "details": json.loads(a.details) if a.details else None,
-            "created_at": a.created_at.isoformat() if a.created_at else None,
-        })
+    items = [_serialize_action(a) for a in result.scalars().all()]
 
     return {"total": total, "page": page, "page_size": page_size, "actions": items}
+
+
+# GH #84 — operator-recorded actions. Operators with database access will
+# sometimes change data by hand; this endpoint lets them leave the same
+# audit row the paved paths write, marked source='operator_record' because
+# the server did not perform (or verify) the change.
+
+_ACTION_PATTERN = r"^[a-z][a-z0-9_]{0,49}$"
+_TARGET_TYPE_PATTERN = r"^[a-z][a-z0-9_]{0,19}$"
+# No control characters, no leading/trailing whitespace.
+_TARGET_ID_PATTERN = r"^[^\s\x00-\x1f\x7f](?:[^\x00-\x1f\x7f]{0,62}[^\s\x00-\x1f\x7f])?$"
+
+
+def _check_state_size(name: str, state: dict | None) -> None:
+    if state is None:
+        return
+    size = len(json.dumps(state, sort_keys=True, default=str).encode("utf-8"))
+    if size > STATE_MAX_BYTES:
+        raise HTTPException(
+            422,
+            f"{name} is {size} bytes serialized; the limit is {STATE_MAX_BYTES} bytes",
+        )
+
+
+class RecordAdminActionRequest(BaseModel):
+    action: str = Field(..., pattern=_ACTION_PATTERN)
+    target_type: str = Field(..., pattern=_TARGET_TYPE_PATTERN)
+    target_id: str = Field(..., pattern=_TARGET_ID_PATTERN)
+    reason: str = Field(..., min_length=1, max_length=REASON_MAX_CHARS)
+    before_state: dict[str, Any] | None = None
+    after_state: dict[str, Any] | None = None
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("reason must not be blank")
+        return value
+
+
+@router.post("/audit-log", status_code=201)
+async def record_admin_action(
+    body: RecordAdminActionRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Record an action an operator performed outside the API.
+
+    The row is stored with source='operator_record': the server attests
+    only WHO recorded it and WHEN, not that the described change happened.
+    """
+    _check_state_size("before_state", body.before_state)
+    _check_state_size("after_state", body.after_state)
+    entry = await _log_action(
+        db,
+        admin.id,
+        body.action,
+        body.target_type,
+        body.target_id,
+        reason=body.reason,
+        before_state=body.before_state,
+        after_state=body.after_state,
+        source=SOURCE_OPERATOR_RECORD,
+    )
+    await db.commit()
+    await db.refresh(entry)
+    return _serialize_action(entry)
 
 
 @router.post("/purge-deleted")
@@ -1810,4 +1987,278 @@ async def restore_project_from_compilation(
         "context_words_restored": context_words_restored,
         "entries_compiled_at_restored": len(entry_ids),
         "dry_run": False,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Project transfer override (GH #84)
+# ---------------------------------------------------------------------------
+
+
+class ProjectForceTransferRequest(BaseModel):
+    to_org_id: str = Field(..., min_length=1, max_length=64)
+    reason: str = Field(..., min_length=1, max_length=REASON_MAX_CHARS)
+    # Same meaning as the transfer accept route's `force` (GH #70): move
+    # even when non-terminal tickets / runs / handoffs use org personas the
+    # destination org does not have.
+    force: bool = False
+    # Org-project owners must be members of the project's org (member
+    # removal reassigns their projects; owners otherwise keep access
+    # forever). Required when the current owner is not a member of the
+    # destination org; may also be given to reassign ownership explicitly.
+    new_owner_id: str | None = Field(None, min_length=1, max_length=36)
+    # Precondition against delayed retries: when present, the project must
+    # currently be in this org (null = personal) or the request is refused
+    # with 409 unexpected_source_scope. Omit to skip the check.
+    expected_org_id: str | None = Field(None, min_length=1, max_length=64)
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("reason must not be blank")
+        return value
+
+
+async def _is_org_member(
+    db: AsyncSession, org_id: str, user_id: str, *, require_active: bool = False
+) -> bool:
+    stmt = (
+        select(OrgMember.user_id)
+        .join(User, User.id == OrgMember.user_id)
+        .where(OrgMember.org_id == org_id, OrgMember.user_id == user_id)
+        .limit(1)
+    )
+    if require_active:
+        stmt = stmt.where(User.is_active.is_not(False))
+    return (await db.execute(stmt)).first() is not None
+
+
+def _project_override_org_event(
+    org: Organization,
+    admin: User,
+    project: Project,
+    before: dict,
+    after: dict,
+) -> OrgAuditEvent:
+    return OrgAuditEvent(
+        id=f"oae_{uuid.uuid4().hex[:16]}",
+        org_id=org.id,
+        org_name_snapshot=org.name,
+        event_type="project_force_transferred",
+        actor_user_id=admin.id,
+        actor_email_snapshot=admin.email,
+        actor_role_at_time="platform_admin",
+        target_type="project",
+        target_id=project.id,
+        before=json.dumps(before, sort_keys=True),
+        after=json.dumps(after, sort_keys=True),
+    )
+
+
+@router.post("/projects/{project_id}/force-transfer")
+async def force_transfer_project(
+    project_id: str,
+    body: ProjectForceTransferRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Move a project into an org without the owner's consent. Platform
+    admin only.
+
+    The operator override for "the owner is unavailable and the team needs
+    the project in the org". It keeps the normal transfer path's
+    invariants: the GH #70 scope locks (project, then the source and
+    destination orgs) are taken before any check, a merged project is
+    refused (409 project_merged), and the stranded-persona guard applies
+    unless `force`. The owner must be a member of the destination org
+    (409 owner_not_member) unless `new_owner_id` names an active member,
+    who then becomes the owner. `expected_org_id` (null = personal) refuses
+    the move (409 unexpected_source_scope) if the project is no longer
+    where the operator saw it. Any pending transfer for the project is cancelled. An
+    accepted ProjectTransfer row (initiated and accepted by the admin), an
+    AdminAction with before/after state and the reason, and OrgAuditEvent
+    rows for the orgs involved are written in the same transaction as the
+    move: either all of it commits or none of it does.
+    """
+    from sessionfs.server.routes.project_transfers import _assert_no_stranded_personas
+    from sessionfs.server.services.project_resolver import get_primary_remote
+    from sessionfs.server.services.scope_locks import lock_project_scope
+
+    project = (
+        await db.execute(select(Project).where(Project.id == project_id))
+    ).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(404, "Project not found")
+
+    to_org_id = body.to_org_id
+    # Re-reads the project under its lock (404 if deleted meanwhile, 409 if
+    # merged), then locks its current org and the destination org.
+    await lock_project_scope(db, project, extra_org_ids=[to_org_id])
+
+    dest_org = (
+        await db.execute(select(Organization).where(Organization.id == to_org_id))
+    ).scalar_one_or_none()
+    if dest_org is None:
+        raise HTTPException(404, "Destination org not found")
+    if "expected_org_id" in body.model_fields_set and project.org_id != body.expected_org_id:
+        raise HTTPException(
+            409,
+            {
+                "code": "unexpected_source_scope",
+                "message": (
+                    f"The project is in {project.org_id or 'personal'!r}, not "
+                    f"{body.expected_org_id or 'personal'!r}; nothing was changed."
+                ),
+                "current_org_id": project.org_id,
+            },
+        )
+    if project.org_id == dest_org.id:
+        raise HTTPException(
+            409,
+            {
+                "code": "already_in_org",
+                "message": "The project is already in that org; nothing to transfer.",
+            },
+        )
+
+    # Org-project owners must be members of the org: member removal hands
+    # their projects to the removing admin, and owners keep full access
+    # regardless of membership. Checked under the destination org lock, which
+    # member removal also takes.
+    old_owner_id = project.owner_id
+    new_owner_id = old_owner_id
+    if body.new_owner_id is not None:
+        if not await _is_org_member(db, dest_org.id, body.new_owner_id, require_active=True):
+            raise HTTPException(
+                409,
+                {
+                    "code": "new_owner_not_member",
+                    "message": (
+                        "new_owner_id must be an active member of the destination org."
+                    ),
+                },
+            )
+        new_owner_id = body.new_owner_id
+    elif not await _is_org_member(db, dest_org.id, old_owner_id):
+        raise HTTPException(
+            409,
+            {
+                "code": "owner_not_member",
+                "message": (
+                    "The project owner is not a member of the destination org. "
+                    "Pass new_owner_id (an active member of that org) to "
+                    "reassign ownership with the move."
+                ),
+                "owner_id": old_owner_id,
+            },
+        )
+
+    source_org = None
+    if project.org_id is not None:
+        source_org = (
+            await db.execute(
+                select(Organization).where(Organization.id == project.org_id)
+            )
+        ).scalar_one_or_none()
+    from_scope = project.org_id if project.org_id is not None else "personal"
+
+    await _assert_no_stranded_personas(db, project, dest_org.id, body.force)
+
+    now = datetime.now(timezone.utc)
+    pending_ids = list(
+        (
+            await db.execute(
+                select(ProjectTransfer.id).where(
+                    ProjectTransfer.project_id == project.id,
+                    ProjectTransfer.state == "pending",
+                )
+            )
+        ).scalars().all()
+    )
+    if pending_ids:
+        await db.execute(
+            update(ProjectTransfer)
+            .where(
+                ProjectTransfer.id.in_(pending_ids),
+                ProjectTransfer.state == "pending",
+            )
+            .values(state="cancelled", updated_at=now)
+        )
+
+    primary_remote = await get_primary_remote(db, project.id)
+    transfer = ProjectTransfer(
+        id=f"xfer_{uuid.uuid4().hex[:16]}",
+        project_id=project.id,
+        project_git_remote_snapshot=primary_remote or project.git_remote_normalized,
+        project_name_snapshot=project.name,
+        initiated_by=admin.id,
+        target_user_id=admin.id,
+        from_scope=from_scope,
+        to_scope=dest_org.id,
+        state="accepted",
+        accepted_by=admin.id,
+        accepted_at=now,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(transfer)
+
+    before = {
+        "org_id": project.org_id,
+        "scope": from_scope,
+        "owner_id": project.owner_id,
+        "pending_transfer_ids": pending_ids,
+    }
+    project.org_id = dest_org.id
+    project.owner_id = new_owner_id
+    project.updated_at = now
+    after = {
+        "org_id": dest_org.id,
+        "scope": dest_org.id,
+        "owner_id": new_owner_id,
+        "transfer_id": transfer.id,
+        "cancelled_transfer_ids": pending_ids,
+    }
+
+    entry = await _log_action(
+        db,
+        admin.id,
+        "project_transfer_override",
+        "project",
+        project.id,
+        {
+            "from_scope": from_scope,
+            "to_org_id": dest_org.id,
+            "transfer_id": transfer.id,
+            "force": body.force,
+            "owner_changed": new_owner_id != old_owner_id,
+        },
+        reason=body.reason,
+        before_state=before,
+        after_state=after,
+    )
+    for org in (source_org, dest_org):
+        if org is not None:
+            db.add(_project_override_org_event(org, admin, project, before, after))
+
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            409, "The project's transfers changed concurrently; retry"
+        ) from None
+
+    return {
+        "status": "transferred",
+        "project_id": project_id,
+        "from_scope": from_scope,
+        "to_org_id": dest_org.id,
+        "transfer_id": transfer.id,
+        "cancelled_transfer_ids": pending_ids,
+        "previous_owner_id": old_owner_id,
+        "owner_id": new_owner_id,
+        "admin_action_id": entry.id,
     }

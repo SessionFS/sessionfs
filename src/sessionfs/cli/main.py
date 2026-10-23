@@ -24,6 +24,43 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+
+def _version_line() -> str:
+    import platform
+    import sys
+
+    from sessionfs import __version__
+
+    py = ".".join(str(part) for part in sys.version_info[:3])
+    return f"sessionfs {__version__} (python {py}, {sys.platform} {platform.machine()})"
+
+
+def _print_version(value: bool) -> None:
+    if value:
+        typer.echo(_version_line())
+        raise typer.Exit(0)
+
+
+@app.callback()
+def _root(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        "-V",
+        callback=_print_version,
+        is_eager=True,
+        expose_value=False,
+        help="Show the installed sessionfs version and exit.",
+    ),
+) -> None:
+    """SessionFS — Portable AI coding sessions."""
+
+
+@app.command("version")
+def version_cmd() -> None:
+    """Show the installed sessionfs version."""
+    typer.echo(_version_line())
+
 # Register sub-command groups
 from sessionfs.cli.cmd_daemon import daemon_app
 from sessionfs.cli.cmd_config import config_app

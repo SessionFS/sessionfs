@@ -17,6 +17,7 @@ import RelativeDate from '../components/RelativeDate';
 import { Badge } from '../components/Badge';
 import { Select, Button, Card } from '../components/ui';
 import type { AgentRun } from '../api/client';
+import { errorMessage } from '../utils/errorMessage';
 
 /**
  * AgentRun `ci_run_url` is operator-supplied (`--ci-run-url` flag on
@@ -94,7 +95,7 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
   });
 
   if (isLoading) return <p className="text-text-tertiary p-4">Loading runs…</p>;
-  if (error) return <p role="alert" className="text-danger p-4">Failed to load runs: {String(error)}</p>;
+  if (error) return <p role="alert" className="text-danger p-4">Failed to load runs: {errorMessage(error)}</p>;
   if (!data) return null;
 
   const runs = data;

@@ -3,6 +3,7 @@ import { useAuth } from '../auth/AuthContext';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Dialog } from '../components/ui/Dialog';
+import { errorMessage } from '../utils/errorMessage';
 
 interface ShareLinkInfo {
   link_id: string;
@@ -39,8 +40,7 @@ export default function ShareDialog({ sessionId, open, onClose }: Props) {
       setLink(result);
       setState('created');
     } catch (err: unknown) {
-      const e = err as { status?: number; message?: string };
-      setError(e.message || 'Failed to create share link');
+      setError(errorMessage(err, 'Failed to create share link'));
       setState('error');
     }
   }, [auth, sessionId, expiresInHours, password]);

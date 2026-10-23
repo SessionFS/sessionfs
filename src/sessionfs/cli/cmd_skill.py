@@ -1484,8 +1484,9 @@ def publish_package(
     trusted_publishing: bool = typer.Option(
         False,
         "--trusted-publishing",
-        help="Publish from GitHub Actions with an OIDC token instead of an API key "
-        "(needs `permissions: id-token: write` and a trusted publisher for --namespace)",
+        help="Publish from GitHub Actions or GitLab CI with an OIDC token instead of an API key "
+        "(GitHub: `permissions: id-token: write`; GitLab: an `id_tokens:` entry; plus a trusted "
+        "publisher for --namespace)",
     ),
     package_name: str | None = typer.Option(
         None, "--package", help="With --trusted-publishing: the package name the trust is scoped to"
@@ -1494,6 +1495,18 @@ def publish_package(
         None,
         "--audience",
         help="With --trusted-publishing: OIDC audience (default: read from the server)",
+    ),
+    ci_provider: str | None = typer.Option(
+        None,
+        "--ci-provider",
+        help="With --trusted-publishing: github or gitlab (default: gitlab inside GitLab CI, "
+        "detected from GITLAB_CI=true, else github)",
+    ),
+    id_token_env: str = typer.Option(
+        "SFS_ID_TOKEN",
+        "--id-token-env",
+        help="With --trusted-publishing on GitLab: the variable holding the ID token declared "
+        "under `id_tokens:` in .gitlab-ci.yml",
     ),
 ) -> None:
     """Validate locally, then upload a package to the hosted marketplace."""
@@ -1512,6 +1525,8 @@ def publish_package(
             package_name=package_name,
             audience=audience,
             json_output=json_output,
+            ci_provider=ci_provider,
+            id_token_env=id_token_env,
         )
         return
     try:
@@ -1605,9 +1620,13 @@ def _publish_trusted(
     package_name: str | None,
     audience: str | None,
     json_output: bool,
+    ci_provider: str | None = None,
+    id_token_env: str = "SFS_ID_TOKEN",
 ) -> None:
     """`sfs skill publish --trusted-publishing`: validate, get a GitHub OIDC
-    token, exchange it for a single-use publish token, upload. No API key."""
+    token (or read the GitLab CI ID token), exchange it for a single-use
+    publish token, upload. No API key."""
+    import os
     from pathlib import Path
 
     import httpx
@@ -1616,6 +1635,11 @@ def _publish_trusted(
     from sessionfs.profiles import resolve_auth
     from sessionfs.skills import publishing
 
+    provider = (ci_provider or "").strip().lower() or (
+        "gitlab" if os.environ.get("GITLAB_CI") == "true" else "github"
+    )
+    if provider not in ("github", "gitlab"):
+        raise typer.BadParameter("--ci-provider must be github or gitlab.")
     if not namespace:
         raise typer.BadParameter("--trusted-publishing needs --namespace (your publisher namespace).")
     if visibility not in (None, "public"):
@@ -1638,9 +1662,21 @@ def _publish_trusted(
     api_url = resolve_auth().api_url
     try:
         expected = audience or publishing.trusted_publishing_audience(api_url=api_url)
-        oidc = publishing.github_oidc_token(expected)
+        if not audience:
+            # An OIDC token is a credential for whichever server its audience
+            # names; never mint one for another server just because the
+            # configured API URL said so.
+            publishing.check_audience_matches_api(expected, api_url)
+        if provider == "gitlab":
+            oidc = publishing.gitlab_id_token(id_token_env, audience=expected)
+        else:
+            oidc = publishing.github_oidc_token(expected)
         exchanged = publishing.exchange_trusted_publishing_token(
-            api_url=api_url, oidc_token=oidc, namespace=namespace, package=package_name or package.name
+            api_url=api_url,
+            oidc_token=oidc,
+            namespace=namespace,
+            package=package_name or package.name,
+            provider=provider,
         )
         target = publishing.trusted_validation_visibility(visibility, exchanged)
         if target != ("public" if visibility == "public" else "personal"):
@@ -1677,7 +1713,10 @@ def _publish_trusted(
         # Publication provenance (which workflow run published it), not build
         # provenance: nothing yet binds the archive digest to that commit.
         ("Published from", f"{signature.get('published_from_repo')}@{signature.get('publishing_run_sha')}"),
-        ("Publishing workflow", signature.get("publishing_workflow_ref")),
+        (
+            "Publishing workflow",
+            signature.get("publishing_workflow_ref") or signature.get("publishing_ci_config_ref_uri"),
+        ),
         ("Publishing run", signature.get("publishing_run_url")),
     ):
         console.print(_literal(f"  {label}: {value}"))

@@ -115,7 +115,7 @@ describe('PersonasTab', () => {
     fireEvent.change(screen.getByLabelText(/Role/i), { target: { value: 'Tester' } });
     fireEvent.submit(screen.getByRole('dialog').querySelector('form')!);
     await new Promise((r) => setTimeout(r, 0));
-    expect(mockAddToast).toHaveBeenCalledWith('error', expect.stringContaining('409'));
+    expect(mockAddToast).toHaveBeenCalledWith('error', expect.stringMatching(/^Save failed: .*name taken/));
   });
 
   it('labels org personas and keeps them read-only (GH #70)', () => {

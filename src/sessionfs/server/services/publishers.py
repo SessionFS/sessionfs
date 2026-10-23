@@ -11,8 +11,10 @@ Invariants this module enforces (Sentinel):
   a listing. DNS proofs are re-checked by a sweeper and lapse after 7 days
   of failures; GitHub proofs are revoked as soon as the installation is gone.
 - Trusted publishing binds to GitHub's NUMERIC repository and owner ids and
-  the exact workflow file; publish tokens are hashed at rest, expire after
-  15 minutes, are single use, and are minted at most once per OIDC ``jti``.
+  the exact workflow file, or to a GitLab instance on the operator allowlist
+  plus the NUMERIC project id, a protected ref and a non-merge-request
+  pipeline; publish tokens are hashed at rest, expire after 15 minutes, are
+  single use, and are minted at most once per OIDC (``iss``, ``jti``).
 - Public listings from anyone but the platform need moderation for a
   publisher's first public version and for any update that widens access.
 """
@@ -82,6 +84,17 @@ _REUSABLE_RE = re.compile(
 # the trusted publisher opts in (it runs with the default branch's privileges
 # on behalf of another workflow, possibly one a fork triggered).
 PUBLISH_EVENTS = frozenset({"push", "release", "workflow_dispatch"})
+# GitLab pipeline sources that can publish (an allowlist, the parallel of
+# PUBLISH_EVENTS): a push (branch / tag), a pipeline run from the UI, or the
+# pipelines API. Everything else is refused - merge_request_event and
+# external_pull_request_event (merge / pull request code, possibly from a
+# fork), parent_pipeline and pipeline (a child or downstream pipeline, whose
+# parent may itself be a merge request pipeline), trigger (trigger tokens),
+# schedule, chat, webide, and any source GitLab adds later.
+GITLAB_PUBLISH_SOURCES = frozenset({"push", "web", "api"})
+# GitLab environment names: letters, digits, spaces and - _ / . (no $ { }).
+_GITLAB_ENVIRONMENT_RE = re.compile(r"^[A-Za-z0-9 ._/-]{1,255}$")
+_GITLAB_PROJECT_PATH_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,254}(?:/[A-Za-z0-9_][A-Za-z0-9._-]{0,254}){1,20}$")
 # A reserved name unlocks only on FRESH domain evidence: a publisher DNS
 # verification that succeeded within this window, or a live DNS re-check of
 # the org's SSO domain proof at claim time.
@@ -104,6 +117,30 @@ _CLAIM_KEYS = (
     "runner_environment",
     "actor_id",
 )
+# The GitLab claims kept on a publish token (no e-mail address, no login).
+_GITLAB_CLAIM_KEYS = (
+    "sub",
+    "namespace_id",
+    "namespace_path",
+    "project_id",
+    "project_path",
+    "pipeline_id",
+    "pipeline_source",
+    "job_id",
+    "ref",
+    "ref_type",
+    "ref_path",
+    "ref_protected",
+    "sha",
+    "environment",
+    "environment_protected",
+    "deployment_tier",
+    "user_id",
+    "runner_environment",
+    "ci_config_ref_uri",
+    "ci_config_sha",
+)
+TRUSTED_PROVENANCE_KINDS = frozenset({"github_oidc", "gitlab_oidc"})
 
 
 def utc(value: datetime | None) -> datetime | None:
@@ -880,8 +917,14 @@ def widening_reasons(
 ) -> list[str]:
     old_caps = capability_set(old_risk or {}, old_signature or {})
     reasons = sorted(capability_set(new_risk, new_signature) - old_caps)
-    if (old_signature or {}).get("kind") == "github_oidc" and new_signature.get("kind") != "github_oidc":
-        reasons.append("trust_downgrade:unattested_after_trusted_publish")
+    old_kind = (old_signature or {}).get("kind")
+    new_kind = new_signature.get("kind")
+    if old_kind in TRUSTED_PROVENANCE_KINDS:
+        if new_kind not in TRUSTED_PROVENANCE_KINDS:
+            reasons.append("trust_downgrade:unattested_after_trusted_publish")
+        elif new_kind != old_kind:
+            # Trusted either way, but published from a different CI provider.
+            reasons.append("trust_change:provider_changed")
     return reasons
 
 
@@ -1362,7 +1405,7 @@ def ref_matches(pattern: str | None, ref: str) -> bool:
     return re.fullmatch(regex, ref) is not None
 
 
-def workflow_matches(claims: dict, workflow_path: str, reusable_workflow: str | None = None) -> bool:
+def workflow_matches(claims: dict, workflow_path: str | None, reusable_workflow: str | None = None) -> bool:
     """Bind the CALLER and, optionally, the CALLEE independently.
 
     ``workflow_ref`` (``<owner>/<repo>/<path>@<ref>``) names the workflow file
@@ -1376,7 +1419,7 @@ def workflow_matches(claims: dict, workflow_path: str, reusable_workflow: str | 
     # owner/repo are case-insensitive on GitHub (and already bound by numeric
     # id); the workflow FILE path is compared exactly: release.yml and
     # Release.yml are different files.
-    if not repository or caller is None:
+    if not repository or caller is None or not workflow_path:
         return False
     if caller[0].casefold() != repository.casefold() or caller[1] != workflow_path:
         return False
@@ -1468,6 +1511,23 @@ async def exchange_oidc_claims(
         # registering the same repository and workflow (no ambiguity DoS).
         and (namespace is None or publisher.namespace == namespace)
     ]
+    trusted, publisher = _single_match(matches, requested_package, denied)
+    return await _mint_publish_token(
+        db,
+        trusted,
+        publisher,
+        requested_package=requested_package,
+        issuer=GITHUB_ACTIONS_ISSUER,
+        jti=str(claims["jti"]),
+        claims=bounded_claims(claims),
+    )
+
+
+def _single_match(
+    matches: list[tuple[SkillTrustedPublisher, SkillPublisher]],
+    requested_package: str | None,
+    denied: HTTPException,
+) -> tuple[SkillTrustedPublisher, SkillPublisher]:
     if requested_package is not None:
         # Prefer the package-scoped binding over a namespace-wide one.
         scoped = [item for item in matches if item[0].package_name == requested_package]
@@ -1479,7 +1539,21 @@ async def exchange_oidc_claims(
             "trusted_publisher_ambiguous",
             "Several trusted publishers match this run; pass the package name.",
         )
-    trusted, publisher = matches[0]
+    return matches[0]
+
+
+async def _mint_publish_token(
+    db: AsyncSession,
+    trusted: SkillTrustedPublisher,
+    publisher: SkillPublisher,
+    *,
+    requested_package: str | None,
+    issuer: str,
+    jti: str,
+    claims: dict,
+) -> tuple[str, SkillPublishToken, SkillTrustedPublisher, SkillPublisher]:
+    """Insert the hashed, single-use publish token. UNIQUE(oidc_issuer,
+    oidc_jti) refuses a second exchange of the same OIDC token (401)."""
     raw = PUBLISH_TOKEN_PREFIX + secrets.token_urlsafe(32)
     row = SkillPublishToken(
         id=f"spt_{secrets.token_hex(12)}",
@@ -1487,9 +1561,9 @@ async def exchange_oidc_claims(
         trusted_publisher_id=trusted.id,
         publisher_id=publisher.id,
         package_name=trusted.package_name or requested_package,
-        oidc_issuer=GITHUB_ACTIONS_ISSUER,
-        oidc_jti=str(claims["jti"])[:255],
-        claims=json.dumps(bounded_claims(claims), sort_keys=True),
+        oidc_issuer=issuer[:255],
+        oidc_jti=jti[:255],
+        claims=json.dumps(claims, sort_keys=True),
         auth_generation=publisher.auth_generation or 0,
         expires_at=now_utc() + PUBLISH_TOKEN_TTL,
     )
@@ -1503,6 +1577,134 @@ async def exchange_oidc_claims(
             detail={"code": "oidc_token_replayed", "message": "This OIDC token was already exchanged."},
         ) from None
     return raw, row, trusted, publisher
+
+
+# ---------------------------------------------------------------------------
+# GitLab CI trusted publishing
+# ---------------------------------------------------------------------------
+
+
+def validate_gitlab_trust_input(
+    *,
+    host: str | None,
+    issuers: tuple[str, ...],
+    project_path: str | None,
+    environment: str | None,
+    ref_pattern: str | None,
+) -> tuple[str, str | None, str | None, str | None]:
+    """(issuer, project_path, environment, ref_pattern) for a GitLab trust.
+
+    The host must be on the operator allowlist (SFS_GITLAB_OIDC_ISSUERS) - a
+    trust for any other instance is refused here and could never match at
+    exchange (no JWKS is ever fetched for it)."""
+    from sessionfs.server.services import gitlab_oidc
+
+    issuer = gitlab_oidc.allowed_issuer(host or gitlab_oidc.GITLAB_COM_ISSUER, issuers)
+    if issuer is None:
+        raise HTTPException(
+            422,
+            detail={
+                "code": "gitlab_host_not_allowed",
+                "message": "This GitLab instance is not enabled on this server "
+                "(the operator lists allowed instances in SFS_GITLAB_OIDC_ISSUERS).",
+            },
+        )
+    path = (project_path or "").strip().strip("/") or None
+    if path is not None and (len(path) > 200 or not _GITLAB_PROJECT_PATH_RE.fullmatch(path)):
+        raise HTTPException(
+            422, detail={"code": "invalid_project_path", "message": "project path must look like group/project"}
+        )
+    env = (environment or "").strip() or None
+    if env is not None and not _GITLAB_ENVIRONMENT_RE.fullmatch(env):
+        raise HTTPException(422, detail={"code": "invalid_environment", "message": "environment name is invalid"})
+    pattern = (ref_pattern or "").strip() or None
+    if pattern is not None and (not _REF_PATTERN_RE.fullmatch(pattern) or "**" in pattern):
+        raise HTTPException(
+            422,
+            detail={
+                "code": "invalid_ref_pattern",
+                "message": "ref_pattern must look like refs/tags/v* or refs/heads/main",
+            },
+        )
+    return issuer, path, env, pattern
+
+
+def gitlab_source_allowed(claims: dict) -> bool:
+    return claims.get("pipeline_source") in GITLAB_PUBLISH_SOURCES
+
+
+def bounded_gitlab_claims(claims: dict) -> dict:
+    kept = {key: claims[key] for key in _GITLAB_CLAIM_KEYS if isinstance(claims.get(key), str)}
+    kept["iss"] = str(claims.get("iss") or "")
+    return kept
+
+
+async def exchange_gitlab_claims(
+    db: AsyncSession,
+    claims: dict,
+    *,
+    issuers: tuple[str, ...],
+    requested_package: str | None,
+    namespace: str | None = None,
+) -> tuple[str, SkillPublishToken, SkillTrustedPublisher, SkillPublisher]:
+    """Match VERIFIED GitLab CI claims to ONE active GitLab trusted publisher
+    and mint a publish token. Every mismatch is the same 403.
+
+    Binding: the row's issuer equals the token's verified iss AND is still
+    allowlisted; numeric project id (and namespace id when pinned); the full
+    ref (``ref_path``) under refs/heads or refs/tags and inside the row's
+    ref pattern; a PROTECTED ref (``ref_protected`` == "true", always
+    required); the environment when the row names one (exact); and a
+    publishing pipeline source (never a merge request pipeline)."""
+    denied = _forbidden(
+        "trusted_publisher_mismatch",
+        "No trusted publisher matches this pipeline job.",
+    )
+    issuer = str(claims.get("iss") or "")
+    ref_path = str(claims.get("ref_path") or "")
+    if issuer not in issuers:
+        raise denied
+    if not (ref_path.startswith("refs/heads/") or ref_path.startswith("refs/tags/")):
+        raise denied
+    if claims.get("ref_protected") != "true" or not gitlab_source_allowed(claims):
+        raise denied
+    candidates = (
+        await db.execute(
+            select(SkillTrustedPublisher, SkillPublisher)
+            .join(SkillPublisher, SkillPublisher.id == SkillTrustedPublisher.publisher_id)
+            .where(
+                SkillTrustedPublisher.provider == "gitlab",
+                SkillTrustedPublisher.gitlab_project_id == int(claims["project_id"]),
+                SkillTrustedPublisher.issuer == issuer,
+                SkillTrustedPublisher.revoked_at.is_(None),
+                SkillPublisher.status == "active",
+            )
+        )
+    ).all()
+    matches = [
+        (tp, publisher)
+        for tp, publisher in candidates
+        if tp.issuer in issuers
+        and (tp.gitlab_namespace_id is None or tp.gitlab_namespace_id == int(claims["namespace_id"]))
+        # GitLab environment names are case-sensitive: exact match.
+        and (tp.environment is None or claims.get("environment") == tp.environment)
+        # Opt-in: GitLab must report that environment as protected (a job
+        # names its own environment; only protection restricts who runs it).
+        and (not tp.require_protected_environment or claims.get("environment_protected") == "true")
+        and ref_matches(tp.ref_pattern, ref_path)
+        and (requested_package is None or tp.package_name in (None, requested_package))
+        and (namespace is None or publisher.namespace == namespace)
+    ]
+    trusted, publisher = _single_match(matches, requested_package, denied)
+    return await _mint_publish_token(
+        db,
+        trusted,
+        publisher,
+        requested_package=requested_package,
+        issuer=issuer,
+        jti=str(claims["jti"]),
+        claims=bounded_gitlab_claims(claims),
+    )
 
 
 def _invalid_publish_token() -> HTTPException:
@@ -1571,6 +1773,8 @@ def provenance_metadata(token: SkillPublishToken, trusted: SkillTrustedPublisher
     commit (that needs a verified attestation, design §4.12), so the commit is
     recorded as the publishing run's SHA and source_commit is left alone."""
     claims = _json_obj(token.claims)
+    if trusted.provider == "gitlab":
+        return _gitlab_provenance(token, trusted, claims, verifier)
     repository = claims.get("repository", "")
 
     def _int(name: str) -> int | None:
@@ -1602,6 +1806,52 @@ def provenance_metadata(token: SkillPublishToken, trusted: SkillTrustedPublisher
             f"https://github.com/{repository}/actions/runs/{claims.get('run_id')}"
             if repository and str(claims.get("run_id", "")).isdigit()
             else None
+        ),
+        "trusted_publisher_id": trusted.id,
+        "verified_at": now_utc().isoformat(),
+        "verifier_version": verifier,
+    }
+
+
+def _gitlab_provenance(token: SkillPublishToken, trusted: SkillTrustedPublisher, claims: dict, verifier: str) -> dict:
+    """Publication provenance for a GitLab CI publish. Its own ``kind``
+    (``gitlab_oidc``) and its own id fields: a GitLab project id is never
+    written where a GitHub repository id is expected (the org skills policy
+    matches ``published_from_repo_id`` against GitHub repositories only)."""
+
+    def _int(name: str) -> int | None:
+        value = str(claims.get(name, ""))
+        return int(value) if value.isascii() and value.isdigit() else None
+
+    issuer = token.oidc_issuer
+    host = issuer.split("://", 1)[-1]
+    project_path = claims.get("project_path") or ""
+    job_id = _int("job_id")
+    return {
+        "kind": "gitlab_oidc",
+        "claim": "publication",
+        "verification": "oidc_token",
+        "build_provenance": None,
+        "attestation": None,
+        "issuer": issuer,
+        "published_from_repo": f"{host}/{project_path}" if project_path else None,
+        "published_from_project_id": _int("project_id"),
+        "published_from_namespace": claims.get("namespace_path"),
+        "published_from_namespace_id": _int("namespace_id"),
+        "publishing_ref": claims.get("ref_path"),
+        "publishing_ref_protected": claims.get("ref_protected") == "true",
+        "publishing_run_sha": claims.get("sha"),
+        "publishing_environment": claims.get("environment"),
+        "publishing_environment_protected": (
+            claims.get("environment_protected") == "true" if claims.get("environment") else None
+        ),
+        "publishing_event": claims.get("pipeline_source"),
+        "publishing_pipeline_id": claims.get("pipeline_id"),
+        "publishing_job_id": claims.get("job_id"),
+        "publishing_ci_config_ref_uri": claims.get("ci_config_ref_uri"),
+        "runner_environment": claims.get("runner_environment"),
+        "publishing_run_url": (
+            f"{issuer}/{project_path}/-/jobs/{job_id}" if project_path and job_id is not None else None
         ),
         "trusted_publisher_id": trusted.id,
         "verified_at": now_utc().isoformat(),

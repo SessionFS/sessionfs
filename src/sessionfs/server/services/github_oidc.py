@@ -18,6 +18,7 @@ from typing import Any
 
 import jwt
 
+from sessionfs.server.services.gitlab_oidc import parse_issuers as parse_gitlab_issuers
 from sessionfs.server.services.oidc_fetch import oidc_fetch_json
 from sessionfs.server.services.oidc_token import (
     GITHUB_ACTIONS_ISSUER,
@@ -61,6 +62,9 @@ class TrustedPublishingSettings:
     audience: str | None
     development: bool
     source: str  # 'override' | 'public_api_url' | 'development' | 'unset'
+    # GitLab instances whose CI ID tokens are accepted (SFS_GITLAB_OIDC_ISSUERS;
+    # empty = GitLab trusted publishing off). Same audience as GitHub.
+    gitlab_issuers: tuple[str, ...] = ()
 
 
 def resolve_trusted_publishing(config: Any) -> TrustedPublishingSettings:
@@ -102,7 +106,13 @@ def resolve_trusted_publishing(config: Any) -> TrustedPublishingSettings:
             )
         if source == "public_api_url" and not audience.lower().startswith("https://"):
             raise RuntimeError("SFS_PUBLIC_API_URL must be this deployment's https:// API origin.")
-    return TrustedPublishingSettings(audience=audience, development=development, source=source)
+    try:
+        gitlab_issuers = parse_gitlab_issuers(str(getattr(config, "gitlab_oidc_issuers", "") or ""))
+    except ValueError as exc:
+        raise RuntimeError(f"SFS_GITLAB_OIDC_ISSUERS is invalid: {exc}") from exc
+    return TrustedPublishingSettings(
+        audience=audience, development=development, source=source, gitlab_issuers=gitlab_issuers
+    )
 
 
 async def fetch_jwks() -> dict:

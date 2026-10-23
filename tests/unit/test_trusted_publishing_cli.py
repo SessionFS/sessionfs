@@ -105,3 +105,166 @@ def test_trusted_validation_target_follows_the_publisher() -> None:
     assert publishing.trusted_validation_visibility(None, {"default_visibility": "org"}) == "org"
     assert publishing.trusted_validation_visibility(None, {}) == "org"
     assert publishing.trusted_validation_visibility("public", {"default_visibility": "user"}) == "public"
+
+
+# ---------------------------------------------------------------------------
+# GitLab CI
+# ---------------------------------------------------------------------------
+
+
+def _fake_jwt(payload: dict) -> str:
+    import base64
+
+    def segment(value: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(value).encode()).decode().rstrip("=")
+
+    return f"{segment({'alg': 'RS256'})}.{segment(payload)}.sig"
+
+
+def test_gitlab_id_token_is_read_from_the_named_variable() -> None:
+    token = _fake_jwt({"aud": "https://api.acme.example"})
+    assert publishing.gitlab_id_token("SFS_ID_TOKEN", env={"SFS_ID_TOKEN": token}) == token
+    assert (
+        publishing.gitlab_id_token(
+            "MY_TOKEN", audience="https://api.acme.example", env={"MY_TOKEN": token}
+        )
+        == token
+    )
+    with pytest.raises(publishing.TrustedPublishingError, match="id_tokens") as missing:
+        publishing.gitlab_id_token("SFS_ID_TOKEN", audience="https://api.acme.example", env={})
+    assert "aud: https://api.acme.example" in str(missing.value)
+    with pytest.raises(publishing.TrustedPublishingError, match="minted for audience") as wrong:
+        publishing.gitlab_id_token(
+            "SFS_ID_TOKEN", audience="https://api.other.example", env={"SFS_ID_TOKEN": token}
+        )
+    # The token itself never appears in an error.
+    assert token not in str(wrong.value)
+    with pytest.raises(publishing.TrustedPublishingError, match="Invalid environment variable"):
+        publishing.gitlab_id_token("BAD-NAME", env={})
+
+
+def test_gitlab_exchange_names_the_provider_and_github_stays_unchanged() -> None:
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={"token": "sfs_tp_x"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    publishing.exchange_trusted_publishing_token(
+        api_url="https://api.example", oidc_token="jwt", namespace="acme", package=None,
+        provider="gitlab", client=client,
+    )
+    publishing.exchange_trusted_publishing_token(
+        api_url="https://api.example", oidc_token="jwt", namespace="acme", package=None, client=client
+    )
+    assert bodies == [
+        {"token": "jwt", "provider": "gitlab", "namespace": "acme"},
+        {"token": "jwt", "namespace": "acme"},
+    ]
+
+
+def test_audience_origin_must_match_the_api_url() -> None:
+    publishing.check_audience_matches_api("https://api.acme.example", "https://api.acme.example/")
+    publishing.check_audience_matches_api("https://API.acme.example:443", "https://api.acme.example")
+    for audience in ("https://api.other.example", "http://api.acme.example", "sessionfs-prod-1",
+                     "https://api.acme.example:8443"):
+        with pytest.raises(publishing.TrustedPublishingError, match="--audience"):
+            publishing.check_audience_matches_api(audience, "https://api.acme.example")
+
+
+@pytest.mark.parametrize("provider", ["github", "gitlab"])
+def test_publish_refuses_a_foreign_audience_unless_explicit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, provider: str
+) -> None:
+    from types import SimpleNamespace
+
+    import typer
+
+    from sessionfs.cli import cmd_skill
+
+    calls: list[str] = []
+    token = _fake_jwt({"aud": "https://api.other.example"})
+    monkeypatch.setenv("SFS_ID_TOKEN", token)
+    monkeypatch.setattr(
+        publishing, "validate_source",
+        lambda _path, visibility: SimpleNamespace(ok=True, package=SimpleNamespace(name="pkg"), data=b"x", problems=[]),
+    )
+    monkeypatch.setattr("sessionfs.profiles.resolve_auth", lambda: SimpleNamespace(api_url="https://api.acme.example"))
+    monkeypatch.setattr(publishing, "trusted_publishing_audience", lambda api_url: "https://api.other.example")
+
+    def github_token(audience: str) -> str:
+        calls.append(f"github:{audience}")
+        return token
+
+    def exchange(**kwargs) -> dict:
+        calls.append(f"exchange:{kwargs['provider']}")
+        return {"token": "sfs_tp_x", "default_visibility": "user"}
+
+    monkeypatch.setattr(publishing, "github_oidc_token", github_token)
+    monkeypatch.setattr(publishing, "exchange_trusted_publishing_token", exchange)
+    monkeypatch.setattr(
+        publishing, "upload_trusted",
+        lambda **_kwargs: (201, {"name": "pkg", "signature": {}}, {}),
+    )
+    common = dict(source=str(tmp_path), visibility=None, namespace="acme", collection=None,
+                  package_name=None, json_output=True, ci_provider=provider)
+    with pytest.raises(typer.Exit):
+        cmd_skill._publish_trusted(audience=None, **common)
+    # Refused before any token was requested or exchanged.
+    assert calls == []
+    cmd_skill._publish_trusted(audience="https://api.other.example", **common)
+    assert calls[-1] == f"exchange:{provider}"
+
+
+def test_publisher_trust_gitlab_payload_and_exclusivity(monkeypatch: pytest.MonkeyPatch) -> None:
+    from typer.testing import CliRunner
+
+    from sessionfs.cli import cmd_skill_publisher
+    from sessionfs.cli.cmd_skill import skill_app
+
+    calls: list[tuple[str, str, dict | None]] = []
+
+    def fake(method: str, path: str, payload: dict | None = None) -> dict:
+        calls.append((method, path, payload))
+        return {"id": "stp_1", "provider": "gitlab", "gitlab_project_id": 4242,
+                "gitlab_host": "https://gitlab.com", "repository": "acme/skills"}
+
+    monkeypatch.setattr(cmd_skill_publisher, "_request", fake)
+    runner = CliRunner()
+    result = runner.invoke(skill_app, [
+        "publisher", "trust", "pub_1", "--gitlab-project", "4242", "--gitlab-project-path", "acme/skills",
+        "--ref-pattern", "refs/tags/v*", "--environment", "production",
+    ])
+    assert result.exit_code == 0, result.output
+    assert calls == [("POST", "/publishers/pub_1/trusted-publishers", {
+        "provider": "gitlab", "gitlab_project_id": 4242, "repository": "acme/skills",
+        "environment": "production", "ref_pattern": "refs/tags/v*",
+    })]
+    assert "4242" in result.output
+    mixed = runner.invoke(skill_app, [
+        "publisher", "trust", "pub_1", "--gitlab-project", "1", "--repo", "o/r", "--workflow", "r.yml",
+    ])
+    assert mixed.exit_code != 0 and len(calls) == 1
+    neither = runner.invoke(skill_app, ["publisher", "trust", "pub_1"])
+    assert neither.exit_code != 0 and len(calls) == 1
+    host_only = runner.invoke(skill_app, ["publisher", "trust", "pub_1", "--gitlab-host", "https://git.acme.example"])
+    assert host_only.exit_code != 0 and len(calls) == 1
+    no_env = runner.invoke(skill_app, [
+        "publisher", "trust", "pub_1", "--gitlab-project", "1", "--require-protected-environment",
+    ])
+    assert no_env.exit_code != 0 and len(calls) == 1
+    github_flag = runner.invoke(skill_app, [
+        "publisher", "trust", "pub_1", "--repo", "o/r", "--workflow", "r.yml", "--environment", "prod",
+        "--require-protected-environment",
+    ])
+    assert github_flag.exit_code != 0 and len(calls) == 1
+    protected = runner.invoke(skill_app, [
+        "publisher", "trust", "pub_1", "--gitlab-project", "1", "--environment", "production",
+        "--require-protected-environment",
+    ])
+    assert protected.exit_code == 0, protected.output
+    assert calls[-1][2] == {
+        "provider": "gitlab", "gitlab_project_id": 1, "require_protected_environment": True,
+        "environment": "production",
+    }

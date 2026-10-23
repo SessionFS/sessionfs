@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { BrowserRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { GitHubIntegrationSection } from './SettingsPage';
+import { GitHubIntegrationSection } from './GitHubIntegrationSection';
 
 /**
  * GitHub App installation linking. Linking happens only through the
@@ -34,7 +35,9 @@ function renderSection() {
   const qc = makeQueryClient();
   return render(
     <QueryClientProvider client={qc}>
-      <GitHubIntegrationSection />
+      <BrowserRouter>
+        <GitHubIntegrationSection />
+      </BrowserRouter>
     </QueryClientProvider>,
   );
 }

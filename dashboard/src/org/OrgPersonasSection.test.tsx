@@ -118,7 +118,7 @@ describe('OrgPersonasSection', () => {
 
     it('lets admins choose the represented member', async () => {
       render(<OrgPersonasSection orgId="org_1" members={members} />);
-      fireEvent.click(screen.getByRole('combobox', { name: /Member represented by release-governance/i }));
+      fireEvent.click(screen.getByRole('button', { name: /Member represented by release-governance/i }));
       fireEvent.click(screen.getByRole('option', { name: 'tolu@example.com' }));
       await new Promise((r) => setTimeout(r, 0));
       expect(update.mutateAsync).toHaveBeenCalledWith({
@@ -131,7 +131,7 @@ describe('OrgPersonasSection', () => {
     it('lets admins clear the represented member', async () => {
       hooks.useOrgPersonas.mockReturnValue({ data: [kelvinPersona], isLoading: false, error: null });
       render(<OrgPersonasSection orgId="org_1" members={members} />);
-      fireEvent.click(screen.getByRole('combobox', { name: /Member represented by kelvin/i }));
+      fireEvent.click(screen.getByRole('button', { name: /Member represented by kelvin/i }));
       fireEvent.click(screen.getByRole('option', { name: 'Nobody' }));
       await new Promise((r) => setTimeout(r, 0));
       expect(update.mutateAsync).toHaveBeenCalledWith({
@@ -154,7 +154,7 @@ describe('OrgPersonasSection', () => {
       expect(screen.queryByText('release-governance')).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /New org persona/i })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: /^Delete$/i })).not.toBeInTheDocument();
-      expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Member represented by/i })).not.toBeInTheDocument();
 
       fireEvent.click(screen.getByRole('button', { name: /^Edit$/i }));
       fireEvent.change(screen.getByLabelText(/Role/i), { target: { value: 'Platform engineer' } });

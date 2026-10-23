@@ -4,6 +4,7 @@ import { Badge } from '../components/Badge';
 import { Button } from '../components/ui';
 import { useRequestRegistryPoll } from '../hooks/useMarketplace';
 import { useToast } from '../hooks/useToast';
+import { errorMessage } from '../utils/errorMessage';
 
 type Variant = 'default' | 'success' | 'warning' | 'danger' | 'info';
 
@@ -65,7 +66,7 @@ function RegistryRow({ registry, orgId, canAdmin }: { registry: SkillRegistry; o
           'error',
           error instanceof ApiError && error.status === 429
             ? 'A poll was requested less than a minute ago.'
-            : `Could not schedule a poll: ${String(error instanceof Error ? error.message : error)}`,
+            : `Could not schedule a poll: ${errorMessage(error)}`,
         ),
     });
 

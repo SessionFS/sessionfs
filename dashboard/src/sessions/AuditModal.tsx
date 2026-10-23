@@ -6,6 +6,7 @@ import { Dialog, DialogHeader, DialogFooter } from '../components/ui/Dialog';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Select } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 const PROVIDERS = [
   { value: 'openrouter', label: 'OpenRouter' },
@@ -147,7 +148,7 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
       );
       onComplete();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to start audit');
+      setError(errorMessage(err, 'Failed to start audit'));
       setSubmitting(false);
     }
   }
@@ -230,7 +231,7 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
                 />
                 Use saved API key
               </label>
-              <span className="text-sm text-green-400">Key saved</span>
+              <span className="text-sm text-success">Key saved</span>
             </div>
           )}
           {(!hasSavedKey || !useSavedKey) && (
@@ -278,7 +279,7 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
               </button>
             )}
           </div>
-          {testStatus === 'ok' && <p className="text-xs text-green-400 mb-3">Connection successful ({discoveredModels.length} models found)</p>}
+          {testStatus === 'ok' && <p className="text-xs text-success mb-3">Connection successful ({discoveredModels.length} models found)</p>}
           {testStatus === 'fail' && <p className="text-xs text-danger mb-3">Connection failed — check URL and API key</p>}
           {!baseUrl && <p className="text-xs text-text-tertiary mb-1">Leave blank for provider default. Set for LiteLLM, vLLM, Ollama.</p>}
         </div>
@@ -296,7 +297,7 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
         </div>
 
         {!!error && (
-          <div className="text-sm text-danger bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">
+          <div className="text-sm text-danger bg-danger/10 border border-danger/30 rounded-lg px-3 py-2">
             {error}
           </div>
         )}

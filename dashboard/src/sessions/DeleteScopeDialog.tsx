@@ -110,7 +110,7 @@ export default function DeleteScopeDialog({
             <button
               onClick={() => onConfirm(scope)}
               disabled={isPending}
-              className="px-4 py-1.5 text-sm bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors font-medium disabled:opacity-50"
+              className="px-4 py-1.5 text-sm bg-danger text-white rounded-lg hover:bg-danger transition-colors font-medium disabled:opacity-50"
             >
               {isPending ? 'Deleting…' : 'Delete'}
             </button>

@@ -1,13 +1,14 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
 import { Badge } from '../components/Badge';
 import EmptyState from '../components/EmptyState';
-import { Card, Select } from '../components/ui';
+import { Card, Select, TableShell } from '../components/ui';
 import { useOrgSkillUsage } from '../hooks/useMarketplace';
 import { useMe } from '../hooks/useMe';
+import MarketplaceNav from './MarketplaceNav';
 import { useMyOrgs } from '../transfers/useTransfers';
 import { isTierGate } from './MarketplacePage';
 import { adminOrgs } from './moderationState';
+import { errorMessage } from '../utils/errorMessage';
 
 /** What an organization's members actually use (marketplace v2 §9.2), for
  *  that org's owners and admins (Team plan). Exact counts of the org's own
@@ -22,11 +23,11 @@ export default function OrgUsagePage() {
   const usage = useOrgSkillUsage(active || undefined, days);
   const items = usage.data?.items || [];
   return (
-    <main className="mx-auto w-full max-w-5xl space-y-5 px-4 py-7 sm:px-6">
+    <div className="mx-auto w-full max-w-5xl space-y-5 px-4 py-7 sm:px-6">
+      <MarketplaceNav />
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <Link to="/marketplace" className="text-xs text-text-tertiary hover:text-text-primary">Marketplace</Link>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-text-primary">Skill usage</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-text-primary">Skill usage</h1>
           <p className="mt-1 max-w-3xl text-sm text-text-secondary">
             Installs, active installs and translation failures from your organization's members, by package and tool,
             with stale and deprecated packages called out.
@@ -54,14 +55,14 @@ export default function OrgUsagePage() {
           <p className="mt-1 text-xs text-text-secondary">Organization skill usage is part of the Team plan.</p>
         </Card>
       ) : (
-        <p role="alert" className="text-sm text-danger">Usage unavailable: {String(usage.error)}</p>
+        <p role="alert" className="text-sm text-danger">Usage unavailable: {errorMessage(usage.error)}</p>
       ))}
       {usage.data && items.length === 0 && (
         <EmptyState title="No usage recorded" description={`No marketplace installs from this organization in the last ${days} days.`} />
       )}
       {items.length > 0 && (
-        <Card className="overflow-x-auto p-5">
-          <table className="w-full min-w-[720px] text-left text-sm">
+        <Card className="p-5">
+          <TableShell minWidth={720}>
             <thead className="text-xs uppercase tracking-wider text-text-tertiary">
               <tr>
                 <th className="py-2">Package</th>
@@ -93,9 +94,9 @@ export default function OrgUsagePage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </TableShell>
         </Card>
       )}
-    </main>
+    </div>
   );
 }

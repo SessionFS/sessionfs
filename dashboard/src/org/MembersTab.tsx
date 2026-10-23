@@ -14,7 +14,7 @@
  */
 
 import { useState } from 'react';
-import { Select } from '../components/ui';
+import { Select, TableShell } from '../components/ui';
 
 import { useMe } from '../hooks/useMe';
 import { useToast } from '../hooks/useToast';
@@ -26,6 +26,7 @@ import {
   useOrgMembers,
   useRemoveMember,
 } from './useOrgMembers';
+import { errorMessage } from '../utils/errorMessage';
 
 interface MembersTabProps {
   orgId: string;
@@ -48,7 +49,7 @@ export default function MembersTab({ orgId }: MembersTabProps) {
   const [removeConfirm, setRemoveConfirm] = useState<RemoveConfirmState | null>(null);
 
   if (isLoading) return <p>Loading members…</p>;
-  if (error) return <p role="alert">Failed to load members: {String(error)}</p>;
+  if (error) return <p role="alert">Failed to load members: {errorMessage(error)}</p>;
   if (!data) return null;
 
   // Owners rank above admins: they manage members too, and count toward
@@ -66,7 +67,7 @@ export default function MembersTab({ orgId }: MembersTabProps) {
           setInviteEmail('');
           addToast('success', `Invitation sent to ${inviteEmail.trim()}`);
         },
-        onError: (err) => addToast('error', `Invite failed: ${err.message}`),
+        onError: (err) => addToast('error', `Invite failed: ${errorMessage(err)}`),
       },
     );
   };
@@ -76,7 +77,7 @@ export default function MembersTab({ orgId }: MembersTabProps) {
       { userId: m.user_id, role: 'admin' },
       {
         onSuccess: () => addToast('success', `${m.email} is now an admin`),
-        onError: (err) => addToast('error', `Role change failed: ${err.message}`),
+        onError: (err) => addToast('error', `Role change failed: ${errorMessage(err)}`),
       },
     );
   };
@@ -86,7 +87,7 @@ export default function MembersTab({ orgId }: MembersTabProps) {
       { userId: m.user_id, role: 'member' },
       {
         onSuccess: () => addToast('success', `${m.email} is now a member`),
-        onError: (err) => addToast('error', `Role change failed: ${err.message}`),
+        onError: (err) => addToast('error', `Role change failed: ${errorMessage(err)}`),
       },
     );
   };
@@ -101,7 +102,7 @@ export default function MembersTab({ orgId }: MembersTabProps) {
           setRemoveConfirm(null);
           addToast('success', `${email} removed from org`);
         },
-        onError: (err) => addToast('error', `Remove failed: ${err.message}`),
+        onError: (err) => addToast('error', `Remove failed: ${errorMessage(err)}`),
       },
     );
   };
@@ -136,7 +137,7 @@ export default function MembersTab({ orgId }: MembersTabProps) {
         </form>
       )}
 
-      <table>
+      <TableShell minWidth={520}>
         <thead>
           <tr>
             <th>Email</th>
@@ -204,7 +205,7 @@ export default function MembersTab({ orgId }: MembersTabProps) {
             );
           })}
         </tbody>
-      </table>
+      </TableShell>
 
       {removeConfirm && (
         <div role="dialog" aria-modal="true" aria-labelledby="remove-confirm-title">

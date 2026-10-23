@@ -25,7 +25,8 @@ import {
   useRejectTransfer,
   useTransfers,
 } from './useTransfers';
-import { Button, Card } from '../components/ui';
+import { Button, Card, PageContainer, PageHeader } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 function scopeLabel(scope: string): string {
   return scope === 'personal' ? 'Personal' : `Org ${scope}`;
@@ -57,7 +58,7 @@ export default function TransferInbox() {
       {
         onSuccess: () =>
           addToast('success', `Accepted transfer of ${t.project_name_snapshot ?? 'project'}`),
-        onError: (err) => addToast('error', `Accept failed: ${err.message}`),
+        onError: (err) => addToast('error', `Accept failed: ${errorMessage(err)}`),
       },
     );
   };
@@ -68,7 +69,7 @@ export default function TransferInbox() {
       {
         onSuccess: () =>
           addToast('success', `Rejected transfer of ${t.project_name_snapshot ?? 'project'}`),
-        onError: (err) => addToast('error', `Reject failed: ${err.message}`),
+        onError: (err) => addToast('error', `Reject failed: ${errorMessage(err)}`),
       },
     );
   };
@@ -79,22 +80,22 @@ export default function TransferInbox() {
       {
         onSuccess: () =>
           addToast('success', `Cancelled transfer of ${t.project_name_snapshot ?? 'project'}`),
-        onError: (err) => addToast('error', `Cancel failed: ${err.message}`),
+        onError: (err) => addToast('error', `Cancel failed: ${errorMessage(err)}`),
       },
     );
   };
 
   if (incoming.isLoading || outgoing.isLoading) return <p className="text-text-tertiary p-4 text-sm">Loading transfers…</p>;
-  if (incoming.error) return <p role="alert" className="text-danger p-4 text-sm">Failed to load inbox: {String(incoming.error)}</p>;
-  if (outgoing.error) return <p role="alert" className="text-danger p-4 text-sm">Failed to load outbox: {String(outgoing.error)}</p>;
+  if (incoming.error) return <p role="alert" className="text-danger p-4 text-sm">Failed to load inbox: {errorMessage(incoming.error)}</p>;
+  if (outgoing.error) return <p role="alert" className="text-danger p-4 text-sm">Failed to load outbox: {errorMessage(outgoing.error)}</p>;
 
   const incomingRows = incoming.data?.transfers ?? [];
   const outgoingRows = outgoing.data?.transfers ?? [];
   const busy = accept.isPending || reject.isPending || cancel.isPending;
 
   return (
-    <section aria-labelledby="transfers-heading" className="space-y-5">
-      <h2 id="transfers-heading" className="text-lg font-semibold text-text-primary">Project transfers</h2>
+    <PageContainer className="space-y-5">
+      <PageHeader title="Project transfers" className="" />
 
       <section aria-labelledby="incoming-heading">
         <h3 id="incoming-heading" className="text-micro uppercase text-text-tertiary mb-3">
@@ -156,6 +157,6 @@ export default function TransferInbox() {
           </div>
         )}
       </section>
-    </section>
+    </PageContainer>
   );
 }

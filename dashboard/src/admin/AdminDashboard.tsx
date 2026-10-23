@@ -12,17 +12,17 @@ import RelativeDate from '../components/RelativeDate';
 import LicensesTab from './LicensesTab';
 import { getAvatarColor } from '../utils/avatar';
 import { formatBytes } from '../utils/format';
-import { Card, Button, Input, Select, Table, Tabs, Dialog, DialogHeader, DialogFooter } from '../components/ui';
+import { Card, Button, Input, Select, Table, TableShell, Tabs, TabPanel, Dialog, DialogHeader, DialogFooter } from '../components/ui';
 
 type AdminTab = 'users' | 'licenses' | 'activity';
 
 const TIER_COLORS: Record<string, string> = {
   free: 'bg-gray-500/15 text-gray-500',
-  starter: 'bg-green-500/15 text-green-500',
+  starter: 'bg-success/15 text-success',
   pro: 'bg-blue-500/15 text-blue-500',
   team: 'bg-purple-500/15 text-purple-500',
-  enterprise: 'bg-amber-500/15 text-amber-500',
-  admin: 'bg-red-500/15 text-red-500',
+  enterprise: 'bg-warning/15 text-warning',
+  admin: 'bg-danger/15 text-danger',
 };
 
 const TIERS = ['free', 'starter', 'pro', 'team', 'enterprise', 'admin'] as const;
@@ -87,7 +87,7 @@ export default function AdminDashboard() {
   const activeTools = stats ? Object.keys(stats.sessions?.by_tool ?? {}).length : 0;
 
   return (
-    <div className="max-w-7xl mx-auto px-4 py-6">
+    <div className="max-w-7xl w-full mx-auto px-4 py-6">
       <h1 className="text-3xl font-bold tracking-tight text-text-primary mb-6">Admin</h1>
 
       {/* Overview Cards */}
@@ -120,7 +120,7 @@ export default function AdminDashboard() {
           {/* Sessions card */}
           <Card level="elevated" className="p-5">
             <div className="flex items-start gap-3">
-              <div className="w-9 h-9 rounded-lg bg-green-500/10 flex items-center justify-center flex-shrink-0">
+              <div className="w-9 h-9 rounded-lg bg-success/10 flex items-center justify-center flex-shrink-0">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
                   <line x1="8" y1="21" x2="16" y2="21" />
@@ -172,17 +172,19 @@ export default function AdminDashboard() {
       {/* Tab Navigation */}
       <Tabs
         bare
+        idPrefix="admin"
+        aria-label="Admin sections"
         tabs={tabs}
         activeKey={activeTab}
         onChange={(key) => setActiveTab(key as AdminTab)}
       />
 
       {/* Tab content */}
-        {activeTab === 'licenses' && <div role="tabpanel"><LicensesTab /></div>}
+        {activeTab === 'licenses' && <TabPanel idPrefix="admin" tabKey="licenses"><LicensesTab /></TabPanel>}
 
         {/* Activity tab */}
         {activeTab === 'activity' && (
-          <section role="tabpanel">
+          <TabPanel idPrefix="admin" tabKey="activity">
             {actionsData && actionsData.actions.length > 0 ? (
               <Table
                 columns={[
@@ -200,7 +202,26 @@ export default function AdminDashboard() {
                     key: 'action',
                     header: 'Action',
                     render: (action) => (
-                      <span className="text-text-primary">{action.action}</span>
+                      <span className="text-text-primary">
+                        {action.action}
+                        {action.source && action.source !== 'api' && (
+                          <span
+                            className="ml-2 rounded border border-warning/40 px-1.5 py-0.5 text-2xs text-warning"
+                            title="Recorded by an operator for a change made outside the API; not verified by the server"
+                          >
+                            recorded by operator
+                          </span>
+                        )}
+                      </span>
+                    ),
+                  },
+                  {
+                    key: 'reason',
+                    header: 'Reason',
+                    render: (action) => (
+                      <span className="text-xs text-text-secondary break-words">
+                        {action.reason ?? ''}
+                      </span>
                     ),
                   },
                   {
@@ -229,12 +250,12 @@ export default function AdminDashboard() {
             ) : (
               <div className="text-center py-12 text-text-tertiary text-sm">No recent actions</div>
             )}
-          </section>
+          </TabPanel>
         )}
 
         {/* User Management */}
         {activeTab === 'users' && (
-          <section role="tabpanel">
+          <TabPanel idPrefix="admin" tabKey="users">
             <div className="mb-4">
               <Input
                 type="text"
@@ -246,7 +267,7 @@ export default function AdminDashboard() {
             </div>
 
             {usersError && (
-              <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-500 text-sm">
+              <div className="mb-4 p-3 bg-danger/10 border border-danger/30 rounded-lg text-danger text-sm">
                 Failed to load users: {String(usersError)}
               </div>
             )}
@@ -256,8 +277,7 @@ export default function AdminDashboard() {
             )}
 
             {usersData && usersData.users.length > 0 && (
-              <div className="border border-border rounded-xl overflow-hidden">
-                <table className="w-full text-base">
+              <TableShell minWidth={640} bordered>
                   <thead>
                     <tr className="bg-bg-elevated text-sm font-semibold text-text-tertiary">
                       <th className="px-4 py-3 text-left">User</th>
@@ -287,8 +307,7 @@ export default function AdminDashboard() {
                       />
                     ))}
                   </tbody>
-                </table>
-              </div>
+                </TableShell>
             )}
 
             {usersData && usersData.users.length === 0 && !usersLoading && (
@@ -300,7 +319,7 @@ export default function AdminDashboard() {
                 Showing {usersData.users.length} of {usersData.total} users
               </div>
             )}
-          </section>
+          </TabPanel>
         )}
 
       {/* Delete confirmation dialog */}
@@ -448,14 +467,14 @@ function UserRow({
               <button
                 onClick={(e) => { e.stopPropagation(); onVerify(); }}
                 disabled={isVerifying}
-                className="w-full text-left px-3 py-1.5 text-sm text-green-500 hover:bg-surface-hover transition-colors disabled:opacity-50"
+                className="w-full text-left px-3 py-1.5 text-sm text-success hover:bg-surface-hover transition-colors disabled:opacity-50"
               >
                 {isVerifying ? 'Verifying…' : 'Verify Email'}
               </button>
             )}
             <button
               onClick={(e) => { e.stopPropagation(); onDelete(); }}
-              className="w-full text-left px-3 py-1.5 text-sm text-red-500 hover:bg-surface-hover transition-colors"
+              className="w-full text-left px-3 py-1.5 text-sm text-danger hover:bg-surface-hover transition-colors"
             >
               Delete User
             </button>

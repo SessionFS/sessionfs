@@ -971,10 +971,11 @@ async def verify_domain(
         after=after_payload,
     )
 
-    await db.commit()
-    await db.refresh(dv)
-
-    return DomainResponse(
+    # Build the response from the row as written, before committing: a
+    # delete waiting on the org lock proceeds the moment we commit, so a
+    # post-commit refresh could find the row gone and fail a verification
+    # that did succeed.
+    response = DomainResponse(
         id=dv.id,
         org_id=dv.org_id,
         domain=dv.domain,
@@ -985,6 +986,8 @@ async def verify_domain(
         txt_record=f"{_DOMAIN_VERIFICATION_PREFIX}{dv.verification_token}",
         created_at=dv.created_at,
     )
+    await db.commit()
+    return response
 
 
 @router.get("/{org_id}/sso/domains", response_model=list[DomainResponse])

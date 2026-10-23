@@ -294,6 +294,10 @@ async def test_audience_defaults_to_public_origin_and_is_disabled_without_one(
     assert config == {
         "enabled": False, "audience": None, "issuer": GITHUB_ACTIONS_ISSUER,
         "allowed_events": ["push", "release", "workflow_dispatch"],
+        "gitlab": {
+            "enabled": False, "issuers": ["https://gitlab.com"],
+            "allowed_pipeline_sources": ["api", "push", "web"], "requires_protected_ref": True,
+        },
     }
     response = await _exchange(client, _sign(_claims()))
     assert response.status_code == 503

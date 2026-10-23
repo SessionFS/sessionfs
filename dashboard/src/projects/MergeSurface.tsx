@@ -9,12 +9,12 @@ import type {
   MergeExecuteResponse,
   MergeCollision,
 } from '../api/client';
-import { ApiError } from '../api/client';
 import {
   Button,
   Card,
   Select,
 } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 function isDryRun(r: MergeDryRunResponse | MergeExecuteResponse): r is MergeDryRunResponse {
   return r.dry_run === true;
@@ -184,13 +184,13 @@ function ExecuteOutcome({ result }: { result: MergeExecuteResponse }) {
     <div
       className={`rounded-lg border px-4 py-3 ${
         isSuccess
-          ? 'border-emerald-500/30 bg-emerald-500/5'
+          ? 'border-success/30 bg-success/5'
           : 'border-[rgba(239,68,68,0.3)] bg-[rgba(239,68,68,0.05)]'
       }`}
     >
       <div className="flex items-center gap-2 mb-2">
         {isSuccess ? (
-          <svg className="w-5 h-5 text-emerald-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <svg className="w-5 h-5 text-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
             <polyline points="22 4 12 14.01 9 11.01" />
           </svg>
@@ -201,7 +201,7 @@ function ExecuteOutcome({ result }: { result: MergeExecuteResponse }) {
             <line x1="9" y1="9" x2="15" y2="15" />
           </svg>
         )}
-        <span className={`text-sm font-semibold ${isSuccess ? 'text-emerald-500' : 'text-[var(--danger)]'}`}>
+        <span className={`text-sm font-semibold ${isSuccess ? 'text-success' : 'text-[var(--danger)]'}`}>
           Merge {isSuccess ? 'completed' : 'failed'}
         </span>
       </div>
@@ -273,11 +273,7 @@ export default function MergeSurface({ projectId, projectName }: MergeSurfacePro
           }
         },
         onError: (err) => {
-          if (err instanceof ApiError) {
-            setError(err.message);
-          } else {
-            setError(String(err));
-          }
+          setError(errorMessage(err));
         },
       },
     );
@@ -297,11 +293,7 @@ export default function MergeSurface({ projectId, projectName }: MergeSurfacePro
           }
         },
         onError: (err) => {
-          if (err instanceof ApiError) {
-            setError(err.message);
-          } else {
-            setError(String(err));
-          }
+          setError(errorMessage(err));
         },
       },
     );
@@ -333,7 +325,7 @@ export default function MergeSurface({ projectId, projectName }: MergeSurfacePro
 
       {/* Error banner */}
       {error && (
-        <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-500 text-sm">
+        <div className="mb-4 p-3 bg-danger/10 border border-danger/30 rounded-lg text-danger text-sm">
           {error}
         </div>
       )}

@@ -372,3 +372,128 @@ def validate_github_actions_token(
     ):
         raise TokenValidationError("claim_invalid", "claim 'environment' is malformed")
     return claims
+
+
+# ---------------------------------------------------------------------------
+# GitLab CI ID tokens (marketplace trusted publishing)
+# ---------------------------------------------------------------------------
+
+# Claims trusted publishing binds to or records. GitLab sends ids and booleans
+# as JSON strings. ``ref`` is the short name; ``ref_path`` the full ref.
+_GITLAB_REQUIRED_STRING_CLAIMS = (
+    "jti",
+    "sub",
+    "namespace_id",
+    "namespace_path",
+    "project_id",
+    "project_path",
+    "pipeline_id",
+    "pipeline_source",
+    "job_id",
+    "ref",
+    "ref_type",
+    "ref_path",
+    "ref_protected",
+    "sha",
+)
+_GITLAB_NUMERIC_CLAIMS = ("namespace_id", "project_id", "pipeline_id", "job_id")
+_GITLAB_OPTIONAL_STRING_CLAIMS = (
+    "environment",
+    "environment_protected",
+    "deployment_tier",
+    "user_id",
+    "runner_environment",
+    "ci_config_ref_uri",
+    "ci_config_sha",
+    "project_visibility",
+)
+_GITLAB_REF_PREFIX = {"branch": "refs/heads/", "tag": "refs/tags/"}
+
+
+def validate_gitlab_ci_token(
+    token: str,
+    jwks: PyJWKSet | str | dict,
+    *,
+    issuer: str,
+    audience: str,
+    max_age_seconds: int = 3600,
+    max_lifetime_seconds: int = 86400 + 300,
+    max_skew: int = 60,
+) -> dict:
+    """Validate a GitLab CI ID token (``id_tokens:``) for trusted publishing.
+
+    Same signature path as every external JWT here (pinned asymmetric algs,
+    kid-resolved key, exp + iat + jti required; nbf verified when present),
+    then:
+
+    - iss EXACTLY *issuer* - the caller passes an allowlisted origin, never a
+      value taken from the token alone;
+    - aud a single value equal to *audience*;
+    - acceptance window: GitLab mints the token when the JOB STARTS (not on
+      demand like GitHub), so iat may be up to *max_age_seconds* old (the
+      publish step must run within that window of job start); the token's own
+      lifetime (job timeout + a few minutes) is capped at
+      *max_lifetime_seconds*;
+    - project / namespace / pipeline / job / ref claims present, strings,
+      bounded, numeric ids all digits; ``ref_type`` branch|tag and
+      ``ref_path`` exactly ``refs/heads/<ref>`` or ``refs/tags/<ref>``;
+      ``ref_protected`` the string "true" or "false";
+    - ``sha`` a full 40-hex commit.
+
+    Binding (project id, ref pattern, protected ref, environment, pipeline
+    source) happens against the trusted publisher row, not here.
+    Returns the claims. Raises TokenValidationError with a reason code."""
+    if not isinstance(token, str) or not token or len(token) > 16384:
+        raise TokenValidationError("token_parse_error", "token missing or too large")
+    claims = _decode_verified(token, jwks, require=("exp", "iat", "jti"))
+
+    if claims.get("iss") != issuer:
+        raise TokenValidationError(
+            "issuer_mismatch", "token was not issued by the expected GitLab instance"
+        )
+
+    token_aud = claims.get("aud")
+    if isinstance(token_aud, list):
+        if len(token_aud) != 1:
+            raise TokenValidationError("invalid_aud", "token must carry exactly one audience")
+        token_aud = token_aud[0]
+    if not isinstance(token_aud, str) or token_aud != audience:
+        raise TokenValidationError("invalid_aud", "token audience is not this server")
+
+    now_ts = datetime.now(timezone.utc).timestamp()
+    iat = claims.get("iat")
+    exp = claims.get("exp")
+    if not isinstance(iat, (int, float)) or not isinstance(exp, (int, float)):
+        raise TokenValidationError("claim_missing", "iat and exp must be numeric")
+    if iat > now_ts + max_skew:
+        raise TokenValidationError("invalid_iat", "token iat is in the future")
+    if now_ts - iat > max_age_seconds + max_skew:
+        raise TokenValidationError("token_too_old", "token is outside the acceptance window")
+    if exp - iat > max_lifetime_seconds:
+        raise TokenValidationError("token_lifetime", "token lifetime exceeds the allowed maximum")
+
+    for name in _GITLAB_REQUIRED_STRING_CLAIMS:
+        value = claims.get(name)
+        if not isinstance(value, str) or not value or len(value) > _MAX_CLAIM_LENGTH:
+            raise TokenValidationError("claim_missing", f"required claim {name!r} missing")
+    for name in _GITLAB_NUMERIC_CLAIMS:
+        # At most 18 digits: always fits the BIGINT columns it is compared to.
+        if not claims[name].isascii() or not claims[name].isdigit() or len(claims[name]) > 18:
+            raise TokenValidationError("claim_invalid", f"claim {name!r} must be numeric")
+    prefix = _GITLAB_REF_PREFIX.get(claims["ref_type"])
+    if prefix is None:
+        raise TokenValidationError("claim_invalid", "claim 'ref_type' must be branch or tag")
+    if claims["ref_path"] != prefix + claims["ref"]:
+        raise TokenValidationError(
+            "claim_invalid", "claims 'ref', 'ref_type' and 'ref_path' disagree"
+        )
+    if claims["ref_protected"] not in ("true", "false"):
+        raise TokenValidationError("claim_invalid", "claim 'ref_protected' must be 'true' or 'false'")
+    sha = claims["sha"]
+    if len(sha) != 40 or any(char not in "0123456789abcdef" for char in sha):
+        raise TokenValidationError("claim_invalid", "claim 'sha' must be a 40-hex commit")
+    for name in _GITLAB_OPTIONAL_STRING_CLAIMS:
+        value = claims.get(name)
+        if value is not None and (not isinstance(value, str) or len(value) > _MAX_CLAIM_LENGTH):
+            raise TokenValidationError("claim_invalid", f"claim {name!r} is malformed")
+    return claims

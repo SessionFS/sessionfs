@@ -58,12 +58,13 @@ vi.mock('./Badge', () => ({
 
 // ── Helpers ──
 
-function renderLayout() {
+function renderLayout(path = '/') {
   return render(
-    <MemoryRouter initialEntries={['/']}>
+    <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route element={<Layout />}>
           <Route path="/" element={<div>Dashboard home</div>} />
+          <Route path="/marketplace/*" element={<div>Marketplace page</div>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -237,30 +238,35 @@ describe('Layout', () => {
       expect(screen.getAllByRole('link', { name: /Handoffs/ }).length).toBeGreaterThan(0);
     });
 
-    it('renders ORGANIZATION group label text', () => {
+    it('groups the sidebar as ungrouped | Library | Inbox | Manage, with Settings/Help/Admin pinned at the bottom', () => {
       renderLayout();
-      // The uppercase group label appears in the sidebar (text-micro, uppercase)
-      const labels = screen.getAllByText('Organization');
-      expect(labels.length).toBeGreaterThanOrEqual(1);
+      const sidebar = document.querySelector('aside nav') as HTMLElement;
+      const labels = Array.from(sidebar.querySelectorAll('.uppercase')).map((n) => n.textContent);
+      expect(labels).toEqual(['Library', 'Inbox', 'Manage']);
+      const order = Array.from(sidebar.querySelectorAll('a')).map((a) => a.textContent?.replace(/\d+$/, '').trim());
+      expect(order).toEqual([
+        'Sessions', 'Projects', 'Handoffs',
+        'Marketplace',
+        'Invites', 'Transfers',
+        'Organization', 'Billing',
+        'Settings', 'Help', 'Admin',
+      ]);
     });
 
-    it('shows Moderation to platform admins and org owners/admins only', () => {
-      // Default mock: platform admin.
-      const first = renderLayout();
-      expect(screen.getAllByRole('link', { name: /Moderation/ })[0]).toHaveAttribute('href', '/marketplace/moderation');
-      first.unmount();
-
-      // Owner of a non-primary org counts as an admin.
-      useMeMock.mockReturnValue({ data: { tier: 'pro', email: 'o@x.dev', org_id: 'org_1', org_role: 'member' } });
-      useMyOrgsMock.mockReturnValue({ data: [{ org_id: 'org_2', name: 'Two', role: 'owner' }], isLoading: false });
-      const second = renderLayout();
-      expect(screen.getAllByRole('link', { name: /Moderation/ }).length).toBeGreaterThan(0);
-      second.unmount();
-
-      useMyOrgsMock.mockReturnValue({ data: [{ org_id: 'org_1', name: 'One', role: 'member' }], isLoading: false });
+    it('has no top-level Moderation link in the sidebar for any role', () => {
       renderLayout();
-      expect(screen.queryAllByRole('link', { name: /Moderation/ })).toHaveLength(0);
-      useMyOrgsMock.mockReturnValue({ data: [], isLoading: false });
+      const sidebar = document.querySelector('aside nav') as HTMLElement;
+      expect(sidebar.querySelector('a[href="/marketplace/moderation"]')).toBeNull();
+    });
+
+    it('keeps Marketplace active on every /marketplace/* route', () => {
+      for (const path of ['/marketplace', '/marketplace/moderation', '/marketplace/publishers', '/marketplace/usage']) {
+        const { unmount } = renderLayout(path);
+        const sidebar = document.querySelector('aside nav') as HTMLElement;
+        const link = sidebar.querySelector('a[href="/marketplace"]') as HTMLElement;
+        expect(link).toHaveAttribute('aria-current', 'page');
+        unmount();
+      }
     });
 
     it('hides org-only Organization nav link for solo users', () => {

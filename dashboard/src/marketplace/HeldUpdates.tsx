@@ -6,6 +6,7 @@ import { useAdvanceAssignment, useHeldUpdates, useMarketplaceDisclosure } from '
 import { useToast } from '../hooks/useToast';
 import { DisclosureCard, UpdateDiff } from './DisclosureCard';
 import type { OrgMembership } from './moderationState';
+import { errorMessage } from '../utils/errorMessage';
 
 /**
  * Held updates (marketplace v2 §3.4): org assignments whose package has a
@@ -74,7 +75,7 @@ function HeldUpdateRow({ orgId, item, onStale }: { orgId: string; item: HeldUpda
         );
         return;
       }
-      addToast('error', `Advance failed: ${String(error)}`);
+      addToast('error', `Advance failed: ${errorMessage(error)}`);
     }
   }
 
@@ -103,7 +104,7 @@ function HeldUpdateRow({ orgId, item, onStale }: { orgId: string; item: HeldUpda
       </div>
       {disclosure.isLoading && <p className="mt-2 text-xs text-text-tertiary">Loading disclosure…</p>}
       {disclosure.error && (
-        <p role="alert" className="mt-2 text-xs text-danger">Disclosure unavailable: {String(disclosure.error)}</p>
+        <p role="alert" className="mt-2 text-xs text-danger">Disclosure unavailable: {errorMessage(disclosure.error)}</p>
       )}
       {disclosure.data && <div className="mt-3"><DisclosureCard disclosure={disclosure.data} /></div>}
       {needsAck && item.diff && (
@@ -149,7 +150,7 @@ export default function HeldUpdates({ orgId }: { orgId: string }) {
       {updates.isLoading ? (
         <p className="mt-3 text-sm text-text-tertiary">Loading updates…</p>
       ) : updates.error ? (
-        <p role="alert" className="mt-3 text-sm text-danger">Updates unavailable: {String(updates.error)}</p>
+        <p role="alert" className="mt-3 text-sm text-danger">Updates unavailable: {errorMessage(updates.error)}</p>
       ) : items.length === 0 ? (
         <p className="mt-3 text-sm text-text-tertiary">No assigned package has a newer version.</p>
       ) : (

@@ -129,6 +129,43 @@ describe('SessionList empty state', () => {
     expect(screen.getByText('Another Session')).toBeInTheDocument();
     // List view is the active toggle state
     expect(screen.getByLabelText('List view')).toHaveAttribute('aria-pressed', 'true');
+    // The page carries a single h1 and the controls are real buttons
+    expect(screen.getByRole('heading', { level: 1, name: 'Sessions' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Select' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Sort direction/ })).toBeInTheDocument();
+  });
+
+  it('shows labelled checkboxes in select mode', async () => {
+    const user = userEvent.setup();
+    const now = new Date().toISOString();
+    hooks.useSessions.mockReturnValue({
+      data: {
+        sessions: [{
+          id: 'ses_1', title: 'Test Session', source_tool: 'claude-code',
+          model_id: null, message_count: 5, total_input_tokens: 100, total_output_tokens: 200,
+          created_at: now, updated_at: now, last_user_at: now, tool_use_count: 0,
+        }],
+        total: 1, page: 1, page_size: 20, has_more: false,
+      },
+      isLoading: false, error: null,
+    });
+    hooks.useDeletedSessions.mockReturnValue({ data: { sessions: [] }, isLoading: false });
+    hooks.useRestoreSession.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    hooks.useFolders.mockReturnValue({ data: { folders: [] }, isLoading: false });
+    hooks.useAddBookmark.mockReturnValue({ mutateAsync: vi.fn() });
+    hooks.useFolderSessions.mockReturnValue({ data: null, isLoading: false });
+
+    render(
+      <MemoryRouter>
+        <SessionList />
+      </MemoryRouter>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Select' }));
+    const box = screen.getByRole('checkbox', { name: 'Select Test Session' });
+    await user.click(box);
+    expect(box).toBeChecked();
+    expect(screen.getByText('1 selected')).toBeInTheDocument();
   });
 
   it('switches to grid view and renders session cards', async () => {
@@ -319,13 +356,13 @@ describe('SessionList empty state', () => {
     );
 
     // Open the sort combobox and select "Sort: Tool"
-    await user.click(screen.getByRole('combobox', { name: 'Sort sessions' }));
+    await user.click(screen.getByRole('button', { name: 'Sort sessions' }));
     await user.click(
       screen.getByRole('option', { name: 'Sort: Tool' }),
     );
 
     expect(screen.queryByRole('heading', { name: 'Today' })).not.toBeInTheDocument();
-    const groupHeadings = screen.getAllByRole('heading', { level: 3 }).map((el) => el.textContent);
+    const groupHeadings = screen.getAllByRole('heading', { level: 2 }).map((el) => el.textContent);
     expect(groupHeadings).toEqual(['Claude Code', 'Codex', 'Gemini CLI']);
   });
 });

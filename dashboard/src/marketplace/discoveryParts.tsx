@@ -1,4 +1,5 @@
 import { Badge } from '../components/Badge';
+import { TableShell } from '../components/ui';
 import type { MarketplacePackage, VerifyStatus } from '../api/client';
 import { installsLabel } from './discoveryUtils';
 
@@ -65,8 +66,7 @@ export function ToolFreshnessTable({ item }: { item: MarketplacePackage }) {
         Installs over the last {item.installs?.window_days ?? 30} days (counts under 10 show as "&lt;10").
         {item.freshness?.computed_at ? ` Freshness computed ${shortDate(item.freshness.computed_at)}.` : ' Freshness not computed yet.'}
       </p>
-      <div className="mt-2 overflow-x-auto rounded-lg border border-border">
-        <table className="w-full min-w-[620px] text-left text-sm">
+      <TableShell minWidth={620} bordered wrapperClassName="mt-2">
           <thead className="bg-bg-sunken text-xs uppercase tracking-wider text-text-tertiary">
             <tr>
               <th className="px-3 py-2">Tool</th>
@@ -102,8 +102,7 @@ export function ToolFreshnessTable({ item }: { item: MarketplacePackage }) {
               );
             })}
           </tbody>
-        </table>
-      </div>
+      </TableShell>
     </section>
   );
 }

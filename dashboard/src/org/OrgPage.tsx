@@ -1,14 +1,18 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import { useMe } from '../hooks/useMe';
 import { getAvatarColor } from '../utils/avatar';
-import { Dropdown, Button } from '../components/ui';
+import { useSearchParams } from 'react-router-dom';
+import { Dropdown, Button, Dialog, DialogHeader, DialogFooter, PageContainer, PageHeader, Tabs } from '../components/ui';
 import OrgSettingsTab from './OrgSettingsTab';
 import SsoTab from './SsoTab';
 import OrgPersonasSection, { type OrgPersonaMember } from './OrgPersonasSection';
 import ActivateLicensePanel from './ActivateLicensePanel';
 import OwnerTransferDialog from './OwnerTransferDialog';
+import { errorMessage } from '../utils/errorMessage';
+
+type OrgTab = 'members' | 'personas' | 'policies' | 'security';
 
 export default function OrgPage() {
   const { auth } = useAuth();
@@ -19,6 +23,8 @@ export default function OrgPage() {
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteRole, setInviteRole] = useState('member');
   const [showInviteForm, setShowInviteForm] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<{ user_id: string; email: string } | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const { data, isLoading } = useQuery({
     queryKey: ['org-info'],
@@ -136,7 +142,7 @@ export default function OrgPage() {
 
   if (!org) {
     return (
-      <div className="max-w-2xl mx-auto px-4 py-12">
+      <div className="max-w-2xl w-full mx-auto px-4 py-12">
         <div className="text-center mb-8">
           <h2 className="text-xl font-semibold text-text-primary mb-4">No Organization</h2>
           <p className="text-text-tertiary mb-6">
@@ -151,116 +157,52 @@ export default function OrgPage() {
     );
   }
 
-  return (
-    <div className="max-w-4xl mx-auto px-4 py-8">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight text-text-primary">{org.name}</h1>
-          <p className="text-md text-text-secondary">
-            {org.slug} &middot; {org.tier} tier &middot; {org.seats_used}/{org.seats_limit} seats
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {isOwner && (
-            <Button variant="secondary" onClick={() => setShowTransferDialog(true)}>
-              Transfer ownership
-            </Button>
-          )}
-          {isAdmin && (
+  const visibleTabs: OrgTab[] = ['members'];
+  if (org.id && (isAdmin || myUserId)) visibleTabs.push('personas');
+  if (org.id) visibleTabs.push('policies');
+  if (org.id && isAdmin) visibleTabs.push('security');
+  const requestedTab = searchParams.get('tab');
+  const activeTab: OrgTab = visibleTabs.includes(requestedTab as OrgTab) ? (requestedTab as OrgTab) : 'members';
+  const selectTab = (key: string) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.set('tab', key);
+        return next;
+      },
+      { replace: true },
+    );
+  };
+
+  const TAB_LABELS: Record<OrgTab, string> = {
+    members: 'Members',
+    personas: 'Personas',
+    policies: 'Policies',
+    security: 'Security',
+  };
+
+  const tabContent: Record<OrgTab, ReactNode> = {
+    members: (
+      <div>
+        {isAdmin && (
+          <div className="flex items-center justify-end gap-2 mb-4">
+            {isOwner && (
+              <Button variant="secondary" onClick={() => setShowTransferDialog(true)}>
+                Transfer ownership
+              </Button>
+            )}
             <button
               onClick={() => setShowInviteForm(!showInviteForm)}
               className="bg-brand text-white rounded-lg px-5 py-2.5 text-sm font-semibold hover:bg-[var(--brand-hover)] transition-colors"
             >
               Invite Member
             </button>
-          )}
-        </div>
-      </div>
-
-      {/* v0.11.0 — pending ownership transfer banner */}
-      {pendingTransfer && (
-        <div className="bg-bg-elevated border border-brand/40 rounded-xl p-5 mb-6">
-          {pendingTransfer.to_user_id === myUserId ? (
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h3 className="text-base font-semibold text-text-primary">
-                  You've been offered ownership of {org.name}
-                </h3>
-                <p className="text-sm text-text-tertiary">
-                  Accept to become the organization owner, or decline to leave ownership unchanged.
-                </p>
-                {pendingTransfer.expires_at && (
-                  <p className="text-xs text-text-tertiary mt-1">
-                    Expires {pendingTransfer.expires_at.slice(0, 10)}
-                  </p>
-                )}
-              </div>
-              <div className="flex gap-2 shrink-0">
-                <Button
-                  onClick={() =>
-                    transferActionMutation.mutate({ transferId: pendingTransfer.transfer_id, action: 'accept' })
-                  }
-                  disabled={transferActionMutation.isPending}
-                >
-                  Accept ownership
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() =>
-                    transferActionMutation.mutate({ transferId: pendingTransfer.transfer_id, action: 'cancel' })
-                  }
-                  disabled={transferActionMutation.isPending}
-                >
-                  Decline
-                </Button>
-              </div>
-            </div>
-          ) : pendingTransfer.from_user_id === myUserId ? (
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <h3 className="text-base font-semibold text-text-primary">
-                  Ownership transfer pending
-                </h3>
-                <p className="text-sm text-text-tertiary">
-                  Waiting for{' '}
-                  {members.find((m: any) => m.user_id === pendingTransfer.to_user_id)?.email ||
-                    'the new owner'}{' '}
-                  to accept. You'll become an admin once they do.
-                </p>
-                {pendingTransfer.expires_at && (
-                  <p className="text-xs text-text-tertiary mt-1">
-                    Expires {pendingTransfer.expires_at.slice(0, 10)}
-                  </p>
-                )}
-              </div>
-              <Button
-                variant="ghost"
-                onClick={() =>
-                  transferActionMutation.mutate({ transferId: pendingTransfer.transfer_id, action: 'cancel' })
-                }
-                disabled={transferActionMutation.isPending}
-                className="shrink-0"
-              >
-                Cancel transfer
-              </Button>
-            </div>
-          ) : (
-            <p className="text-sm text-text-tertiary">
-              An ownership transfer is pending for this organization.
-            </p>
-          )}
-          {transferActionMutation.isError && (
-            <p className="text-red-500 text-sm mt-2">
-              {(transferActionMutation.error as Error).message}
-            </p>
-          )}
-        </div>
-      )}
-
+          </div>
+        )}
       {/* Invite form */}
       {showInviteForm && isAdmin && (
         <div className="bg-bg-elevated border border-border rounded-xl p-5 mb-6">
-          <h3 className="text-sm font-medium text-text-primary mb-3">Invite a teammate</h3>
+          <h2 className="text-sm font-medium text-text-primary mb-3">Invite a teammate</h2>
           <div className="flex gap-3 items-end">
             <div className="flex-1">
               <label className="block text-sm text-text-tertiary mb-1">Email</label>
@@ -306,7 +248,7 @@ export default function OrgPage() {
             </button>
           </div>
           {inviteMutation.isError && (
-            <p className="text-red-500 text-sm mt-2">{(inviteMutation.error as Error).message}</p>
+            <p className="text-danger text-sm mt-2">{errorMessage(inviteMutation.error)}</p>
           )}
         </div>
       )}
@@ -314,7 +256,7 @@ export default function OrgPage() {
       {/* Members */}
       <div className="bg-bg-elevated border border-border rounded-xl overflow-hidden mb-6">
         <div className="px-5 py-3 border-b border-border">
-          <h3 className="text-lg font-semibold text-text-primary">Members</h3>
+          <h2 className="text-lg font-semibold text-text-primary">Members</h2>
         </div>
         <div className="divide-y divide-[var(--border)]">
           {members.map((m: any) => (
@@ -334,7 +276,7 @@ export default function OrgPage() {
               <span
                 className={`px-2 py-0.5 rounded-full text-xs font-medium ${
                   m.role === 'owner'
-                    ? 'bg-amber-500/15 text-amber-500'
+                    ? 'bg-warning/15 text-warning'
                     : m.role === 'admin'
                       ? 'bg-brand/15 text-brand'
                       : 'bg-[var(--border)] text-text-tertiary'
@@ -344,7 +286,7 @@ export default function OrgPage() {
               </span>
 
               {/* Joined */}
-              <span className="text-xs text-text-tertiary w-20 text-right flex-shrink-0">
+              <span className="hidden sm:block text-xs text-text-tertiary w-20 text-right flex-shrink-0">
                 {m.joined_at?.slice(0, 10) || '-'}
               </span>
 
@@ -360,15 +302,11 @@ export default function OrgPage() {
                     }
                     className="text-xs text-brand hover:underline"
                   >
-                    {m.role === 'admin' ? 'Make Member' : 'Make Admin'}
+                    {m.role === 'admin' ? 'Make member' : 'Make admin'}
                   </button>
                   <button
-                    onClick={() => {
-                      if (confirm(`Remove ${m.email} from the organization?`)) {
-                        removeMutation.mutate(m.user_id);
-                      }
-                    }}
-                    className="text-xs text-red-500 hover:underline"
+                    onClick={() => setRemoveTarget({ user_id: m.user_id, email: m.email })}
+                    className="text-xs text-danger hover:underline"
                   >
                     Remove
                   </button>
@@ -388,7 +326,7 @@ export default function OrgPage() {
       {isAdmin && pendingInvites.length > 0 && (
         <div className="bg-bg-elevated border border-border rounded-xl overflow-hidden">
           <div className="px-5 py-3 border-b border-border">
-            <h3 className="text-lg font-semibold text-text-primary">Pending Invites</h3>
+            <h2 className="text-lg font-semibold text-text-primary">Pending Invites</h2>
           </div>
           <div className="divide-y divide-[var(--border)]">
             {pendingInvites.map((inv: any) => (
@@ -399,7 +337,7 @@ export default function OrgPage() {
                 <div className="flex-1 min-w-0">
                   <div className="text-base text-text-primary truncate">{inv.email}</div>
                 </div>
-                <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-500/10 text-yellow-500">
+                <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-warning/10 text-warning">
                   {inv.role}
                 </span>
                 <span className="text-xs text-text-tertiary">
@@ -414,20 +352,10 @@ export default function OrgPage() {
         </div>
       )}
 
-      {/* v0.10.0 Phase 6 — org defaults (retention, compile model, KB knobs). */}
-      {org?.id && (
-        <div className="bg-bg-elevated border border-border rounded-xl p-5 mt-6">
-          <OrgSettingsTab orgId={org.id} canEdit={isAdmin} />
-        </div>
-      )}
-
-      {/* v0.13.x — SSO (OIDC) admin configuration. */}
-      {org?.id && isAdmin && (
-        <div className="bg-bg-elevated border border-border rounded-xl p-5 mt-6">
-          <SsoTab orgId={org.id} canEdit={isAdmin} isOwner={isOwner} />
-        </div>
-      )}
-
+      </div>
+    ),
+    personas: (
+      <>
       {/* GH #70 — org-level personas (admins and owners manage them).
           GitHub #81 — members see and edit the personas that represent them. */}
       {org?.id && (isAdmin || myUserId) && (
@@ -436,9 +364,129 @@ export default function OrgPage() {
           isAdmin={isAdmin}
           myUserId={myUserId}
           members={members.map((m: OrgPersonaMember) => ({ user_id: m.user_id, email: m.email }))}
-          className="bg-bg-elevated border border-border rounded-xl p-5 mt-6"
+          className="bg-bg-elevated border border-border rounded-xl p-5"
         />
       )}
+
+      </>
+    ),
+    policies: (
+      <>
+      {/* v0.10.0 Phase 6 — org defaults (retention, compile model, KB knobs). */}
+      {org?.id && (
+        <div className="bg-bg-elevated border border-border rounded-xl p-5">
+          <OrgSettingsTab orgId={org.id} canEdit={isAdmin} />
+        </div>
+      )}
+
+      </>
+    ),
+    security: (
+      <>
+      {/* v0.13.x — SSO (OIDC) admin configuration. */}
+      {org?.id && isAdmin && (
+        <div className="bg-bg-elevated border border-border rounded-xl p-5">
+          <SsoTab orgId={org.id} canEdit={isAdmin} isOwner={isOwner} />
+        </div>
+      )}
+
+      </>
+    ),
+  };
+
+  return (
+    <PageContainer>
+      <PageHeader
+        title={org.name}
+        description={`${org.slug} \u00b7 ${org.tier} tier \u00b7 ${org.seats_used}/${org.seats_limit} seats`}
+      />
+
+      {/* v0.11.0 — pending ownership transfer banner */}
+      {pendingTransfer && (
+        <div className="bg-bg-elevated border border-brand/40 rounded-xl p-5 mb-6">
+          {pendingTransfer.to_user_id === myUserId ? (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-base font-semibold text-text-primary">
+                  You've been offered ownership of {org.name}
+                </h2>
+                <p className="text-sm text-text-tertiary">
+                  Accept to become the organization owner, or decline to leave ownership unchanged.
+                </p>
+                {pendingTransfer.expires_at && (
+                  <p className="text-xs text-text-tertiary mt-1">
+                    Expires {pendingTransfer.expires_at.slice(0, 10)}
+                  </p>
+                )}
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <Button
+                  onClick={() =>
+                    transferActionMutation.mutate({ transferId: pendingTransfer.transfer_id, action: 'accept' })
+                  }
+                  disabled={transferActionMutation.isPending}
+                >
+                  Accept ownership
+                </Button>
+                <Button
+                  variant="ghost"
+                  onClick={() =>
+                    transferActionMutation.mutate({ transferId: pendingTransfer.transfer_id, action: 'cancel' })
+                  }
+                  disabled={transferActionMutation.isPending}
+                >
+                  Decline
+                </Button>
+              </div>
+            </div>
+          ) : pendingTransfer.from_user_id === myUserId ? (
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-base font-semibold text-text-primary">
+                  Ownership transfer pending
+                </h2>
+                <p className="text-sm text-text-tertiary">
+                  Waiting for{' '}
+                  {members.find((m: any) => m.user_id === pendingTransfer.to_user_id)?.email ||
+                    'the new owner'}{' '}
+                  to accept. You'll become an admin once they do.
+                </p>
+                {pendingTransfer.expires_at && (
+                  <p className="text-xs text-text-tertiary mt-1">
+                    Expires {pendingTransfer.expires_at.slice(0, 10)}
+                  </p>
+                )}
+              </div>
+              <Button
+                variant="ghost"
+                onClick={() =>
+                  transferActionMutation.mutate({ transferId: pendingTransfer.transfer_id, action: 'cancel' })
+                }
+                disabled={transferActionMutation.isPending}
+                className="shrink-0"
+              >
+                Cancel transfer
+              </Button>
+            </div>
+          ) : (
+            <p className="text-sm text-text-tertiary">
+              An ownership transfer is pending for this organization.
+            </p>
+          )}
+          {transferActionMutation.isError && (
+            <p className="text-danger text-sm mt-2">
+              {errorMessage(transferActionMutation.error)}
+            </p>
+          )}
+        </div>
+      )}
+
+      <Tabs
+        aria-label="Organization sections"
+        tabs={visibleTabs.map((key) => ({ key, label: TAB_LABELS[key], content: tabContent[key] }))}
+        activeKey={activeTab}
+        onChange={selectTab}
+      />
 
       {isOwner && orgId && (
         <OwnerTransferDialog
@@ -451,6 +499,25 @@ export default function OrgPage() {
           }
         />
       )}
-    </div>
+
+      <Dialog open={!!removeTarget} onClose={() => setRemoveTarget(null)} titleId="remove-member-title">
+        <DialogHeader titleId="remove-member-title">Remove member</DialogHeader>
+        <p className="text-sm text-text-secondary mb-6">
+          {removeTarget ? `Remove ${removeTarget.email} from the organization?` : ''}
+        </p>
+        <DialogFooter>
+          <Button variant="secondary" onClick={() => setRemoveTarget(null)}>Cancel</Button>
+          <Button
+            variant="danger"
+            onClick={() => {
+              if (removeTarget) removeMutation.mutate(removeTarget.user_id);
+              setRemoveTarget(null);
+            }}
+          >
+            Remove
+          </Button>
+        </DialogFooter>
+      </Dialog>
+    </PageContainer>
   );
 }

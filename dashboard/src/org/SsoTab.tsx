@@ -29,6 +29,7 @@ import {
   type SsoProviderResponse,
 } from './useSso';
 import { Button, Input, Dialog, DialogHeader, DialogFooter } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 interface SsoTabProps {
   orgId: string;
@@ -152,8 +153,8 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
   if (provider.isLoading) return <p className="text-text-tertiary">Loading SSO settings…</p>;
   if (provider.isError)
     return (
-      <p role="alert" className="text-red-500">
-        Failed to load SSO settings: {String((provider.error as Error)?.message ?? provider.error)}
+      <p role="alert" className="text-danger">
+        Failed to load SSO settings: {errorMessage(provider.error)}
       </p>
     );
 
@@ -176,7 +177,7 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
           addToast('success', 'OIDC provider configured');
           setShowProviderForm(false);
         },
-        onError: (err) => addToast('error', `Failed: ${parseErrorText(err.message)}`),
+        onError: (err) => addToast('error', `Save failed: ${parseErrorText(errorMessage(err))}`),
       },
     );
   };
@@ -199,7 +200,7 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
         addToast('success', 'Provider updated');
         setShowEditProvider(false);
       },
-      onError: (err) => addToast('error', `Update failed: ${parseErrorText(err.message)}`),
+      onError: (err) => addToast('error', `Update failed: ${parseErrorText(errorMessage(err))}`),
     });
   };
 
@@ -209,7 +210,7 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
         addToast('success', 'OIDC provider removed');
         setConfirmDeleteProvider(false);
       },
-      onError: (err) => addToast('error', `Delete failed: ${parseErrorText(err.message)}`),
+      onError: (err) => addToast('error', `Delete failed: ${parseErrorText(errorMessage(err))}`),
     });
   };
 
@@ -219,7 +220,7 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
       { enabled: !providerData.enabled },
       {
         onSuccess: () => addToast('success', providerData.enabled ? 'Provider disabled' : 'Provider enabled'),
-        onError: (err) => addToast('error', `Toggle failed: ${parseErrorText(err.message)}`),
+        onError: (err) => addToast('error', `Toggle failed: ${parseErrorText(errorMessage(err))}`),
       },
     );
   };
@@ -229,7 +230,7 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
     toggleEnforcement.mutate(!providerData.enforced, {
       onSuccess: (data) =>
         addToast('success', data.enforced ? 'Enforcement enabled' : 'Enforcement disabled'),
-      onError: (err) => addToast('error', `Enforcement failed: ${parseErrorText(err.message)}`),
+      onError: (err) => addToast('error', `Enforcement failed: ${parseErrorText(errorMessage(err))}`),
     });
   };
 
@@ -243,7 +244,7 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
           setNewDomainResult({ domain: data.domain, txt_record: data.txt_record });
           setDomainInput('');
         },
-        onError: (err) => addToast('error', `Add domain failed: ${parseErrorText(err.message)}`),
+        onError: (err) => addToast('error', `Add domain failed: ${parseErrorText(errorMessage(err))}`),
       },
     );
   };
@@ -257,7 +258,7 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
             ? `Domain ${data.domain} verified`
             : `Verification pending for ${data.domain} — check DNS`,
         ),
-      onError: (err) => addToast('error', `Verify failed: ${parseErrorText(err.message)}`),
+      onError: (err) => addToast('error', `Verify failed: ${parseErrorText(errorMessage(err))}`),
     });
   };
 
@@ -268,7 +269,7 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
         addToast('success', 'Domain removed');
         setConfirmDeleteDomainId(null);
       },
-      onError: (err) => addToast('error', `Delete domain failed: ${parseErrorText(err.message)}`),
+      onError: (err) => addToast('error', `Delete domain failed: ${parseErrorText(errorMessage(err))}`),
     });
   };
 
@@ -282,7 +283,7 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
           addToast('success', 'Break-glass grant issued (1 hour)');
           setGrantUserId('');
         },
-        onError: (err) => addToast('error', `Grant failed: ${parseErrorText(err.message)}`),
+        onError: (err) => addToast('error', `Grant failed: ${parseErrorText(errorMessage(err))}`),
       },
     );
   };
@@ -294,7 +295,7 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
         addToast('success', 'Break-glass grant revoked');
         setConfirmRevokeGrantId(null);
       },
-      onError: (err) => addToast('error', `Revoke failed: ${parseErrorText(err.message)}`),
+      onError: (err) => addToast('error', `Revoke failed: ${parseErrorText(errorMessage(err))}`),
     });
   };
 
@@ -303,12 +304,12 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
   return (
     <section aria-labelledby="sso-heading">
       {/* ── Provider ── */}
-      <h3 id="sso-heading" className="text-lg font-semibold text-text-primary mb-3">
+      <h2 id="sso-heading" className="text-lg font-semibold text-text-primary mb-3">
         SSO (OIDC) Configuration
-      </h3>
+      </h2>
 
       <div className="bg-surface border border-border rounded-lg p-4 mb-5">
-        <h4 className="text-base font-medium text-text-primary mb-2">Provider</h4>
+        <h3 className="text-base font-medium text-text-primary mb-2">Provider</h3>
 
         {!isConfigured && !showProviderForm && (
           <SsoEmptyState onConfigure={() => setShowProviderForm(true)} />
@@ -429,10 +430,10 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
       {/* ── Domains ── */}
       {isConfigured && (
         <div className="bg-surface border border-border rounded-lg p-4 mb-5">
-          <h4 className="text-base font-medium text-text-primary mb-2">Domains</h4>
+          <h3 className="text-base font-medium text-text-primary mb-2">Domains</h3>
 
           {domains.isLoading && <p className="text-text-tertiary text-sm">Loading domains…</p>}
-          {domains.isError && <p role="alert" className="text-red-500 text-sm">{String((domains.error as Error)?.message ?? domains.error)}</p>}
+          {domains.isError && <p role="alert" className="text-danger text-sm">{errorMessage(domains.error)}</p>}
 
           {domains.data && domains.data.length === 0 && (
             <p className="text-text-tertiary text-sm mb-3">No domains configured yet.</p>
@@ -447,8 +448,8 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
                     <span
                       className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-medium ${
                         d.status === 'verified'
-                          ? 'bg-green-500/15 text-green-500'
-                          : 'bg-amber-500/15 text-amber-500'
+                          ? 'bg-success/15 text-success'
+                          : 'bg-warning/15 text-warning'
                       }`}
                     >
                       {d.status}
@@ -484,7 +485,7 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
 
           {/* New domain result — show txt_record prominently */}
           {newDomainResult && (
-            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mb-3" data-testid="txt-record-callout">
+            <div className="bg-warning/10 border border-warning/30 rounded-lg p-3 mb-3" data-testid="txt-record-callout">
               <p className="text-sm font-medium text-text-primary mb-1">
                 DNS record to publish for <span className="font-mono">{newDomainResult.domain}</span>:
               </p>
@@ -524,7 +525,7 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
       {/* ── Enforcement ── */}
       {isConfigured && (
         <div className="bg-surface border border-border rounded-lg p-4 mb-5">
-          <h4 className="text-base font-medium text-text-primary mb-2">Enforcement</h4>
+          <h3 className="text-base font-medium text-text-primary mb-2">Enforcement</h3>
 
           <div className="flex items-center gap-3 mb-2">
             <label className="text-sm font-medium text-text-secondary">Enforce SSO</label>
@@ -561,8 +562,8 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
           </p>
 
           {toggleEnforcement.isError && (
-            <p role="alert" className="text-red-500 text-sm mt-2">
-              {parseErrorText((toggleEnforcement.error as Error)?.message ?? '')}
+            <p role="alert" className="text-danger text-sm mt-2">
+              {parseErrorText(errorMessage(toggleEnforcement.error))}
             </p>
           )}
         </div>
@@ -571,13 +572,13 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
       {/* ── Break-glass ── */}
       {isOwner && (
         <div className="bg-surface border border-border rounded-lg p-4 mb-5">
-          <h4 className="text-base font-medium text-text-primary mb-2">Break-glass grants</h4>
+          <h3 className="text-base font-medium text-text-primary mb-2">Break-glass grants</h3>
           <p className="text-xs text-text-tertiary mb-3">
             One-hour emergency grants for admins to sign in when SSO enforcement blocks them. Owner only.
           </p>
 
           {grants.isLoading && <p className="text-text-tertiary text-sm">Loading grants…</p>}
-          {grants.isError && <p role="alert" className="text-red-500 text-sm">{String((grants.error as Error)?.message ?? grants.error)}</p>}
+          {grants.isError && <p role="alert" className="text-danger text-sm">{errorMessage(grants.error)}</p>}
 
           {(grants.data ?? []).length > 0 && (
             <ul className="divide-y divide-border mb-3" aria-label="Break-glass grants">
@@ -590,7 +591,7 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
                       <span
                         className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-medium ${
                           active
-                            ? 'bg-green-500/15 text-green-500'
+                            ? 'bg-success/15 text-success'
                             : 'bg-text-tertiary/15 text-text-tertiary'
                         }`}
                       >

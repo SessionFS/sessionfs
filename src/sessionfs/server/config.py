@@ -61,6 +61,11 @@ class ServerConfig(BaseSettings):
     public_api_url: str = ""
     # Overrides the trusted-publishing OIDC audience (must be deployment-unique).
     trusted_publishing_audience: str = ""
+    # GitLab instances whose CI ID tokens may be exchanged for publish tokens
+    # (comma-separated https origins, e.g. https://gitlab.example.com).
+    # Unset = https://gitlab.com only; "none" disables GitLab. Listed values
+    # replace the default. An invalid entry refuses startup.
+    gitlab_oidc_issuers: str = ""
     # Public GitHub mirror of the public native catalog, as owner/repo (e.g.
     # SessionFS/marketplace). Set: the public catalog's add commands lead with
     # the keyless GitHub form. A scheduled `sfs catalog export` keeps it in

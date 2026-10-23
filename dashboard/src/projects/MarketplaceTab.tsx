@@ -23,6 +23,7 @@ import { ModerationStateBadge, RevocationIncompleteNotice } from '../marketplace
 import { DisclosureCard, UpdateDiff } from '../marketplace/DisclosureCard';
 import RelativeDate from '../components/RelativeDate';
 import { Button, Input } from '../components/ui';
+import { errorMessage } from '../utils/errorMessage';
 
 interface MarketplaceTabProps { projectId: string }
 
@@ -144,7 +145,7 @@ function ApprovalRow({
       {disclosure.isLoading && <p className="text-xs text-text-tertiary">Loading install disclosure…</p>}
       {disclosure.error && (
         <p role="alert" className="text-xs text-danger">
-          Install disclosure unavailable: {String(disclosure.error)}. Approval is disabled until it loads.
+          Install disclosure unavailable: {errorMessage(disclosure.error)}. Approval is disabled until it loads.
         </p>
       )}
       {disclosure.data && <DisclosureCard disclosure={disclosure.data} />}
@@ -278,7 +279,7 @@ export default function MarketplaceTab({ projectId }: MarketplaceTabProps) {
         addToast('error', 'The confirmation code could not be delivered to your email. Ask another owner or admin to approve, or retry later.');
         return;
       }
-      addToast('error', `Could not send confirmation code: ${String(error)}`);
+      addToast('error', `Send code failed: ${errorMessage(error)}`);
     }
   }
 
@@ -287,7 +288,7 @@ export default function MarketplaceTab({ projectId }: MarketplaceTabProps) {
       const result = await revoke.mutateAsync(requestId);
       addToast('success', result.warning ? `Grant revoked. ${result.warning}` : 'Grant revoked; consent receipts invalidated.');
     } catch (error) {
-      addToast('error', `Revoke failed: ${String(error)}`);
+      addToast('error', `Revoke failed: ${errorMessage(error)}`);
     }
   }
 
@@ -337,12 +338,12 @@ export default function MarketplaceTab({ projectId }: MarketplaceTabProps) {
         );
         return;
       }
-      addToast('error', `${action === 'approve' ? 'Approval' : 'Cancellation'} failed: ${String(error)}`);
+      addToast('error', `${action === 'approve' ? 'Approval' : 'Cancellation'} failed: ${errorMessage(error)}`);
     }
   }
 
   if (requests.isLoading) return <p className="p-4 text-sm text-text-tertiary">Loading install requests…</p>;
-  if (requests.error) return <p role="alert" className="p-4 text-sm text-danger">Failed to load install requests: {String(requests.error)}</p>;
+  if (requests.error) return <p role="alert" className="p-4 text-sm text-danger">Failed to load install requests: {errorMessage(requests.error)}</p>;
   const rows = requests.data?.items || [];
   return (
     <section aria-labelledby="project-marketplace-heading" className="space-y-4">

@@ -13,6 +13,7 @@ sfs [OPTIONS] COMMAND [ARGS]...
 | Option | Description |
 |--------|-------------|
 | `--help` | Show help and exit |
+| `--version`, `-V` | Show the installed version (`sessionfs X.Y.Z (python …, platform arch)`) and exit. Also available as `sfs version`. |
 
 ---
 
@@ -1737,6 +1738,34 @@ sfs admin registries poll [--limit N] [--registry ID ...] [--until-idle] [--max-
 | `--until-idle` | off | Keep requesting batches while a full batch was polled |
 | `--max-runs` | 20 | Stop after this many requests |
 
+## `sfs admin audit-log`
+
+Show the platform admin audit log, newest first (platform admin only): action, target, admin, reason, and before/after state when captured. Entries with source `operator_record` were recorded by an operator and not verified by the server. See [Auditing Operator Overrides](/self-hosted/#auditing-operator-overrides).
+
+```
+sfs admin audit-log [--target-type TYPE] [--target-id ID] [--action NAME] [--source api|operator_record] [--admin-id USER_ID] [--limit N] [--page N] [--json]
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--target-type` / `--target-id` | — | Only entries for this target |
+| `--admin-id` | — | Only entries performed or recorded by this admin |
+| `--action` | — | Only entries with this action |
+| `--source` | — | `api` or `operator_record` |
+| `--limit` | 50 | Entries per page (1-200) |
+| `--json` | off | Print the raw JSON, including the full before/after state |
+
+## `sfs admin override`
+
+Audited operator overrides (platform admin only).
+
+```
+sfs admin override project-transfer PROJECT_ID --to-org ORG_ID --reason "..." [--new-owner USER_ID] [--expect-from ORG_ID|personal] [--force] [--yes]
+sfs admin override record --action NAME --target-type TYPE --target-id ID --reason "..." [--before-file F] [--after-file F]
+```
+
+`project-transfer` moves a project into an organization without the owner's consent. It keeps the normal transfer checks (merged projects and stranded org personas are refused unless `--force`), cancels any pending transfer, and commits the move together with an audit entry holding the reason and before/after state. The owner must be a member of the destination organization; otherwise pass `--new-owner` with an active member, who becomes the owner. `--expect-from` refuses the move unless the project is still in the given org (or `personal`), so a retried command cannot move it twice. `record` logs an action performed outside the API, such as raw SQL; it is stored with source `operator_record`. Reasons are 1-500 characters; state files must hold a JSON object of at most 64 KiB.
+
 ## `sfs admin trusted-reviewers`
 
 Register, list, or revoke an organization's trusted reviewers (org-admin only). A trusted reviewer is authorized to post review verdicts that the autonomous work queue's stop oracle will trust — typically a dedicated automated reviewer key. Tightly gated and fully audited. Available starting v0.12.1.
@@ -1820,7 +1849,7 @@ Import, inspect, and install portable Agent Skills and Agent Plugins locally. Se
 | `sfs skill pull [--for TOOL] [--device-id ID] [--yes] [--allow-* ...] [--approve-widening] [--allow-hidden-unicode] [--json]` | Apply your org's skill assignments and your approved install requests to this device (see [Skills Marketplace](/skills-marketplace/)) |
 | `sfs skill validate SOURCE [--visibility personal\|org\|public] [--json]` | Validate a package directory or `.tar.gz` exactly as the server would. Prints each problem with its file and line (when known), why it fails, and how to fix it, then exits 1. On success it prints the content hash, risk flags, sizes, and the checks that only the server can make |
 | `sfs skill publish SOURCE [--org ORG_ID] [--visibility personal\|org\|public] [--namespace NS] [--collection NAME] [--yes] [--json]` | Validate locally, show a summary (name, version, license, risk flags, size, target), confirm, then upload. Prints the listing, package, and version IDs and the package URL |
-| `sfs skill publish SOURCE --trusted-publishing --namespace NS [--package NAME] [--visibility public] [--audience AUD]` | Publish from a GitHub Actions job without an API key: reads the server's OIDC audience, requests the job's OIDC token, exchanges it for a single-use publish token, and uploads. See [Trusted publishing](/skills-marketplace/#trusted-publishing-from-github-actions) |
+| `sfs skill publish SOURCE --trusted-publishing --namespace NS [--package NAME] [--visibility public] [--audience AUD] [--ci-provider github\|gitlab] [--id-token-env VAR]` | Publish from a GitHub Actions or GitLab CI job without an API key: reads the server's OIDC audience, gets the job's OIDC token (GitLab: from `$SFS_ID_TOKEN`, declared with `id_tokens:`), exchanges it for a single-use publish token, and uploads. See [Trusted publishing](/skills-marketplace/#trusted-publishing-from-github-actions) and [GitLab CI](/skills-marketplace/#trusted-publishing-from-gitlab-ci) |
 | `sfs skill publisher claim NAMESPACE [--org ORG_ID] [--display-name NAME] [--json]` | Claim a namespace: 3-39 lowercase letters, digits or single hyphens. Personal publishers need Starter or above; org publishers need an org owner/admin and the team skill library. Names that imitate a reserved brand or a verified publisher are refused with `409 namespace_confusable`: lookalike letters from any script (the full Unicode UTS #39 confusables table, so Cyrillic, Greek or Cherokee spellings), leetspeak digits (`0 1 2 3 4 5 6 7 8 9`), `rn`/`m`, one or two typos, and added `-official`, `-team`, `-ai` and similar. A namespace another owner already publishes packages in is refused with `409 namespace_in_use` (ask SessionFS to review the claim). An owner can hold 5 publishers and claim 10 namespaces in total (retired ones count). Namespaces are never released, even after deletion |
 | `sfs skill publisher list [--json]` | Publishers you manage, personal and org |
 | `sfs skill publisher show PUBLISHER_ID [--json]` | Publisher details; managers also see verifications and trusted publishers |
@@ -1828,6 +1857,7 @@ Import, inspect, and install portable Agent Skills and Agent Plugins locally. Se
 | `sfs skill publisher verify PUBLISHER_ID --github-org INSTALLATION_ID` / `--github-user INSTALLATION_ID` | Verify a GitHub organization or account through one of **your own** SessionFS GitHub App installations. The installation must be linked to your account through the verified GitHub sign-in flow; an installation linked only by its id is refused with `409 installation_claim_unverified`. The badge is bound to GitHub's numeric account id, so a renamed or re-registered login does not inherit it |
 | `sfs skill publisher check PUBLISHER_ID VERIFICATION_ID` | Re-check a verification now |
 | `sfs skill publisher trust PUBLISHER_ID --repo OWNER/REPO --workflow FILE [--environment ENV] [--ref-pattern REF] [--package NAME] [--reusable-workflow OWNER/REPO/.github/workflows/FILE] [--allow-workflow-run]` | Allow a GitHub Actions workflow to publish for this publisher (see [Skills Marketplace](/skills-marketplace/)) |
+| `sfs skill publisher trust PUBLISHER_ID --gitlab-project ID [--gitlab-host ORIGIN] [--gitlab-project-path GROUP/PROJECT] [--gitlab-namespace-id ID] [--environment ENV [--require-protected-environment]] [--ref-pattern REF] [--package NAME]` | Allow a GitLab CI project to publish for this publisher (see [Trusted Publishing from GitLab CI](/skills-marketplace/#trusted-publishing-from-gitlab-ci)). `--gitlab-host` defaults to `https://gitlab.com`. `--environment` only adds security when the environment is protected in GitLab; `--require-protected-environment` enforces that |
 | `sfs skill publisher untrust PUBLISHER_ID TRUSTED_ID` | Remove a trusted publisher. Publish tokens already issued under it stop working |
 | `sfs skill publisher stats PUBLISHER_ID [--days 7\|30\|90] [--json]` | Publisher analytics: installs by tool, version and day, active installs, uninstall rate, translation failures, works-in regressions, scan findings and open reports. Counts under 10 show as `<10` |
 | `sfs skill publisher package PUBLISHER_ID PACKAGE_ID [--category SLUG ...] [--deprecate\|--undeprecate] [--message TEXT] [--successor PACKAGE_ID] [--readme-path PATH]` | Set a package's categories (up to 3), deprecation with a same-publisher successor, and README path |

@@ -136,3 +136,38 @@ def test_readiness_endpoint_maps_states_to_status_codes(monkeypatch):
     assert check("behind") == 503
     monkeypatch.setattr(health, "_schema_confirmed", False)
     assert check("ahead") == 200
+
+
+def test_readiness_over_http_reports_503_against_a_behind_database(monkeypatch):
+    """GitHub #83: a database one migration behind the code must fail the
+    readiness probe end to end (real route, real alembic_version row)."""
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from sessionfs.server.db import engine as engine_module
+    from sessionfs.server.routes import health
+
+    monkeypatch.setattr(health, "_schema_confirmed", False)
+    app = FastAPI()
+    app.include_router(health.router)
+    previous = sorted(r for r in known_revisions() if r != code_head_revision())[-1]
+
+    async def probe(revision: str | None):
+        engine, setup = _engine_with_revision(revision)
+        await setup()
+        monkeypatch.setattr(engine_module, "_engine", engine)
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://api"
+            ) as client:
+                return await client.get("/health/ready")
+        finally:
+            await engine.dispose()
+
+    behind = asyncio.run(probe(previous))
+    assert behind.status_code == 503
+    assert behind.json() == {"status": "not_ready", "schema": "behind"}
+
+    current = asyncio.run(probe(code_head_revision()))
+    assert current.status_code == 200
+    assert current.json() == {"status": "ready", "schema": "current"}

@@ -1,18 +1,19 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ProjectDetail from './ProjectDetail';
 
 /**
- * UI coverage for ProjectDetail. The page is 979 lines and renders four
- * tabs (Context, Pages, Entries, History) plus a header card with edit,
- * auto-narrative toggle, and delete-project flow. These tests focus on
- * the entry points and the highest-risk user interactions:
+ * UI coverage for ProjectDetail. The page has five URL-driven sections
+ * (Overview, Knowledge, Work, Rules & Skills, Settings) with sub-tabs, plus
+ * a header card. These tests focus on the entry points and the highest-risk
+ * user interactions:
  *
  *   - loading / error states
- *   - header renders project metadata + auto-narrative toggle
- *   - tab switching navigates between panels
+ *   - header renders project metadata
+ *   - sections, sub-tabs and the ?tab=/&sub= URL round trip
+ *   - Settings holds rename, auto-narrative, repos, merge, transfer, delete
  *   - edit → save → mutation called with the right payload
  *   - compile-from-context calls the compile mutation
  *   - delete flow shows confirm dialog then calls mutate
@@ -26,6 +27,7 @@ import ProjectDetail from './ProjectDetail';
 const { hooks, mockAddToast } = vi.hoisted(() => ({
   hooks: {
     useProject: vi.fn(),
+    useProjects: vi.fn(),
     useUpdateProjectContext: vi.fn(),
     useDeleteProject: vi.fn(),
     useKnowledgeEntries: vi.fn(),
@@ -68,6 +70,16 @@ vi.mock('../transfers/useTransfers', () => ({
   useMyOrgs: () => ({ data: [], isLoading: false, error: null }),
 }));
 
+// The Work and Rules & Skills bodies have their own suites and their own
+// auth-bound hooks; here only which one is mounted matters.
+vi.mock('./TicketsTab', () => ({ default: () => <div>tickets body</div> }));
+vi.mock('./AgentRunsTab', () => ({ default: () => <div>agent runs body</div> }));
+vi.mock('./PersonasTab', () => ({ default: () => <div>personas body</div> }));
+vi.mock('./RulesTab', () => ({ default: () => <div>rules body</div> }));
+vi.mock('./MarketplaceTab', () => ({ default: () => <div>skills body</div> }));
+// TransferPanel has its own suite; only its heading matters here.
+vi.mock('./TransferPanel', () => ({ default: () => <h3>Transfer ownership</h3> }));
+
 // react-markdown is ESM-only and pulls in a lot — stub it to a simple
 // <div> so we don't have to transform the import tree in tests.
 vi.mock('react-markdown', () => ({
@@ -100,9 +112,21 @@ function setProjectData(overrides: Record<string, unknown> = {}) {
   });
 }
 
+function LocationProbe() {
+  const loc = useLocation();
+  const navigate = useNavigate();
+  return (
+    <>
+      <div data-testid="loc">{loc.search}</div>
+      <button onClick={() => navigate(-1)}>history back</button>
+    </>
+  );
+}
+
 function renderPage(initial = '/projects/sessionfs%2Fsessionfs') {
   return render(
     <MemoryRouter initialEntries={[initial]}>
+      <LocationProbe />
       <Routes>
         <Route path="/projects/:id" element={<ProjectDetail />} />
         <Route path="/projects" element={<div>projects list</div>} />
@@ -142,6 +166,7 @@ describe('ProjectDetail', () => {
     hooks.useLinkRepo.mockReturnValue(makeMutation());
     hooks.useUnlinkRepo.mockReturnValue(makeMutation());
     hooks.useMergeProject.mockReturnValue(makeMutation());
+    hooks.useProjects.mockReturnValue({ data: [], isLoading: false, error: null });
     hooks.useRebuildProject.mockReturnValue(makeMutation());
     hooks.useRefreshEntry.mockReturnValue(makeMutation());
   });
@@ -163,24 +188,25 @@ describe('ProjectDetail', () => {
     expect(screen.getByText(/boom/i)).toBeInTheDocument();
   });
 
-  it('renders the project header with remote + auto-narrative toggle', () => {
+  it('renders the project header with the remote and no settings controls', () => {
     setProjectData();
     renderPage();
 
     expect(screen.getByRole('heading', { name: /sessionfs\/sessionfs/i })).toBeInTheDocument();
-    const narrativeToggle = screen.getByRole('checkbox', { name: /auto-narrative on sync/i });
-    expect(narrativeToggle).toBeInTheDocument();
-    expect(narrativeToggle).not.toBeChecked();
+    expect(screen.queryByRole('checkbox', { name: /auto-narrative on sync/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /rename project/i })).not.toBeInTheDocument();
   });
 
-  it('toggling auto-narrative calls the settings mutation', async () => {
+  it('toggling auto-narrative in Settings calls the settings mutation', async () => {
     setProjectData();
     const settings = makeMutation();
     hooks.useUpdateProjectSettings.mockReturnValue(settings);
 
-    renderPage();
+    renderPage('/projects/sessionfs%2Fsessionfs?tab=settings');
     const user = userEvent.setup();
-    await user.click(screen.getByRole('checkbox', { name: /auto-narrative on sync/i }));
+    const toggle = screen.getByRole('checkbox', { name: /auto-narrative on sync/i });
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
 
     await waitFor(() => {
       expect(settings.mutate).toHaveBeenCalledWith(
@@ -188,6 +214,22 @@ describe('ProjectDetail', () => {
         expect.any(Object),
       );
     });
+  });
+
+  it('renaming from Settings calls the rename mutation', async () => {
+    setProjectData({ name: 'Old name' });
+    const rename = makeMutation();
+    hooks.useUpdateProjectName.mockReturnValue(rename);
+
+    renderPage('/projects/sessionfs%2Fsessionfs?tab=settings');
+    const user = userEvent.setup();
+    const input = screen.getByRole('textbox', { name: 'Project name' });
+    expect(screen.getByRole('button', { name: 'Rename' })).toBeDisabled();
+    await user.clear(input);
+    await user.type(input, 'New name');
+    await user.click(screen.getByRole('button', { name: 'Rename' }));
+
+    expect(rename.mutate).toHaveBeenCalledWith('New name', expect.any(Object));
   });
 
   it('clicking Edit Context Document opens the draft editor', async () => {
@@ -227,7 +269,7 @@ describe('ProjectDetail', () => {
     expect(args.doc).toBe('new context');
   });
 
-  it('switching to the Entries tab loads the knowledge entries view', async () => {
+  it('switching to the Knowledge section loads the knowledge entries view', async () => {
     setProjectData();
     hooks.useKnowledgeEntries.mockReturnValue({
       data: {
@@ -249,7 +291,7 @@ describe('ProjectDetail', () => {
     renderPage();
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole('tab', { name: /entries/i }));
+    await user.click(screen.getByRole('tab', { name: /knowledge/i }));
 
     // The entry text should appear once the tab renders it
     await waitFor(() => {
@@ -259,29 +301,167 @@ describe('ProjectDetail', () => {
     });
   });
 
+  // GitHub #86/#87: all five sections live in the one tablist (no horizontal
+  // scroll needed), and the project's skills sub-tab is not named like the
+  // sidebar Marketplace.
+  it('renders the five sections inside a single tablist', () => {
+    setProjectData();
+    renderPage();
+    const list = screen.getByRole('tablist');
+    const names = screen.getAllByRole('tab').map((t) => t.textContent?.trim());
+    expect(names).toEqual(['Overview', 'Knowledge', 'Work', 'Rules & Skills', 'Settings']);
+    for (const tab of screen.getAllByRole('tab')) expect(list.contains(tab)).toBe(true);
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('tab', { name: 'Marketplace' })).not.toBeInTheDocument();
+  });
+
+  it('puts the pending count on the Knowledge tab and the Entries sub-tab', async () => {
+    setProjectData();
+    hooks.useKnowledgeEntries.mockReturnValue({ data: { entries: [], total: 7 }, isLoading: false });
+    renderPage();
+    expect(screen.getByRole('tab', { name: /knowledge/i })).toHaveTextContent('7');
+    await userEvent.setup().click(screen.getByRole('tab', { name: /knowledge/i }));
+    expect(screen.getByRole('tab', { name: /entries/i })).toHaveTextContent('7');
+  });
+
+  it('shows sub-tabs per section and none for Overview or Settings', async () => {
+    setProjectData();
+    renderPage();
+    const user = userEvent.setup();
+    expect(screen.getAllByRole('tab')).toHaveLength(5);
+
+    await user.click(screen.getByRole('tab', { name: 'Knowledge' }));
+    expect(screen.getAllByRole('tab').map((t) => t.textContent?.trim().replace(/\d+$/, ''))).toEqual([
+      'Overview', 'Knowledge', 'Work', 'Rules & Skills', 'Settings', 'Entries', 'Pages', 'History',
+    ]);
+
+    await user.click(screen.getByRole('tab', { name: 'Work' }));
+    expect(screen.getByRole('tab', { name: 'Tickets' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Agent runs' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Personas' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('tab', { name: 'Rules & Skills' }));
+    expect(screen.getByRole('tab', { name: 'Rules' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('tab', { name: 'Skills' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('tab', { name: 'Settings' }));
+    expect(screen.getAllByRole('tab')).toHaveLength(5);
+  });
+
+  describe('URL-driven tabs', () => {
+    it('reads ?tab= and &sub= on load', () => {
+      setProjectData();
+      renderPage('/projects/sessionfs%2Fsessionfs?tab=knowledge&sub=history');
+      expect(screen.getByRole('tab', { name: 'Knowledge' })).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByRole('tab', { name: 'History' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    it('writes the section and sub-tab to the URL on click, keeping other params', async () => {
+      setProjectData();
+      renderPage('/projects/sessionfs%2Fsessionfs?edit=1');
+      const user = userEvent.setup();
+
+      await user.click(screen.getByRole('tab', { name: 'Work' }));
+      expect(screen.getByTestId('loc')).toHaveTextContent('tab=work');
+      expect(screen.getByTestId('loc')).toHaveTextContent('edit=1');
+
+      await user.click(screen.getByRole('tab', { name: 'Personas' }));
+      expect(screen.getByTestId('loc')).toHaveTextContent('tab=work');
+      expect(screen.getByTestId('loc')).toHaveTextContent('sub=personas');
+
+      // Changing section drops the previous section's sub-tab.
+      await user.click(screen.getByRole('tab', { name: 'Knowledge' }));
+      expect(screen.getByTestId('loc')).not.toHaveTextContent('sub=personas');
+    });
+
+    it('Back returns to the previous section; sub-tab clicks do not add history', async () => {
+      setProjectData();
+      renderPage();
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('tab', { name: 'Work' }));
+      await user.click(screen.getByRole('tab', { name: 'Agent runs' }));
+      await user.click(screen.getByRole('tab', { name: 'Personas' }));
+      await user.click(screen.getByRole('button', { name: 'history back' }));
+      expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    it('falls back to Overview and the first sub-tab for unknown values', () => {
+      setProjectData();
+      const { unmount } = renderPage('/projects/sessionfs%2Fsessionfs?tab=nonsense');
+      expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+      unmount();
+      renderPage('/projects/sessionfs%2Fsessionfs?tab=work&sub=nonsense');
+      expect(screen.getByRole('tab', { name: 'Tickets' })).toHaveAttribute('aria-selected', 'true');
+    });
+
+    it.each([
+      ['entries', 'Knowledge', 'Entries'],
+      ['pages', 'Knowledge', 'Pages'],
+      ['history', 'Knowledge', 'History'],
+      ['tickets', 'Work', 'Tickets'],
+      ['agent-runs', 'Work', 'Agent runs'],
+      ['personas', 'Work', 'Personas'],
+      ['rules', 'Rules & Skills', 'Rules'],
+      ['marketplace', 'Rules & Skills', 'Skills'],
+      ['repos', 'Settings', null],
+      ['merge', 'Settings', null],
+      ['transfer', 'Settings', null],
+      ['context', 'Overview', null],
+    ])('maps the legacy ?tab=%s key to %s', (legacy, section, subTab) => {
+      setProjectData();
+      renderPage(`/projects/sessionfs%2Fsessionfs?tab=${legacy}`);
+      expect(screen.getByRole('tab', { name: section })).toHaveAttribute('aria-selected', 'true');
+      if (subTab) {
+        expect(screen.getByRole('tab', { name: new RegExp(`^${subTab}\\d*$`) })).toHaveAttribute('aria-selected', 'true');
+      }
+    });
+
+    it('keeps ?edit=1 opening the context editor', async () => {
+      setProjectData();
+      renderPage('/projects/sessionfs%2Fsessionfs?edit=1');
+      const textarea = await screen.findByRole('textbox');
+      expect((textarea as HTMLTextAreaElement).value).toContain('Some context here');
+    });
+  });
+
+  describe('Settings section', () => {
+    it('holds rename, auto-narrative, repos, merge, transfer and the danger zone', () => {
+      setProjectData();
+      renderPage('/projects/sessionfs%2Fsessionfs?tab=settings');
+      for (const name of [/project name/i, /auto-narrative/i, /repositories/i, /merge into this project/i, /transfer ownership/i, /danger zone/i]) {
+        expect(screen.getByRole('heading', { name })).toBeInTheDocument();
+      }
+      expect(screen.getByRole('button', { name: /delete project/i })).toBeInTheDocument();
+    });
+  });
+
+  it('the header no longer offers a project actions menu', () => {
+    setProjectData();
+    renderPage();
+    expect(screen.queryByRole('button', { name: /project actions/i })).not.toBeInTheDocument();
+  });
+
+  it('shows one Compile action, in the pending notice, not on the Overview card', () => {
+    setProjectData();
+    hooks.useKnowledgeEntries.mockReturnValue({ data: { entries: [], total: 3 }, isLoading: false });
+    renderPage();
+    expect(screen.getAllByRole('button', { name: /compile now/i })).toHaveLength(1);
+    expect(screen.getByText(/3 pending entries/i)).toBeInTheDocument();
+  });
+
   it('delete-project flow shows confirm dialog then calls deleteProject.mutate', async () => {
     setProjectData();
     const del = makeMutation();
     hooks.useDeleteProject.mockReturnValue(del);
 
-    renderPage();
+    renderPage('/projects/sessionfs%2Fsessionfs?tab=settings');
     const user = userEvent.setup();
 
-    // Open the "more" menu (three-dot button)
-    const moreButtons = screen.getAllByRole('button');
-    // The "more menu" button is the three-dot icon button — find it by its svg shape.
-    // A reliable way: it's the button whose content is the three-dot svg (no text).
-    const moreBtn = moreButtons.find((b) => b.querySelector('svg circle[cx="12"][cy="5"]'));
-    expect(moreBtn).toBeDefined();
-    await user.click(moreBtn!);
+    await user.click(screen.getByRole('button', { name: /delete project/i }));
 
-    // "Delete Project" menu item appears
-    const deleteMenuItem = await screen.findByRole('menuitem', { name: /delete project/i });
-    await user.click(deleteMenuItem);
-
-    // Confirmation dialog must appear before actual delete
-    // Then click the final "Delete" button inside the dialog.
+    // Confirmation dialog must appear before actual delete.
     const confirmBtn = await screen.findByRole('button', { name: /^delete$/i });
+    expect(del.mutate).not.toHaveBeenCalled();
     await user.click(confirmBtn);
 
     await waitFor(() => {

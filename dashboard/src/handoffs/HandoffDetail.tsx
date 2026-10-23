@@ -9,6 +9,7 @@ import RelativeDate from '../components/RelativeDate';
 import { Badge } from '../components/Badge';
 import { Card, Button } from '../components/ui';
 import type { HandoffDetail as HandoffDetailType, HandoffSessionSummary } from '../api/client';
+import { errorMessage } from '../utils/errorMessage';
 
 /** Map handoff statuses to Badge variants. */
 const STATUS_VARIANT: Record<string, 'warning' | 'success' | 'danger'> = {
@@ -255,7 +256,7 @@ export default function HandoffDetail() {
         <Button variant="ghost" size="sm" onClick={() => navigate('/handoffs')} className="mb-4">
           ← Back to Handoffs
         </Button>
-        <p className="text-danger text-sm">Failed to load handoff: {String(error)}</p>
+        <p className="text-danger text-sm">Failed to load handoff: {errorMessage(error)}</p>
       </div>
     );
   }
@@ -265,7 +266,7 @@ export default function HandoffDetail() {
   const pullCommand = `sfs pull-handoff ${handoff.id}`;
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-6">
+    <div className="max-w-3xl w-full mx-auto px-4 py-6">
       <Button variant="ghost" size="sm" onClick={() => navigate('/handoffs')} className="mb-5">
         ← Back to Handoffs
       </Button>
@@ -325,7 +326,7 @@ export default function HandoffDetail() {
           </Button>
           {claimMutation.isError && (
             <p className="text-danger text-sm mt-2">
-              Failed to claim: {String(claimMutation.error)}
+              Failed to claim: {errorMessage(claimMutation.error)}
             </p>
           )}
         </div>

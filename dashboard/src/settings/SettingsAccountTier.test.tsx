@@ -8,7 +8,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { AccountTab } from './SettingsPage';
+import AccountSection from './AccountSection';
 
 function profile(extra: Record<string, unknown> = {}) {
   return {
@@ -22,20 +22,20 @@ function profile(extra: Record<string, unknown> = {}) {
   };
 }
 
-describe('AccountTab tier', () => {
+describe('AccountSection tier', () => {
   it('shows the effective tier for an org member whose raw tier is free', () => {
-    render(<AccountTab profile={profile()} logout={vi.fn()} />);
+    render(<AccountSection profile={profile()} logout={vi.fn()} />);
     expect(screen.getByTestId('account-tier')).toHaveTextContent('team');
   });
 
   it('shows enterprise when the org grants enterprise', () => {
-    render(<AccountTab profile={profile({ effective_tier: 'enterprise' })} logout={vi.fn()} />);
+    render(<AccountSection profile={profile({ effective_tier: 'enterprise' })} logout={vi.fn()} />);
     expect(screen.getByTestId('account-tier')).toHaveTextContent('enterprise');
   });
 
   it('falls back to the raw tier when the server omits effective_tier', () => {
     render(
-      <AccountTab profile={profile({ tier: 'pro', effective_tier: undefined })} logout={vi.fn()} />,
+      <AccountSection profile={profile({ tier: 'pro', effective_tier: undefined })} logout={vi.fn()} />,
     );
     expect(screen.getByTestId('account-tier')).toHaveTextContent('pro');
   });
