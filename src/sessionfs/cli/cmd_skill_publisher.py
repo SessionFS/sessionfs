@@ -47,6 +47,40 @@ def _request(method: str, path: str, payload: dict | None = None) -> Any:
     return body
 
 
+def _lookup_gitlab_namespace_id(host: str | None, project_id: int) -> int:
+    """The project's current namespace id from the GitLab REST API.
+
+    Public projects need no token; GITLAB_TOKEN or CI_JOB_TOKEN from the
+    environment is used when set (never printed). Raises ValueError with a
+    short reason when the lookup cannot produce an id.
+    """
+    import os
+
+    import httpx
+
+    origin = (host or "https://gitlab.com").rstrip("/")
+    if not origin.startswith("https://"):
+        raise ValueError("the GitLab host is not an https origin")
+    headers: dict[str, str] = {}
+    if os.environ.get("GITLAB_TOKEN"):
+        headers["PRIVATE-TOKEN"] = os.environ["GITLAB_TOKEN"]
+    elif os.environ.get("CI_JOB_TOKEN"):
+        headers["JOB-TOKEN"] = os.environ["CI_JOB_TOKEN"]
+    try:
+        response = httpx.get(f"{origin}/api/v4/projects/{project_id}", headers=headers, timeout=15.0)
+    except httpx.RequestError as exc:
+        raise ValueError(f"could not reach {origin} ({type(exc).__name__})") from exc
+    if response.status_code != 200:
+        raise ValueError(f"GitLab answered HTTP {response.status_code} for project #{project_id}")
+    try:
+        namespace_id = response.json()["namespace"]["id"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise ValueError("GitLab's answer had no namespace id") from exc
+    if isinstance(namespace_id, bool) or not isinstance(namespace_id, int) or namespace_id < 1:
+        raise ValueError("GitLab's answer had no valid namespace id")
+    return namespace_id
+
+
 def _segment(value: str) -> str:
     from sessionfs.url_path_safety import path_segment
 
@@ -194,7 +228,18 @@ def trust(
         None, "--gitlab-project-path", help="group/project, shown next to the trust (matching uses the id)"
     ),
     gitlab_namespace_id: int | None = typer.Option(
-        None, "--gitlab-namespace-id", min=1, help="Also pin the project's numeric group/namespace id"
+        None,
+        "--gitlab-namespace-id",
+        "--gitlab-namespace",
+        min=1,
+        help="Pin this numeric group/namespace id. Default: look up the project's current namespace id "
+        "from the GitLab API (GITLAB_TOKEN or CI_JOB_TOKEN is used when set)",
+    ),
+    no_namespace_pin: bool = typer.Option(
+        False,
+        "--no-namespace-pin",
+        help="GitLab only: do not pin the namespace. A project transferred to another namespace keeps "
+        "matching this trust, so this is discouraged",
     ),
     environment: str | None = typer.Option(
         None,
@@ -246,7 +291,9 @@ def trust(
             ("--gitlab-namespace-id", gitlab_namespace_id),
         )
         if value is not None
-    ] + (["--require-protected-environment"] if require_protected_environment else [])
+    ] + (["--require-protected-environment"] if require_protected_environment else []) + (
+        ["--no-namespace-pin"] if no_namespace_pin else []
+    )
     if require_protected_environment and environment is None:
         raise typer.BadParameter("--require-protected-environment needs --environment.")
     if gitlab_flags:
@@ -256,6 +303,22 @@ def trust(
             )
         if gitlab_project is None:
             raise typer.BadParameter("--gitlab-project (the numeric project id) is required for GitLab.")
+        if no_namespace_pin and gitlab_namespace_id is not None:
+            raise typer.BadParameter("--no-namespace-pin and --gitlab-namespace cannot be combined.")
+        if no_namespace_pin:
+            err_console.print(
+                "[yellow]Warning:[/yellow] the namespace is not pinned. If this GitLab project is transferred "
+                "to another namespace, pipelines there on protected refs can still publish under this trust."
+            )
+        elif gitlab_namespace_id is None:
+            try:
+                gitlab_namespace_id = _lookup_gitlab_namespace_id(gitlab_host, gitlab_project)
+            except ValueError as exc:
+                raise typer.BadParameter(
+                    f"Could not look up the namespace of project #{gitlab_project}: {exc}. "
+                    "Pass --gitlab-namespace ID to pin it explicitly, or --no-namespace-pin to skip pinning."
+                ) from exc
+            console.print(f"Pinning GitLab namespace id {gitlab_namespace_id}.")
         gitlab_payload: dict[str, Any] = {"provider": "gitlab", "gitlab_project_id": gitlab_project}
         if require_protected_environment:
             gitlab_payload["require_protected_environment"] = True
@@ -277,6 +340,8 @@ def trust(
                 style="green",
             )
         )
+        for warning in row.get("warnings") or []:
+            err_console.print(Text(f"Warning: {warning}", style="yellow"))
         return
     if repo is None or workflow is None:
         raise typer.BadParameter("Pass --repo and --workflow (GitHub) or --gitlab-project (GitLab).")

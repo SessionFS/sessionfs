@@ -213,6 +213,22 @@ export interface GitHubInstallationResponse {
   install_available?: boolean;
 }
 
+/**
+ * GitLab integration settings. The server never returns a stored token or
+ * webhook secret, only whether each is set.
+ */
+export interface GitLabSettingsResponse {
+  instance_url: string;
+  has_token: boolean;
+  has_webhook_secret?: boolean;
+}
+
+export interface GitLabSettingsRequest {
+  instance_url: string;
+  access_token: string;
+  webhook_secret?: string;
+}
+
 export type GitHubClaimFlow = 'install' | 'authorize';
 
 export interface GitHubClaimChoice {
@@ -1892,6 +1908,19 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'PUT',
         body: JSON.stringify(updates),
       }),
+
+    // GitLab integration
+    getGitLabSettings: () =>
+      request<GitLabSettingsResponse>('/api/v1/settings/gitlab'),
+
+    saveGitLabSettings: (body: GitLabSettingsRequest) =>
+      request<GitLabSettingsResponse>('/api/v1/settings/gitlab', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+
+    deleteGitLabSettings: () =>
+      request<void>('/api/v1/settings/gitlab', { method: 'DELETE' }),
 
     /**
      * Start linking a GitHub App installation through GitHub OAuth. Sent with

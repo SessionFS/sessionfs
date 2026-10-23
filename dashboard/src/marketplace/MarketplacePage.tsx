@@ -225,7 +225,7 @@ function PackageDialog({ item, state, onClose }: { item: MarketplacePackage; sta
         </div>
         <p className="-mt-2 mb-5 max-w-2xl text-sm leading-6 text-text-secondary">{item.description}</p>
         {state !== 'active' && (
-          <div role="status" className={`mb-5 rounded-lg border p-3 text-sm ${state === 'blocked' ? 'border-danger/40 bg-[rgba(240,64,96,0.06)] text-danger' : 'border-warning/40 bg-[rgba(240,192,64,0.06)] text-warning'}`}>
+          <div role="status" className={`mb-5 rounded-lg border p-3 text-sm ${state === 'blocked' ? 'border-danger/40 bg-danger/6 text-danger' : 'border-warning/40 bg-warning/6 text-warning'}`}>
             <p className="font-semibold">This version is {STATE_COPY[state].label}.</p>
             <p className="mt-1 text-xs text-text-secondary">{STATE_COPY[state].help}</p>
           </div>
@@ -284,7 +284,7 @@ function PackageDialog({ item, state, onClose }: { item: MarketplacePackage; sta
         </TabPanel>
 
         {showPreview && (
-          <section className="mt-6 rounded-xl border border-warning/30 bg-[rgba(240,192,64,0.05)] p-4" aria-live="polite">
+          <section className="mt-6 rounded-xl border border-warning/30 bg-warning/5 p-4" aria-live="polite">
             <h3 className="text-sm font-semibold text-warning">Untrusted instruction preview</h3>
             <p className="mt-1 text-xs text-text-secondary">Reading a preview does not approve, install, or execute the package.</p>
             {preview.isLoading && <p className="mt-3 text-sm text-text-tertiary">Loading preview…</p>}
@@ -301,7 +301,7 @@ function PackageDialog({ item, state, onClose }: { item: MarketplacePackage; sta
         )}
 
         {ownsVersion && confirmDelete && (
-          <section className="mt-6 rounded-xl border border-danger/40 bg-[rgba(240,64,96,0.06)] p-4" role="alertdialog" aria-labelledby="delete-version-title">
+          <section className="mt-6 rounded-xl border border-danger/40 bg-danger/6 p-4" role="alertdialog" aria-labelledby="delete-version-title">
             <h3 id="delete-version-title" className="text-sm font-semibold text-danger">Delete this version?</h3>
             <p className="mt-1 text-xs text-text-secondary">Removes the immutable archive and listing for {item.version || item.version_id}. Refused while an approved install request or organization assignment still references it.</p>
             <div className="mt-3 flex gap-2">
@@ -422,7 +422,7 @@ function ManagedLibrary() {
         <section aria-labelledby="registries-heading" className="rounded-lg border border-border bg-bg-sunken p-4">
           <h3 id="registries-heading" className="text-sm font-semibold text-text-primary">Approved registries</h3>
           {org.registries.isLoading ? <p className="mt-3 text-sm text-text-tertiary">Loading registries…</p> : isTierGate(org.registries.error) ? (
-            <div className="mt-3 rounded-lg border border-warning/40 bg-[rgba(240,192,64,0.06)] p-3" role="status">
+            <div className="mt-3 rounded-lg border border-warning/40 bg-warning/6 p-3" role="status">
               <p className="text-sm font-semibold text-warning">Upgrade to Team</p>
               <p className="mt-1 text-xs text-text-secondary">Organization skill registries and managed assignments are a Team-tier feature. Ask your organization owner to upgrade to enable them.</p>
             </div>
@@ -610,7 +610,7 @@ export default function MarketplacePage() {
           {[0, 1, 2].map((item) => <div key={item} className="h-44 animate-pulse rounded-xl border border-border bg-bg-elevated" />)}
         </div>
       )}
-      {packages.error && <p role="alert" className="mt-5 rounded-lg border border-danger/30 bg-[rgba(240,64,96,0.06)] p-4 text-sm text-danger">Marketplace unavailable: {errorMessage(packages.error)}</p>}
+      {packages.error && <p role="alert" className="mt-5 rounded-lg border border-danger/30 bg-danger/6 p-4 text-sm text-danger">Marketplace unavailable: {errorMessage(packages.error)}</p>}
       {packages.data && loadedCount === 0 && (
         <EmptyState title="No packages match" description="Try a broader search or another target tool. Private organization packages appear only for authorized members." />
       )}

@@ -92,7 +92,7 @@ export function SafeReadme({ readme, versionId }: { readme: MarketplaceReadme; v
         {readme.source === 'readme' ? readme.path : `No README: showing ${readme.path}`} · publisher-supplied, untrusted
       </p>
       {readme.hidden_unicode.length > 0 && (
-        <div role="alert" className="mb-3 rounded-lg border border-warning/40 bg-[rgba(240,192,64,0.06)] p-3 text-xs text-warning">
+        <div role="alert" className="mb-3 rounded-lg border border-warning/40 bg-warning/6 p-3 text-xs text-warning">
           <p className="font-semibold">Hidden or bidirectional characters</p>
           <p className="mt-1 text-text-secondary">Shown below as ⟦U+XXXX⟧ markers:</p>
           <ul className="mt-1 font-mono">

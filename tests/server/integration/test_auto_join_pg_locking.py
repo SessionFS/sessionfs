@@ -22,6 +22,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from tests.pg_helpers import wait_for_lock_waiters
 from sessionfs.server.db.models import (
     Base,
     OrgDomainVerification,
@@ -99,7 +100,7 @@ async def test_domain_delete_and_auto_join_serialize_instead_of_deadlocking(monk
     delete_task = asyncio.create_task(run_delete())
     await asyncio.wait_for(deleted_row.wait(), timeout=10)
     join_task = asyncio.create_task(run_join())
-    await asyncio.sleep(0.5)  # let auto-join reach its lock waits
+    await wait_for_lock_waiters(engine, task=join_task)
     resume_delete.set()
 
     results = await asyncio.wait_for(
@@ -182,7 +183,7 @@ async def test_domain_verify_and_delete_serialize_instead_of_deadlocking(monkeyp
     verify_task = asyncio.create_task(run_verify())
     await asyncio.wait_for(reached_audit.wait(), timeout=10)
     delete_task = asyncio.create_task(run_delete())
-    await asyncio.sleep(0.5)  # let delete reach its lock wait
+    await wait_for_lock_waiters(engine, task=delete_task)
     resume_verify.set()
 
     results = await asyncio.wait_for(

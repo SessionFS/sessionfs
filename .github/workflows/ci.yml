@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
@@ -50,6 +53,18 @@ jobs:
             exit 1
           fi
           echo "install.sh files are in sync."
+
+  dashboard:
+    name: Dashboard palette
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Check for hard-coded colours
+        working-directory: dashboard
+        run: npm run check:palette
 
   security:
     name: Dependency Audit

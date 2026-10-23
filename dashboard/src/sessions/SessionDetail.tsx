@@ -22,6 +22,8 @@ import { useDeleteSession } from '../hooks/useSessions';
 import { useToast } from '../hooks/useToast';
 import { TOOL_COLORS } from '../utils/tools';
 import { Button } from '../components/ui/Button';
+import { IconButton } from '../components/ui/IconButton';
+import { DEFAULT_FOLDER_COLOR } from '../utils/folderColors';
 import { Card } from '../components/ui/Card';
 import { Tabs, TabPanel } from '../components/ui/Tabs';
 import { Dropdown } from '../components/ui/Dropdown';
@@ -137,9 +139,9 @@ export default function SessionDetail() {
   if (error || !session) {
     return (
       <div className="p-8">
-        <button onClick={() => navigate('/')} className="text-brand text-sm mb-4 hover:underline">
+        <Button variant="ghost" size="sm" onClick={() => navigate('/')} className="mb-4 text-brand hover:text-brand">
           &larr; Back
-        </button>
+        </Button>
         <p className="text-danger">Failed to load session: {errorMessage(error)}</p>
       </div>
     );
@@ -203,15 +205,17 @@ export default function SessionDetail() {
     <div className="flex flex-col flex-1 min-h-0">
       {/* Back link */}
       <div className="px-4 pt-3">
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => navigate('/')}
-          className="text-brand text-sm hover:underline inline-flex items-center gap-1"
+          className="gap-1 text-brand hover:text-brand"
         >
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <polyline points="15 18 9 12 15 6" />
           </svg>
           Back to Sessions
-        </button>
+        </Button>
       </div>
 
       {/* Header card — tool-colored left edge per Phase 1b card pattern */}
@@ -237,13 +241,13 @@ export default function SessionDetail() {
             </Button>
             <Dropdown
               trigger={
-                <button className="p-1.5 text-text-tertiary hover:text-text-secondary hover:bg-surface-hover rounded-lg transition-colors" aria-label="Session actions">
-                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor">
+                <IconButton label="Session actions" aria-haspopup="menu">
+                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
                     <circle cx="12" cy="5" r="2" />
                     <circle cx="12" cy="12" r="2" />
                     <circle cx="12" cy="19" r="2" />
                   </svg>
-                </button>
+                </IconButton>
               }
               items={moreMenuItems}
               onSelect={handleMoreSelect}
@@ -419,8 +423,8 @@ export default function SessionDetail() {
                       m.role === 'assistant'
                         ? 'bg-success/10 text-success'
                         : m.role === 'user'
-                          ? 'bg-blue-500/10 text-blue-400'
-                          : 'bg-gray-500/10 text-gray-400'
+                          ? 'bg-info/10 text-info'
+                          : 'bg-text-tertiary/10 text-text-tertiary'
                     }`}>
                       {m.role === 'assistant' ? 'AI' : m.role === 'user' ? 'You' : m.role}
                     </span>
@@ -508,37 +512,43 @@ function BookmarksSection({ sessionId }: { sessionId: string }) {
   return (
     <div className="px-5 mt-2">
       {!showAdd ? (
-        <button
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={() => setShowAdd(true)}
-          className="text-xs text-brand hover:underline"
+          className="font-normal text-brand hover:text-brand"
         >
           + Add to folder
-        </button>
+        </Button>
       ) : (
         <div className="flex flex-wrap items-center gap-1.5">
           {folders.map((f) => (
-            <button
+            <Button
               key={f.id}
+              variant="secondary"
+              size="sm"
               onClick={() => {
                 addBookmark.mutate({ folderId: f.id, sessionId }, {
                   onSettled: () => setShowAdd(false),
                 });
               }}
-              className="inline-flex items-center gap-1.5 px-2 py-1 text-xs text-text-secondary hover:bg-surface-hover rounded transition-colors border border-border"
+              className="gap-1.5 !px-2 !py-1 font-normal"
             >
               <span
                 className="w-2 h-2 rounded-full shrink-0"
-                style={{ backgroundColor: f.color || '#4f9cf7' }}
+                style={{ backgroundColor: f.color || DEFAULT_FOLDER_COLOR }}
               />
               {f.name}
-            </button>
+            </Button>
           ))}
-          <button
+          <Button
+            variant="ghost"
+            size="sm"
             onClick={() => setShowAdd(false)}
-            className="text-xs text-text-tertiary hover:text-text-secondary px-1"
+            className="font-normal text-text-tertiary"
           >
             Cancel
-          </button>
+          </Button>
         </div>
       )}
     </div>

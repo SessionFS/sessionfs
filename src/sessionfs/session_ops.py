@@ -85,6 +85,10 @@ def list_checkpoints(
 ) -> list[dict[str, Any]]:
     """List checkpoints stored for a session, sorted by mtime ascending.
 
+    Checkpoints with identical mtimes (coarse filesystem timestamps, or
+    several created in the same tick) are ordered by name, so the order is
+    stable.
+
     Raises `SessionOpError` if the session is unknown. Returns an empty
     list if the session has no checkpoints.
     """
@@ -97,7 +101,7 @@ def list_checkpoints(
         return []
 
     results: list[dict[str, Any]] = []
-    for entry in sorted(root.iterdir(), key=lambda p: p.stat().st_mtime):
+    for entry in sorted(root.iterdir(), key=lambda p: (p.stat().st_mtime_ns, p.name)):
         if not entry.is_dir():
             continue
         manifest_path = entry / "manifest.json"

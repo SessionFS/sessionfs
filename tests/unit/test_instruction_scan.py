@@ -9,6 +9,7 @@ documentation ranges or known capture services; nothing here is runnable.
 
 from __future__ import annotations
 
+import gc
 import json
 import random
 import re
@@ -567,6 +568,74 @@ def _best_of(count: int, run, clock=_CPU) -> float:
     return best
 
 
+def _min_cpu(run, repeats: int) -> float:
+    """Smallest CPU time of `repeats` calls, with the collector paused.
+
+    A cyclic GC pass during a big scan walks every live object of the whole
+    test process, which on a loaded runner can inflate one sample several-fold.
+    """
+    best = float("inf")
+    gc.collect()
+    gc.disable()
+    try:
+        for _ in range(repeats):
+            started = _CPU()
+            run()
+            best = min(best, _CPU() - started)
+    finally:
+        gc.enable()
+    return best
+
+
+def _scales_linearly(run_small, run_large, limit: float, slack: float = 0.05, rounds: int = 3, repeats: int = 3):
+    """Return (ok, small, large): does `run_large` cost under limit * small + slack?
+
+    Samples accumulate across rounds (each keeps its minimum) and the check is
+    retried after a failing round. Scheduler noise only ever adds time, so it
+    does not repeat across rounds; a genuinely super-linear path fails every
+    round, because its minimum is itself too large.
+    """
+    run_small()
+    run_large()  # warm both
+    small = large = float("inf")
+    for _ in range(rounds):
+        small = min(small, _min_cpu(run_small, repeats))
+        large = min(large, _min_cpu(run_large, repeats))
+        if large < small * limit + slack:
+            return True, small, large
+    return False, small, large
+
+
+def _assert_linear(run_small, run_large, limit: float, label: object = "", slack: float = 0.05) -> None:
+    ok, small, large = _scales_linearly(run_small, run_large, limit, slack)
+    assert ok, (label, small, large)
+
+
+def _quadratic_work(n: int) -> None:
+    total = 0
+    for i in range(n):
+        for j in range(n):
+            total += i ^ j
+
+
+def _linear_work(n: int) -> None:
+    total = 0
+    for i in range(n * 500):
+        total += i ^ 3
+
+
+def test_linearity_harness_flags_quadratic_work() -> None:
+    # 8x the input: quadratic work costs ~64x, the checks allow 24x.
+    ok, small, large = _scales_linearly(
+        lambda: _quadratic_work(500), lambda: _quadratic_work(4000), 24, rounds=1, repeats=1
+    )
+    assert not ok, (small, large)
+    ok, small, large = _scales_linearly(
+        lambda: _linear_work(500), lambda: _linear_work(4000), 24, rounds=1, repeats=1
+    )
+    assert ok, (small, large)
+
+
 _FRESH_SCAN_TIMER = """
 import json, sys, time
 from sessionfs.skills.instruction_scan import scan_files
@@ -575,7 +644,7 @@ def best(text):
     files = [(job["script"], text), (job["skill"], text)]
     scan_files(files)  # warm the regex cache
     times = []
-    for _ in range(2):  # best of two: one noisy sample under a parallel suite flips the ratio
+    for _ in range(3):  # best of three: one noisy sample under a parallel suite flips the ratio
         started = time.process_time()
         scan_files(files)
         times.append(time.process_time() - started)
@@ -597,6 +666,18 @@ def _scan_times_in_fresh_process(large: str, small: str) -> tuple[float, float]:
     )
     elapsed, quarter = json.loads(done.stdout)
     return elapsed, quarter
+
+
+def _fresh_process_scales_linearly(large: str, small: str, limit: float, slack: float, attempts: int = 3):
+    """(ok, small, large) across up to `attempts` fresh-process measurements,
+    keeping each side's minimum (noise only adds time; see _scales_linearly)."""
+    best_large = best_small = float("inf")
+    for _ in range(attempts):
+        elapsed, quarter = _scan_times_in_fresh_process(large, small)
+        best_large, best_small = min(best_large, elapsed), min(best_small, quarter)
+        if best_large < best_small * limit + slack:
+            return True, best_small, best_large
+    return False, best_small, best_large
 
 
 def _typical_bundle() -> dict[str, str]:
@@ -1516,18 +1597,12 @@ def test_typical_files_never_reach_the_analysis_budget() -> None:
 
 @pytest.mark.parametrize("token", ["$(curl x) ", "| s'", "curl x | sh\n", "`curl `"])
 def test_shell_analysis_scales_linearly(token: str) -> None:
-    timings = []
-    for size in (32768, 262144):
-        text = ("curl https://x.example/a " + token * (size // len(token)))[:size]
-        scan_files([(SKILL, text)])  # warm
-        best = float("inf")
-        for _ in range(3):  # best of three: robust to a loaded machine
-            started = _CPU()
-            scan_files([(SKILL, text)])
-            best = min(best, _CPU() - started)
-        timings.append(best)
+    def text_of(size: int) -> str:
+        return ("curl https://x.example/a " + token * (size // len(token)))[:size]
+
+    small, large = text_of(32768), text_of(262144)
     # 8x the input: linear is ~8-10x, quadratic would be ~64x.
-    assert timings[1] < timings[0] * 24, timings
+    _assert_linear(lambda: scan_files([(SKILL, small)]), lambda: scan_files([(SKILL, large)]), 24, token)
 
 
 @pytest.mark.parametrize(
@@ -1702,18 +1777,14 @@ def test_here_document_of_any_length() -> None:
 @pytest.mark.parametrize("token", ["> ", " \n", "x <<A ", "alias a=b ", "f() { ls; } ", "$F ", "<&3 ", "rm -f ", "powershell -x ", "a=curl "])
 def test_round_11_paths_stay_linear(token: str) -> None:
     prefix = "#!/bin/sh\nF=curl\nexec 3< <(curl -s https://x.example/i)\ncurl https://x.example/a "
-    timings = []
-    for size in (32768, 262144):
-        text = prefix + (token * (size // len(token)))[:size]
-        scan_files([(SCRIPT, text), (SKILL, text)])
-        best = float("inf")
-        for _ in range(3):  # best of three: robust to a loaded machine
-            started = _CPU()
-            scan_files([(SCRIPT, text), (SKILL, text)])
-            best = min(best, _CPU() - started)
-        timings.append(best)
+    small, large = (prefix + (token * (size // len(token)))[:size] for size in (32768, 262144))
     # 8x the input: linear is ~8-10x, quadratic would be ~64x.
-    assert timings[1] < timings[0] * 24 + 0.05, (token, timings)
+    _assert_linear(
+        lambda: scan_files([(SCRIPT, small), (SKILL, small)]),
+        lambda: scan_files([(SCRIPT, large), (SKILL, large)]),
+        24,
+        token,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2287,13 +2358,10 @@ def test_valued_options_and_multicall_shells_run_command_strings(prefix: str) ->
 
 
 def test_function_analysis_is_linear() -> None:
-    def cpu(text: str) -> float:
-        return _best_of(2, lambda: scan_files([(SCRIPT, text)]))
-
     for token in ("function ", "f() { ls; }\n", "function f { ls; }; "):
-        small = cpu(_FETCH + "\n" + token * (32768 // len(token)))
-        large = cpu(_FETCH + "\n" + token * (262144 // len(token)))
-        assert large < small * 24 + 0.05, (token, small, large)
+        small = _FETCH + "\n" + token * (32768 // len(token))
+        large = _FETCH + "\n" + token * (262144 // len(token))
+        _assert_linear(lambda: scan_files([(SCRIPT, small)]), lambda: scan_files([(SCRIPT, large)]), 24, token)
 
 
 def test_function_definitions_are_bounded_in_memory() -> None:
@@ -2755,10 +2823,11 @@ def test_256_kib_of_function_definitions_scans_in_linear_cpu_time() -> None:
     small_text = _function_definitions(64 * 1024)
     large_text = _function_definitions(256 * 1024)
     assert scan_files([(SCRIPT, large_text)]).findings == ()
-    small = _best_of(2, lambda: scan_files([(SCRIPT, small_text)]))
-    large = _best_of(2, lambda: scan_files([(SCRIPT, large_text)]))
+    ok, small, large = _scales_linearly(
+        lambda: scan_files([(SCRIPT, small_text)]), lambda: scan_files([(SCRIPT, large_text)]), 8
+    )
     assert large < 1.0 * _HEADROOM, large  # typically ~0.15 s of CPU
-    assert large < small * 8 + 0.05, (small, large)  # 4x the input: linear
+    assert ok, (small, large)  # 4x the input: linear
 
 
 @pytest.mark.perf
@@ -3187,9 +3256,9 @@ def test_runs_of_fail_closed_wrappers_scan_quickly(text: str) -> None:
 def test_round_11_paths_scan_256_kib_in_linear_time(token: str) -> None:
     large = _FETCH + "\n" + _filled(token)
     small = large[: len(large) // 4]
-    elapsed, quarter = _scan_times_in_fresh_process(large, small)
+    ok, quarter, elapsed = _fresh_process_scales_linearly(large, small, 8, 0.25)
     assert elapsed < 1.0 * _HEADROOM, (token, elapsed)  # typically ~1-2 s for both members
-    assert elapsed < quarter * 8 + 0.25, (token, quarter, elapsed)  # 4x the input: linear
+    assert ok, (token, quarter, elapsed)  # 4x the input: linear
 
 
 @pytest.mark.parametrize(
@@ -3421,9 +3490,9 @@ def test_round_12_benign_shapes_stay_clean(text: str) -> None:
 def test_round_12_paths_scan_256_kib_in_linear_time(token: str) -> None:
     large = _FETCH + "\n" + _filled(token)
     small = large[: len(large) // 4]
-    elapsed, quarter = _scan_times_in_fresh_process(large, small)
+    ok, quarter, elapsed = _fresh_process_scales_linearly(large, small, 8, 0.25)
     assert elapsed < 1.5 * _HEADROOM, (token, elapsed)  # typically 2-5 s for both members
-    assert elapsed < quarter * 8 + 0.25, (token, quarter, elapsed)  # 4x the input: linear
+    assert ok, (token, quarter, elapsed)  # 4x the input: linear
 
 
 def _detection_fixtures() -> list[str]:

@@ -17,14 +17,39 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.21.0 -->
+      <!-- v0.21.1 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.21.1</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 23, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Project Context You Can Read &middot; GitLab in the Dashboard &middot; Pinned GitLab Namespaces</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Project context and wiki pages render as documents.</strong> Bullets, numbered lists, quotes, tables, task lists and code blocks display properly, each line an agent writes stays on its own line, long ids and URLs wrap, and the text uses the page width at a comfortable reading length. Raw HTML in a document is never rendered, and only web, mail and in-page links are clickable.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>An &ldquo;On this page&rdquo; section list.</strong> The project <strong>Overview</strong> shows a list of the context&rsquo;s sections beside the text, highlighting the one you&rsquo;re reading; on phones it&rsquo;s a collapsible list above it.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>GitLab in the dashboard.</strong> <strong>Settings &rarr; Integrations &rarr; GitLab</strong> connects, updates or disconnects your GitLab instance (gitlab.com or self-managed) for merge request context comments. The access token and webhook secret are write-only: the form never shows them back. See <a href="/git-integration/#gitlab" class="text-brand hover:underline">Git Integration</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>GitLab trusted publishing pins the namespace by default.</strong> <span class="font-mono text-accent text-sm">sfs skill publisher trust --gitlab-project ID</span> looks up the project&rsquo;s current namespace and pins it, so a project moved to another namespace can&rsquo;t keep publishing. Pass <span class="font-mono text-accent text-sm">--gitlab-namespace ID</span> to set it yourself or <span class="font-mono text-accent text-sm">--no-namespace-pin</span> to opt out (with a warning); unpinned GitLab trusts are flagged by the server and marked in the dashboard. See <a href="/skills-marketplace/#trusted-publishing-from-gitlab-ci" class="text-brand hover:underline">Trusted Publishing from GitLab CI</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Session list accessibility.</strong> Rows no longer nest buttons inside a clickable row, so screen readers and keyboards handle them properly. In a group of follow-up sessions, the title expands the group and <strong>View</strong> opens the session.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Consistent dashboard styling.</strong> Buttons and colours use the shared components and theme colours throughout.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed:</strong> platform administrator accounts could be treated as Free in plan checks; they now always count as Enterprise.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed:</strong> checkpoints created within the same filesystem timestamp are listed in a stable order.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security:</strong> <span class="font-mono text-accent text-sm">GET /api/v1/settings/gitlab</span> returned the stored GitLab webhook secret on every read. It now reports only whether one is set (<span class="font-mono text-accent text-sm">has_webhook_secret</span>); <span class="font-mono text-accent text-sm">PUT</span> returns the secret once, and only when the server generated it.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;082 (unchanged; 067 and 068 unused). 7609 backend tests + 806 dashboard UI tests passing. 81 MCP tools (unchanged).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.21.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.21.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 22, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">A Reorganized Dashboard That Works on Phones &middot; GitLab CI Trusted Publishing &middot; Audited Operator Overrides</h2>
         <ul class="space-y-2 text-base text-muted">

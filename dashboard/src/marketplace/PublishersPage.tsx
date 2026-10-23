@@ -248,6 +248,11 @@ function TrustedPublishers({ publisher }: { publisher: PublisherDetail }) {
                 {row.ref_pattern ? ` · ${row.ref_pattern}` : ''}
                 {row.package_name ? ` · ${row.package_name}` : ''}
               </span>
+              {row.provider === 'gitlab' && !row.gitlab_namespace_id && (
+                <span title="If this GitLab project is transferred to another namespace, pipelines there still match this trust. Re-create the trust with a pinned namespace id.">
+                  <Badge label="Namespace not pinned" variant="warning" tint />
+                </span>
+              )}
               <Button size="sm" variant="ghost" onClick={() => removeOne(row.id)} loading={remove.isPending}>Remove</Button>
             </li>
           ))}

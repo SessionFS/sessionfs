@@ -214,7 +214,7 @@ function ModerationPanel({ report, index, feedIncomplete = false }: { report: Ma
         <section
           role="alertdialog"
           aria-labelledby={`confirm-${report.id}`}
-          className={`mt-3 rounded-xl border p-4 ${action === 'restore' ? 'border-border' : 'border-danger/40 bg-[rgba(240,64,96,0.06)]'}`}
+          className={`mt-3 rounded-xl border p-4 ${action === 'restore' ? 'border-border' : 'border-danger/40 bg-danger/6'}`}
         >
           <h4 id={`confirm-${report.id}`} className={`text-sm font-semibold ${action === 'restore' ? 'text-text-primary' : 'text-danger'}`}>
             {copy.verb} {kind === 'versions' ? 'this version' : 'the whole package'}?

@@ -4,7 +4,7 @@ import { useProjects } from '../hooks/useProjects';
 import type { ProjectContext } from '../api/client';
 import RelativeDate from '../components/RelativeDate';
 import CreateProjectModal from './CreateProjectModal';
-import { Card, Button, PageContainer, PageHeader } from '../components/ui';
+import { Card, Button, IconButton, PageContainer, PageHeader } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
 
 // v0.10.0 added `projects.org_id` (migration 035). The generated
@@ -126,30 +126,28 @@ export default function ProjectsPage() {
           <>
           {/* List/Grid view toggle (mirrors Sessions) */}
           <div className="flex items-center rounded-lg border border-border bg-surface overflow-hidden">
-            <button
+            <IconButton
+              label="List view"
               onClick={() => handleViewMode('list')}
-              className={`p-2 transition-colors ${viewMode === 'list' ? 'bg-bg-elevated text-text-primary' : 'text-text-tertiary hover:text-text-primary'}`}
-              title="List view"
-              aria-label="List view"
               aria-pressed={viewMode === 'list'}
+              className={`!rounded-none ${viewMode === 'list' ? 'bg-bg-elevated text-text-primary' : ''}`}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
                 <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
               </svg>
-            </button>
-            <button
+            </IconButton>
+            <IconButton
+              label="Grid view"
               onClick={() => handleViewMode('grid')}
-              className={`p-2 transition-colors ${viewMode === 'grid' ? 'bg-bg-elevated text-text-primary' : 'text-text-tertiary hover:text-text-primary'}`}
-              title="Grid view"
-              aria-label="Grid view"
               aria-pressed={viewMode === 'grid'}
+              className={`!rounded-none ${viewMode === 'grid' ? 'bg-bg-elevated text-text-primary' : ''}`}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
                 <rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" />
               </svg>
-            </button>
+            </IconButton>
           </div>
           <Button onClick={() => setShowCreate(true)}>+ New Project</Button>
           </>

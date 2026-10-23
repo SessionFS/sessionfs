@@ -1303,7 +1303,10 @@ async def choose_github_claim(
 class GitLabSettingsResponse(BaseModel):
     instance_url: str
     has_token: bool
-    webhook_secret: str | None
+    has_webhook_secret: bool = False
+    # Only ever set in a PUT response, when the server generated the secret,
+    # so the user can copy it into GitLab once. Never read back afterwards.
+    webhook_secret: str | None = None
 
 
 class GitLabSettingsRequest(BaseModel):
@@ -1326,12 +1329,11 @@ async def get_gitlab_settings(
         return GitLabSettingsResponse(
             instance_url="https://gitlab.com",
             has_token=False,
-            webhook_secret=None,
         )
     return GitLabSettingsResponse(
         instance_url=settings.instance_url,
         has_token=bool(settings.encrypted_access_token),
-        webhook_secret=settings.webhook_secret,
+        has_webhook_secret=bool(settings.webhook_secret),
     )
 
 
@@ -1357,7 +1359,8 @@ async def update_gitlab_settings(
         select(GitLabSettings).where(GitLabSettings.user_id == user.id)
     )
     settings = result.scalar_one_or_none()
-    webhook_secret = body.webhook_secret or _secrets.token_hex(16)
+    generated = None if body.webhook_secret else _secrets.token_hex(16)
+    webhook_secret = body.webhook_secret or generated
 
     if settings is None:
         settings = GitLabSettings(
@@ -1372,6 +1375,8 @@ async def update_gitlab_settings(
         settings.encrypted_access_token = encrypted
         if body.webhook_secret:
             settings.webhook_secret = body.webhook_secret
+        else:
+            generated = None  # kept the existing secret; nothing new to show
 
     await db.commit()
     await db.refresh(settings)
@@ -1379,7 +1384,8 @@ async def update_gitlab_settings(
     return GitLabSettingsResponse(
         instance_url=settings.instance_url,
         has_token=True,
-        webhook_secret=settings.webhook_secret,
+        has_webhook_secret=bool(settings.webhook_secret),
+        webhook_secret=generated,
     )
 
 

@@ -69,7 +69,7 @@ export function Drawer({ open, onClose, titleId, children }: DrawerProps) {
       {/* Backdrop */}
       <div
         className="absolute inset-0"
-        style={{ backgroundColor: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)' }}
+        style={{ backgroundColor: 'var(--scrim)', backdropFilter: 'blur(4px)' }}
         onClick={onClose}
       />
       {/* Drawer panel */}

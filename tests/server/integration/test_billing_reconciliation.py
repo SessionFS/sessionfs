@@ -35,6 +35,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tests.pg_helpers import wait_for_lock_waiters
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.models import (
     ApiKey,
@@ -1883,7 +1884,7 @@ async def test_pg_org_create_and_checkout_serialize_on_the_customer_lock():
                 await lock_stripe_customer(tx_a, cus)
                 event = _checkout_event({"user_id": user.id, "tier": "team", "seats": "4"}, sub, cus)
                 webhook = asyncio.create_task(_process_stripe_event(event, tx_b))
-                await asyncio.sleep(0.5)
+                await wait_for_lock_waiters(engine, task=webhook)
                 assert not webhook.done(), "checkout must wait for the customer lock"
 
                 user_a = (await tx_a.execute(select(User).where(User.id == user.id))).scalar_one()
@@ -1944,7 +1945,7 @@ async def test_pg_admin_org_tier_change_waits_for_an_in_flight_subscription_upda
             hook = asyncio.create_task(webhook())
             await asyncio.wait_for(locked.wait(), timeout=10)
             admin_task = asyncio.create_task(admin_change())
-            await asyncio.sleep(0.5)
+            await wait_for_lock_waiters(engine, task=admin_task)
             assert not admin_task.done(), "admin change must queue behind the webhook's locks"
             release.set()
             assert await asyncio.wait_for(hook, timeout=10) == {"status": "ok"}
@@ -1992,7 +1993,7 @@ async def test_pg_subscription_update_waits_for_an_in_flight_admin_change():
             admin_task = asyncio.create_task(admin_change())
             await asyncio.wait_for(locked.wait(), timeout=10)
             hook = asyncio.create_task(webhook())
-            await asyncio.sleep(0.5)
+            await wait_for_lock_waiters(engine, task=hook)
             assert not hook.done(), "webhook must queue behind the admin change's locks"
             release.set()
             assert (await asyncio.wait_for(admin_task, timeout=10))["updated"] == {"seats_limit": 20}

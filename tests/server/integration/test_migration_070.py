@@ -16,7 +16,7 @@ from alembic import command
 from alembic.config import Config
 
 from sessionfs.server.db.models import Base
-from tests.pg_helpers import reset_pg_schema
+from tests.pg_helpers import reset_pg_schema, wait_for_lock_waiters
 
 COLUMNS = {
     "skill_package_versions": ("capability_manifest", "capability_digest", "manifest_version", "publication_seq"),
@@ -281,7 +281,7 @@ def test_postgres_concurrent_active_assignments_are_serialized() -> None:
             await first.execute(insert, {"id": "pga1", "v": "pgv1"})
             await second.begin()
             pending = asyncio.ensure_future(second.execute(insert, {"id": "pga2", "v": "pgv2"}))
-            await asyncio.sleep(0.3)
+            await wait_for_lock_waiters(engine, task=pending)
             assert not pending.done()  # blocked on the first transaction's row
             await first.commit()
             with pytest.raises(IntegrityError):
@@ -314,7 +314,7 @@ def test_postgres_grant_scope_lock_serializes_two_approvals() -> None:
         async with AsyncSession(engine) as first, AsyncSession(engine) as second:
             await lock_grant_scope(first, key)
             pending = asyncio.ensure_future(lock_grant_scope(second, key))
-            await asyncio.sleep(0.3)
+            await wait_for_lock_waiters(engine, task=pending)
             assert not pending.done()  # the second approval waits
             await first.commit()
             await asyncio.wait_for(pending, 5)
@@ -367,7 +367,7 @@ def test_postgres_advance_and_package_block_do_not_deadlock() -> None:
                 await advance.execute(sa.text("SELECT id FROM org_skill_assignments WHERE id = 'dla1' FOR UPDATE"))
 
             pending = asyncio.ensure_future(run_advance())
-            await asyncio.sleep(0.3)
+            await wait_for_lock_waiters(engine, task=pending)
             assert not pending.done()  # waits on the version rows, holds nothing the block needs
             await block.execute(sa.text(
                 "UPDATE org_skill_assignments SET revoked_at = now() WHERE version_id IN ('dlv1', 'dlv2')"
@@ -406,7 +406,7 @@ def test_postgres_project_scope_approvals_from_different_users_serialize() -> No
             pending = asyncio.ensure_future(
                 lock_grant_scope(second, grant_scope_lock_key("prj", "pk", "project", "bob", None))
             )
-            await asyncio.sleep(0.3)
+            await wait_for_lock_waiters(engine, task=pending)
             assert not pending.done()
             await first.commit()
             await asyncio.wait_for(pending, 5)
@@ -526,7 +526,7 @@ def test_postgres_revocation_waits_for_an_approval_in_the_same_grant_scope() -> 
             pending = asyncio.ensure_future(
                 lock_grant_scope(revocation, grant_scope_lock_key("prj", "pk", "project", "bob", None))
             )
-            await asyncio.sleep(0.3)
+            await wait_for_lock_waiters(engine, task=pending)
             assert not pending.done()
             await approval.commit()
             await asyncio.wait_for(pending, 5)
@@ -582,7 +582,7 @@ def test_postgres_publication_seq_is_monotonic_under_the_publisher_lock() -> Non
                 return seq2
 
             pending = asyncio.ensure_future(publish_second())
-            await asyncio.sleep(0.3)
+            await wait_for_lock_waiters(engine, task=pending)
             assert not pending.done()  # the second waits on the owner-row lock
             await first.commit()
             seq2 = await asyncio.wait_for(pending, 5)
@@ -625,7 +625,7 @@ def test_postgres_held_update_recheck_waits_for_a_takedown() -> None:
                 await _take_delivery_locks(listing, version)  # shared advisory lock
 
             pending = asyncio.ensure_future(recheck())
-            await asyncio.sleep(0.3)
+            await wait_for_lock_waiters(engine, task=pending)
             assert not pending.done()  # the re-check waits for the block to commit
             await takedown.commit()
             await asyncio.wait_for(pending, 5)

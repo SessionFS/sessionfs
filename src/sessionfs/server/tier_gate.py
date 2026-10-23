@@ -81,14 +81,19 @@ async def get_effective_tier(
        fall back to org.tier if no active entitlement exists.
     2. Else → resolve user entitlement FIRST, fall back to user.tier
        if no active entitlement exists.
-    3. Legacy admin tier: 'admin' is never an entitlement tier; always
-       resolves to ENTERPRISE.
+    3. Legacy admin tier: 'admin' is never an entitlement tier and always
+       resolves to ENTERPRISE, checked before any entitlement. Migration 050
+       gave legacy admins an active `free` entitlement, which would otherwise
+       win and gate platform admins as Free.
 
     Callers that have already loaded the user's OrgMember row (e.g. the
     /me handler's joined query) may pass it via `membership` to avoid a
     redundant re-query (Codex R1 LOW). Omitting it preserves the original
     behavior for every other caller.
     """
+    if user.tier == "admin":
+        return Tier.ENTERPRISE
+
     if membership is None:
         membership = await get_user_org_membership(user.id, db)
 
@@ -124,9 +129,6 @@ async def get_effective_tier(
     try:
         return Tier(user.tier)
     except ValueError:
-        # Legacy admin tier — not an entitlement tier, always ENTERPRISE.
-        if user.tier == "admin":
-            return Tier.ENTERPRISE
         return Tier.FREE
 
 

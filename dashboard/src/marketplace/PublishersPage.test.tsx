@@ -132,6 +132,20 @@ describe('PublishersPage', () => {
     });
   });
 
+  it('warns on GitLab trusts without a pinned namespace', () => {
+    const gitlab = (id: string, namespace: number | null) => ({
+      id, provider: 'gitlab', repository: `acme/${id}`, repository_id: null, repository_owner_id: null,
+      workflow: null, gitlab_host: 'https://gitlab.com', gitlab_project_id: 4242, gitlab_namespace_id: namespace,
+      environment: null, ref_pattern: null, package_name: null, created_at: null, revoked_at: null,
+    });
+    hooks.useMyPublishers.mockReturnValue({
+      data: { items: [{ ...publisher, trusted_publishers: [gitlab('loose', null), gitlab('pinned', 77)] }], count: 1 },
+      isLoading: false, error: null,
+    });
+    renderPage();
+    expect(screen.getAllByText('Namespace not pinned')).toHaveLength(1);
+  });
+
   it('renders the empty state', () => {
     hooks.useMyPublishers.mockReturnValue({ data: { items: [], count: 0 }, isLoading: false, error: null });
     renderPage();

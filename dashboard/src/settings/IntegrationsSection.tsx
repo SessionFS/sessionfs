@@ -2,8 +2,9 @@ import { useAuth } from '../auth/AuthContext';
 import CopyButton from '../components/CopyButton';
 import { Card } from '../components/ui';
 import { GitHubIntegrationSection } from './GitHubIntegrationSection';
+import { GitLabIntegrationSection } from './GitLabIntegrationSection';
 
-/** Integrations: the API connection details plus the GitHub App link. */
+/** Integrations: the API connection details plus the GitHub App and GitLab links. */
 export default function IntegrationsSection() {
   const { auth } = useAuth();
   if (!auth) return null;
@@ -37,6 +38,8 @@ export default function IntegrationsSection() {
       </Card>
 
       <GitHubIntegrationSection />
+
+      <GitLabIntegrationSection />
     </div>
   );
 }

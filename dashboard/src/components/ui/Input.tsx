@@ -6,7 +6,7 @@ const baseField =
   'w-full bg-bg-sunken border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary transition-[background-color,border-color,box-shadow] duration-150 ease-out outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] disabled:opacity-50 disabled:cursor-not-allowed';
 
 const errorField =
-  'border-[var(--danger)] focus-visible:border-[var(--danger)] focus-visible:shadow-[0_0_0_3px_rgba(240,64,96,0.25)]';
+  'border-[var(--danger)] focus-visible:border-[var(--danger)] focus-visible:shadow-[0_0_0_3px_color-mix(in_srgb,var(--danger)_25%,transparent)]';
 
 /* ── field wrapper ── */
 

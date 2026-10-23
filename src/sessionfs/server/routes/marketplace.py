@@ -2492,8 +2492,8 @@ async def _personal_storage_limit(db: AsyncSession, auth: AuthContext) -> int:
     per-session sync cap. Free keeps SFS_MAX_SYNC_BYTES_FREE (Free cannot
     publish anyway); a platform administrator is unlimited."""
     if auth.user.tier == "admin":
-        # Same migration-050 caveat as the publish gate: a platform admin's
-        # legacy `free` entitlement must not shrink their quota.
+        # Unlimited, not the ENTERPRISE plan figure get_effective_tier
+        # would give: platform admins hold the launch catalogs.
         return 0
     effective_tier = await get_effective_tier(auth.user, db)
     if effective_tier in (Tier.STARTER, Tier.PRO, Tier.TEAM, Tier.ENTERPRISE):
@@ -2754,6 +2754,8 @@ async def _fence_personal_tier(db: AsyncSession, *, user_id: str) -> None:
     if user is None or not user.is_active:
         raise HTTPException(403, "User account is inactive")
     if user.tier == "admin":
+        # Platform admins publish regardless of plan; get_effective_tier
+        # would also give them ENTERPRISE, this just skips the lookup.
         return
     tier = await get_effective_tier(user, db, membership=membership)
     if "marketplace_access" not in get_features_for_tier(tier):

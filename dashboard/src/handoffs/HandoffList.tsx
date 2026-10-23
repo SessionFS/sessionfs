@@ -61,7 +61,7 @@ export default function HandoffList() {
       <TabPanel idPrefix="handoffs" tabKey={tab}>
       {/* Error */}
       {error && (
-        <div className="mt-4 mb-4 p-3 rounded-lg text-sm text-danger" style={{ backgroundColor: 'rgba(240,64,96,0.1)', border: '1px solid rgba(240,64,96,0.3)' }}>
+        <div className="mt-4 mb-4 p-3 rounded-lg text-sm text-danger" style={{ backgroundColor: 'color-mix(in srgb, var(--danger) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--danger) 30%, transparent)' }}>
           Failed to load handoffs: {errorMessage(error)}
         </div>
       )}
@@ -85,7 +85,7 @@ export default function HandoffList() {
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3 min-w-0 flex-1">
-                  <span className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-medium text-brand uppercase border" style={{ backgroundColor: 'rgba(79,156,247,0.12)', borderColor: 'rgba(79,156,247,0.3)' }}>
+                  <span className="w-8 h-8 rounded-full flex-shrink-0 flex items-center justify-center text-xs font-medium text-brand uppercase border" style={{ backgroundColor: 'color-mix(in srgb, var(--brand) 12%, transparent)', borderColor: 'color-mix(in srgb, var(--brand) 30%, transparent)' }}>
                     {(isInbox ? h.sender_email : h.recipient_email).charAt(0)}
                   </span>
                   <div className="min-w-0">

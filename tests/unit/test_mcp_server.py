@@ -2455,6 +2455,34 @@ class TestCheckpointAndForkHandlers:
         # message_count reflects the seeded jsonl with 2 messages
         assert all(cp["message_count"] == 2 for cp in result["checkpoints"])
 
+    def test_list_checkpoints_equal_mtimes_order_by_name(self, mcp_env):
+        import os
+
+        paths = {}
+        for name in ("beta", "alpha", "gamma"):  # created out of name order
+            created = mcp_server._handle_checkpoint_session(
+                {"session_id": "ses_auth1234abcdef", "name": name}
+            )
+            paths[name] = created["path"]
+        stamp = 1_700_000_000_000_000_000
+        for path in paths.values():
+            os.utime(path, ns=(stamp, stamp))
+        for _ in range(3):
+            result = mcp_server._handle_list_checkpoints(
+                {"session_id": "ses_auth1234abcdef"}
+            )
+            assert [cp["name"] for cp in result["checkpoints"]] == [
+                "alpha",
+                "beta",
+                "gamma",
+            ]
+        # A genuinely older checkpoint still sorts first.
+        os.utime(paths["gamma"], ns=(stamp - 10**9, stamp - 10**9))
+        result = mcp_server._handle_list_checkpoints(
+            {"session_id": "ses_auth1234abcdef"}
+        )
+        assert [cp["name"] for cp in result["checkpoints"]] == ["gamma", "alpha", "beta"]
+
     def test_list_checkpoints_empty(self, mcp_env):
         result = mcp_server._handle_list_checkpoints(
             {"session_id": "ses_dbmigrate1234ab"}

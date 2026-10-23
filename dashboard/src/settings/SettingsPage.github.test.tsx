@@ -18,7 +18,10 @@ const client = {
   startGitHubClaim: vi.fn(),
   getGitHubClaimChoices: vi.fn(),
   chooseGitHubInstallation: vi.fn(),
+  getGitLabSettings: vi.fn(),
 };
+
+vi.mock('../hooks/useToast', () => ({ useToast: () => ({ addToast: vi.fn() }) }));
 
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => mockAuth(),
@@ -58,6 +61,7 @@ describe('SettingsPage GitHub return handling', () => {
     assign.mockReset();
     client.getMe.mockResolvedValue({ email: 'a@example.com', tier: 'pro' });
     client.getGitHubInstallation.mockResolvedValue(NOT_CONNECTED);
+    client.getGitLabSettings.mockResolvedValue({ instance_url: 'https://gitlab.com', has_token: false });
     mockAuth.mockReturnValue({
       auth: { apiKey: 'sk_test_0123456789abcdef', baseUrl: 'http://test.api', client },
       logout: vi.fn(),
@@ -103,7 +107,7 @@ describe('SettingsPage GitHub return handling', () => {
     window.history.replaceState({}, '', '/settings?github=connected');
     renderPage();
     expect(await screen.findByText(/GitHub Integration/)).toBeInTheDocument();
-    await screen.findByText(/not connected/i);
+    await screen.findAllByText(/not connected/i);
     expect(screen.queryByText(/linked and ownership verified/i)).not.toBeInTheDocument();
   });
 

@@ -87,6 +87,7 @@
   --danger-solid: #d6304f;  /* fill behind white text */
   --warning: #f0c040;
   --info: #5ca6f9;
+  --scrim: oklch(0% 0 0 / 0.5);  /* modal/drawer backdrop, same in both themes */
 
   --tool-claude:  #d97706;
   --tool-codex:   #10b981;
@@ -219,6 +220,7 @@
   --color-code-well-dot-yellow: var(--code-well-dot-yellow);
   --color-code-well-dot-green: var(--code-well-dot-green);
   --color-info: var(--info);
+  --color-role-discovery: var(--role-discovery);
 
   /* === Canonical type scale ===
      Dense dev-tool UI. Maps Tailwind's text-* utilities to our values so

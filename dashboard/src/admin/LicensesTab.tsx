@@ -7,7 +7,7 @@ import { errorMessage } from '../utils/errorMessage';
 const STATUS_STYLES: Record<string, string> = {
   active: 'bg-success/10 text-success border-success/30',
   expired: 'bg-danger/10 text-danger border-danger/30',
-  revoked: 'bg-neutral-500/10 text-neutral-400 border-neutral-500/30',
+  revoked: 'bg-text-tertiary/10 text-text-tertiary border-text-tertiary/30',
   trial: 'bg-warning/10 text-warning border-warning/30',
 };
 

@@ -1,10 +1,10 @@
 export const AVATAR_COLORS = [
-  'bg-blue-500/20 text-blue-500',
-  'bg-green-500/20 text-green-500',
-  'bg-purple-500/20 text-purple-500',
-  'bg-orange-500/20 text-orange-500',
-  'bg-pink-500/20 text-pink-500',
-  'bg-teal-500/20 text-teal-500',
+  'bg-info/20 text-info',
+  'bg-success/20 text-success',
+  'bg-role-discovery/20 text-role-discovery',
+  'bg-warning/20 text-warning',
+  'bg-danger/20 text-danger',
+  'bg-brand/20 text-brand',
 ];
 
 export function getAvatarColor(email: string): string {

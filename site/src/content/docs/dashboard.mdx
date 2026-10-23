@@ -86,7 +86,7 @@ Click **New Project** to create one. Provide a name and optionally link a git re
 
 A project is organized into five sections. The current section and sub-tab are kept in the address bar, so you can link straight to them and the back button works.
 
-- **Overview** — the project's context document, with a markdown editor. This document is injected into sessions via MCP or `--append-system-prompt-file`.
+- **Overview** — the project's compiled context document, shown as a readable document (lists, quotes, tables, task lists and code blocks render properly) with an **On this page** list of its sections beside the text that highlights the one you're reading; on a phone the list is a collapsible menu above the text. Click **Edit** to change it in the markdown editor. This document is injected into sessions via MCP or `--append-system-prompt-file`.
 - **Knowledge** — **Entries** (structured facts captured with `add_knowledge`, with type, text, confidence and creation date), **Pages** (wiki pages with backlinks, including compiled section pages) and **History** (past compilations).
 - **Work** — **Tickets**, **Agent runs** and **Personas** for the project's agent team.
 - **Rules & Skills** — **Rules** (canonical project rules compiled into each tool's instruction file) and **Skills** (the project's installed skills and pending install requests from the marketplace).
@@ -114,7 +114,7 @@ Account settings live at `/settings`, split into sections that each have their o
 
 - **Account** (`/settings/account`) — your account and plan, last sync, and the **Capture Health** card. If a tool ships a format change that silently breaks capture, the daemon detects it (an idle tool is never flagged) and the card surfaces it here — the same signal reported by `sfs doctor`.
 - **Preferences** (`/settings/preferences`) — appearance, including light or dark theme.
-- **Integrations** (`/settings/integrations`) — your server URL and API key, and the **GitHub Integration** for PR-linked sessions and PR comments.
+- **Integrations** (`/settings/integrations`) — your server URL and API key, the **GitHub Integration** for PR-linked sessions and PR comments, and the **GitLab Integration** for merge request comments on gitlab.com or a self-managed instance (connect, update or disconnect; the access token and webhook secret are write-only and never shown back). See [Git Integration](/git-integration/).
 - **Data protection** (`/settings/data-protection`) — automatic audit on sync (LLM Judge) and your DLP secret-scanning policy.
 - **Sync** (`/settings/sync`) — autosync mode: `off` (local only), `all` (sync every session), or `selective` (sync only sessions on your watchlist).
 

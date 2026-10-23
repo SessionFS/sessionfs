@@ -20,7 +20,7 @@ export function RevocationIncompleteNotice({
 }) {
   if (!isRevocationFeedIncomplete(error)) return null;
   return (
-    <div role="status" className={`rounded-lg border border-warning/40 bg-[rgba(240,192,64,0.06)] p-3 ${className}`}>
+    <div role="status" className={`rounded-lg border border-warning/40 bg-warning/6 p-3 ${className}`}>
       <p className="text-sm font-semibold text-warning">Moderation state is incomplete</p>
       <p className="mt-1 text-xs leading-5 text-text-secondary">
         {hasPrevious
@@ -54,8 +54,8 @@ export function ExplanationAlert({
 }) {
   const upgrade = explanation.code?.startsWith('upgrade_required');
   const palette = tone === 'danger'
-    ? 'border-danger/40 bg-[rgba(240,64,96,0.06)]'
-    : 'border-warning/40 bg-[rgba(240,192,64,0.06)]';
+    ? 'border-danger/40 bg-danger/6'
+    : 'border-warning/40 bg-warning/6';
   return (
     <div role="alert" className={`rounded-lg border p-3 ${palette}`}>
       <p className={`text-sm font-semibold ${tone === 'danger' ? 'text-danger' : 'text-warning'}`}>{explanation.title}</p>

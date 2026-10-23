@@ -164,7 +164,7 @@ function SidebarLink({
       {!collapsed && badgeCount != null && badgeCount > 0 && (
         <span
           className="ml-auto px-1.5 py-0.5 text-xs rounded-full font-medium tabular-nums"
-          style={{ backgroundColor: 'rgba(240,192,64,0.15)', color: 'var(--warning)' }}
+          style={{ backgroundColor: 'color-mix(in srgb, var(--warning) 15%, transparent)', color: 'var(--warning)' }}
           role="status"
           aria-label={`${badgeCount} pending`}
         >
@@ -522,7 +522,7 @@ export default function Layout() {
                         {bc != null && bc > 0 && (
                           <span
                             className="px-1.5 py-0.5 text-xs rounded-full font-medium"
-                            style={{ backgroundColor: 'rgba(240,192,64,0.15)', color: 'var(--warning)' }}
+                            style={{ backgroundColor: 'color-mix(in srgb, var(--warning) 15%, transparent)', color: 'var(--warning)' }}
                             role="status"
                             aria-label={`${bc} pending`}
                           >

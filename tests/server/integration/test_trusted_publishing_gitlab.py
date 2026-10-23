@@ -422,6 +422,15 @@ async def test_namespace_pin(client: AsyncClient, auth_headers: dict) -> None:
     assert moved.status_code == 403
 
 
+async def test_unpinned_trust_warns_and_pinned_does_not(client: AsyncClient, auth_headers: dict) -> None:
+    _, unpinned = await _setup(client, auth_headers)
+    assert unpinned["gitlab_namespace_id"] is None
+    assert any("not pinned" in warning for warning in unpinned["warnings"])
+    _, pinned = await _setup(client, auth_headers, namespace="acme-pin", gitlab_namespace_id=int(NAMESPACE_ID))
+    assert pinned["gitlab_namespace_id"] == int(NAMESPACE_ID)
+    assert "warnings" not in pinned
+
+
 async def test_require_protected_environment(client: AsyncClient, auth_headers: dict) -> None:
     # Off by default: an unprotected environment with the right name matches
     # (the documented weakness the opt-in closes).

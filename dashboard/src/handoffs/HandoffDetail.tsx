@@ -119,7 +119,7 @@ function HandoffStepper({ handoff }: { handoff: HandoffDetailType }) {
                   }`}
                   style={
                     getStepState(i + 1, handoff.status) === 'expired'
-                      ? { backgroundColor: 'rgba(240,64,96,0.4)' }
+                      ? { backgroundColor: 'color-mix(in srgb, var(--danger) 40%, transparent)' }
                       : undefined
                   }
                 />
@@ -207,7 +207,7 @@ function SessionContextCard({ summary }: { summary: HandoffSessionSummary }) {
           <span className="text-sm text-text-tertiary block mb-1.5">Errors</span>
           <div className="space-y-1.5">
             {summary.errors_encountered.map((err, i) => (
-              <p key={i} className="text-xs truncate px-2.5 py-1.5 rounded-md border text-danger" style={{ backgroundColor: 'rgba(240,64,96,0.05)', borderColor: 'rgba(240,64,96,0.2)' }}>
+              <p key={i} className="text-xs truncate px-2.5 py-1.5 rounded-md border text-danger" style={{ backgroundColor: 'color-mix(in srgb, var(--danger) 5%, transparent)', borderColor: 'color-mix(in srgb, var(--danger) 20%, transparent)' }}>
                 {err}
               </p>
             ))}

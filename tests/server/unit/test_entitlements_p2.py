@@ -539,6 +539,31 @@ class TestEffectiveTierResolution:
         tier = await get_effective_tier(user, db_session)
         assert tier == Tier.ENTERPRISE
 
+    async def test_effective_tier_admin_beats_migration_050_free_entitlement(
+        self, db_session: AsyncSession
+    ):
+        """Migration 050 gave legacy admins an active `free` entitlement; it
+        must not demote them to Free."""
+        user = await _create_user(db_session, tier="admin")
+        # Inserted directly, as the migration did: apply_entitlement would
+        # also rewrite users.tier, which the migration left as 'admin'.
+        db_session.add(Entitlement(
+            owner_type="user", owner_id=user.id, source="manual",
+            tier="free", status="active", billing_status="current",
+        ))
+        await db_session.commit()
+
+        assert await get_effective_tier(user, db_session) == Tier.ENTERPRISE
+
+    async def test_effective_tier_admin_in_lower_tier_org(self, db_session: AsyncSession):
+        """A platform admin who is also a member of a Team org still
+        resolves to ENTERPRISE."""
+        org = await _create_org(db_session, tier="team")
+        user = await _create_user(db_session, tier="admin")
+        await _add_member(db_session, org.id, user.id, "member")
+
+        assert await get_effective_tier(user, db_session) == Tier.ENTERPRISE
+
 
 # ────────────────────────────────────────────────────────────────
 # Drift regression

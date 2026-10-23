@@ -20,7 +20,7 @@ export function DeprecationNotice({ item, onOpenSuccessor }: { item: Marketplace
   if (!deprecation) return null;
   const successor = deprecation.successor;
   return (
-    <div role="status" className="mb-4 rounded-lg border border-warning/40 bg-[rgba(240,192,64,0.06)] p-3 text-sm text-warning">
+    <div role="status" className="mb-4 rounded-lg border border-warning/40 bg-warning/6 p-3 text-sm text-warning">
       <p className="font-semibold">Deprecated by its publisher.</p>
       {deprecation.message && <p className="mt-1 text-xs text-text-secondary">{deprecation.message}</p>}
       {successor && (

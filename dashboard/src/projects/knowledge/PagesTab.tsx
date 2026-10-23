@@ -1,10 +1,9 @@
 import { useState } from 'react';
-import ReactMarkdown from 'react-markdown';
 import { useWikiPages, useWikiPage, useUpdateWikiPage, useDeleteWikiPage, useRegenerateWikiPage } from '../../hooks/useProjects';
 import { useToast } from '../../hooks/useToast';
 import RelativeDate from '../../components/RelativeDate';
 import type { WikiPage } from '../../api/client';
-import { Button, Input, Textarea } from '../../components/ui';
+import { Button, Input, Markdown, Textarea } from '../../components/ui';
 import { errorMessage } from '../../utils/errorMessage';
 
 export default function PagesTab({ projectId }: { projectId: string }) {
@@ -172,7 +171,7 @@ export default function PagesTab({ projectId }: { projectId: string }) {
                 {isSelected && (
                   <div className="border-t border-border px-4 py-3">
                     {page.auto_generated && !isEditing && (
-                      <div className="mb-3 px-3 py-2 rounded-lg bg-[rgba(249,115,22,0.08)] border border-[rgba(249,115,22,0.2)] text-xs text-[#f97316]">
+                      <div className="mb-3 px-3 py-2 rounded-lg bg-warning/8 border border-warning/20 text-xs text-warning">
                         Auto-maintained. Manual edits may be overwritten during compilation.
                       </div>
                     )}
@@ -196,8 +195,8 @@ export default function PagesTab({ projectId }: { projectId: string }) {
                       </div>
                     ) : (
                       <>
-                        <div className="prose prose-sm dark:prose-invert max-w-[65ch] text-text-secondary">
-                          <ReactMarkdown>{pageDetail?.content ?? page.content ?? ''}</ReactMarkdown>
+                        <div className="max-w-[78ch]">
+                          <Markdown>{pageDetail?.content ?? page.content ?? ''}</Markdown>
                         </div>
 
                         {/* Backlinks */}

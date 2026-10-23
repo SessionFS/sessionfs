@@ -16,7 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from sessionfs.server.services.scope_locks import advisory_key, lock_scopes
-from tests.pg_helpers import upgrade_pg_to_head
+from tests.pg_helpers import upgrade_pg_to_head, wait_for_lock_waiters
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -96,7 +96,7 @@ async def test_pg_project_lock_serializes_two_transactions():
                 await b.commit()
 
             task = asyncio.create_task(b_takes_lock())
-            await asyncio.sleep(0.3)
+            await wait_for_lock_waiters(engine, task=task)
             assert order == []  # still blocked behind A
             order.append("a-commit")
             await a.commit()
@@ -309,7 +309,7 @@ async def test_pg_merge_waits_for_concurrent_demotion_then_refuses():
                     session_factory=factory,
                 )
             )
-            await asyncio.sleep(0.5)
+            await wait_for_lock_waiters(engine, task=task)
             assert not task.done()  # blocked on the org lock
             await demoter.commit()
             with pytest.raises(HTTPException) as exc:
@@ -391,7 +391,7 @@ async def test_pg_force_transfer_waits_for_org_lock_then_rereads():
                     db=admin_db,
                 )
             )
-            await asyncio.sleep(0.5)
+            await wait_for_lock_waiters(engine, task=task)
             assert not task.done()  # blocked on the org lock
             await remover.commit()
             with pytest.raises(HTTPException) as exc:
@@ -488,7 +488,7 @@ async def test_pg_owner_transfer_accept_waits_for_concurrent_demotion():
                     user=target_user, db=acceptor,
                 )
             )
-            await asyncio.sleep(0.5)
+            await wait_for_lock_waiters(engine, task=task)
             assert not task.done()  # blocked on the org lock
             await demoter.commit()
             with pytest.raises(HTTPException) as exc:
@@ -548,7 +548,7 @@ async def test_pg_delete_user_serializes_with_concurrent_join():
             task = asyncio.create_task(
                 delete_user(user_id=f"vic-{tag}", admin=admin_user, db=deleter)
             )
-            await asyncio.sleep(0.5)
+            await wait_for_lock_waiters(engine, task=task)
             assert not task.done()  # waiting on the user lock
             await joiner.commit()
             await asyncio.wait_for(task, timeout=10)
@@ -625,7 +625,7 @@ async def test_pg_create_project_waits_for_member_removal_then_refuses():
                     db=creator,
                 )
             )
-            await asyncio.sleep(0.5)
+            await wait_for_lock_waiters(engine, task=task)
             assert not task.done()  # blocked on the org/user lock
             await remover.commit()
             with pytest.raises(HTTPException) as exc:
@@ -735,7 +735,7 @@ async def test_pg_handoff_create_waits_for_persona_delete_then_refuses():
                     db=creator,
                 )
             )
-            await asyncio.sleep(0.5)
+            await wait_for_lock_waiters(engine, task=task)
             assert not task.done()  # blocked on the project scope lock
             await deleter.commit()
             with pytest.raises(HTTPException) as exc:
@@ -840,7 +840,7 @@ async def test_pg_handoff_claim_waits_for_merge_rewrite_then_refuses():
                     db=claimer,
                 )
             )
-            await asyncio.sleep(0.5)
+            await wait_for_lock_waiters(engine, task=task)
             assert not task.done()  # blocked on the source project lock
             await merger.commit()
             with pytest.raises(HTTPException) as exc:

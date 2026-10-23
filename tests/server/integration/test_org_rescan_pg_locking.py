@@ -19,6 +19,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from tests.pg_helpers import wait_for_lock_waiters
 from sessionfs.server.db.models import Base, OrgAuditEvent, Organization
 
 pytestmark = pytest.mark.skipif(
@@ -57,7 +58,7 @@ async def test_concurrent_reservations_never_exceed_the_daily_cap(monkeypatch):
             held = await reserve(first)  # holds the org row lock, not committed
             assert held is not None
             waiting = asyncio.create_task(reserve(second))
-            await asyncio.sleep(0.5)
+            await wait_for_lock_waiters(engine, task=waiting)
             assert not waiting.done()  # blocked on the org row lock
             await first.commit()
             assert await asyncio.wait_for(waiting, 10) is None  # sees the committed third

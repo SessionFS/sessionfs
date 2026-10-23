@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 import pytest
 
 from sessionfs.skills import publishing
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _plain(s: str) -> str:
+    # CI forces colour, and usage errors come in a box that wraps lines.
+    return " ".join(_ANSI_RE.sub("", s).replace("│", " ").split())
 
 
 def test_personal_public_target_sends_visibility() -> None:
@@ -234,7 +242,7 @@ def test_publisher_trust_gitlab_payload_and_exclusivity(monkeypatch: pytest.Monk
     runner = CliRunner()
     result = runner.invoke(skill_app, [
         "publisher", "trust", "pub_1", "--gitlab-project", "4242", "--gitlab-project-path", "acme/skills",
-        "--ref-pattern", "refs/tags/v*", "--environment", "production",
+        "--ref-pattern", "refs/tags/v*", "--environment", "production", "--no-namespace-pin",
     ])
     assert result.exit_code == 0, result.output
     assert calls == [("POST", "/publishers/pub_1/trusted-publishers", {
@@ -261,10 +269,124 @@ def test_publisher_trust_gitlab_payload_and_exclusivity(monkeypatch: pytest.Monk
     assert github_flag.exit_code != 0 and len(calls) == 1
     protected = runner.invoke(skill_app, [
         "publisher", "trust", "pub_1", "--gitlab-project", "1", "--environment", "production",
-        "--require-protected-environment",
+        "--require-protected-environment", "--no-namespace-pin",
     ])
     assert protected.exit_code == 0, protected.output
     assert calls[-1][2] == {
         "provider": "gitlab", "gitlab_project_id": 1, "require_protected_environment": True,
         "environment": "production",
     }
+
+
+def _trust_harness(monkeypatch: pytest.MonkeyPatch):
+    from typer.testing import CliRunner
+
+    from sessionfs.cli import cmd_skill_publisher
+    from sessionfs.cli.cmd_skill import skill_app
+
+    calls: list[dict | None] = []
+
+    def fake(method: str, path: str, payload: dict | None = None) -> dict:
+        calls.append(payload)
+        return {"id": "stp_1", "provider": "gitlab", "gitlab_project_id": 4242,
+                "gitlab_host": "https://gitlab.com", "repository": "project 4242"}
+
+    monkeypatch.setattr(cmd_skill_publisher, "_request", fake)
+    monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+    monkeypatch.delenv("CI_JOB_TOKEN", raising=False)
+    return CliRunner(), skill_app, calls
+
+
+def _mock_gitlab(monkeypatch: pytest.MonkeyPatch, handler) -> list[httpx.Request]:
+    seen: list[httpx.Request] = []
+
+    def get(url, **kwargs):
+        with httpx.Client(transport=httpx.MockTransport(lambda req: (seen.append(req), handler(req))[1])) as client:
+            return client.get(url, **kwargs)
+
+    monkeypatch.setattr(httpx, "get", get)
+    return seen
+
+
+def test_gitlab_trust_pins_the_looked_up_namespace_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner, app, calls = _trust_harness(monkeypatch)
+    seen = _mock_gitlab(
+        monkeypatch, lambda req: httpx.Response(200, json={"id": 4242, "namespace": {"id": 77}})
+    )
+    result = runner.invoke(app, ["publisher", "trust", "pub_1", "--gitlab-project", "4242"])
+    assert result.exit_code == 0, result.output
+    assert str(seen[0].url) == "https://gitlab.com/api/v4/projects/4242"
+    assert "private-token" not in seen[0].headers and "job-token" not in seen[0].headers
+    assert calls[-1]["gitlab_namespace_id"] == 77
+
+
+def test_gitlab_lookup_uses_a_token_from_the_environment_without_printing_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner, app, calls = _trust_harness(monkeypatch)
+    monkeypatch.setenv("GITLAB_TOKEN", "glpat-secret-value")
+    seen = _mock_gitlab(monkeypatch, lambda req: httpx.Response(200, json={"namespace": {"id": 5}}))
+    result = runner.invoke(
+        app, ["publisher", "trust", "pub_1", "--gitlab-project", "4242", "--gitlab-host", "https://git.acme.example"]
+    )
+    assert result.exit_code == 0, result.output
+    assert str(seen[0].url) == "https://git.acme.example/api/v4/projects/4242"
+    assert seen[0].headers["private-token"] == "glpat-secret-value"
+    assert "glpat-secret-value" not in result.output
+    assert calls[-1]["gitlab_namespace_id"] == 5
+
+
+def test_gitlab_explicit_namespace_skips_the_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner, app, calls = _trust_harness(monkeypatch)
+    seen = _mock_gitlab(monkeypatch, lambda req: httpx.Response(500))
+    result = runner.invoke(app, ["publisher", "trust", "pub_1", "--gitlab-project", "4242", "--gitlab-namespace", "9"])
+    assert result.exit_code == 0, result.output
+    assert seen == [] and calls[-1]["gitlab_namespace_id"] == 9
+
+
+def test_gitlab_no_namespace_pin_warns_and_sends_no_pin(monkeypatch: pytest.MonkeyPatch) -> None:
+    runner, app, calls = _trust_harness(monkeypatch)
+    seen = _mock_gitlab(monkeypatch, lambda req: httpx.Response(500))
+    result = runner.invoke(app, ["publisher", "trust", "pub_1", "--gitlab-project", "4242", "--no-namespace-pin"])
+    assert result.exit_code == 0, result.output
+    assert "not pinned" in result.output
+    assert seen == [] and "gitlab_namespace_id" not in calls[-1]
+    both = runner.invoke(
+        app, ["publisher", "trust", "pub_1", "--gitlab-project", "4242", "--no-namespace-pin", "--gitlab-namespace", "9"]
+    )
+    assert both.exit_code != 0 and len(calls) == 1
+    mixed = runner.invoke(
+        app, ["publisher", "trust", "pub_1", "--repo", "o/r", "--workflow", "r.yml", "--no-namespace-pin"]
+    )
+    assert mixed.exit_code != 0 and len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [
+        lambda req: httpx.Response(404, json={"message": "404 Project Not Found"}),
+        lambda req: httpx.Response(200, json={"id": 4242}),
+        lambda req: httpx.Response(200, text="not json"),
+        lambda req: (_ for _ in ()).throw(httpx.ConnectError("down")),
+    ],
+)
+def test_gitlab_lookup_failure_refuses_and_names_both_flags(monkeypatch: pytest.MonkeyPatch, handler) -> None:
+    runner, app, calls = _trust_harness(monkeypatch)
+    _mock_gitlab(monkeypatch, handler)
+    result = runner.invoke(app, ["publisher", "trust", "pub_1", "--gitlab-project", "4242"])
+    assert result.exit_code != 0 and calls == []
+    out = _plain(result.output)
+    assert "--gitlab-namespace" in out and "--no-namespace-pin" in out
+
+
+def test_gitlab_server_warnings_are_shown(monkeypatch: pytest.MonkeyPatch) -> None:
+    from sessionfs.cli import cmd_skill_publisher
+
+    runner, app, _ = _trust_harness(monkeypatch)
+    monkeypatch.setattr(
+        cmd_skill_publisher, "_request",
+        lambda *a, **k: {"id": "stp_1", "provider": "gitlab", "gitlab_project_id": 1, "repository": "r",
+                         "gitlab_host": "h", "warnings": ["namespace is not pinned"]},
+    )
+    result = runner.invoke(app, ["publisher", "trust", "pub_1", "--gitlab-project", "1", "--gitlab-namespace", "3"])
+    assert result.exit_code == 0 and "namespace is not pinned" in result.output

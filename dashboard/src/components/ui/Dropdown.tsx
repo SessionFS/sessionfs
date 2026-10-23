@@ -155,7 +155,7 @@ export function Dropdown({ trigger, items, onSelect, menuLabel, minWidthClass }:
                       <span
                         className="ml-auto px-1.5 py-0.5 text-2xs rounded-full font-medium shrink-0"
                         style={{
-                          backgroundColor: 'rgba(240,192,64,0.15)',
+                          backgroundColor: 'color-mix(in srgb, var(--warning) 15%, transparent)',
                           color: 'var(--warning)',
                         }}
                       >

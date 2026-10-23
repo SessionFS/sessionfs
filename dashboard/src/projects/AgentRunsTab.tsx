@@ -167,7 +167,7 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
                 type="button"
                 onClick={() => setExpanded(expanded === r.id ? null : r.id)}
                 aria-expanded={expanded === r.id}
-                className="w-full text-left px-4 py-2.5 hover:bg-surface-hover transition-colors duration-150"
+                className="w-full text-left px-4 py-2.5 hover:bg-surface-hover transition-colors duration-150 outline-none focus-visible:shadow-[inset_0_0_0_2px_var(--brand-glow)]"
               >
                 <div className="flex items-center gap-3 text-sm flex-wrap">
                   <code className="text-mono-chip">{r.id}</code>

@@ -5,7 +5,7 @@ import { abbreviateTool } from '../utils/models';
 import { renderSnippet } from '../utils/highlight';
 import RelativeDate from '../components/RelativeDate';
 import { useFocusTrap } from '../hooks/useFocusTrap';
-import { Select } from '../components/ui';
+import { Button, IconButton, Select } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
 
 const TOOLS = [
@@ -89,17 +89,17 @@ function MobileFilterSheet({
                 Refine results
               </h2>
             </div>
-            <button
-              type="button"
+            <IconButton
+              label="Close filters"
+              variant="secondary"
               onClick={onClose}
-              className="flex h-9 w-9 items-center justify-center rounded-full border border-border bg-surface text-text-secondary transition-colors hover:bg-surface-hover"
-              aria-label="Close filters"
+              className="h-9 w-9 !rounded-full"
             >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
                 <line x1="4" y1="4" x2="12" y2="12" />
                 <line x1="12" y1="4" x2="4" y2="12" />
               </svg>
-            </button>
+            </IconButton>
           </div>
 
           <div className="space-y-4">
@@ -120,36 +120,33 @@ function MobileFilterSheet({
           </div>
 
           <div className="mt-5 flex items-center justify-between gap-3">
-            <button
+            <Button
               type="button"
+              variant="ghost"
               onClick={() => {
                 setDraftTool('');
                 setDraftDays(0);
                 onApply('', 0);
                 onClose();
               }}
-              className="rounded-lg px-3 py-2 text-sm font-medium text-text-tertiary transition-colors hover:text-text-secondary"
+              className="font-medium text-text-tertiary"
             >
               Clear all
-            </button>
+            </Button>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={onClose}
-                className="rounded-lg border border-border px-4 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover"
-              >
+              <Button type="button" variant="secondary" onClick={onClose} className="font-medium">
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
                 onClick={() => {
                   onApply(draftTool, draftDays);
                   onClose();
                 }}
-                className="rounded-lg bg-brand px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-[var(--brand-hover)]"
+                className="shadow-none"
               >
                 Apply filters
-              </button>
+              </Button>
             </div>
           </div>
         </div>
@@ -217,7 +214,7 @@ export default function SearchResults() {
           <button
             type="button"
             onClick={() => setMobileFiltersOpen(true)}
-            className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-3.5 py-2 text-sm font-medium text-text-secondary shadow-[var(--shadow-sm)] transition-colors hover:bg-surface-hover"
+            className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-3.5 py-2 text-sm font-medium text-text-secondary shadow-[var(--shadow-sm)] transition-colors hover:bg-surface-hover outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
             aria-haspopup="dialog"
             aria-expanded={mobileFiltersOpen}
             aria-label="Open search filters"
@@ -307,8 +304,9 @@ export default function SearchResults() {
             {data.results.map((r) => (
               <button
                 key={r.session_id}
+                type="button"
                 onClick={() => handleResultClick(r)}
-                className="w-full text-left p-3 bg-bg-secondary border border-border rounded-lg hover:border-text-muted transition-colors"
+                className="w-full text-left p-3 bg-bg-secondary border border-border rounded-lg hover:border-text-muted transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
               >
                 <div className="flex items-center gap-2 mb-1">
                   <span className="text-sm font-medium text-text-primary truncate flex-1">
@@ -339,23 +337,25 @@ export default function SearchResults() {
         {/* Pagination */}
         {totalPages > 1 && (
           <div className="flex items-center justify-center gap-2 mt-4">
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               disabled={page <= 1}
               onClick={() => setPage((p) => p - 1)}
-              className="px-3 py-1 text-sm bg-bg-secondary border border-border rounded hover:border-text-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Previous
-            </button>
+            </Button>
             <span className="text-sm text-text-muted">
               Page {page} of {totalPages}
             </span>
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               disabled={page >= totalPages}
               onClick={() => setPage((p) => p + 1)}
-              className="px-3 py-1 text-sm bg-bg-secondary border border-border rounded hover:border-text-muted transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             >
               Next
-            </button>
+            </Button>
           </div>
         )}
       </div>

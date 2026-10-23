@@ -1051,7 +1051,13 @@ async def _add_gitlab_trusted_publisher(
                "ref_pattern": ref_pattern, "package_name": package_name},
     )
     await db.commit()
-    return _trusted_response(row)
+    response = _trusted_response(row)
+    if body.gitlab_namespace_id is None:
+        response["warnings"] = [
+            "gitlab_namespace_id is not pinned: if the GitLab project is transferred to another namespace, "
+            "its protected-ref pipelines there still match this trust. Pin the namespace id."
+        ]
+    return response
 
 
 @router.post("/publishers/{publisher_id}/trusted-publishers", status_code=201)

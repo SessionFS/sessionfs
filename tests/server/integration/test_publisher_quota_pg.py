@@ -18,6 +18,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from tests.pg_helpers import wait_for_lock_waiters
 from sessionfs.server.db.models import Base, SkillPublisher, User
 from sessionfs.server.services import publishers as svc
 from sessionfs.skills.confusables import skeleton
@@ -124,7 +125,7 @@ async def test_suspension_waits_for_an_in_flight_publish_and_collects_its_listin
             return ids
 
     task = asyncio.create_task(suspend())
-    await asyncio.sleep(0.5)
+    await wait_for_lock_waiters(engine, task=task)
     assert not task.done(), "suspension did not wait for the in-flight publish"
     await publish.commit()
     await publish.close()
@@ -175,7 +176,7 @@ async def test_installation_revocation_waits_for_the_publisher_lock() -> None:
             return count
 
     task = asyncio.create_task(revoke())
-    await asyncio.sleep(0.5)
+    await wait_for_lock_waiters(engine, task=task)
     assert not task.done(), "revocation did not take the publisher lock"
     await holder.commit()
     await holder.close()
@@ -256,7 +257,7 @@ async def test_legacy_package_publish_cannot_deadlock_with_moderation(tmp_path) 
             return result
 
     task = asyncio.create_task(republish())
-    await asyncio.sleep(0.5)
+    await wait_for_lock_waiters(engine, task=task)
     # Moderation's second lock (package) must be free: the publish may not
     # hold it while it waits for the version row.
     await moderation.execute(
@@ -329,7 +330,7 @@ async def test_namespace_claim_and_first_publish_are_serialized(tmp_path) -> Non
                 return exc.status_code
 
     task = asyncio.create_task(publish())
-    await asyncio.sleep(0.5)
+    await wait_for_lock_waiters(engine, task=task)
     assert not task.done(), "the first publish did not wait for the namespace claim"
     await claim.commit()
     await claim.close()
@@ -350,7 +351,7 @@ async def test_installation_state_is_serialized_with_verification_creation() -> 
             return await svc.installation_usable(db, installation_id)
 
     task = asyncio.create_task(creator())
-    await asyncio.sleep(0.5)
+    await wait_for_lock_waiters(engine, task=task)
     assert not task.done(), "verification creation did not wait for the installation lock"
     await webhook.commit()
     await webhook.close()
@@ -402,7 +403,7 @@ async def test_lookalike_promotions_are_serialized(monkeypatch: pytest.MonkeyPat
             return status, reason
 
     task = asyncio.create_task(promote_second())
-    await asyncio.sleep(0.5)
+    await wait_for_lock_waiters(engine, task=task)
     assert not task.done(), "the second promotion did not wait for the global lock"
     await holder.commit()
     await holder.close()
@@ -486,7 +487,7 @@ async def test_membership_fences_wait_for_a_concurrent_removal() -> None:
                     return exc.status_code
 
         task = asyncio.create_task(fence())
-        await asyncio.sleep(0.5)
+        await wait_for_lock_waiters(engine, task=task)
         assert not task.done(), f"{check} fence did not wait for the membership removal"
         await remover.commit()
         await remover.close()
@@ -543,7 +544,7 @@ async def test_public_publish_waits_for_the_global_promotion_lock(tmp_path) -> N
             return result
 
     task = asyncio.create_task(publish())
-    await asyncio.sleep(0.5)
+    await wait_for_lock_waiters(engine, task=task)
     assert not task.done(), "a public publish did not wait for the global promotion lock"
     await promotion.commit()
     await promotion.close()
@@ -593,7 +594,7 @@ async def test_final_publish_fences_hold_membership_until_commit() -> None:
             await db.commit()
 
     task = asyncio.create_task(remove())
-    await asyncio.sleep(0.5)
+    await wait_for_lock_waiters(engine, task=task)
     assert not task.done(), "the removal did not wait for the publish fence"
     await holder.commit()
     await holder.close()
@@ -624,7 +625,7 @@ async def test_final_publish_fences_hold_membership_until_commit() -> None:
                     return exc.status_code
 
         task = asyncio.create_task(fenced())
-        await asyncio.sleep(0.5)
+        await wait_for_lock_waiters(engine, task=task)
         assert not task.done(), f"{check} did not wait for the membership removal"
         await remover.commit()
         await remover.close()
@@ -660,7 +661,7 @@ async def test_offboarding_locks_memberships_before_the_user_row() -> None:
             await db.commit()
 
     task = asyncio.create_task(offboard())
-    await asyncio.sleep(0.5)
+    await wait_for_lock_waiters(engine, task=task)
     assert not task.done(), "offboarding did not wait for the membership fence"
     # The fence can still take the user row: offboarding must not hold it
     # (with the old user-first order this lock would wait, then deadlock).
@@ -705,7 +706,7 @@ async def test_personal_fence_locks_the_org_entitlement_that_grants_the_tier() -
             await db.commit()
 
     task = asyncio.create_task(downgrade())
-    await asyncio.sleep(0.5)
+    await wait_for_lock_waiters(engine, task=task)
     assert not task.done(), "the org entitlement downgrade did not wait for the personal fence"
     await fence.commit()
     await fence.close()
@@ -741,7 +742,7 @@ async def test_org_publish_fence_locks_the_entitlement_and_rechecks_the_tier() -
             await db.commit()
 
     task = asyncio.create_task(downgrade())
-    await asyncio.sleep(0.5)
+    await wait_for_lock_waiters(engine, task=task)
     assert not task.done(), "the org entitlement downgrade did not wait for the org feature fence"
     await fence.commit()
     await fence.close()
@@ -777,7 +778,7 @@ async def test_concurrent_offboarding_serializes_through_the_advisory_lock() -> 
             await admin_routes.delete_user(victim_id, admin, db)
 
     task = asyncio.create_task(offboard())
-    await asyncio.sleep(0.5)
+    await wait_for_lock_waiters(engine, task=task)
     assert not task.done(), "offboarding did not wait for the offboarding advisory lock"
     await holder.commit()
     await holder.close()

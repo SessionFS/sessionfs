@@ -61,17 +61,18 @@ function SessionGridCard({
   const toolColor = TOOL_COLORS[s.source_tool] || 'var(--text-tertiary)';
 
   return (
-    <div
-      role="button"
-      onClick={onClick}
-      onKeyDown={(e) => { if (e.key === 'Enter') onClick(); }}
-      tabIndex={0}
-      className="group bg-surface border border-border rounded-lg cursor-pointer hover:bg-bg-elevated hover:border-border-strong transition-[background-color,border-color] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] flex flex-col"
-    >
+    <div className="group relative bg-surface border border-border rounded-lg hover:bg-bg-elevated hover:border-border-strong transition-[background-color,border-color] duration-150 ease-out flex flex-col">
       {/* Body */}
       <div className="px-4 pt-[14px] pb-2 flex-1 min-w-0">
-        <h4 className="text-md font-semibold text-text-primary truncate mb-1.5">
-          {s.title || <span className="text-text-tertiary italic">Untitled session</span>}
+        <h4 className="text-md font-semibold text-text-primary mb-1.5">
+          {/* ::after stretches the title button over the whole card; footer controls sit above it */}
+          <button
+            type="button"
+            onClick={onClick}
+            className="block max-w-full truncate text-left cursor-pointer outline-none after:absolute after:inset-0 after:rounded-lg focus-visible:after:shadow-[0_0_0_3px_var(--brand-glow)]"
+          >
+            {s.title || <span className="text-text-tertiary italic">Untitled session</span>}
+          </button>
         </h4>
         <div className="flex flex-wrap items-center gap-1 text-xs text-text-tertiary">
           <span
@@ -97,21 +98,19 @@ function SessionGridCard({
         </div>
       </div>
       {/* Footer */}
-      <div className="px-4 pb-3 flex items-center justify-between">
+      <div className="px-4 pb-3 flex items-center justify-between relative z-10 pointer-events-none [&>*]:pointer-events-auto">
         <span className="text-xs text-text-tertiary">
           <RelativeDate iso={s.updated_at} />
         </span>
         <div className="flex items-center gap-1.5">
           <Button
             size="sm"
-            onClick={(e) => { e.stopPropagation(); onResume(); }}
-            className="!py-1 !px-2.5 shadow-none opacity-0 group-hover:opacity-100 group-focus:opacity-100 focus-visible:opacity-100"
+            onClick={onResume}
+            className="!py-1 !px-2.5 shadow-none opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
           >
             Resume
           </Button>
-          <div onClick={(e) => e.stopPropagation()}>
-            <BookmarkDropdown sessionId={s.id} isBookmarked={isBookmarked} />
-          </div>
+          <BookmarkDropdown sessionId={s.id} isBookmarked={isBookmarked} />
         </div>
       </div>
     </div>

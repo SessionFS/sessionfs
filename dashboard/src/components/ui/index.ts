@@ -16,3 +16,4 @@ export { IconButton } from './IconButton';
 export { Checkbox } from './Checkbox';
 export { Switch } from './Switch';
 export { MonoText } from './MonoText';
+export { Markdown } from './Markdown';

@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import ReactMarkdown from 'react-markdown';
 import {
   useProject,
   useUpdateProjectContext,
@@ -17,6 +16,7 @@ import AgentRunsTab from './AgentRunsTab';
 import MarketplaceTab from './MarketplaceTab';
 import ProjectSettings from './ProjectSettings';
 import ProjectHeader from './ProjectHeader';
+import ContextDocument from './ContextDocument';
 import KnowledgeEntriesTab from './knowledge/EntriesTab';
 import PagesTab from './knowledge/PagesTab';
 import HistoryTab from './knowledge/HistoryTab';
@@ -302,7 +302,7 @@ export default function ProjectDetail() {
 
           {/* Context document body */}
           <Card level="elevated" className="rounded-xl shadow-[var(--shadow-sm)]">
-            <div className="px-6 py-5">
+            <div className="px-4 py-5 sm:px-8 sm:py-7">
               {editing ? (
                 <div>
                   <Textarea
@@ -324,11 +324,7 @@ export default function ProjectDetail() {
                   </div>
                 </div>
               ) : project.context_document ? (
-                <div className="bg-surface border border-border rounded-lg p-5">
-                  <article className="prose prose-sm dark:prose-invert max-w-[65ch] text-text-secondary leading-relaxed">
-                    <ReactMarkdown>{project.context_document}</ReactMarkdown>
-                  </article>
-                </div>
+                <ContextDocument markdown={project.context_document} />
               ) : (
                 <div className="text-center py-12">
                   <p className="text-text-tertiary text-sm mb-1">

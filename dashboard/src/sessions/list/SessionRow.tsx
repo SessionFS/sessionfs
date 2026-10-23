@@ -12,7 +12,6 @@ import { BookmarkDropdown } from './BookmarkDropdown';
 export function SessionRow({
   session: s,
   onClick,
-  onKeyDown,
   onResume,
   onNavigate,
   lineageBadge,
@@ -24,7 +23,6 @@ export function SessionRow({
 }: {
   session: SessionSummary;
   onClick: () => void;
-  onKeyDown: (e: React.KeyboardEvent) => void;
   onResume: () => void;
   onNavigate?: () => void;
   lineageBadge?: React.ReactNode;
@@ -34,52 +32,53 @@ export function SessionRow({
   selected?: boolean;
   onToggleSelect?: () => void;
 }) {
+  const titleClass = `font-semibold text-text-primary ${isChild ? 'text-sm' : 'text-md'}`;
   return (
     <div
-      role="button"
-      onClick={onClick}
-      onKeyDown={(e) => { if (e.key === ' ') { e.preventDefault(); onClick(); } else { onKeyDown(e); } }}
-      tabIndex={0}
-      className={`group bg-surface border border-border rounded-lg cursor-pointer hover:bg-bg-elevated hover:border-border-strong transition-[background-color,border-color] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${isChild ? 'px-3 py-3' : 'px-4 py-[14px]'} ${selected ? 'ring-1 ring-brand bg-brand/5' : ''}`}
+      className={`group relative bg-surface border border-border rounded-lg hover:bg-bg-elevated hover:border-border-strong transition-[background-color,border-color] duration-150 ease-out ${isChild ? 'px-3 py-3' : 'px-4 py-[14px]'} ${selected ? 'ring-1 ring-brand bg-brand/5' : ''}`}
     >
-      {/* Line 1: Title + hover actions + timestamp */}
+      {/* Line 1: Title + hover actions + timestamp. The title button's ::after
+          stretches over the whole row so the row stays one click target;
+          every other control sits above it (relative z-10) as a sibling. */}
       <div className="flex items-center gap-3 mb-1">
         {selectMode && (
           <Checkbox
             aria-label={`Select ${s.title || 'untitled session'}`}
             checked={selected || false}
             onChange={() => onToggleSelect?.()}
-            className="mr-3 shrink-0"
-            onClick={(e) => e.stopPropagation()}
+            className="mr-3 shrink-0 relative z-10"
           />
         )}
-        <span
-          className={`font-semibold text-text-primary min-w-0 flex-1 line-clamp-2 break-words sm:line-clamp-1 ${isChild ? 'text-sm' : 'text-md'} ${onNavigate ? 'cursor-pointer' : ''}`}
-          onClick={onNavigate ? (e) => { e.stopPropagation(); onNavigate(); } : undefined}
+        <button
+          type="button"
+          onClick={onClick}
+          className={`${titleClass} min-w-0 flex-1 block text-left cursor-pointer outline-none after:absolute after:inset-0 after:rounded-lg focus-visible:after:shadow-[0_0_0_3px_var(--brand-glow)]`}
         >
-          {isChild && <span className="text-text-tertiary mr-1">&#8627;</span>}
-          {s.title || <span className="text-text-tertiary italic">Untitled session</span>}
-          {s.parent_session_id && !isChild && (
-            <span className="text-text-tertiary text-xs ml-1.5">&crarr; fork</span>
-          )}
-        </span>
-        <div className="ml-auto flex items-center gap-2 shrink-0">
+          <span className="block line-clamp-2 break-words sm:line-clamp-1">
+            {isChild && <span className="text-text-tertiary mr-1">&#8627;</span>}
+            {s.title || <span className="text-text-tertiary italic">Untitled session</span>}
+            {s.parent_session_id && !isChild && (
+              <span className="text-text-tertiary text-xs ml-1.5">&crarr; fork</span>
+            )}
+          </span>
+        </button>
+        <div className="ml-auto flex items-center gap-2 shrink-0 relative z-10 pointer-events-none [&>*]:pointer-events-auto">
           {/* Row actions */}
           <div className="flex items-center gap-1.5">
             {onNavigate && (
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={(e) => { e.stopPropagation(); onNavigate(); }}
-                className="!py-0.5 !px-2 font-medium opacity-0 group-hover:opacity-100"
+                onClick={onNavigate}
+                className="!py-0.5 !px-2 font-medium opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
               >
                 View
               </Button>
             )}
             <Button
               size="sm"
-              onClick={(e) => { e.stopPropagation(); onResume(); }}
-              className="!py-1 !px-2.5 shadow-none opacity-0 group-hover:opacity-100 group-focus:opacity-100 focus-visible:opacity-100"
+              onClick={onResume}
+              className="!py-1 !px-2.5 shadow-none opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
             >
               Resume
             </Button>
@@ -89,9 +88,7 @@ export function SessionRow({
           <span className={`text-text-tertiary ${isChild ? 'text-xs' : 'text-sm'}`}>
             <RelativeDate iso={s.updated_at} />
           </span>
-          <div onClick={(e) => e.stopPropagation()}>
-            <BookmarkDropdown sessionId={s.id} isBookmarked={isBookmarked} />
-          </div>
+          <BookmarkDropdown sessionId={s.id} isBookmarked={isBookmarked} />
         </div>
       </div>
       {/* Line 2: tool name + session id as mono-chips; counts + model as text-tertiary */}

@@ -226,7 +226,7 @@ function AuditReportView({
           <MetricCard label="Confidence" value={`${avgConfidence}%`} color={avgConfidence >= 80 ? 'text-success' : avgConfidence >= 50 ? 'text-warning' : 'text-danger'} />
         )}
         {uniqueCweCount > 0 && (
-          <MetricCard label="CWE IDs" value={String(uniqueCweCount)} color="text-orange-400" />
+          <MetricCard label="CWE IDs" value={String(uniqueCweCount)} color="text-warning" />
         )}
       </div>
 
@@ -312,12 +312,14 @@ function AuditReportView({
                     <VerdictBadge verdict={finding.verdict} />
                     <SeverityBadge severity={finding.severity} />
                     <span className="text-sm text-text-muted truncate flex-1">{finding.claim}</span>
-                    <button
+                    <Button
+                      variant="secondary"
+                      size="sm"
                       onClick={() => restore(key)}
-                      className="px-2 py-0.5 text-xs text-accent border border-accent/30 rounded hover:bg-accent/10 transition-colors shrink-0"
+                      className="shrink-0 !px-2 !py-0.5 font-normal text-accent border-accent/30 hover:bg-accent/10"
                     >
                       Restore
-                    </button>
+                    </Button>
                   </div>
                   {dismissed[key] && (
                     <p className="text-xs text-text-muted mt-1 no-underline" style={{ textDecoration: 'none' }}>
@@ -351,10 +353,10 @@ function AuditReportView({
 
 const SEVERITY_STYLES: Record<string, string> = {
   critical: 'bg-danger/20 text-danger',
-  high: 'bg-orange-500/20 text-orange-400',
+  high: 'bg-warning/20 text-warning',
   low: 'bg-bg-tertiary text-text-muted',
   major: 'bg-danger/20 text-danger',
-  moderate: 'bg-orange-500/20 text-orange-400',
+  moderate: 'bg-warning/20 text-warning',
   minor: 'bg-bg-tertiary text-text-muted',
 };
 
@@ -444,8 +446,10 @@ function FindingCard({
     <div className={`border rounded-lg overflow-hidden ${borderStyle}`}>
       {/* Header row — clickable to expand */}
       <button
+        type="button"
         onClick={() => setExpanded(!expanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-bg-tertiary/50 transition-colors flex-wrap"
+        aria-expanded={expanded}
+        className={`w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-bg-tertiary/50 transition-colors flex-wrap outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]`}
       >
         <SeverityBadge severity={finding.severity} />
         {finding.category && (
@@ -454,7 +458,7 @@ function FindingCard({
           </span>
         )}
         {finding.cwe_id && (
-          <span className="px-2 py-0.5 text-2xs rounded bg-bg-tertiary text-orange-400 font-mono">
+          <span className="px-2 py-0.5 text-2xs rounded bg-bg-tertiary text-warning font-mono">
             {finding.cwe_id}
           </span>
         )}
@@ -519,32 +523,40 @@ function FindingCard({
           {/* Actions row */}
           <div className="flex items-center gap-2 pt-1">
             {onJump && (
-              <button onClick={() => onJump(finding.message_index)}
-                className="text-accent text-xs hover:underline">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onJump(finding.message_index)}
+                className="font-normal text-accent hover:text-accent"
+              >
                 Jump to message #{finding.message_index}
-              </button>
+              </Button>
             )}
             <div className="flex-1" />
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={handleConfirm}
-              className="inline-flex items-center gap-1 px-2 py-1 text-xs text-success border border-success/30 rounded hover:bg-success/10 transition-colors"
+              className="gap-1 !px-2 !py-1 font-normal text-success border-success/30 hover:bg-success/10"
               title="Confirm finding"
             >
               <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
               </svg>
               Confirm
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={handleDismiss}
-              className="inline-flex items-center gap-1 px-2 py-1 text-xs text-text-muted border border-border rounded hover:bg-bg-tertiary transition-colors"
+              className="gap-1 !px-2 !py-1 font-normal text-text-muted"
               title="Dismiss finding"
             >
               <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
               </svg>
               Dismiss
-            </button>
+            </Button>
           </div>
 
           {/* Inline dismiss reason input */}
@@ -559,18 +571,17 @@ function FindingCard({
                 className="flex-1 px-2 py-1 text-xs bg-bg-tertiary border border-border rounded text-text-primary placeholder:text-text-muted/50 outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
                 autoFocus
               />
-              <button
-                onClick={handleDismiss}
-                className="px-2 py-1 text-xs bg-bg-tertiary border border-border rounded text-text-secondary hover:bg-bg-tertiary/80"
-              >
+              <Button variant="secondary" size="sm" onClick={handleDismiss} className="!px-2 !py-1 font-normal">
                 Submit
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={() => { setDismissing(false); setDismissReason(''); }}
-                className="px-2 py-1 text-xs text-text-muted hover:text-text-secondary"
+                className="!px-2 !py-1 font-normal text-text-muted"
               >
                 Cancel
-              </button>
+              </Button>
             </div>
           )}
         </div>
@@ -596,8 +607,8 @@ function CollapsibleSection({ title, defaultOpen, children, badge }: { title: st
   const [open, setOpen] = useState(defaultOpen);
   return (
     <section className="mb-4">
-      <button onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 text-sm text-text-muted hover:text-text-secondary mb-2 w-full text-left">
+      <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
+        className="flex items-center gap-2 text-sm text-text-muted hover:text-text-secondary mb-2 w-full text-left rounded outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]">
         <svg className={`w-3 h-3 transition-transform ${open ? 'rotate-90' : ''}`}
           fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
@@ -669,12 +680,12 @@ function DownloadDropdown({ report, sessionTitle }: { report: AuditReport; sessi
   return (
     <Dropdown
       trigger={
-        <button className="px-3 py-1.5 text-sm border border-border text-text-secondary rounded hover:bg-bg-tertiary transition-colors inline-flex items-center gap-1">
+        <Button variant="secondary" size="sm" className="gap-1 font-normal">
           Export
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
             <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
           </svg>
-        </button>
+        </Button>
       }
       items={items}
       onSelect={handleSelect}

@@ -51,3 +51,49 @@ def upgrade_pg_to_head(url: str | None = None) -> None:
     config.set_main_option("script_location", _MIGRATIONS)
     config.set_main_option("sqlalchemy.url", url or os.environ[PG_URL_ENV])
     command.upgrade(config, "head")
+
+
+async def wait_for_lock_waiters(
+    engine,
+    count: int = 1,
+    *,
+    task: "asyncio.Future | None" = None,
+    timeout: float = 20.0,
+    interval: float = 0.02,
+) -> None:
+    """Block until `count` backends of the scratch database wait on a lock.
+
+    A fixed `asyncio.sleep` before "assert the racer is still blocked" is a
+    guess: under load the racer may not have reached its lock wait yet, so it
+    sees the committed state instead of blocking. This polls pg_stat_activity
+    (from its own, third connection) until `count` other backends report
+    `wait_event_type = 'Lock'` (heavyweight and advisory lock waits), and
+    fails with a clear message on timeout. If `task` finishes first it never
+    blocked, which is reported immediately.
+    """
+    from sqlalchemy import text
+
+    query = text(
+        "SELECT count(*) FROM pg_stat_activity "
+        "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+        "AND wait_event_type = 'Lock'"
+    )
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    waiting = 0
+    while True:
+        async with engine.connect() as conn:
+            waiting = (await conn.execute(query)).scalar_one()
+        if waiting >= count:
+            return
+        if task is not None and task.done():
+            raise AssertionError(
+                f"task finished before any lock wait was observed (waiting={waiting}); "
+                "it never blocked on the lock"
+            )
+        if loop.time() >= deadline:
+            raise AssertionError(
+                f"timed out after {timeout}s waiting for {count} backend(s) to wait "
+                f"on a lock; only {waiting} did"
+            )
+        await asyncio.sleep(interval)

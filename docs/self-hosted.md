@@ -606,7 +606,7 @@ SessionFS supports GitLab merge request comments (cloud and self-hosted instance
    - URL: `https://your-sessionfs-domain/webhooks/gitlab`
    - Secret token: set in your Helm values or `SFS_GITLAB_WEBHOOK_SECRET` env var
    - Events: "Merge request events"
-3. Configure in the dashboard Settings page or via Helm:
+3. Save your access token and instance URL in the dashboard under **Settings → Integrations → GitLab** (the API alternative is `PUT /api/v1/settings/gitlab`), and set the webhook secret via Helm:
 
 ```yaml
 api:

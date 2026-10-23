@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Button } from '../../components/ui';
 
 export function SupersedeDialog({
   entryId,
@@ -34,23 +35,21 @@ export function SupersedeDialog({
         className="w-full px-2 py-1 text-xs bg-bg-primary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] placeholder:text-text-tertiary mb-2"
       />
       <div className="flex gap-2 justify-end">
-        <button
-          onClick={onCancel}
-          className="text-xs text-text-tertiary hover:text-text-secondary px-2 py-1"
-        >
+        <Button variant="ghost" size="sm" onClick={onCancel} className="font-normal text-text-tertiary">
           Cancel
-        </button>
-        <button
+        </Button>
+        <Button
+          size="sm"
           onClick={() => {
             const id = parseInt(supersedingId, 10);
             if (!id || !reason.trim()) return;
             onConfirm(id, reason.trim());
           }}
           disabled={isPending || !supersedingId || !reason.trim()}
-          className="text-xs font-medium text-white bg-brand px-3 py-1 rounded hover:bg-[var(--brand-hover)] transition-colors disabled:opacity-50"
+          className="shadow-none"
         >
           {isPending ? 'Saving…' : 'Confirm'}
-        </button>
+        </Button>
       </div>
     </div>
   );

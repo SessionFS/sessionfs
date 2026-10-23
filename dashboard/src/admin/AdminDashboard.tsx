@@ -17,10 +17,10 @@ import { Card, Button, Input, Select, Table, TableShell, Tabs, TabPanel, Dialog,
 type AdminTab = 'users' | 'licenses' | 'activity';
 
 const TIER_COLORS: Record<string, string> = {
-  free: 'bg-gray-500/15 text-gray-500',
+  free: 'bg-text-tertiary/15 text-text-tertiary',
   starter: 'bg-success/15 text-success',
-  pro: 'bg-blue-500/15 text-blue-500',
-  team: 'bg-purple-500/15 text-purple-500',
+  pro: 'bg-info/15 text-info',
+  team: 'bg-role-discovery/15 text-role-discovery',
   enterprise: 'bg-warning/15 text-warning',
   admin: 'bg-danger/15 text-danger',
 };
@@ -99,7 +99,7 @@ export default function AdminDashboard() {
           {/* Users card */}
           <Card level="elevated" className="p-5">
             <div className="flex items-start gap-3">
-              <div className="w-9 h-9 rounded-lg bg-blue-500/10 flex items-center justify-center flex-shrink-0">
+              <div className="w-9 h-9 rounded-lg bg-info/10 flex items-center justify-center flex-shrink-0">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--info)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
                   <circle cx="9" cy="7" r="4" />
@@ -140,8 +140,8 @@ export default function AdminDashboard() {
           {/* Storage card */}
           <Card level="elevated" className="p-5">
             <div className="flex items-start gap-3">
-              <div className="w-9 h-9 rounded-lg bg-purple-500/10 flex items-center justify-center flex-shrink-0">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <div className="w-9 h-9 rounded-lg bg-role-discovery/10 flex items-center justify-center flex-shrink-0">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--role-discovery)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <ellipse cx="12" cy="5" rx="9" ry="3" />
                   <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
                   <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
@@ -154,7 +154,7 @@ export default function AdminDashboard() {
                   <>
                     <div className="w-full h-1.5 bg-[var(--border)] rounded-full mt-2 overflow-hidden">
                       <div
-                        className="h-full bg-purple-500 rounded-full transition-[width] duration-200"
+                        className="h-full bg-role-discovery rounded-full transition-[width] duration-200"
                         style={{ width: `${storagePct}%` }}
                       />
                     </div>
@@ -419,7 +419,7 @@ function UserRow({
   isSavingTier,
   isVerifying,
 }: UserRowProps) {
-  const tierColor = TIER_COLORS[user.tier] || 'bg-gray-500/15 text-gray-500';
+  const tierColor = TIER_COLORS[user.tier] || 'bg-text-tertiary/15 text-text-tertiary';
   const selectedTier = pendingTier ?? user.tier;
   const tierChanged = selectedTier !== user.tier;
   const avatarColor = getAvatarColor(user.email);

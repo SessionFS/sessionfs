@@ -76,7 +76,7 @@ function DryRunPlan({ result }: { result: MergeDryRunResponse }) {
   return (
     <div className="space-y-4">
       {/* Summary header */}
-      <div className="rounded-lg border border-[var(--brand)] bg-[rgba(26,115,232,0.06)] px-4 py-3">
+      <div className="rounded-lg border border-[var(--brand)] bg-brand/6 px-4 py-3">
         <p className="text-sm font-semibold text-text-primary mb-1">Dry-run plan</p>
         <p className="text-xs text-text-secondary">
           {stats.personas_reassigned + stats.tickets_reassigned + stats.knowledge_entries_reassigned + stats.wiki_pages_reassigned}{' '}
@@ -165,7 +165,7 @@ function DryRunPlan({ result }: { result: MergeDryRunResponse }) {
       </div>
 
       {/* Warning */}
-      <div className="rounded-lg border border-[rgba(239,68,68,0.2)] bg-[rgba(239,68,68,0.04)] px-4 py-3">
+      <div className="rounded-lg border border-danger/20 bg-danger/4 px-4 py-3">
         <p className="text-xs font-medium text-[var(--danger)] mb-1">
           This is a one-way operation
         </p>
@@ -185,7 +185,7 @@ function ExecuteOutcome({ result }: { result: MergeExecuteResponse }) {
       className={`rounded-lg border px-4 py-3 ${
         isSuccess
           ? 'border-success/30 bg-success/5'
-          : 'border-[rgba(239,68,68,0.3)] bg-[rgba(239,68,68,0.05)]'
+          : 'border-danger/30 bg-danger/5'
       }`}
     >
       <div className="flex items-center gap-2 mb-2">

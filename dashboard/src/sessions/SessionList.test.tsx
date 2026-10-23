@@ -204,6 +204,51 @@ describe('SessionList empty state', () => {
     expect(screen.getAllByText('Test Session').length).toBeGreaterThanOrEqual(1);
   });
 
+  it('keeps session rows free of nested interactive elements in list and grid views', async () => {
+    const user = userEvent.setup();
+    const now = new Date().toISOString();
+    hooks.useSessions.mockReturnValue({
+      data: {
+        sessions: [{
+          id: 'ses_1', title: 'Nested Check', source_tool: 'claude-code',
+          model_id: null, message_count: 5, total_input_tokens: 100, total_output_tokens: 200,
+          created_at: now, updated_at: now, last_user_at: now, tool_use_count: 0,
+        }],
+        total: 1, page: 1, page_size: 20, has_more: false,
+      },
+      isLoading: false, error: null,
+    });
+    hooks.useDeletedSessions.mockReturnValue({ data: { sessions: [] }, isLoading: false });
+    hooks.useRestoreSession.mockReturnValue({ mutate: vi.fn(), isPending: false });
+    hooks.useFolders.mockReturnValue({ data: { folders: [] }, isLoading: false });
+    hooks.useAddBookmark.mockReturnValue({ mutateAsync: vi.fn() });
+    hooks.useFolderSessions.mockReturnValue({ data: null, isLoading: false });
+
+    const { container } = render(
+      <MemoryRouter>
+        <SessionList />
+      </MemoryRouter>,
+    );
+
+    const nested = () => container.querySelectorAll('[role="button"] button, [role="button"] input, button button, button input');
+    expect(screen.getAllByRole('button', { name: /Nested Check/ }).length).toBeGreaterThan(0);
+    expect(nested()).toHaveLength(0);
+
+    await user.click(screen.getByLabelText('Grid view'));
+    expect(screen.getAllByRole('button', { name: /Nested Check/ }).length).toBeGreaterThan(0);
+    expect(nested()).toHaveLength(0);
+
+    // In select mode (list view) the title button toggles selection instead of navigating
+    await user.click(screen.getByLabelText('List view'));
+    await user.click(screen.getByRole('button', { name: 'Select' }));
+    const box = screen.getByRole('checkbox', { name: 'Select Nested Check' });
+    expect(box).not.toBeChecked();
+    const titleBtn = screen.getAllByRole('button', { name: /Nested Check/ }).find((b) => b.closest('.group'));
+    await user.click(titleBtn!);
+    expect(box).toBeChecked();
+    expect(nested()).toHaveLength(0);
+  });
+
   it('persists view mode across re-mounts via localStorage', () => {
     // Pre-set grid in localStorage
     window.localStorage.setItem('sfs-sessions-view', 'grid');

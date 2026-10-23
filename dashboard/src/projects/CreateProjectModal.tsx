@@ -5,6 +5,7 @@ import { useFocusTrap } from '../hooks/useFocusTrap';
 import { createProjectSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
 import FieldError from '../components/FieldError';
 import { errorMessage } from '../utils/errorMessage';
+import { Button } from '../components/ui';
 
 function nameFromRemote(remote: string): string {
   // "github.com/acme/repo" -> "acme/repo"
@@ -106,20 +107,16 @@ export default function CreateProjectModal({ onClose, onCreated }: Props) {
               </p>
             )}
             <div className="flex justify-end gap-3 mt-6">
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-3 py-1.5 text-sm text-text-secondary hover:text-text-primary transition-colors"
-              >
+              <Button type="button" variant="ghost" onClick={onClose}>
                 Cancel
-              </button>
-              <button
+              </Button>
+              <Button
                 type="submit"
                 disabled={!remote.trim() || createProject.isPending}
-                className="px-4 py-1.5 text-sm bg-brand text-white rounded-lg hover:bg-[var(--brand-hover)] transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+                className="shadow-none"
               >
                 {createProject.isPending ? 'Creating…' : 'Create'}
-              </button>
+              </Button>
             </div>
           </form>
         </div>

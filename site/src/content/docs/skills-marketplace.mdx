@@ -292,6 +292,8 @@ GitLab CI jobs can publish the same way, using a GitLab CI ID token (the `id_tok
      --environment production --require-protected-environment
    ```
 
+   The command also pins the project's current namespace (group) id, read from the GitLab API (`GET /api/v4/projects/<id>`; public projects need no token, and `GITLAB_TOKEN` or `CI_JOB_TOKEN` is used when set). A project keeps its numeric id when it is transferred to another group, so without the pin that group's protected-ref pipelines would still match. If the lookup fails the command refuses: pass `--gitlab-namespace ID` to set the id yourself, or `--no-namespace-pin` to skip pinning (a warning is printed, the server flags the trust, and the dashboard shows "Namespace not pinned").
+
    For self-managed GitLab add `--gitlab-host https://gitlab.example.com`; the server operator must list that instance in `SFS_GITLAB_OIDC_ISSUERS` (only `https://gitlab.com` is allowed by default), exactly as it appears in the token's `iss` (GitLab's `external_url`: lowercase host, no `:443`, no trailing slash).
 
    A job names its own environment, so `--environment` only adds security when that environment is **protected** in GitLab (a GitLab Premium feature). `--require-protected-environment` refuses tokens unless GitLab reports the environment as protected; leave it off on GitLab Free and rely on protected tags.

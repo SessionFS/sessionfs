@@ -191,7 +191,7 @@ export function Tabs({
 
   const mask =
     overflow.left || overflow.right
-      ? `linear-gradient(to right, ${overflow.left ? 'transparent' : '#000'} 0, #000 ${overflow.left ? FADE_PX : 0}px, #000 calc(100% - ${overflow.right ? FADE_PX : 0}px), ${overflow.right ? 'transparent' : '#000'} 100%)`
+      ? `linear-gradient(to right, ${overflow.left ? 'transparent' : 'black'} 0, black ${overflow.left ? FADE_PX : 0}px, black calc(100% - ${overflow.right ? FADE_PX : 0}px), ${overflow.right ? 'transparent' : 'black'} 100%)`
       : undefined;
 
   return (

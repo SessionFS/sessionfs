@@ -119,8 +119,8 @@ export default function KnowledgeEntriesTab({ projectId }: { projectId: string }
         <div
           className="mb-4 rounded-lg border p-4"
           style={{
-            backgroundColor: (health.stale_entry_count > 10) ? 'rgba(239,68,68,0.06)' : 'rgba(250,204,21,0.06)',
-            borderColor: (health.stale_entry_count > 10) ? 'rgba(239,68,68,0.2)' : 'rgba(250,204,21,0.2)',
+            backgroundColor: (health.stale_entry_count > 10) ? 'color-mix(in srgb, var(--danger) 6%, transparent)' : 'color-mix(in srgb, var(--warning) 6%, transparent)',
+            borderColor: (health.stale_entry_count > 10) ? 'color-mix(in srgb, var(--danger) 20%, transparent)' : 'color-mix(in srgb, var(--warning) 20%, transparent)',
           }}
         >
           {/* Summary counters */}
@@ -214,8 +214,10 @@ export default function KnowledgeEntriesTab({ projectId }: { projectId: string }
       {staleClaims.length > 0 && (
         <div className="mb-4 rounded-lg border border-border bg-bg-primary">
           <button
+            type="button"
             onClick={() => setStaleQueueOpen(!staleQueueOpen)}
-            className="w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-text-secondary hover:bg-surface-hover transition-colors"
+            aria-expanded={staleQueueOpen}
+            className={`w-full flex items-center justify-between px-4 py-2.5 text-sm font-medium text-text-secondary hover:bg-surface-hover transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]`}
           >
             <span>Stale Claims Review ({staleClaims.length})</span>
             <span className="text-2xs">{staleQueueOpen ? '\u25B2' : '\u25BC'}</span>
@@ -234,26 +236,32 @@ export default function KnowledgeEntriesTab({ projectId }: { projectId: string }
                     </p>
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
-                    <button
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => handleStillValid(entry)}
                       disabled={refreshEntry.isPending}
-                      className="text-xs text-brand hover:underline px-2 py-1"
+                      className="font-normal text-brand hover:text-brand"
                     >
                       Still valid
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => setSupersedeTarget(entry.id)}
-                      className="text-xs text-text-tertiary hover:text-text-secondary px-2 py-1"
+                      className="font-normal text-text-tertiary"
                     >
                       Supersede
-                    </button>
-                    <button
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => handleDismiss(entry)}
                       disabled={dismissEntry.isPending}
-                      className="text-xs text-text-tertiary hover:text-danger px-2 py-1"
+                      className="font-normal text-text-tertiary hover:text-danger"
                     >
                       Dismiss
-                    </button>
+                    </Button>
                   </div>
                   {supersedeTarget === entry.id && (
                     <SupersedeDialog
@@ -426,33 +434,39 @@ export default function KnowledgeEntriesTab({ projectId }: { projectId: string }
                 {/* Actions */}
                 <div className="flex items-center gap-1 shrink-0">
                   {!entry.dismissed && entry.claim_class === 'note' && entry.freshness_class !== 'superseded' && (
-                    <button
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => handlePromote(entry)}
                       disabled={promote.isPending}
-                      className="text-xs text-brand hover:underline px-2 py-1"
+                      className="font-normal text-brand hover:text-brand"
                       title="Promote to Claim"
                     >
                       Promote
-                    </button>
+                    </Button>
                   )}
                   {!entry.dismissed && entry.freshness_class !== 'superseded' && (
-                    <button
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => setSupersedeTarget(supersedeTarget === entry.id ? null : entry.id)}
-                      className="text-xs text-text-tertiary hover:text-text-secondary px-2 py-1"
+                      className="font-normal text-text-tertiary"
                       title="Mark Superseded"
                     >
                       Supersede
-                    </button>
+                    </Button>
                   )}
                   {!entry.dismissed && !entry.compiled_at && entry.freshness_class !== 'superseded' && (
-                    <button
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => handleDismiss(entry)}
                       disabled={dismissEntry.isPending}
-                      className="shrink-0 text-xs text-text-tertiary hover:text-danger transition-colors px-2 py-1"
+                      className="shrink-0 font-normal text-text-tertiary hover:text-danger"
                       title="Dismiss this entry"
                     >
                       Dismiss
-                    </button>
+                    </Button>
                   )}
                 </div>
               </div>

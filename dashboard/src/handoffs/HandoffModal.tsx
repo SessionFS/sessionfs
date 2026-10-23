@@ -47,7 +47,7 @@ export default function HandoffModal({ sessionId, onClose }: HandoffModalProps) 
 
       {createHandoff.isSuccess ? (
         <>
-          <div className="p-3 rounded-lg mb-4" style={{ backgroundColor: 'rgba(61,220,132,0.1)', border: '1px solid rgba(61,220,132,0.3)' }}>
+          <div className="p-3 rounded-lg mb-4" style={{ backgroundColor: 'color-mix(in srgb, var(--success) 10%, transparent)', border: '1px solid color-mix(in srgb, var(--success) 30%, transparent)' }}>
             <p className="text-[var(--accent)] text-sm font-medium">Handoff sent</p>
             <p className="text-text-secondary text-sm mt-1">
               Handoff ID: <code className="text-mono-chip">{createHandoff.data.id}</code>
@@ -92,7 +92,7 @@ export default function HandoffModal({ sessionId, onClose }: HandoffModalProps) 
           </div>
 
           {createHandoff.isError && (
-            <div className="mb-4 p-2 rounded text-sm" style={{ backgroundColor: 'rgba(240,64,96,0.1)', color: 'var(--danger)', border: '1px solid rgba(240,64,96,0.3)' }}>
+            <div className="mb-4 p-2 rounded text-sm" style={{ backgroundColor: 'color-mix(in srgb, var(--danger) 10%, transparent)', color: 'var(--danger)', border: '1px solid color-mix(in srgb, var(--danger) 30%, transparent)' }}>
               Failed to create handoff: {errorMessage(createHandoff.error)}
             </div>
           )}

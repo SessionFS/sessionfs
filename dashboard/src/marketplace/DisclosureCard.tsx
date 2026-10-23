@@ -109,7 +109,7 @@ export function DisclosureCard({ disclosure }: { disclosure: MarketplaceDisclosu
         </p>
       )}
       {(unicode.length > 0 || unicodeTotal > 0 || disclosure.unicode?.truncated) && (
-        <div role="alert" className="mt-3 rounded-lg border border-danger/40 bg-[rgba(240,64,96,0.06)] p-3" data-testid="disclosure-unicode">
+        <div role="alert" className="mt-3 rounded-lg border border-danger/40 bg-danger/6 p-3" data-testid="disclosure-unicode">
           <p className="text-sm font-semibold text-danger">
             Invisible characters in {disclosure.unicode.flagged_files} file{disclosure.unicode.flagged_files === 1 ? '' : 's'}
             {unicodeTotal ? ` (${Object.entries(unicodeCounts).filter(([, v]) => v).map(([k, v]) => `${v} ${k}`).join(', ')})` : ''}

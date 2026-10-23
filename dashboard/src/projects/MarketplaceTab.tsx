@@ -150,7 +150,7 @@ function ApprovalRow({
       )}
       {disclosure.data && <DisclosureCard disclosure={disclosure.data} />}
       {reapproval && (
-        <div className="rounded-lg border border-danger/40 bg-[rgba(240,64,96,0.06)] p-3">
+        <div className="rounded-lg border border-danger/40 bg-danger/6 p-3">
           <p className="text-xs font-semibold text-danger">
             {reapproval.update_class === 'widening'
               ? 'This version asks for more access than the version already approved here.'
@@ -178,7 +178,7 @@ function ApprovalRow({
         </div>
       )}
       {elevated.length > 0 && (
-        <fieldset className="rounded-lg border border-warning/40 bg-[rgba(240,192,64,0.06)] p-3">
+        <fieldset className="rounded-lg border border-warning/40 bg-warning/6 p-3">
           <legend className="px-1 text-xs font-semibold text-warning">Elevated capabilities requested — confirm each one</legend>
           {elevated.map((capability) => (
             <label key={capability} className="mt-1 flex items-start gap-2 text-xs text-text-primary">

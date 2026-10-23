@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.1] - 2026-10-23
+
+**Project context you can actually read, a GitLab card in the dashboard, and steadier releases.** No server migrations. No new MCP tools (81).
+
+### Added
+- **GitLab in the dashboard.** Settings → Integrations → GitLab connects, updates or disconnects your GitLab instance (gitlab.com or self-managed) for merge-request context comments. Tokens and webhook secrets are write-only: the form never shows them back.
+- **Section list for project context.** The Overview tab shows an "On this page" list of the context's sections beside the text, highlighting the one you're reading; on phones it's a collapsible list above it.
+
+### Changed
+- **Project context and wiki pages render as documents.** Bullets, numbered lists, quotes, tables, task lists and code blocks now display properly, each line an agent writes stays on its own line, long ids and URLs wrap, and the text uses the page width at a comfortable reading length. Raw HTML in a document is never rendered, and only web, mail and in-page links are clickable.
+- **GitLab trusted publishing pins the namespace by default.** `sfs skill publisher trust --gitlab-project ID` looks up the project's current namespace and pins it, so a project moved to another namespace can't keep publishing. Pass `--gitlab-namespace ID` to set it yourself or `--no-namespace-pin` to opt out (with a warning). The server warns on unpinned GitLab trusts and the dashboard marks them.
+- **Session list.** Rows no longer nest buttons inside a clickable row, so screen readers and keyboards handle them properly. In a group of follow-up sessions, the title expands the group and **View** opens the session.
+- Dashboard buttons and colours use the shared components and theme colours throughout; a CI check now rejects hard-coded colours.
+- React 19.2.7, Tailwind CSS 4.3.3.
+
+### Fixed
+- Platform administrator accounts were treated as Free in plan checks when they also had the plan record created by migration 050. They now always count as Enterprise.
+- Checkpoints created within the same filesystem timestamp are listed in a stable order.
+
+### Security
+- `GET /api/v1/settings/gitlab` returned the stored GitLab webhook secret on every read. It now reports only whether one is set (`has_webhook_secret`); `PUT` returns the secret once, and only when the server generated it.
+
 ## [0.21.0] - 2026-10-22
 
 **A reorganized dashboard that works on phones, GitLab CI trusted publishing for the marketplace, and an audit trail for operator overrides.** Server migrations 081–082. No new MCP tools (81).

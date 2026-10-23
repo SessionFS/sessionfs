@@ -201,10 +201,6 @@ export default function SessionList() {
     navigate(`/sessions/${id}`);
   }
 
-  function handleRowKeyDown(e: React.KeyboardEvent, id: string) {
-    if (e.key === 'Enter') navigate(`/sessions/${id}`);
-  }
-
   function handleToggleSelect() {
     if (selectMode) clearSelection();
     else { setSelectMode(true); if (viewMode === 'grid') handleViewMode('list'); }
@@ -441,7 +437,7 @@ export default function SessionList() {
                     label={group.label}
                     sessions={group.sessions}
                     onRowClick={handleRowClick}
-                    onRowKeyDown={handleRowKeyDown}
+                   
                     onResume={handleResume}
                     expandedGroups={expandedGroups}
                     onToggleGroup={toggleGroup}
@@ -454,9 +450,9 @@ export default function SessionList() {
                 ))
               ) : (
                 <>
-                  <DateGroup label="Today" sessions={grouped.today} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} isFirst selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
-                  <DateGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
-                  <DateGroup label="Earlier" sessions={grouped.earlier} onRowClick={handleRowClick} onRowKeyDown={handleRowKeyDown} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
+                  <DateGroup label="Today" sessions={grouped.today} onRowClick={handleRowClick} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} isFirst selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
+                  <DateGroup label="This Week" sessions={grouped.thisWeek} onRowClick={handleRowClick} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
+                  <DateGroup label="Earlier" sessions={grouped.earlier} onRowClick={handleRowClick} onResume={handleResume} expandedGroups={expandedGroups} onToggleGroup={toggleGroup} selectMode={selectMode} selectedIds={selectedIds} onToggleSelect={toggleSelect} isInFolder={!!selectedFolderId} />
                 </>
               )
             )}

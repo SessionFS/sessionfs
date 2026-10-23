@@ -15,6 +15,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from tests.pg_helpers import wait_for_lock_waiters
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.models import (
     AdminAction,
@@ -1238,7 +1239,7 @@ async def test_assignment_waits_for_a_concurrent_block_on_postgres() -> None:
                     return exc.status_code
 
         task = asyncio.create_task(assign())
-        await asyncio.sleep(0.5)
+        await wait_for_lock_waiters(engine, task=task)
         assert not task.done(), "assignment did not wait for the content-hash lock"
         await blocker.commit()
         assert await asyncio.wait_for(task, timeout=10) == 404
@@ -1796,7 +1797,7 @@ async def test_concurrent_reports_cannot_exceed_the_daily_cap_on_postgres(
                     return exc.status_code
 
         task = asyncio.create_task(second_report())
-        await asyncio.sleep(0.5)
+        await wait_for_lock_waiters(engine, task=task)
         assert not task.done(), "second report did not wait for the reporter lock"
         await first.commit()
         assert await asyncio.wait_for(task, timeout=10) == 429
@@ -1938,7 +1939,7 @@ async def test_delivery_revalidation_waits_for_an_in_flight_block_on_postgres() 
                 return 200
 
         task = asyncio.create_task(deliver())
-        await asyncio.sleep(0.5)
+        await wait_for_lock_waiters(engine, task=task)
         assert not task.done(), "re-validation did not wait for the in-flight block"
         await blocker.commit()
         assert await asyncio.wait_for(task, timeout=10) == 404
@@ -3059,7 +3060,7 @@ async def test_version_delete_waits_for_an_in_flight_block_on_postgres() -> None
                 return 204
 
         task = asyncio.create_task(delete())
-        await asyncio.sleep(0.5)
+        await wait_for_lock_waiters(engine, task=task)
         assert not task.done(), "the delete did not wait for the content-hash lock"
         await blocker.commit()
         status, detail = await asyncio.wait_for(task, timeout=10)

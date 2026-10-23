@@ -95,6 +95,7 @@ export function resolve(method: string, pathname: string): MockResult | null {
   // ── settings ──
   if (path === '/api/v1/settings/audit-trigger') return ok({ trigger: 'manual', auto_audit: false, enabled: false });
   if (path === '/api/v1/settings/github') return ok(d.githubInstallation);
+  if (path === '/api/v1/settings/gitlab') return ok(d.gitlabSettings);
   if (path === '/api/v1/settings/judge') return ok(d.judgeSettings);
   if (path === '/api/v1/sync/settings') return ok(d.syncSettings);
   if (path === '/api/v1/sync/status') return ok(d.syncStatus);

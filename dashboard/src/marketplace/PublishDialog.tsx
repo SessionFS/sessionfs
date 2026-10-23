@@ -132,7 +132,7 @@ export default function PublishDialog({ onClose }: { onClose: () => void }) {
 
       {published ? (
         <div className="space-y-4" aria-live="polite">
-          <div className="rounded-lg border border-accent/40 bg-[rgba(61,220,132,0.06)] p-4">
+          <div className="rounded-lg border border-accent/40 bg-success/6 p-4">
             <p className="text-sm font-semibold text-accent">Published {published.display_name || published.name}</p>
             <dl className="mt-3 grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
               <div><dt className="text-text-tertiary">Version</dt><dd className="font-mono text-text-primary">{published.version || 'unversioned'} · {published.version_id}</dd></div>

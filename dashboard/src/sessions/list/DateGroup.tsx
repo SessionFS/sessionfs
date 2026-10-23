@@ -9,7 +9,6 @@ export function DateGroup({
   label,
   sessions,
   onRowClick,
-  onRowKeyDown,
   onResume,
   expandedGroups,
   onToggleGroup,
@@ -22,7 +21,6 @@ export function DateGroup({
   label: string;
   sessions: SessionSummary[];
   onRowClick: (id: string) => void;
-  onRowKeyDown: (e: React.KeyboardEvent, id: string) => void;
   onResume: (s: SessionSummary) => void;
   expandedGroups: Set<string>;
   onToggleGroup: (rootId: string) => void;
@@ -59,17 +57,6 @@ export function DateGroup({
                     onRowClick(group.root.id);
                   }
                 }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    if (selectMode) {
-                      onToggleSelect(group.root.id);
-                    } else if (hasChildren) {
-                      onToggleGroup(group.root.id);
-                    } else {
-                      onRowClick(group.root.id);
-                    }
-                  }
-                }}
                 onResume={() => onResume(group.root)}
                 onNavigate={hasChildren ? () => onRowClick(group.root.id) : undefined}
                 isBookmarked={!!isInFolder}
@@ -80,7 +67,7 @@ export function DateGroup({
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={(e) => { e.stopPropagation(); onToggleGroup(group.root.id); }}
+                    onClick={() => onToggleGroup(group.root.id)}
                     className="gap-1.5 !px-2 !py-1 text-sm font-medium text-brand hover:bg-brand/10 hover:text-brand"
                     title={isExpanded ? 'Collapse follow-ups' : 'Expand follow-ups'}
                   >
@@ -106,12 +93,6 @@ export function DateGroup({
                       key={child.id}
                       session={child}
                       onClick={() => selectMode ? onToggleSelect(child.id) : onRowClick(child.id)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          if (selectMode) onToggleSelect(child.id);
-                          else onRowKeyDown(e, child.id);
-                        }
-                      }}
                       onResume={() => onResume(child)}
                       isChild
                       isBookmarked={!!isInFolder}

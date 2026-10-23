@@ -1,5 +1,6 @@
 import { useState, useCallback, isValidElement, type ReactNode } from 'react';
 import Markdown, { type Components } from 'react-markdown';
+import { Button } from '../components/ui';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -261,7 +262,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
       type="button"
       onClick={handleCopy}
       aria-label={copied ? 'Copied' : label}
-      className="inline-flex items-center gap-1 text-text-tertiary hover:text-text-secondary transition-colors duration-150"
+      className="inline-flex items-center gap-1 rounded text-text-tertiary hover:text-text-secondary transition-colors duration-150 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
     >
       <CopyIcon />
       <span className="text-2xs">{copied ? 'Copied' : 'Copy'}</span>
@@ -443,7 +444,7 @@ function ToolUseBlock({ block }: BlockProps) {
           }}
           aria-expanded={open}
           aria-label={`${name}: ${summary}`}
-          className="flex-1 min-w-0 flex items-center gap-2 px-3 py-1.5 text-left rounded-lg"
+          className="flex-1 min-w-0 flex items-center gap-2 px-3 py-1.5 text-left rounded-lg outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
         >
           <span className="text-text-tertiary shrink-0">
             <ChevronIcon open={open} />
@@ -778,13 +779,14 @@ function UnknownToolDetail({ input }: { input: Record<string, unknown> }) {
           })}
         </div>
       )}
-      <button
-        type="button"
+      <Button
+        variant="ghost"
+        size="sm"
         onClick={(e) => { e.stopPropagation(); setShowRaw((v) => !v); }}
-        className="text-xs text-text-tertiary hover:text-text-secondary transition-colors duration-150"
+        className="!px-1.5 !py-0.5 font-normal text-text-tertiary"
       >
         {showRaw ? 'Hide raw' : 'Show raw'}
-      </button>
+      </Button>
       {showRaw && (
         <pre className="text-xs font-mono bg-bg-sunken border border-border rounded-lg p-2.5 overflow-x-auto whitespace-pre-wrap max-h-80 overflow-y-auto">
           {JSON.stringify(input, null, 2)}
@@ -826,7 +828,7 @@ function ToolResultBlock({ block }: BlockProps) {
         }}
         aria-expanded={open}
         aria-label={`Tool result${isError ? ' (error)' : ''} — ${lineCount} lines`}
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-bg-sunken transition-colors duration-150 rounded-lg"
+        className="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-bg-sunken transition-colors duration-150 rounded-lg outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
       >
         <span className="text-text-tertiary shrink-0">
           <ChevronIcon open={open} />
@@ -865,13 +867,14 @@ function ToolResultBlock({ block }: BlockProps) {
           </div>
           {isLong && (
             <div className="px-3 py-1.5 border-t border-border">
-              <button
-                type="button"
+              <Button
+                variant="ghost"
+                size="sm"
                 onClick={(e) => { e.stopPropagation(); setExpanded((v) => !v); }}
-                className="text-xs text-text-tertiary hover:text-text-secondary transition-colors duration-150"
+                className="!px-1.5 !py-0.5 font-normal text-text-tertiary"
               >
                 {expanded ? 'Show less' : `Show full output (${lineCount} lines)`}
-              </button>
+              </Button>
             </div>
           )}
         </div>
@@ -889,7 +892,8 @@ function ThinkingBlock({ text }: { text: string }) {
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="w-full px-3 py-1.5 text-left text-xs text-text-tertiary hover:text-text-secondary transition-colors flex items-center gap-2"
+        aria-expanded={open}
+        className="w-full px-3 py-1.5 text-left text-xs text-text-tertiary hover:text-text-secondary transition-colors flex items-center gap-2 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
       >
         <span className="text-2xs font-mono uppercase tracking-wider">Thinking</span>
         <span className="text-text-tertiary">{open ? '▲' : '▼'}</span>
