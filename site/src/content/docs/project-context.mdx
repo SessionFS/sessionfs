@@ -25,7 +25,7 @@ sfs project show
 
 ## How It Works
 
-1. **One document per repository** — matched by git remote URL (SSH and HTTPS both work)
+1. **One document per repository** — matched by git remote URL. Every spelling of the same remote (HTTPS, `ssh://`, `git://`, scp style such as `git@github.com:org/repo`, with or without `.git` or a trailing slash) maps to the same project
 2. **Shared across the team** — anyone with sessions in the repo can read and edit
 3. **Accessible via MCP** — AI agents call `get_project_context` to read the document and `add_knowledge` to contribute back
 4. **Auto-compiled from entries** — knowledge entries from sessions are merged into the document during compilation

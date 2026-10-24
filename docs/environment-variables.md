@@ -68,7 +68,8 @@ All SessionFS server environment variables use the `SFS_` prefix.
 | `SFS_RATE_LIMIT_PER_MINUTE` | API rate limit per API key per minute. Set to `0` to disable | `120` |
 | `SFS_KNOWLEDGE_RATE_LIMIT_PER_HOUR` | Per-user, per-hour cap on `add_knowledge` / `POST /entries/add`. Overrides the tier-based defaults (`free=20`, `starter=50`, `pro=100`, `team=100`, `enterprise=200`, `admin=500`) when set. Bucket key is `user_id`, not `session_id`, so MCP `manual` callers don't share buckets across users | — |
 | `SFS_SMTP_VERIFY_SSL` | Verify SSL certificates for SMTP. Set to `false` for self-signed certs | `true` |
-| `SFS_JUDGE_BASE_URL` | Custom OpenAI-compatible endpoint for LLM Judge (LiteLLM, vLLM, Ollama, etc.) | — |
+| `SFS_JUDGE_BASE_URL` | Custom OpenAI-compatible endpoint for LLM Judge (LiteLLM, vLLM, Ollama, etc.). Operator configuration: this exact URL may be on a private host even when `SFS_LLM_ALLOW_PRIVATE_HOSTS` is false (link-local and cloud-metadata addresses are still refused) | — |
+| `SFS_LLM_ALLOW_PRIVATE_HOSTS` | Let users point their own LLM endpoint (judge settings `base_url`, and `base_url` on audit, narrative-summary and knowledge compile requests) at private, loopback or plain-http hosts, e.g. an in-cluster Ollama or vLLM. When false the URL must be https and resolve to public addresses only. The URL is checked when it is saved or submitted and again before every outbound request; redirects are never followed. Link-local, unspecified and cloud-metadata addresses are blocked in both modes. Helm: `api.llm.allowPrivateHosts` (default `true` in the chart, since self-hosted model gateways usually live on the private network) | `false` |
 | `SFS_DASHBOARD_DIR` | Path to dashboard static files | `./static` |
 | `SFS_APP_URL` | Dashboard origin used in links the server generates (organization invite emails, return pages after billing) | `https://app.sessionfs.dev` |
 | `SFS_API_URL` | Public API origin used in generated share links (and by the remote MCP server to reach the API) | `https://api.sessionfs.dev` |
@@ -82,6 +83,12 @@ All SessionFS server environment variables use the `SFS_` prefix.
 | `SFS_MAX_SYNC_MEMBER_BYTES_FREE` | Per-file cap inside a session archive for free tier. Long AI sessions (8000+ messages) typically have a single `messages.jsonl` file at this scale | `10485760` (10 MB) |
 | `SFS_MAX_SYNC_MEMBER_BYTES_PAID` | Per-file cap inside a session archive for paid tiers (Starter/Pro/Team/Enterprise). The CLI also reads this env var to size its local pre-flight check and its unpack-time safety ceiling. **Self-hosted operators raising this cap above the 50 MB default MUST set the same value on every CLI host** — otherwise the local pull/unpack path rejects archives the server already accepted | `52428800` (50 MB) |
 | `SFS_RETENTION_DAYS_FREE` | Cloud retention for free tier | `14` |
+
+## GitLab integration
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `SFS_GITLAB_ALLOW_PRIVATE_HOSTS` | Let users point the GitLab integration (`PUT /api/v1/settings/gitlab`) at private, loopback or plain-http hosts, for an internal self-hosted GitLab. When false the instance URL must be https and resolve to public addresses only; the host is re-checked before every outbound request. Link-local and cloud-metadata addresses are blocked in both modes. The Helm chart sets this to true (`api.gitlab.allowPrivateHosts`) | `false` |
 
 ## GitHub App
 

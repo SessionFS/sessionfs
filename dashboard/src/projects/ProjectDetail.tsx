@@ -22,6 +22,7 @@ import PagesTab from './knowledge/PagesTab';
 import HistoryTab from './knowledge/HistoryTab';
 import { Card, Button, Textarea, Dialog, DialogHeader, DialogFooter, Tabs, TabPanel } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
+import { ApiError } from '../api/client';
 
 // The page has five sections. The active one lives in the URL as
 // `?tab=<section>`, and the active sub-tab of the sections that have them as
@@ -74,6 +75,20 @@ const LEGACY_TABS: Record<string, [Section, string?]> = {
   context: ['context'],
 };
 
+/** Target project id from a 410 project_merged response, if that is the error. */
+function mergedIntoId(error: unknown): string | undefined {
+  if (!(error instanceof ApiError) || error.status !== 410) return undefined;
+  const target = error.details?.merged_into;
+  if (typeof target === 'string') return target;
+  try {
+    const json = JSON.parse(error.raw);
+    const legacy = json?.detail?.merged_into;
+    return typeof legacy === 'string' ? legacy : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function resolveView(tabParam: string | null, subParam: string | null): { section: Section; sub: string | undefined } {
   let section: Section = 'context';
   let legacySub: string | undefined;
@@ -106,11 +121,30 @@ function Panel({ children, padded = false, sub }: { children: ReactNode; padded?
 // Main component
 // ------------------------------------------------------------------
 export default function ProjectDetail() {
+  // The URL segment is a project id, or a legacy percent-encoded git remote
+  // from before projects were routed by id (old emails, docs, bookmarks).
   const { id } = useParams<{ id: string }>();
-  const remote = decodeURIComponent(id || '');
+  const idOrRemote = decodeURIComponent(id || '');
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { data: project, isLoading, error } = useProject(remote);
+  const { data: project, isLoading, error } = useProject(idOrRemote);
+
+  // Land every project on its id URL, keeping ?tab=&sub= and the rest.
+  const search = searchParams.toString();
+  const query = search ? `?${search}` : '';
+  useEffect(() => {
+    if (project && project.id !== idOrRemote) {
+      navigate(`/projects/${project.id}${query}`, { replace: true });
+    }
+  }, [project, idOrRemote, query, navigate]);
+
+  // A merged project answers 410 with the project it moved into.
+  const mergedInto = mergedIntoId(error);
+  useEffect(() => {
+    if (mergedInto && mergedInto !== idOrRemote) {
+      navigate(`/projects/${mergedInto}${query}`, { replace: true });
+    }
+  }, [mergedInto, idOrRemote, query, navigate]);
   const updateContext = useUpdateProjectContext();
   const deleteProject = useDeleteProject();
   const { addToast } = useToast();
@@ -165,8 +199,9 @@ export default function ProjectDetail() {
   }
 
   function handleSave() {
+    if (!project) return;
     updateContext.mutate(
-      { remote, doc: draft },
+      { remote: project.git_remote_normalized, doc: draft },
       {
         onSuccess: () => {
           addToast('success', 'Context document saved');
@@ -192,7 +227,7 @@ export default function ProjectDetail() {
     });
   }
 
-  if (isLoading) {
+  if (isLoading || mergedInto) {
     return <div className="p-8 text-text-tertiary">Loading project…</div>;
   }
 

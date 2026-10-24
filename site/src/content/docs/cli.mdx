@@ -1762,9 +1762,43 @@ Audited operator overrides (platform admin only).
 ```
 sfs admin override project-transfer PROJECT_ID --to-org ORG_ID --reason "..." [--new-owner USER_ID] [--expect-from ORG_ID|personal] [--force] [--yes]
 sfs admin override record --action NAME --target-type TYPE --target-id ID --reason "..." [--before-file F] [--after-file F]
+sfs admin override user-merge SOURCE_USER_ID TARGET_USER_ID --reason "..." [--apply] [--yes] [--json]
+sfs admin override project-merge SOURCE_PROJECT_ID TARGET_PROJECT_ID --reason "..." [--persona-policy rename|skip|merge_content] [--apply] [--yes] [--json]
 ```
 
 `project-transfer` moves a project into an organization without the owner's consent. It keeps the normal transfer checks (merged projects and stranded org personas are refused unless `--force`), cancels any pending transfer, and commits the move together with an audit entry holding the reason and before/after state. The owner must be a member of the destination organization; otherwise pass `--new-owner` with an active member, who becomes the owner. `--expect-from` refuses the move unless the project is still in the given org (or `personal`), so a retried command cannot move it twice. `record` logs an action performed outside the API, such as raw SQL; it is stored with source `operator_record`. Reasons are 1-500 characters; state files must hold a JSON object of at most 64 KiB.
+
+### `sfs admin override user-merge`
+
+Fold a duplicate account (for example a signup with a typo in the email) into the account to keep. Calls `POST /api/v1/admin/users/{source_id}/merge-into/{target_id}`. **Dry run by default**: it writes nothing and prints, per table, how many rows would be reassigned, deduplicated, revoked or cancelled (`--json` includes the row ids). `--apply` performs the merge in one transaction, deactivates the source user, revokes its API keys and writes exactly one `user_merge` audit entry with the reason and the state before and after. Prompts for confirmation when applying unless `--yes`.
+
+- **Reassigned to the target:** sessions, projects, share links, bookmarks, handoffs, knowledge entries, context compilations, tickets (creator, resolver, comments, edits), wiki revisions, personas (creator and represented member), work queues, rules, GitHub installation and the source's plan records. Source storage usage is added to the target's. A session alias the target already uses is cleared, and the sync watchlist keeps one row per session.
+- **Deduplicated:** org memberships (the higher role wins, the target on ties), and team memberships, devices, GitLab settings and judge settings (the target's row wins).
+- **Revoked, never moved:** API keys (including service keys), trusted-reviewer bindings, SSO break-glass grants and SSO identities, and pending ownership or project transfers involving the source.
+- **Left alone:** audit and history tables, so past actions keep the original actor.
+
+The merge refuses, changing nothing, when source and target are the same (`400`); either user does not exist (`404`); the target is inactive (`409 target_inactive`); the source is a platform admin (`409 source_is_platform_admin`); the source has billing attached (`409 source_has_billing`); both users hold an active plan (`409 entitlement_conflict` — it never guesses which plan to keep); the source owns skill marketplace packages, publishers, listings or registries (`409 marketplace_assets_owned`); both have a GitHub installation (`409 github_installation_conflict`); or the source owns org projects in an org neither user belongs to (`409 project_owner_not_member`).
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--reason`, `-r` | required | Why the merge is needed (1-500 characters), stored in the audit log |
+| `--apply` | off | Perform the merge. Without it the command is a dry run |
+| `--yes`, `-y` | off | Skip the confirmation prompt when applying |
+| `--json` | off | Print the raw JSON response, including the row ids |
+
+### `sfs admin override project-merge`
+
+Merge a duplicate project into the one to keep, whoever owns them. Use it when the owners can't run `sfs project merge` themselves, for example when the two projects belong to different users. Calls `POST /api/v1/admin/projects/{target_id}/merge-from/{source_id}`. It runs the same merge as `sfs project merge`: sessions, knowledge entries, wiki pages, tickets, personas, agent runs, handoffs and repos move to the target, and the source becomes a redirect to it. **Dry run by default**: prints the counts that would move. `--apply` merges in one transaction and writes one `project_merge` audit entry with the reason and the state before and after. Prompts for confirmation when applying unless `--yes`.
+
+Both projects must be in the same org, or both personal (`400 cross_scope` otherwise: move one with `sfs admin override project-transfer` first). Owners don't have to match: merging one user's personal project into another user's gives the target's owner everything in the source, so check the dry run. It also refuses a project that is already merged or has a pending transfer.
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--reason`, `-r` | required | Why the merge is needed (1-500 characters), stored in the audit log |
+| `--persona-policy` | `rename` | What to do when both projects have a persona with the same name: `rename`, `skip` or `merge_content` |
+| `--apply` | off | Perform the merge. Without it the command is a dry run |
+| `--yes`, `-y` | off | Skip the confirmation prompt when applying |
+| `--json` | off | Print the raw JSON response |
 
 ## `sfs admin trusted-reviewers`
 

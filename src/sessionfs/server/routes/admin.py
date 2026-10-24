@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictBool, field_validator
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -111,6 +111,27 @@ async def _log_action(
 
     Only adds the row to the session: it commits (or rolls back) together
     with the change it describes, in the caller's transaction."""
+    return _log_action_sync(
+        db, admin_id, action, target_type, target_id, details,
+        reason=reason, before_state=before_state, after_state=after_state, source=source,
+    )
+
+
+def _log_action_sync(
+    db: AsyncSession,
+    admin_id: str,
+    action: str,
+    target_type: str,
+    target_id: str,
+    details: dict | None = None,
+    *,
+    reason: str | None = None,
+    before_state: dict | None = None,
+    after_state: dict | None = None,
+    source: str = SOURCE_API,
+) -> AdminAction:
+    """`_log_action` for synchronous callers (a merge engine pre-commit
+    hook). Adds the row to ``db`` without awaiting anything."""
     entry = AdminAction(
         id=str(uuid.uuid4()),
         admin_id=admin_id,
@@ -2261,4 +2282,327 @@ async def force_transfer_project(
         "previous_owner_id": old_owner_id,
         "owner_id": new_owner_id,
         "admin_action_id": entry.id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Project merge override (GH #89)
+# ---------------------------------------------------------------------------
+
+
+class ProjectMergeOverrideRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=REASON_MAX_CHARS)
+    dry_run: StrictBool = True
+    persona_policy: str = Field("rename", pattern="^(rename|skip|merge_content)$")
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("reason must not be blank")
+        return value
+
+
+@router.post("/projects/{target_id}/merge-from/{source_id}")
+async def merge_project_override(
+    target_id: str,
+    source_id: str,
+    body: ProjectMergeOverrideRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Merge SOURCE into TARGET whoever owns them. Platform admin only.
+
+    The operator path for duplicate projects whose owners can't run
+    `sfs project merge` themselves (the owner-of-both / org-admin path).
+    It runs the same merge engine (services/merge.py): `dry_run` (default
+    true) returns the plan and writes nothing; `dry_run=false` merges in
+    one transaction, SOURCE becomes a tombstone redirecting to TARGET, and
+    the AdminAction (`project_merge`, target = the source project, reason,
+    before/after) commits in that same transaction. The engine's own
+    project_merge_audit row is written too.
+
+    Owners need not match (GH #89 asks for the cross-owner path): two
+    users' personal projects can be merged, and the target's owner then
+    holds everything from the source. The AdminAction's before_state names
+    both owners.
+
+    Refused: source == target (400); either project missing (404); the
+    projects are in different scopes (400 cross_scope: move one with
+    force-transfer first); everything the engine refuses (already merged,
+    pending transfer, persona shadowing under a non-rename policy).
+    """
+    from sessionfs.server.db.engine import _session_factory
+    from sessionfs.server.services.merge import merge_projects
+    from sessionfs.server.services.project_resolver import ProjectResolutionLoopError
+
+    if target_id == source_id:
+        raise HTTPException(400, "Cannot merge a project into itself")
+    source = await db.get(Project, source_id)
+    target = await db.get(Project, target_id)
+    if source is None:
+        raise HTTPException(404, "Source project not found")
+    if target is None:
+        raise HTTPException(404, "Target project not found")
+    if source.org_id != target.org_id:
+        raise HTTPException(
+            400,
+            {
+                "code": "cross_scope",
+                "message": (
+                    "The projects are in different scopes. Move one into the "
+                    "other's org with force-transfer first."
+                ),
+            },
+        )
+    if _session_factory is None:
+        raise HTTPException(500, "Database not initialized")
+
+    before = {
+        "source": {"id": source.id, "name": source.name, "owner_id": source.owner_id,
+                   "org_id": source.org_id},
+        "target": {"id": target.id, "name": target.name, "owner_id": target.owner_id,
+                   "org_id": target.org_id},
+    }
+    actions: list[AdminAction] = []
+
+    def record(stats: dict) -> None:
+        actions.append(
+            _log_action_sync(
+                db,
+                admin.id,
+                "project_merge",
+                "project",
+                source_id,
+                details={"merged_into": target_id, "persona_policy": body.persona_policy},
+                reason=body.reason,
+                before_state=before,
+                after_state={"merged_into": target_id, "stats": stats},
+            )
+        )
+
+    try:
+        result = await merge_projects(
+            db=db,
+            source_id=source_id,
+            target_id=target_id,
+            user_id=admin.id,
+            dry_run=body.dry_run,
+            persona_policy=body.persona_policy,
+            session_factory=_session_factory,
+            platform_admin=True,
+            before_commit=record,
+        )
+    except ProjectResolutionLoopError:
+        raise HTTPException(
+            409,
+            {
+                "error": "resolution_loop",
+                "message": "Project resolution exceeded hop limit — possible data corruption.",
+            },
+        )
+
+    if body.dry_run:
+        return {"status": "planned", **result}
+    return {"status": "merged", "admin_action_id": actions[0].id, **result}
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-account merge (platform admin)
+# ---------------------------------------------------------------------------
+
+
+class UserMergeRequest(BaseModel):
+    reason: str = Field(..., min_length=1, max_length=REASON_MAX_CHARS)
+    # StrictBool: 1, 0, "true" and null are 422, not silently coerced into
+    # a destructive apply.
+    dry_run: StrictBool = True
+
+    @field_validator("reason")
+    @classmethod
+    def _reason_not_blank(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("reason must not be blank")
+        return value
+
+
+@router.post("/users/{source_id}/merge-into/{target_id}")
+async def merge_user_into(
+    source_id: str,
+    target_id: str,
+    body: UserMergeRequest,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Fold a duplicate account (SOURCE) into another (TARGET). Platform
+    admin only. `dry_run` (default true) writes nothing and returns the
+    plan; `dry_run=false` applies it in ONE transaction together with the
+    deactivation of SOURCE and exactly one AdminAction (`user_merge`, target
+    = the source user, reason, before/after = per-table counts and row ids,
+    source `api`; `details.merged_into` names the target).
+
+    Refused: source == target (400); either user missing (404); target
+    inactive (409 target_inactive); source is a platform admin (409
+    source_is_platform_admin); source holds Stripe pointers (409
+    source_has_billing); both hold an active entitlement (409
+    entitlement_conflict, the merge never guesses which plan to keep);
+    source owns skill-marketplace packages/publishers/listings/registries
+    (409 marketplace_assets_owned); both have a GitHub installation (409
+    github_installation_conflict); source owns org projects in an org
+    neither user belongs to (409 project_owner_not_member).
+
+    Per-table decisions (see services/user_merge.py):
+
+    * REASSIGNED to the target: sessions, projects.owner_id, share_links,
+      bookmark_folders, bookmarks, audit_reports,
+      project_rules.created_by, rules_versions.compiled_by, handoffs
+      (sender_id, recipient_id, recipient_user_id), handoff_comments
+      author, knowledge_entries.user_id, context_compilations.user_id,
+      agent_personas (created_by, represented_user_id, with an org audit
+      row each), tickets (created_by_user_id, resolver_user_id),
+      ticket_comments author, ticket_edits editor, wiki_page_revisions,
+      work_queues creator, work_queue_items implementer, org_invites
+      inviter, pr_comments owner, github_installations, and every
+      entitlements row owned by the source (the target also inherits the
+      source's entitlement pointer and tier when the source held the only
+      active one). Source storage_used_bytes is added to the target's.
+    * DEDUPED: org_members (per org: moved when the target is not a
+      member; otherwise the higher role wins, the target on ties, the
+      source row is deleted before any promotion so the one-owner-per-org
+      index never sees two owners, each change audited in the org's
+      audit trail); team_members, sync_watchlist, skill_devices,
+      gitlab_settings and user_judge_settings (the target's row wins, the
+      source's is deleted, the rest move); sessions.alias (unique per
+      user: a source alias the target already uses is cleared on the
+      moved session).
+    * REVOKED / CANCELLED (never moved): the source's API keys (including
+      service keys), trusted_reviewers bindings, SSO break-glass grants,
+      SSO external identities, and pending org owner transfers and project
+      transfers involving the source. The source user is deactivated.
+    * LEFT ALONE so history keeps the original actor: admin_actions,
+      org_audit_events, activation_attempt, agent_runs, agent_feedback,
+      billing intents/reconciliations, handoff_events, retrieval audit
+      tables, project_merge_audit, project_repos, transfer history, org
+      skill policies/assignments, skill_* provenance and moderation
+      tables, residents, trusted_reviewers.created_by_user_id,
+      teams.created_by, org_members.invited_by, sso_exchange_codes,
+      github_claim_attempts, sessions.deleted_by,
+      knowledge_entries.dismissed_by, work_queue_items.closed_by_user_id,
+      api_keys.created_by_user_id.
+
+    Locks follow the GH #70 order: project scope locks (the source's
+    projects), then both user scope locks, then the org scope locks of
+    every org either user belongs to or whose project is moved, then the
+    billing row locks (Stripe customer, user rows). The set of the
+    source's projects is re-read under the locks; if it changed the
+    request is refused (409 changed_concurrently) and can be retried.
+    """
+    from sessionfs.server.services.entitlements import lock_billing_rows
+    from sessionfs.server.services.scope_locks import lock_scopes
+    from sessionfs.server.services.user_merge import merge_users, trim_state
+
+    if source_id == target_id:
+        raise HTTPException(400, "Source and target must be different users")
+    users = {
+        u.id: u
+        for u in (
+            await db.execute(select(User).where(User.id.in_([source_id, target_id])))
+        ).scalars().all()
+    }
+    if source_id not in users:
+        raise HTTPException(404, "Source user not found")
+    if target_id not in users:
+        raise HTTPException(404, "Target user not found")
+    apply = not body.dry_run
+
+    if apply:
+        owned_before = set(
+            (await db.execute(select(Project.id).where(Project.owner_id == source_id))).scalars()
+        )
+        await lock_scopes(db, project_ids=owned_before, user_ids=[source_id, target_id])
+        org_ids = set(
+            (
+                await db.execute(
+                    select(OrgMember.org_id).where(OrgMember.user_id.in_([source_id, target_id]))
+                )
+            ).scalars()
+        ) | set(
+            (
+                await db.execute(
+                    select(Project.org_id).where(
+                        Project.owner_id == source_id, Project.org_id.is_not(None)
+                    )
+                )
+            ).scalars()
+        )
+        await lock_scopes(db, org_ids=org_ids)
+        owned_now = set(
+            (await db.execute(select(Project.id).where(Project.owner_id == source_id))).scalars()
+        )
+        if owned_now != owned_before:
+            await db.rollback()
+            raise HTTPException(
+                409,
+                {
+                    "code": "changed_concurrently",
+                    "message": "The source user's projects changed while locking; retry.",
+                },
+            )
+        locked = await lock_billing_rows(db, user_ids=[source_id, target_id])
+        source, target = locked[("user", source_id)], locked[("user", target_id)]
+        if source is None or target is None:
+            await db.rollback()
+            raise HTTPException(404, "User not found")
+    else:
+        source, target = users[source_id], users[target_id]
+
+    def _snapshot(u: User) -> dict:
+        return {
+            "id": u.id, "email": u.email, "tier": u.tier, "is_active": u.is_active,
+            "storage_used_bytes": u.storage_used_bytes or 0,
+            "entitlement_id": u.entitlement_id,
+        }
+
+    before_users = {"source": _snapshot(source), "target": _snapshot(target)}
+    plan = await merge_users(db, admin=admin, source=source, target=target, apply=apply)
+
+    if not apply:
+        return {
+            "status": "dry_run", "dry_run": True,
+            "source_id": source_id, "target_id": target_id,
+            "reason": body.reason, "plan": plan,
+        }
+
+    rows = {k: plan[k] for k in ("reassigned", "deduped", "revoked", "cancelled", "org_members")}
+    before = trim_state(
+        {"users": before_users, "target_id": target_id, "rows": rows}, STATE_MAX_BYTES // 2
+    )
+    after = trim_state(
+        {
+            "users": {"source": _snapshot(source), "target": _snapshot(target)},
+            "merged_into": target_id,
+            "rows": rows,
+            "user": plan["user"],
+        },
+        STATE_MAX_BYTES // 2,
+    )
+    entry = await _log_action(
+        db, admin.id, "user_merge", "user", source_id,
+        {"merged_into": target_id, "source_email": source.email, "target_email": target.email},
+        reason=body.reason, before_state=before, after_state=after,
+    )
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            409,
+            {"code": "changed_concurrently", "message": "Rows changed concurrently; nothing was merged, retry."},
+        ) from None
+    return {
+        "status": "merged", "dry_run": False,
+        "source_id": source_id, "target_id": target_id,
+        "reason": body.reason, "plan": plan, "admin_action_id": entry.id,
     }

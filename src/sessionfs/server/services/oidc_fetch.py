@@ -42,11 +42,13 @@ logger = logging.getLogger("sessionfs.api")
 # ---------------------------------------------------------------------------
 
 _PRIVATE_RANGES: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
+    ipaddress.IPv4Network("0.0.0.0/8"),          # "this host"
     ipaddress.IPv4Network("127.0.0.0/8"),       # loopback
     ipaddress.IPv4Network("169.254.0.0/16"),     # link-local
     ipaddress.IPv4Network("10.0.0.0/8"),         # private A
     ipaddress.IPv4Network("172.16.0.0/12"),      # private B
     ipaddress.IPv4Network("192.168.0.0/16"),     # private C
+    ipaddress.IPv4Network("100.64.0.0/10"),      # carrier-grade NAT
     ipaddress.IPv6Network("::1/128"),            # loopback v6
     ipaddress.IPv6Network("fe80::/10"),           # link-local v6
     ipaddress.IPv6Network("fc00::/7"),            # unique local v6
@@ -95,6 +97,9 @@ def _is_private_or_metadata_ip(ip_str: str) -> bool:
     except ValueError:
         return True  # unparseable → block (safe default)
 
+    # ::ffff:10.0.0.1 reaches 10.0.0.1; judge the embedded IPv4 address.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
     if ip in _METADATA_IPS:
         return True
     for net in _PRIVATE_RANGES:

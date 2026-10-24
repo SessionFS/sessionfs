@@ -17,14 +17,39 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.21.1 -->
+      <!-- v0.22.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.22.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 24, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">One Project per Repository &middot; Operator Merge Tools &middot; Tighter GitLab Integration</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>The same repository no longer becomes two projects (GitHub #88).</strong> Remotes written as <span class="font-mono text-accent text-sm">ssh://</span>, <span class="font-mono text-accent text-sm">git://</span>, <span class="font-mono text-accent text-sm">git+ssh://</span>, scp style with a user other than <span class="font-mono text-accent text-sm">git</span> (or none), with an uppercase scheme or a trailing slash were stored as written, so each spelling made a separate project. All of them now map to the repository path, project creation normalizes the value it&rsquo;s given, and migration 083 rewrites stored remotes. Where two projects already exist for one repository, the migration leaves the pair alone and prints both ids so an operator can merge them. Repositories in a home directory or at an absolute path on a personal server keep their host, so different machines don&rsquo;t collide.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Merge duplicate accounts.</strong> Platform admins can fold a duplicate signup into the account to keep with <span class="font-mono text-accent text-sm">sfs admin override user-merge SOURCE TARGET --reason &quot;...&quot;</span>. Dry run by default; <span class="font-mono text-accent text-sm">--apply</span> moves sessions, projects, handoffs, tickets, knowledge and the rest in one transaction, deduplicates org memberships (the higher role wins), revokes the duplicate&rsquo;s API keys, deactivates it and writes one audit entry. It refuses rather than guess when both accounts hold an active plan, or the duplicate has billing or marketplace assets. See <a href="/self-hosted/#auditing-operator-overrides" class="text-brand hover:underline">Auditing Operator Overrides</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Merge duplicate projects as an operator (GitHub #89).</strong> <span class="font-mono text-accent text-sm">sfs admin override project-merge SOURCE TARGET --reason &quot;...&quot;</span> runs the existing project merge for a platform admin who owns neither project, including two users&rsquo; personal projects. Dry run by default; the audit entry commits together with the merge.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Project pages use the project id in the URL</strong> (<span class="font-mono text-accent text-sm">/projects/proj_...</span>). Old links by remote redirect, and a merged project&rsquo;s link opens the project it was merged into.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed:</strong> merging accounts clears a session alias the target already uses and keeps one sync-watchlist row per session.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security: GitLab instance URLs are validated.</strong> Saving a GitLab instance URL that points at a private, loopback or cloud-metadata address is refused (<span class="font-mono text-accent text-sm">422 invalid_gitlab_instance_url</span>), the host is re-checked before every request so a DNS change after saving can&rsquo;t redirect the token, and redirects aren&rsquo;t followed. Self-hosted deployments with GitLab on a private network can allow private addresses with <span class="font-mono text-accent text-sm">SFS_GITLAB_ALLOW_PRIVATE_HOSTS=true</span> (Helm <span class="font-mono text-accent text-sm">api.gitlab.allowPrivateHosts</span>); metadata addresses stay blocked. See <a href="/git-integration/#gitlab" class="text-brand hover:underline">Git Integration</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security:</strong> the SSRF guards now judge IPv4-mapped IPv6 addresses (<span class="font-mono text-accent text-sm">::ffff:169.254.169.254</span>) by their IPv4 part, and also block <span class="font-mono text-accent text-sm">0.0.0.0/8</span> and <span class="font-mono text-accent text-sm">100.64.0.0/10</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security: custom LLM endpoints are checked.</strong> A custom <span class="font-mono text-accent text-sm">base_url</span> for the LLM judge or narrative summaries is now checked when it is saved and before every request, redirects are not followed, and on the hosted service it must be a public https endpoint. Self-hosted model gateways on a private network keep working: the Helm chart sets <span class="font-mono text-accent text-sm">SFS_LLM_ALLOW_PRIVATE_HOSTS=true</span>. Model discovery now takes the API key in the request body (<span class="font-mono text-accent text-sm">POST /api/v1/settings/judge/models</span>) instead of the query string.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security:</strong> dashboard dependencies updated (zod 4.6.7, undici).</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;083 (083 rewrites stored git remotes to one canonical form; 067 and 068 unused). 7740 backend tests + 815 dashboard UI tests passing. 81 MCP tools (unchanged).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.21.1 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.21.1</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 23, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Project Context You Can Read &middot; GitLab in the Dashboard &middot; Pinned GitLab Namespaces</h2>
         <ul class="space-y-2 text-base text-muted">

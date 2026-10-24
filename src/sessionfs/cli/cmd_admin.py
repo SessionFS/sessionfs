@@ -520,6 +520,133 @@ def override_project_transfer(
     )
 
 
+@override_app.command("user-merge")
+def override_user_merge(
+    source: str = typer.Argument(..., help="User id of the duplicate account to merge away"),
+    target: str = typer.Argument(..., help="User id of the account to keep"),
+    reason: str = typer.Option(..., "--reason", "-r", help="Why the merge is needed (stored in the audit log)"),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Perform the merge. Without it the command is a dry run that writes nothing",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt when applying"),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw JSON response"),
+) -> None:
+    """Merge a duplicate user account into another (platform admin).
+
+    Dry run by default: prints what would be reassigned, deduplicated and
+    revoked. With --apply the merge runs in one transaction, deactivates
+    the source user and revokes its API keys, and writes one audit entry."""
+    reason = reason.strip()
+    if not reason:
+        err_console.print("[red]Error[/red]: --reason must not be blank.")
+        raise typer.Exit(2)
+    if apply and not yes and not typer.confirm(
+        f"Merge user {source} into {target}, deactivating {source} and revoking its API keys"
+    ):
+        console.print("Cancelled.")
+        raise typer.Exit(0)
+    status, body = _call(
+        "POST",
+        f"/api/v1/admin/users/{quote(source, safe='')}/merge-into/{quote(target, safe='')}",
+        {"reason": reason, "dry_run": not apply},
+    )
+    if status >= 400 or not isinstance(body, dict):
+        _fail(status, body)
+    assert isinstance(body, dict)
+    if as_json:
+        typer.echo(json.dumps(body, indent=2, sort_keys=True))
+        return
+
+    plan = body.get("plan") or {}
+    verb = "Merged" if apply else "Dry run (nothing changed)"
+    console.print(f"[green]{verb}[/green]: {_e(source)} → {_e(target)}", soft_wrap=True)
+    for group in ("reassigned", "revoked", "cancelled"):
+        for name, info in sorted((plan.get(group) or {}).items()):
+            count = info.get("count", 0) if isinstance(info, dict) else 0
+            console.print(f"  {group}: {_e(name)}: {count}", soft_wrap=True)
+    for name, info in sorted((plan.get("deduped") or {}).items()):
+        moved = (info.get("moved") or {}).get("count", 0)
+        dropped = (info.get("dropped_target_wins") or {}).get("count", 0)
+        console.print(
+            f"  deduped: {_e(name)}: {moved} moved, {dropped} dropped (target wins)", soft_wrap=True
+        )
+    for m in plan.get("org_members") or []:
+        console.print(
+            f"  org {_e(m.get('org_id'))}: {_e(m.get('action'))}, role "
+            f"{_e(m.get('source_role'))}/{_e(m.get('target_role'))} → {_e(m.get('resulting_role'))}",
+            soft_wrap=True,
+        )
+    if apply:
+        console.print(f"  Audit entry: {_e(body.get('admin_action_id'))}")
+    else:
+        console.print("[dim]Re-run with --apply to perform the merge.[/dim]")
+
+
+@override_app.command("project-merge")
+def override_project_merge(
+    source: str = typer.Argument(..., help="Project id to merge away (becomes a redirect)"),
+    target: str = typer.Argument(..., help="Project id to keep"),
+    reason: str = typer.Option(..., "--reason", "-r", help="Why the merge is needed (stored in the audit log)"),
+    persona_policy: str = typer.Option(
+        "rename", "--persona-policy", help="Persona name collisions: rename, skip or merge_content"
+    ),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Perform the merge. Without it the command is a dry run that writes nothing",
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt when applying"),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw JSON response"),
+) -> None:
+    """Merge one project into another whoever owns them (platform admin).
+
+    For duplicate projects whose owners can't run `sfs project merge`
+    themselves. Both projects must be in the same org (or both personal).
+    Dry run by default; with --apply the merge runs in one transaction and
+    writes one audit entry."""
+    reason = reason.strip()
+    if not reason:
+        err_console.print("[red]Error[/red]: --reason must not be blank.")
+        raise typer.Exit(2)
+    if persona_policy not in ("rename", "skip", "merge_content"):
+        err_console.print("[red]Error[/red]: --persona-policy must be rename, skip or merge_content.")
+        raise typer.Exit(2)
+    if apply and not yes and not typer.confirm(
+        f"Merge project {source} into {target}; {source} becomes a redirect"
+    ):
+        console.print("Cancelled.")
+        raise typer.Exit(0)
+    status, body = _call(
+        "POST",
+        f"/api/v1/admin/projects/{quote(target, safe='')}/merge-from/{quote(source, safe='')}",
+        {"reason": reason, "dry_run": not apply, "persona_policy": persona_policy},
+    )
+    if status >= 400 or not isinstance(body, dict):
+        _fail(status, body)
+    assert isinstance(body, dict)
+    if as_json:
+        typer.echo(json.dumps(body, indent=2, sort_keys=True))
+        return
+
+    verb = "Merged" if apply else "Dry run (nothing changed)"
+    console.print(f"[green]{verb}[/green]: {_e(source)} → {_e(target)}", soft_wrap=True)
+    for name, count in sorted((body.get("stats") or {}).items()):
+        if isinstance(count, int) and not isinstance(count, bool):
+            console.print(f"  {_e(name)}: {count}", soft_wrap=True)
+    if body.get("would_refuse"):
+        console.print(
+            f"[yellow]The merge would be refused[/yellow]: {_e(body.get('blocking_reason'))}. "
+            "Try --persona-policy rename.",
+            soft_wrap=True,
+        )
+    if apply:
+        console.print(f"  Audit entry: {_e(body.get('admin_action_id'))}")
+    else:
+        console.print("[dim]Re-run with --apply to perform the merge.[/dim]")
+
+
 def _read_state_file(path: Optional[Path], flag: str) -> dict | None:
     if path is None:
         return None

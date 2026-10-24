@@ -126,7 +126,8 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | GET | `/api/v1/settings/judge` | Bearer | Get judge settings |
 | PUT | `/api/v1/settings/judge` | Bearer | Save judge settings |
 | DELETE | `/api/v1/settings/judge` | Bearer | Clear judge settings |
-| GET | `/api/v1/settings/judge/models` | Bearer | Discover models from custom endpoint |
+| GET | `/api/v1/settings/judge/models?base_url=` | Bearer | Discover models from custom endpoint using the saved judge key (an `api_key` query parameter is refused) |
+| POST | `/api/v1/settings/judge/models` | Bearer | Discover models; body `{base_url, api_key?}` |
 | GET | `/api/v1/settings/audit-trigger` | Bearer | Get auto-audit trigger |
 | PUT | `/api/v1/settings/audit-trigger` | Bearer | Set auto-audit trigger |
 | GET | `/api/v1/settings/github` | Bearer | GitHub installation settings |

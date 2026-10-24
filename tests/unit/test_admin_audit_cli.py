@@ -306,3 +306,78 @@ def test_override_record_surfaces_validation_error():
     )
     assert result.exit_code == 1
     assert "action" in _out(result)
+
+
+_MERGE_PLAN = {
+    "reassigned": {"sessions.user_id": {"count": 62, "ids": [], "truncated": False}},
+    "revoked": {"api_keys": {"count": 1, "ids": [], "truncated": False}},
+    "cancelled": {},
+    "deduped": {"team_members": {"moved": {"count": 0}, "dropped_target_wins": {"count": 1}}},
+    "org_members": [{"org_id": "org_1", "action": "merged", "source_role": "owner",
+                     "target_role": "member", "resulting_role": "owner"}],
+}
+
+
+def test_override_user_merge_defaults_to_dry_run():
+    fake = _FakeRequest(200, {"status": "dry_run", "plan": _MERGE_PLAN})
+    result = _invoke(fake, ["override", "user-merge", "u_src", "u_tgt", "--reason", "typo"])
+    assert result.exit_code == 0, _out(result)
+    call = fake.calls[0]
+    assert call["path"] == "/api/v1/admin/users/u_src/merge-into/u_tgt"
+    assert call["body"] == {"reason": "typo", "dry_run": True}
+    out = _out(result)
+    assert "nothing changed" in out and "sessions.user_id: 62" in out and "--apply" in out
+
+
+def test_override_user_merge_apply_confirms_and_can_cancel():
+    fake = _FakeRequest(200, {})
+    result = _invoke(fake, ["override", "user-merge", "u_src", "u_tgt", "-r", "typo", "--apply"],
+                     input="n\n")
+    assert result.exit_code == 0 and fake.calls == []
+    assert "Cancelled" in _out(result)
+
+
+def test_override_user_merge_apply_yes():
+    fake = _FakeRequest(200, {"status": "merged", "plan": _MERGE_PLAN, "admin_action_id": "aa_9"})
+    result = _invoke(fake, ["override", "user-merge", "u_src", "u_tgt", "-r", "typo", "--apply", "-y"])
+    assert result.exit_code == 0, _out(result)
+    assert fake.calls[0]["body"] == {"reason": "typo", "dry_run": False}
+    assert "aa_9" in _out(result)
+
+
+def test_override_user_merge_blank_reason_and_server_error():
+    fake = _FakeRequest(200, {})
+    assert _invoke(fake, ["override", "user-merge", "a", "b", "-r", "  "]).exit_code == 2
+    assert fake.calls == []
+    denied = _FakeRequest(
+        409, {"error": {"code": "entitlement_conflict", "message": "Both users hold an active entitlement"}}
+    )
+    result = _invoke(denied, ["override", "user-merge", "a", "b", "-r", "x"])
+    assert result.exit_code == 1 and "active entitlement" in _out(result)
+
+
+def test_override_project_merge_defaults_to_dry_run():
+    fake = _FakeRequest(200, {"status": "planned", "dry_run": True,
+                              "stats": {"sessions": 12, "knowledge_entries": 4}})
+    result = _invoke(fake, ["override", "project-merge", "proj_src", "proj_tgt", "-r", "twins"])
+    assert result.exit_code == 0, _out(result)
+    call = fake.calls[0]
+    assert call["path"] == "/api/v1/admin/projects/proj_tgt/merge-from/proj_src"
+    assert call["body"] == {"reason": "twins", "dry_run": True, "persona_policy": "rename"}
+    out = _out(result)
+    assert "nothing changed" in out and "sessions: 12" in out and "--apply" in out
+
+
+def test_override_project_merge_apply_and_validation():
+    fake = _FakeRequest(200, {"status": "merged", "stats": {}, "admin_action_id": "aa_7"})
+    result = _invoke(fake, ["override", "project-merge", "a", "b", "-r", "x", "--apply", "-y",
+                            "--persona-policy", "skip"])
+    assert result.exit_code == 0, _out(result)
+    assert fake.calls[0]["body"] == {"reason": "x", "dry_run": False, "persona_policy": "skip"}
+    assert "aa_7" in _out(result)
+    none = _FakeRequest(200, {})
+    assert _invoke(none, ["override", "project-merge", "a", "b", "-r", " "]).exit_code == 2
+    assert _invoke(none, ["override", "project-merge", "a", "b", "-r", "x",
+                          "--persona-policy", "clobber"]).exit_code == 2
+    cancelled = _invoke(none, ["override", "project-merge", "a", "b", "-r", "x", "--apply"], input="n\n")
+    assert cancelled.exit_code == 0 and none.calls == []

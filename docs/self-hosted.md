@@ -516,6 +516,24 @@ sfs admin override project-transfer proj_abc123 --to-org org_xyz --expect-from p
 
 The move, an accepted transfer record, the audit entry and organization audit events commit in one transaction. Merged projects are refused, open work assigned to org personas the destination lacks is refused unless `--force`, and any pending transfer for the project is cancelled. The owner of an organization project must be a member of that organization: if the current owner is not (for example, they have left), add `--new-owner <user-id>` with an active member, and ownership changes in the same transaction. `--expect-from` makes a retried command safe: it refuses if the project is no longer where you expected it.
 
+**Merge a duplicate account.** For a duplicate signup (for example a typo in the email), preview and then apply the merge instead of reassigning rows by hand:
+
+```bash
+sfs admin override user-merge <duplicate-id> <kept-id> --reason "Typo in email domain (ticket OPS-77)"          # dry run
+sfs admin override user-merge <duplicate-id> <kept-id> --reason "Typo in email domain (ticket OPS-77)" --apply
+```
+
+This calls `POST /api/v1/admin/users/{source_id}/merge-into/{target_id}`. The dry run lists the rows that would move; `--apply` reassigns them, deduplicates org memberships (higher role wins), revokes the duplicate's API keys, deactivates it and writes one `user_merge` audit entry, all in one transaction. It refuses when both accounts hold an active entitlement or the duplicate owns marketplace assets or Stripe billing; resolve those first. See the [CLI reference](./cli-reference.md#sfs-admin-override-user-merge).
+
+**Merge duplicate projects.** When the same repository ended up as two projects, the owner can run `sfs project merge`. When the twins belong to different users, merge them as an operator:
+
+```bash
+sfs admin override project-merge <duplicate-project-id> <kept-project-id> --reason "Duplicate from an ssh:// remote (OPS-81)"          # dry run
+sfs admin override project-merge <duplicate-project-id> <kept-project-id> --reason "Duplicate from an ssh:// remote (OPS-81)" --apply
+```
+
+Everything moves to the kept project and the duplicate becomes a redirect to it, with one `project_merge` audit entry. Since v0.22.0 the server stores one canonical remote for every URL form of a repository (`ssh://`, `git://`, scp remotes with any user, trailing slashes), so new duplicates of this kind no longer appear. Upgrading runs migration 083, which rewrites stored remotes to the canonical form and prints any project it left alone because its canonical remote already belongs to another project: those are the pairs to merge. See the [CLI reference](./cli-reference.md#sfs-admin-override-project-merge).
+
 **Record a change made by hand.** When you have to change data directly in the database, record it afterwards:
 
 ```bash

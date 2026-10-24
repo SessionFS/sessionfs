@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ProjectDetail from './ProjectDetail';
+import { ApiError } from '../api/client';
 
 /**
  * UI coverage for ProjectDetail. The page has five URL-driven sections
@@ -467,5 +468,73 @@ describe('ProjectDetail', () => {
     await waitFor(() => {
       expect(del.mutate).toHaveBeenCalledWith('proj_abc', expect.any(Object));
     });
+  });
+});
+
+describe('ProjectDetail routing by id', () => {
+  beforeEach(() => {
+    for (const h of Object.values(hooks)) h.mockReset();
+    hooks.useKnowledgeEntries.mockReturnValue({ data: { entries: [], total: 0 }, isLoading: false });
+    hooks.useCompileProject.mockReturnValue(makeMutation());
+    hooks.useUpdateProjectContext.mockReturnValue(makeMutation());
+    hooks.useDeleteProject.mockReturnValue(makeMutation());
+    hooks.useUpdateProjectSettings.mockReturnValue(makeMutation());
+    hooks.useUpdateProjectName.mockReturnValue(makeMutation());
+    hooks.useProjectHealth.mockReturnValue({ data: null, isLoading: false });
+    hooks.useProjectRepos.mockReturnValue({ data: [], isLoading: false, error: null });
+    hooks.useProjects.mockReturnValue({ data: [], isLoading: false, error: null });
+    for (const k of ['useLinkRepo', 'useUnlinkRepo', 'useMergeProject'] as const) {
+      hooks[k].mockReturnValue(makeMutation());
+    }
+  });
+
+  it('redirects a legacy remote URL to the id URL, keeping the query', async () => {
+    setProjectData();
+    renderPage('/projects/sessionfs%2Fsessionfs?tab=work&sub=personas');
+    await waitFor(() => {
+      expect(hooks.useProject).toHaveBeenLastCalledWith('proj_abc');
+    });
+    expect(screen.getByTestId('loc').textContent).toBe('?tab=work&sub=personas');
+    expect(hooks.useProject).toHaveBeenCalledWith('sessionfs/sessionfs');
+  });
+
+  it('does not redirect when the URL already holds the project id', async () => {
+    setProjectData();
+    renderPage('/projects/proj_abc?tab=settings');
+    await screen.findByRole('heading', { name: /sessionfs\/sessionfs/i });
+    expect(screen.getByTestId('loc').textContent).toBe('?tab=settings');
+    for (const [arg] of hooks.useProject.mock.calls) expect(arg).toBe('proj_abc');
+  });
+
+  it('follows a 410 merged_into to the target project id', async () => {
+    const merged = new ApiError(410, JSON.stringify({
+      error: { code: '410', message: 'merged', details: { error: 'project_merged', merged_into: 'proj_target' } },
+    }));
+    hooks.useProject.mockImplementation((arg: string) =>
+      arg === 'proj_old'
+        ? { data: undefined, isLoading: false, error: merged }
+        : {
+            data: { id: 'proj_target', git_remote_normalized: 'acme/new', context_document: '', created_at: '', updated_at: '' },
+            isLoading: false,
+            error: null,
+          },
+    );
+    renderPage('/projects/proj_old?tab=settings');
+    await waitFor(() => {
+      expect(hooks.useProject).toHaveBeenLastCalledWith('proj_target');
+    });
+    expect(screen.getByTestId('loc').textContent).toBe('?tab=settings');
+  });
+
+  it('saves the context against the loaded project remote, not the URL param', async () => {
+    setProjectData();
+    const update = makeMutation();
+    hooks.useUpdateProjectContext.mockReturnValue(update);
+    renderPage('/projects/proj_abc');
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /^edit$/i }));
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(update.mutate).toHaveBeenCalled());
+    expect(update.mutate.mock.calls[0][0].remote).toBe('sessionfs/sessionfs');
   });
 });

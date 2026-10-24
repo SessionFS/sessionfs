@@ -3,6 +3,7 @@ import { appendFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { mockApi } from './fixtures/mock-api';
+import { PROJECT_ID } from './fixtures/data';
 
 const require = createRequire(import.meta.url);
 const AXE_PATH = require.resolve('axe-core/axe.min.js');
@@ -14,7 +15,8 @@ const BASE_URL = `http://127.0.0.1:${PORT}`;
 // Obviously fake: the API is fully intercepted, nothing here is a credential.
 const FAKE_KEY = 'sk_sfs_FAKE_VISUAL_TEST_KEY_0000000000';
 
-const PROJECT = encodeURIComponent('acme/widgets');
+// Project pages are routed by id (a legacy remote URL redirects to it).
+const PROJECT = PROJECT_ID;
 
 const PAGES: { name: string; path: string }[] = [
   { name: 'sessions', path: '/' },

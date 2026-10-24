@@ -1922,6 +1922,52 @@ sfs admin override project-transfer PROJECT_ID --to-org ORG_ID --reason "..." [-
 
 ---
 
+## `sfs admin override user-merge`
+
+Fold a duplicate account (for example a signup with a typo in the email) into the account to keep (platform admin only). Calls `POST /api/v1/admin/users/{source_id}/merge-into/{target_id}` with `{"reason": "...", "dry_run": true|false}`. **Dry run by default**: it writes nothing and prints, per table, how many rows would be reassigned, deduplicated, revoked or cancelled (`--json` includes the row ids). `--apply` performs the merge in one transaction, deactivates the source user, revokes its API keys and writes exactly one `user_merge` audit entry (source `api`) with the reason and per-table counts and ids before and after. Prompts for confirmation when applying unless `--yes`.
+
+What happens to each kind of data:
+
+- **Reassigned to the target:** sessions, projects, share links, bookmarks, handoffs, knowledge entries, context compilations, tickets (creator, resolver, comments, edits), wiki revisions, personas (creator and represented member), work queues, rules, GitHub installation, and the source's entitlement rows. Source storage usage is added to the target's.
+- **Deduplicated:** org memberships (the higher role wins, the target on ties; an owner moved or promoted this way keeps the one-owner-per-org rule), and team memberships, devices, GitLab settings and judge settings (the target's row wins).
+- **Revoked, never moved:** API keys (including service keys), trusted-reviewer bindings, SSO break-glass grants and SSO identities, and pending ownership or project transfers involving the source.
+- **Left alone:** audit and history tables, so past actions keep the original actor.
+
+The merge refuses, changing nothing, when: source and target are the same (`400`); either user does not exist (`404`); the target is inactive (`409 target_inactive`); the source is a platform admin (`409 source_is_platform_admin`); the source has Stripe billing pointers (`409 source_has_billing`); both users hold an active entitlement (`409 entitlement_conflict`, it never guesses which plan to keep); the source owns skill marketplace packages, publishers, listings or registries (`409 marketplace_assets_owned`); both have a GitHub installation (`409 github_installation_conflict`); or the source owns org projects in an org neither user belongs to (`409 project_owner_not_member`).
+
+```
+sfs admin override user-merge SOURCE_USER_ID TARGET_USER_ID --reason "..." [--apply] [--yes] [--json]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--reason`, `-r` | string | required | Why the merge is needed (1-500 characters), stored in the audit log |
+| `--apply` | flag | off | Perform the merge. Without it the command is a dry run |
+| `--yes`, `-y` | flag | off | Skip the confirmation prompt when applying |
+| `--json` | flag | off | Print the raw JSON response, including the row ids |
+
+---
+
+## `sfs admin override project-merge`
+
+Merge a duplicate project into the one to keep, whoever owns them (platform admin only). Use it when the owners can't run [`sfs project merge`](#sfs-project-merge) themselves, for example when the twins belong to different users. Calls `POST /api/v1/admin/projects/{target_id}/merge-from/{source_id}` with `{"reason": "...", "dry_run": true|false, "persona_policy": "..."}`. It runs the same merge engine as `sfs project merge`: sessions, knowledge entries, wiki pages, tickets, personas, agent runs, handoffs and repos move to the target, and the source becomes a redirect to it. **Dry run by default**: prints the counts that would move. `--apply` merges in one transaction and writes one `project_merge` audit entry (source `api`) with the reason and the before/after state. Prompts for confirmation when applying unless `--yes`.
+
+Both projects must be in the same org, or both personal (`400 cross_scope` otherwise: move one with `sfs admin override project-transfer` first). Owners don't have to match: merging one user's personal project into another user's gives the target's owner everything in the source, so check the dry run. It also refuses a project that is already merged or has a pending transfer.
+
+```
+sfs admin override project-merge SOURCE_PROJECT_ID TARGET_PROJECT_ID --reason "..." [--persona-policy rename|skip|merge_content] [--apply] [--yes] [--json]
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--reason`, `-r` | string | required | Why the merge is needed (1-500 characters), stored in the audit log |
+| `--persona-policy` | string | `rename` | What to do when both projects have a persona with the same name: `rename`, `skip` or `merge_content` |
+| `--apply` | flag | off | Perform the merge. Without it the command is a dry run |
+| `--yes`, `-y` | flag | off | Skip the confirmation prompt when applying |
+| `--json` | flag | off | Print the raw JSON response |
+
+---
+
 ## `sfs admin override record`
 
 Record an action an operator performed outside the API, for example with raw SQL (platform admin only). Calls `POST /api/v1/admin/audit-log`. The entry is stored with source `operator_record`: the server records who logged it and when, but did not perform or verify the change.

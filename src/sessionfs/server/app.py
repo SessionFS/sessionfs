@@ -50,6 +50,13 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
 
     _configure_logging(config.log_level)
 
+    # User-supplied LLM endpoints are re-checked against the SSRF policy right
+    # before every outbound request (judge, summaries, knowledge, compile).
+    from sessionfs.judge.providers import set_base_url_guard
+    from sessionfs.server.llm_url_guard import guard_llm_base_url
+
+    set_base_url_guard(guard_llm_base_url)
+
     # Marketplace trusted publishing: resolve environment + OIDC audience ONCE
     # (refusing to start outside development on a generic audience, whatever
     # its source); the routes use exactly this value.

@@ -97,6 +97,8 @@ Linking an installation goes through a GitHub sign-in, and SessionFS accepts the
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `SFS_GITLAB_WEBHOOK_SECRET` | Global GitLab webhook token for MR events. Optional: per-user webhook secrets from Settings also work. A delivery matching neither is refused with 401 | — |
+| `SFS_GITLAB_ALLOW_PRIVATE_HOSTS` | Let users point the GitLab integration (`PUT /api/v1/settings/gitlab`) at private, loopback or plain-http hosts, for an internal self-hosted GitLab. When false the instance URL must be https and resolve to public addresses only (`422 invalid_gitlab_instance_url` otherwise); the host is re-checked before every outbound request and redirects are not followed. Link-local and cloud-metadata addresses are blocked in both modes. The Helm chart sets this to true (`api.gitlab.allowPrivateHosts`) | `false` |
+| `SFS_LLM_ALLOW_PRIVATE_HOSTS` | Let users point their own LLM endpoint (the `base_url` in judge settings, and on audit and narrative-summary requests) at private, loopback or plain-http hosts, for example an in-cluster Ollama, vLLM or LiteLLM. When false the URL must be https and resolve to public addresses only. The URL is checked when it is saved and again before every request; redirects are never followed, and link-local and cloud-metadata addresses are always blocked. The Helm chart sets it to `true` (`api.llm.allowPrivateHosts`). | `false` |
 
 ## Hosted billing
 

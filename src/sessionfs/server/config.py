@@ -66,6 +66,17 @@ class ServerConfig(BaseSettings):
     # Unset = https://gitlab.com only; "none" disables GitLab. Listed values
     # replace the default. An invalid entry refuses startup.
     gitlab_oidc_issuers: str = ""
+    # Allow the per-user GitLab integration to target private / loopback /
+    # plain-http hosts (an internal self-hosted GitLab). Default false: the
+    # hosted service only talks to public https GitLab hosts. The Helm chart
+    # sets this true. Link-local and cloud-metadata addresses stay blocked.
+    gitlab_allow_private_hosts: bool = False
+    # Allow user-supplied LLM endpoints (judge settings base_url, audit and
+    # narrative-summary base_url) to target private / loopback / plain-http
+    # hosts, e.g. an in-cluster Ollama or vLLM. Default false: the hosted
+    # service only calls public https endpoints. Link-local and cloud-metadata
+    # addresses stay blocked either way.
+    llm_allow_private_hosts: bool = False
     # Public GitHub mirror of the public native catalog, as owner/repo (e.g.
     # SessionFS/marketplace). Set: the public catalog's add commands lead with
     # the keyless GitHub form. A scheduled `sfs catalog export` keeps it in

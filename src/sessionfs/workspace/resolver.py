@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import configparser
 import logging
-import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -107,27 +106,10 @@ class WorkspaceResolver:
         return None
 
     def _normalize_remote(self, url: str) -> str:
-        """Normalize a git remote URL to org/repo form.
+        """Normalize a git remote URL the same way the server does."""
+        from sessionfs.git_remote import normalize_git_remote
 
-        git@github.com:org/repo.git -> org/repo
-        https://github.com/org/repo.git -> org/repo
-        https://github.com/org/repo -> org/repo
-        """
-        url = url.strip()
-        if not url:
-            return ""
-
-        # SSH: git@host:org/repo.git
-        ssh_match = re.match(r"^[\w.-]+@[\w.-]+:(.*?)(?:\.git)?$", url)
-        if ssh_match:
-            return ssh_match.group(1)
-
-        # HTTPS: https://host/org/repo.git or https://host/org/repo
-        https_match = re.match(r"^https?://[^/]+/(.*?)(?:\.git)?$", url)
-        if https_match:
-            return https_match.group(1)
-
-        return url
+        return normalize_git_remote(url)
 
     def _remote_matches(self, repo_dir: Path, target_remote: str) -> bool:
         """Check if any remote in a git repo matches the target."""

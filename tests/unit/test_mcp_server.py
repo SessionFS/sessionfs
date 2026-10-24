@@ -3267,7 +3267,7 @@ class TestProjectResolverRemoteValidation:
             # shapes normalize_git_remote's own tests cover
             ("https://github.com/Acme/Skills.git", "acme/skills"),
             ("  https://github.com/org/repo.git  ", "org/repo"),
-            ("https://github.com/acme/skills/", "acme/skills/"),
+            ("https://github.com/acme/skills/", "acme/skills"),
             ("git@github.com:SessionFS/sessionfs", "sessionfs/sessionfs"),
             ("git@github.com:SessionFS/sessionfs.git", "sessionfs/sessionfs"),
             ("git@gitlab.com:team/project.git", "team/project"),
@@ -3543,10 +3543,13 @@ class TestPathSegmentValidation:
             await mcp_server._handle_get_ticket({"ticket_id": "../../../admin/users"})
         assert requested == []
 
-    def test_ssh_host_dot_segment_rejected(self):
-        """normalize_git_remote returns ssh:// URLs verbatim (host included),
-        so the host must not be able to inject a dot segment."""
-        for remote in ("ssh://../admin", "ssh://./admin", "git://../x/y"):
+    def test_ssh_host_cannot_inject_a_dot_segment(self):
+        """normalize_git_remote drops the host of URL remotes, so a dot-segment
+        host never reaches the key."""
+        for remote, key in (("ssh://../admin", "admin"), ("ssh://./admin", "admin"),
+                            ("git://../x/y", "x/y")):
+            assert mcp_server._strict_repository_identifier(remote) == key
+        for remote in ("ssh://host/../admin", "git://host/x/./y"):
             with pytest.raises(ValueError):
                 mcp_server._strict_repository_identifier(remote)
 

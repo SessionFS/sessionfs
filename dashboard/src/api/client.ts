@@ -1642,13 +1642,15 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'DELETE',
       }),
 
-    discoverModels: (baseUrl: string, apiKey?: string) => {
-      const params = new URLSearchParams({ base_url: baseUrl });
-      if (apiKey) params.set('api_key', apiKey);
-      return request<{ models: { id: string; owned_by: string }[]; error?: string; base_url?: string }>(
-        `/api/v1/settings/judge/models?${params}`,
-      );
-    },
+    // POST so a typed API key travels in the body, never in a URL/access log.
+    discoverModels: (baseUrl: string, apiKey?: string) =>
+      request<{ models: { id: string; owned_by: string }[]; error?: string; base_url?: string }>(
+        '/api/v1/settings/judge/models',
+        {
+          method: 'POST',
+          body: JSON.stringify({ base_url: baseUrl, ...(apiKey ? { api_key: apiKey } : {}) }),
+        },
+      ),
 
     // Admin endpoints
     adminListUsers: (params: { page?: number; page_size?: number; search?: string } = {}) => {

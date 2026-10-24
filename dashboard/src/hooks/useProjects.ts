@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
+import { ApiError } from '../api/client';
 
 export function useProjects() {
   const { auth } = useAuth();
@@ -11,12 +12,25 @@ export function useProjects() {
   });
 }
 
-export function useProject(remote: string) {
+/** Load a project by id, or by a legacy git remote (old links keep working). */
+export function useProject(idOrRemote: string) {
   const { auth } = useAuth();
+  const queryClient = useQueryClient();
   return useQuery({
-    queryKey: ['project', remote],
-    queryFn: () => auth!.client.getProject(remote),
-    enabled: !!auth && !!remote,
+    queryKey: ['project', idOrRemote],
+    queryFn: async () => {
+      const project = await auth!.client.getProject(idOrRemote);
+      // A remote lookup redirects to the id URL; seed that key so the
+      // redirect does not refetch the same project.
+      if (project.id !== idOrRemote) {
+        queryClient.setQueryData(['project', project.id], project);
+      }
+      return project;
+    },
+    enabled: !!auth && !!idOrRemote,
+    // 4xx (not found, no access, merged) will not change on a retry, and a
+    // merged project should redirect right away.
+    retry: (count, err) => !(err instanceof ApiError && err.status < 500) && count < 1,
     staleTime: 60_000,
   });
 }
@@ -39,9 +53,10 @@ export function useUpdateProjectContext() {
   return useMutation({
     mutationFn: ({ remote, doc }: { remote: string; doc: string }) =>
       auth!.client.updateProjectContext(remote, doc),
-    onSuccess: (_data, variables) => {
+    onSuccess: () => {
+      // The project may be cached under its id and under a legacy remote.
       void queryClient.invalidateQueries({ queryKey: ['projects'] });
-      void queryClient.invalidateQueries({ queryKey: ['project', variables.remote] });
+      void queryClient.invalidateQueries({ queryKey: ['project'] });
     },
   });
 }

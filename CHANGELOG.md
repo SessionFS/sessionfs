@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-10-24
+
+**One project per repository, operator merge tools, and a tighter GitLab integration.** Migration 083 (stored git remotes rewritten to one canonical form). No new MCP tools (81).
+
+### Added
+- **Merge duplicate accounts.** Platform admins can fold a duplicate signup into the account to keep with `sfs admin override user-merge SOURCE TARGET --reason "..."` (or `POST /api/v1/admin/users/{source_id}/merge-into/{target_id}`). Dry run by default; `--apply` moves sessions, projects, handoffs, tickets, knowledge and the rest in one transaction, deduplicates org memberships (the higher role wins), revokes the duplicate's API keys, deactivates it and writes one audit entry. It refuses rather than guess when both accounts hold an active plan, or the duplicate has billing or marketplace assets.
+- **Merge duplicate projects as an operator.** `sfs admin override project-merge SOURCE TARGET --reason "..."` (or `POST /api/v1/admin/projects/{target_id}/merge-from/{source_id}`) runs the existing project merge for a platform admin who owns neither project, including two users' personal projects. Dry run by default; the audit entry commits together with the merge (GitHub #89).
+
+### Changed
+- **Project pages use the project id in the URL** (`/projects/proj_...`). Old links by remote redirect, and a merged project's link opens the project it was merged into.
+- The session transcript renderer is split into smaller modules (no visible change).
+
+### Fixed
+- **The same repository no longer becomes two projects.** Remotes written as `ssh://`, `git://`, `git+ssh://`, scp style with a user other than `git` (or none), with an uppercase scheme or a trailing slash were stored as written, so each spelling made a separate project. All of them now map to the repository path, project creation normalizes the value it's given, and migration 083 rewrites stored remotes. Where two projects already exist for one repository, the migration leaves the pair alone and prints both ids so an operator can merge them. Repositories in a home directory or at an absolute path on a personal server keep their host, so different machines don't collide (GitHub #88).
+- Merging accounts clears a session alias the target already uses and keeps one sync-watchlist row per session.
+
+### Security
+- **GitLab instance URLs are validated.** Saving a GitLab instance URL that points at a private, loopback or cloud-metadata address is refused (`422 invalid_gitlab_instance_url`), the host is re-checked before every request so a DNS change after saving can't redirect the token, and redirects aren't followed. Self-hosted deployments with GitLab on a private network can allow private addresses with `SFS_GITLAB_ALLOW_PRIVATE_HOSTS=true` (Helm `api.gitlab.allowPrivateHosts`); metadata addresses stay blocked.
+- The SSRF guards now judge IPv4-mapped IPv6 addresses (`::ffff:169.254.169.254`) by their IPv4 part, and also block `0.0.0.0/8` and `100.64.0.0/10`.
+- **Custom LLM endpoints are checked the same way.** A user-supplied `base_url` (judge settings, audit and narrative-summary requests, model discovery) was fetched by the server without any address check, so a signed-in user could make the API send requests to internal or metadata addresses. The URL is now checked when it is saved or submitted and again before every request, redirects are not followed, and on the hosted service it must be a public https endpoint. Self-hosted deployments whose model gateway runs on a private network keep working: the Helm chart sets `SFS_LLM_ALLOW_PRIVATE_HOSTS=true` (`api.llm.allowPrivateHosts`); metadata addresses stay blocked.
+- Model discovery takes the API key in the request body (`POST /api/v1/settings/judge/models`); `GET` with an `api_key` query parameter now returns 400, because query strings end up in access logs. `GET` without one still uses the saved key.
+- Dashboard dependencies: zod 4.6.7 and undici (memory-exhaustion and denial-of-service advisories).
+
 ## [0.21.1] - 2026-10-23
 
 **Project context you can actually read, a GitLab card in the dashboard, and steadier releases.** No server migrations. No new MCP tools (81).

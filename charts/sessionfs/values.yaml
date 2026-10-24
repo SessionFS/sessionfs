@@ -103,6 +103,23 @@ api:
     privateKeyKey: "github-private-key"      # App private key (PEM)
     webhookSecretKey: "github-webhook-secret"  # webhook HMAC secret
   rateLimitPerMinute: 120  # Requests per minute per API key. Set to 0 to disable.
+  # Per-user GitLab integration (MR comments). Self-hosted installs normally
+  # point at an internal GitLab, so private / loopback / plain-http hosts are
+  # allowed by default here (SFS_GITLAB_ALLOW_PRIVATE_HOSTS). Link-local and
+  # cloud-metadata addresses stay blocked either way. Set false to restrict
+  # the integration to public https GitLab hosts.
+  gitlab:
+    allowPrivateHosts: true
+  # User-supplied LLM endpoints (judge settings / audit / narrative-summary
+  # base_url). Self-hosted installs normally run their model gateway (Ollama,
+  # vLLM, LiteLLM) on the private network, so private / loopback / plain-http
+  # hosts are allowed by default here (SFS_LLM_ALLOW_PRIVATE_HOSTS), like the
+  # GitLab setting above. This also lets any signed-in user make the API call
+  # other private addresses; set false to allow only public https endpoints.
+  # Link-local and cloud-metadata addresses stay blocked either way.
+  # SFS_JUDGE_BASE_URL, set by the operator, is always allowed on a private host.
+  llm:
+    allowPrivateHosts: true
   # Native per-tool skill catalogs (read-only git under /api/v1/git/...).
   marketplace:
     # Public API origin used in catalog clone URLs (SFS_PUBLIC_API_URL), e.g.

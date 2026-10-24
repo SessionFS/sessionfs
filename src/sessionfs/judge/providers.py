@@ -7,10 +7,27 @@ single request and never stored.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 
 import httpx
 
 logger = logging.getLogger("sessionfs.judge.providers")
+
+# Optional SSRF guard for caller-supplied endpoint URLs. The API server
+# installs one (sessionfs.server.llm_url_guard) in create_app; the CLI runs
+# without it so a local Ollama keeps working. It runs right before every
+# outbound request to a custom base_url and raises to refuse it.
+_base_url_guard: Callable[[str], Awaitable[None]] | None = None
+
+
+def set_base_url_guard(guard: Callable[[str], Awaitable[None]] | None) -> None:
+    global _base_url_guard
+    _base_url_guard = guard
+
+
+async def _check_base_url(url: str) -> None:
+    if _base_url_guard is not None:
+        await _base_url_guard(url)
 
 _PROVIDER_DETECT = [
     ("claude-", "anthropic"),
@@ -88,7 +105,7 @@ async def _call_openai_compatible(
     else:
         body["temperature"] = temperature
 
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
         resp = await client.post(url, json=body, headers=headers)
     resp.raise_for_status()
     data = resp.json()
@@ -179,6 +196,7 @@ async def call_llm(
 
     # Custom base URL — always use OpenAI-compatible format
     if base_url:
+        await _check_base_url(base_url)
         return await _call_openai_compatible(base_url, model, system, prompt, api_key, temperature)
 
     if provider == "anthropic":
@@ -231,6 +249,11 @@ async def _call_openrouter_with_headers(
 
 async def discover_models(base_url: str, api_key: str = "") -> list[str]:
     """Query an OpenAI-compatible /models endpoint and return model IDs."""
+    try:
+        await _check_base_url(base_url)
+    except Exception as e:
+        logger.warning("Model discovery refused for %s: %s", base_url, e)
+        return []
     url = base_url.rstrip("/")
     if not url.endswith("/models"):
         if url.endswith("/v1"):
@@ -243,9 +266,9 @@ async def discover_models(base_url: str, api_key: str = "") -> list[str]:
         headers["Authorization"] = f"Bearer {api_key}"
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
             resp = await client.get(url, headers=headers)
-        if resp.status_code >= 400:
+        if resp.status_code >= 300:
             return []
         data = resp.json()
         models_list = data.get("data", data.get("models", []))
@@ -266,6 +289,7 @@ async def discover_models(base_url: str, api_key: str = "") -> list[str]:
 async def validate_base_url(base_url: str, api_key: str, model: str) -> bool:
     """Test a custom endpoint with a minimal request."""
     try:
+        await _check_base_url(base_url)
         result = await _call_openai_compatible(
             url=base_url,
             model=model,

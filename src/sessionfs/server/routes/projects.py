@@ -78,7 +78,14 @@ class CreateProjectRequest(BaseModel):
             # Reserved namespace (structural reclaimed state lives in
             # repo_reclaimed_at, not in this column).
             raise ValueError("git_remote_normalized uses a reserved prefix")
-        return v
+        # Older clients may send a raw URL form; store the canonical value so
+        # the same repo can't become two projects (GitHub #88).
+        from sessionfs.git_remote import normalize_git_remote
+
+        normalized = normalize_git_remote(v)
+        if not normalized:
+            raise ValueError("git_remote_normalized cannot be empty")
+        return normalized
 
 
 class UpdateContextRequest(BaseModel):
@@ -728,9 +735,13 @@ async def link_repo(
     normalized = normalize_git_remote(body.git_remote)
     if not normalized:
         raise HTTPException(400, "Could not parse git remote URL")
-    if normalized.lower().startswith(RECLAIMED_REMOTE_PREFIX):
+    if body.git_remote.strip().lower().startswith(
+        RECLAIMED_REMOTE_PREFIX
+    ) or normalized.lower().startswith(RECLAIMED_REMOTE_PREFIX):
         # Reserved namespace: reclaimed state is structural
-        # (repo_reclaimed_at), never a caller-supplied remote value.
+        # (repo_reclaimed_at), never a caller-supplied remote value. The
+        # raw input is checked too: the normalizer reads "reclaimed:x" as an
+        # scp-style remote and would strip the prefix.
         raise HTTPException(400, "git_remote uses a reserved prefix")
 
     # Nothing is written before verification: end this read transaction so
@@ -1443,13 +1454,22 @@ async def unlink_repo(
     return {"status": "unlinked", "repo_id": repo_id}
 
 
+# Ids minted by create_project. A normalized git remote always contains a
+# dot or slash, so it can never match this.
+_PROJECT_ID_RE = re.compile(r"^proj_[0-9a-f]{16}$")
+
+
 @router.get("/{git_remote_normalized:path}", response_model=ProjectResponse)
 async def get_project(
     git_remote_normalized: str,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ProjectResponse:
-    """Get a project context by git remote.
+    """Get a project context by project id or git remote.
+
+    A segment matching ``proj_<16 hex>`` is looked up by id; anything
+    else is a normalized git remote.  Both share the access, tombstone
+    and 404/403 handling below.
 
     User must be the project owner, a member of the project's org
     (v0.10.22 — tk_7a457574c5624e12), or have captured at least one
@@ -1470,9 +1490,14 @@ async def get_project(
     # Resolve without following tombstones first — we need to detect
     # the tombstone so we can run F4's access-on-source-before-disclose.
     try:
-        project = await resolve_project_by_remote(
-            db, git_remote_normalized, follow_tombstone=False,
-        )
+        if _PROJECT_ID_RE.match(git_remote_normalized):
+            project = await resolve_project_by_id(
+                db, git_remote_normalized, follow_tombstone=False,
+            )
+        else:
+            project = await resolve_project_by_remote(
+                db, git_remote_normalized, follow_tombstone=False,
+            )
     except ProjectResolutionLoopError:
         raise HTTPException(409, {
             "error": "resolution_loop",

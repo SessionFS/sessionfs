@@ -181,7 +181,7 @@ export default function ProjectsPage() {
             <ProjectCard
               key={p.id}
               project={p}
-              onClick={() => navigate(`/projects/${encodeURIComponent(p.git_remote_normalized)}`)}
+              onClick={() => navigate(`/projects/${p.id}`)}
             />
           ))}
         </div>
@@ -258,9 +258,9 @@ export default function ProjectsPage() {
       {showCreate && (
         <CreateProjectModal
           onClose={() => setShowCreate(false)}
-          onCreated={(remote) => {
+          onCreated={(project) => {
             setShowCreate(false);
-            navigate(`/projects/${encodeURIComponent(remote)}?edit=1`);
+            navigate(`/projects/${project.id}?edit=1`);
           }}
         />
       )}

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from datetime import datetime, timezone
 
 from sqlalchemy import and_, case, func, or_, select, update
@@ -36,6 +37,7 @@ from sessionfs.server.db.models import (
     RetrievalAuditEvent,
     Session,
     Ticket,
+    User,
     WikiPageRevision,
 )
 
@@ -1134,6 +1136,9 @@ async def merge_projects(
     dry_run: bool,
     persona_policy: str,
     session_factory: async_sessionmaker,
+    *,
+    platform_admin: bool = False,
+    before_commit: Callable[[dict], None] | None = None,
 ) -> dict:
     """Merge source project into target project.
 
@@ -1145,6 +1150,12 @@ async def merge_projects(
         dry_run: If True, validate + compute plan only (ZERO writes).
         persona_policy: 'rename' | 'skip' | 'merge_content'.
         session_factory: Factory for fresh sessions (audit survival).
+        platform_admin: The caller is acting as a platform admin (admin
+            override, GitHub #89): under the locks, re-check that they are
+            still an active platform admin instead of a project admin.
+        before_commit: Called with the final stats just before the merge
+            commits, so the caller can add rows (an AdminAction) to ``db``
+            that commit or roll back together with the merge.
 
     Returns:
         dict with keys: dry_run, stats, persona_collisions, slug_collisions,
@@ -1275,10 +1286,19 @@ async def merge_projects(
         # changes take the same org lock, so the standing we read is the
         # standing that holds until commit.
         await lock_scopes(db, org_ids=[source.org_id])
-        if not await user_is_project_admin(db, user_id, source):
-            raise HTTPException(403, "Not authorized on source project")
-        if not await user_is_project_admin(db, user_id, target):
-            raise HTTPException(403, "Not authorized on target project")
+        if platform_admin:
+            actor = (
+                await db.execute(
+                    select(User.tier, User.is_active).where(User.id == user_id)
+                )
+            ).first()
+            if actor is None or actor.tier != "admin" or actor.is_active is False:
+                raise HTTPException(403, "Platform admin access required")
+        else:
+            if not await user_is_project_admin(db, user_id, source):
+                raise HTTPException(403, "Not authorized on source project")
+            if not await user_is_project_admin(db, user_id, target):
+                raise HTTPException(403, "Not authorized on target project")
         await db.execute(
             select(Project)
             .where(Project.id.in_([source_id, target_id]))
@@ -1437,6 +1457,9 @@ async def merge_projects(
         # pending handoffs to the target — the stranding guards and the
         # claim route attribute them to the live project from now on.
         await _step_handoff_anchors(db, pending_handoff_ids, target_id)
+
+        if before_commit is not None:
+            before_commit(stats)
 
         # Merge changes committed — all-or-nothing success. This also
         # releases the scope locks (and the SQLite writer lock).

@@ -228,6 +228,11 @@ async def run_audit(
         import os
         base_url = os.environ.get("SFS_JUDGE_BASE_URL") or None
 
+    # SSRF policy for the endpoint (re-checked before each request as well).
+    from sessionfs.server.routes.settings import _check_llm_base_url_or_400
+
+    base_url = await _check_llm_base_url_or_400(base_url)
+
     # Require either an API key or a base URL (some endpoints like Ollama need no key)
     if not llm_api_key and not base_url:
         raise HTTPException(

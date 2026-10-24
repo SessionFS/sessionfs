@@ -26,7 +26,7 @@ function nameFromRemote(remote: string): string {
 
 interface Props {
   onClose: () => void;
-  onCreated: (remote: string) => void;
+  onCreated: (project: { id: string; git_remote_normalized: string }) => void;
 }
 
 export default function CreateProjectModal({ onClose, onCreated }: Props) {
@@ -62,9 +62,9 @@ export default function CreateProjectModal({ onClose, onCreated }: Props) {
     createProject.mutate(
       { name: nameFromRemote(trimmed), git_remote_normalized: trimmed },
       {
-        onSuccess: () => {
+        onSuccess: (project) => {
           addToast('success', 'Project created');
-          onCreated(trimmed);
+          onCreated(project);
         },
         onError: (err) => {
           addToast('error', `Create failed: ${errorMessage(err)}`);

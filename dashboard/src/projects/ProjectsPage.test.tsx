@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ProjectsPage from './ProjectsPage';
 
@@ -52,4 +52,20 @@ describe('ProjectsPage view toggle', () => {
     expect(screen.getByText('one')).toBeInTheDocument();
     expect(screen.getByText('two')).toBeInTheDocument();
   });
+
+  it('opens a project at its id URL, not its git remote', async () => {
+    const user = userEvent.setup();
+    render(
+      <MemoryRouter>
+        <ProjectsPage />
+        <LocationDisplay />
+      </MemoryRouter>,
+    );
+    await user.click(screen.getByText('two'));
+    expect(screen.getByTestId('path').textContent).toBe('/projects/p2');
+  });
 });
+
+function LocationDisplay() {
+  return <span data-testid="path">{useLocation().pathname}</span>;
+}

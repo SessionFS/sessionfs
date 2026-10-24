@@ -18,6 +18,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sessionfs.git_remote import normalize_git_remote
 from sessionfs.server.db.models import Project, ProjectRepo
 
 
@@ -77,30 +78,44 @@ async def resolve_project_by_remote(
     if not git_remote_normalized:
         return None
 
-    # Primary path: project_repos join table (source of truth)
-    stmt = (
-        select(Project)
-        .join(ProjectRepo, ProjectRepo.project_id == Project.id)
-        .where(ProjectRepo.git_remote_normalized == git_remote_normalized)
-    )
-    if for_update:
-        stmt = stmt.with_for_update(of=Project)
-    result = await db.execute(stmt)
-    project = result.scalar_one_or_none()
+    # Callers may hand in a raw or older-normalized form (old clients, URL
+    # path segments). The exact value is tried first, so a stored value is
+    # always found as itself (including a duplicate migration 083 left under
+    # its pre-083 form until it is merged); then the canonical form, which
+    # is where every other spelling of the same repo lives (GitHub #88).
+    candidates = [git_remote_normalized]
+    canonical = normalize_git_remote(git_remote_normalized)
+    if canonical and canonical != git_remote_normalized:
+        candidates.append(canonical)
 
-    # Fallback: legacy projects.git_remote_normalized column. A
-    # repo-reclaimed project lost its repository: its legacy column is NULL
-    # (never matches) and the explicit guard below keeps any pre-migration
-    # row unreachable by its former remote.
-    if project is None:
-        stmt = select(Project).where(
-            Project.git_remote_normalized == git_remote_normalized,
-            Project.repo_reclaimed_at.is_(None),
+    project = None
+    for remote in candidates:
+        # Primary path: project_repos join table (source of truth)
+        stmt = (
+            select(Project)
+            .join(ProjectRepo, ProjectRepo.project_id == Project.id)
+            .where(ProjectRepo.git_remote_normalized == remote)
         )
         if for_update:
-            stmt = stmt.with_for_update()
+            stmt = stmt.with_for_update(of=Project)
         result = await db.execute(stmt)
         project = result.scalar_one_or_none()
+
+        # Fallback: legacy projects.git_remote_normalized column. A
+        # repo-reclaimed project lost its repository: its legacy column is
+        # NULL (never matches) and the explicit guard below keeps any
+        # pre-migration row unreachable by its former remote.
+        if project is None:
+            stmt = select(Project).where(
+                Project.git_remote_normalized == remote,
+                Project.repo_reclaimed_at.is_(None),
+            )
+            if for_update:
+                stmt = stmt.with_for_update()
+            result = await db.execute(stmt)
+            project = result.scalar_one_or_none()
+        if project is not None:
+            break
 
     # Tombstone redirect: follow merged_into_project_id chain.
     # repo_reclaimed projects (repo_reclaimed_at IS NOT NULL,

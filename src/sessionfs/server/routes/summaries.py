@@ -200,6 +200,11 @@ async def generate_narrative_summary(
     if not api_key:
         raise HTTPException(400, "No API key provided — set judge settings or pass llm_api_key")
 
+    # SSRF policy for the endpoint (re-checked before each request as well).
+    from sessionfs.server.routes.settings import _check_llm_base_url_or_400
+
+    base_url = await _check_llm_base_url_or_400(base_url)
+
     from sessionfs.server.services.summarizer import generate_narrative
 
     summary = await generate_narrative(

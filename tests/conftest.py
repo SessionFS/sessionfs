@@ -95,6 +95,19 @@ def _isolated_credentials(tmp_path_factory: pytest.TempPathFactory, monkeypatch:
     yield
 
 
+@pytest.fixture(autouse=True)
+def _reset_llm_base_url_guard():
+    """create_app installs a process-wide SSRF guard into the LLM provider
+    module; start every test without it so CLI-side provider tests are not
+    affected by an app built in an earlier test (an app fixture re-installs
+    it after this runs)."""
+    from sessionfs.judge import providers
+
+    providers.set_base_url_guard(None)
+    yield
+    providers.set_base_url_guard(None)
+
+
 @pytest.fixture
 def tmp_store(tmp_path: Path) -> Path:
     """Create a temporary store directory."""

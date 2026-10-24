@@ -67,6 +67,7 @@ async def put_judge_settings(
     db: AsyncSession = Depends(get_db),
 ) -> JudgeSettingsResponse:
     """Store judge LLM settings with encrypted API key."""
+    body.base_url = await _check_llm_base_url_or_400(body.base_url)
     fernet = _get_fernet()
     encrypted_key = fernet.encrypt(body.api_key.encode()).decode()
 
@@ -183,31 +184,72 @@ async def update_summarize_trigger(
     return {"trigger": body.trigger}
 
 
-@router.get("/judge/models")
-async def discover_models(
-    base_url: str = Query(..., description="OpenAI-compatible endpoint URL"),
-    api_key: str = Query("", description="API key (optional for local endpoints)"),
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """Discover available models from an OpenAI-compatible endpoint.
+class DiscoverModelsRequest(BaseModel):
+    base_url: str = Field(..., max_length=500)
+    api_key: str = Field("", max_length=4096)
 
-    Queries the /v1/models (or /models) endpoint and returns the model list.
-    If no explicit API key provided, tries the user's saved key.
-    """
-    # Fall back to saved key if none provided
+
+_DISCOVERY_MAX_BYTES = 2 * 1024 * 1024
+_ENDPOINT_REFUSED = (
+    "This endpoint URL is not allowed. It must be https and resolve to public "
+    "addresses (self-hosted servers can allow private hosts with "
+    "SFS_LLM_ALLOW_PRIVATE_HOSTS)."
+)
+
+
+async def _check_llm_base_url_or_400(base_url: str | None) -> str | None:
+    """Validate a user-supplied LLM endpoint; 400 with a generic message (the
+    resolved addresses are logged, never returned)."""
+    if base_url is None or not base_url.strip():
+        return None
+    import asyncio
+
+    from sessionfs.server.llm_url_guard import SsrfError, validate_llm_base_url
+
+    try:
+        return await asyncio.to_thread(validate_llm_base_url, base_url)
+    except SsrfError as exc:
+        logger.warning("Refused LLM endpoint %s: %s", base_url[:200], exc)
+        raise HTTPException(400, _ENDPOINT_REFUSED) from None
+
+
+async def _saved_judge_api_key(user: User, db: AsyncSession) -> str:
+    stmt = select(UserJudgeSettings).where(UserJudgeSettings.user_id == user.id)
+    result = await db.execute(stmt)
+    settings = result.scalar_one_or_none()
+    if settings and settings.encrypted_api_key:
+        try:
+            return _get_fernet().decrypt(settings.encrypted_api_key.encode()).decode()
+        except Exception:
+            return ""
+    return ""
+
+
+async def _fetch_models(client: httpx.AsyncClient, url: str, headers: dict[str, str]) -> tuple[int, bytes]:
+    async with client.stream("GET", url, headers=headers) as resp:
+        if resp.status_code >= 300:
+            return resp.status_code, b""
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in resp.aiter_bytes():
+            size += len(chunk)
+            if size > _DISCOVERY_MAX_BYTES:
+                raise ValueError("response too large")
+            chunks.append(chunk)
+        return resp.status_code, b"".join(chunks)
+
+
+async def _discover_models(base_url: str, api_key: str, user: User, db: AsyncSession) -> dict:
+    from sessionfs.server.llm_url_guard import guard_llm_base_url
+
+    checked = await _check_llm_base_url_or_400(base_url)
+    if checked is None:
+        raise HTTPException(400, "base_url is required")
+
     if not api_key:
-        stmt = select(UserJudgeSettings).where(UserJudgeSettings.user_id == user.id)
-        result = await db.execute(stmt)
-        settings = result.scalar_one_or_none()
-        if settings and settings.encrypted_api_key:
-            try:
-                fernet = _get_fernet()
-                api_key = fernet.decrypt(settings.encrypted_api_key.encode()).decode()
-            except Exception:
-                pass
+        api_key = await _saved_judge_api_key(user, db)
 
-    url = base_url.rstrip("/")
+    url = checked
     if not url.endswith("/models"):
         if url.endswith("/v1"):
             url = f"{url}/models"
@@ -219,42 +261,79 @@ async def discover_models(
         headers["Authorization"] = f"Bearer {api_key}"
 
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(url, headers=headers)
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+            # Re-checked right before each request (DNS rebinding).
+            await guard_llm_base_url(checked)
+            status, raw = await _fetch_models(client, url, headers)
+            if status == 404:
+                # Some endpoints use /models without the /v1 prefix.
+                alt_url = checked + "/models"
+                if alt_url != url:
+                    await guard_llm_base_url(checked)
+                    status, raw = await _fetch_models(client, alt_url, headers)
 
-        if resp.status_code == 404:
-            # Some endpoints use /models without /v1 prefix
-            alt_url = base_url.rstrip("/") + "/models"
-            if alt_url != url:
-                resp = await httpx.AsyncClient(timeout=15).__aenter__()
-                async with httpx.AsyncClient(timeout=15) as client:
-                    resp = await client.get(alt_url, headers=headers)
+        if status >= 300:
+            return {"models": [], "error": f"Endpoint returned {status}"}
 
-        if resp.status_code >= 400:
-            return {"models": [], "error": f"Endpoint returned {resp.status_code}"}
-
-        data = resp.json()
-        models_list = data.get("data", data.get("models", []))
+        data = json.loads(raw)
+        models_list = data.get("data", data.get("models", [])) if isinstance(data, dict) else []
+        if not isinstance(models_list, list):
+            models_list = []
 
         models = []
-        for m in models_list:
+        for m in models_list[:1000]:
             if isinstance(m, dict):
                 model_id = m.get("id", m.get("model", ""))
-                if model_id:
+                if model_id and isinstance(model_id, str):
+                    owned_by = m.get("owned_by", "")
                     models.append({
-                        "id": model_id,
-                        "owned_by": m.get("owned_by", ""),
+                        "id": model_id[:200],
+                        "owned_by": owned_by[:200] if isinstance(owned_by, str) else "",
                     })
-            elif isinstance(m, str):
-                models.append({"id": m, "owned_by": ""})
+            elif isinstance(m, str) and m:
+                models.append({"id": m[:200], "owned_by": ""})
 
-        return {"models": models, "base_url": base_url}
+        return {"models": models, "base_url": checked}
 
     except httpx.TimeoutException:
         return {"models": [], "error": "Connection timed out"}
     except Exception as e:
-        logger.warning("Model discovery failed for %s: %s", base_url, e)
-        return {"models": [], "error": str(e)}
+        # Never echo the exception text: it would turn this into a network
+        # probe (connection refused vs. TLS error vs. refused address).
+        logger.warning("Model discovery failed for %s: %s", base_url[:200], e)
+        return {"models": [], "error": "Could not list models from this endpoint"}
+
+
+@router.get("/judge/models")
+async def discover_models(
+    base_url: str = Query(..., max_length=500, description="OpenAI-compatible endpoint URL"),
+    api_key: str | None = Query(None, include_in_schema=False),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Discover available models from an OpenAI-compatible endpoint using the
+    caller's saved judge API key (if any).
+
+    To test a key that is not saved yet, use POST /judge/models: an API key in
+    a query string lands in access logs, so it is refused here.
+    """
+    if api_key:
+        raise HTTPException(
+            400,
+            "Send the API key in the body of POST /api/v1/settings/judge/models, not in the query string.",
+        )
+    return await _discover_models(base_url, "", user, db)
+
+
+@router.post("/judge/models")
+async def discover_models_post(
+    body: DiscoverModelsRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Discover available models; the optional API key travels in the body.
+    Without one, the caller's saved judge key is used."""
+    return await _discover_models(body.base_url, body.api_key, user, db)
 
 
 # --- GitHub installation settings ---
@@ -1344,6 +1423,23 @@ async def update_gitlab_settings(
     db: AsyncSession = Depends(get_db),
 ) -> GitLabSettingsResponse:
     """Create or update GitLab integration settings."""
+    import asyncio
+
+    from sessionfs.server.gitlab_client import SsrfError, validate_gitlab_instance_url
+
+    try:
+        instance_url = await asyncio.to_thread(
+            validate_gitlab_instance_url, body.instance_url
+        )
+    except SsrfError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "invalid_gitlab_instance_url",
+                "message": f"GitLab instance URL rejected: {exc}",
+            },
+        ) from exc
+    body.instance_url = instance_url
     import base64
     import hashlib as _hashlib
     import secrets as _secrets

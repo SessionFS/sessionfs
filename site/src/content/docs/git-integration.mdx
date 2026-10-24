@@ -50,6 +50,8 @@ SessionFS supports GitLab merge request comments for both cloud and self-hosted 
 
 Works with any GitLab instance — set the instance URL to your instance in Settings → Integrations → GitLab (or `instance_url` in the API).
 
+The instance URL must use https and resolve to a public address; a URL pointing at a private, loopback or cloud-metadata address is refused with `422 invalid_gitlab_instance_url`. The host is checked again before every request, so a DNS change after saving can't redirect your token, and redirects are not followed. Self-hosted SessionFS deployments with GitLab on a private network can allow private addresses with `SFS_GITLAB_ALLOW_PRIVATE_HOSTS=true` (the Helm chart's default, `api.gitlab.allowPrivateHosts`); cloud-metadata addresses stay blocked. See [Environment Variables](/environment/#gitlab).
+
 ## PR/MR comment format
 
 ```markdown

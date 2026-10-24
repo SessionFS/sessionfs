@@ -12,6 +12,8 @@ data:
   {{- if .Values.api.corsOrigins }}
   SFS_CORS_ORIGINS: {{ .Values.api.corsOrigins | quote }}
   {{- end }}
+  SFS_GITLAB_ALLOW_PRIVATE_HOSTS: {{ (.Values.api.gitlab).allowPrivateHosts | default false | quote }}
+  SFS_LLM_ALLOW_PRIVATE_HOSTS: {{ (.Values.api.llm).allowPrivateHosts | default false | quote }}
   {{- with .Values.api.marketplace }}
   {{- if .publicApiUrl }}
   SFS_PUBLIC_API_URL: {{ .publicApiUrl | quote }}
