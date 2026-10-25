@@ -79,14 +79,12 @@ def delete_session_rows(conn: sqlite3.Connection, session_id: str) -> None:
     constraint failed" whenever a native ref exists. Every local delete
     path (``sfs delete``, server-410 cleanup, watchers) uses this.
     """
-    try:
+    # A single transaction: if either DELETE fails, the connection rolls back
+    # so no half-done write transaction is left open and the index stays
+    # consistent (tracked rows and session rows are deleted together).
+    with conn:
         conn.execute("DELETE FROM tracked_sessions WHERE sfs_session_id = ?", (session_id,))
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-        conn.commit()
-    except BaseException:
-        # Never leave a half-done write transaction open on the connection.
-        conn.rollback()
-        raise
 
 
 def prune_session_rows(conn: sqlite3.Connection, session_id: str) -> None:
@@ -100,18 +98,15 @@ def prune_session_rows(conn: sqlite3.Connection, session_id: str) -> None:
     the ``last_captured_at`` marker it was captured — are cleared. The source
     is then treated as already seen and only recaptured once it changes.
     """
-    try:
+    # One transaction, same rationale as ``delete_session_rows``: the UPDATE
+    # and DELETE commit together or roll back together.
+    with conn:
         conn.execute(
             "UPDATE tracked_sessions SET sfs_session_id = NULL, last_captured_at = NULL "
             "WHERE sfs_session_id = ?",
             (session_id,),
         )
         conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-        conn.commit()
-    except BaseException:
-        # Never leave a half-done write transaction open on the connection.
-        conn.rollback()
-        raise
 
 
 class SessionIndex:

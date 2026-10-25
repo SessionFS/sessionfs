@@ -10,6 +10,7 @@ Each path catches `SyncDeletedError` and calls `cleanup_deleted_session()`.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import shutil
 from pathlib import Path
@@ -48,26 +49,38 @@ def cleanup_deleted_session(
     except Exception as exc:
         logger.warning("Failed to mark %s as deleted: %s", session_id, exc)
 
-    # 2. Remove .sfs directory
-    if session_dir and session_dir.is_dir():
-        try:
-            shutil.rmtree(session_dir)
-            logger.info("Removed local dir %s", session_dir)
-        except OSError as exc:
-            # Keep the index rows so the session stays visible and the
-            # removal can be retried.
-            logger.warning("Failed to remove %s: %s", session_dir, exc)
-            return
+    # 2. Remove .sfs directory and its index rows under the per-session lock.
+    # A capture that was already in flight re-checks the exclusion list (set
+    # in step 1) at commit time under the same lock, so it skips instead of
+    # resurrecting the directory we just removed.
+    from sessionfs.store.local import lock_session_dir
 
-    # 3. Remove from SQLite index (sessions + tracked_sessions)
-    if store is not None:
-        try:
-            conn = getattr(getattr(store, "index", None), "_conn", None)
-            if conn is not None:
-                from sessionfs.store.index import delete_session_rows
+    sessions_dir = getattr(store, "sessions_dir", None) if store is not None else None
+    if sessions_dir is not None and session_id:
+        _lock_ctx = lock_session_dir(sessions_dir, session_id)
+    else:
+        _lock_ctx = contextlib.nullcontext()
 
-                # tracked_sessions (native tool session -> .sfs id) first:
-                # it references sessions and foreign keys are enforced.
-                delete_session_rows(conn, session_id)
-        except Exception as exc:
-            logger.warning("Failed to clean index for %s: %s", session_id, exc)
+    with _lock_ctx:
+        if session_dir and session_dir.is_dir():
+            try:
+                shutil.rmtree(session_dir)
+                logger.info("Removed local dir %s", session_dir)
+            except OSError as exc:
+                # Keep the index rows so the session stays visible and the
+                # removal can be retried.
+                logger.warning("Failed to remove %s: %s", session_dir, exc)
+                return
+
+        # 3. Remove from SQLite index (sessions + tracked_sessions)
+        if store is not None:
+            try:
+                conn = getattr(getattr(store, "index", None), "_conn", None)
+                if conn is not None:
+                    from sessionfs.store.index import delete_session_rows
+
+                    # tracked_sessions (native tool session -> .sfs id) first:
+                    # it references sessions and foreign keys are enforced.
+                    delete_session_rows(conn, session_id)
+            except Exception as exc:
+                logger.warning("Failed to clean index for %s: %s", session_id, exc)

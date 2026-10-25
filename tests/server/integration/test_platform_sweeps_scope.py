@@ -40,6 +40,7 @@ SWEEPS: list[tuple[str, dict, str | None]] = [
     ("/api/v1/admin/sweeps/org-digest", {}, "run_org_digest"),
     ("/api/v1/admin/sweeps/kb-compile", {}, "kb_compile_sweep"),
     ("/api/v1/admin/sweeps/helper-retention", {}, "helper_retention_sweep"),
+    ("/api/v1/admin/sweeps/ticket-notifications", {}, "run_ticket_notifications_sweep"),
 ]
 SWEEP_PATHS = {path for path, _, _ in SWEEPS}
 

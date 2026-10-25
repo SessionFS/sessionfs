@@ -19,9 +19,15 @@ Available on the **Enterprise** plan. Added in v0.23.0.
 
 Answers and audit rows record which of the two was used (`user` or `org`), never the key.
 
+### Supported providers
+
+The same provider list powers the security review, the helper, summaries and Jira drafting (v0.24.0): Anthropic, OpenAI, Google Gemini, OpenRouter, DeepSeek, Kimi (Moonshot), xAI (Grok), Mistral, Z.ai (GLM), Qwen (Alibaba Cloud), MiniMax, Groq, Together AI and Fireworks AI. Pick the provider, paste your key and choose a model: **Fetch models** lists the models your key can use, and any model id can be typed in. A custom OpenAI-compatible endpoint URL (LiteLLM, vLLM, Ollama, or a regional endpoint) replaces the provider default. A saved key is only ever sent to the provider or endpoint it was saved with; changing either requires entering the key again.
+
+Gateways that reject `temperature`, `top_p` or reasoning settings for a reasoning model are handled automatically: the request is retried once without them, and that is remembered for the endpoint and model.
+
 ## Where to use it
 
-- **Dashboard.** **Ask the helper** in the sidebar or the Cmd+K palette opens a drawer. The same button on a project or session page scopes the question to it. Answers stream in with links to the cited sessions; earlier threads are under **Conversations**.
+- **Dashboard.** **Ask the helper** in the sidebar or the Cmd+K palette opens a drawer. The same button on a project or session page scopes the question to it. Answers stream in with citations; a citation opens the session at the exact message and highlights it (`/sessions/<id>?msg=<n>`). The composer stays pinned at the bottom, and earlier threads and **New** are always at hand. Retrying a failed answer doesn't save your question twice.
 - **CLI.** `sfs helper ask "Where did we fix the SSO redirect?"` streams the answer to the terminal. `sfs helper conversations list|show|delete` manages threads, and `sfs helper status` shows whether the helper is available and which key it would use. See the [CLI reference](/cli/#sfs-helper-enterprise).
 - **MCP.** The `ask_session_helper` tool returns the whole answer with its citations, so an agent can ask without shelling out. See [MCP Server](/mcp/#ask_session_helper).
 
@@ -56,7 +62,7 @@ Request body for `POST /api/v1/helper/turns`:
 }
 ```
 
-`conversation_id` and `scope` are optional (`session_ids` takes up to 100 ids). When streaming, the events are `conversation` (always first), `text`, `tool_call`, `tool_result`, `citation`, `done` and `error`. A keep-alive comment is sent every 15 seconds. If the client disconnects, the model call is cancelled and the partial answer is kept.
+`conversation_id` and `scope` are optional (`session_ids` takes up to 100 ids). Set `"retry": true` when re-asking after a failed answer: if the thread's last question is still unanswered and identical, it is reused instead of being stored twice. When streaming, the events are `conversation` (always first), `text`, `tool_call`, `tool_result`, `citation`, `done` and `error`. A keep-alive comment is sent every 15 seconds. If the client disconnects, the model call is cancelled and the partial answer is kept.
 
 With `"stream": false` the response is:
 

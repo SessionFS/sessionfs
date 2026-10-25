@@ -15,8 +15,6 @@ from __future__ import annotations
 import fcntl
 import json
 import logging
-import os
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -56,23 +54,15 @@ def _read_deleted(path: Path) -> dict[str, Any]:
 
 
 def _write_deleted(path: Path, data: dict[str, Any]) -> None:
-    """Atomically write the deleted.json file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    # Write to temp file in same directory, then rename (atomic on POSIX)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), suffix=".tmp", prefix="deleted_"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, default=str)
-        os.replace(tmp_path, str(path))
-    except Exception:
-        # Clean up temp file on failure
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    """Durably and atomically write the deleted.json file.
+
+    Uses the shared fsutil helper so the temp file is fsynced before the
+    rename and the parent directory fsynced after it — a crash can't leave a
+    truncated or half-written exclusion list behind.
+    """
+    from sessionfs.store.fsutil import atomic_write_text
+
+    atomic_write_text(path, json.dumps(data, indent=2, default=str))
 
 
 def _lock_path(path: Path) -> Path:

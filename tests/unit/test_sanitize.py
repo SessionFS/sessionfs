@@ -8,7 +8,12 @@ columns stay NUL-free. The archive blob itself is never modified.
 
 from __future__ import annotations
 
-from sessionfs.server.sanitize import sanitize_meta, strip_nul
+from sessionfs.server.sanitize import (
+    sanitize_archive_string,
+    sanitize_meta,
+    sanitize_surrogates,
+    strip_nul,
+)
 
 
 def test_strip_nul_removes_single_nul():
@@ -62,3 +67,35 @@ def test_sanitize_meta_none_values_left_untouched():
     out, count = sanitize_meta(meta)
     assert out["title"] is None
     assert count == 0
+
+
+def test_sanitize_surrogates_replaces_lone_surrogates():
+    assert sanitize_surrogates("a\ud800b") == "a�b"
+    assert sanitize_surrogates("\udfff") == "�"
+    # A well-formed surrogate pair (U+1F600) round-trips unchanged.
+    assert sanitize_surrogates("😀") == "😀"
+    # Already-encodable strings are returned verbatim.
+    assert sanitize_surrogates("plain ascii") == "plain ascii"
+
+
+def test_sanitize_surrogates_empty_and_non_string():
+    assert sanitize_surrogates("") == ""
+
+
+def test_sanitize_archive_string_strips_nul_and_surrogates():
+    value, count = sanitize_archive_string("a\x00b\ud800c")
+    assert value == "ab�c"
+    assert count == 1
+
+
+def test_sanitize_meta_replaces_lone_surrogates_in_string_keys():
+    meta = {
+        "title": "Branch \ud800name",
+        "model_id": "claude-opus-4-6",
+        "message_count": 5,
+    }
+    out, count = sanitize_meta(meta)
+    assert out["title"] == "Branch �name"
+    assert out["model_id"] == "claude-opus-4-6"
+    assert out["message_count"] == 5
+    assert count == 0  # no NULs, only a surrogate replacement

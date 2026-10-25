@@ -9,7 +9,11 @@ turning ``O'Brien & Co`` into ``O&amp;#x27;Brien &amp;amp; Co``.
 
 from __future__ import annotations
 
-from sessionfs.server.email_templates import transfer_proposed_email
+from sessionfs.server.email_templates import (
+    ticket_notification_email,
+    ticket_notification_text,
+    transfer_proposed_email,
+)
 
 
 def test_transfer_proposed_email_escapes_proposer_name_once() -> None:
@@ -29,3 +33,46 @@ def test_transfer_proposed_email_escapes_proposer_name_once() -> None:
     # No double-escaping: the escaped sequences must not themselves be escaped.
     assert "&amp;#x27;" not in html
     assert "&amp;amp;" not in html
+
+
+def test_ticket_notification_email_links_to_inbox_ticket_deep_link() -> None:
+    # The "View ticket" link must land on the ticket inside the inbox, i.e.
+    # /projects/{pid}?tab=work&sub=tickets&ticket={tid}, not a bare project URL
+    # that drops the user on the overview.
+    html = ticket_notification_email(
+        notifications=[
+            {
+                "ticket_title": "Fix flaky test",
+                "ticket_id": "tk_1",
+                "project_id": "proj_1",
+                "kind": "comment",
+                "summary": "New comment",
+            }
+        ],
+        dashboard_url="https://app.example.com/",
+    )
+    assert (
+        "https://app.example.com/projects/proj_1"
+        "?tab=work&sub=tickets&ticket=tk_1" in html
+    )
+    # The link must not be the bare project-overview link.
+    assert "?tab=work\" " not in html
+
+
+def test_ticket_notification_text_links_to_inbox_ticket_deep_link() -> None:
+    text = ticket_notification_text(
+        notifications=[
+            {
+                "ticket_title": "Fix flaky test",
+                "ticket_id": "tk_1",
+                "project_id": "proj_1",
+                "kind": "comment",
+                "summary": "New comment",
+            }
+        ],
+        dashboard_url="https://app.example.com/",
+    )
+    assert (
+        "https://app.example.com/projects/proj_1"
+        "?tab=work&sub=tickets&ticket=tk_1" in text
+    )

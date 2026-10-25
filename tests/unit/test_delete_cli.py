@@ -144,6 +144,56 @@ def test_delete_no_scope_prints_error():
     assert "specify" in (result.output or result.stdout or "").lower() or result.exit_code != 0
 
 
+def test_delete_everywhere_writes_tombstone_when_store_unavailable(
+    tmp_path: Path, monkeypatch
+):
+    """``sfs delete --everywhere`` must still tombstone when the store can't open.
+
+    The cloud delete succeeds even if the local store is unusable (no store
+    dir, corrupt index, …); the exclusion marker is independent of the store
+    and must be written either way, or a later capture/sync resurrects a local
+    copy of the just-deleted session.
+    """
+    import httpx
+
+    from sessionfs.cli import cmd_delete
+
+    def _no_store():
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(cmd_delete, "open_store", _no_store)
+    monkeypatch.setattr(
+        cmd_delete, "_load_sync_config", lambda: {"api_url": "http://x", "api_key": "k"}
+    )
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"purge_after": "30d"}
+
+    monkeypatch.setattr(httpx, "delete", lambda *a, **k: _Resp())
+
+    marked: dict[str, str] = {}
+
+    def _mark_deleted(sid: str, scope: str, base_dir=None):
+        marked[sid] = scope
+
+    monkeypatch.setattr("sessionfs.store.deleted.mark_deleted", _mark_deleted)
+    monkeypatch.setattr("sessionfs.cli.common.get_store_dir", lambda: tmp_path)
+
+    cmd_delete.delete(
+        session_id="ses_aaaa1111bbbb2222",
+        cloud=False,
+        local=False,
+        everywhere=True,
+        force=True,
+    )
+
+    assert marked == {"ses_aaaa1111bbbb2222": "everywhere"}
+
+
+
 # ── Test 21: Autosync skips sessions in deleted.json (push direction) ──
 
 def test_autosync_push_skips_excluded(tmp_path: Path):

@@ -70,12 +70,20 @@ def _import_from_claude_code() -> None:
 
             try:
                 cc_session = parse_session(Path(s["path"]))
-                session_dir = store.allocate_session_dir(sfs_id)
-                convert_session(cc_session, session_dir.parent, session_id=sfs_id, session_dir=session_dir)
 
-                manifest = json.loads((session_dir / "manifest.json").read_text())
-                store.upsert_session_metadata(sfs_id, manifest, str(session_dir))
-                imported += 1
+                def _write(staging: Path):
+                    convert_session(
+                        cc_session, staging.parent,
+                        session_id=sfs_id, session_dir=staging,
+                    )
+                    manifest_path = staging / "manifest.json"
+                    if manifest_path.exists():
+                        return json.loads(manifest_path.read_text())
+                    return None
+
+                outcome = store.commit_session(sfs_id, _write)
+                if not outcome.skipped:
+                    imported += 1
             except Exception as e:
                 err_console.print(f"[red]Error importing {sfs_id}: {e}[/red]")
 

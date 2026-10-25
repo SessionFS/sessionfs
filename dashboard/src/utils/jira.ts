@@ -33,16 +33,35 @@ export function jiraErrorCode(err: unknown): string | undefined {
 }
 
 /**
- * Jira promotion is gated on the user's *effective* tier being Enterprise.
- * Legacy accounts still carry `tier: 'admin'` (pre-migration), which the
- * backend resolves to enterprise — mirror that here so they are not locked
- * out of a feature they are paying for.
+ * Jira promotion is an Enterprise feature. It is *project-scoped*: the plan
+ * that pays for the project (its org's, or its owner's for personal projects)
+ * decides it, not whichever org the caller happens to have as their primary.
+ * So a Team-seat user opening a project owned by an Enterprise org may still
+ * promote tickets there.
+ *
+ * The project response carries its own `effective_tier` (tk_792504a140604e62);
+ * older servers omit it, in which case fall back to the caller's effective
+ * tier, then their raw tier. Legacy accounts still carry `tier: 'admin'`
+ * (pre-migration), which the backend resolves to enterprise — mirror that
+ * here, but only in that fallback: a project with its own effective_tier gates
+ * even platform admins, matching `check_project_feature`.
  */
 export function hasJiraEnterpriseTier(
-  me: { tier: string; effective_tier: string } | null | undefined,
+  project: { effective_tier?: string | null } | null | undefined,
+  me: { tier?: string | null; effective_tier?: string | null } | null | undefined,
 ): boolean {
-  if (!me) return false;
-  return me.effective_tier === 'enterprise' || me.tier === 'admin';
+  // A newer server reports the project's own effective_tier, and that is the
+  // single source of truth: a platform admin gets no bypass here, because the
+  // backend's `check_project_feature` has none either.
+  if (project?.effective_tier) return project.effective_tier === 'enterprise';
+
+  // Older servers omit the project's effective_tier, in which case fall back to
+  // the caller's tier. Legacy accounts still carry `tier: 'admin'`
+  // (pre-migration), which the backend resolves to enterprise — mirror that
+  // here so they are not locked out of a feature they are paying for.
+  if (me?.tier === 'admin') return true;
+  const tier = me?.effective_tier || me?.tier || 'free';
+  return tier === 'enterprise';
 }
 
 /**

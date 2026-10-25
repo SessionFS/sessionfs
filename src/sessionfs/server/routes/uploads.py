@@ -48,6 +48,35 @@ logger = logging.getLogger("sessionfs.api")
 
 router = APIRouter(prefix="/api/v1/uploads", tags=["uploads"])
 
+# Per-user in-flight part uploads, process-local. Each user may PUT at most
+# _MAX_CONCURRENT_PART_PUTS parts at once; requests past the cap get 429
+# upload_busy with a Retry-After hint (mirrors helper_busy / publish_busy).
+_MAX_CONCURRENT_PART_PUTS = 2
+_PART_PUT_RETRY_AFTER_SECONDS = 1
+_part_puts_in_flight: dict[str, int] = {}
+
+
+def _acquire_part_slot(user_id: str) -> None:
+    if _part_puts_in_flight.get(user_id, 0) >= _MAX_CONCURRENT_PART_PUTS:
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "upload_busy",
+                "message": "You already have the maximum number of part uploads running.",
+                "retry_after": _PART_PUT_RETRY_AFTER_SECONDS,
+            },
+            headers={"Retry-After": str(_PART_PUT_RETRY_AFTER_SECONDS)},
+        )
+    _part_puts_in_flight[user_id] = _part_puts_in_flight.get(user_id, 0) + 1
+
+
+def _release_part_slot(user_id: str) -> None:
+    remaining = _part_puts_in_flight.get(user_id, 0)
+    if remaining <= 1:
+        _part_puts_in_flight.pop(user_id, None)
+    else:
+        _part_puts_in_flight[user_id] = remaining - 1
+
 
 async def _get_owned_upload(
     upload_id: str, user_id: str, db: AsyncSession, *, for_update: bool = False
@@ -300,7 +329,26 @@ async def put_upload_part(
     user: User = Depends(require_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Upload one part of a chunked upload. Idempotent: re-upload overwrites."""
+    """Upload one part of a chunked upload. Idempotent: re-upload overwrites.
+
+    Concurrent part PUTs per user are capped at ``_MAX_CONCURRENT_PART_PUTS``
+    (429 ``upload_busy`` with Retry-After past the cap) so one client can't
+    pin every in-flight request body buffer at once.
+    """
+    _acquire_part_slot(user.id)
+    try:
+        return await _put_upload_part(upload_id, part_number, request, user, db)
+    finally:
+        _release_part_slot(user.id)
+
+
+async def _put_upload_part(
+    upload_id: str,
+    part_number: int,
+    request: Request,
+    user: User,
+    db: AsyncSession,
+):
     now = datetime.now(timezone.utc)
     upload = await _get_owned_upload(upload_id, user.id, db)
     _ensure_upload_active(upload, now)
@@ -659,6 +707,24 @@ async def _assemble_parts(
     return data, hasher.hexdigest()
 
 
+async def _delete_upload_blobs(
+    blob_store: BlobStore, upload_id: str, part_count: int
+) -> None:
+    """Best-effort delete of every staged part blob for an upload.
+
+    Iterates the deterministic key space (``part-00001`` .. ``part-<count>``)
+    rather than the part rows, so a part whose blob landed but whose row never
+    committed (a crash between the ``put`` and the commit) is still reclaimed.
+    Part blobs are the only objects under an upload's prefix, so this clears
+    the whole prefix.
+    """
+    for n in range(1, part_count + 1):
+        try:
+            await blob_store.delete(_upload_part_blob_key(upload_id, n))
+        except Exception:
+            pass
+
+
 @router.delete("/{upload_id}", status_code=200)
 async def abort_upload(
     upload_id: str,
@@ -686,20 +752,15 @@ async def abort_upload(
             },
         )
 
-    result = await db.execute(
-        select(SessionUploadPart.part_number).where(
-            SessionUploadPart.upload_id == upload.id
-        )
-    )
-    part_numbers = [row[0] for row in result.all()]
-
     await db.execute(
         delete(SessionUploadPart).where(SessionUploadPart.upload_id == upload.id)
     )
     upload.status = "aborted"
     await db.commit()
 
-    await _delete_part_blobs(_get_blob_store(request), upload.id, part_numbers)
+    await _delete_upload_blobs(
+        _get_blob_store(request), upload.id, upload.part_count
+    )
 
     return {"upload_id": upload.id, "status": upload.status}
 
@@ -723,18 +784,11 @@ async def abort_expired_pending_uploads(
 
     aborted = 0
     for upload in uploads:
-        parts_result = await db.execute(
-            select(SessionUploadPart.part_number).where(
-                SessionUploadPart.upload_id == upload.id
-            )
-        )
-        part_numbers = [row[0] for row in parts_result.all()]
-
         await db.execute(
             delete(SessionUploadPart).where(SessionUploadPart.upload_id == upload.id)
         )
         upload.status = "aborted"
-        await _delete_part_blobs(blob_store, upload.id, part_numbers)
+        await _delete_upload_blobs(blob_store, upload.id, upload.part_count)
         aborted += 1
 
     # Reclaim completing rows stuck past the grace window (a complete request
@@ -750,12 +804,6 @@ async def abort_expired_pending_uploads(
     )
     for upload in completing_result.scalars().all():
         if _as_utc(upload.expires_at) <= _as_utc(now):
-            parts_result = await db.execute(
-                select(SessionUploadPart.part_number).where(
-                    SessionUploadPart.upload_id == upload.id
-                )
-            )
-            part_numbers = [row[0] for row in parts_result.all()]
             await db.execute(
                 delete(SessionUploadPart).where(
                     SessionUploadPart.upload_id == upload.id
@@ -763,7 +811,7 @@ async def abort_expired_pending_uploads(
             )
             upload.status = "aborted"
             upload.completion_token = None
-            await _delete_part_blobs(blob_store, upload.id, part_numbers)
+            await _delete_upload_blobs(blob_store, upload.id, upload.part_count)
             aborted += 1
         else:
             upload.status = "pending"

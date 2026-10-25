@@ -25,7 +25,7 @@ import { ApiError } from '../api/client';
 
 // vi.mock is hoisted above imports, so any referenced variables must be
 // created inside vi.hoisted() which runs before the mock factory.
-const { hooks, mockAddToast } = vi.hoisted(() => ({
+const { hooks, mockAddToast, meData, jiraSurface } = vi.hoisted(() => ({
   hooks: {
     useProject: vi.fn(),
     useProjects: vi.fn(),
@@ -55,6 +55,8 @@ const { hooks, mockAddToast } = vi.hoisted(() => ({
     useMergeProject: vi.fn(),
   },
   mockAddToast: vi.fn(),
+  meData: { value: { user_id: 'u_1', tier: 'enterprise', effective_tier: 'enterprise' } },
+  jiraSurface: { value: null as { isEnterprise?: boolean } | null },
 }));
 
 vi.mock('../hooks/useProjects', () => hooks);
@@ -77,17 +79,21 @@ vi.mock('../transfers/useTransfers', () => ({
 }));
 
 // The Jira ticket surface resolves the current user's tier/role; stub the me
-// query the same way so the broader suite stays free of an AuthProvider.
+// query the same way so the broader suite stays free of an AuthProvider. The
+// holder lets individual tests vary the caller's tier.
 vi.mock('../hooks/useMe', () => ({
-  useMe: () => ({
-    data: { user_id: 'u_1', tier: 'enterprise', effective_tier: 'enterprise' },
-    isLoading: false,
-  }),
+  useMe: () => ({ data: meData.value, isLoading: false }),
 }));
 
 // The Work and Rules & Skills bodies have their own suites and their own
-// auth-bound hooks; here only which one is mounted matters.
-vi.mock('./TicketsTab', () => ({ default: () => <div>tickets body</div> }));
+// auth-bound hooks; here only which one is mounted matters. Capture the Jira
+// surface prop so we can assert the enterprise gate resolves from the project.
+vi.mock('./TicketsTab', () => ({
+  default: (props: { projectId: string; jira?: { isEnterprise?: boolean } }) => {
+    jiraSurface.value = props.jira ?? null;
+    return <div>tickets body</div>;
+  },
+}));
 vi.mock('./AgentRunsTab', () => ({ default: () => <div>agent runs body</div> }));
 vi.mock('./PersonasTab', () => ({ default: () => <div>personas body</div> }));
 vi.mock('./RulesTab', () => ({ default: () => <div>rules body</div> }));
@@ -171,6 +177,8 @@ describe('ProjectDetail', () => {
   beforeEach(() => {
     for (const h of Object.values(hooks)) h.mockReset();
     mockAddToast.mockReset();
+    meData.value = { user_id: 'u_1', tier: 'enterprise', effective_tier: 'enterprise' };
+    jiraSurface.value = null;
 
     // Default: entries-related hooks return empty pages so the Entries
     // tab renders without crashes when we switch to it.
@@ -480,6 +488,24 @@ describe('ProjectDetail', () => {
     renderPage();
     expect(screen.getAllByRole('button', { name: /compile now/i })).toHaveLength(1);
     expect(screen.getByText(/3 pending entries/i)).toBeInTheDocument();
+  });
+
+  describe('Jira enterprise gate (tk_792504a140604e62)', () => {
+    it('resolves the gate from the project tier, not the caller primary org', async () => {
+      setProjectData({ org_id: 'org_x', effective_tier: 'enterprise' });
+      meData.value = { user_id: 'u_1', tier: 'team', effective_tier: 'team' };
+      renderPage('/projects/proj_abc?tab=work&sub=tickets');
+      await screen.findByText('tickets body');
+      expect(jiraSurface.value?.isEnterprise).toBe(true);
+    });
+
+    it('falls back to the caller tier when the project omits effective_tier', async () => {
+      setProjectData({ org_id: 'org_x' }); // no effective_tier on the project
+      meData.value = { user_id: 'u_1', tier: 'team', effective_tier: 'team' };
+      renderPage('/projects/proj_abc?tab=work&sub=tickets');
+      await screen.findByText('tickets body');
+      expect(jiraSurface.value?.isEnterprise).toBe(false);
+    });
   });
 
   describe('compile-needed banner (GitHub #93)', () => {

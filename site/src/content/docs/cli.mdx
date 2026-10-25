@@ -691,6 +691,8 @@ Pull a session from the cloud.
 sfs pull SESSION_ID
 ```
 
+Since v0.24.0 the local copy is replaced to match the server: files the server version no longer has are removed, while local-only reports such as the audit report and checkpoints are kept.
+
 ---
 
 ## `sfs pull-handoff`
@@ -1486,7 +1488,7 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed: 83, covering sessions (including `ask_session_helper`), knowledge, rules, personas, tickets, agent runs (including `replay_agent_run`), agent feedback, handoffs, work queues and the skills marketplace. See [MCP Server](/mcp/) for the full catalogue.
+Tools exposed: 85, covering sessions (including `ask_session_helper`), knowledge, rules, personas, tickets (including `watch_ticket` and `get_ticket_updates`), agent runs (including `replay_agent_run`), agent feedback, handoffs, work queues and the skills marketplace. See [MCP Server](/mcp/) for the full catalogue.
 
 ---
 
@@ -1869,6 +1871,9 @@ Manage tickets with a server-enforced FSM (`suggested → open → in_progress �
 | `sfs ticket complete <id>` | Move from `in_progress` to `review`; clears owned bundle |
 | `sfs ticket comment <id> "body" [--as PERSONA]` | Slack-like comment (non-idempotent) |
 | `sfs ticket status` | Render the active-ticket bundle (Rich panel) |
+| `sfs ticket follow <id> [--mute]` / `sfs ticket unfollow <id>` | Follow a ticket to be notified when it changes state, changes hands or gets a comment; `--mute` follows silently (v0.24.0) |
+| `sfs ticket inbox [--all] [--mark-read]` | Your ticket notifications, unread by default (v0.24.0) |
+| `sfs ticket updates [--persona NAME] [--no-ack]` | Agent-side poll of what changed on followed tickets; each persona keeps its own cursor, `--no-ack` peeks without advancing it (v0.24.0) |
 | `sfs ticket block <id> --reason "..."` / `sfs ticket unblock <id>` | Toggle blocked state |
 | `sfs ticket reopen <id>` | Move a terminal ticket back to `open` |
 | `sfs ticket approve <id>` / `sfs ticket dismiss <id>` | Decide on `suggested` tickets |
@@ -1881,6 +1886,8 @@ Manage tickets with a server-enforced FSM (`suggested → open → in_progress �
 | `sfs ticket jira unlink <id> --confirm` | Remove the link (project admin); the Jira issue is left alone |
 
 The active-ticket bundle is stored locally and read by all 10 daemon watchers (claude_code, codex, copilot, cursor, gemini, amp, cline, roo_code, kilo_code, antigravity). Captured sessions carry the bundle in their `manifest.json` and the server populates `sessions.persona_name` + `sessions.ticket_id` on upload.
+
+Following is also automatic: creating a ticket, being assigned, commenting or posting a review verdict follows it for you. Notifications are written by the server and never copy comment bodies. Choose an email digest (`off`, `your_turn` by default, or `all`) under **Settings → Preferences** in the dashboard.
 
 ---
 

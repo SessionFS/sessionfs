@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import OrgHelperKeyCard from './OrgHelperKeyCard';
 
-const { hooks, toastHook, toastApi } = vi.hoisted(() => {
+const { hooks, toastHook, toastApi, llmProvidersHook } = vi.hoisted(() => {
   const toastApi = { addToast: vi.fn(), removeToast: vi.fn(), toasts: [] };
   return {
     hooks: {
@@ -20,11 +20,13 @@ const { hooks, toastHook, toastApi } = vi.hoisted(() => {
     },
     toastHook: { useToast: vi.fn() },
     toastApi,
+    llmProvidersHook: { useLlmProviders: vi.fn() },
   };
 });
 
 vi.mock('./useOrgLlmSettings', () => hooks);
 vi.mock('../hooks/useToast', () => toastHook);
+vi.mock('../hooks/useLlmProviders', () => llmProvidersHook);
 
 function makeMutation(extra: Record<string, unknown> = {}) {
   return {
@@ -51,10 +53,22 @@ beforeEach(() => {
   for (const h of Object.values(hooks)) h.mockReset();
   toastHook.useToast.mockReset();
   toastApi.addToast.mockReset();
+  llmProvidersHook.useLlmProviders.mockReset();
   hooks.useOrgLlmSettings.mockReturnValue({ data: DEFAULTS, isLoading: false });
   hooks.useSaveOrgLlmSettings.mockReturnValue(makeMutation());
   hooks.useDeleteOrgLlmSettings.mockReturnValue(makeMutation());
   toastHook.useToast.mockReturnValue(toastApi);
+  llmProvidersHook.useLlmProviders.mockReturnValue({
+    data: {
+      providers: [
+        { id: 'openrouter', label: 'OpenRouter', api_style: 'openai', suggested_models: [], discovery: true },
+        { id: 'anthropic', label: 'Anthropic', api_style: 'anthropic', suggested_models: [], discovery: false },
+        { id: 'openai', label: 'OpenAI', api_style: 'openai', suggested_models: [], discovery: true },
+        { id: 'google', label: 'Google', api_style: 'google', suggested_models: [], discovery: false },
+      ],
+    },
+    isLoading: false,
+  });
 });
 
 describe('OrgHelperKeyCard', () => {

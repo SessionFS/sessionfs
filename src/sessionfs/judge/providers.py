@@ -7,9 +7,12 @@ single request and never stored.
 from __future__ import annotations
 
 import logging
+from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 
 import httpx
+
+from sessionfs.judge.provider_registry import detect_provider_id, get_provider
 
 logger = logging.getLogger("sessionfs.judge.providers")
 
@@ -29,48 +32,180 @@ async def _check_base_url(url: str) -> None:
     if _base_url_guard is not None:
         await _base_url_guard(url)
 
-_PROVIDER_DETECT = [
-    ("claude-", "anthropic"),
-    ("gpt-", "openai"),
-    ("o1", "openai"),
-    ("o3", "openai"),
-    ("o4", "openai"),
-    ("gemini-", "google"),
-]
 
-# Reasoning models that reject temperature — use reasoning effort instead
-_REASONING_MODELS = {"o1", "o1-pro", "o3", "o3-mini", "o4-mini"}
+# Reasoning families that reject non-default temperature (OpenAI o-series and
+# the newer gpt-5/gpt-6 families). Prefix-matched so dated/dotted variants such
+# as "o3-mini-2025-04-16", "gpt-5.6-sol" and "gpt-6-astra" are all covered
+# without mangling names that merely contain "-2" (e.g. "gpt-4.2-style").
+_REASONING_PREFIXES = ("o1", "o3", "o4", "gpt-5", "gpt-6")
 
 _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
-_OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 _GOOGLE_URL_TEMPLATE = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
-_OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
 def _detect_provider(model: str) -> str:
-    """Auto-detect provider from model name.
-
-    Models containing "/" are routed to OpenRouter.
-    Unknown models fall back to OpenRouter.
-    """
-    if "/" in model:
-        return "openrouter"
-
-    model_lower = model.lower()
-    for prefix, provider in _PROVIDER_DETECT:
-        if model_lower.startswith(prefix):
-            return provider
-
-    # Unknown model — fall back to OpenRouter
-    return "openrouter"
+    """Auto-detect provider from model name (registry id)."""
+    return detect_provider_id(model)
 
 
 def _is_reasoning_model(model: str) -> bool:
     """Check if a model is a reasoning model that rejects temperature."""
-    base = model.lower().split("-2")[0]  # strip date suffix like -2025-04-16
-    return base in _REASONING_MODELS
+    base = model.lower()
+    return any(base.startswith(prefix) for prefix in _REASONING_PREFIXES)
+
+
+# ---------------------------------------------------------------------------
+# Parameter-omission cache
+# ---------------------------------------------------------------------------
+#
+# Some OpenAI-compatible endpoints (LiteLLM/Azure gateways, vLLM) reject
+# ``temperature`` / ``top_p`` / ``reasoning`` on reasoning models. When we see
+# such a 400/422 once, remember the parameter per (endpoint URL, model) so the
+# next call omits it up front and doesn't waste a request. Process-local and
+# bounded — no DB, no Redis.
+
+_PARAM_OMISSION_CACHE: OrderedDict[tuple[str, str], frozenset[str]] = OrderedDict()
+_PARAM_OMISSION_CACHE_MAX = 512
+
+_REJECTION_TOKENS = (
+    "unsupported",
+    "not support",
+    "does not support",
+    "only the default",
+    "invalid",
+    "unknown",
+    "unrecognized",
+)
+
+
+def _omitted_params(url: str, model: str) -> frozenset[str]:
+    """Parameters remembered as rejected for (endpoint URL, model)."""
+    return _PARAM_OMISSION_CACHE.get((url, model), frozenset())
+
+
+def _remember_omission(url: str, model: str, params: frozenset[str]) -> None:
+    key = (url, model)
+    _PARAM_OMISSION_CACHE[key] = params
+    _PARAM_OMISSION_CACHE.move_to_end(key)
+    while len(_PARAM_OMISSION_CACHE) > _PARAM_OMISSION_CACHE_MAX:
+        _PARAM_OMISSION_CACHE.popitem(last=False)
+
+
+def _clear_omission_cache() -> None:
+    """Empty the parameter-omission cache (used by tests)."""
+    _PARAM_OMISSION_CACHE.clear()
+
+
+def _classify_param_error(status: int, text: str) -> frozenset[str]:
+    """Map a 400/422 provider error body to request parameters to drop.
+
+    Conservative: the body must mention the parameter name AND one of the
+    rejection tokens. Returns an empty set when nothing matches.
+    """
+    if status not in (400, 422):
+        return frozenset()
+    low = text.lower()
+    if not any(token in low for token in _REJECTION_TOKENS):
+        return frozenset()
+    omitted: set[str] = set()
+    if "temperature" in low:
+        omitted.add("temperature")
+    if "top_p" in low:
+        omitted.add("top_p")
+    if "reasoning_effort" in low or "reasoning" in low:
+        omitted.add("reasoning")
+    return frozenset(omitted)
+
+
+def _has_param(body: dict, param: str) -> bool:
+    """Whether a logical parameter ("temperature", "top_p", "reasoning") is set."""
+    if param == "reasoning":
+        return "reasoning" in body or "reasoning_effort" in body
+    return param in body
+
+
+def _apply_sampling(
+    body: dict,
+    *,
+    model: str,
+    temperature: float,
+    omit_temperature: bool,
+    reasoning_effort: bool,
+    reasoning_object: bool,
+    drop: frozenset[str],
+) -> None:
+    """Set reasoning effort or temperature on a chat-completions body.
+
+    Reasoning models never get ``temperature`` (only their default is
+    accepted); dropping the reasoning parameter must not add it back. OpenAI's
+    Chat Completions and OpenAI-compatible gateways take a top-level
+    ``reasoning_effort`` string; OpenRouter takes a ``reasoning`` object.
+    """
+    base_model = model.split("/")[-1] if "/" in model else model
+    is_reasoning = reasoning_effort and _is_reasoning_model(base_model)
+    if is_reasoning:
+        if "reasoning" not in drop:
+            if reasoning_object:
+                body["reasoning"] = {"effort": "medium"}
+            else:
+                body["reasoning_effort"] = "medium"
+    elif not omit_temperature and "temperature" not in drop:
+        body["temperature"] = temperature
+
+
+def _response_error_text(resp: httpx.Response) -> str:
+    """Decode a provider error body without ever raising."""
+    try:
+        return resp.content.decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+
+
+def _build_openai_body(
+    *,
+    model: str,
+    system: str,
+    prompt: str,
+    temperature: float,
+    token_field: str,
+    omit_temperature: bool,
+    reasoning_effort: bool,
+    reasoning_object: bool = False,
+    drop: frozenset[str] = frozenset(),
+) -> dict:
+    """Build a chat-completions body, honouring remembered omissions.
+
+    Reasoning models never get ``temperature`` (their default is 1); dropping
+    ``reasoning`` for one of them must not add ``temperature`` back in.
+    """
+    body: dict = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        token_field: 4096,
+    }
+    _apply_sampling(
+        body,
+        model=model,
+        temperature=temperature,
+        omit_temperature=omit_temperature,
+        reasoning_effort=reasoning_effort,
+        reasoning_object=reasoning_object,
+        drop=drop,
+    )
+    return body
+
+
+def _chat_completions_url(base_url: str) -> str:
+    """Append /chat/completions to an OpenAI-compatible base URL (idempotent)."""
+    url = base_url.rstrip("/")
+    if not url.endswith("/chat/completions"):
+        url = f"{url}/chat/completions"
+    return url
 
 
 async def _call_openai_compatible(
@@ -80,34 +215,54 @@ async def _call_openai_compatible(
     prompt: str,
     api_key: str,
     temperature: float = 0,
+    *,
+    token_field: str = "max_completion_tokens",
+    omit_temperature: bool = False,
+    extra_headers: tuple[tuple[str, str], ...] = (),
+    reasoning_effort: bool = True,
+    reasoning_object: bool = False,
 ) -> str:
-    """Call any OpenAI-compatible endpoint (OpenAI, OpenRouter, LiteLLM, vLLM, Ollama, etc.)."""
-    url = url.rstrip("/")
-    if not url.endswith("/chat/completions"):
-        url = f"{url}/chat/completions"
+    """Call any OpenAI-compatible endpoint (OpenAI, OpenRouter, LiteLLM, vLLM, Ollama, etc.).
+
+    The keyword-only arguments carry the request quirks of the provider profile
+    (see ``provider_registry``); the generic defaults preserve the historical
+    behaviour for caller-supplied ``base_url`` endpoints.
+    """
+    url = _chat_completions_url(url)
 
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+    for key, value in extra_headers:
+        headers[key] = value
 
-    base_model = model.split("/")[-1] if "/" in model else model
+    drop = _omitted_params(url, model)
 
-    body: dict = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        "max_completion_tokens": 4096,
-    }
-    if _is_reasoning_model(base_model):
-        body["reasoning"] = {"effort": "medium"}
-    else:
-        body["temperature"] = temperature
+    def build(drop: frozenset[str]) -> dict:
+        return _build_openai_body(
+            model=model,
+            system=system,
+            prompt=prompt,
+            temperature=temperature,
+            token_field=token_field,
+            omit_temperature=omit_temperature,
+            reasoning_effort=reasoning_effort,
+            reasoning_object=reasoning_object,
+            drop=drop,
+        )
 
+    body = build(drop)
     async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
         resp = await client.post(url, json=body, headers=headers)
-    resp.raise_for_status()
+        if resp.status_code in (400, 422):
+            new_drop = _classify_param_error(resp.status_code, _response_error_text(resp))
+            effective = new_drop - drop
+            if effective and any(_has_param(body, param) for param in effective):
+                drop = drop | new_drop
+                _remember_omission(url, model, drop)
+                body = build(drop)
+                resp = await client.post(url, json=body, headers=headers)
+        resp.raise_for_status()
     data = resp.json()
     return data["choices"][0]["message"]["content"]
 
@@ -176,17 +331,11 @@ async def call_llm(
     regardless of provider — this supports LiteLLM, vLLM, Ollama, Azure OpenAI,
     and any OpenAI-compatible gateway.
 
-    Auto-detects provider from model name if not specified:
-    - claude-* -> anthropic
-    - gpt-*, o1*, o3*, o4* -> openai
-    - gemini-* -> google
-    - models containing "/" -> openrouter
-    - unknown models -> openrouter (fallback)
-
-    Uses httpx directly — no SDK dependencies. The API key is used for
-    this single request only and is never persisted. Temperature defaults
-    to 0 for deterministic judge output. Reasoning models (o3, o4-mini)
-    use reasoning effort instead of temperature.
+    Auto-detects provider from model name if not specified, and dispatches
+    through the provider registry (no per-provider if/elif ladder). Uses httpx
+    directly — no SDK dependencies. The API key is used for this single request
+    only and is never persisted. Temperature defaults to 0 for deterministic
+    judge output; reasoning models use reasoning effort instead of temperature.
     """
     if provider is None:
         provider = _detect_provider(model)
@@ -199,52 +348,28 @@ async def call_llm(
         await _check_base_url(base_url)
         return await _call_openai_compatible(base_url, model, system, prompt, api_key, temperature)
 
-    if provider == "anthropic":
-        return await _call_anthropic(model, system, prompt, api_key, temperature)
-    elif provider == "openai":
-        return await _call_openai_compatible(_OPENAI_URL, model, system, prompt, api_key, temperature)
-    elif provider == "google":
-        return await _call_google(model, system, prompt, api_key, temperature)
-    elif provider == "openrouter":
-        headers_extra = {
-            "HTTP-Referer": "https://sessionfs.dev",
-            "X-Title": "SessionFS",
-        }
-        return await _call_openrouter_with_headers(model, system, prompt, api_key, temperature, headers_extra)
-    else:
+    profile = get_provider(provider)
+    if profile is None:
         raise ValueError(f"Unsupported provider: {provider}")
 
+    if profile.api_style == "anthropic":
+        return await _call_anthropic(model, system, prompt, api_key, temperature)
+    if profile.api_style == "google":
+        return await _call_google(model, system, prompt, api_key, temperature)
 
-async def _call_openrouter_with_headers(
-    model: str, system: str, prompt: str, api_key: str, temperature: float, extra_headers: dict,
-) -> str:
-    """Call OpenRouter with SessionFS-specific headers."""
-    url = _OPENROUTER_URL
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-        **extra_headers,
-    }
-    base_model = model.split("/")[-1] if "/" in model else model
-
-    body: dict = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": prompt},
-        ],
-        "max_tokens": 4096,
-    }
-    if _is_reasoning_model(base_model):
-        body["reasoning"] = {"effort": "medium"}
-    else:
-        body["temperature"] = temperature
-
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(url, json=body, headers=headers)
-    resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"]
+    return await _call_openai_compatible(
+        _chat_completions_url(profile.base_url),
+        model,
+        system,
+        prompt,
+        api_key,
+        temperature,
+        token_field=profile.token_field,
+        omit_temperature=profile.omit_temperature,
+        extra_headers=profile.extra_headers,
+        reasoning_effort=profile.reasoning_effort,
+        reasoning_object=profile.reasoning_object,
+    )
 
 
 async def discover_models(base_url: str, api_key: str = "") -> list[str]:

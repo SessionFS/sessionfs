@@ -12,6 +12,34 @@
 | 413 | Request entity too large | Upload exceeds server limit | Check `MAX_UPLOAD_SIZE` setting |
 | 429 | Rate limited | Too many requests per minute | Wait, or increase `SFS_RATE_LIMIT_PER_MINUTE`. Set to `0` to disable |
 
+## Reasoning models and temperature
+
+Some OpenAI-compatible reasoning models (OpenAI `o1`/`o3`/`o4` and `gpt-5`/`gpt-6`
+families, and Azure/LiteLLM gateways fronting them) reject a non-default
+`temperature`. The judge sends a `temperature` of `0` by default, so a
+self-hosted endpoint can answer those calls with HTTP 400 and an error like:
+
+```
+Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported.
+```
+
+SessionFS handles this two ways:
+
+1. **Up-front omission.** Models in those families are detected by name prefix
+   and get `reasoning` effort instead of `temperature`, so the default call
+   already omits `temperature`.
+2. **Retry on rejection.** If a gateway still answers a judge / narrative /
+   audit request with 400/422 saying `temperature`, `top_p` or `reasoning` is
+   unsupported or not the default, SessionFS retries that one request without
+   the rejected parameter, and remembers the omission per endpoint and model
+   for the lifetime of the process (no database or shared state).
+
+If you still see the error after upgrading, the model id may not match the
+known prefixes (a custom Azure deployment name, for example). Use the model's
+`model` field verbatim in your judge settings, or configure the deployment name
+to start with the model family it fronts (for example `gpt-5-...`) so the
+prefix detection and retry both apply.
+
 ## Session ID Format
 
 SessionFS generates session IDs in the format: `ses_` followed by 8-40 lowercase hex characters.

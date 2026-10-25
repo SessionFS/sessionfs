@@ -24,6 +24,8 @@ from sessionfs.server.tier_gate import (
     get_user_context,
     raise_project_upgrade_required,
     resolve_org_plan_tier,
+    resolve_project_plan_tier,
+    resolve_project_plan_tiers,
 )
 from sessionfs.server.tiers import get_features_for_tier
 
@@ -138,6 +140,10 @@ class ProjectResponse(BaseModel):
     # Empty string for a repo-reclaimed project (its column is NULL);
     # repo_reclaimed distinguishes that state from a real remote.
     repo_reclaimed: bool = False
+    # The plan tier that pays for this project (resolve_project_plan_tier).
+    # Absent (None) only when the server predates this field — the dashboard
+    # falls back to the caller's own tier in that case.
+    effective_tier: str | None = None
 
 
 class LinkRepoRequest(BaseModel):
@@ -244,6 +250,7 @@ def _project_response(
     *,
     session_count: int = 0,
     repos: list[ProjectRepoResponse] | None = None,
+    effective_tier: str | None = None,
 ) -> ProjectResponse:
     """Build a ProjectResponse, mapping the structural reclaimed state
     (NULL git_remote_normalized + repo_reclaimed_at) onto the wire
@@ -266,6 +273,7 @@ def _project_response(
         last_scheduled_compile_at=getattr(project, "last_scheduled_compile_at", None),
         repos=repos,
         repo_reclaimed=project.repo_reclaimed_at is not None,
+        effective_tier=effective_tier,
     )
 
 
@@ -383,8 +391,17 @@ async def list_projects(
     else:
         session_counts = {}
 
+    # The project's own plan tier (not the caller's primary-org tier) gates
+    # project-scoped Enterprise surfaces in the dashboard (tk_792504a140604e62).
+    # Batch-resolve so a long list stays O(1) round-trips.
+    plan_tiers = await resolve_project_plan_tiers(projects, db) if projects else {}
+
     return [
-        _project_response(p, session_count=session_counts.get(p.id, 0))
+        _project_response(
+            p,
+            session_count=session_counts.get(p.id, 0),
+            effective_tier=plan_tiers[p.id].value if p.id in plan_tiers else None,
+        )
         for p in projects
     ]
 
@@ -649,7 +666,8 @@ async def create_project(
             blob_store,
         )
 
-    return _project_response(project)
+    effective_tier = (await resolve_project_plan_tier(project, db)).value
+    return _project_response(project, effective_tier=effective_tier)
 
 
 # ── P3: Multi-Repo Link / Unlink / List ──────────────────────────────────
@@ -1555,7 +1573,12 @@ async def get_project(
     if not await user_can_access_project(db, user.id, project):
         raise HTTPException(403, "No access to this project")
 
-    return _project_response(project, repos=await _repos_for_project(db, project.id))
+    effective_tier = (await resolve_project_plan_tier(project, db)).value
+    return _project_response(
+        project,
+        repos=await _repos_for_project(db, project.id),
+        effective_tier=effective_tier,
+    )
 
 
 @router.put("/{git_remote_normalized:path}/context")
@@ -1755,7 +1778,12 @@ async def update_project(
     await db.commit()
     await db.refresh(project)
 
-    return _project_response(project, repos=await _repos_for_project(db, project.id))
+    effective_tier = (await resolve_project_plan_tier(project, db)).value
+    return _project_response(
+        project,
+        repos=await _repos_for_project(db, project.id),
+        effective_tier=effective_tier,
+    )
 
 
 @router.delete("/{project_id}")

@@ -34,9 +34,8 @@ plan) the invite acceptance fails with a clear error.
 
 ### Remove
 
-Removing a member **revokes access** but **never destroys data**. This is the
-CEO-mandated invariant for v0.10.0 — the dashboard confirm modal spells it out
-verbatim:
+Removing a member **revokes access** but **never destroys data**. This invariant
+has held since v0.10.0 — the dashboard confirm modal spells it out verbatim:
 
 > Access will be revoked. Data stays.
 >

@@ -416,6 +416,11 @@ license:
 
 ## Security
 security:
+  # Left empty, both are generated on first install and kept on later
+  # `helm upgrade`s (the chart reads the existing Secret). They protect stored
+  # LLM keys and GitLab/Jira tokens, so they must never change once set. With
+  # ArgoCD or any `helm template` flow the chart cannot read the cluster: set
+  # both values (or existingSecret) explicitly.
   verificationSecret: ""
   encryptionKey: ""
   existingSecret: ""

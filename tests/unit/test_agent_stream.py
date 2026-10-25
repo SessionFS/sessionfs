@@ -605,7 +605,7 @@ class TestRequestBody:
             )
         body = requests[0]
         assert "temperature" not in body
-        assert body.get("reasoning") == {"effort": "medium"}
+        assert body.get("reasoning_effort") == "medium"
 
 
 # ---------------------------------------------------------------------------

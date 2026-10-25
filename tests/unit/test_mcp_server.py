@@ -299,10 +299,10 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_83(self):
+    def test_tool_count_is_85(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 83, (
-            "Expected 83 MCP tools after ask_session_helper (session helper), "
+        assert len(_TOOLS) == 85, (
+            "Expected 85 MCP tools after watch_ticket/get_ticket_updates, "
             f"got {len(_TOOLS)}"
         )
 
@@ -377,6 +377,9 @@ class TestToolRegistryV0996:
             "replay_agent_run",
             # Session helper (Enterprise, BYOK) — non-streaming answer + citations
             "ask_session_helper",
+            # Ticket watchers — follow/unfollow + agent notification delta
+            "watch_ticket",
+            "get_ticket_updates",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
         # A3: approval is dashboard/CLI/API only — never brokered over MCP,
@@ -2086,6 +2089,123 @@ class TestNewToolDispatch:
         assert "complete_ticket" in result.get("error", "")
         # Bundle survives.
         assert bundle.exists()
+
+    # ── v0.10.x ticket watchers: strict boolean parsing ──
+
+    @pytest.mark.asyncio
+    async def test_dispatch_watch_ticket_false_string_watches(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        """`unwatch="false"` is a falsey STRING — `bool("false")` is True, so
+        the old code would unwatch. The strict parser must treat it as False
+        and PUT (watch), while `muted="true"` parses to the boolean True."""
+        result = await mcp_server._handle_watch_ticket({
+            "ticket_id": "tk_1",
+            "unwatch": "false",
+            "muted": "true",
+        })
+        assert captured["method"] == "PUT"
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_test/tickets/tk_1/watch"
+        )
+        assert captured["json"] == {"muted": True}
+        assert result.get("watching") is True
+
+    @pytest.mark.asyncio
+    async def test_dispatch_watch_ticket_true_string_unwatches(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_watch_ticket({
+            "ticket_id": "tk_1",
+            "unwatch": "true",
+        })
+        assert captured["method"] == "DELETE"
+        assert result.get("watching") is False
+
+    @pytest.mark.asyncio
+    async def test_dispatch_get_ticket_updates_false_string_does_not_ack(
+        self, fake_resolver, monkeypatch, captured
+    ):
+        """`ack="false"` must skip the ack POST even when the server returned a
+        next_cursor; `bool("false")` is True and would have acked."""
+        import httpx
+
+        class _Resp:
+            status_code = 200
+            headers = {}
+            text = json.dumps({"next_cursor": 7, "items": []})
+
+            def json(self):
+                return {"next_cursor": 7, "items": []}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, *, params=None, headers=None):
+                captured["method"] = "GET"
+                captured["url"] = url
+                captured["params"] = params or {}
+                return _Resp()
+
+            async def post(self, url, *, json=None, headers=None):
+                captured["method"] = "POST"
+                captured["ack"] = json
+                return _Resp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+        result = await mcp_server._handle_get_ticket_updates({"ack": "false"})
+        assert result["next_cursor"] == 7
+        # Only the GET happened — no ack POST was sent.
+        assert captured["method"] == "GET"
+        assert "ack" not in captured
+
+    @pytest.mark.asyncio
+    async def test_dispatch_get_ticket_updates_acks_by_default(
+        self, fake_resolver, monkeypatch, captured
+    ):
+        """Sanity: with no `ack` argument the default is True, so a returned
+        next_cursor IS acknowledged."""
+        import httpx
+
+        class _Resp:
+            status_code = 200
+            headers = {}
+            text = json.dumps({"next_cursor": 7, "items": []})
+
+            def json(self):
+                return {"next_cursor": 7, "items": []}
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, *, params=None, headers=None):
+                captured["method"] = "GET"
+                return _Resp()
+
+            async def post(self, url, *, json=None, headers=None):
+                captured["method"] = "POST"
+                captured["ack"] = json
+                return _Resp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+        result = await mcp_server._handle_get_ticket_updates({})
+        assert captured["method"] == "POST"
+        assert captured["ack"] == {"cursor": 7, "persona": ""}
+        assert result.get("acknowledged") is True
 
 
 # ---------------------------------------------------------------------------

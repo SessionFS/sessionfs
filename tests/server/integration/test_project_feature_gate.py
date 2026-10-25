@@ -472,3 +472,41 @@ async def test_create_personal_project_uses_callers_plan(
     _, free_key = await _user(db_session, tier="free")
     resp = await client.post("/api/v1/projects/", json=_create_body(None), headers=_hdrs(free_key))
     assert resp.status_code == 403
+
+
+# ── project responses carry the project's own plan tier ──────────
+
+
+@pytest.mark.asyncio
+async def test_project_effective_tier_comes_from_project_org_not_primary_org(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """tk_792504a140604e62 — a Team-seat user opening an Enterprise-org
+    project must see effective_tier=enterprise, not their primary org's team."""
+    user, key = await _user(db_session)
+    team_org = await _org(db_session, "team", user)
+    enterprise_org = await _org(db_session, "enterprise", user)
+    await _set_primary(db_session, user, team_org)
+    # GET-by-id matches _PROJECT_ID_RE (proj_ + 16 hex); the default _project
+    # helper only makes 12, so build one with a resolvable id directly.
+    project = Project(
+        id=f"proj_{uuid.uuid4().hex[:16]}",
+        name=f"p-{uuid.uuid4().hex[:6]}",
+        git_remote_normalized=f"github.com/acme/{uuid.uuid4().hex[:8]}",
+        context_document="",
+        owner_id=user.id,
+        org_id=enterprise_org.id,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(project)
+    await db_session.commit()
+
+    resp = await client.get(f"/api/v1/projects/{project.id}", headers=_hdrs(key))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["effective_tier"] == "enterprise"
+
+    # The list endpoint batch-resolves the same value.
+    listing = await client.get("/api/v1/projects/", headers=_hdrs(key))
+    assert listing.status_code == 200, listing.text
+    row = next(p for p in listing.json() if p["id"] == project.id)
+    assert row["effective_tier"] == "enterprise"

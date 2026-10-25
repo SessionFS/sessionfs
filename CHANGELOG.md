@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0] - 2026-10-25
+
+**Follow tickets and get told when it's your turn, bring a key from 14 LLM providers, and a local session store that survives crashes.** Server migration 093. Adds 2 MCP tools (83 → 85).
+
+### Added
+- **Follow tickets.** Follow a ticket to hear when it changes state, changes hands or gets a comment; creating a ticket, being assigned, commenting or posting a review verdict follows it for you, and you can mute a ticket without unfollowing. A bell in the dashboard opens your inbox, where "your turn" notifications (a ticket assigned to you, a review waiting on you) stand out and open the ticket directly. Bursts of changes are combined into one notification, and notifications are written by the server and never copy comment bodies. CLI: `sfs ticket follow|unfollow|inbox`. API: `/api/v1/me/ticket-notifications`, `PUT /api/v1/me/notification-settings`.
+- **Ticket updates for agents.** Agents poll what changed on the tickets they follow with `sfs ticket updates`, the MCP tools `watch_ticket` and `get_ticket_updates`, or `GET /api/v1/me/ticket-updates`. Each persona keeps its own cursor, so several agents on one account each see every change once; service keys get their own cursors and only see projects they are allowed to.
+- **Ticket email digest.** Choose `off`, `your_turn` (the default) or `all` under **Settings → Preferences**. One email per run lists everything pending instead of one email per change, and access is re-checked before anything is sent. It is sent by the sweep `POST /api/v1/admin/sweeps/ticket-notifications`.
+- **14 LLM providers.** The security review, session helper, summaries and Jira drafting accept a key from Anthropic, OpenAI, Google Gemini, OpenRouter, DeepSeek, Kimi (Moonshot), xAI, Mistral, Z.ai (GLM), Qwen (Alibaba Cloud), MiniMax, Groq, Together AI or Fireworks AI, or any OpenAI-compatible endpoint (LiteLLM, vLLM, Ollama). **Fetch models** lists the models your key can use, and any model id can be typed in. `sfs audit --provider` reads that provider's own key variable (`DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`, and so on). The default model is now `claude-sonnet-5-5`.
+- **Helper citations open the exact message.** A citation in a helper answer opens the session at the cited message and highlights it (`/sessions/<id>?msg=<n>`, backed by `GET /api/v1/sessions/{id}/messages?around=<n>`). The audit tab's **Jump to message** uses the same link.
+- **Helper message retention in org settings.** Org admins can set how long helper messages are kept from the Organization page.
+
+### Changed
+- **The session helper drawer is redesigned**, with a pinned composer, readable citations, conversation history and New always at hand, and clear states while access is being checked or a scope isn't available. Switching between project, session and org scope keeps the drawer usable.
+- **Reasoning models work behind any gateway (GitHub #102).** When an endpoint rejects `temperature`, `top_p` or reasoning settings, SessionFS retries that request once without them and remembers it for that endpoint and model. Reasoning effort is sent in each API's own shape. When a narrative summary fails, the dashboard shows why, without echoing network error details.
+- **Retrying a failed helper answer doesn't save the question twice** (`retry: true` on `POST /api/v1/helper/turns`).
+- **`sfs pull` makes the local copy match the server.** Files the server version no longer has are removed, while local-only reports such as the audit report and checkpoints are kept.
+- **Enterprise features follow the project's plan.** Promote to Jira, the session helper and other project features are shown based on the plan of the project's organization, not your primary org's. Project responses include `effective_tier`.
+- **The MCP server has 85 tools** (`watch_ticket` and `get_ticket_updates` added).
+- The install docs use `curl -fsSL https://sessionfs.dev/install.sh | sh`.
+
+### Fixed
+- **Local session store is crash-safe.** Every capture, pull, recapture and delete now writes through one locked commit: a session you deleted can no longer come back from a capture already in progress, files are written atomically and flushed to disk so a power cut can't leave a half-written session, symlinked session folders are refused, and a session that changed during an upload is no longer marked as uploaded (it uploads again). Captures are no slower.
+- **Pushing a session with an unusual character no longer fails.** A broken Unicode character in a branch name, title or message made the upload fail with a server error; it is now stored with a replacement character.
+- **Codex resume no longer produces duplicate tool calls.** A message captured twice made Codex reject the resumed session.
+- **The helper status follows the question's scope**, so a project in an Enterprise org shows the helper as available even when your primary org isn't Enterprise.
+
+### Security
+- **LLM keys and integration tokens use a derived encryption key.** Stored keys are encrypted with a key derived by HKDF (existing values still decrypt). The server refuses to store or read encrypted secrets with an unset or placeholder `SFS_VERIFICATION_SECRET` (503 `encryption_unavailable`), except in development.
+- **A saved LLM key stays with its provider.** Changing a saved key's provider or endpoint requires entering the key again, so it can't be redirected to another host. Security reviews and narrative summaries that name a different endpoint or provider no longer fall back to your saved key; they must supply their own.
+- **Upload limits.** Concurrent upload parts per user are capped and abandoned part data is cleaned up.
+- **Jira hardening.** Bounded connection fields, a two-minute clock-skew allowance when adopting an issue after a timeout, and Jira error bodies are no longer passed through.
+- Helper knowledge search escapes `%` and `_` in queries.
+
+### Upgrade notes
+- **Self-hosted servers: run migration 093** (ticket watchers, notifications and cursors; additive).
+- **Helm: generated secrets now persist across upgrades.** Charts before 0.24.0 generated a new `verification-secret` and `encryption-key` on every `helm upgrade`, which broke stored LLM keys and GitLab/Jira tokens. From 0.24.0 the chart reuses the existing values. If stored keys stopped working after an earlier upgrade, re-enter them once. GitOps (`helm template`) flows can't read the cluster: set both values or use `security.existingSecret`.
+- **Set `SFS_VERIFICATION_SECRET`** to a real secret on production servers; placeholders now make encrypted-secret routes return 503.
+- **Schedule the ticket digest** if you want ticket emails: call `POST /api/v1/admin/sweeps/ticket-notifications` from a CronJob with a `platform_sweeps:run` service key.
+- **CLI: `sfs pull` now replaces the local session folder** with the server's version (local audit reports and checkpoints are kept).
+
 ## [0.23.0] - 2026-10-24
 
 **Ask questions across your sessions with the Enterprise session helper, promote tickets to Jira, and resume large uploads where they stopped.** Server migrations 084–092. Adds 2 MCP tools (81 → 83).

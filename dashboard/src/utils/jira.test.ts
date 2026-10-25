@@ -8,22 +8,59 @@ import { canUnlinkTicket, hasJiraEnterpriseTier, jiraErrorCode } from './jira';
  */
 
 describe('hasJiraEnterpriseTier', () => {
-  it('is true for an enterprise effective tier', () => {
-    expect(hasJiraEnterpriseTier({ tier: 'enterprise', effective_tier: 'enterprise' })).toBe(true);
+  it('is true when the project tier is enterprise, even for a Team caller', () => {
+    expect(
+      hasJiraEnterpriseTier(
+        { effective_tier: 'enterprise' },
+        { tier: 'team', effective_tier: 'team' },
+      ),
+    ).toBe(true);
   });
 
-  it('is true for legacy admin accounts', () => {
-    expect(hasJiraEnterpriseTier({ tier: 'admin', effective_tier: 'enterprise' })).toBe(true);
+  it('falls back to the caller tier when the project omits effective_tier', () => {
+    expect(
+      hasJiraEnterpriseTier(
+        { effective_tier: null },
+        { tier: 'enterprise', effective_tier: 'enterprise' },
+      ),
+    ).toBe(true);
   });
 
-  it('is false for lower tiers', () => {
-    expect(hasJiraEnterpriseTier({ tier: 'team', effective_tier: 'team' })).toBe(false);
-    expect(hasJiraEnterpriseTier({ tier: 'pro', effective_tier: 'pro' })).toBe(false);
+  it('is false when both project and caller tiers are lower', () => {
+    expect(
+      hasJiraEnterpriseTier(
+        { effective_tier: 'team' },
+        { tier: 'pro', effective_tier: 'pro' },
+      ),
+    ).toBe(false);
   });
 
-  it('is false when me is missing', () => {
-    expect(hasJiraEnterpriseTier(null)).toBe(false);
-    expect(hasJiraEnterpriseTier(undefined)).toBe(false);
+  it('does not promote a legacy admin on a non-enterprise project', () => {
+    // A newer server reports the project's own tier; the platform-admin bypass
+    // must not leak onto a project the backend's `check_project_feature` would
+    // refuse with a 403.
+    expect(
+      hasJiraEnterpriseTier(
+        { effective_tier: 'team' },
+        { tier: 'admin', effective_tier: 'enterprise' },
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps the legacy admin fallback when the project omits effective_tier', () => {
+    // Older servers omit the project's effective_tier; tier:'admin' still maps
+    // to enterprise so legacy accounts are not locked out.
+    expect(
+      hasJiraEnterpriseTier(
+        { effective_tier: null },
+        { tier: 'admin', effective_tier: 'enterprise' },
+      ),
+    ).toBe(true);
+  });
+
+  it('is false when both project and me are missing', () => {
+    expect(hasJiraEnterpriseTier(null, null)).toBe(false);
+    expect(hasJiraEnterpriseTier(undefined, undefined)).toBe(false);
   });
 });
 

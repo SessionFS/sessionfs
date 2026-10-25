@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, AsyncIterator, cast
 
 from anyio import CancelScope, fail_after
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from starlette.background import BackgroundTask
@@ -78,7 +78,7 @@ from sessionfs.server.tier_gate import (
     get_user_org_membership,
     resolve_org_plan_tier,
 )
-from sessionfs.server.tiers import get_features_for_tier, get_minimum_tier_for_feature
+from sessionfs.server.tiers import Tier, get_features_for_tier, get_minimum_tier_for_feature
 
 router = APIRouter(prefix="/api/v1/helper", tags=["helper"])
 
@@ -157,6 +157,10 @@ class HelperTurnRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=_MAX_MESSAGE_CHARS)
     scope: HelperScopeRequest | None = None
     stream: bool = True
+    # Re-asking after a failed answer: when the thread already ends with this
+    # exact (redacted) question and no answer, reuse that row instead of
+    # storing the question a second time.  Otherwise a normal turn.
+    retry: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -286,21 +290,45 @@ def _trim_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return kept
 
 
-async def _history_messages(db: AsyncSession, conversation_id: str) -> list[dict[str, Any]]:
-    """Rebuild the neutral message list for a conversation from stored rows.
+async def _conversation_rows(db: AsyncSession, conversation_id: str) -> list[HelperMessage]:
+    """Every stored row of a conversation, oldest first."""
+    return list(
+        (
+            await db.execute(
+                select(HelperMessage)
+                .where(HelperMessage.conversation_id == conversation_id)
+                .order_by(HelperMessage.created_at.asc(), HelperMessage.id.asc())
+            )
+        ).scalars().all()
+    )
+
+
+def _unanswered_question_index(rows: list[HelperMessage], stored_message: str) -> int | None:
+    """Index of a trailing user row a retry can reuse, else ``None``.
+
+    Reusable only when the conversation's last user row has no assistant row
+    after it (tool rows from the failed attempt don't count as an answer) and
+    its stored content equals this turn's redacted question exactly.  A partial
+    answer saved on a disconnect or provider error is an assistant row, so a
+    retry after one is stored as a fresh question (keeping the user/assistant
+    alternation providers expect).
+    """
+    for i in range(len(rows) - 1, -1, -1):
+        role = rows[i].role
+        if role == "assistant":
+            return None
+        if role == "user":
+            return i if rows[i].content == stored_message else None
+    return None
+
+
+def _history_from_rows(rows: list[HelperMessage]) -> list[dict[str, Any]]:
+    """Rebuild the neutral message list from stored rows (oldest first).
 
     Tool rows carry the sanitized call identity, so the assistant tool_calls
     are reconstructed from them; consecutive tool rows group into one assistant
     tool-call message as the model originally emitted them.
     """
-    rows = (
-        await db.execute(
-            select(HelperMessage)
-            .where(HelperMessage.conversation_id == conversation_id)
-            .order_by(HelperMessage.created_at.asc(), HelperMessage.id.asc())
-        )
-    ).scalars().all()
-
     messages: list[dict[str, Any]] = []
     i = 0
     while i < len(rows):
@@ -462,14 +490,26 @@ async def _resolve_scope(
     return HelperScope(project_id=project_id, session_ids=tuple(session_ids)), org_id
 
 
-async def _gate(user: User, db: AsyncSession, org_id: str | None) -> None:
-    """Enterprise gate: the helper needs the conversation's plan to include it."""
-    plan_scope = "org" if org_id is not None else "user"
-    plan = (
+async def _scope_plan_tier(user: User, db: AsyncSession, org_id: str | None) -> Tier:
+    """The plan that gates the helper for a scope.
+
+    The single decision shared by ``_gate`` and ``GET /status`` so the
+    pre-flight availability check and the turn gate can never drift.  An
+    org scope resolves the org's plan; anything else (including a personal
+    project) resolves the caller's own effective tier — the same tier they
+    get everywhere else.
+    """
+    return (
         await resolve_org_plan_tier(org_id, db)
         if org_id is not None
         else await get_effective_tier(user, db)
     )
+
+
+async def _gate(user: User, db: AsyncSession, org_id: str | None) -> None:
+    """Enterprise gate: the helper needs the conversation's plan to include it."""
+    plan_scope = "org" if org_id is not None else "user"
+    plan = await _scope_plan_tier(user, db, org_id)
     if _FEATURE in get_features_for_tier(plan):
         return
     required = get_minimum_tier_for_feature(_FEATURE)
@@ -685,6 +725,7 @@ async def _turn_events(
     conversation: HelperConversation,
     message: str,
     slot: _InFlightSlot | None = None,
+    retry: bool = False,
 ) -> AsyncGenerator[dict[str, Any], None]:
     """Run one turn, yielding structured events (converted to SSE by callers).
 
@@ -716,26 +757,36 @@ async def _turn_events(
         # in a short transaction on a fresh session.  Committing now means a
         # later disconnect/error cannot drop the caller's message or the audit
         # trail.
+        # A retry whose question is already the thread's unanswered last
+        # question reuses that row: the history sent to the model stops before
+        # it (the question is appended below exactly as on a normal turn) and
+        # no second copy is stored.  The comparison is against this turn's
+        # redacted text, so redaction is never skipped.
         audit_context_id: str
         async with session_factory() as db:
-            history = await _history_messages(db, conversation_id)
+            rows = await _conversation_rows(db, conversation_id)
+            reuse_index = (
+                _unanswered_question_index(rows, stored_message) if retry else None
+            )
+            history = _history_from_rows(rows if reuse_index is None else rows[:reuse_index])
             audit_context = RetrievalAuditContext(
                 id=f"ra_{uuid.uuid4().hex[:24]}",
                 project_id=scope.project_id,
                 created_by_user_id=user.id,
             )
             db.add(audit_context)
-            db.add(
-                HelperMessage(
-                    id=_new_message_id(),
-                    conversation_id=conversation_id,
-                    role="user",
-                    content=stored_message,
-                    key_source=key_source,
-                    input_tokens=0,
-                    output_tokens=0,
+            if reuse_index is None:
+                db.add(
+                    HelperMessage(
+                        id=_new_message_id(),
+                        conversation_id=conversation_id,
+                        role="user",
+                        content=stored_message,
+                        key_source=key_source,
+                        input_tokens=0,
+                        output_tokens=0,
+                    )
                 )
-            )
             await db.commit()
             audit_context_id = audit_context.id
 
@@ -1148,6 +1199,7 @@ async def create_helper_turn(
         conversation=conversation,
         message=body.message,
         slot=slot,
+        retry=body.retry,
     )
 
     accept = (request.headers.get("accept") or "").lower()
@@ -1279,15 +1331,38 @@ async def delete_helper_conversation(
 
 @router.get("/status")
 async def get_helper_status(
+    project_id: str | None = Query(None, max_length=64),
+    session_ids: list[Annotated[str, Query(max_length=64)]] | None = Query(
+        None, max_length=_MAX_SESSION_IDS
+    ),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Whether the helper is usable, and which key/model it would use."""
-    plan = await get_effective_tier(user, db)
-    enabled = _FEATURE in get_features_for_tier(plan)
+    """Whether the helper is usable, and which key/model it would use.
+
+    Unscoped this reports the caller's own plan (their primary-org tier,
+    as before).  Scoped it accepts the same ``project_id`` / ``session_ids``
+    fields a turn accepts (with the same limits) and resolves them through
+    ``_resolve_scope``, so a session-only scope reports the plan of the org
+    those sessions' projects resolve to — the exact decision ``_gate`` makes
+    for the matching turn — and the 404/400 scope errors match a turn's.
+    """
+    scope, org_id = await _resolve_scope(
+        db,
+        user,
+        HelperScopeRequest(
+            project_id=project_id,
+            session_ids=session_ids,
+        ),
+    )
+
+    enabled = _FEATURE in get_features_for_tier(await _scope_plan_tier(user, db, org_id))
     membership = await get_user_org_membership(user.id, db)
-    org_id = membership.org_id if membership is not None else None
-    resolved = await resolve_helper_llm(user, org_id or "", db)
+    # The scope org wins for key resolution; otherwise fall back to the
+    # primary org (the pre-scope behaviour, and the same precedence /turns
+    # applies).
+    key_org_id = org_id or (membership.org_id if membership is not None else None)
+    resolved = await resolve_helper_llm(user, key_org_id or "", db)
     return {
         "enabled": enabled,
         "key_source": resolved.key_source if resolved is not None else None,

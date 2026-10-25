@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 83 tools in eleven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, and Skills Marketplace.
+The MCP server exposes 85 tools in eleven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, and Skills Marketplace.
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -463,6 +463,27 @@ Slack-like comment thread. Non-idempotent (each call creates a row). Passing `le
 | `body` | string | yes | Markdown body |
 | `as_persona` | string | no | Comment authored by this persona |
 | `lease_epoch` | integer | no | Optional stale-worker fence from `start_ticket` |
+
+#### `watch_ticket`
+
+Follow or unfollow a ticket so you (and your agents) are notified when it changes hands or state. Creating a ticket, being assigned, commenting or posting a review verdict follows it automatically. Added in v0.24.0.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | yes | Ticket ID |
+| `unwatch` | boolean | no | Stop following (default false) |
+| `muted` | boolean | no | Follow without receiving notifications (default false) |
+| `git_remote` | string | no | Git remote URL like `github.com/org/repo`, or a local repo path. Omit to use the current workspace |
+
+#### `get_ticket_updates`
+
+Poll what changed on the tickets you follow since the last acknowledged cursor. Returns at most 100 updates and a `next_cursor`. Each persona keeps its own cursor, so several agents on one account each see every change once. Summaries are written by the server and never contain comment bodies. Added in v0.24.0.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `persona_name` | string | no | Persona whose cursor to poll (defaults to the active ticket's persona, else your own) |
+| `ack` | boolean | no | Advance the cursor past the returned updates (default true); `false` peeks |
+| `git_remote` | string | no | Git remote URL like `github.com/org/repo`, or a local repo path. Omit to use the current workspace |
 
 ### Session checkpoint + fork
 

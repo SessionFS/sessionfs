@@ -559,7 +559,7 @@ sfs audit SESSION_ID [OPTIONS]
 |--------|------|---------|-------------|
 | `--model` | string | `claude-sonnet-4` | Judge LLM model |
 | `--api-key` | string | — | LLM API key (or use config/env) |
-| `--provider` | string | auto-detect | Provider: anthropic, openai, google, openrouter |
+| `--provider` | string | auto-detect | LLM provider: anthropic, openai, google, openrouter, deepseek, kimi, xai, mistral, zai, qwen, minimax, groq, together, fireworks. Without `--api-key`, the key comes from that provider's own variable (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`/`GOOGLE_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`, `MOONSHOT_API_KEY`, `XAI_API_KEY`, `MISTRAL_API_KEY`, `ZAI_API_KEY`, `DASHSCOPE_API_KEY`, `MINIMAX_API_KEY`, `GROQ_API_KEY`, `TOGETHER_API_KEY`, `FIREWORKS_API_KEY`) — never another provider's |
 | `--base-url` | string | — | Custom OpenAI-compatible endpoint (LiteLLM, vLLM, Ollama) |
 | `--consensus` | flag | `false` | Run 3 passes, report where 2+ agree (3x cost) |
 | `--report` | flag | `false` | Show existing report only |
@@ -1752,14 +1752,14 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed (83):
+Tools exposed (85):
 
 - **Sessions:** `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_session_summary`, `get_audit_report`, `get_session_provenance`, `get_session_retrieval_log`, `rename_session`, `checkpoint_session`, `list_checkpoints`, `fork_session`, `ask_session_helper`
 - **Knowledge (read):** `get_project_context`, `get_context_section`, `get_wiki_page`, `get_wiki_page_history`, `search_project_knowledge`, `list_knowledge_entries`, `get_knowledge_entry`, `get_knowledge_health`, `ask_project`
 - **Knowledge (write):** `add_knowledge`, `update_wiki_page`, `list_wiki_pages`, `compile_knowledge_base`, `dismiss_knowledge_entry`, `update_entry_confidence`, `promote_entry`, `promote_eligible_entries`
 - **Rules (read-only):** `get_rules`, `get_compiled_rules`
 - **Personas:** `list_personas`, `get_persona`, `create_persona`, `update_persona`, `delete_persona`, `assume_persona`, `forget_persona`
-- **Tickets:** `list_tickets`, `get_ticket`, `create_ticket`, `update_ticket`, `start_ticket`, `complete_ticket`, `resolve_ticket`, `approve_ticket`, `assign_persona`, `escalate_ticket`, `add_ticket_comment`, `list_ticket_comments`, `get_ticket_review_state`
+- **Tickets:** `list_tickets`, `get_ticket`, `create_ticket`, `update_ticket`, `start_ticket`, `complete_ticket`, `resolve_ticket`, `approve_ticket`, `assign_persona`, `escalate_ticket`, `add_ticket_comment`, `list_ticket_comments`, `get_ticket_review_state`, `watch_ticket`, `get_ticket_updates`
 - **Agent runs and feedback:** `create_agent_run`, `replay_agent_run`, `complete_agent_run`, `list_agent_runs`, `record_agent_feedback`, `list_agent_feedback`, `get_agent_feedback_summary`
 - **Work queues:** `create_work_queue`, `list_work_queues`, `get_work_queue`, `set_work_queue_status`, `run_work_queue_step`, `complete_work_queue_step`
 - **Handoffs:** `create_handoff`, `get_handoff`, `list_inbox_handoffs`, `list_sent_handoffs`, `claim_handoff`, `decline_handoff`, `revoke_handoff`, `add_handoff_comment`
@@ -2705,6 +2705,38 @@ sfs ticket watch tk_abc123 --notify                      # OS notification on ne
 ```
 
 Each new comment triggers a terminal bell. `--notify` additionally calls `terminal-notifier` on macOS if installed (best-effort, no-op otherwise). Ctrl-C exits gracefully with a count of new comments seen during the session.
+
+### `sfs ticket follow` / `unfollow`
+
+Follow a ticket so you (and your agents) are notified when it changes hands or state. `--mute` follows without receiving notifications. `unfollow` removes the follow.
+
+```bash
+sfs ticket follow tk_abc123
+sfs ticket follow tk_abc123 --mute
+sfs ticket unfollow tk_abc123
+```
+
+Following is also automatic: creating a ticket, being assigned, commenting, or posting a review verdict subscribes you. Notifications are server-generated summaries and never copy comment bodies.
+
+### `sfs ticket inbox`
+
+List your watched-ticket notifications (unread by default). `--all` includes read ones; `--mark-read` marks them read after listing.
+
+```bash
+sfs ticket inbox
+sfs ticket inbox --all
+sfs ticket inbox --mark-read
+```
+
+### `sfs ticket updates`
+
+Poll the agent-side notification delta and acknowledge it. The cursor is per persona: `--persona` names the persona whose cursor to poll (defaults to the active bundle's persona, else your own). `--no-ack` peeks without advancing the cursor.
+
+```bash
+sfs ticket updates
+sfs ticket updates --persona atlas
+sfs ticket updates --no-ack
+```
 
 ### `sfs ticket status`
 

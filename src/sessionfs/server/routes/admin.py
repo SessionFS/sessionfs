@@ -40,7 +40,11 @@ from sessionfs.server.db.models import (
     ProjectTransfer,
     Session,
     SsoExchangeCode,
+    Ticket,
+    TicketNotification,
+    TicketWatcher,
     User,
+    UserNotificationSettings,
 )
 from sessionfs.server.services.auto_join import maybe_auto_join
 from sessionfs.server.roles import OrgRole
@@ -646,6 +650,11 @@ async def delete_user(
     # Remove org memberships to free seats
     await db.execute(
         delete(OrgMember).where(OrgMember.user_id == user_id)
+    )
+    # Remove ticket-watcher subscriptions so a deactivated user no longer
+    # accumulates notification rows (unbounded growth).
+    await db.execute(
+        delete(TicketWatcher).where(TicketWatcher.user_id == user_id)
     )
     # GitHub #81 — and with them any org persona they represented.
     await clear_represented_user(
@@ -1945,6 +1954,343 @@ async def sweep_org_digest(
         admin_id,
         "run_org_digest",
         "org_digest",
+        "bulk",
+        {**result_payload, **actor},
+    )
+    await db.commit()
+    return result_payload
+
+
+# Ticket-notification email sweep: only notify rows older than this so a burst
+# of coalesced events settles into one email instead of one-per-keystroke.
+_TICKET_EMAIL_MIN_AGE = timedelta(minutes=10)
+# Bounded work per sweep run, and the retention window for stale notifications.
+_TICKET_SWEEP_LIMIT = 5000
+# Candidate USERS per sweep run: selecting users (not rows) means one user with
+# a huge backlog can't fill the row limit and starve everyone behind them.
+_TICKET_SWEEP_USER_LIMIT = 500
+_TICKET_RETENTION_DAYS = 90
+
+
+async def _mark_notifications_emailed(
+    db: AsyncSession, user_id: str, ids: list[int], now: datetime
+) -> int:
+    """Claim rows for delivery. The ``emailed_at IS NULL`` guard keeps this
+    idempotent under a concurrent sweep: the second run's rowcount is zero."""
+    if not ids:
+        return 0
+    result = await db.execute(
+        update(TicketNotification)
+        .where(
+            TicketNotification.id.in_(ids),
+            TicketNotification.user_id == user_id,
+            TicketNotification.emailed_at.is_(None),
+        )
+        .values(emailed_at=now)
+    )
+    return result.rowcount
+
+
+async def _claim_notifications(
+    db: AsyncSession, user_id: str, ids: list[int], now: datetime
+) -> list[int]:
+    """Claim rows for delivery, returning the ids this run actually won.
+
+    The digest must be built from the claimed ids (not the pre-claim
+    selection), otherwise two overlapping sweeps both send the same rows. On
+    PostgreSQL a single ``UPDATE ... RETURNING id`` does this atomically; on
+    SQLite (no ``UPDATE ... RETURNING``) rows are claimed one at a time and
+    kept only when ``rowcount == 1``.
+    """
+    if not ids:
+        return []
+    dialect = db.bind.dialect.name if db.bind is not None else "sqlite"
+    if dialect == "postgresql":
+        result = await db.execute(
+            update(TicketNotification)
+            .where(
+                TicketNotification.id.in_(ids),
+                TicketNotification.user_id == user_id,
+                TicketNotification.emailed_at.is_(None),
+            )
+            .values(emailed_at=now)
+            .returning(TicketNotification.id)
+        )
+        return [row_id for (row_id,) in result.fetchall()]
+    claimed: list[int] = []
+    for nid in ids:
+        result = await db.execute(
+            update(TicketNotification)
+            .where(
+                TicketNotification.id == nid,
+                TicketNotification.user_id == user_id,
+                TicketNotification.emailed_at.is_(None),
+            )
+            .values(emailed_at=now)
+        )
+        if result.rowcount == 1:
+            claimed.append(nid)
+    return claimed
+
+
+@router.post("/sweeps/ticket-notifications")
+async def sweep_ticket_notifications(
+    request: Request,
+    auth: AuthContext = Depends(require_platform_sweeper()),
+    db: AsyncSession = Depends(get_db),
+):
+    """Email users about watched tickets that changed (ticket watchers).
+
+    Accepts a platform-admin user key or a ``platform_sweeps:run`` service
+    key (the scheduled job). Selects unread, un-emailed notifications older
+    than 10 minutes and sends each user ONE digest email. Access is re-checked
+    per row against the ticket's current project, so a user who lost access
+    since the notification was written is never emailed its content. Per-user
+    ``ticket_email`` (off | your_turn | all, default your_turn) gates delivery:
+    ``off`` never emails, ``your_turn`` only emails when at least one pending
+    notification is a your_turn, ``all`` emails every batch. Recipients are
+    masked in logs. Idempotent via ``emailed_at IS NULL`` rowcount guards.
+    """
+    from sessionfs.server.auth.project_access import user_can_access_project
+    from sessionfs.server.email import create_email_provider, mask_address
+
+    config = getattr(request.app.state, "config", None)
+    provider = create_email_provider(config)
+    dashboard_url = _digest_dashboard_url(config)
+
+    admin_id = auth.user.id
+    actor = sweep_actor_details(auth)
+    now = datetime.now(timezone.utc)
+    cutoff = now - _TICKET_EMAIL_MIN_AGE
+
+    # End the auth transaction; each per-user delivery commits independently.
+    await db.rollback()
+
+    # Select candidate USERS (not rows) so a few users with large backlogs
+    # can't fill the row limit and starve everyone behind them. Ordering by
+    # each user's oldest deliverable row preserves global age order at user
+    # granularity; each user's rows are then fetched and claimed per user.
+    user_ids = (
+        await db.execute(
+            select(TicketNotification.user_id)
+            .join(Ticket, Ticket.id == TicketNotification.ticket_id)
+            .where(
+                TicketNotification.read_at.is_(None),
+                TicketNotification.emailed_at.is_(None),
+                TicketNotification.updated_at <= cutoff,
+            )
+            .group_by(TicketNotification.user_id)
+            .order_by(func.min(TicketNotification.id).asc())
+            .limit(_TICKET_SWEEP_USER_LIMIT)
+        )
+    ).scalars().all()
+
+    users = {
+        u.id: u
+        for u in (
+            await db.execute(select(User).where(User.id.in_(user_ids)))
+        ).scalars()
+    }
+    settings = {
+        s.user_id: s
+        for s in (
+            await db.execute(
+                select(UserNotificationSettings).where(
+                    UserNotificationSettings.user_id.in_(user_ids)
+                )
+            )
+        ).scalars()
+    }
+
+    sent = 0
+    skipped_pref = 0
+    skipped_access = 0
+    errors: list[dict] = []
+
+    for user_id in user_ids:
+        items = (
+            await db.execute(
+                select(
+                    TicketNotification,
+                    Ticket.title,
+                    Ticket.project_id,
+                )
+                .join(Ticket, Ticket.id == TicketNotification.ticket_id)
+                .where(
+                    TicketNotification.user_id == user_id,
+                    TicketNotification.read_at.is_(None),
+                    TicketNotification.emailed_at.is_(None),
+                    TicketNotification.updated_at <= cutoff,
+                )
+                .order_by(TicketNotification.id.asc())
+                .limit(_TICKET_SWEEP_LIMIT)
+            )
+        ).all()
+        ids = [n.id for n, _, _ in items]
+        try:
+            user = users.get(user_id)
+            if user is None or not user.is_active or not user.email:
+                await _mark_notifications_emailed(db, user_id, ids, now)
+                await db.commit()
+                skipped_pref += len(items)
+                continue
+
+            # Re-check tenant isolation once per (user, project), not per row.
+            visible: list[tuple[TicketNotification, str | None, str]] = []
+            invisible_ids: list[int] = []
+            project_access: dict[str, bool] = {}
+            for notification, title, project_id in items:
+                if project_id not in project_access:
+                    project = await db.get(Project, project_id)
+                    project_access[project_id] = (
+                        project is not None
+                        and await user_can_access_project(db, user_id, project)
+                    )
+                if project_access[project_id]:
+                    visible.append((notification, title, project_id))
+                else:
+                    invisible_ids.append(notification.id)
+            # Inaccessible rows are consumed (never delivered) so they do not
+            # resurface on later sweeps.
+            if invisible_ids:
+                await _mark_notifications_emailed(db, user_id, invisible_ids, now)
+            if not visible:
+                await db.commit()
+                skipped_access += len(items)
+                continue
+
+            mode = settings.get(user_id)
+            ticket_email = mode.ticket_email if mode is not None else "your_turn"
+            if ticket_email == "off":
+                await _mark_notifications_emailed(
+                    db, user_id, [n.id for n, _, _ in visible], now
+                )
+                await db.commit()
+                skipped_pref += len(visible)
+                continue
+            if ticket_email == "your_turn" and not any(
+                n.kind == "your_turn" for n, _, _ in visible
+            ):
+                await _mark_notifications_emailed(
+                    db, user_id, [n.id for n, _, _ in visible], now
+                )
+                await db.commit()
+                skipped_pref += len(visible)
+                continue
+
+            # Claim the visible rows for delivery; ``claimed_ids`` is exactly
+            # what this run won, so two overlapping sweeps never both email the
+            # same row.
+            claimed_ids = await _claim_notifications(
+                db, user_id, [n.id for n, _, _ in visible], now
+            )
+            await db.commit()
+            if not claimed_ids:
+                skipped_pref += len(visible)
+                continue
+
+            claimed_lookup = set(claimed_ids)
+            digest = [
+                {
+                    "ticket_title": title,
+                    "ticket_id": n.ticket_id,
+                    "project_id": project_id,
+                    "kind": n.kind,
+                    "summary": n.summary,
+                }
+                for n, title, project_id in visible
+                if n.id in claimed_lookup
+            ]
+            outcome = await provider.send_ticket_notification(
+                to_email=user.email,
+                notifications=digest,
+                dashboard_url=dashboard_url,
+            )
+            if outcome.get("status") == "sent":
+                sent += 1
+            else:
+                # Release only the rows THIS run claimed, guarded by
+                # ``emailed_at == now`` so a concurrent run's reservation is
+                # never released.
+                await db.execute(
+                    update(TicketNotification)
+                    .where(
+                        TicketNotification.id.in_(claimed_ids),
+                        TicketNotification.emailed_at == now,
+                    )
+                    .values(emailed_at=None)
+                )
+                await db.commit()
+                logger.warning(
+                    "ticket notification email failed to %s",
+                    mask_address(user.email),
+                )
+                errors.append({"user_id": user_id, "reason": "send_failed"})
+        except Exception as exc:
+            await db.rollback()
+            logger.warning(
+                "ticket notification sweep failed for user %s: %s",
+                user_id,
+                type(exc).__name__,
+            )
+            errors.append({"user_id": user_id, "reason": "error"})
+
+    # Retention: purge notifications delivered through at least one channel
+    # (read or emailed) that are older than the retention window. Split into
+    # two bounded deletes (read-and-old, emailed-and-old) so each can use a
+    # dedicated (column, updated_at) index instead of one OR'd full scan.
+    retention_cutoff = now - timedelta(days=_TICKET_RETENTION_DAYS)
+    read_stale_ids = (
+        await db.execute(
+            select(TicketNotification.id)
+            .where(
+                TicketNotification.updated_at < retention_cutoff,
+                TicketNotification.read_at.is_not(None),
+            )
+            .order_by(TicketNotification.id.asc())
+            .limit(_TICKET_SWEEP_LIMIT)
+        )
+    ).scalars().all()
+    if read_stale_ids:
+        await db.execute(
+            delete(TicketNotification).where(
+                TicketNotification.id.in_(list(read_stale_ids))
+            )
+        )
+    emailed_stale_ids = (
+        await db.execute(
+            select(TicketNotification.id)
+            .where(
+                TicketNotification.updated_at < retention_cutoff,
+                TicketNotification.emailed_at.is_not(None),
+                # Read rows were handled above; partition so a row flagged both
+                # read and emailed is counted (and deleted) exactly once.
+                TicketNotification.read_at.is_(None),
+            )
+            .order_by(TicketNotification.id.asc())
+            .limit(_TICKET_SWEEP_LIMIT)
+        )
+    ).scalars().all()
+    if emailed_stale_ids:
+        await db.execute(
+            delete(TicketNotification).where(
+                TicketNotification.id.in_(list(emailed_stale_ids))
+            )
+        )
+    retention_deleted = len(read_stale_ids) + len(emailed_stale_ids)
+
+    result_payload = {
+        "users_emailed": sent,
+        "notifications_skipped_preference": skipped_pref,
+        "notifications_skipped_access": skipped_access,
+        "notifications_deleted_retention": retention_deleted,
+        "errors": errors,
+    }
+    await _log_action(
+        db,
+        admin_id,
+        "run_ticket_notifications_sweep",
+        "ticket_notification",
         "bulk",
         {**result_payload, **actor},
     )

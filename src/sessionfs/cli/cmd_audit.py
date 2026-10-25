@@ -18,13 +18,20 @@ from sessionfs.cli.common import (
     open_store,
     resolve_session_id,
 )
+from sessionfs.judge.provider_registry import PROVIDERS, detect_provider_id, get_provider
+
+_PROVIDER_IDS = tuple(p.id for p in PROVIDERS)
 
 
 def audit(
     session_id: str = typer.Argument(..., help="Session ID or prefix"),
-    model: str = typer.Option("claude-sonnet-4", "--model", help="Judge LLM model"),
+    model: str = typer.Option("claude-sonnet-5-5", "--model", help="Judge LLM model"),
     api_key: Optional[str] = typer.Option(None, "--api-key", help="LLM API key"),
-    provider: Optional[str] = typer.Option(None, "--provider", help="LLM provider (anthropic, openai, google, openrouter)"),
+    provider: Optional[str] = typer.Option(
+        None,
+        "--provider",
+        help=f"LLM provider ({', '.join(_PROVIDER_IDS)}); detected from --model when omitted",
+    ),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="Custom OpenAI-compatible endpoint (LiteLLM, vLLM, Ollama, etc.)"),
     consensus: bool = typer.Option(False, "--consensus", help="Run 3 passes, report only where 2+ agree"),
     report_only: bool = typer.Option(False, "--report", help="Show existing report only"),
@@ -40,14 +47,23 @@ def audit(
         _show_existing_report(session_dir, session_id, json_output, fmt)
         return
 
+    if provider is not None:
+        provider = provider.strip().lower()
+        if get_provider(provider) is None:
+            err_console.print(
+                f"[red]Unknown provider '{provider}'. Choose one of: {', '.join(_PROVIDER_IDS)}.[/red]"
+            )
+            raise typer.Exit(1)
+
     # Resolve base URL: CLI flag > env var > config.toml
     resolved_base_url = _resolve_base_url(base_url)
 
-    resolved_key = _resolve_api_key(api_key, model)
+    resolved_key = _resolve_api_key(api_key, model, provider)
     if resolved_key is None and not resolved_base_url:
         err_console.print(
             "[red]No API key found. Provide --api-key, set it in config.toml [judge], "
-            "or set ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY env var.[/red]"
+            "or set the provider's key variable (e.g. ANTHROPIC_API_KEY, OPENAI_API_KEY, "
+            "DEEPSEEK_API_KEY, MOONSHOT_API_KEY).[/red]"
         )
         raise typer.Exit(1)
 
@@ -74,7 +90,7 @@ def audit(
             err_console.print(f"[yellow]Warning: {warning}[/yellow]")
 
 
-def _resolve_api_key(explicit_key: str | None, model: str) -> str | None:
+def _resolve_api_key(explicit_key: str | None, model: str, provider: str | None = None) -> str | None:
     """Resolve API key from flag, config, or environment."""
     if explicit_key:
         return explicit_key
@@ -93,23 +109,12 @@ def _resolve_api_key(explicit_key: str | None, model: str) -> str | None:
     except Exception:
         pass
 
-    # Try environment variables based on model/provider
-    model_lower = model.lower()
-    if model_lower.startswith("claude"):
-        key = os.environ.get("ANTHROPIC_API_KEY")
-        if key:
-            return key
-    elif model_lower.startswith(("gpt-", "o1", "o3")):
-        key = os.environ.get("OPENAI_API_KEY")
-        if key:
-            return key
-    elif model_lower.startswith("gemini"):
-        key = os.environ.get("GOOGLE_API_KEY")
-        if key:
-            return key
-
-    # Fallback: try all env vars
-    for env_var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY"):
+    # Environment: only the variables of the provider this request goes to,
+    # so a key is never sent to a different vendor.
+    profile = get_provider(provider) if provider else None
+    if profile is None:
+        profile = get_provider(detect_provider_id(model))
+    for env_var in profile.env_vars if profile else ():
         key = os.environ.get(env_var)
         if key:
             return key

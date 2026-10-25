@@ -997,6 +997,65 @@ _TOOLS = [
         },
     ),
     Tool(
+        name="watch_ticket",
+        description=(
+            "Follow or unfollow a ticket so you (and your agents) get "
+            "notified when it changes hands or state. Pass `unwatch=true` "
+            "to stop following, or `muted=true` to follow without "
+            "receiving notifications.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket follow` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string", "description": "Ticket id (tk_...)"},
+                "unwatch": {
+                    "type": "boolean",
+                    "description": "Stop following (default false)",
+                    "default": False,
+                },
+                "muted": {
+                    "type": "boolean",
+                    "description": "Follow silently without notifications (default false)",
+                    "default": False,
+                },
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["ticket_id"],
+        },
+    ),
+    Tool(
+        name="get_ticket_updates",
+        description=(
+            "Poll the caller's watched-ticket notifications since the last "
+            "acknowledged cursor. Returns at most 100 updates and a "
+            "`next_cursor` to acknowledge. Summaries are server-generated "
+            "and never contain comment bodies.\n\n"
+            "Pass `ack=false` to peek without advancing the cursor.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs ticket updates` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "persona_name": {
+                    "type": "string",
+                    "description": (
+                        "Optional persona cursor. Defaults to the active "
+                        "ticket's persona, else the human's own cursor."
+                    ),
+                },
+                "ack": {
+                    "type": "boolean",
+                    "description": "Acknowledge the returned cursor (default true)",
+                    "default": True,
+                },
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+        },
+    ),
+    Tool(
         name="start_ticket",
         description=(
             "Start working on a ticket. Returns the compiled persona + "
@@ -2650,6 +2709,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_list_ticket_comments(arguments)
         elif name == "get_ticket_review_state":
             result = await _handle_get_ticket_review_state(arguments)
+        elif name == "watch_ticket":
+            result = await _handle_watch_ticket(arguments)
+        elif name == "get_ticket_updates":
+            result = await _handle_get_ticket_updates(arguments)
         elif name == "start_ticket":
             result = await _handle_start_ticket(arguments)
         elif name == "create_ticket":
@@ -4652,6 +4715,99 @@ async def _handle_get_ticket_review_state(args: dict) -> dict:
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return resp.json()
+
+
+async def _handle_watch_ticket(args: dict) -> dict:
+    """Wrap PUT/DELETE /api/v1/projects/{project_id}/tickets/{ticket_id}/watch."""
+    ticket_id = args.get("ticket_id", "")
+    if not ticket_id:
+        return {"error": "ticket_id is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    unwatch = _strict_bool(args.get("unwatch"), False)
+    muted = _strict_bool(args.get("muted"), False)
+    url = f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/watch"
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        if unwatch:
+            resp = await client.delete(url, headers={"Authorization": f"Bearer {api_key}"})
+        else:
+            resp = await client.put(
+                url,
+                json={"muted": muted},
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+    if resp.status_code == 404:
+        return {"error": f"Ticket '{ticket_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    if unwatch:
+        return {"ticket_id": ticket_id, "watching": False}
+    body = resp.json() if resp.text else {}
+    return {"ticket_id": ticket_id, "watching": True, **body}
+
+
+async def _handle_get_ticket_updates(args: dict) -> dict:
+    """Wrap GET /api/v1/me/ticket-updates (+ optional ack POST).
+
+    The agent delta cursor is per (user, persona); summaries are
+    server-generated and never contain comment bodies. When ``ack`` is true
+    (the default) the returned ``next_cursor`` is acknowledged so the next
+    poll only returns strictly newer notifications.
+    """
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    persona = args.get("persona_name") or ""
+    # Thread the persona from the active-ticket bundle when the caller did
+    # not name one, so a resident polling its own work keeps its own cursor.
+    if not persona:
+        try:
+            from sessionfs.active_ticket import read_bundle
+
+            bundle = read_bundle()
+            if (
+                isinstance(bundle, dict)
+                and bundle.get("project_id") == project_id
+                and bundle.get("persona_name")
+            ):
+                persona = bundle["persona_name"]
+        except Exception:
+            pass
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/me/ticket-updates",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params={"persona": persona},
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+
+    payload = resp.json()
+    next_cursor = payload.get("next_cursor")
+    if _strict_bool(args.get("ack"), True) and next_cursor is not None:
+        async with httpx.AsyncClient(timeout=15) as client:
+            ack_resp = await client.post(
+                f"{api_url}/api/v1/me/ticket-updates/ack",
+                json={"cursor": next_cursor, "persona": persona},
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+        if ack_resp.status_code >= 400:
+            payload["ack_error"] = f"API error {ack_resp.status_code}: {ack_resp.text}"
+        else:
+            payload["acknowledged"] = True
+    return payload
 
 
 async def _handle_list_ticket_comments(args: dict) -> dict:

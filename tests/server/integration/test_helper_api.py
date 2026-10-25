@@ -724,6 +724,174 @@ async def test_status_reports_enabled_and_key_source(
     assert body["model"] == "gpt-4o"
 
 
+@pytest.mark.asyncio
+async def test_status_project_scope_uses_project_org_plan(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    """The caller's primary org is Team, but the project's org is Enterprise —
+    a project-scoped status must reflect the project's plan, not the caller's."""
+    user, key = await _make_user(db_session, tier="team")
+    team_org = await _make_org_with(db_session, user, tier="team")
+    user.default_org_id = team_org.id
+    await db_session.commit()
+
+    ent_admin, _ = await _make_user(db_session, "entadmin", tier="enterprise")
+    ent_org = await _make_org_with(db_session, ent_admin, member=user, tier="enterprise")
+    project = await _make_project(db_session, user, org_id=ent_org.id)
+
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+
+    scoped = await client.get(
+        f"/api/v1/helper/status?project_id={project.id}", headers=_hdrs(key)
+    )
+    assert scoped.status_code == 200, scoped.text
+    assert scoped.json()["enabled"] is True
+
+    # Unscoped still reports the caller's own (Team) plan.
+    unscoped = await client.get("/api/v1/helper/status", headers=_hdrs(key))
+    assert unscoped.status_code == 200, unscoped.text
+    assert unscoped.json()["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_status_project_scope_no_access_is_404(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    user, key = await _make_user(db_session)
+    owner, _ = await _make_user(db_session, "owner", tier="enterprise")
+    project = await _make_project(db_session, owner, org_id=None)
+
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+
+    resp = await client.get(
+        f"/api/v1/helper/status?project_id={project.id}", headers=_hdrs(key)
+    )
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_status_personal_project_agrees_with_gate(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    """A personal project resolves the owner's own tier, exactly like the
+    turn gate's personal case — status and _gate must agree."""
+    user, key = await _make_user(db_session, tier="team")
+    project = await _make_project(db_session, user, org_id=None)
+
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+
+    status = await client.get(
+        f"/api/v1/helper/status?project_id={project.id}", headers=_hdrs(key)
+    )
+    assert status.status_code == 200, status.text
+    assert status.json()["enabled"] is False
+
+    turn = await client.post(
+        "/api/v1/helper/turns",
+        headers=_hdrs(key),
+        json={
+            "message": "hi",
+            "stream": False,
+            "scope": {"project_id": project.id},
+        },
+    )
+    assert turn.status_code == 403, turn.text
+    assert turn.json()["error"]["code"] == "upgrade_required"
+    assert turn.json()["error"]["details"]["plan_scope"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_status_session_scope_uses_sessions_org_plan(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    """The caller's primary org is Team, but the session's project belongs to an
+    Enterprise org — a session-scoped status must report the sessions' org plan,
+    exactly like the matching turn."""
+    user, key = await _make_user(db_session, tier="team")
+    team_org = await _make_org_with(db_session, user, tier="team")
+    user.default_org_id = team_org.id
+    await db_session.commit()
+
+    ent_admin, _ = await _make_user(db_session, "entadmin", tier="enterprise")
+    ent_org = await _make_org_with(db_session, ent_admin, member=user, tier="enterprise")
+    project = await _make_project(db_session, user, org_id=ent_org.id)
+    session = await _make_session(db_session, user, project_id=project.id)
+
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+
+    scoped = await client.get(
+        f"/api/v1/helper/status?session_ids={session.id}", headers=_hdrs(key)
+    )
+    assert scoped.status_code == 200, scoped.text
+    assert scoped.json()["enabled"] is True
+
+    # Unscoped still reports the caller's own (Team) plan.
+    unscoped = await client.get("/api/v1/helper/status", headers=_hdrs(key))
+    assert unscoped.status_code == 200, unscoped.text
+    assert unscoped.json()["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_status_session_scope_enterprise_user_team_org_session_not_enabled(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    """The caller's own plan is Enterprise, but the session lives in a Team org's
+    project — the sessions' org plan must win over the caller's tier."""
+    user, key = await _make_user(db_session, tier="enterprise")
+    team_admin, _ = await _make_user(db_session, "teamadmin", tier="team")
+    team_org = await _make_org_with(db_session, team_admin, member=user, tier="team")
+    project = await _make_project(db_session, user, org_id=team_org.id)
+    session = await _make_session(db_session, user, project_id=project.id)
+
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+
+    scoped = await client.get(
+        f"/api/v1/helper/status?session_ids={session.id}", headers=_hdrs(key)
+    )
+    assert scoped.status_code == 200, scoped.text
+    assert scoped.json()["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_status_other_users_session_is_404(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    user, key = await _make_user(db_session)
+    other, _ = await _make_user(db_session, "bob")
+    other_session = await _make_session(db_session, other)
+
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+
+    resp = await client.get(
+        f"/api/v1/helper/status?session_ids={other_session.id}", headers=_hdrs(key)
+    )
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_status_session_scope_mixed_orgs_is_400(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    """Session-only scope spanning two orgs' projects is refused (scope_mixed_orgs),
+    identical to a turn."""
+    user, key = await _make_user(db_session)
+    org_a = await _make_org_with(db_session, user)
+    org_b = await _make_org_with(db_session, user)
+    project_a = await _make_project(db_session, user, org_a.id)
+    project_b = await _make_project(db_session, user, org_b.id)
+    session_a = await _make_session(db_session, user, project_id=project_a.id)
+    session_b = await _make_session(db_session, user, project_id=project_b.id)
+
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+
+    resp = await client.get(
+        f"/api/v1/helper/status?session_ids={session_a.id}&session_ids={session_b.id}",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "scope_mixed_orgs"
+
+
 # ---------------------------------------------------------------------------
 # Retrieval audit (source="helper")
 # ---------------------------------------------------------------------------
@@ -1776,3 +1944,216 @@ async def test_audit_context_commits_before_model_and_survives_delete(
         await db_session.execute(select(RetrievalAuditContext))
     ).scalars().one() is not None
 
+
+
+# ---------------------------------------------------------------------------
+# Retry after a failed answer (retry=true)
+# ---------------------------------------------------------------------------
+
+
+def _fake_run_agent_recording(seen: list[list[dict]]):
+    """Answers with text and records the history the model was given."""
+
+    async def _fake(*, execute_tool, messages, **kwargs):
+        seen.append([dict(m) for m in messages])
+        yield TextDelta("Answer.")
+        yield Done("stop")
+
+    return _fake
+
+
+def _fake_run_agent_tool_then_provider_error():
+    async def _fake(*, execute_tool, **kwargs):
+        call = ToolCall(id="call_1", name="list_recent_sessions", arguments={})
+        yield ToolCallEvent(call)
+        result = await execute_tool(call)
+        yield ToolResultEvent(call, result)
+        raise ProviderError(500, "upstream exploded")
+
+    return _fake
+
+
+async def _stream_turn(client: AsyncClient, key: str, payload: dict) -> list[tuple[str, dict]]:
+    body = ""
+    async with client.stream(
+        "POST", "/api/v1/helper/turns", headers=_hdrs(key), json={**payload, "stream": True}
+    ) as resp:
+        assert resp.status_code == 200, await resp.aread()
+        async for chunk in resp.aiter_text():
+            body += chunk
+    return _parse_sse(body)
+
+
+async def _rows(db: AsyncSession, conversation_id: str) -> list[HelperMessage]:
+    db.expire_all()
+    return list(
+        (
+            await db.execute(
+                select(HelperMessage)
+                .where(HelperMessage.conversation_id == conversation_id)
+                .order_by(HelperMessage.created_at.asc(), HelperMessage.id.asc())
+            )
+        ).scalars().all()
+    )
+
+
+async def _failed_first_turn(
+    client: AsyncClient, key: str, monkeypatch: pytest.MonkeyPatch, message: str, fake=None
+) -> str:
+    monkeypatch.setattr(helper_mod, "run_agent", fake or _fake_run_agent_provider_error())
+    events = await _stream_turn(client, key, {"message": message})
+    assert any(e == "error" for e, _ in events)
+    return next(d["conversation_id"] for e, d in events if e == "conversation")
+
+
+@pytest.mark.asyncio
+async def test_retry_reuses_the_unanswered_question(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    user, key = await _make_user(db_session)
+    user_id = user.id
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+    conversation_id = await _failed_first_turn(client, key, monkeypatch, "What failed?")
+    assert [r.role for r in await _rows(db_session, conversation_id)] == ["user"]
+
+    seen: list[list[dict]] = []
+    monkeypatch.setattr(helper_mod, "run_agent", _fake_run_agent_recording(seen))
+    events = await _stream_turn(
+        client, key, {"message": "What failed?", "conversation_id": conversation_id, "retry": True}
+    )
+    assert ("conversation", {"conversation_id": conversation_id}) in events
+    assert any(e == "done" for e, _ in events)
+
+    rows = await _rows(db_session, conversation_id)
+    assert [(r.role, r.content) for r in rows] == [("user", "What failed?"), ("assistant", "Answer.")]
+    # The model saw the question exactly once, as the last message.
+    assert [(m["role"], m.get("content")) for m in seen[0]] == [("user", "What failed?")]
+    # Each attempt still gets its own retrieval-audit context.
+    contexts = (
+        await db_session.execute(
+            select(RetrievalAuditContext).where(RetrievalAuditContext.created_by_user_id == user_id)
+        )
+    ).scalars().all()
+    assert len(contexts) == 2
+
+
+@pytest.mark.asyncio
+async def test_retry_after_failed_tool_step_does_not_duplicate_question(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    """Tool rows saved by the failed attempt are not an answer."""
+    _user, key = await _make_user(db_session)
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+    conversation_id = await _failed_first_turn(
+        client, key, monkeypatch, "Which sessions?", _fake_run_agent_tool_then_provider_error()
+    )
+    assert [r.role for r in await _rows(db_session, conversation_id)] == ["user", "tool"]
+
+    seen: list[list[dict]] = []
+    monkeypatch.setattr(helper_mod, "run_agent", _fake_run_agent_recording(seen))
+    await _stream_turn(
+        client, key, {"message": "Which sessions?", "conversation_id": conversation_id, "retry": True}
+    )
+    rows = await _rows(db_session, conversation_id)
+    assert [r.role for r in rows].count("user") == 1
+    assert rows[-1].role == "assistant"
+    # The failed attempt's tool output is not replayed ahead of the question.
+    assert [m["role"] for m in seen[0]] == ["user"]
+
+
+@pytest.mark.asyncio
+async def test_retry_matches_on_the_redacted_question(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    user, key = await _make_user(db_session)
+    await _make_org_with(
+        db_session,
+        user,
+        settings={"dlp": {"enabled": True, "mode": "redact", "categories": ["phi"]}},
+    )
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+    question = "why was ssn 123-45-6789 flagged?"
+    conversation_id = await _failed_first_turn(client, key, monkeypatch, question)
+
+    monkeypatch.setattr(helper_mod, "run_agent", _fake_run_agent_recording([]))
+    await _stream_turn(
+        client, key, {"message": question, "conversation_id": conversation_id, "retry": True}
+    )
+    rows = await _rows(db_session, conversation_id)
+    users = [r for r in rows if r.role == "user"]
+    assert len(users) == 1
+    assert "123-45-6789" not in (users[0].content or "")
+    assert "[REDACTED:ssn]" in (users[0].content or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    ["answered", "different_question", "partial_answer", "retry_flag_off"],
+)
+async def test_retry_falls_back_to_a_normal_turn(
+    case: str, client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    """Without an unanswered identical last question, retry stores the question."""
+    user, key = await _make_user(db_session)
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+    base = datetime.now(timezone.utc) - timedelta(hours=1)
+    conv = await _make_conversation(db_session, user, None, base)
+    # _make_conversation stored a user "hi"; shape the tail per case.
+    if case in ("answered", "partial_answer"):
+        db_session.add(
+            HelperMessage(
+                id=f"hm_{uuid.uuid4().hex[:24]}",
+                conversation_id=conv.id,
+                role="assistant",
+                content="Hello." if case == "answered" else "Partial",
+                stop_reason="stop" if case == "answered" else "client_disconnected",
+                created_at=base + timedelta(seconds=1),
+            )
+        )
+        await db_session.commit()
+    message = "something else" if case == "different_question" else "hi"
+
+    seen: list[list[dict]] = []
+    monkeypatch.setattr(helper_mod, "run_agent", _fake_run_agent_recording(seen))
+    await _stream_turn(
+        client,
+        key,
+        {"message": message, "conversation_id": conv.id, "retry": case != "retry_flag_off"},
+    )
+    rows = await _rows(db_session, conv.id)
+    assert [r.role for r in rows].count("user") == 2
+    assert rows[-2].role == "user" and rows[-2].content == message
+    assert rows[-1].role == "assistant"
+    assert (seen[0][-1]["role"], seen[0][-1]["content"]) == ("user", message)
+
+
+@pytest.mark.asyncio
+async def test_retry_still_respects_busy_limit_and_ownership(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    owner, owner_key = await _make_user(db_session, "owner")
+    _other, other_key = await _make_user(db_session, "mallory")
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+    conv = await _make_conversation(db_session, owner, None, datetime.now(timezone.utc))
+
+    # Someone else's thread is still 404, retry or not.
+    resp = await client.post(
+        "/api/v1/helper/turns",
+        headers=_hdrs(other_key),
+        json={"message": "hi", "conversation_id": conv.id, "retry": True, "stream": False},
+    )
+    assert resp.status_code == 404
+
+    helper_mod._in_flight[owner.id] = 2
+    try:
+        resp = await client.post(
+            "/api/v1/helper/turns",
+            headers=_hdrs(owner_key),
+            json={"message": "hi", "conversation_id": conv.id, "retry": True, "stream": False},
+        )
+        assert resp.status_code == 409
+        assert resp.json()["error"]["code"] == "helper_busy"
+    finally:
+        helper_mod._in_flight.pop(owner.id, None)
+    assert [r.role for r in await _rows(db_session, conv.id)] == ["user"]

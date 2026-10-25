@@ -1,6 +1,6 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ConversationView from './ConversationView';
 
 // ── Mock useMessages ───────────────────────────────────────────────
@@ -211,5 +211,97 @@ describe('ConversationView — states', () => {
 
     // Should render without crash — MessageBlock handles non-string/non-array content
     expect(screen.getByText('User')).toBeInTheDocument();
+  });
+});
+
+
+// ── Deep link to one message (?msg=<n>) ───────────────────────────
+
+describe('ConversationView — deep link to a message', () => {
+  beforeEach(() => mockUseMessages.mockReset());
+
+  function located(target: { index: number; status: 'found' | 'hidden' | 'missing'; anchor_index: number | null }) {
+    mockUseMessages.mockReturnValue({
+      data: {
+        messages: [mkMsg('user', 'line ten'), mkMsg('assistant', 'line eleven'), mkMsg('user', 'line thirteen')],
+        message_indexes: [10, 11, 13],
+        total: 120,
+        page: 3,
+        page_size: 50,
+        has_more: false,
+        target,
+      },
+      isLoading: false,
+      error: null,
+    });
+  }
+
+  it('asks the server for the page around the message, oldest first', () => {
+    located({ index: 11, status: 'found', anchor_index: 11 });
+    render(<ConversationView sessionId="ses_test" targetMessage={11} targetKey="k1" />);
+    expect(mockUseMessages).toHaveBeenCalledWith('ses_test', 1, 50, 'oldest', 11);
+    // The page the server chose is the one shown.
+    expect(screen.getAllByText(/Page 3 of 3/).length).toBe(2);
+  });
+
+  it('gives each message a stable id, scrolls to the target and highlights it', async () => {
+    located({ index: 11, status: 'found', anchor_index: 11 });
+    const scrollSpy = vi.spyOn(HTMLElement.prototype, 'scrollIntoView');
+    render(<ConversationView sessionId="ses_test" targetMessage={11} targetKey="k1" />);
+
+    const el = document.getElementById('msg-11');
+    expect(el).not.toBeNull();
+    expect(document.getElementById('msg-10')).not.toBeNull();
+    await waitFor(() => expect(el).toHaveAttribute('data-highlighted', 'true'));
+    expect(scrollSpy.mock.contexts).toContain(el);
+    expect(document.activeElement).toBe(el);
+    expect(screen.getByRole('status')).toHaveTextContent('Showing message 11.');
+    // No fallback notice when the message itself was found.
+    expect(screen.queryByText(/hidden in this view/)).not.toBeInTheDocument();
+    scrollSpy.mockRestore();
+  });
+
+  it('falls back to the nearest message with a notice when the target is filtered out', async () => {
+    located({ index: 12, status: 'hidden', anchor_index: 13 });
+    render(<ConversationView sessionId="ses_test" targetMessage={12} targetKey="k1" />);
+    expect(screen.getByText(/Message 12 is hidden in this view/)).toBeInTheDocument();
+    await waitFor(() => expect(document.getElementById('msg-13')).toHaveAttribute('data-highlighted', 'true'));
+  });
+
+  it('says so when the message is not in the transcript', () => {
+    located({ index: 999, status: 'missing', anchor_index: 13 });
+    render(<ConversationView sessionId="ses_test" targetMessage={999} targetKey="k1" />);
+    expect(screen.getByText(/Message 999 isn't in this transcript/)).toBeInTheDocument();
+  });
+
+  it('handles a view with nothing to show', () => {
+    mockUseMessages.mockReturnValue({
+      data: { messages: [], message_indexes: [], total: 0, page: 1, page_size: 50, has_more: false, target: { index: 4, status: 'hidden', anchor_index: null } },
+      isLoading: false,
+      error: null,
+    });
+    render(<ConversationView sessionId="ses_test" targetMessage={4} targetKey="k1" />);
+    expect(screen.getByText("Message 4 isn't shown in this view.")).toBeInTheDocument();
+  });
+
+  it('stops locating once the reader pages away', async () => {
+    located({ index: 11, status: 'found', anchor_index: 11 });
+    render(<ConversationView sessionId="ses_test" targetMessage={11} targetKey="k1" />);
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole('button', { name: '1' })[0]);
+    expect(mockUseMessages).toHaveBeenLastCalledWith('ses_test', 1, 50, 'oldest', undefined);
+  });
+
+  it('re-locates when a different message is linked', () => {
+    located({ index: 11, status: 'found', anchor_index: 11 });
+    const { rerender } = render(<ConversationView sessionId="ses_test" targetMessage={11} targetKey="k1" />);
+    rerender(<ConversationView sessionId="ses_test" targetMessage={40} targetKey="k2" />);
+    expect(mockUseMessages).toHaveBeenLastCalledWith('ses_test', 1, 50, 'oldest', 40);
+  });
+
+  it('without a target keeps the newest-first default', () => {
+    located({ index: 0, status: 'found', anchor_index: 0 });
+    render(<ConversationView sessionId="ses_test" />);
+    expect(mockUseMessages).toHaveBeenCalledWith('ses_test', 1, 50, 'newest', undefined);
   });
 });

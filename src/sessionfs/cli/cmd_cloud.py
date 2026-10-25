@@ -576,7 +576,6 @@ def push(
     ),
 ) -> None:
     """Push a local session to the server."""
-    from sessionfs.sync.archive import pack_session
     from sessionfs.sync.client import (
         SyncConflictError,
         SyncDeletedError,
@@ -670,7 +669,11 @@ def push(
             extra_headers["X-SessionFS-Undelete"] = "true"
 
         console.print(f"Packing session {full_id[:12]}...")
-        archive_data = pack_session(session_dir)
+        # Hash-then-pack under the per-session lock, so the ack below can tell
+        # whether a capture landed mid-upload.
+        from sessionfs.store.local import pack_and_hash
+
+        archive_data = pack_and_hash(session_dir)
 
         # Resolve the server-advertised member-size cap once per command.
         # Cached so the unpack path below sees the same value.
@@ -716,8 +719,11 @@ def push(
         if is_excluded(full_id, base_dir=_del_base):
             remove_exclusion(full_id, base_dir=_del_base)
 
-        # Update local manifest with new etag
-        _update_manifest_sync(session_dir, result.etag)
+        # Update local manifest with new etag — but keep it dirty if a capture
+        # landed while the upload was in flight.
+        from sessionfs.store.local import apply_sync_ack
+
+        apply_sync_ack(session_dir, result.etag)
 
         action = "Created" if result.created else "Updated"
         console.print(
@@ -755,7 +761,6 @@ def pull(
     force: bool = typer.Option(False, "--force", "-f", help="Overwrite local without prompting."),
 ) -> None:
     """Pull a session from the server."""
-    from sessionfs.sync.archive import unpack_session
 
     store = open_store()
     client = _get_sync_client()
@@ -792,22 +797,13 @@ def pull(
                 console.print("[dim]Pull cancelled.[/dim]")
                 return
 
-        # Extract to local store
-        target_dir = store.allocate_session_dir(session_id)
+        # Extract to local store via a staged, atomic commit. An explicit
+        # pull overrides exclusion, so the commit skips the exclusion recheck.
         _sync_cfg = _load_sync_config()
-        unpack_session(
-            result.data,
-            target_dir,
-            member_limit_bytes=_resolve_max_member_size(
-                _sync_cfg.get("api_url"), _sync_cfg.get("api_key")
-            ),
+        member_limit = _resolve_max_member_size(
+            _sync_cfg.get("api_url"), _sync_cfg.get("api_key")
         )
-
-        # Update index
-        manifest_path = target_dir / "manifest.json"
-        if manifest_path.exists():
-            manifest = json.loads(manifest_path.read_text())
-            store.upsert_session_metadata(session_id, manifest, str(target_dir))
+        target_dir = _commit_pull(store, session_id, result.data, member_limit)
 
         # Store etag
         _update_manifest_sync(target_dir, result.etag)
@@ -890,7 +886,6 @@ def list_remote(
 
 def sync_all() -> None:
     """Bidirectional sync: push local changes, pull remote-only sessions."""
-    from sessionfs.sync.archive import pack_session, unpack_session
     from sessionfs.sync.client import SyncConflictError, SyncDeletedError
 
     # Construct the client FIRST so auth/config failures (no API key,
@@ -985,7 +980,9 @@ def sync_all() -> None:
 
                 async with upload_sem:
                     try:
-                        archive_data = pack_session(session_dir)
+                        from sessionfs.store.local import pack_and_hash
+
+                        archive_data = pack_and_hash(session_dir)
                         # Pre-upload oversize check — mirrors the same
                         # gate as `sfs push` and `sfs handoff` so the
                         # `sfs sync` upload path doesn't waste bandwidth
@@ -1021,7 +1018,9 @@ def sync_all() -> None:
                         result = await client.push_session(
                             sid, archive_data, etag=local_etag, store_dir=_del_base
                         )
-                        _update_manifest_sync(session_dir, result.etag)
+                        from sessionfs.store.local import apply_sync_ack
+
+                        apply_sync_ack(session_dir, result.etag)
                         push_results[sid] = "pushed"
                     except SyncConflictError:
                         push_results[sid] = "conflict"
@@ -1070,18 +1069,9 @@ def sync_all() -> None:
                             return False
                         result = await client.pull_session(sid)
                         if result.data:
-                            target_dir = store.allocate_session_dir(sid)
-                            unpack_session(
-                                result.data,
-                                target_dir,
-                                member_limit_bytes=max_member_size,
+                            target_dir = _commit_pull(
+                                store, sid, result.data, max_member_size
                             )
-
-                            manifest_path = target_dir / "manifest.json"
-                            if manifest_path.exists():
-                                manifest = json.loads(manifest_path.read_text())
-                                store.upsert_session_metadata(sid, manifest, str(target_dir))
-
                             _update_manifest_sync(target_dir, result.etag)
                             return True
                     except Exception as exc:
@@ -1218,7 +1208,6 @@ def handoff(
                 )
             parsed_attachments.append({"kind": kind, "ref_id": ref_id})
 
-    from sessionfs.sync.archive import pack_session
     from sessionfs.sync.client import SyncConflictError, SyncDeletedError, SyncTooLargeError
     from sessionfs.cli.common import get_store_dir
 
@@ -1234,7 +1223,9 @@ def handoff(
         local_etag = (manifest or {}).get("sync", {}).get("etag")
 
         console.print(f"Ensuring session {full_id[:12]} is synced...")
-        archive_data = pack_session(session_dir)
+        from sessionfs.store.local import pack_and_hash
+
+        archive_data = pack_and_hash(session_dir)
 
         # Resolve the tier-aware member-size cap from server settings.
         _sync_cfg = _load_sync_config()
@@ -1267,7 +1258,9 @@ def handoff(
                 await client.close()
 
         result = asyncio.run(_push_and_handoff())
-        _update_manifest_sync(session_dir, result.etag)
+        from sessionfs.store.local import apply_sync_ack
+
+        apply_sync_ack(session_dir, result.etag)
 
         # Create handoff via API
         import httpx
@@ -1359,7 +1352,6 @@ def pull_handoff(
 ) -> None:
     """Pull a session from a handoff link."""
     import httpx
-    from sessionfs.sync.archive import unpack_session
 
     store = open_store()
     cfg = _load_sync_config()
@@ -1464,22 +1456,13 @@ def pull_handoff(
                 console.print("[dim]Pull cancelled.[/dim]")
                 return
 
-        # Extract to local store
-        target_dir = store.allocate_session_dir(session_id)
+        # Extract to local store via a staged, atomic commit. An explicit
+        # pull overrides exclusion, so the commit skips the exclusion recheck.
         _sync_cfg = _load_sync_config()
-        unpack_session(
-            pull_result.data,
-            target_dir,
-            member_limit_bytes=_resolve_max_member_size(
-                _sync_cfg.get("api_url"), _sync_cfg.get("api_key")
-            ),
+        member_limit = _resolve_max_member_size(
+            _sync_cfg.get("api_url"), _sync_cfg.get("api_key")
         )
-
-        # Update index
-        manifest_path = target_dir / "manifest.json"
-        if manifest_path.exists():
-            manifest = json.loads(manifest_path.read_text())
-            store.upsert_session_metadata(session_id, manifest, str(target_dir))
+        target_dir = _commit_pull(store, session_id, pull_result.data, member_limit)
 
         _update_manifest_sync(target_dir, pull_result.etag)
 
@@ -1495,9 +1478,18 @@ def pull_handoff(
                 resolved = resolver.resolve(git_remote, git_info.get("branch"))
                 if resolved.path:
                     console.print(f"  Found local repo: {resolved.path}")
-                    # Update workspace root_path to local clone
+                    # Update workspace root_path to local clone. Do it under
+                    # the per-session lock and refuse to recreate the dir, so a
+                    # concurrent delete isn't resurrected by this rewrite.
                     workspace["root_path"] = str(resolved.path)
-                    workspace_path.write_text(json.dumps(workspace, indent=2))
+                    from sessionfs.store.fsutil import atomic_write_text
+                    from sessionfs.store.local import lock_session_dir
+                    with lock_session_dir(store.sessions_dir, session_id):
+                        atomic_write_text(
+                            workspace_path,
+                            json.dumps(workspace, indent=2),
+                            create_parent=False,
+                        )
                 else:
                     console.print(
                         f"[dim]  Could not find local clone of {git_remote}[/dim]"
@@ -1825,17 +1817,42 @@ def handoffs_events(
         console.print(line)
 
 
-def _update_manifest_sync(session_dir: Path, etag: str) -> None:
-    """Update the sync block in a session's manifest.json."""
-    from datetime import datetime, timezone
+def _commit_pull(store, session_id: str, archive_data: bytes, member_limit: int | None) -> Path:
+    """Unpack a pulled archive into the store via a staged, atomic commit.
 
-    manifest_path = session_dir / "manifest.json"
-    if not manifest_path.exists():
-        return
-    manifest = json.loads(manifest_path.read_text())
-    if "sync" not in manifest:
-        manifest["sync"] = {}
-    manifest["sync"]["etag"] = etag
-    manifest["sync"]["last_sync_at"] = datetime.now(timezone.utc).isoformat()
-    manifest["sync"]["dirty"] = False
-    manifest_path.write_text(json.dumps(manifest, indent=2))
+    Returns the final session directory. An explicit pull overrides the local
+    exclusion list, so the commit skips the exclusion recheck; a concurrent
+    delete still can't resurrect the session because the whole unpack happens
+    in staging and is only renamed into place at commit time. The commit runs
+    in ``replace`` mode: the archive is authoritative, so local-only files are
+    removed and colliding entries (e.g. ``checkpoints/``) are replaced rather
+    than merged.
+    """
+    from sessionfs.sync.archive import unpack_session
+
+    def _writer(staging: Path):
+        unpack_session(archive_data, staging, member_limit_bytes=member_limit)
+        manifest_path = staging / "manifest.json"
+        if manifest_path.exists():
+            return json.loads(manifest_path.read_text())
+        return None
+
+    # A pull replaces the local session outright: the archive is authoritative,
+    # so a local-only file (or a remotely-removed file) must not survive a pull
+    # that is then marked clean.
+    outcome = store.commit_session(session_id, _writer, skip_excluded=False, mode="replace")
+    if outcome.session_dir is None:  # pragma: no cover - only if skipped
+        raise RuntimeError(f"pull commit for {session_id} was skipped unexpectedly")
+    return outcome.session_dir
+
+
+def _update_manifest_sync(session_dir: Path, etag: str) -> None:
+    """Record a session as clean at ``etag`` (used after a pull/import).
+
+    This is the pull path: the content was just received from the server, so
+    it is clean by definition. The push/ack path uses ``apply_sync_ack``
+    instead, which keeps the session dirty when a capture landed mid-upload.
+    """
+    from sessionfs.store.local import mark_session_synced
+
+    mark_session_synced(session_dir, etag)

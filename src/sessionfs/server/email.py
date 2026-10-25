@@ -314,6 +314,34 @@ class EmailProvider(ABC):
         ok = await self.send(to_email, subject, html)
         return {"status": "sent" if ok else "failed"}
 
+    async def send_ticket_notification(
+        self,
+        to_email: str,
+        notifications: list[dict],
+        dashboard_url: str,
+    ) -> dict[str, Any]:
+        from sessionfs.server.email_templates import (
+            ticket_notification_email,
+            ticket_notification_text,
+        )
+
+        html = ticket_notification_email(
+            notifications=notifications,
+            dashboard_url=dashboard_url,
+        )
+        text = ticket_notification_text(
+            notifications=notifications,
+            dashboard_url=dashboard_url,
+        )
+        first_title = notifications[0]["ticket_title"] if notifications else None
+        count = len(notifications)
+        subject = (
+            f"SessionFS: {count} ticket update(s) — "
+            f"{strip_subject_controls(first_title or 'tickets you follow')}"
+        )
+        ok = await self.send(to_email, subject, html, text=text)
+        return {"status": "sent" if ok else "failed"}
+
     async def send_retention_notice(
         self, to_email: str, purged_count: int, session_titles: list[str],
     ) -> dict[str, Any]:

@@ -14,6 +14,7 @@ from rich.table import Table
 
 from sessionfs.cli.common import console, get_store_dir
 from sessionfs.daemon.status import read_status
+from sessionfs.store.fsutil import atomic_write_text
 
 daemon_app = typer.Typer(name="daemon", help="Manage the SessionFS daemon.", no_args_is_help=True)
 
@@ -366,7 +367,7 @@ def rebuild_index() -> None:
                         if not isinstance(manifest.get("source"), dict):
                             manifest["source"] = {}
                         manifest["source"]["tool"] = tracked[0]
-                        manifest_path.write_text(json.dumps(manifest, indent=2))
+                        atomic_write_text(manifest_path, json.dumps(manifest, indent=2))
                 store.upsert_session_metadata(session_id, manifest, str(sfs_dir))
                 count += 1
             except Exception as e:  # noqa: BLE001 — isolate per-session failure

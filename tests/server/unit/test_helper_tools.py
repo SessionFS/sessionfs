@@ -546,6 +546,37 @@ async def test_search_project_knowledge_happy_path(db_session, test_user, blob_s
 
 
 @pytest.mark.asyncio
+async def test_search_project_knowledge_escapes_like_wildcards(
+    db_session, test_user, blob_store
+):
+    """A literal ``%`` query must match only entries containing a ``%``, not
+    every entry (the pre-fix ``ilike(f"%{query}%")`` turned it into a
+    match-everything wildcard)."""
+    project = await _make_project(db_session, owner=test_user)
+    for content in ("has a % sign", "no percent here"):
+        db_session.add(
+            KnowledgeEntry(
+                project_id=project.id,
+                session_id=f"ses_{uuid.uuid4().hex[:12]}",
+                user_id=test_user.id,
+                entry_type="decision",
+                content=content,
+                confidence=0.9,
+                claim_class="claim",
+                created_at=_now(),
+            )
+        )
+    await db_session.commit()
+
+    ctx = _ctx(db_session, test_user, blob_store=blob_store, audit=RecordingSink())
+    result = await _run(
+        ctx, "search_project_knowledge", {"project_id": project.id, "query": "%"}
+    )
+    assert "has a % sign" in result.content
+    assert "no percent here" not in result.content
+
+
+@pytest.mark.asyncio
 async def test_search_project_knowledge_cross_org_denied(db_session, test_user, blob_store):
     owner = await _make_user(db_session, email="owner@example.com")
     org_b = await _make_org(db_session)

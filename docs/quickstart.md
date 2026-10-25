@@ -9,7 +9,7 @@
 pipx install sessionfs
 ```
 
-This installs two commands: `sfs` (CLI) and `sfsd` (daemon). See [Installation](install.md) for alternative methods (brew, curl, pip).
+This installs two commands: `sfs` (CLI) and `sfsd` (daemon). See [Installation](install.md) for alternative methods (curl, pip).
 
 ## 2. Run the Setup Wizard
 

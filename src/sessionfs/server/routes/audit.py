@@ -197,7 +197,14 @@ async def run_audit(
     llm_api_key = body.llm_api_key
     model = body.model or "claude-sonnet-4"
     provider = body.provider
-    base_url = body.base_url
+
+    # SSRF policy for the endpoint (re-checked before each request as well).
+    from sessionfs.server.routes.settings import (
+        _check_llm_base_url_or_400,
+        saved_judge_key_matches,
+    )
+
+    base_url = await _check_llm_base_url_or_400(body.base_url)
 
     if not llm_api_key:
         from sessionfs.server.db.models import UserJudgeSettings
@@ -206,7 +213,11 @@ async def run_audit(
         stmt = select(UserJudgeSettings).where(UserJudgeSettings.user_id == user.id)
         result = await db.execute(stmt)
         settings = result.scalar_one_or_none()
-        if settings:
+        # The saved key only goes to the provider/endpoint it was saved for;
+        # a request that overrides either must supply its own key.
+        if settings and saved_judge_key_matches(
+            settings, provider=body.provider, base_url=base_url
+        ):
             llm_api_key = decrypt_llm_key(settings.encrypted_api_key)
             if not body.model:
                 model = settings.model
@@ -219,9 +230,6 @@ async def run_audit(
     if not base_url:
         import os
         base_url = os.environ.get("SFS_JUDGE_BASE_URL") or None
-
-    # SSRF policy for the endpoint (re-checked before each request as well).
-    from sessionfs.server.routes.settings import _check_llm_base_url_or_400
 
     base_url = await _check_llm_base_url_or_400(base_url)
 
@@ -403,6 +411,9 @@ async def _run_judge_pipeline(
     chunks = [c for _, c in scored_chunks[:MAX_CHUNKS]]
 
     all_findings: list[Finding] = []
+    chunks_attempted = 0
+    successful_calls = 0
+    last_error: Exception | None = None
 
     for chunk in chunks:
         chunk_start = messages.index(chunk[0]) if chunk else 0
@@ -413,17 +424,25 @@ async def _run_judge_pipeline(
         if not chunk_claims:
             continue
 
+        chunks_attempted += 1
         prompt = build_judge_prompt(chunk_claims, chunk_evidence, messages)
         try:
             response = await call_llm(
                 model=model, system=JUDGE_SYSTEM_PROMPT, prompt=prompt,
                 api_key=llm_api_key, provider=provider, base_url=base_url,
             )
-        except Exception:
+        except Exception as exc:
+            last_error = exc
             continue  # Skip failed chunks, don't crash the whole audit
 
+        successful_calls += 1
         findings = _parse_judge_response(response, chunk_claims)
         all_findings.extend(findings)
+
+    # Every chunk's LLM call failed — surface the error instead of returning an
+    # empty report the caller cannot distinguish from a clean audit.
+    if chunks_attempted > 0 and successful_calls == 0 and last_error is not None:
+        raise last_error
 
     all_findings = _deduplicate_findings(all_findings)
     return JudgeReport(

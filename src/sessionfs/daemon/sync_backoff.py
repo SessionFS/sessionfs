@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -169,15 +168,14 @@ def _iso(wall: float) -> str | None:
 
 def write_retry_request(store_dir: Path, session_ids: list[str] | None) -> Path:
     """Queue a request for the running daemon to retry now (all when None)."""
+    from sessionfs.store.fsutil import atomic_write_text
+
     queue = store_dir / RETRY_REQUEST_DIR
     queue.mkdir(parents=True, exist_ok=True)
     name = f"{time.time_ns()}-{uuid.uuid4().hex}"
     payload = {"all": session_ids is None, "sessions": session_ids or []}
-    tmp = queue / f".{name}.tmp"
-    tmp.write_text(json.dumps(payload))
-    os.chmod(tmp, 0o600)
     final = queue / f"{name}.json"
-    tmp.replace(final)
+    atomic_write_text(final, json.dumps(payload))
     return final
 
 

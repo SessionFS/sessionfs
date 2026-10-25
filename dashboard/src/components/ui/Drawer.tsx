@@ -7,6 +7,15 @@ interface DrawerProps {
   /** ID for aria-labelledby — must match a heading inside children. */
   titleId: string;
   children: ReactNode;
+  /**
+   * Bare layout: no built-in close button or padding, and the panel is a
+   * full-height flex column that doesn't scroll itself — the children own
+   * the header, scroll area and footer (and must render their own close
+   * control). Used by panels with a pinned header/composer.
+   */
+  bare?: boolean;
+  /** Width classes for the panel (default `w-[480px] max-w-full`). */
+  widthClassName?: string;
 }
 
 const KEYFRAME_ID = 'sfs-drawer-keyframes';
@@ -33,7 +42,7 @@ function injectKeyframes() {
  * and body-scroll-lock patterns. Anchored right, full viewport height,
  * 480 px wide (100 % on mobile via max-w-full).
  */
-export function Drawer({ open, onClose, titleId, children }: DrawerProps) {
+export function Drawer({ open, onClose, titleId, children, bare = false, widthClassName = 'w-[480px] max-w-full' }: DrawerProps) {
   const drawerRef = useRef<HTMLDivElement>(null);
   useFocusTrap(open ? drawerRef : { current: null });
 
@@ -80,9 +89,13 @@ export function Drawer({ open, onClose, titleId, children }: DrawerProps) {
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="sfs-drawer-panel absolute right-0 top-0 bottom-0 w-[480px] max-w-full overflow-y-auto border-l border-border bg-overlay"
-        style={{ animation: 'sfs-drawer-in 150ms ease-out' }}
+        className={`sfs-drawer-panel absolute right-0 top-0 bottom-0 ${widthClassName} border-l border-border bg-overlay ${
+          bare ? 'flex flex-col overflow-hidden' : 'overflow-y-auto'
+        }`}
+        style={{ animation: 'sfs-drawer-in 150ms ease-out', boxShadow: bare ? 'var(--shadow-overlay)' : undefined }}
       >
+        {bare ? children : (
+        <>
         {/* X close button */}
         <button
           type="button"
@@ -105,6 +118,8 @@ export function Drawer({ open, onClose, titleId, children }: DrawerProps) {
           </svg>
         </button>
         <div className="p-6">{children}</div>
+        </>
+        )}
       </div>
     </div>
   );

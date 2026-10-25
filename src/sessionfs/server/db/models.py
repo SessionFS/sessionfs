@@ -2294,6 +2294,179 @@ class TrustedReviewer(Base):
     )
 
 
+class TicketWatcher(Base):
+    """A user following a ticket so they (and their agents) learn when it
+    changes hands or state.
+
+    One row per (ticket, user). ``source`` records how the row came to be:
+    ``creator`` / ``assignee`` / ``commenter`` / ``reviewer`` are written
+    automatically when the corresponding event fires; ``explicit`` is a
+    user following via the watch API. ``muted`` suppresses notifications
+    without dropping the follow. ``persona_name`` is the persona that
+    caused an auto-subscribe (e.g. the assigned persona whose human owner
+    this user is); it is informational, not a second key.
+    """
+
+    __tablename__ = "ticket_watchers"
+    __table_args__ = (
+        Index("idx_ticket_watchers_ticket", "ticket_id"),
+        Index("idx_ticket_watchers_user", "user_id"),
+    )
+
+    ticket_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tickets.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    persona_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="explicit", server_default="explicit"
+    )
+    muted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class TicketNotification(Base):
+    """A server-generated notification about a watched ticket.
+
+    One row per event (or coalesced burst — see services/ticket_watchers).
+    ``id`` is a monotonic BigInteger cursor used by the agent delta API.
+    ``summary`` is written by the server and NEVER copies a comment body.
+    ``actor_type`` is ``user`` or ``service_key``; ``actor_user_id`` is
+    the human identity behind the action and ``service_key_name`` records
+    the service-key credential when a resident acted. ``project_id`` is
+    denormalized so every read/delivery can re-check tenant isolation
+    without joining back through the ticket.
+    """
+
+    __tablename__ = "ticket_notifications"
+    __table_args__ = (
+        Index("idx_ticket_notifications_user_id", "user_id", "id"),
+        Index("idx_ticket_notifications_user_read", "user_id", "read_at"),
+        Index("idx_ticket_notifications_ticket", "ticket_id"),
+        Index(
+            "idx_ticket_notifications_sweep",
+            "emailed_at",
+            "read_at",
+            "updated_at",
+        ),
+        Index(
+            "idx_ticket_notifications_read_updated",
+            "read_at",
+            "updated_at",
+        ),
+        Index(
+            "idx_ticket_notifications_emailed_updated",
+            "emailed_at",
+            "updated_at",
+        ),
+        # SQLite would otherwise reuse a deleted max id, and coalescing deletes
+        # and re-inserts rows: the agent delta (id > cursor) needs ids that
+        # never repeat.
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer(), "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ticket_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tickets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    actor_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default="user"
+    )
+    actor_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    event_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+    read_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    emailed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class TicketWatchCursor(Base):
+    """Last-seen notification cursor for a (user, persona) pair.
+
+    ``persona_name`` is the empty string for the human's own cursor and a
+    persona name for an agent polling on that persona's behalf, so the
+    human inbox and each resident keep independent read positions.
+    """
+
+    __tablename__ = "ticket_watch_cursors"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    persona_name: Mapped[str] = mapped_column(
+        String(50), primary_key=True, server_default=""
+    )
+    last_seen_notification_id: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class UserNotificationSettings(Base):
+    """Per-user notification preferences.
+
+    ``ticket_email`` is ``off``, ``your_turn`` (default) or ``all`` and
+    gates the ticket-notification email sweep.
+    """
+
+    __tablename__ = "user_notification_settings"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    ticket_email: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="your_turn", server_default="your_turn"
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class Resident(Base):
     """Durable resident identity — reviewer or implementer (R0, migration 057).
 

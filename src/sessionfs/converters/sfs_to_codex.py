@@ -107,8 +107,21 @@ def convert_sfs_to_codex(
     turn_id: str | None = None
     turn_count = 0
     msg_count = 0
+    seen_msg_ids: set[str] = set()
+    # Codex rejects duplicate call_ids, so track them per side. A tool_use and
+    # its matching tool_result legitimately share a call_id (call vs. output),
+    # but a capture that recorded the same message twice must not emit either
+    # side a second time.
+    emitted_call_ids: set[str] = set()
+    emitted_output_call_ids: set[str] = set()
 
     for msg in main_messages:
+        msg_id = msg.get("msg_id")
+        if msg_id and msg_id in seen_msg_ids:
+            continue
+        if msg_id:
+            seen_msg_ids.add(msg_id)
+
         role = msg.get("role", "user")
         content = msg.get("content", [])
         ts = msg.get("timestamp", created_at)
@@ -200,6 +213,9 @@ def convert_sfs_to_codex(
                         or block.get("tool_use_id")
                         or f"call_{uuid_mod.uuid4().hex[:24]}"
                     )
+                    if call_id in emitted_call_ids:
+                        continue
+                    emitted_call_ids.add(call_id)
                     codex_item_type = block.get("codex_item_type")
 
                     # A custom_tool_call captured by the Codex watcher carries its
@@ -263,7 +279,9 @@ def convert_sfs_to_codex(
                         })
 
                 elif btype == "tool_result":
-                    lines.append(_tool_result_item(ts, block))
+                    item = _tool_result_item(ts, block, emitted_output_call_ids)
+                    if item is not None:
+                        lines.append(item)
 
                 elif btype == "image":
                     logger.info("Dropping image block (not supported in Codex import)")
@@ -293,7 +311,9 @@ def convert_sfs_to_codex(
                     continue
                 btype = block.get("type", "")
                 if btype == "tool_result":
-                    lines.append(_tool_result_item(ts, block))
+                    item = _tool_result_item(ts, block, emitted_output_call_ids)
+                    if item is not None:
+                        lines.append(item)
                 elif btype == "text":
                     text = block.get("text", "")
                     if text:
@@ -400,13 +420,21 @@ def _event(event_type: str, ts: str, **payload_fields: Any) -> dict[str, Any]:
     }
 
 
-def _tool_result_item(ts: str, block: dict[str, Any]) -> dict[str, Any]:
+def _tool_result_item(
+    ts: str,
+    block: dict[str, Any],
+    emitted_output_call_ids: set[str] | None = None,
+) -> dict[str, Any] | None:
     """Build a Codex ``response_item`` for a ``tool_result`` block.
 
     Custom tool outputs (captured from Codex ``custom_tool_call_output``) round-trip
     as ``custom_tool_call_output`` with a string ``output``; everything else stays a
     ``function_call_output``. The call_id reuses the original ``tool_use_id`` so it
     matches the tool_use's call_id on resume.
+
+    When ``emitted_output_call_ids`` is given, a block whose call_id was already
+    emitted on the output side is dropped (returns ``None``) so a duplicated
+    capture never produces a duplicate call_id.
     """
     output_text = block.get("content", "") or block.get("output", "")
     if isinstance(output_text, list):
@@ -418,6 +446,10 @@ def _tool_result_item(ts: str, block: dict[str, Any]) -> dict[str, Any]:
         or block.get("id")
         or f"call_{uuid_mod.uuid4().hex[:24]}"
     )
+    if emitted_output_call_ids is not None:
+        if call_id in emitted_output_call_ids:
+            return None
+        emitted_output_call_ids.add(call_id)
     if block.get("codex_item_type") == "custom_tool_call_output":
         return {
             "timestamp": ts,

@@ -32,6 +32,12 @@ class NarrativeRequest(BaseModel):
     base_url: str | None = None
 
 
+class NarrativeError(BaseModel):
+    code: str
+    message: str
+    status: int | None = None
+
+
 class SummaryResponse(BaseModel):
     session_id: str
     title: str
@@ -55,6 +61,7 @@ class SummaryResponse(BaseModel):
     outcome: str | None = None
     open_issues: list[str] | None = None
     narrative_model: str | None = None
+    narrative_error: NarrativeError | None = None
     personas_active: list[str] = []
     generated_at: str = ""
 
@@ -170,32 +177,41 @@ async def generate_narrative_summary(
     api_key = body.llm_api_key
     model = body.model or "claude-sonnet-4"
     provider = body.provider
-    base_url = body.base_url
+
+    # SSRF policy for the endpoint (re-checked before each request as well).
+    from sessionfs.server.routes.settings import (
+        _check_llm_base_url_or_400,
+        saved_judge_key_matches,
+    )
+
+    base_url = await _check_llm_base_url_or_400(body.base_url)
 
     if not api_key:
-        # Try saved judge settings (same pattern as audit route)
+        # Try saved judge settings (same pattern as audit route). The saved
+        # key only goes to the provider/endpoint it was saved for.
         from sessionfs.server.db.models import UserJudgeSettings
         from sessionfs.server.llm_keys import decrypt_llm_key
 
         judge_stmt = select(UserJudgeSettings).where(UserJudgeSettings.user_id == user.id)
         judge_result = await db.execute(judge_stmt)
         judge_settings = judge_result.scalar_one_or_none()
-        if judge_settings and judge_settings.encrypted_api_key:
+        if (
+            judge_settings
+            and judge_settings.encrypted_api_key
+            and saved_judge_key_matches(
+                judge_settings, provider=body.provider, base_url=base_url
+            )
+        ):
             api_key = decrypt_llm_key(judge_settings.encrypted_api_key)
             if not body.model and judge_settings.model:
                 model = judge_settings.model
             if not body.provider and judge_settings.provider:
                 provider = judge_settings.provider
-            if not body.base_url and judge_settings.base_url:
-                base_url = judge_settings.base_url
+            if not base_url and judge_settings.base_url:
+                base_url = await _check_llm_base_url_or_400(judge_settings.base_url)
 
     if not api_key:
         raise HTTPException(400, "No API key provided — set judge settings or pass llm_api_key")
-
-    # SSRF policy for the endpoint (re-checked before each request as well).
-    from sessionfs.server.routes.settings import _check_llm_base_url_or_400
-
-    base_url = await _check_llm_base_url_or_400(base_url)
 
     from sessionfs.server.services.summarizer import generate_narrative
 
@@ -442,6 +458,7 @@ def _summary_to_response(summary, session: Session) -> SummaryResponse:
         outcome=summary.outcome,
         open_issues=summary.open_issues,
         narrative_model=summary.narrative_model,
+        narrative_error=summary.narrative_error,
         personas_active=list(summary.personas_active or []),
         generated_at=summary.generated_at,
     )

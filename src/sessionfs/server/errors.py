@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import DBAPIError, IntegrityError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from sessionfs.server.llm_keys import EncryptionUnavailableError
 from sessionfs.server.schemas.errors import ErrorDetail, ErrorResponse
 from sessionfs.server.services.entitlements import BillingLockRetry
 
@@ -199,6 +200,26 @@ def register_exception_handlers(app: FastAPI) -> None:
             )
         )
         return JSONResponse(status_code=422, content=body.model_dump())
+
+    @app.exception_handler(EncryptionUnavailableError)
+    async def encryption_unavailable_handler(
+        request: Request, exc: EncryptionUnavailableError
+    ):
+        """A missing/default verification secret in production: 503 with a
+        clear envelope so the operator sees the misconfiguration, not a bare
+        ``Internal Server Error`` (and never a token encrypted under a public
+        placeholder key)."""
+        logger.error(
+            "Encryption unavailable on %s %s: %s", request.method, request.url.path, exc
+        )
+        body = ErrorResponse(
+            error=ErrorDetail(
+                code="encryption_unavailable",
+                message=str(exc),
+                details={"status": 503},
+            )
+        )
+        return JSONResponse(status_code=503, content=body.model_dump())
 
     @app.exception_handler(BillingLockRetry)
     async def billing_lock_retry_handler(request: Request, exc: BillingLockRetry):

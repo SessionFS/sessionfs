@@ -19,6 +19,10 @@ list of :class:`ToolCall` dataclasses. A tool result is represented by the
 ``tool`` role; :class:`ToolResult` is what ``execute_tool`` returns and is turned
 into such a message with :func:`tool_result_message`.
 
+Assistant messages may additionally carry a private ``reasoning_content`` key
+(DeepSeek/Kimi) that is echoed back on follow-up tool-loop requests for the
+providers that require it and is never surfaced to callers.
+
 Stream events (each turn, in order)
 -----------------------------------
 * :class:`TextDelta` — a piece of assistant text.
@@ -61,12 +65,16 @@ from uuid import uuid4
 
 import httpx
 
+from sessionfs.judge.provider_registry import get_provider
 from sessionfs.judge.providers import (
     _ANTHROPIC_URL,
-    _OPENAI_URL,
-    _OPENROUTER_URL,
+    _chat_completions_url,
+    _apply_sampling,
+    _classify_param_error,
+    _has_param,
     _detect_provider,
-    _is_reasoning_model,
+    _omitted_params,
+    _remember_omission,
 )
 
 logger = logging.getLogger("sessionfs.judge.agent_stream")
@@ -130,6 +138,10 @@ class Usage:
 @dataclass(frozen=True)
 class Done:
     stop_reason: str
+    # Accumulated reasoning_content for the turn (DeepSeek/Kimi). Never
+    # surfaced to callers — it is carried so the tool loop can echo it back
+    # on the assistant message in follow-up requests.
+    reasoning_content: str = ""
 
 
 @dataclass(frozen=True)
@@ -170,8 +182,15 @@ def user_message(content: str) -> Message:
     return {"role": "user", "content": content}
 
 
-def assistant_message(content: str, tool_calls: list[ToolCall] | None = None) -> Message:
-    return {"role": "assistant", "content": content, "tool_calls": tool_calls or []}
+def assistant_message(
+    content: str,
+    tool_calls: list[ToolCall] | None = None,
+    reasoning_content: str = "",
+) -> Message:
+    msg = {"role": "assistant", "content": content, "tool_calls": tool_calls or []}
+    if reasoning_content:
+        msg["reasoning_content"] = reasoning_content
+    return msg
 
 
 def tool_result_message(result: ToolResult) -> Message:
@@ -255,12 +274,17 @@ def _raise_stream_error(err: Any, api_key: str) -> None:
     raise ProviderError(status, _sanitise_error_message(message, api_key))
 
 
-async def _raise_provider_error(resp: httpx.Response, api_key: str) -> None:
+async def _read_error_body(resp: httpx.Response) -> str:
+    """Read a provider error body as text without ever raising."""
     try:
-        raw = (await resp.aread()).decode("utf-8", errors="replace")
+        raw = await resp.aread()
     except Exception:
-        raw = ""
-    message = _extract_error_message(raw)
+        return ""
+    return raw.decode("utf-8", errors="replace")
+
+
+async def _raise_provider_error(resp: httpx.Response, api_key: str) -> None:
+    message = _extract_error_message(await _read_error_body(resp))
     raise ProviderError(resp.status_code, _sanitise_error_message(message, api_key))
 
 
@@ -268,13 +292,17 @@ async def _raise_provider_error(resp: httpx.Response, api_key: str) -> None:
 # Wire-format translation
 # ---------------------------------------------------------------------------
 
-def _openai_messages(messages: list[Message]) -> list[dict[str, Any]]:
+def _openai_messages(messages: list[Message], *, echo_reasoning: bool = False) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for m in messages:
         role = m.get("role")
         if role == "assistant":
             tool_calls = m.get("tool_calls") or []
             msg: dict[str, Any] = {"role": "assistant", "content": m.get("content") or None}
+            if echo_reasoning and m.get("reasoning_content"):
+                # Some reasoning providers (DeepSeek/Kimi) require the assistant's
+                # reasoning_content to be echoed back on multi-turn tool requests.
+                msg["reasoning_content"] = m["reasoning_content"]
             if tool_calls:
                 msg["tool_calls"] = [
                     {
@@ -464,6 +492,20 @@ def _google_stop_reason(reason: str | None, has_function_calls: bool) -> str:
 # Per-provider streaming turns
 # ---------------------------------------------------------------------------
 
+def _replayed_without_reasoning(messages: list[Message]) -> bool:
+    """True when a prior assistant message lacks reasoning_content.
+
+    History rebuilt from storage (e.g. the session helper's persisted turns)
+    never carries reasoning text, so a resumed tool-loop turn needs the
+    provider's thinking disabled rather than echoing a reasoning it cannot
+    reconstruct.
+    """
+    for m in messages:
+        if m.get("role") == "assistant" and not m.get("reasoning_content"):
+            return True
+    return False
+
+
 async def _stream_openai_compatible(
     *,
     url: str,
@@ -475,69 +517,105 @@ async def _stream_openai_compatible(
     temperature: float,
     max_tokens: int,
     timeout: float,
-    openrouter: bool,
+    token_field: str = "max_completion_tokens",
+    omit_temperature: bool = False,
+    extra_headers: tuple[tuple[str, str], ...] = (),
+    reasoning_effort: bool = True,
+    reasoning_object: bool = False,
+    echo_reasoning: bool = False,
+    thinking_disable_on_replay: bool = False,
 ) -> AsyncIterator[StreamEvent]:
-    url = url.rstrip("/")
-    if not url.endswith("/chat/completions"):
-        url = f"{url}/chat/completions"
+    url = _chat_completions_url(url)
 
     headers: dict[str, str] = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    if openrouter:
-        headers["HTTP-Referer"] = "https://sessionfs.dev"
-        headers["X-Title"] = "SessionFS"
+    for key, value in extra_headers:
+        headers[key] = value
 
-    base_model = model.split("/")[-1] if "/" in model else model
-    token_field = "max_tokens" if openrouter else "max_completion_tokens"
-    body: dict[str, Any] = {
-        "model": model,
-        "messages": [{"role": "system", "content": system}, *_openai_messages(messages)],
-        "stream": True,
-        "stream_options": {"include_usage": True},
-        token_field: max_tokens,
-    }
-    if _is_reasoning_model(base_model):
-        body["reasoning"] = {"effort": "medium"}
-    else:
-        body["temperature"] = temperature
-    if tools:
-        body["tools"] = _openai_tools(tools)
+
+    def build(drop: frozenset[str]) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                *_openai_messages(messages, echo_reasoning=echo_reasoning),
+            ],
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            token_field: max_tokens,
+        }
+        if thinking_disable_on_replay and _replayed_without_reasoning(messages):
+            # DeepSeek rejects a replayed tool-loop turn whose assistant messages
+            # carry no reasoning_content while thinking is on; disable it for this
+            # request (the conversation history cannot reconstruct the reasoning).
+            body["thinking"] = {"type": "disabled"}
+        _apply_sampling(
+            body,
+            model=model,
+            temperature=temperature,
+            omit_temperature=omit_temperature,
+            reasoning_effort=reasoning_effort,
+            reasoning_object=reasoning_object,
+            drop=drop,
+        )
+        if tools:
+            body["tools"] = _openai_tools(tools)
+        return body
 
     tool_frags: dict[int, dict[str, str]] = {}
+    reasoning_parts: list[str] = []
     input_tokens = 0
     output_tokens = 0
     finish_reason: str | None = None
 
+    drop = _omitted_params(url, model)
+
     async with _make_client(timeout) as client:
-        async with client.stream("POST", url, json=body, headers=headers) as resp:
-            if resp.status_code >= 400:
-                await _raise_provider_error(resp, api_key)
-            async for data in _iter_sse_json(resp):
-                if "error" in data:
-                    _raise_stream_error(data["error"], api_key)
-                choices = data.get("choices") or []
-                if choices:
-                    delta = choices[0].get("delta") or {}
-                    if delta.get("content"):
-                        yield TextDelta(delta["content"])
-                    for frag in delta.get("tool_calls") or []:
-                        idx = frag.get("index", 0)
-                        slot = tool_frags.setdefault(idx, {"id": "", "name": "", "args": ""})
-                        if frag.get("id"):
-                            slot["id"] = frag["id"]
-                        fn = frag.get("function") or {}
-                        if fn.get("name"):
-                            slot["name"] = fn["name"]
-                        if fn.get("arguments"):
-                            slot["args"] += fn["arguments"]
-                    fr = choices[0].get("finish_reason")
-                    if fr:
-                        finish_reason = fr
-                usage = data.get("usage")
-                if usage:
-                    input_tokens = usage.get("prompt_tokens", 0)
-                    output_tokens = usage.get("completion_tokens", 0)
+        for attempt in range(2):
+            body = build(drop)
+            async with client.stream("POST", url, json=body, headers=headers) as resp:
+                if resp.status_code >= 400:
+                    if attempt == 0:
+                        new_drop = _classify_param_error(
+                            resp.status_code, await _read_error_body(resp)
+                        )
+                        effective = new_drop - drop
+                        if effective and any(_has_param(body, param) for param in effective):
+                            drop = drop | new_drop
+                            _remember_omission(url, model, drop)
+                            continue
+                    await _raise_provider_error(resp, api_key)
+                async for data in _iter_sse_json(resp):
+                    if "error" in data:
+                        _raise_stream_error(data["error"], api_key)
+                    choices = data.get("choices") or []
+                    if choices:
+                        delta = choices[0].get("delta") or {}
+                        if delta.get("content"):
+                            yield TextDelta(delta["content"])
+                        # Reasoning text (DeepSeek/Kimi) is accumulated but never
+                        # surfaced, logged, or persisted — only echoed back.
+                        if delta.get("reasoning_content"):
+                            reasoning_parts.append(delta["reasoning_content"])
+                        for frag in delta.get("tool_calls") or []:
+                            idx = frag.get("index", 0)
+                            slot = tool_frags.setdefault(idx, {"id": "", "name": "", "args": ""})
+                            if frag.get("id"):
+                                slot["id"] = frag["id"]
+                            fn = frag.get("function") or {}
+                            if fn.get("name"):
+                                slot["name"] = fn["name"]
+                            if fn.get("arguments"):
+                                slot["args"] += fn["arguments"]
+                        fr = choices[0].get("finish_reason")
+                        if fr:
+                            finish_reason = fr
+                    usage = data.get("usage")
+                    if usage:
+                        input_tokens = usage.get("prompt_tokens", 0)
+                        output_tokens = usage.get("completion_tokens", 0)
+            break
 
     if finish_reason is None:
         raise ProviderError(502, "Provider stream ended before a finish_reason.")
@@ -558,7 +636,7 @@ async def _stream_openai_compatible(
         )
 
     yield Usage(input_tokens, output_tokens)
-    yield Done(_openai_stop_reason(finish_reason))
+    yield Done(_openai_stop_reason(finish_reason), reasoning_content="".join(reasoning_parts))
 
 
 async def _stream_anthropic(
@@ -764,58 +842,52 @@ async def stream_chat(
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
-            openrouter=False,
-        )
-    elif provider == "anthropic":
-        turn = _stream_anthropic(
-            model=model,
-            system=system,
-            messages=messages,
-            tools=tools,
-            api_key=api_key,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=timeout,
-        )
-    elif provider == "openai":
-        turn = _stream_openai_compatible(
-            url=_OPENAI_URL,
-            model=model,
-            system=system,
-            messages=messages,
-            tools=tools,
-            api_key=api_key,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=timeout,
-            openrouter=False,
-        )
-    elif provider == "openrouter":
-        turn = _stream_openai_compatible(
-            url=_OPENROUTER_URL,
-            model=model,
-            system=system,
-            messages=messages,
-            tools=tools,
-            api_key=api_key,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=timeout,
-            openrouter=True,
-        )
-    elif provider == "google":
-        turn = _stream_google(
-            model=model,
-            system=system,
-            messages=messages,
-            tools=tools,
-            api_key=api_key,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=timeout,
         )
     else:
-        raise ValueError(f"Unsupported provider: {provider}")
+        profile = get_provider(provider)
+        if profile is None:
+            raise ValueError(f"Unsupported provider: {provider}")
+        if profile.api_style == "anthropic":
+            turn = _stream_anthropic(
+                model=model,
+                system=system,
+                messages=messages,
+                tools=tools,
+                api_key=api_key,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+        elif profile.api_style == "google":
+            turn = _stream_google(
+                model=model,
+                system=system,
+                messages=messages,
+                tools=tools,
+                api_key=api_key,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+        else:
+            turn = _stream_openai_compatible(
+                url=_chat_completions_url(profile.base_url),
+                model=model,
+                system=system,
+                messages=messages,
+                tools=tools,
+                api_key=api_key,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                token_field=profile.token_field,
+                omit_temperature=profile.omit_temperature,
+                extra_headers=profile.extra_headers,
+                reasoning_effort=profile.reasoning_effort,
+                reasoning_object=profile.reasoning_object,
+                echo_reasoning=profile.echo_reasoning,
+                thinking_disable_on_replay=profile.thinking_disable_on_replay,
+            )
 
     async for event in turn:
         yield event
@@ -892,6 +964,7 @@ async def run_agent(
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
         turn_stop_reason: str | None = None
+        turn_reasoning: str = ""
 
         async for event in _bounded_stream(
             stream_chat(
@@ -910,6 +983,7 @@ async def run_agent(
         ):
             if isinstance(event, Done):
                 turn_stop_reason = event.stop_reason
+                turn_reasoning = event.reasoning_content
                 continue
             yield event
             if isinstance(event, TextDelta):
@@ -919,7 +993,9 @@ async def run_agent(
             elif isinstance(event, Usage):
                 total_tokens += event.input_tokens + event.output_tokens
 
-        conversation.append(assistant_message("".join(text_parts), tool_calls))
+        conversation.append(
+            assistant_message("".join(text_parts), tool_calls, reasoning_content=turn_reasoning)
+        )
 
         if loop.time() >= deadline:
             yield Done("deadline")

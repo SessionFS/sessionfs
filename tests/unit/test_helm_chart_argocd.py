@@ -10,6 +10,7 @@ keeps its pre-install/pre-upgrade hook. Skipped when ``helm`` is not on PATH (li
 
 from __future__ import annotations
 
+import base64
 import shutil
 import subprocess
 from pathlib import Path
@@ -226,3 +227,27 @@ def test_ingress_health_ready_follows_the_api_service_port():
     assert "proxy_pass http://sessionfs-api:9000/health/ready;" in block
     # Near-miss paths under /health/ are a 404, never the SPA's 200.
     assert "location ^~ /health/ {" in conf
+
+
+def test_generated_app_secrets_survive_upgrades():
+    """An empty verificationSecret/encryptionKey must not be regenerated on
+    every upgrade: rotating them makes every stored LLM, GitLab and Jira secret
+    unreadable. The template reuses the in-cluster Secret via `lookup`."""
+    template = (Path(CHART_DIR) / "templates" / "secrets.yaml").read_text()
+    assert 'lookup "v1" "Secret" .Release.Namespace' in template
+    for key in ("verification-secret", "encryption-key"):
+        reuse = f'get $existingData "{key}"'
+        assert reuse in template
+        # The reuse branch must come before the random fallback.
+        assert template.index(reuse) < template.index(f"{key}: {{{{ randAlphaNum 32")
+
+
+def test_explicit_secret_values_still_win():
+    docs = _render("--set", "security.verificationSecret=abc", "--set", "security.encryptionKey=def")
+    data = next(
+        d["data"]
+        for d in docs
+        if d.get("kind") == "Secret" and "verification-secret" in (d.get("data") or {})
+    )
+    assert base64.b64decode(data["verification-secret"]).decode() == "abc"
+    assert base64.b64decode(data["encryption-key"]).decode() == "def"

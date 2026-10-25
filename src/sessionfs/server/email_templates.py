@@ -567,3 +567,65 @@ def handoff_email(
         "If you didn't expect this email, you can safely ignore it.</p>"
         "</div>"
     )
+
+
+def ticket_notification_email(
+    *,
+    notifications: list[dict],
+    dashboard_url: str,
+) -> str:
+    """One email digest of watched-ticket notifications for a user.
+
+    Each item is ``{"ticket_title", "ticket_id", "project_id", "kind",
+    "summary"}``. ``summary`` is server-generated (e.g. "Assigned to you")
+    and never copies a comment body, so it can be rendered inline safely.
+    """
+    from sessionfs.server.services.ticket_watchers import KIND_LABELS
+
+    count = len(notifications)
+    items_html = []
+    for item in notifications:
+        label = KIND_LABELS.get(
+            item["kind"], str(item["kind"]).replace("_", " ").title()
+        )
+        url = (
+            dashboard_url.rstrip("/")
+            + "/projects/"
+            + _html.escape(str(item["project_id"]), quote=True)
+            + "?tab=work&sub=tickets&ticket="
+            + _html.escape(str(item["ticket_id"]), quote=True)
+        )
+        items_html.append(
+            "<div style='background: #161b22; padding: 12px 16px; margin: 8px 0; "
+            "border-radius: 6px;'>"
+            f"<p style='margin: 0 0 4px 0; font-size: 12px; color: #4f9cf7;'>{_html.escape(label)}</p>"
+            f"<p style='margin: 0 0 4px 0; font-weight: 500;'>{_html.escape(item['ticket_title'] or 'Untitled ticket')}</p>"
+            f"<p style='margin: 0 0 8px 0; color: #8b949e;'>{_html.escape(item['summary'])}</p>"
+            f"<a href='{url}' style='color: #4f9cf7; font-size: 13px;'>View ticket</a>"
+            "</div>"
+        )
+    plural = "" if count == 1 else "s"
+    return (
+        _shell()
+        + "<div style='margin-bottom: 24px;'>"
+        + f"<h2 style='margin: 0 0 8px 0; color: #e6edf3;'>{count} ticket update{plural}</h2>"
+        + "<p style='margin: 0; color: #8b949e;'>Tickets you follow changed.</p></div>"
+        + "".join(items_html)
+        + _footer()
+    )
+
+
+def ticket_notification_text(
+    *,
+    notifications: list[dict],
+    dashboard_url: str,
+) -> str:
+    """Plain-text fallback for the ticket-notification email."""
+    lines = [f"{len(notifications)} ticket update(s)\n"]
+    for item in notifications:
+        lines.append(
+            f"{item['ticket_title'] or 'Untitled ticket'}\n{item['summary']}\n"
+            f"{dashboard_url.rstrip('/')}/projects/{item['project_id']}"
+            f"?tab=work&sub=tickets&ticket={item['ticket_id']}\n"
+        )
+    return "\n".join(lines)

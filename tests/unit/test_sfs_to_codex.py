@@ -347,3 +347,112 @@ def test_custom_tool_call_output_round_trips(tmp_path: Path):
     # It must not also be emitted as a function_call_output.
     fco = [l for l in lines if l["type"] == "response_item" and l["payload"].get("type") == "function_call_output"]
     assert fco == []
+
+
+def _write_session(d: Path, messages: list[dict]) -> None:
+    d.mkdir()
+    (d / "manifest.json").write_text(json.dumps({
+        "sfs_version": "0.1.0", "session_id": d.name,
+        "created_at": "2026-03-20T10:00:00Z", "updated_at": "2026-03-20T10:00:00Z",
+        "source": {"tool": "claude-code"},
+    }))
+    with open(d / "messages.jsonl", "w") as f:
+        for msg in messages:
+            f.write(json.dumps(msg) + "\n")
+
+
+def _response_items(output: Path, item_type: str) -> list[dict]:
+    entries = [json.loads(line) for line in output.read_text().strip().split("\n")]
+    return [
+        entry for entry in entries
+        if entry["type"] == "response_item" and entry["payload"].get("type") == item_type
+    ]
+
+
+def test_duplicate_msg_id_is_skipped(tmp_path: Path):
+    """A capture that recorded the same message twice (same msg_id) must not
+    emit duplicate function_call / function_call_output pairs, and must not
+    re-emit the duplicated message's text or user message."""
+    d = tmp_path / "ses_dup123456abcdef.sfs"
+    _write_session(d, [
+        {"msg_id": "m1", "role": "user",
+         "content": [{"type": "text", "text": "hi"}],
+         "timestamp": "2026-03-20T10:00:00Z"},
+        {"msg_id": "m2", "role": "assistant",
+         "content": [
+             {"type": "text", "text": "looking now"},
+             {"type": "tool_use", "tool_use_id": "call_abc", "name": "Read",
+              "input": {"path": "a.py"}},
+         ],
+         "timestamp": "2026-03-20T10:00:01Z"},
+        {"msg_id": "m3", "role": "tool",
+         "content": [{"type": "tool_result", "tool_use_id": "call_abc", "content": "data"}],
+         "timestamp": "2026-03-20T10:00:02Z"},
+        # Duplicate of m1 — must be dropped.
+        {"msg_id": "m1", "role": "user",
+         "content": [{"type": "text", "text": "hi"}],
+         "timestamp": "2026-03-20T10:00:03Z"},
+        # Duplicate of m2 / m3 — must be dropped.
+        {"msg_id": "m2", "role": "assistant",
+         "content": [
+             {"type": "text", "text": "looking now"},
+             {"type": "tool_use", "tool_use_id": "call_abc", "name": "Read",
+              "input": {"path": "a.py"}},
+         ],
+         "timestamp": "2026-03-20T10:00:04Z"},
+        {"msg_id": "m3", "role": "tool",
+         "content": [{"type": "tool_result", "tool_use_id": "call_abc", "content": "data"}],
+         "timestamp": "2026-03-20T10:00:05Z"},
+    ])
+
+    output = tmp_path / "output.jsonl"
+    convert_sfs_to_codex(d, output_path=output)
+
+    calls = _response_items(output, "function_call")
+    outputs = _response_items(output, "function_call_output")
+    assert [c["payload"]["call_id"] for c in calls] == ["call_abc"]
+    assert [o["payload"]["call_id"] for o in outputs] == ["call_abc"]
+
+    # The duplicated assistant text block and user message must each be
+    # emitted exactly once — the call_id backstop would still drop the
+    # duplicated tool_use, so only this asserts the msg_id skip itself.
+    message_items = _response_items(output, "message")
+
+    def message_text(item: dict) -> str:
+        content = item["payload"].get("content") or []
+        return "\n".join(
+            block.get("text", "") for block in content if isinstance(block, dict)
+        )
+
+    assert [t for t in map(message_text, message_items) if t == "looking now"] == ["looking now"]
+    assert [t for t in map(message_text, message_items) if t == "hi"] == ["hi"]
+
+
+def test_duplicate_call_id_is_never_emitted_twice(tmp_path: Path):
+    """Backstop: even with distinct msg_ids, a call_id already emitted on the
+    call or output side must not be emitted a second time."""
+    d = tmp_path / "ses_dup2bcdefghijk.sfs"
+    _write_session(d, [
+        {"msg_id": "m1", "role": "assistant",
+         "content": [{"type": "tool_use", "tool_use_id": "call_dup", "name": "Read",
+                     "input": {"path": "a.py"}}],
+         "timestamp": "2026-03-20T10:00:00Z"},
+        {"msg_id": "m2", "role": "assistant",
+         "content": [{"type": "tool_use", "tool_use_id": "call_dup", "name": "Read",
+                     "input": {"path": "b.py"}}],
+         "timestamp": "2026-03-20T10:00:01Z"},
+        {"msg_id": "m3", "role": "tool",
+         "content": [{"type": "tool_result", "tool_use_id": "call_dup", "content": "out1"}],
+         "timestamp": "2026-03-20T10:00:02Z"},
+        {"msg_id": "m4", "role": "tool",
+         "content": [{"type": "tool_result", "tool_use_id": "call_dup", "content": "out2"}],
+         "timestamp": "2026-03-20T10:00:03Z"},
+    ])
+
+    output = tmp_path / "output.jsonl"
+    convert_sfs_to_codex(d, output_path=output)
+
+    calls = _response_items(output, "function_call")
+    outputs = _response_items(output, "function_call_output")
+    assert [c["payload"]["call_id"] for c in calls] == ["call_dup"]
+    assert [o["payload"]["call_id"] for o in outputs] == ["call_dup"]

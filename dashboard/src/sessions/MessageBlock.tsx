@@ -1,8 +1,13 @@
 import ContentBlock from './ContentBlock';
 import RelativeDate from '../components/RelativeDate';
+import { messageAnchorId } from './messageAnchor';
 
 interface MessageProps {
   message: Record<string, unknown>;
+  /** 0-based messages.jsonl line number; gives the block a stable `msg-<n>` id. */
+  index?: number;
+  /** Briefly ring the block (the target of a `?msg=` deep link). */
+  highlighted?: boolean;
 }
 
 // ── Role rails — 2px left border, one colour per role ──────────────
@@ -33,7 +38,7 @@ function roleLabelClass(role: string): string {
 
 // ── MessageBlock ───────────────────────────────────────────────────
 
-export default function MessageBlock({ message }: MessageProps) {
+export default function MessageBlock({ message, index, highlighted = false }: MessageProps) {
   const role = String(message.role || 'unknown');
   const content = message.content as Record<string, unknown>[] | string | undefined;
   const timestamp = message.timestamp as string | undefined;
@@ -58,7 +63,15 @@ export default function MessageBlock({ message }: MessageProps) {
   const bgClass = isTool || isSystem ? 'bg-bg-sunken/60' : 'bg-surface';
 
   return (
-    <div className={`${rail} ${bgClass} rounded-lg px-4 py-3`}>
+    <div
+      id={index != null ? messageAnchorId(index) : undefined}
+      data-message-index={index}
+      data-highlighted={highlighted || undefined}
+      tabIndex={index != null ? -1 : undefined}
+      className={`${rail} ${bgClass} rounded-lg px-4 py-3 scroll-mt-4 outline-none motion-safe:transition-shadow motion-safe:duration-500 ${
+        highlighted ? 'shadow-[0_0_0_2px_var(--brand),0_0_0_6px_var(--brand-glow)]' : ''
+      }`}
+    >
       {/* Top bar — role label, model, timestamp */}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">

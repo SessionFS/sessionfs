@@ -357,6 +357,12 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 
 **Upgrading to v0.23.0** runs migrations 084–092 (org helper keys, agent run replay columns, the org digest ledger, transfer proposals, resumable uploads, compile schedules, helper audit rows without a project, Jira tables and helper conversations). All are additive except 090, whose downgrade deletes helper audit rows that have no project. Existing projects keep compile scheduling `off` until someone turns it on. The scheduled compile, org digest and helper retention only run once something calls their sweeps; see [Scheduled sweeps](#scheduled-sweeps).
 
+**Upgrading to v0.24.0** runs migration 093 (ticket followers, notifications and per-persona cursors; additive). Also:
+
+- **Helm generated secrets now persist across upgrades.** Charts before 0.24.0 generated a new `verification-secret` and `encryption-key` on every `helm upgrade`, which broke stored LLM keys and GitLab/Jira tokens. From 0.24.0 the chart reuses the existing values. If stored keys stopped working after an earlier upgrade, re-enter them once. GitOps flows that render with `helm template` can't read the cluster: set both values explicitly or use `security.existingSecret`.
+- **Set `SFS_VERIFICATION_SECRET` to a real secret.** Stored LLM keys and integration tokens are encrypted with a key derived from it (existing values still decrypt). With an unset or placeholder value, routes that store or read encrypted secrets return `503 encryption_unavailable` outside development.
+- **Schedule the ticket digest** if you want ticket emails; see [Scheduled sweeps](#scheduled-sweeps).
+
 ## Troubleshooting
 
 ### Check pod status
@@ -616,13 +622,14 @@ sfs admin audit-log --source operator_record --json
 
 ## Scheduled Sweeps
 
-SessionFS has no scheduler of its own. Three v0.23.0 features run only when a scheduled job calls their sweep endpoint. Authenticate with a platform admin key or, better for cron, a `platform_sweeps:run` service key: it works only while the platform admin who minted it and the user it runs as are both still active platform admins.
+SessionFS has no scheduler of its own. These features run only when a scheduled job calls their sweep endpoint. Authenticate with a platform admin key or, better for cron, a `platform_sweeps:run` service key: it works only while the platform admin who minted it and the user it runs as are both still active platform admins.
 
 | Sweep | Endpoint | What it does |
 |-------|----------|--------------|
 | KB compile | `POST /api/v1/admin/sweeps/kb-compile` | Compiles every project whose schedule (`nightly` / `weekly`) has elapsed or whose waiting-claims threshold is reached. Deterministic compiler only, one transaction per project; body `{"limit": N}` (default 100, max 1000) |
 | Org digest | `POST /api/v1/admin/sweeps/org-digest` | Sends the weekly activity digest to owners and admins of Team and Enterprise orgs. Sends once per org per week however often it runs, and always covers the last completed week, so run it daily |
 | Helper retention | `POST /api/v1/admin/sweeps/helper-retention` | Deletes session helper messages older than the org's `helper_retention_days` (default 90), then removes empty threads |
+| Ticket digest | `POST /api/v1/admin/sweeps/ticket-notifications` | Emails each user one digest of their pending ticket notifications, following their preference (`off`, `your_turn` by default, or `all`). Access is re-checked before anything is sent (v0.24.0) |
 
 Example CronJob for the KB compile sweep, every 15 minutes:
 

@@ -25,6 +25,7 @@ const ProjectsPage = React.lazy(() => import('./projects/ProjectsPage'));
 const ProjectDetail = React.lazy(() => import('./projects/ProjectDetail'));
 const TransferInbox = React.lazy(() => import('./transfers/TransferInbox'));
 const InvitesPage = React.lazy(() => import('./invites/InvitesPage'));
+const TicketInbox = React.lazy(() => import('./notifications/TicketInbox'));
 const HelpPage = React.lazy(() => import('./help/HelpPage'));
 const GettingStartedPage = React.lazy(() => import('./onboarding/GettingStartedPage'));
 const OnboardingGate = React.lazy(() => import('./onboarding/OnboardingGate'));
@@ -96,6 +97,7 @@ export default function App() {
               <Route path="/handoffs/:id" element={<HandoffDetail />} />
               <Route path="/transfers" element={<TransferInbox />} />
               <Route path="/invites" element={<InvitesPage />} />
+              <Route path="/inbox" element={<TicketInbox />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/settings/:section" element={<SettingsPage />} />
               <Route path="/settings/billing" element={<BillingPage />} />

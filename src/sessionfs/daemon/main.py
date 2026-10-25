@@ -270,7 +270,6 @@ class DaemonSyncer:
     async def _sync_sessions(self, session_ids: set[str]) -> None:
         """Push pending sessions to the server."""
         from sessionfs.store.deleted import is_excluded
-        from sessionfs.sync.archive import pack_session
         from sessionfs.sync.client import (
             SyncConflictError,
             SyncDeletedError,
@@ -338,7 +337,11 @@ class DaemonSyncer:
                 continue
 
             try:
-                archive_data = pack_session(session_dir)
+                # Hash-then-pack under the per-session lock, so the ack below
+                # can tell whether a capture landed mid-upload.
+                from sessionfs.store.local import pack_and_hash
+
+                archive_data = pack_and_hash(session_dir)
                 # Read current etag from manifest sync state
                 etag = self._get_local_etag(session_id)
 
@@ -661,23 +664,18 @@ class DaemonSyncer:
         return sync_state.get("etag")
 
     def _store_local_etag(self, session_id: str, etag: str) -> None:
-        """Store the etag in the session's manifest.json sync state."""
+        """Record a successful upload's etag.
+
+        Clears ``dirty`` only if the content on disk still matches what was
+        packed for this upload — a capture that landed mid-upload leaves the
+        session dirty so it is re-queued (see ``apply_sync_ack``).
+        """
+        from sessionfs.store.local import apply_sync_ack
+
         session_dir = self.store.get_session_dir(session_id)
         if not session_dir:
             return
-        manifest_path = session_dir / "manifest.json"
-        if not manifest_path.exists():
-            return
-
-        manifest = json.loads(manifest_path.read_text())
-        if "sync" not in manifest:
-            manifest["sync"] = {}
-        manifest["sync"]["etag"] = etag
-        manifest["sync"]["last_sync_at"] = (
-            __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
-        )
-        manifest["sync"]["dirty"] = False
-        manifest_path.write_text(json.dumps(manifest, indent=2))
+        apply_sync_ack(session_dir, etag)
 
     def enqueue_dirty_sessions(self) -> None:
         """Queue every local session that has never been pushed or is dirty."""
@@ -724,6 +722,17 @@ class DaemonSyncer:
 
     def _mark_session_dirty_flag(self, session_id: str) -> None:
         """Set dirty=true in manifest so _collect_dirty_sessions re-queues it."""
+        from sessionfs.store.local import lock_session_dir
+
+        # Serialize with capture/delete: the manifest is a read-modify-write
+        # and must not resurrect a session that a concurrent delete removed.
+        with lock_session_dir(self.store.sessions_dir, session_id):
+            self._mark_session_dirty_flag_unlocked(session_id)
+
+    def _mark_session_dirty_flag_unlocked(self, session_id: str) -> None:
+        """Inner variant of ``_mark_session_dirty_flag`` (caller holds the lock)."""
+        from sessionfs.store.fsutil import atomic_write_text
+
         session_dir = self.store.get_session_dir(session_id)
         if not session_dir:
             return
@@ -734,7 +743,9 @@ class DaemonSyncer:
         if "sync" not in manifest:
             manifest["sync"] = {}
         manifest["sync"]["dirty"] = True
-        manifest_path.write_text(json.dumps(manifest, indent=2))
+        atomic_write_text(
+            manifest_path, json.dumps(manifest, indent=2), create_parent=False
+        )
 
     async def close(self) -> None:
         """Clean up the sync client."""

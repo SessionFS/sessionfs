@@ -438,3 +438,194 @@ async def test_messages_workspace_tools_share_cache(
     assert len(_archive_cache) == cache_size_after_messages  # Still no new entry
 
     clear_archive_cache()
+
+
+# --- Message line numbers + ?around= (helper citation deep links) ---
+
+
+def _archive_with_lines(lines: list[str]) -> bytes:
+    """A .sfs archive whose messages.jsonl is exactly ``lines`` (one per line)."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        manifest = json.dumps({
+            "sfs_version": "0.1.0",
+            "session_id": "ses_test123",
+            "title": "Around test",
+            "source": {"tool": "claude-code"},
+        }).encode()
+        info = tarfile.TarInfo(name="manifest.json")
+        info.size = len(manifest)
+        tar.addfile(info, io.BytesIO(manifest))
+        body = ("\n".join(lines) + "\n").encode()
+        info = tarfile.TarInfo(name="messages.jsonl")
+        info.size = len(body)
+        tar.addfile(info, io.BytesIO(body))
+    return buf.getvalue()
+
+
+def _msg(n: int, **extra) -> str:
+    return json.dumps({
+        "msg_id": f"m{n}",
+        "role": "user" if n % 2 == 0 else "assistant",
+        "content": [{"type": "text", "text": f"message {n}"}],
+        **extra,
+    })
+
+
+# Line 1 is blank, line 3 a sidechain entry, line 4 an empty message; every
+# other line 0..24 is a visible message.
+_AROUND_LINES = [
+    _msg(0),
+    "",
+    _msg(2),
+    _msg(3, is_sidechain=True),
+    json.dumps({"msg_id": "m4", "role": "assistant", "content": []}),
+    *[_msg(n) for n in range(5, 25)],
+]
+_VISIBLE = [0, 2, *range(5, 25)]
+
+
+async def _upload(client: AsyncClient, headers: dict, sid: str, lines: list[str]) -> None:
+    resp = await client.put(
+        f"/api/v1/sessions/{sid}/sync",
+        headers=headers,
+        files={"file": ("session.tar.gz", io.BytesIO(_archive_with_lines(lines)), "application/gzip")},
+    )
+    assert resp.status_code in (200, 201), resp.text
+
+
+@pytest.mark.asyncio
+async def test_messages_report_jsonl_line_numbers(client: AsyncClient, auth_headers: dict):
+    """Each message carries the messages.jsonl line number the helper cites."""
+    await _upload(client, auth_headers, "ses_lines1234abcdefg", _AROUND_LINES)
+    resp = await client.get(
+        "/api/v1/sessions/ses_lines1234abcdefg/messages?page_size=100", headers=auth_headers
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["message_indexes"] == _VISIBLE
+    assert [m["msg_id"] for m in data["messages"]] == [f"m{n}" for n in _VISIBLE]
+    assert data["target"] is None
+
+    newest = (
+        await client.get(
+            "/api/v1/sessions/ses_lines1234abcdefg/messages?page_size=3&order=newest",
+            headers=auth_headers,
+        )
+    ).json()
+    assert newest["message_indexes"] == [24, 23, 22]
+
+
+def test_message_line_numbers_match_helper_numbering():
+    """The messages endpoint and the helper's archive reader number lines alike."""
+    from sessionfs.server.routes.sessions import _extract_archive_content
+    from sessionfs.server.services.session_archive import extract_archive
+
+    data = _archive_with_lines(_AROUND_LINES)
+    assert _extract_archive_content(data)["message_indexes"] == extract_archive(data)["message_indexes"]
+
+
+@pytest.mark.asyncio
+async def test_messages_around_returns_page_containing_target(
+    client: AsyncClient, auth_headers: dict
+):
+    await _upload(client, auth_headers, "ses_around1234abcdef", _AROUND_LINES)
+    base = "/api/v1/sessions/ses_around1234abcdef/messages?page_size=5"
+
+    # Oldest-first pages: [0,2,5,6,7] [8,9,10,11,12] [13..17] ...
+    data = (await client.get(f"{base}&around=11&page=1", headers=auth_headers)).json()
+    assert data["page"] == 2
+    assert data["message_indexes"] == [8, 9, 10, 11, 12]
+    assert data["target"] == {"index": 11, "status": "found", "anchor_index": 11}
+
+    # Newest-first counts from the end: [24..20] [19..15] ...
+    data = (await client.get(f"{base}&around=16&order=newest", headers=auth_headers)).json()
+    assert data["page"] == 2
+    assert 16 in data["message_indexes"]
+    assert data["target"]["status"] == "found"
+
+
+@pytest.mark.asyncio
+async def test_messages_around_hidden_and_missing_fall_back_to_nearest(
+    client: AsyncClient, auth_headers: dict
+):
+    await _upload(client, auth_headers, "ses_aroundhid1234abc", _AROUND_LINES)
+    base = "/api/v1/sessions/ses_aroundhid1234abc/messages?page_size=5"
+
+    # Sidechain line 3: nearest visible are 2 and 5 → 2 (closer).
+    data = (await client.get(f"{base}&around=3", headers=auth_headers)).json()
+    assert data["target"] == {"index": 3, "status": "hidden", "anchor_index": 2}
+    assert data["page"] == 1
+
+    # Empty message on line 4: 5 is closer than 2.
+    data = (await client.get(f"{base}&around=4", headers=auth_headers)).json()
+    assert data["target"] == {"index": 4, "status": "hidden", "anchor_index": 5}
+
+    # Blank line 1 is not a message at all; tie between 0 and 2 → earlier.
+    data = (await client.get(f"{base}&around=1", headers=auth_headers)).json()
+    assert data["target"] == {"index": 1, "status": "missing", "anchor_index": 0}
+
+    # Past the end → the last message, on the last page.
+    data = (await client.get(f"{base}&around=999", headers=auth_headers)).json()
+    assert data["target"] == {"index": 999, "status": "missing", "anchor_index": 24}
+    assert data["page"] == 5
+    assert data["message_indexes"][-1] == 24
+
+
+@pytest.mark.asyncio
+async def test_messages_around_with_nothing_visible(client: AsyncClient, auth_headers: dict):
+    await _upload(
+        client, auth_headers, "ses_aroundnone1234ab", [_msg(0, is_sidechain=True)]
+    )
+    data = (
+        await client.get(
+            "/api/v1/sessions/ses_aroundnone1234ab/messages?around=0", headers=auth_headers
+        )
+    ).json()
+    assert data["target"] == {"index": 0, "status": "hidden", "anchor_index": None}
+    assert data["page"] == 1
+    assert data["messages"] == []
+
+
+@pytest.mark.asyncio
+async def test_messages_around_validation_and_access(
+    client: AsyncClient, auth_headers: dict, db_session
+):
+    """``around`` is validated and never bypasses the ownership check."""
+    from datetime import datetime, timezone
+    import uuid
+
+    from sessionfs.server.auth.keys import generate_api_key, hash_api_key
+    from sessionfs.server.db.models import ApiKey, User
+
+    await _upload(client, auth_headers, "ses_aroundacl1234abc", _AROUND_LINES)
+    resp = await client.get(
+        "/api/v1/sessions/ses_aroundacl1234abc/messages?around=-1", headers=auth_headers
+    )
+    assert resp.status_code == 422
+
+    other = User(
+        id=str(uuid.uuid4()),
+        email="other-around@example.com",
+        display_name="Other",
+        tier="pro",
+        created_at=datetime.now(timezone.utc),
+        email_verified=True,
+    )
+    db_session.add(other)
+    raw = generate_api_key()
+    db_session.add(
+        ApiKey(
+            id=str(uuid.uuid4()),
+            user_id=other.id,
+            key_hash=hash_api_key(raw),
+            name="other",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+    resp = await client.get(
+        "/api/v1/sessions/ses_aroundacl1234abc/messages?around=2",
+        headers={"Authorization": f"Bearer {raw}"},
+    )
+    assert resp.status_code == 404

@@ -26,8 +26,11 @@ from sessionfs.server.db.models import (
     User,
 )
 from sessionfs.server.routes.uploads import (
+    _acquire_part_slot,
     _finalize_upload,
+    _part_puts_in_flight,
     _read_part_body,
+    _release_part_slot,
     abort_expired_pending_uploads,
 )
 from sessionfs.server.storage.local import LocalBlobStore
@@ -74,6 +77,63 @@ async def _put_part(
         headers=headers,
         content=data,
     )
+
+
+@pytest.mark.asyncio
+async def test_abort_expired_pending_uploads_deletes_orphan_blobs(
+    db_session: AsyncSession, blob_store: LocalBlobStore, test_user: User
+):
+    """Orphaned part blobs (blob written, row never committed) are reclaimed
+    by the sweep, not just parts with a matching SessionUploadPart row."""
+    now = datetime.now(timezone.utc)
+    expired = SessionUpload(
+        id="up_" + "d" * 24,
+        user_id=test_user.id,
+        session_id="ses_orphan",
+        total_size=200,
+        sha256="e" * 64,
+        part_size=5 * 1024 * 1024,
+        part_count=2,
+        status="pending",
+        created_at=now - timedelta(hours=25),
+        expires_at=now - timedelta(hours=1),
+    )
+    db_session.add(expired)
+    await db_session.flush()
+    # Only part 1 has a row; part 2's blob is orphaned.
+    db_session.add(
+        SessionUploadPart(upload_id=expired.id, part_number=1, size=100, sha256="f" * 64)
+    )
+    await db_session.commit()
+
+    key1 = f"uploads/{expired.id}/part-00001"
+    key2 = f"uploads/{expired.id}/part-00002"
+    await blob_store.put(key1, b"a" * 100)
+    await blob_store.put(key2, b"b" * 100)
+
+    aborted = await abort_expired_pending_uploads(db_session, blob_store, now)
+    assert aborted == 1
+    assert await blob_store.get(key1) is None
+    assert await blob_store.get(key2) is None
+
+
+def test_part_put_slot_caps_per_user():
+    _part_puts_in_flight.clear()
+    try:
+        _acquire_part_slot("user-a")
+        _acquire_part_slot("user-a")
+        with pytest.raises(HTTPException) as exc:
+            _acquire_part_slot("user-a")
+        assert exc.value.status_code == 429
+        assert exc.value.detail["code"] == "upload_busy"
+        assert exc.value.headers["Retry-After"] == "1"
+        # A different user is unaffected.
+        _acquire_part_slot("user-b")
+        # Releasing one slot lets the same user back in.
+        _release_part_slot("user-a")
+        _acquire_part_slot("user-a")
+    finally:
+        _part_puts_in_flight.clear()
 
 
 @pytest.mark.asyncio
@@ -126,6 +186,60 @@ async def test_complete_happy_path(
     pull = await client.get(f"/api/v1/sessions/{session_id}/sync", headers=auth_headers)
     assert pull.status_code == 200
     assert pull.content == data
+
+
+def _archive_with_surrogate_message() -> bytes:
+    """A .sfs archive whose messages.jsonl carries a lone UTF-16 surrogate."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        manifest = json.dumps({
+            "sfs_version": "0.1.0",
+            "session_id": "ses_x",
+            "title": "Surrogate message",
+            "tags": [],
+            "source": {"tool": "claude-code"},
+            "model": {"provider": "anthropic", "model_id": "claude-opus-4-6"},
+            "stats": {"message_count": 1},
+        }).encode()
+        info = tarfile.TarInfo(name="manifest.json")
+        info.size = len(manifest)
+        tar.addfile(info, io.BytesIO(manifest))
+
+        # json.dumps escapes the lone surrogate as \ud800; the extraction path
+        # decodes it back into a lone surrogate code point that can't be UTF-8
+        # encoded, so it must be replaced with U+FFFD before the DB write.
+        line = json.dumps({"content": "hi \ud800 there"}).encode() + b"\n"
+        info = tarfile.TarInfo(name="messages.jsonl")
+        info.size = len(line)
+        tar.addfile(info, io.BytesIO(line))
+    return buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_complete_sanitizes_surrogate_message_text(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession
+):
+    """A lone surrogate in message text reaches the chunked-upload complete
+    path sanitized (U+FFFD), not 500ing the DB write."""
+    data = _archive_with_surrogate_message()
+    session_id = "ses_uploadsurr1"
+    init = await _initiate(client, auth_headers, session_id, len(data), _sha256(data))
+    assert init.status_code == 201, init.text
+    upload_id = init.json()["upload_id"]
+
+    put = await _put_part(client, auth_headers, upload_id, 1, data)
+    assert put.status_code == 200, put.text
+
+    comp = await client.post(
+        f"/api/v1/uploads/{upload_id}/complete", headers=auth_headers
+    )
+    assert comp.status_code in (200, 201), comp.text
+
+    row = (
+        await db_session.execute(select(Session).where(Session.id == session_id))
+    ).scalar_one()
+    assert row.messages_text == "hi � there"
+    row.messages_text.encode("utf-8")
 
 
 @pytest.mark.asyncio

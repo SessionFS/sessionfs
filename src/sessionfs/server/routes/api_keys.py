@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import ApiKey, Organization, User
+from sessionfs.server.db.models import ApiKey, Organization, TicketWatchCursor, User
 from sessionfs.server.schemas.api_keys import (
     PersonalKeyCreateRequest,
     PersonalKeyCreateResponse,
@@ -333,6 +333,46 @@ async def rotate_service_key(
             revoke_reason=f"rotated by {user.email or user.id}",
         )
     )
+
+    # Carry the old key's watch cursor(s) into the new key's namespace so a
+    # rotated resident keeps its read position instead of replaying history.
+    # The service-key cursor namespace is "svc:<key id>"; the new key id is
+    # freshly minted, so on_conflict_do_nothing only guards a retry.
+    old_persona = f"svc:{old.id}"
+    new_persona = f"svc:{new_key.id}"
+    copied_cursors = (
+        await db.execute(
+            select(TicketWatchCursor).where(
+                TicketWatchCursor.persona_name == old_persona
+            )
+        )
+    ).scalars().all()
+    if copied_cursors:
+        dialect = db.bind.dialect.name if db.bind is not None else "sqlite"
+        if dialect == "postgresql":
+            from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+            insert_impl = pg_insert
+        else:
+            from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+
+            insert_impl = sqlite_insert
+        await db.execute(
+            insert_impl(TicketWatchCursor)
+            .values(
+                [
+                    {
+                        "user_id": row.user_id,
+                        "persona_name": new_persona,
+                        "last_seen_notification_id": row.last_seen_notification_id,
+                        "updated_at": now,
+                    }
+                    for row in copied_cursors
+                ]
+            )
+            .on_conflict_do_nothing(index_elements=["user_id", "persona_name"])
+        )
+
     await db.commit()
     await db.refresh(new_key)
 

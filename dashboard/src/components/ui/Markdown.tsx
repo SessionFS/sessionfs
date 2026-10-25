@@ -1,4 +1,4 @@
-import { isValidElement, type ReactNode } from 'react';
+import { isValidElement, useMemo, type ReactNode } from 'react';
 import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
@@ -229,6 +229,10 @@ interface MarkdownProps {
    *  contents); keep it distinct per document on a page. */
   headingIdPrefix?: string;
   className?: string;
+  /** Optional link override: return a node to replace the default link for
+   *  an href (e.g. in-app citation chips), or undefined to keep the default.
+   *  Hrefs still pass the safe-link filter first. */
+  renderLink?: (href: string, children: ReactNode) => ReactNode | undefined;
 }
 
 /**
@@ -237,7 +241,19 @@ interface MarkdownProps {
  * breaks kept as breaks (agents write one fact per line), raw HTML never
  * rendered, and links limited to safe targets.
  */
-export function Markdown({ children, headingIdPrefix, className = '' }: MarkdownProps) {
+export function Markdown({ children, headingIdPrefix, className = '', renderLink }: MarkdownProps) {
+  const resolved = useMemo<Components>(() => {
+    if (!renderLink) return components;
+    const DefaultLink = components.a as (props: { node?: unknown; href?: string; children?: ReactNode }) => ReactNode;
+    return {
+      ...components,
+      a: ({ node, children: linkChildren, href }) => {
+        const safe = safeHref(href);
+        const custom = safe ? renderLink(safe, linkChildren) : undefined;
+        return custom !== undefined ? custom : DefaultLink({ node, href, children: linkChildren });
+      },
+    };
+  }, [renderLink]);
   return (
     <div className={`text-base leading-7 text-text-secondary ${className}`}>
       <ReactMarkdown
@@ -245,7 +261,7 @@ export function Markdown({ children, headingIdPrefix, className = '' }: Markdown
         urlTransform={urlTransform}
         remarkPlugins={[remarkGfm, remarkBreaks]}
         rehypePlugins={headingIdPrefix ? [rehypeHeadingIds(headingIdPrefix)] : []}
-        components={components}
+        components={resolved}
       >
         {children}
       </ReactMarkdown>

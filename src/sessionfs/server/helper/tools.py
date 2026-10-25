@@ -525,6 +525,16 @@ async def _get_session_excerpts(ctx: HelperContext, args: dict[str, Any]) -> Too
     )
 
 
+def _escape_like(query: str) -> str:
+    """Escape LIKE wildcards so a query of ``%`` or ``_`` matches literally.
+
+    The ``escape="\\"`` argument on ``ilike`` tells the DB to treat a
+    backslash as the escape character; here we backslash-escape every
+    ``\\``, ``%`` and ``_`` in the user's query.
+    """
+    return query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 async def _search_project_knowledge(
     ctx: HelperContext, args: dict[str, Any]
 ) -> ToolOutput:
@@ -543,7 +553,7 @@ async def _search_project_knowledge(
             KnowledgeEntry.dismissed == False,  # noqa: E712
             KnowledgeEntry.superseded_by.is_(None),
             KnowledgeEntry.claim_class != "note",
-            KnowledgeEntry.content.ilike(f"%{query}%"),
+            KnowledgeEntry.content.ilike(f"%{_escape_like(query)}%", escape="\\"),
         )
         .order_by(KnowledgeEntry.confidence.desc(), KnowledgeEntry.created_at.desc())
         .limit(limit)

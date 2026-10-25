@@ -1,48 +1,13 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { useJudgeSettings } from '../hooks/useJudgeSettings';
+import { useLlmProviders } from '../hooks/useLlmProviders';
 import { useBackgroundTasks } from '../components/BackgroundTasks';
 import { Dialog, DialogHeader, DialogFooter } from '../components/ui/Dialog';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { Select } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
-
-const PROVIDERS = [
-  { value: 'openrouter', label: 'OpenRouter' },
-  { value: 'anthropic', label: 'Anthropic' },
-  { value: 'openai', label: 'OpenAI' },
-  { value: 'google', label: 'Google' },
-] as const;
-
-const PROVIDER_MODELS: Record<string, { value: string; label: string }[]> = {
-  anthropic: [
-    { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
-    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-    { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-  ],
-  openai: [
-    { value: 'gpt-5.2', label: 'GPT-5.2' },
-    { value: 'gpt-5.2-pro', label: 'GPT-5.2 Pro' },
-    { value: 'gpt-4o', label: 'GPT-4o' },
-    { value: 'o3', label: 'o3 (reasoning)' },
-    { value: 'o4-mini', label: 'o4 Mini (reasoning)' },
-  ],
-  google: [
-    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-  ],
-  openrouter: [
-    { value: 'anthropic/claude-opus-4-6', label: 'Claude Opus 4.6' },
-    { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-    { value: 'openai/gpt-5.2', label: 'GPT-5.2' },
-    { value: 'openai/gpt-4o', label: 'GPT-4o' },
-    { value: 'openai/o3', label: 'o3 (reasoning)' },
-    { value: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-    { value: 'deepseek/deepseek-v3.2', label: 'DeepSeek V3.2' },
-    { value: 'deepseek/deepseek-r1', label: 'DeepSeek R1' },
-  ],
-};
 
 interface Props {
   open: boolean;
@@ -56,6 +21,7 @@ interface Props {
 export default function AuditModal({ open, sessionId, sessionTitle, messageCount, onClose, onComplete }: Props) {
   const { auth } = useAuth();
   const { data: savedSettings } = useJudgeSettings();
+  const { data: providerData } = useLlmProviders();
   const [provider, setProvider] = useState('anthropic');
   const [model, setModel] = useState('claude-sonnet-4-6');
   const [apiKey, setApiKey] = useState('');
@@ -64,9 +30,15 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [discoveredModels, setDiscoveredModels] = useState<{ id: string; owned_by: string }[]>([]);
+  const [fetchedModels, setFetchedModels] = useState<{ id: string; owned_by: string }[]>([]);
   const [discovering, setDiscovering] = useState(false);
+  const [fetching, setFetching] = useState(false);
   const [testStatus, setTestStatus] = useState<'idle' | 'testing' | 'ok' | 'fail'>('idle');
   const { startAudit } = useBackgroundTasks();
+
+  const providers = providerData?.providers ?? [];
+  const currentProvider = providers.find((p) => p.id === provider);
+  const isDiscovery = currentProvider?.discovery === true;
 
   // Pre-fill from saved settings
   useEffect(() => {
@@ -99,7 +71,9 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
   }, [baseUrl, apiKey, auth]);
 
   const isOpenRouter = provider === 'openrouter';
-  const models = PROVIDER_MODELS[provider] || [];
+  const models = fetchedModels.length > 0
+    ? fetchedModels.map((m) => ({ value: m.id, label: m.id + (m.owned_by ? ` (${m.owned_by})` : '') }))
+    : (currentProvider?.suggested_models ?? []).map((m) => ({ value: m, label: m }));
   const estimatedCost = (messageCount * 0.01).toFixed(2);
   const hasSavedKey = savedSettings?.key_set === true;
   const hasBaseUrl = !!baseUrl;
@@ -107,14 +81,28 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
   const keyPlaceholder = useMemo(() => {
     if (isOpenRouter) return 'sk-or-…';
     if (provider === 'anthropic') return 'sk-ant-…';
-    if (provider === 'openai') return 'sk-…';
-    return 'AIza…';
+    if (provider === 'google') return 'AIza…';
+    return 'sk-…';
   }, [provider, isOpenRouter]);
 
   function handleProviderChange(newProvider: string) {
     setProvider(newProvider);
-    const providerModels = PROVIDER_MODELS[newProvider];
-    if (providerModels?.length && !hasBaseUrl) setModel(providerModels[0].value);
+    setFetchedModels([]);
+    const next = providers.find((p) => p.id === newProvider);
+    if (next?.suggested_models.length && !hasBaseUrl) setModel(next.suggested_models[0]);
+  }
+
+  async function handleFetchModels() {
+    if (!auth || !isDiscovery) return;
+    setFetching(true);
+    try {
+      const result = await auth.client.discoverModels('', apiKey || undefined, provider);
+      setFetchedModels(result.models || []);
+    } catch {
+      setFetchedModels([]);
+    } finally {
+      setFetching(false);
+    }
   }
 
   async function handleTestConnection() {
@@ -153,7 +141,7 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
     }
   }
 
-  const providerOptions = PROVIDERS.map((p) => ({ value: p.value, label: p.label }));
+  const providerOptions = providers.map((p) => ({ value: p.id, label: p.label }));
 
   const modelSelectOptions = useMemo(() => {
     if (hasBaseUrl && discoveredModels.length > 0) {
@@ -203,18 +191,33 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
                   if (v === '__custom__') setModel('');
                   else setModel(v);
                 }}
-                options={[...models.map((m) => ({ value: m.value, label: m.label }))]}
+                options={[
+                  ...models.map((m) => ({ value: m.value, label: m.label })),
+                  { value: '__custom__', label: 'Other model…' },
+                ]}
               />
-              {isOpenRouter && !models.some((m) => m.value === model) && (
+              {!models.some((m) => m.value === model) && (
                 <Input
                   type="text"
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
-                  placeholder="provider/model-name"
+                  placeholder={isOpenRouter ? 'vendor/model-name' : 'model-name'}
                   className="mt-1.5"
                 />
               )}
             </>
+          )}
+          {isDiscovery && !hasBaseUrl && (
+            <Button
+              type="button"
+              variant="secondary"
+              onClick={handleFetchModels}
+              disabled={fetching}
+              loading={fetching}
+              className="mt-1.5"
+            >
+              Fetch models
+            </Button>
           )}
         </div>
 

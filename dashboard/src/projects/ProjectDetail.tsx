@@ -281,7 +281,7 @@ export default function ProjectDetail() {
     ? {
         orgId: project.org_id,
         isProjectAdmin: canUnlinkTicket(project, me, myOrgs),
-        isEnterprise: hasJiraEnterpriseTier(me),
+        isEnterprise: hasJiraEnterpriseTier(project, me),
       }
     : undefined;
 
@@ -296,7 +296,7 @@ export default function ProjectDetail() {
           Back to Projects
         </Button>
         {openHelper && (
-          <Button variant="secondary" size="sm" onClick={() => openHelper({ project_id: project.id })}>
+          <Button variant="secondary" size="sm" onClick={() => openHelper({ project_id: project.id, label: project.name })}>
             Ask the helper
           </Button>
         )}
@@ -451,7 +451,7 @@ export default function ProjectDetail() {
       )}
 
       {section === 'work' && sub === 'tickets' && (
-        <Panel padded sub={sub}><TicketsTab projectId={project.id} jira={jira} /></Panel>
+        <Panel padded sub={sub}><TicketsTab projectId={project.id} jira={jira} initialTicketId={searchParams.get('ticket')} /></Panel>
       )}
       {section === 'work' && sub === 'agent-runs' && (
         <Panel padded sub={sub}><AgentRunsTab projectId={project.id} /></Panel>

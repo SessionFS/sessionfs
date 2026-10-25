@@ -79,6 +79,7 @@ REASSIGN_COLUMNS: tuple[tuple[str, str], ...] = (
     ("tickets", "resolver_user_id"),
     ("ticket_comments", "author_user_id"),
     ("ticket_edits", "edited_by_user_id"),
+    ("ticket_notifications", "user_id"),
     ("wiki_page_revisions", "user_id"),
     ("work_queues", "created_by_user_id"),
     ("work_queue_items", "implementer_user_id"),
@@ -93,6 +94,9 @@ DEDUPE_TABLES: tuple[tuple[str, str | None], ...] = (
     ("skill_devices", "device_key"),
     ("gitlab_settings", None),
     ("user_judge_settings", None),
+    ("ticket_watchers", "ticket_id"),
+    ("ticket_watch_cursors", "persona_name"),
+    ("user_notification_settings", None),
 )
 
 # Tables referencing users that are deliberately not touched.

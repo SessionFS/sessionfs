@@ -15,6 +15,7 @@ export interface OrgGeneralSettings {
   kb_retention_days: number | null;
   kb_max_context_words: number | null;
   kb_section_page_limit: number | null;
+  helper_retention_days: number | null;
   auto_join_domains?: string[];
 }
 

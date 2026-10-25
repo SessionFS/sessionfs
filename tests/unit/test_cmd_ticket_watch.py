@@ -284,3 +284,49 @@ async def _no_sleep(_seconds):
     """Skip real sleep in tests so the watch loop drains the scripted
     fake immediately."""
     return None
+
+
+def test_updates_cmd_passes_persona_via_httpx_params(monkeypatch):
+    """`sfs ticket updates` must hand `persona` to httpx as a query param,
+    not splice it raw into the URL — a persona like ``codex & atlas=1`` would
+    otherwise produce a broken query string."""
+    import httpx
+
+    captured: dict = {}
+
+    class _Resp:
+        status_code = 200
+        headers = {"content-type": "application/json"}
+        content = b'{"items": [], "next_cursor": null}'
+        text = '{"items": [], "next_cursor": null}'
+
+        def json(self):
+            return {"items": [], "next_cursor": None}
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, *, headers=None, params=None):
+            captured["url"] = url
+            captured["params"] = params
+            return _Resp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    monkeypatch.setattr(
+        "sessionfs.cli.cmd_ticket._resolve_project",
+        lambda: ("https://api.test", "key", "proj_x"),
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(ticket_app, ["updates", "--persona", "codex & atlas=1"])
+    assert result.exit_code == 0, result.output
+    assert captured["params"] == {"persona": "codex & atlas=1"}
+    # The raw ampersand/equals never reached the URL; httpx encodes it.
+    assert "& atlas" not in captured["url"]

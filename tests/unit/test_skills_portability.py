@@ -1428,6 +1428,14 @@ def test_remaining_watchers_annotate_managed_package_provenance(
         def allocate_session_dir(self, sfs_id):
             return session_dir
 
+        def commit_session(self, sfs_id, writer_fn, **kwargs):
+            # The real store stages and moves files in; writing in place is
+            # equivalent for this test, which only inspects the result.
+            from types import SimpleNamespace
+
+            writer_fn(session_dir)
+            return SimpleNamespace(skipped=False)
+
         def upsert_session_metadata(self, *args, **kwargs):
             pass
 

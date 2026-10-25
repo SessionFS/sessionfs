@@ -58,26 +58,35 @@ def create_checkpoint(
     if not session_dir:
         raise SessionOpError(f"Session '{session_id}' not found")
 
-    checkpoint_dir = _checkpoints_root(session_dir) / name
-    if checkpoint_dir.exists():
-        raise SessionOpError(f"Checkpoint '{name}' already exists")
+    # Write the checkpoint under the per-session lock so it serializes with a
+    # concurrent capture/delete, and re-check the directory under the lock:
+    # ``mkdir(parents=True)`` must not resurrect a session a delete removed.
+    from sessionfs.store.local import lock_session_dir
 
-    checkpoint_dir.mkdir(parents=True)
-    manifest_src = session_dir / "manifest.json"
-    if manifest_src.exists():
-        shutil.copy2(manifest_src, checkpoint_dir / "manifest.json")
-    messages_src = session_dir / "messages.jsonl"
-    if messages_src.exists():
-        shutil.copy2(messages_src, checkpoint_dir / "messages.jsonl")
+    with lock_session_dir(store.sessions_dir, session_id):
+        if not session_dir.is_dir():
+            raise SessionOpError(f"Session '{session_id}' not found")
 
-    created_at = datetime.now(timezone.utc).isoformat()
-    return {
-        "session_id": session_id,
-        "name": name,
-        "path": str(checkpoint_dir),
-        "created_at": created_at,
-        "has_messages": messages_src.exists(),
-    }
+        checkpoint_dir = _checkpoints_root(session_dir) / name
+        if checkpoint_dir.exists():
+            raise SessionOpError(f"Checkpoint '{name}' already exists")
+
+        checkpoint_dir.mkdir(parents=True)
+        manifest_src = session_dir / "manifest.json"
+        if manifest_src.exists():
+            shutil.copy2(manifest_src, checkpoint_dir / "manifest.json")
+        messages_src = session_dir / "messages.jsonl"
+        if messages_src.exists():
+            shutil.copy2(messages_src, checkpoint_dir / "messages.jsonl")
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        return {
+            "session_id": session_id,
+            "name": name,
+            "path": str(checkpoint_dir),
+            "created_at": created_at,
+            "has_messages": messages_src.exists(),
+        }
 
 
 def list_checkpoints(
@@ -161,37 +170,39 @@ def fork_session(
         source_dir = session_dir
 
     new_id = generate_session_id()
-    new_dir = store.allocate_session_dir(new_id)
 
-    src_messages = source_dir / "messages.jsonl"
-    if src_messages.exists():
-        shutil.copy2(src_messages, new_dir / "messages.jsonl")
+    def _write(staging: Path) -> dict:
+        src_messages = source_dir / "messages.jsonl"
+        if src_messages.exists():
+            shutil.copy2(src_messages, staging / "messages.jsonl")
 
-    src_manifest_path = source_dir / "manifest.json"
-    if src_manifest_path.exists():
-        manifest = json.loads(src_manifest_path.read_text())
-    else:
-        manifest = json.loads((session_dir / "manifest.json").read_text())
+        src_manifest_path = source_dir / "manifest.json"
+        if src_manifest_path.exists():
+            manifest = json.loads(src_manifest_path.read_text())
+        else:
+            manifest = json.loads((session_dir / "manifest.json").read_text())
 
-    manifest["session_id"] = new_id
-    manifest["title"] = name
-    manifest["parent_session_id"] = session_id
-    if from_checkpoint is not None:
-        manifest["forked_from_checkpoint"] = from_checkpoint
+        manifest["session_id"] = new_id
+        manifest["title"] = name
+        manifest["parent_session_id"] = session_id
+        if from_checkpoint is not None:
+            manifest["forked_from_checkpoint"] = from_checkpoint
 
-    (new_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
+        (staging / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
-    for fname in ("workspace.json", "tools.json"):
-        src = session_dir / fname
-        if src.exists():
-            shutil.copy2(src, new_dir / fname)
+        for fname in ("workspace.json", "tools.json"):
+            src = session_dir / fname
+            if src.exists():
+                shutil.copy2(src, staging / fname)
 
-    store.upsert_session_metadata(new_id, manifest, str(new_dir))
+        return manifest
+
+    outcome = store.commit_session(new_id, _write)
 
     return {
         "session_id": new_id,
         "title": name,
         "parent_session_id": session_id,
         "forked_from_checkpoint": from_checkpoint,
-        "path": str(new_dir),
+        "path": str(outcome.session_dir),
     }

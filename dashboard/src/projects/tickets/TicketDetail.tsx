@@ -8,7 +8,11 @@ import {
   useTicket,
   useTicketChildren,
   useTicketComments,
+  useTicketWatchers,
+  useUnwatchTicket,
+  useWatchTicket,
 } from '../../hooks/useTickets';
+import { useMe } from '../../hooks/useMe';
 import RelativeDate from '../../components/RelativeDate';
 import { type Ticket } from '../../api/client';
 import { Button, Textarea } from '../../components/ui';
@@ -53,6 +57,44 @@ export function TicketDetail({
   const [draft, setDraft] = useState('');
   const [submitting, setSubmitting] = useState<Action | null>(null);
 
+  // Ticket watching (follow / unfollow / mute). The current user's row is
+  // derived from the watchers list + the me profile, so no extra "am I
+  // following" endpoint is needed.
+  const me = useMe();
+  const { data: watchers } = useTicketWatchers(projectId, ticketId);
+  const watch = useWatchTicket(projectId);
+  const unwatch = useUnwatchTicket(projectId);
+  const myWatch = watchers?.find((w) => w.user_id === me.data?.user_id);
+  const watching = !!myWatch;
+  const muted = myWatch?.muted ?? false;
+
+  async function handleFollow(mute: boolean) {
+    try {
+      await watch.mutateAsync({ ticketId, muted: mute });
+      addToast('success', mute ? 'Following (muted)' : 'Following');
+    } catch (exc) {
+      addToast('error', `Follow failed: ${errorMessage(exc)}`);
+    }
+  }
+
+  async function handleUnfollow() {
+    try {
+      await unwatch.mutateAsync(ticketId);
+      addToast('success', 'Unfollowed');
+    } catch (exc) {
+      addToast('error', `Unfollow failed: ${errorMessage(exc)}`);
+    }
+  }
+
+  async function handleToggleMute() {
+    try {
+      await watch.mutateAsync({ ticketId, muted: !muted });
+      addToast('success', muted ? 'Unmuted' : 'Muted');
+    } catch (exc) {
+      addToast('error', `Mute failed: ${errorMessage(exc)}`);
+    }
+  }
+
   const childIds = t.kind === 'issue' ? t.child_ticket_ids : [];
   const childQueries = useTicketChildren(projectId, childIds);
   const { data: parent } = useTicket(
@@ -90,6 +132,41 @@ export function TicketDetail({
 
   return (
     <div className="px-3 py-3 bg-surface/50 text-sm space-y-3 border-t border-border">
+      {/* ── Follow / Unfollow / Mute ── */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {watching ? (
+          <>
+            <Badge variant="success" tint label={muted ? 'Following (muted)' : 'Following'} size="sm" />
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleToggleMute}
+              aria-pressed={muted}
+            >
+              {muted ? 'Unmute' : 'Mute'}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={unwatch.isPending}
+              loading={unwatch.isPending}
+              onClick={handleUnfollow}
+            >
+              Unfollow
+            </Button>
+          </>
+        ) : (
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={watch.isPending}
+            onClick={() => handleFollow(false)}
+          >
+            Follow
+          </Button>
+        )}
+      </div>
+
       {t.kind === 'task' && t.parent_ticket_id && (
         <div className="text-xs">
           <Button

@@ -59,7 +59,7 @@ from sessionfs.server.schemas.sessions import (
     ToolsResponse,
     SessionChangesResponse,
 )
-from sessionfs.server.sanitize import sanitize_meta, strip_nul
+from sessionfs.server.sanitize import sanitize_archive_string, sanitize_meta
 from sessionfs.server.services.session_search import (
     search_sessions as _search_sessions_service,
     source_tool_filter_values as _source_tool_filter_values,
@@ -896,8 +896,8 @@ _cache_lock = threading.Lock()
 def _get_cached_archive_content(session_id: str, etag: str, data: bytes) -> dict[str, object]:
     """Get parsed archive contents, using an LRU cache keyed by (session_id, etag).
 
-    Returns a dict with keys: "messages" (list[dict]), "workspace" (dict|None),
-    "tools" (dict|None).
+    Returns a dict with keys: "messages" (list[dict]), "message_indexes"
+    (list[int]), "workspace" (dict|None), "tools" (dict|None).
     """
     cache_key = (session_id, etag)
 
@@ -919,8 +919,15 @@ def _get_cached_archive_content(session_id: str, etag: str, data: bytes) -> dict
 
 
 def _extract_archive_content(data: bytes) -> dict[str, object]:
-    """Extract messages, workspace, and tools from a .sfs tar.gz archive."""
+    """Extract messages, workspace, and tools from a .sfs tar.gz archive.
+
+    ``message_indexes[i]`` is the 0-based line number of ``messages[i]`` in
+    ``messages.jsonl``, counting every line (blank ones included) — the same
+    numbering as ``services.session_archive.extract_archive``, which the
+    session helper uses for its ``msg:<n>`` citations.
+    """
     messages: list[dict] = []
+    message_indexes: list[int] = []
     workspace: dict | None = None
     tools: dict | None = None
 
@@ -934,7 +941,7 @@ def _extract_archive_content(data: bytes) -> dict[str, object]:
                 if basename == "messages.jsonl":
                     f = tar.extractfile(member)
                     if f is not None:
-                        for line in f:
+                        for line_index, line in enumerate(f):
                             line = line.strip()
                             if not line:
                                 continue
@@ -943,6 +950,7 @@ def _extract_archive_content(data: bytes) -> dict[str, object]:
                             # crash downstream `.get()` calls — skip it.
                             if isinstance(parsed, dict):
                                 messages.append(parsed)
+                                message_indexes.append(line_index)
                 elif basename == "workspace.json":
                     f = tar.extractfile(member)
                     if f is not None:
@@ -954,7 +962,12 @@ def _extract_archive_content(data: bytes) -> dict[str, object]:
     except Exception as exc:
         _logger.warning("Failed to extract archive content: %s", exc)
 
-    return {"messages": messages, "workspace": workspace, "tools": tools}
+    return {
+        "messages": messages,
+        "message_indexes": message_indexes,
+        "workspace": workspace,
+        "tools": tools,
+    }
 
 
 def clear_archive_cache() -> None:
@@ -1128,7 +1141,7 @@ async def upload_session(
     nul_count = 0
     meta, n = sanitize_meta(meta)
     nul_count += n
-    messages_text, n = strip_nul(messages_text)
+    messages_text, n = sanitize_archive_string(messages_text)
     nul_count += n
 
     # Extract git metadata for PR matching + session denormalized tag.
@@ -1144,11 +1157,11 @@ async def upload_session(
         git_remote_normalized = normalize_git_remote(workspace_data.get("git_remote", ""))
         git_branch = workspace_data.get("git_branch", "")
         git_commit = workspace_data.get("git_commit", "")
-    git_remote_normalized, n = strip_nul(git_remote_normalized)
+    git_remote_normalized, n = sanitize_archive_string(git_remote_normalized)
     nul_count += n
-    git_branch, n = strip_nul(git_branch)
+    git_branch, n = sanitize_archive_string(git_branch)
     nul_count += n
-    git_commit, n = strip_nul(git_commit)
+    git_commit, n = sanitize_archive_string(git_commit)
     nul_count += n
 
     if nul_count:
@@ -1895,13 +1908,13 @@ def _prepare_sync_archive(
             git_remote_normalized = normalize_git_remote(workspace_data.get("git_remote", ""))
             git_branch = workspace_data.get("git_branch", "")
             git_commit = workspace_data.get("git_commit", "")
-        git_remote_normalized, n = strip_nul(git_remote_normalized)
+        git_remote_normalized, n = sanitize_archive_string(git_remote_normalized)
         nul_count += n
-        git_branch, n = strip_nul(git_branch)
+        git_branch, n = sanitize_archive_string(git_branch)
         nul_count += n
-        git_commit, n = strip_nul(git_commit)
+        git_commit, n = sanitize_archive_string(git_commit)
         nul_count += n
-        messages_text, n = strip_nul(messages_text)
+        messages_text, n = sanitize_archive_string(messages_text)
         nul_count += n
 
         if nul_count:
@@ -2750,6 +2763,15 @@ async def get_session_messages(
     session_id: str,
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=100),
+    around: int | None = Query(
+        None,
+        ge=0,
+        le=10_000_000,
+        description=(
+            "0-based messages.jsonl line number (the helper's msg:<n>). When set, "
+            "the page containing that message is returned and `page` is ignored."
+        ),
+    ),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     request: Request = None,
@@ -2763,11 +2785,17 @@ async def get_session_messages(
         raise HTTPException(status_code=404, detail="Session blob not found")
 
     content = _get_cached_archive_content(session_id, session.etag, data)
-    all_messages = content["messages"]
+    all_messages: list[dict] = content["messages"]  # type: ignore[assignment]
+    all_indexes: list[int] = content.get("message_indexes") or []  # type: ignore[assignment]
+    if len(all_indexes) != len(all_messages):
+        # Archive cached before line numbers were tracked: positions are the
+        # best available numbering.
+        all_indexes = list(range(len(all_messages)))
 
     # Filter out sidechain and empty messages — they render as blank pages
-    messages = [
-        m for m in all_messages
+    visible = [
+        (idx, m)
+        for idx, m in zip(all_indexes, all_messages)
         if not m.get("is_sidechain")
         and (m.get("content") or m.get("role") == "tool")
     ]
@@ -2775,20 +2803,51 @@ async def get_session_messages(
     # Support order parameter: "newest" reverses so most recent is page 1
     order = request.query_params.get("order", "oldest") if request else "oldest"
     if order == "newest":
-        messages = list(reversed(messages))
+        visible = list(reversed(visible))
 
-    total = len(messages)
+    total = len(visible)
+    target: dict | None = None
+    if around is not None:
+        target = _locate_message(around, visible, set(all_indexes))
+        anchor = target["anchor_index"]
+        if anchor is not None:
+            position = next(i for i, (idx, _m) in enumerate(visible) if idx == anchor)
+            page = position // page_size + 1
+        else:
+            page = 1
+
     start = (page - 1) * page_size
     end = start + page_size
-    page_messages = messages[start:end]
+    page_items = visible[start:end]
 
     return {
-        "messages": page_messages,
+        "messages": [m for _idx, m in page_items],
+        "message_indexes": [idx for idx, _m in page_items],
         "total": total,
         "page": page,
         "page_size": page_size,
         "has_more": end < total,
+        "target": target,
     }
+
+
+def _locate_message(
+    index: int, visible: list[tuple[int, dict]], all_indexes: set[int]
+) -> dict:
+    """Resolve a requested line number to the message a view should show.
+
+    The target itself when visible; otherwise the visible message with the
+    nearest line number (an earlier one wins a tie, since sidechain and empty
+    entries follow the message they belong to).
+    """
+    visible_indexes = [idx for idx, _m in visible]
+    if index in visible_indexes:
+        return {"index": index, "status": "found", "anchor_index": index}
+    status = "hidden" if index in all_indexes else "missing"
+    anchor = min(
+        visible_indexes, key=lambda idx: (abs(idx - index), idx > index), default=None
+    )
+    return {"index": index, "status": status, "anchor_index": anchor}
 
 
 @router.get("/{session_id}/workspace", response_model=WorkspaceResponse)
@@ -2910,7 +2969,7 @@ async def reindex_sessions(
             nul_count = 0
             meta, n = sanitize_meta(meta)
             nul_count += n
-            messages_text, n = strip_nul(messages_text)
+            messages_text, n = sanitize_archive_string(messages_text)
             nul_count += n
 
             session.title = meta["title"]
@@ -2946,11 +3005,11 @@ async def reindex_sessions(
             ws = _extract_workspace_from_archive(data)
             if ws:
                 from sessionfs.git_remote import normalize_git_remote
-                session.git_remote_normalized, n = strip_nul(normalize_git_remote(ws.get("git_remote", "")))
+                session.git_remote_normalized, n = sanitize_archive_string(normalize_git_remote(ws.get("git_remote", "")))
                 nul_count += n
-                session.git_branch, n = strip_nul(ws.get("git_branch", ""))
+                session.git_branch, n = sanitize_archive_string(ws.get("git_branch", ""))
                 nul_count += n
-                session.git_commit, n = strip_nul(ws.get("git_commit", ""))
+                session.git_commit, n = sanitize_archive_string(ws.get("git_commit", ""))
                 nul_count += n
 
             if nul_count:

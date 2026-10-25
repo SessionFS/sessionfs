@@ -85,10 +85,16 @@ def _recapture_claude_code(
     from sessionfs.spec.convert_cc import convert_session
 
     cc_session = parse_session(native_path, copy_on_read=True)
-    session_dir = store.allocate_session_dir(sfs_id)
-    convert_session(cc_session, session_dir.parent, session_id=sfs_id, session_dir=session_dir)
 
-    _update_index_and_ref(store, sfs_id, session_dir, ref, native_path)
+    def _write(staging: Path) -> dict | None:
+        convert_session(
+            cc_session, staging.parent, session_id=sfs_id, session_dir=staging
+        )
+        return _read_manifest(staging)
+
+    outcome = store.commit_session(sfs_id, _write, skip_excluded=False)
+    if not outcome.skipped:
+        _update_ref(store, ref, native_path)
 
 
 def _recapture_codex(
@@ -97,10 +103,14 @@ def _recapture_codex(
     from sessionfs.watchers.codex import parse_codex_session, convert_codex_to_sfs
 
     codex_session = parse_codex_session(native_path)
-    session_dir = store.allocate_session_dir(sfs_id)
-    convert_codex_to_sfs(codex_session, session_dir, session_id=sfs_id)
 
-    _update_index_and_ref(store, sfs_id, session_dir, ref, native_path)
+    def _write(staging: Path) -> dict | None:
+        convert_codex_to_sfs(codex_session, staging, session_id=sfs_id)
+        return _read_manifest(staging)
+
+    outcome = store.commit_session(sfs_id, _write, skip_excluded=False)
+    if not outcome.skipped:
+        _update_ref(store, ref, native_path)
 
 
 def _recapture_gemini(
@@ -109,10 +119,14 @@ def _recapture_gemini(
     from sessionfs.converters.gemini_to_sfs import parse_gemini_session, convert_gemini_to_sfs
 
     gemini_session = parse_gemini_session(native_path)
-    session_dir = store.allocate_session_dir(sfs_id)
-    convert_gemini_to_sfs(gemini_session, session_dir, session_id=sfs_id)
 
-    _update_index_and_ref(store, sfs_id, session_dir, ref, native_path)
+    def _write(staging: Path) -> dict | None:
+        convert_gemini_to_sfs(gemini_session, staging, session_id=sfs_id)
+        return _read_manifest(staging)
+
+    outcome = store.commit_session(sfs_id, _write, skip_excluded=False)
+    if not outcome.skipped:
+        _update_ref(store, ref, native_path)
 
 
 def _recapture_cursor(
@@ -131,10 +145,14 @@ def _recapture_cursor(
             f"in the global DB — the composer rows appear to have been purged. "
             f"Refusing to overwrite the existing .sfs capture with empty content."
         )
-    session_dir = store.allocate_session_dir(sfs_id)
-    convert_cursor_to_sfs(session, session_dir, session_id=sfs_id)
 
-    _update_index_and_ref(store, sfs_id, session_dir, ref, native_path)
+    def _write(staging: Path) -> dict | None:
+        convert_cursor_to_sfs(session, staging, session_id=sfs_id)
+        return _read_manifest(staging)
+
+    outcome = store.commit_session(sfs_id, _write, skip_excluded=False)
+    if not outcome.skipped:
+        _update_ref(store, ref, native_path)
 
 
 class CursorComposerPurgedError(Exception):
@@ -146,10 +164,13 @@ def _recapture_copilot(
 ) -> None:
     from sessionfs.converters.copilot_to_sfs import convert_copilot_to_sfs
 
-    session_dir = store.allocate_session_dir(sfs_id)
-    convert_copilot_to_sfs(native_path, session_dir, session_id=sfs_id)
+    def _write(staging: Path) -> dict | None:
+        convert_copilot_to_sfs(native_path, staging, session_id=sfs_id)
+        return _read_manifest(staging)
 
-    _update_index_and_ref(store, sfs_id, session_dir, ref, native_path)
+    outcome = store.commit_session(sfs_id, _write, skip_excluded=False)
+    if not outcome.skipped:
+        _update_ref(store, ref, native_path)
 
 
 def _recapture_amp(
@@ -157,10 +178,13 @@ def _recapture_amp(
 ) -> None:
     from sessionfs.converters.amp_to_sfs import convert_amp_to_sfs
 
-    session_dir = store.allocate_session_dir(sfs_id)
-    convert_amp_to_sfs(native_path, session_dir, session_id=sfs_id)
+    def _write(staging: Path) -> dict | None:
+        convert_amp_to_sfs(native_path, staging, session_id=sfs_id)
+        return _read_manifest(staging)
 
-    _update_index_and_ref(store, sfs_id, session_dir, ref, native_path)
+    outcome = store.commit_session(sfs_id, _write, skip_excluded=False)
+    if not outcome.skipped:
+        _update_ref(store, ref, native_path)
 
 
 def _recapture_cline(
@@ -169,10 +193,14 @@ def _recapture_cline(
     from sessionfs.converters.cline_to_sfs import parse_cline_session, convert_cline_to_sfs
 
     cline_session = parse_cline_session(native_path, tool=ref.tool)
-    session_dir = store.allocate_session_dir(sfs_id)
-    convert_cline_to_sfs(cline_session, session_dir, session_id=sfs_id)
 
-    _update_index_and_ref(store, sfs_id, session_dir, ref, native_path)
+    def _write(staging: Path) -> dict | None:
+        convert_cline_to_sfs(cline_session, staging, session_id=sfs_id)
+        return _read_manifest(staging)
+
+    outcome = store.commit_session(sfs_id, _write, skip_excluded=False)
+    if not outcome.skipped:
+        _update_ref(store, ref, native_path)
 
 
 def _recapture_antigravity(
@@ -214,21 +242,25 @@ def _recapture_antigravity(
     raise SystemExit(1)
 
 
-def _update_index_and_ref(
-    store: object, sfs_id: str, session_dir: Path, ref: NativeSessionRef, native_path: Path,
-) -> None:
-    """Update session metadata index and tracking ref after re-capture."""
+def _read_manifest(session_dir: Path) -> dict | None:
+    """Read a staged session's manifest for indexing, or None if absent."""
     manifest_path = session_dir / "manifest.json"
     if manifest_path.exists():
-        manifest = json.loads(manifest_path.read_text())
-        store.upsert_session_metadata(sfs_id, manifest, str(session_dir))
+        return json.loads(manifest_path.read_text())
+    return None
 
+
+def _update_ref(
+    store: object, ref: NativeSessionRef, native_path: Path,
+) -> None:
+    """Update the tracking ref after re-capture (the index row was already
+    written by ``commit_session`` from the staged manifest)."""
     stat = native_path.stat()
     new_ref = NativeSessionRef(
         tool=ref.tool,
         native_session_id=ref.native_session_id,
         native_path=str(native_path),
-        sfs_session_id=sfs_id,
+        sfs_session_id=ref.sfs_session_id,
         last_mtime=stat.st_mtime,
         last_size=stat.st_size,
         last_captured_at=datetime.now(timezone.utc).isoformat(),

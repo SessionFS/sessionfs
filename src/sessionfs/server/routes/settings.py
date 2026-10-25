@@ -31,6 +31,7 @@ from sessionfs.server.db.models import (
     UserJudgeSettings,
 )
 from sessionfs.server.llm_keys import decrypt_llm_key, encrypt_llm_key, encrypt_secret
+from sessionfs.server.routes.llm_providers import validate_provider_or_422
 from sessionfs.server.services import github_oauth
 
 logger = logging.getLogger("sessionfs.server.routes.settings")
@@ -59,6 +60,7 @@ async def put_judge_settings(
     db: AsyncSession = Depends(get_db),
 ) -> JudgeSettingsResponse:
     """Store judge LLM settings with encrypted API key."""
+    validate_provider_or_422(body.provider, body.base_url)
     body.base_url = await _check_llm_base_url_or_400(body.base_url)
     encrypted_key = encrypt_llm_key(body.api_key)
 
@@ -176,8 +178,9 @@ async def update_summarize_trigger(
 
 
 class DiscoverModelsRequest(BaseModel):
-    base_url: str = Field(..., max_length=500)
+    base_url: str = Field("", max_length=500)
     api_key: str = Field("", max_length=4096)
+    provider: str | None = Field(None, max_length=32)
 
 
 _DISCOVERY_MAX_BYTES = 2 * 1024 * 1024
@@ -204,11 +207,58 @@ async def _check_llm_base_url_or_400(base_url: str | None) -> str | None:
         raise HTTPException(400, _ENDPOINT_REFUSED) from None
 
 
-async def _saved_judge_api_key(user: User, db: AsyncSession) -> str:
+def saved_judge_key_matches(
+    settings: UserJudgeSettings,
+    *,
+    provider: str | None,
+    base_url: str | None,
+) -> bool:
+    """Whether a request may use the saved judge key it did not supply.
+
+    The saved key is write-only and bound to the provider/endpoint it was
+    saved with. A request that overrides the endpoint (``base_url``, already
+    checked) or, for a key saved without a custom endpoint, the provider would
+    otherwise send the stored key to a host the caller picks. ``None`` /
+    empty overrides fall back to the saved values and always match.
+    """
+    saved_base = (settings.base_url or "").rstrip("/")
+    if base_url:
+        return bool(saved_base) and saved_base == base_url.rstrip("/")
+    if provider and not saved_base:
+        return provider.strip().lower() == (settings.provider or "").strip().lower()
+    return True
+
+
+async def _saved_judge_api_key(
+    user: User,
+    db: AsyncSession,
+    *,
+    provider: str | None = None,
+    base_url: str | None = None,
+) -> str:
+    """The caller's saved judge key, but only for the endpoint it was saved for.
+
+    A stored key is write-only: discovery must never send it to a different
+    provider or URL than the one it was saved with (it would leak the key to
+    that host). ``provider`` is a registry id (fixed endpoint, saved row must
+    have no custom base_url); ``base_url`` is an already-checked custom URL
+    that must equal the saved one.
+    """
     stmt = select(UserJudgeSettings).where(UserJudgeSettings.user_id == user.id)
     result = await db.execute(stmt)
     settings = result.scalar_one_or_none()
-    if settings and settings.encrypted_api_key:
+    if settings is None or not settings.encrypted_api_key:
+        return ""
+    saved_base = (settings.base_url or "").rstrip("/")
+    if base_url is not None:
+        if not saved_base or saved_base != base_url.rstrip("/"):
+            return ""
+    elif provider is not None:
+        if saved_base or (settings.provider or "").strip().lower() != provider:
+            return ""
+    else:
+        return ""
+    if settings.encrypted_api_key:
         try:
             return decrypt_llm_key(settings.encrypted_api_key)
         except Exception:
@@ -230,6 +280,30 @@ async def _fetch_models(client: httpx.AsyncClient, url: str, headers: dict[str, 
         return resp.status_code, b"".join(chunks)
 
 
+def _parse_model_list(raw: bytes) -> list[dict]:
+    """Parse a OpenAI-compatible /models body into ``{"id", "owned_by"}`` items."""
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    models_list = data.get("data", data.get("models", [])) if isinstance(data, dict) else []
+    if not isinstance(models_list, list):
+        return []
+    models: list[dict] = []
+    for m in models_list[:1000]:
+        if isinstance(m, dict):
+            model_id = m.get("id", m.get("model", ""))
+            if model_id and isinstance(model_id, str):
+                owned_by = m.get("owned_by", "")
+                models.append({
+                    "id": model_id[:200],
+                    "owned_by": owned_by[:200] if isinstance(owned_by, str) else "",
+                })
+        elif isinstance(m, str) and m:
+            models.append({"id": m[:200], "owned_by": ""})
+    return models
+
+
 async def _discover_models(base_url: str, api_key: str, user: User, db: AsyncSession) -> dict:
     from sessionfs.server.llm_url_guard import guard_llm_base_url
 
@@ -238,7 +312,7 @@ async def _discover_models(base_url: str, api_key: str, user: User, db: AsyncSes
         raise HTTPException(400, "base_url is required")
 
     if not api_key:
-        api_key = await _saved_judge_api_key(user, db)
+        api_key = await _saved_judge_api_key(user, db, base_url=checked)
 
     url = checked
     if not url.endswith("/models"):
@@ -266,25 +340,7 @@ async def _discover_models(base_url: str, api_key: str, user: User, db: AsyncSes
         if status >= 300:
             return {"models": [], "error": f"Endpoint returned {status}"}
 
-        data = json.loads(raw)
-        models_list = data.get("data", data.get("models", [])) if isinstance(data, dict) else []
-        if not isinstance(models_list, list):
-            models_list = []
-
-        models = []
-        for m in models_list[:1000]:
-            if isinstance(m, dict):
-                model_id = m.get("id", m.get("model", ""))
-                if model_id and isinstance(model_id, str):
-                    owned_by = m.get("owned_by", "")
-                    models.append({
-                        "id": model_id[:200],
-                        "owned_by": owned_by[:200] if isinstance(owned_by, str) else "",
-                    })
-            elif isinstance(m, str) and m:
-                models.append({"id": m[:200], "owned_by": ""})
-
-        return {"models": models, "base_url": checked}
+        return {"models": _parse_model_list(raw), "base_url": checked}
 
     except httpx.TimeoutException:
         return {"models": [], "error": "Connection timed out"}
@@ -293,6 +349,56 @@ async def _discover_models(base_url: str, api_key: str, user: User, db: AsyncSes
         # probe (connection refused vs. TLS error vs. refused address).
         logger.warning("Model discovery failed for %s: %s", base_url[:200], e)
         return {"models": [], "error": "Could not list models from this endpoint"}
+
+
+async def _discover_models_from_provider(
+    provider: str, api_key: str, user: User, db: AsyncSession
+) -> dict:
+    """List models for a registry provider using its fixed /models endpoint.
+
+    Falls back to the provider's suggested models when the provider exposes no
+    list-models endpoint or the fetch fails, so the picker always has usable
+    ids. The endpoint is fixed by the registry (never user-supplied), but the
+    response is still capped and redirects are not followed.
+    """
+    from sessionfs.judge.provider_registry import get_provider
+
+    profile = get_provider(provider)
+    if profile is None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "unknown_provider",
+                "message": f"Unknown LLM provider: {provider}",
+            },
+        )
+
+    suggested = [{"id": m, "owned_by": ""} for m in profile.suggested_models]
+    if not profile.discovery or not profile.models_path:
+        return {"models": suggested, "provider": profile.id, "base_url": None}
+
+    url = profile.base_url.rstrip("/") + profile.models_path
+    if not api_key:
+        api_key = await _saved_judge_api_key(user, db, provider=profile.id)
+
+    headers: dict[str, str] = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=False) as client:
+            status, raw = await _fetch_models(client, url, headers)
+        if status >= 300:
+            return {"models": suggested, "provider": profile.id, "base_url": url, "error": f"Endpoint returned {status}"}
+        fetched = _parse_model_list(raw)
+        # Prefer the live list; keep the curated suggestions when it is empty.
+        return {"models": fetched or suggested, "provider": profile.id, "base_url": url}
+
+    except httpx.TimeoutException:
+        return {"models": suggested, "provider": profile.id, "error": "Connection timed out"}
+    except Exception as e:
+        logger.warning("Provider model discovery failed for %s: %s", provider, e)
+        return {"models": suggested, "provider": profile.id, "error": "Could not list models from this endpoint"}
 
 
 @router.get("/judge/models")
@@ -323,7 +429,13 @@ async def discover_models_post(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Discover available models; the optional API key travels in the body.
-    Without one, the caller's saved judge key is used."""
+    Without one, the caller's saved judge key is used.
+
+    A registry ``provider`` id routes discovery to that provider's fixed
+    /models endpoint; otherwise a custom ``base_url`` is queried as before.
+    """
+    if body.provider:
+        return await _discover_models_from_provider(body.provider, body.api_key, user, db)
     return await _discover_models(body.base_url, body.api_key, user, db)
 
 

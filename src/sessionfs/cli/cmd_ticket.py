@@ -13,6 +13,10 @@ Commands:
                                       render new comments as they appear
 - sfs ticket status                — show the active ticket (from bundle)
 - sfs ticket block | unblock | reopen | approve | dismiss <id>
+- sfs ticket follow <id> [--mute]  — follow a ticket (optionally silently)
+- sfs ticket unfollow <id>         — stop following a ticket
+- sfs ticket inbox [--all] [--mark-read] — list your notifications
+- sfs ticket updates [--persona X] [--no-ack] — poll agent notifications
 
 `start` writes ~/.sessionfs/active_ticket.json so the daemon (Phase 6)
 can tag captured sessions; `complete` removes it only if it points at
@@ -23,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import typer
@@ -1109,6 +1114,222 @@ def escalate_ticket_cmd(
             err_console.print(
                 f"[yellow]Priority bumped, but audit comment failed ({s3}).[/yellow]"
             )
+
+
+# ── sfs ticket follow / unfollow / inbox / updates … ──
+
+
+def _ago(iso: str | None) -> str:
+    """Render an ISO-8601 timestamp as a short relative time."""
+    if not iso:
+        return "—"
+    try:
+        dt = datetime.fromisoformat(iso.replace("Z", "+00:00"))
+    except ValueError:
+        return iso
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    seconds = (datetime.now(timezone.utc) - dt.astimezone(timezone.utc)).total_seconds()
+    if seconds < 60:
+        return "just now"
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m ago"
+    hours = minutes // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    days = hours // 24
+    return f"{days}d ago"
+
+
+def _kind_style(kind: str) -> str:
+    return {
+        "your_turn": "bold yellow",
+        "review_verdict": "magenta",
+        "status": "cyan",
+        "assignment": "green",
+        "dependency_unblocked": "dim",
+        "comment": "",
+    }.get(kind, "")
+
+
+@ticket_app.command("follow")
+@handle_errors
+def follow_ticket_cmd(
+    ticket_id: str = typer.Argument(..., help="Ticket id (e.g. tk_...)"),
+    mute: bool = typer.Option(False, "--mute", help="Follow without notifications"),
+) -> None:
+    """Follow a ticket so you're notified when it changes."""
+    api_url, api_key, project_id = _resolve_project()
+    s, body, _ = asyncio.run(
+        _api_request(
+            "PUT",
+            f"/api/v1/projects/{project_id}/tickets/{ticket_id}/watch",
+            api_url, api_key,
+            json_data={"muted": mute},
+        )
+    )
+    if s == 404:
+        err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
+        raise typer.Exit(1)
+    if s >= 400 or not isinstance(body, dict):
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
+        raise typer.Exit(1)
+    mode = "muted" if mute else "following"
+    console.print(f"[green]Now {mode} {ticket_id}.[/green]")
+
+
+@ticket_app.command("unfollow")
+@handle_errors
+def unfollow_ticket_cmd(
+    ticket_id: str = typer.Argument(..., help="Ticket id (e.g. tk_...)"),
+) -> None:
+    """Stop following a ticket."""
+    api_url, api_key, project_id = _resolve_project()
+    s, body, _ = asyncio.run(
+        _api_request(
+            "DELETE",
+            f"/api/v1/projects/{project_id}/tickets/{ticket_id}/watch",
+            api_url, api_key,
+        )
+    )
+    if s == 404:
+        err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
+        raise typer.Exit(1)
+    if s >= 400:
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]No longer following {ticket_id}.[/green]")
+
+
+@ticket_app.command("inbox")
+@handle_errors
+def inbox_cmd(
+    show_all: bool = typer.Option(
+        False, "--all", help="Include already-read notifications"
+    ),
+    mark_read: bool = typer.Option(
+        False, "--mark-read", help="Mark the listed notifications read"
+    ),
+) -> None:
+    """List your watched-ticket notifications."""
+    api_url, api_key, _ = _resolve_project()
+    suffix = "?unread=true&limit=100" if not show_all else "?limit=100"
+    s, body, _ = asyncio.run(
+        _api_request(
+            "GET", f"/api/v1/me/ticket-notifications{suffix}", api_url, api_key
+        )
+    )
+    if s >= 400:
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
+        raise typer.Exit(1)
+
+    items = body.get("items", []) if isinstance(body, dict) else []
+    if not items:
+        console.print("[dim]Inbox is empty.[/dim]")
+        return
+
+    table = Table()
+    table.add_column("ID", style="dim", no_wrap=True)
+    table.add_column("Kind")
+    table.add_column("Ticket")
+    table.add_column("Summary")
+    table.add_column("When", style="dim")
+    for n in items:
+        table.add_row(
+            str(n.get("id", "")),
+            f"[{_kind_style(n.get('kind',''))}]{n.get('kind','')}[/]",
+            n.get("ticket_title") or n.get("ticket_id", ""),
+            n.get("summary", ""),
+            _ago(n.get("created_at")),
+        )
+    console.print(table)
+
+    if mark_read:
+        s2, body2, _ = asyncio.run(
+            _api_request(
+                "POST", "/api/v1/me/ticket-notifications/read", api_url, api_key,
+                json_data={"all": True},
+            )
+        )
+        if s2 >= 400:
+            err_console.print(
+                f"[red]API error ({s2}): {format_api_error(body2, s2)}[/red]"
+            )
+            raise typer.Exit(1)
+        console.print("[green]Marked all as read.[/green]")
+
+
+@ticket_app.command("updates")
+@handle_errors
+def updates_cmd(
+    persona: str | None = typer.Option(
+        None, "--persona", help="Persona cursor to poll (default: active bundle persona)"
+    ),
+    no_ack: bool = typer.Option(
+        False, "--no-ack", help="Peek without advancing the cursor"
+    ),
+) -> None:
+    """Poll your agent-side ticket notifications and acknowledge them."""
+    api_url, api_key, project_id = _resolve_project()
+
+    effective = persona
+    if not effective:
+        bundle = read_bundle()
+        if (
+            isinstance(bundle, dict)
+            and bundle.get("project_id") == project_id
+            and bundle.get("persona_name")
+        ):
+            effective = bundle["persona_name"]
+    effective = effective or ""
+
+    s, body, _ = asyncio.run(
+        _api_request(
+            "GET",
+            "/api/v1/me/ticket-updates",
+            api_url, api_key,
+            params={"persona": effective},
+        )
+    )
+    if s >= 400:
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
+        raise typer.Exit(1)
+
+    items = body.get("items", []) if isinstance(body, dict) else []
+    next_cursor = body.get("next_cursor") if isinstance(body, dict) else None
+    if not items:
+        console.print("[dim]No new ticket updates.[/dim]")
+    else:
+        table = Table()
+        table.add_column("ID", style="dim", no_wrap=True)
+        table.add_column("Kind")
+        table.add_column("Ticket")
+        table.add_column("Summary")
+        table.add_column("When", style="dim")
+        for n in items:
+            table.add_row(
+                str(n.get("id", "")),
+                f"[{_kind_style(n.get('kind',''))}]{n.get('kind','')}[/]",
+                n.get("ticket_title") or n.get("ticket_id", ""),
+                n.get("summary", ""),
+                _ago(n.get("created_at")),
+            )
+        console.print(table)
+
+    if not no_ack and next_cursor is not None:
+        s2, body2, _ = asyncio.run(
+            _api_request(
+                "POST", "/api/v1/me/ticket-updates/ack", api_url, api_key,
+                json_data={"cursor": next_cursor, "persona": effective},
+            )
+        )
+        if s2 >= 400:
+            err_console.print(
+                f"[red]API error ({s2}): {format_api_error(body2, s2)}[/red]"
+            )
+            raise typer.Exit(1)
+        console.print(f"[green]Acknowledged through cursor {next_cursor}.[/green]")
 
 
 # ── sfs ticket jira … ──

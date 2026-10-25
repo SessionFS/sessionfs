@@ -48,6 +48,7 @@ type FormState = {
   kb_retention_days: string;
   kb_max_context_words: string;
   kb_section_page_limit: string;
+  helper_retention_days: string;
   auto_join_domains: string[];
 };
 
@@ -56,6 +57,7 @@ function settingsToForm(s: OrgGeneralSettings | undefined): FormState {
     kb_retention_days: s?.kb_retention_days?.toString() ?? '',
     kb_max_context_words: s?.kb_max_context_words?.toString() ?? '',
     kb_section_page_limit: s?.kb_section_page_limit?.toString() ?? '',
+    helper_retention_days: s?.helper_retention_days?.toString() ?? '',
     auto_join_domains: s?.auto_join_domains ?? [],
   };
 }
@@ -93,6 +95,7 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
       kb_retention_days: parseIntOrNull(form.kb_retention_days),
       kb_max_context_words: parseIntOrNull(form.kb_max_context_words),
       kb_section_page_limit: parseIntOrNull(form.kb_section_page_limit),
+      helper_retention_days: parseIntOrNull(form.helper_retention_days),
     };
     // Only send auto-join domains when they changed, so saving KB settings
     // never re-validates (and fails on) a domain configured earlier.
@@ -177,6 +180,11 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
           'kb_section_page_limit',
           'KB section page limit',
           'Maximum pages a single KB section can generate (1-200).',
+        )}
+        {field(
+          'helper_retention_days',
+          'Helper message retention (days)',
+          'Days session-helper messages are kept before pruning (1-3650).',
         )}
 
         <div className="flex flex-col gap-2">

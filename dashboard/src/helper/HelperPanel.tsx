@@ -4,10 +4,12 @@
  * Streaming is done with raw `fetch` + `ReadableStream` (EventSource can't set
  * the `Authorization` header), the chunks are framed by `SseParser`, and the
  * text deltas are rendered progressively through the shared `ui/Markdown`.
- * Tool steps and citations are folded into the assistant turn as they arrive.
+ * Tool calls/results and citations are folded into the assistant turn as they
+ * arrive. Layout: pinned header (scope + history/new/close), a scrolling
+ * transcript (or the history list), and a pinned composer.
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -15,32 +17,47 @@ import { ApiError, type HelperCitation, type HelperConversationSummary } from '.
 import { useMe } from '../hooks/useMe';
 import { useToast } from '../hooks/useToast';
 import { errorMessage } from '../utils/errorMessage';
-import { Button, Dialog, DialogFooter, DialogHeader, Drawer, Markdown } from '../components/ui';
+import { Button, Dialog, DialogFooter, DialogHeader, Drawer } from '../components/ui';
 import type { HelperScope } from './HelperProvider';
 import { useDeleteHelperConversation, useHelperConversations, useHelperStatus } from './useHelper';
 import { SseParser, type SseEvent } from './sse';
+import {
+  MAX_MESSAGE_CHARS,
+  TITLE_ID,
+  classifyError,
+  streamError,
+  type HelperError,
+  type ToolStep,
+  type Turn,
+} from './format';
+import { activeOption, hasScope, scopeKey, scopeOptions, type ScopeOption } from './scope';
+import HelperHeader from './HelperHeader';
+import HelperComposer from './HelperComposer';
+import HelperEmptyState from './HelperEmptyState';
+import HelperHistory from './HelperHistory';
+import HelperNotice from './HelperNotice';
+import { AssistantMessage, UserMessage } from './HelperMessage';
+import { AlertIcon, ArrowDownIcon, KeyIcon, LockIcon } from './icons';
+import { linkButtonPrimary, linkButtonSecondary } from './styles';
 
-interface ToolStep {
-  id: string;
-  name: string;
-  ok: boolean;
-  itemCount: number;
+const STICK_THRESHOLD_PX = 72;
+
+function keyLabel(source: string | null | undefined): string | null {
+  if (source === 'user') return 'Your key';
+  if (source === 'org') return 'Org key';
+  return null;
 }
 
-interface Turn {
-  id: string;
-  role: 'user' | 'assistant';
-  content: string;
-  toolSteps: ToolStep[];
-  citations: HelperCitation[];
-  error?: string;
-}
-
-// The server stores each thread's last scope and returns it from the
-// conversation endpoint, so resuming a scoped thread no longer needs a
-// sessionStorage sidecar — loadConversation restores the scope from the API.
-function hasScope(scope?: HelperScope): boolean {
-  return !!scope && (!!scope.project_id || (scope.session_ids?.length ?? 0) > 0);
+/** The status endpoint's 4xx scope failures (a scope the user switched to or a
+ *  restored thread's scope is gone / mixed-org), versus a transient failure. */
+function classifyStatusError(err: unknown): { message: string } | null {
+  if (err instanceof ApiError && err.status === 404) {
+    return { message: "You no longer have access to this conversation's scope." };
+  }
+  if (err instanceof ApiError && err.status === 400) {
+    return { message: errorMessage(err) };
+  }
+  return null;
 }
 
 export default function HelperPanel({
@@ -55,40 +72,70 @@ export default function HelperPanel({
   const { auth } = useAuth();
   const { addToast } = useToast();
   const me = useMe();
-  const status = useHelperStatus(open);
+
+  // Declared before the status hook so availability follows the *active* scope
+  // (the entry scope on open, then whatever changeScope / history restore sets)
+  // rather than only the entry scope's project.
+  const [activeScope, setActiveScope] = useState<HelperScope | undefined>(undefined);
+  const status = useHelperStatus(open, activeScope);
   const conversations = useHelperConversations(open);
   const deleteConversation = useDeleteHelperConversation();
 
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [activeTitle, setActiveTitle] = useState<string | null>(null);
-  const [activeScope, setActiveScope] = useState<HelperScope | undefined>(undefined);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<HelperConversationSummary | null>(null);
-  const [doneAnnouncement, setDoneAnnouncement] = useState('');
+  const [announcement, setAnnouncement] = useState('');
+  const [view, setView] = useState<'chat' | 'history'>('chat');
+  const [openingId, setOpeningId] = useState<string | null>(null);
+  const [showJump, setShowJump] = useState(false);
 
   const abortRef = useRef<AbortController | null>(null);
   const idRef = useRef(0);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const scrollerRef = useRef<HTMLDivElement>(null);
+  const stickRef = useRef(true);
 
   const nextId = useCallback(() => `turn-${++idRef.current}`, []);
 
+  // A scope that turns out to be unavailable replaces the body; announce it
+  // through the panel's status region so screen-reader users hear why.
+  // Adjusted during render (like the reset below) so it lands in the same pass.
+  const scopeErrorMessage = status.isError ? classifyStatusError(status.error)?.message : undefined;
+  const [announcedScopeError, setAnnouncedScopeError] = useState<string | undefined>(undefined);
+  if (scopeErrorMessage !== announcedScopeError) {
+    setAnnouncedScopeError(scopeErrorMessage);
+    if (scopeErrorMessage) setAnnouncement(scopeErrorMessage);
+  }
+
   // Each open starts a fresh (optionally scoped) conversation. A new scope
-  // object only arrives via openHelper(), so [open, scope] re-runs exactly on
-  // open and when the entry point changes the scope.
+  // object only arrives via openHelper(), so this resets exactly on open and
+  // when the entry point changes the scope. State is reset during render (no
+  // effect cascade); the in-flight request is aborted in the effect below.
+  const [resetFor, setResetFor] = useState<{ open: boolean; scope?: HelperScope }>({ open: false });
+  if (resetFor.open !== open || resetFor.scope !== scope) {
+    setResetFor({ open, scope });
+    if (open) {
+      setConversationId(null);
+      setActiveTitle(null);
+      setActiveScope(scope);
+      setTurns([]);
+      setInput('');
+      setStreaming(false);
+      setView('chat');
+      setAnnouncement('');
+      setShowJump(false);
+    }
+  }
   useEffect(() => {
     if (!open) return;
-    abortRef.current?.abort();
     // Supersede any in-flight turn so its finally block can't write stale
     // conversation/scope state back over the freshly-reset drawer.
+    abortRef.current?.abort();
     abortRef.current = null;
-    setConversationId(null);
-    setActiveTitle(null);
-    setActiveScope(scope);
-    setTurns([]);
-    setInput('');
-    setStreaming(false);
+    stickRef.current = true;
   }, [open, scope]);
 
   // Abort any in-flight turn when the panel finally unmounts.
@@ -96,17 +143,43 @@ export default function HelperPanel({
 
   // Move focus to the prompt once the chat form is actually available.
   const canChat = status.data?.enabled === true && status.data.key_source != null;
+  // The header keeps its controls once any status exists (even a disabled,
+  // missing-key or failed scope) so the user can always switch back; only the
+  // very first load, before the entry scope's status resolves, hides them.
+  const hasStatus = status.data !== undefined || status.isError;
   useEffect(() => {
-    if (open && canChat) inputRef.current?.focus();
-  }, [open, canChat]);
+    if (open && canChat && view === 'chat') inputRef.current?.focus();
+  }, [open, canChat, view]);
 
-  // Auto-scroll the streaming answer into view as deltas arrive.
-  const transcriptRef = useRef<HTMLDivElement>(null);
+  // Follow the answer while the reader is at the bottom; once they scroll up,
+  // stop following and offer a "jump to latest" pill instead.
   useEffect(() => {
-    if (streaming) transcriptRef.current?.scrollIntoView({ block: 'end', behavior: 'smooth' });
-  }, [turns, streaming]);
+    const el = scrollerRef.current;
+    if (!el || view !== 'chat') return;
+    if (stickRef.current) el.scrollTop = el.scrollHeight;
+  }, [turns, view]);
 
-  function newConversation() {
+  const onScroll = () => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < STICK_THRESHOLD_PX;
+    stickRef.current = atBottom;
+    setShowJump(!atBottom);
+  };
+
+  const jumpToLatest = () => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    stickRef.current = true;
+    setShowJump(false);
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    if (typeof el.scrollTo === 'function') el.scrollTo({ top: el.scrollHeight, behavior: reduce ? 'auto' : 'smooth' });
+    else el.scrollTop = el.scrollHeight;
+  };
+
+  /** Start a fresh thread; keeps the current scope unless one is given. */
+  function newConversation(opts?: { scope: HelperScope | undefined }) {
+    const nextScope = opts ? opts.scope : activeScope;
     abortRef.current?.abort();
     abortRef.current = null;
     // The aborted turn's finally skips state updates (it no longer owns
@@ -114,29 +187,53 @@ export default function HelperPanel({
     setStreaming(false);
     setConversationId(null);
     setActiveTitle(null);
-    setActiveScope(undefined);
+    setActiveScope(nextScope);
     setTurns([]);
     setInput('');
+    setView('chat');
+    setAnnouncement('');
+    stickRef.current = true;
+    setShowJump(false);
+    inputRef.current?.focus();
   }
 
   async function loadConversation(id: string) {
     if (!auth || streaming) return;
+    setOpeningId(id);
     try {
       const conv = await auth.client.getHelperConversation(id);
       const loaded: Turn[] = [];
+      // Tool rows are stored next to the answer they fed (their order within a
+      // turn isn't guaranteed), so fold them into that turn's assistant.
+      let pendingSteps: ToolStep[] = [];
+      let lastAssistant: Turn | null = null;
       for (const m of conv.messages) {
         if (m.role === 'user') {
           loaded.push({ id: nextId(), role: 'user', content: m.content, toolSteps: [], citations: [] });
+          pendingSteps = [];
+          lastAssistant = null;
         } else if (m.role === 'assistant') {
-          loaded.push({
+          lastAssistant = {
             id: nextId(),
             role: 'assistant',
             content: m.content,
-            toolSteps: [],
+            toolSteps: pendingSteps,
             citations: m.citations ?? [],
-          });
+            status: 'done',
+          };
+          pendingSteps = [];
+          loaded.push(lastAssistant);
+        } else if (m.role === 'tool') {
+          const step: ToolStep = {
+            id: m.tool_call_id ?? m.id,
+            name: m.tool_name ?? 'tool',
+            args: m.tool_args ?? {},
+            status: 'ok',
+            itemCount: null,
+          };
+          if (lastAssistant) lastAssistant.toolSteps = [...lastAssistant.toolSteps, step];
+          else pendingSteps.push(step);
         }
-        // role === 'tool' rows are intermediate steps; the answer already folds them in.
       }
       setConversationId(id);
       setActiveTitle(conv.title);
@@ -146,8 +243,13 @@ export default function HelperPanel({
           : undefined,
       );
       setTurns(loaded);
+      setView('chat');
+      stickRef.current = true;
+      setShowJump(false);
     } catch (err) {
       addToast('error', `Couldn't open conversation: ${errorMessage(err)}`);
+    } finally {
+      setOpeningId(null);
     }
   }
 
@@ -155,10 +257,18 @@ export default function HelperPanel({
     abortRef.current?.abort();
   }
 
-  async function send() {
-    const question = input.trim();
-    if (!question || streaming || !auth) return;
-    setInput('');
+  /**
+   * `retry` re-asks after a failed answer: the server then reuses the stored
+   * question when it is still the thread's unanswered last message, instead
+   * of saving it a second time.
+   */
+  async function send(text?: string, opts: { retry?: boolean } = {}) {
+    const question = (text ?? input).trim();
+    if (!question || streaming || !auth || question.length > MAX_MESSAGE_CHARS) return;
+    // Availability is still being rechecked for a new scope: suggestion chips
+    // and Retry would otherwise send under the previous scope's status.
+    if (status.isPlaceholderData) return;
+    if (text === undefined) setInput('');
 
     // New conversations use the active scope; continuations re-send the scope
     // the thread was restored with (loadConversation sets activeScope from the
@@ -167,6 +277,7 @@ export default function HelperPanel({
     const sentScope = activeScope;
     const body: Record<string, unknown> = { message: question, stream: true };
     if (conversationId) body.conversation_id = conversationId;
+    if (opts.retry && conversationId) body.retry = true;
     if (hasScope(sentScope)) {
       body.scope = { project_id: sentScope?.project_id, session_ids: sentScope?.session_ids };
     }
@@ -175,10 +286,13 @@ export default function HelperPanel({
     setTurns((prev) => [
       ...prev,
       { id: nextId(), role: 'user', content: question, toolSteps: [], citations: [] },
-      { id: assistantId, role: 'assistant', content: '', toolSteps: [], citations: [] },
+      { id: assistantId, role: 'assistant', content: '', toolSteps: [], citations: [], question, status: 'streaming' },
     ]);
     setStreaming(true);
-    setDoneAnnouncement('');
+    setAnnouncement('');
+    setView('chat');
+    stickRef.current = true;
+    setShowJump(false);
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -189,6 +303,9 @@ export default function HelperPanel({
     };
 
     let newConversationId: string | null = null;
+    let gotDone = false;
+    let streamFailed = false;
+    let citationCount = 0;
 
     const handleEvent = (ev: SseEvent) => {
       try {
@@ -197,28 +314,43 @@ export default function HelperPanel({
         } else if (ev.event === 'text') {
           const delta = (JSON.parse(ev.data) as { delta?: string }).delta ?? '';
           if (delta) patchAssistant((t) => ({ ...t, content: t.content + delta }));
-        } else if (ev.event === 'tool_result') {
-          const r = JSON.parse(ev.data) as { id?: string; name?: string; ok?: boolean; item_count?: number };
+        } else if (ev.event === 'tool_call') {
+          const c = JSON.parse(ev.data) as { id?: string; name?: string; args?: Record<string, unknown> };
           patchAssistant((t) => ({
             ...t,
             toolSteps: [
               ...t.toolSteps,
-              { id: r.id ?? '', name: r.name ?? 'tool', ok: r.ok !== false, itemCount: r.item_count ?? 0 },
+              { id: c.id ?? '', name: c.name ?? 'tool', args: c.args ?? {}, status: 'running', itemCount: null },
             ],
           }));
+        } else if (ev.event === 'tool_result') {
+          const r = JSON.parse(ev.data) as { id?: string; name?: string; ok?: boolean; item_count?: number };
+          const finished: Pick<ToolStep, 'status' | 'itemCount'> = {
+            status: r.ok === false ? 'error' : 'ok',
+            itemCount: typeof r.item_count === 'number' ? r.item_count : null,
+          };
+          patchAssistant((t) => {
+            const idx = r.id ? t.toolSteps.findIndex((s) => s.id === r.id && s.status === 'running') : -1;
+            const toolSteps =
+              idx >= 0
+                ? t.toolSteps.map((s, i) => (i === idx ? { ...s, ...finished } : s))
+                : [...t.toolSteps, { id: r.id ?? '', name: r.name ?? 'tool', args: {}, ...finished }];
+            return { ...t, toolSteps };
+          });
         } else if (ev.event === 'citation') {
           const c = JSON.parse(ev.data) as HelperCitation;
+          citationCount += 1;
           patchAssistant((t) => ({
             ...t,
             citations: [...t.citations, { session_id: c.session_id, message_index: c.message_index ?? null, title: c.title }],
           }));
         } else if (ev.event === 'error') {
-          const message = (JSON.parse(ev.data) as { message?: string }).message;
-          patchAssistant((t) => ({ ...t, error: message ?? 'The helper failed to answer.' }));
+          const e = JSON.parse(ev.data) as { code?: string; message?: string };
+          streamFailed = true;
+          patchAssistant((t) => ({ ...t, error: streamError(e.code, e.message) }));
         } else if (ev.event === 'done') {
-          setDoneAnnouncement('Answer complete');
+          gotDone = true;
         }
-        // tool_call (running state) carries no display state.
       } catch {
         // A malformed frame should never surface — ignore it and keep the rest.
       }
@@ -228,6 +360,8 @@ export default function HelperPanel({
       for (const ev of parser.push(chunk)) handleEvent(ev);
     };
 
+    let outcome: Turn['status'] = 'done';
+    let failure: HelperError | null = null;
     try {
       const resp = await fetch(`${auth.baseUrl}/api/v1/helper/turns`, {
         method: 'POST',
@@ -252,244 +386,321 @@ export default function HelperPanel({
       }
       process(decoder.decode()); // flush any trailing bytes
       for (const ev of parser.flush()) handleEvent(ev); // final frame with no blank line
+
+      if (streamFailed) outcome = 'error';
+      else if (!gotDone) {
+        outcome = 'error';
+        failure = { kind: 'disconnected', message: 'The connection closed before the answer finished.' };
+      }
     } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        // User pressed Stop; the server persists the partial answer.
+        outcome = 'stopped';
+      } else {
+        outcome = 'error';
+        failure = classifyError(err);
+      }
+    } finally {
       // Only the turn that still owns the abort ref may touch state after an
       // await: a reset (open/new) nulls abortRef so a stale aborted turn can't
       // write its error back into the freshly-opened conversation.
-      if (abortRef.current === controller && (err as Error).name !== 'AbortError') {
-        // AbortError = user pressed Stop; the server persists the partial answer.
-        patchAssistant((t) => ({ ...t, error: t.error ?? errorMessage(err) }));
-      }
-    } finally {
-      if (abortRef.current !== controller) return;
-      setStreaming(false);
-      abortRef.current = null;
-      if (newConversationId) {
-        setConversationId(newConversationId);
-        void conversations.refetch();
+      if (abortRef.current === controller) {
+        const settledStatus = outcome;
+        const err = failure;
+        patchAssistant((t) => ({
+          ...t,
+          status: settledStatus,
+          error: t.error ?? err ?? undefined,
+          // Steps still marked running when the stream ends didn't report back.
+          toolSteps: t.toolSteps.map((s) =>
+            s.status === 'running' ? { ...s, status: settledStatus === 'error' ? 'error' : 'ok' } : s,
+          ),
+        }));
+        setStreaming(false);
+        abortRef.current = null;
+        if (settledStatus === 'done') {
+          setAnnouncement(
+            citationCount > 0
+              ? `Answer complete, with ${citationCount} ${citationCount === 1 ? 'source' : 'sources'}.`
+              : 'Answer complete.',
+          );
+        } else if (settledStatus === 'stopped') {
+          setAnnouncement('Answer stopped.');
+        }
+        if (err && (err.kind === 'key_required' || err.kind === 'upgrade_required')) void status.refetch();
+        if (newConversationId) {
+          setConversationId(newConversationId);
+          void conversations.refetch();
+        }
       }
     }
   }
 
-  // ── Gate states ──
+  function retry(assistantId: string) {
+    const idx = turns.findIndex((t) => t.id === assistantId);
+    const question = turns[idx]?.question;
+    if (idx < 0 || !question || streaming || status.isPlaceholderData) return;
+    // Drop the failed exchange (question + error) and ask again.
+    setTurns((prev) => prev.filter((_, i) => i !== idx && !(i === idx - 1 && prev[i].role === 'user')));
+    void send(question, { retry: true });
+  }
+
+  function changeScope(option: ScopeOption) {
+    if (turns.length > 0 || conversationId) newConversation({ scope: option.scope });
+    else setActiveScope(option.scope);
+    inputRef.current?.focus();
+  }
+
+  // ── Derived display state ──
+
+  const options = useMemo(() => scopeOptions(scope, activeScope), [scope, activeScope]);
+  const current = useMemo(() => activeOption(scope, activeScope), [scope, activeScope]);
+  const isOrgMember = !!me.data?.org_id && me.data?.org_role === 'member';
+  const isOrgAdmin = !!me.data?.org_id && (me.data?.org_role === 'admin' || me.data?.org_role === 'owner');
+
+  const keyHint: ReactNode = isOrgMember ? (
+    <span className="mt-1 block">Or ask your org admin to add an org key.</span>
+  ) : null;
+
+  const modelLabel = useMemo(() => {
+    const d = status.data;
+    if (!d) return null;
+    return [keyLabel(d.key_source), d.provider, d.model].filter(Boolean).join(' · ') || null;
+  }, [status.data]);
+
+  const placeholder =
+    current.kind === 'project'
+      ? `Ask about ${current.label === 'This project' ? 'this project' : current.label}…`
+      : current.kind === 'session'
+        ? 'Ask about this session…'
+        : 'Ask about your sessions…';
+
+  // ── Body ──
+
+  const statusScopeError = status.isError ? classifyStatusError(status.error) : null;
 
   let body: ReactNode;
-  if (status.isLoading) {
-    body = <p className="text-sm text-text-tertiary py-4">Loading…</p>;
+  if (status.isLoading && !status.data) {
+    body = (
+      <div className="flex-1 space-y-3 px-5 py-8" aria-busy="true" aria-label="Loading the helper">
+        <div className="h-10 w-10 animate-skeleton-pulse rounded-xl bg-surface-hover" />
+        <div className="h-4 w-2/3 animate-skeleton-pulse rounded bg-surface-hover" />
+        <div className="h-3 w-full animate-skeleton-pulse rounded bg-surface-hover" />
+        <div className="h-3 w-5/6 animate-skeleton-pulse rounded bg-surface-hover" />
+      </div>
+    );
+  } else if (statusScopeError) {
+    body = (
+      <HelperNotice
+        tone="warning"
+        icon={<AlertIcon size={20} />}
+        title="This scope is unavailable"
+        actions={
+          scopeKey(activeScope) === scopeKey(scope) ? (
+            // The entry scope itself is gone (e.g. project access revoked):
+            // restarting there would hit the same error.
+            <Button onClick={() => newConversation({ scope: undefined })}>Ask about all my sessions</Button>
+          ) : (
+            <Button onClick={() => newConversation({ scope })}>Start a new conversation</Button>
+          )
+        }
+      >
+        <p>{statusScopeError.message}</p>
+      </HelperNotice>
+    );
   } else if (status.isError) {
     body = (
-      <div className="text-sm text-text-secondary">
-        <p className="text-danger">Couldn't check the helper status.</p>
-        <Button variant="secondary" size="sm" className="mt-3" onClick={() => void status.refetch()}>
-          Retry
-        </Button>
-      </div>
+      <HelperNotice
+        tone="danger"
+        icon={<AlertIcon size={20} />}
+        title="Couldn't load the helper"
+        actions={
+          <Button variant="secondary" onClick={() => void status.refetch()}>
+            Retry
+          </Button>
+        }
+      >
+        <p>We couldn't check whether the session helper is available for your account.</p>
+      </HelperNotice>
     );
   } else if (status.data && !status.data.enabled) {
     body = (
-      <div className="text-sm text-text-secondary">
-        <p>The session helper is available on the Enterprise plan.</p>
-        <Link to="/settings/billing" className="text-brand hover:underline mt-1 inline-block">
-          View plans
-        </Link>
-      </div>
+      <HelperNotice
+        icon={<LockIcon size={20} />}
+        title="An Enterprise feature"
+        actions={
+          <Link to="/settings/billing" onClick={onClose} className={linkButtonPrimary}>
+            View plans
+          </Link>
+        }
+      >
+        <p>
+          The session helper answers questions across your sessions and project knowledge, with links to every
+          source. It is available on the Enterprise plan.
+        </p>
+      </HelperNotice>
     );
   } else if (status.data && status.data.key_source === null) {
-    const isOrgMember = !!me.data?.org_id && me.data?.org_role === 'member';
     body = (
-      <div className="text-sm text-text-secondary">
-        <p>Add a key in Settings → Data protection → Security review model to use the session helper.</p>
-        {isOrgMember && <p className="mt-1">Or ask your org admin to add an org key.</p>}
+      <HelperNotice
+        icon={<KeyIcon size={20} />}
+        title="Connect a model to get started"
+        actions={
+          <>
+            <Link to="/settings/data-protection" onClick={onClose} className={linkButtonPrimary}>
+              Open Data protection settings
+            </Link>
+            {isOrgAdmin && (
+              <Link to="/settings/organization?tab=policies" onClick={onClose} className={linkButtonSecondary}>
+                Set an org key
+              </Link>
+            )}
+          </>
+        }
+      >
+        <p>
+          The helper runs on your own model key — SessionFS never supplies one. Add a key in{' '}
+          <span className="font-medium text-text-primary">Settings → Data protection → Security review model</span>{' '}
+          to use the session helper.
+        </p>
+        {isOrgMember && <p>Or ask your org admin to add an org key.</p>}
+        {isOrgAdmin && <p>As an org admin you can also add one key for everyone in your organization.</p>}
+      </HelperNotice>
+    );
+  } else if (view === 'history') {
+    body = (
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <HelperHistory
+          conversations={conversations.data}
+          loading={conversations.isLoading}
+          error={conversations.isError === true}
+          onRetry={() => void conversations.refetch()}
+          activeId={conversationId}
+          openingId={openingId}
+          busy={streaming}
+          orgId={me.data?.org_id ?? null}
+          orgName={me.data?.org_name ?? null}
+          onOpen={(id) => void loadConversation(id)}
+          onDelete={setDeleteTarget}
+          onNew={() => newConversation()}
+        />
       </div>
     );
   } else {
     body = (
-      <div className="flex flex-col gap-3">
-        {/* Scope / conversation context */}
-        {(activeScope || activeTitle) && (
-          <div className="text-2xs text-text-tertiary">
-            {activeScope?.project_id
-              ? 'About this project'
-              : activeScope?.session_ids?.length
-                ? 'About this session'
-                : activeTitle}
-          </div>
-        )}
-
-        {/* History + New stay available even while a conversation is open, so
-            the user can switch threads or start fresh without closing first. */}
-        <div>
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-micro uppercase font-semibold tracking-wide text-text-tertiary">
-              Conversations
-            </span>
-            <Button variant="ghost" size="sm" onClick={newConversation}>
-              New
-            </Button>
-          </div>
-          {conversations.data && conversations.data.length === 0 ? (
-            <p className="text-xs text-text-tertiary">No conversations yet.</p>
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        <div ref={scrollerRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+          {turns.length === 0 ? (
+            <HelperEmptyState
+              scope={current}
+              onPick={(p) => void send(p)}
+              disabled={status.isPlaceholderData === true}
+              recent={conversations.data ?? []}
+              onOpenConversation={(id) => void loadConversation(id)}
+              onShowHistory={() => setView('history')}
+            />
           ) : (
-            <ul className="max-h-52 overflow-y-auto space-y-0.5" aria-label="Conversation history">
-              {conversations.data?.map((c) => (
-                <li key={c.id} className="group flex items-center gap-1 rounded-md hover:bg-surface-hover">
-                  <button
-                    type="button"
-                    disabled={streaming}
-                    onClick={() => void loadConversation(c.id)}
-                    className="flex-1 min-w-0 text-left px-2 py-1.5 text-sm text-text-secondary hover:text-text-primary truncate outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] rounded-md"
-                  >
-                    {c.title || 'Untitled conversation'}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={streaming}
-                    onClick={() => setDeleteTarget(c)}
-                    aria-label={`Delete ${c.title || 'Untitled conversation'}`}
-                    className="shrink-0 p-1.5 text-text-tertiary hover:text-danger rounded-md outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
-                  >
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="3 6 5 6 21 6" />
-                      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-                      <path d="M10 11v6M14 11v6" />
-                      <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-                    </svg>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        {/* Transcript */}
-        <div ref={transcriptRef} className="space-y-4" aria-live="polite" aria-busy={streaming}>
-          {turns.map((t) =>
-            t.role === 'user' ? (
-              <div key={t.id} className="text-sm">
-                <div className="text-2xs uppercase tracking-wide text-text-tertiary mb-1">You</div>
-                <p className="text-text-primary whitespace-pre-wrap">{t.content}</p>
-              </div>
-            ) : (
-              <div key={t.id} className="text-sm">
-                <div className="text-2xs uppercase tracking-wide text-text-tertiary mb-1">Helper</div>
-
-                {t.toolSteps.length > 0 && (
-                  <ul className="mb-2 space-y-1">
-                    {t.toolSteps.map((s, i) => (
-                      <li key={`${s.id}-${i}`} className="flex items-center gap-1.5 text-xs text-text-tertiary">
-                        <span aria-hidden="true">{s.ok ? '✓' : '✗'}</span>
-                        <span className="font-mono">{s.name}</span>
-                        <span>· {s.itemCount} {s.itemCount === 1 ? 'item' : 'items'}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-
-                {t.content ? (
-                  <Markdown>{t.content}</Markdown>
+            <section aria-label="Conversation" aria-busy={streaming} className="space-y-6 px-4 py-5 sm:px-5">
+              {turns.map((t) =>
+                t.role === 'user' ? (
+                  <UserMessage key={t.id} content={t.content} />
                 ) : (
-                  t.error === undefined && <p className="text-text-tertiary">Thinking…</p>
-                )}
-
-                {t.citations.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {t.citations.map((c, i) => (
-                      // The message_index maps to the raw messages.jsonl line, not
-                      // the dashboard's paginated render, so there is no matching
-                      // #msg-N anchor to link to. Link to the session only, and
-                      // close the drawer before navigating away.
-                      <Link
-                        key={`${c.session_id}-${i}`}
-                        to={`/sessions/${c.session_id}`}
-                        onClick={onClose}
-                        className="text-xs text-brand underline underline-offset-2 decoration-brand/40 hover:decoration-brand"
-                      >
-                        {c.title || c.session_id}
-                      </Link>
-                    ))}
-                  </div>
-                )}
-
-                {t.error && <p className="text-danger text-xs mt-2">{t.error}</p>}
-              </div>
-            ),
+                  <AssistantMessage
+                    key={t.id}
+                    turn={t}
+                    actions={{
+                      onRetry: t.question ? () => retry(t.id) : undefined,
+                      onNewConversation: () => newConversation(),
+                      onNavigate: onClose,
+                      keyHint,
+                    }}
+                  />
+                ),
+              )}
+            </section>
           )}
         </div>
-
-        {/* Screen-reader announcement that a turn finished streaming. */}
-        <div className="sr-only" role="status">
-          {doneAnnouncement}
-        </div>
-
-        {/* Composer */}
-        <div className="flex items-center gap-2 pt-1">
-          <input
-            ref={inputRef}
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                void send();
-              }
-            }}
-            disabled={streaming}
-            placeholder="Ask about your sessions…"
-            aria-label="Ask the session helper"
-            className="flex-1 min-w-0 px-3 py-2 text-sm bg-bg-sunken border border-border rounded-lg text-text-primary placeholder:text-text-tertiary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] disabled:opacity-50"
-          />
-          {streaming ? (
-            <Button variant="secondary" onClick={stop}>
-              Stop
-            </Button>
-          ) : (
-            <Button onClick={() => void send()} disabled={!input.trim()}>
-              Send
-            </Button>
-          )}
-        </div>
+        {showJump && turns.length > 0 && (
+          <button
+            type="button"
+            onClick={jumpToLatest}
+            className="absolute bottom-3 left-1/2 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-overlay px-3 py-1.5 text-xs font-medium text-text-primary transition-colors hover:bg-bg-elevated outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+            style={{ boxShadow: 'var(--shadow-overlay)' }}
+          >
+            <ArrowDownIcon size={13} />
+            Jump to latest
+          </button>
+        )}
       </div>
     );
   }
 
   return (
-    <Drawer open={open} onClose={onClose} titleId="helper-panel-title">
-      <div className="flex flex-col gap-4">
-        <h2 id="helper-panel-title" className="text-lg font-semibold text-text-primary">
-          Session helper
-        </h2>
+    <Drawer open={open} onClose={onClose} titleId={TITLE_ID} bare widthClassName="w-full sm:w-[480px] lg:w-[520px]">
+      <div className="flex h-full min-h-0 flex-col bg-surface">
+        <HelperHeader
+          options={options}
+          active={current}
+          onScopeChange={changeScope}
+          threadTitle={activeTitle}
+          hasThread={turns.length > 0 || conversationId !== null}
+          view={view}
+          onToggleHistory={() => setView((v) => (v === 'history' ? 'chat' : 'history'))}
+          onNew={() => newConversation()}
+          onClose={onClose}
+          showControls={hasStatus}
+        />
+
         {body}
 
-        <Dialog open={deleteTarget !== null} onClose={() => setDeleteTarget(null)} titleId="helper-delete-dialog-title">
-          <DialogHeader titleId="helper-delete-dialog-title">Delete conversation?</DialogHeader>
-          <p className="text-sm text-text-secondary">
-            This permanently deletes “{deleteTarget?.title || 'this conversation'}” and its messages.
-          </p>
-          <DialogFooter>
-            <Button variant="secondary" onClick={() => setDeleteTarget(null)}>
-              Cancel
-            </Button>
-            <Button
-              variant="danger"
-              loading={deleteConversation.isPending}
-              onClick={() => {
-                if (!deleteTarget) return;
-                deleteConversation.mutate(deleteTarget.id, {
-                  onSuccess: () => {
-                    addToast('success', 'Conversation deleted');
-                    if (deleteTarget.id === conversationId) newConversation();
-                    setDeleteTarget(null);
-                  },
-                  onError: (err) => addToast('error', `Delete failed: ${errorMessage(err)}`),
-                });
-              }}
-            >
-              Delete
-            </Button>
-          </DialogFooter>
-        </Dialog>
+        {canChat && view === 'chat' && (
+          <HelperComposer
+            ref={inputRef}
+            value={input}
+            onChange={setInput}
+            onSend={() => void send()}
+            onStop={stop}
+            streaming={streaming}
+            placeholder={placeholder}
+            modelLabel={modelLabel}
+            checking={status.isPlaceholderData === true}
+          />
+        )}
+
+        {/* Announces each finished answer once — never the individual tokens. */}
+        <div className="sr-only" role="status" aria-live="polite">
+          {announcement}
+        </div>
       </div>
+
+      <Dialog open={deleteTarget !== null} onClose={() => setDeleteTarget(null)} titleId="helper-delete-dialog-title">
+        <DialogHeader titleId="helper-delete-dialog-title">Delete conversation?</DialogHeader>
+        <p className="text-sm text-text-secondary">
+          This permanently deletes “{deleteTarget?.title || 'this conversation'}” and its messages.
+        </p>
+        <DialogFooter>
+          <Button variant="secondary" onClick={() => setDeleteTarget(null)}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            loading={deleteConversation.isPending}
+            onClick={() => {
+              if (!deleteTarget) return;
+              deleteConversation.mutate(deleteTarget.id, {
+                onSuccess: () => {
+                  addToast('success', 'Conversation deleted');
+                  if (deleteTarget.id === conversationId) newConversation();
+                  setDeleteTarget(null);
+                },
+                onError: (err) => addToast('error', `Delete failed: ${errorMessage(err)}`),
+              });
+            }}
+          >
+            Delete
+          </Button>
+        </DialogFooter>
+      </Dialog>
     </Drawer>
   );
 }

@@ -146,6 +146,10 @@ helm install sessionfs sessionfs/sessionfs \
 
 SessionFS requires several secrets for operation. You can either provide them inline in `values.yaml` (not recommended for production) or reference pre-existing Kubernetes secrets.
 
+`verification-secret` and `encryption-key` encrypt stored LLM keys and GitLab/Jira tokens, so they must never change once set. If you leave them empty, the chart generates them on first install and keeps the same values on every later `helm upgrade`. ArgoCD and other `helm template` flows can't read the cluster, so for GitOps set both values or use `security.existingSecret`. Charts before 0.24.0 generated new values on every upgrade; if stored keys stopped working after an upgrade, re-enter them once.
+
+The API refuses to store or read encrypted secrets when `SFS_VERIFICATION_SECRET` is unset or a placeholder such as `dev-secret` (503 `encryption_unavailable`), except in development (`SFS_ENVIRONMENT=development`, or a SQLite database).
+
 ### Create Secrets Manually
 
 ```bash
@@ -615,6 +619,45 @@ provider. Digest links resolve to `SFS_DASHBOARD_URL` when set, falling back
 to `SFS_APP_URL` (the same origin invite emails use), and are omitted when
 neither is set, so self-hosted installs never link recipients to the hosted
 dashboard.
+
+### Ticket notification email digest
+
+Users who follow tickets accumulate unread ticket notifications as those
+tickets change state, change hands, or pick up comments. A separate sweep
+emails each user one digest per run instead of an email per notification,
+sent by an external scheduled job that calls a key-authenticated endpoint —
+the server has no scheduler of its own:
+
+```text
+POST /api/v1/admin/sweeps/ticket-notifications
+```
+
+Authenticate with a platform-admin user key, or a `platform_sweeps:run`
+service key minted by a platform admin. Each run selects unread, un-emailed
+notifications older than 10 minutes (the delay lets a burst of changes
+coalesce into one row first) and groups them by user, so a user receives a
+single digest listing every pending notification. Delivery is idempotent via
+an `emailed_at IS NULL` rowcount guard, so a duplicate schedule tick is safe;
+a delivery that fails releases its reservation (`emailed_at` is reset) so a
+later run retries it.
+
+Each user's **ticket email** preference gates delivery, set from the
+dashboard (**Settings → Preferences**) or with
+`PUT /api/v1/me/notification-settings` (`{"ticket_email": ...}`):
+
+- `off` — never email (notifications still appear in the dashboard inbox and
+  `sfs ticket inbox`).
+- `your_turn` — the default: email only when at least one pending
+  notification is a "your turn".
+- `all` — email every batch.
+
+Access is re-checked per row against the ticket's current project, so a user
+who lost access since the notification was written is never emailed its
+content; those rows are marked emailed (never delivered) so they do not
+resurface. With `email.provider=none` the sweep is a no-op for delivery but
+still marks rows emailed and logs the suppressed send, mirroring the org
+digest. Digest links resolve to `SFS_DASHBOARD_URL` when set, falling back to
+`SFS_APP_URL`, and are omitted when neither is set.
 
 ### SMTP with Kubernetes Secrets
 

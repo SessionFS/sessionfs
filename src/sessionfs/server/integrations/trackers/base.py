@@ -36,7 +36,13 @@ class TrackerProject:
 
 @dataclass
 class TrackerIssue:
-    """A lightweight view of a remote issue (enough to fill the link row)."""
+    """A lightweight view of a remote issue (enough to fill the link row).
+
+    ``project_key`` / ``creator_account_id`` / ``reporter_account_id`` /
+    ``created_at`` are only populated by the label search used for adoptions;
+    they let the route refuse to adopt an issue that wasn't created by this
+    connection in the mapped project after the unknown publish began.
+    """
 
     key: str
     url: str
@@ -45,6 +51,10 @@ class TrackerIssue:
     # The remote issue's numeric ``id`` — distinct from ``key`` and stored on
     # the link so a stale link can be identified without trusting the key.
     id: str | None = None
+    project_key: str | None = None
+    creator_account_id: str | None = None
+    reporter_account_id: str | None = None
+    created_at: str | None = None
 
 
 @runtime_checkable

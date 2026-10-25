@@ -27,6 +27,32 @@ access, and org membership. An org admin does not gain a wider view through it.
   Responses and audit rows record which source was used (`user` | `org`), never
   the key itself.
 
+- **Supported providers.** The same provider list powers the judge, the helper,
+  summaries, and Jira drafting:
+
+  | Provider | Id | Endpoint |
+  |---|---|---|
+  | Anthropic | `anthropic` | api.anthropic.com |
+  | OpenAI | `openai` | api.openai.com |
+  | Google Gemini | `google` | generativelanguage.googleapis.com |
+  | OpenRouter | `openrouter` | openrouter.ai |
+  | DeepSeek | `deepseek` | api.deepseek.com |
+  | Kimi (Moonshot) | `kimi` | api.moonshot.ai |
+  | xAI (Grok) | `xai` | api.x.ai |
+  | Mistral | `mistral` | api.mistral.ai |
+  | Z.ai (GLM) | `zai` | api.z.ai (international) |
+  | Qwen (Alibaba Cloud) | `qwen` | dashscope-intl.aliyuncs.com (Singapore) |
+  | MiniMax | `minimax` | api.minimax.io (international) |
+  | Groq | `groq` | api.groq.com |
+  | Together AI | `together` | api.together.xyz |
+  | Fireworks AI | `fireworks` | api.fireworks.ai |
+
+  Pick the provider, paste your key, and choose a model — **Fetch models** lists
+  the models your key can use, and any model id can be typed in. A custom
+  OpenAI-compatible endpoint URL (LiteLLM, vLLM, Ollama, a regional endpoint such
+  as mainland-China GLM or another Qwen region) replaces the provider default.
+  A saved key is only ever sent to the provider or endpoint it was saved with.
+
 ## Where to use it
 
 - **Dashboard** — **Ask the helper** in the sidebar or the Cmd+K palette opens
@@ -57,9 +83,22 @@ Run one turn. Request body:
     "project_id": "…",             // optional
     "session_ids": ["…"]           // optional, up to 100
   },
-  "stream": true                   // default true
+  "stream": true,                  // default true
+  "retry": false                   // re-asking after a failed answer
 }
 ```
+
+`retry: true` re-asks a question whose answer failed. If the thread's last
+question is still unanswered and matches this one after redaction, the stored
+question is reused instead of being saved twice; otherwise the turn runs as
+usual.
+
+Citations look like `[session:<id> msg:<n>]`, where `n` is the 0-based line
+number of the message in the session's `messages.jsonl`. The dashboard opens
+them at `/sessions/<id>?msg=<n>`, backed by
+`GET /api/v1/sessions/{id}/messages?around=<n>`, which returns the page holding
+that line plus a `target` object (`found`, `hidden` when the view filters the
+message out, or `missing`, with the nearest message to show instead).
 
 With `stream=true` (the default) or `Accept: text/event-stream`, the response is
 Server-Sent Events (`text/event-stream`, `Cache-Control: no-store`,

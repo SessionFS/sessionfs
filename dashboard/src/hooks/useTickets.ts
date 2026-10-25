@@ -1,6 +1,6 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
-import type { Ticket, TicketComment, TicketCreate } from '../api/client';
+import type { Ticket, TicketComment, TicketCreate, TicketWatcher } from '../api/client';
 
 /**
  * React-Query hooks for v0.10.1 Tickets (Team+).
@@ -139,6 +139,45 @@ export function useAddTicketComment(projectId: string | undefined) {
       void qc.invalidateQueries({
         queryKey: ['ticketComments', projectId, ticketId],
       });
+    },
+  });
+}
+
+/* ── Ticket watching (follow / unfollow / mute) ── */
+
+export function useTicketWatchers(
+  projectId: string | undefined,
+  ticketId: string | undefined,
+) {
+  const { auth } = useAuth();
+  return useQuery<TicketWatcher[]>({
+    queryKey: ['ticketWatchers', projectId, ticketId],
+    queryFn: () => auth!.client.listTicketWatchers(projectId!, ticketId!),
+    enabled: !!auth && !!projectId && !!ticketId,
+    staleTime: 15_000,
+  });
+}
+
+export function useWatchTicket(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ticketId, muted }: { ticketId: string; muted?: boolean }) =>
+      auth!.client.watchTicket(projectId!, ticketId, muted ?? false),
+    onSuccess: (_data, { ticketId }) => {
+      void qc.invalidateQueries({ queryKey: ['ticketWatchers', projectId, ticketId] });
+    },
+  });
+}
+
+export function useUnwatchTicket(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ticketId: string) =>
+      auth!.client.unwatchTicket(projectId!, ticketId),
+    onSuccess: (_data, ticketId) => {
+      void qc.invalidateQueries({ queryKey: ['ticketWatchers', projectId, ticketId] });
     },
   });
 }

@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, useLocation, Link } from 'react-router-dom';
 import { useSession } from '../hooks/useSession';
 import { useMessages } from '../hooks/useMessages';
 import { useAudit } from '../hooks/useAudit';
@@ -33,6 +33,12 @@ import { errorMessage } from '../utils/errorMessage';
 
 type Tab = 'messages' | 'changes' | 'summary' | 'audit';
 
+/** `?msg=` value → a non-negative integer line number, else undefined. */
+function parseMessageParam(raw: string | null): number | undefined {
+  if (raw == null || !/^\d{1,9}$/.test(raw)) return undefined;
+  return Number(raw);
+}
+
 const TAB_DEFS: Array<{ key: Tab; label: string }> = [
   { key: 'messages', label: 'Messages' },
   { key: 'changes', label: 'Changes' },
@@ -54,17 +60,32 @@ export default function SessionDetail() {
   const [showShare, setShowShare] = useState(false);
   const [showAuditModal, setShowAuditModal] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  // `?msg=<n>` deep-links to one message (0-based messages.jsonl line number,
+  // as cited by the session helper).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
+  const targetMessage = parseMessageParam(searchParams.get('msg'));
   const [activeTab, setActiveTab] = useState<Tab>('messages');
-  const [jumpToPage, setJumpToPage] = useState<number | undefined>(undefined);
+  const [lastTargetKey, setLastTargetKey] = useState<string | null>(null);
+  // Following a message link always lands on the Messages tab.
+  if (targetMessage != null && lastTargetKey !== location.key) {
+    setLastTargetKey(location.key);
+    if (activeTab !== 'messages') setActiveTab('messages');
+  }
   const deleteSession = useDeleteSession();
   const { addToast } = useToast();
 
+  // "Jump to message #N" in the audit tab reuses the `?msg=<n>` deep link
+  // (ConversationView's `targetMessage`) instead of a raw page number, so it
+  // lands on and highlights the exact message. `finding.message_index` is the
+  // 0-based messages.jsonl line number, which `?msg=` already expects.
   function handleJumpToMessage(messageIndex: number) {
-    const page = Math.floor(messageIndex / 50) + 1;
-    setJumpToPage(page);
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      params.set('msg', String(messageIndex));
+      return params;
+    });
     setActiveTab('messages');
-    // Clear after a tick so ConversationView picks it up then resets
-    setTimeout(() => setJumpToPage(undefined), 100);
   }
   const [editingMeta, setEditingMeta] = useState(false);
   const [titleInput, setTitleInput] = useState('');
@@ -238,7 +259,7 @@ export default function SessionDetail() {
           </div>
           <div className="flex items-center gap-2">
             {openHelper && (
-              <Button onClick={() => openHelper({ session_ids: [session.id] })} size="sm" variant="secondary">
+              <Button onClick={() => openHelper({ session_ids: [session.id], label: session.title || undefined })} size="sm" variant="secondary">
                 Ask the helper
               </Button>
             )}
@@ -463,7 +484,13 @@ export default function SessionDetail() {
 
       {/* Tab content */}
       <TabPanel idPrefix="session" tabKey={activeTab} className="flex-1 overflow-y-auto">
-        {activeTab === 'messages' && <ConversationView sessionId={session.id} initialPage={jumpToPage} />}
+        {activeTab === 'messages' && (
+          <ConversationView
+            sessionId={session.id}
+            targetMessage={targetMessage}
+            targetKey={location.key}
+          />
+        )}
         {activeTab === 'changes' && <ChangesTab sessionId={session.id} />}
         {activeTab === 'summary' && <SummaryTab sessionId={session.id} />}
         {activeTab === 'audit' && (

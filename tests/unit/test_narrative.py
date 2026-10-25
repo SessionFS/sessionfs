@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from sessionfs.server.services.summarizer import (
@@ -89,6 +90,52 @@ async def test_generate_narrative_llm_failure():
 
     assert result.what_happened is None
     assert result.narrative_model is None
+    assert result.narrative_error == {
+        "code": "llm_request_failed",
+        "message": "The LLM request failed.",
+        "status": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_generate_narrative_error_extracts_status_and_message():
+    """An httpx HTTPStatusError yields a machine-readable narrative_error."""
+    summary = _make_summary()
+    request = httpx.Request("POST", "https://litellm.internal/v1/chat/completions")
+    response = httpx.Response(
+        400,
+        request=request,
+        json={"error": {"message": "Unsupported value: 'temperature' does not support 0."}},
+    )
+    error = httpx.HTTPStatusError("bad request", request=request, response=response)
+
+    with patch("sessionfs.judge.providers.call_llm", new_callable=AsyncMock, side_effect=error):
+        result = await generate_narrative(summary, _make_messages(), model="gpt-4o", api_key="sk-test")
+
+    assert result.narrative_error is not None
+    assert result.narrative_error["code"] == "llm_request_failed"
+    assert result.narrative_error["status"] == 400
+    assert "temperature" in result.narrative_error["message"]
+
+
+@pytest.mark.asyncio
+async def test_generate_narrative_error_redacts_api_key():
+    """The surfaced message never contains the caller's API key."""
+    summary = _make_summary()
+    request = httpx.Request("POST", "https://litellm.internal/v1/chat/completions")
+    response = httpx.Response(
+        400,
+        request=request,
+        json={"error": {"message": "invalid key sk-secret-123 rejected"}},
+    )
+    error = httpx.HTTPStatusError("bad request", request=request, response=response)
+
+    with patch("sessionfs.judge.providers.call_llm", new_callable=AsyncMock, side_effect=error):
+        result = await generate_narrative(summary, _make_messages(), model="gpt-4o", api_key="sk-secret-123")
+
+    assert result.narrative_error is not None
+    assert "sk-secret-123" not in result.narrative_error["message"]
+    assert "***" in result.narrative_error["message"]
 
 
 def test_build_prompt_includes_stats():
@@ -136,3 +183,20 @@ async def test_generate_narrative_strips_code_fences():
 
     assert result.what_happened == "Fixed the bug."
     assert result.narrative_model == "gpt-4o"
+
+
+@pytest.mark.parametrize(
+    "exc, expected",
+    [
+        (httpx.ConnectError("[Errno 61] Connection refused to 10.0.0.5"), "Could not reach the LLM endpoint."),
+        (httpx.ReadTimeout("timed out"), "The LLM request timed out."),
+        (ValueError("Expecting value: line 1 column 1"), "The model's answer could not be read."),
+        (RuntimeError("guard refused 169.254.169.254"), "The LLM request failed."),
+    ],
+)
+def test_transport_errors_are_never_echoed(exc, expected):
+    from sessionfs.server.services.summarizer import _narrative_error_snippet
+
+    status, message = _narrative_error_snippet(exc, "sk-x")
+    assert status is None
+    assert message == expected

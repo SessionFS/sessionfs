@@ -44,6 +44,12 @@ vi.mock('../invites/useInvites', () => ({
   useMyInvites: () => ({ data: { invites: [] }, isLoading: false, error: null }),
 }));
 
+// The notification bell reads from useTicketNotificationUnreadCount; stub it
+// here so the layout shell test doesn't need a QueryClientProvider.
+vi.mock('../hooks/useTicketNotifications', () => ({
+  useTicketNotificationUnreadCount: () => ({ data: { count: 0, etag: '' } }),
+}));
+
 vi.mock('./SearchBar', () => ({
   default: () => <div data-testid="search-bar">Search</div>,
 }));
@@ -251,7 +257,7 @@ describe('Layout', () => {
       expect(order).toEqual([
         'Sessions', 'Projects', 'Handoffs',
         'Marketplace',
-        'Invites', 'Transfers',
+        'Notifications', 'Invites', 'Transfers',
         'Organization', 'Billing',
         'Settings', 'Help', 'Admin',
       ]);

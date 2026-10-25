@@ -20,6 +20,8 @@ import difflib
 from dataclasses import dataclass
 from typing import Any
 
+from sessionfs.server.sanitize import sanitize_surrogates as _sanitize
+
 MAX_FILES = 200
 MAX_DIFF_BYTES = 1_000_000  # 1 MB of diff text (UTF-8 bytes) across all files
 MAX_DIFF_LINES = 2_000  # per-side line cap before we refuse difflib
@@ -619,25 +621,6 @@ def _resolve_operation(
     if workspace_role in ("edited", "written"):
         return "edited"
     return "unknown"
-
-
-def _sanitize(text: str) -> str:
-    """Replace lone surrogates (U+D800–U+DFFF) with U+FFFD.
-
-    JSON can carry lone surrogates (e.g. ``"a\\ud800b"``) that Python's
-    ``json`` decoder leaves as a surrogate code point in the ``str``. Such a
-    string cannot be encoded to UTF-8, so any downstream ``encode("utf-8")``
-    raises ``UnicodeEncodeError`` and 500s the endpoint. The UTF-16 round-trip
-    maps each lone surrogate to U+FFFD while leaving every other character
-    intact. The fast path keeps the common (already-encodable) case cheap.
-    """
-    if not text:
-        return text
-    try:
-        text.encode("utf-8")
-        return text
-    except UnicodeEncodeError:
-        return text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
 
 
 def _first_str(inp: dict[str, Any], *keys: str) -> str | None:

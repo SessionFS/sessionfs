@@ -405,6 +405,36 @@ async def test_connection_put_rejects_unknown_template_and_invalid_site(
 
 
 @pytest.mark.asyncio
+async def test_connection_put_rejects_oversize_fields_with_422(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """Oversize connection fields are rejected with a 422 up front instead of
+    overflowing the columns (and surfacing as a 500) on insert."""
+    org = await _org(db_session)
+    _, key = await _member(db_session, org, "admin")
+    base = {"site_url": "https://acme.atlassian.net", "account_email": "jira@acme.com",
+            "api_token": _TOKEN, "default_template": "agile"}
+
+    resp = await client.put(
+        f"/api/v1/orgs/{org.id}/integrations/jira", headers=_hdrs(key),
+        json={**base, "api_token": "x" * 2049},
+    )
+    assert resp.status_code == 422, resp.text
+
+    resp = await client.put(
+        f"/api/v1/orgs/{org.id}/integrations/jira", headers=_hdrs(key),
+        json={**base, "account_email": "a" * 256 + "@acme.com"},
+    )
+    assert resp.status_code == 422, resp.text
+
+    resp = await client.put(
+        f"/api/v1/orgs/{org.id}/integrations/jira", headers=_hdrs(key),
+        json={**base, "site_url": "https://acme.atlassian.net/" + "x" * 255},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
 async def test_connection_delete_removes_and_audits(client: AsyncClient, db_session: AsyncSession, fake_jira):
     org = await _org(db_session)
     user, key = await _member(db_session, org, "admin")
@@ -1721,9 +1751,21 @@ async def test_timeout_keeps_unknown_row_then_retry_adopts(
             calls["create"] += 1
             raise asyncio.TimeoutError
 
+        async def myself_account_id(self):
+            return "a1"
+
         async def search_issue_by_label(self, project_key, label):
             calls["search"] += 1
-            return TrackerIssue(key="ACME-9", url=f"{self.site_url}/browse/ACME-9", status="", id="10009")
+            return TrackerIssue(
+                key="ACME-9",
+                url=f"{self.site_url}/browse/ACME-9",
+                status="",
+                id="10009",
+                project_key="ACME",
+                creator_account_id="a1",
+                reporter_account_id="a1",
+                created_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
+            )
 
         async def update_issue(self, issue_key, *a, **k):
             calls["update"] += 1
@@ -1842,11 +1884,23 @@ async def test_adopt_retries_label_search_once_before_creating(
             calls["create"] += 1
             raise asyncio.TimeoutError
 
+        async def myself_account_id(self):
+            return "a1"
+
         async def search_issue_by_label(self, project_key, label):
             calls["search"] += 1
             if calls["search"] == 1:
                 return None  # not yet visible in Jira's search index
-            return TrackerIssue(key="ACME-9", url=f"{self.site_url}/browse/ACME-9", status="", id="10009")
+            return TrackerIssue(
+                key="ACME-9",
+                url=f"{self.site_url}/browse/ACME-9",
+                status="",
+                id="10009",
+                project_key="ACME",
+                creator_account_id="a1",
+                reporter_account_id="a1",
+                created_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
+            )
 
         async def update_issue(self, issue_key, *a, **k):
             calls["update"] += 1
@@ -1869,6 +1923,95 @@ async def test_adopt_retries_label_search_once_before_creating(
     # The first empty search is retried once; the issue found on the retry is
     # adopted (updated), never re-created.
     assert calls == {"create": 1, "search": 2, "update": 1}
+
+
+@pytest.mark.parametrize(
+    "override, fragment",
+    [
+        (
+            {"project_key": "OTHER"},
+            "not the mapped project ACME",
+        ),
+        (
+            {"creator_account_id": "someone-else", "reporter_account_id": "someone-else"},
+            "not created by this connection",
+        ),
+        (
+            {"created_at": "2020-01-01T00:00:00+00:00"},
+            "created before the unknown publish began",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_adopt_rejects_unverified_issue(
+    client, db_session, monkeypatch, override, fragment
+):
+    """A label match alone is not proof of ownership: a foreign-project /
+    foreign-account / stale issue keeps the link ``unknown`` and 409s."""
+    org, user, key, project, ticket = await _ready(db_session)
+    calls = {"create": 0, "search": 0}
+
+    base = dict(
+        key="ACME-9",
+        url="https://acme.atlassian.net/browse/ACME-9",
+        status="",
+        id="10009",
+        project_key="ACME",
+        creator_account_id="a1",
+        reporter_account_id="a1",
+        created_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
+    )
+    base.update(override)
+
+    class RejectingFake:
+        def __init__(self, site_url, account_email, api_token, *, transport=None):
+            self.site_url = validate_site_url(site_url)
+
+        async def aclose(self):
+            pass
+
+        async def create_issue(self, *a, **k):
+            calls["create"] += 1
+            raise asyncio.TimeoutError
+
+        async def myself_account_id(self):
+            return "a1"
+
+        async def search_issue_by_label(self, project_key, label):
+            calls["search"] += 1
+            return TrackerIssue(**base)
+
+        async def update_issue(self, issue_key, *a, **k):
+            raise AssertionError("no update expected when adoption is refused")
+
+    monkeypatch.setattr("sessionfs.server.routes.jira.JiraClient", RejectingFake)
+
+    r1 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish", headers=_hdrs(key),
+        json=_PUBLISH_BODY,
+    )
+    assert r1.status_code == 504
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+    )).scalar_one()
+    assert link.status == "unknown"
+    await db_session.commit()
+
+    r2 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish", headers=_hdrs(key),
+        json=_PUBLISH_BODY,
+    )
+    assert r2.status_code == 409, r2.text
+    assert r2.json()["error"]["details"]["error"] == "jira_adopt_rejected"
+    assert fragment in r2.json()["error"]["message"]
+
+    # The link stays 'unknown' so a corrected publish can still adopt/create.
+    gt = (await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}", headers=_hdrs(key)
+    )).json()
+    assert gt["jira_publish_unknown"] is True
+    assert gt["jira"] is None
 
 
 @pytest.mark.asyncio

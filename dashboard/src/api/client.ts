@@ -53,12 +53,25 @@ export interface SessionListResponse {
   has_more: boolean;
 }
 
+/** Where `?around=<n>` landed (see MessageTarget in schemas/sessions.py). */
+export interface MessageTarget {
+  /** The requested 0-based messages.jsonl line number. */
+  index: number;
+  /** `hidden` = filtered out of this view (sidechain/empty); `missing` = no such message. */
+  status: 'found' | 'hidden' | 'missing';
+  /** The message the page shows in its place; null when the view is empty. */
+  anchor_index: number | null;
+}
+
 export interface MessagesResponse {
   messages: Record<string, unknown>[];
+  /** 0-based messages.jsonl line number of each message (the helper's `msg:<n>`). */
+  message_indexes?: number[];
   total: number;
   page: number;
   page_size: number;
   has_more: boolean;
+  target?: MessageTarget | null;
 }
 
 export interface FileChange {
@@ -176,6 +189,14 @@ export interface OrgLlmSettings {
   base_url: string | null;
   enabled: boolean;
   plan_includes_helper: boolean;
+}
+
+export interface LlmProvider {
+  id: string;
+  label: string;
+  api_style: 'anthropic' | 'google' | 'openai';
+  suggested_models: string[];
+  discovery: boolean;
 }
 
 // ── Session helper (Enterprise) ──
@@ -551,6 +572,10 @@ export interface ProjectContext {
   updated_at: string;
   session_count?: number;
   auto_narrative?: boolean;
+  /** The plan tier that pays for this project (its org's, or its owner's).
+   *  Absent on older servers — the dashboard falls back to the caller's own
+   *  tier in that case. */
+  effective_tier?: string | null;
   /** Multi-repo: linked repos (populated on detail, omitted on list). */
   repos?: ProjectRepoResponse[];
   /** Multi-repo: set when all repos were reclaimed (orphaned project). */
@@ -956,6 +981,51 @@ export interface TicketComment {
   content: string;
   session_id: string | null;
   created_at: string;
+}
+
+// ------------------------------------------------------------------
+// Ticket watchers + notifications (me-scoped)
+// ------------------------------------------------------------------
+
+export interface TicketWatcher {
+  user_id: string;
+  persona_name: string | null;
+  source: string;
+  muted: boolean;
+  created_at: string;
+}
+
+export type TicketNotificationKind =
+  | 'your_turn'
+  | 'review_verdict'
+  | 'status'
+  | 'comment'
+  | 'assignment'
+  | 'dependency_unblocked';
+
+export interface TicketNotification {
+  id: number;
+  ticket_id: string;
+  project_id: string;
+  ticket_title: string | null;
+  kind: TicketNotificationKind | string;
+  summary: string;
+  actor_type: 'user' | 'service_key' | string;
+  actor_user_id: string | null;
+  service_key_name: string | null;
+  event_count: number;
+  created_at: string;
+  updated_at: string;
+  read_at: string | null;
+}
+
+export interface TicketNotificationList {
+  items: TicketNotification[];
+  next_before: number | null;
+}
+
+export interface TicketNotificationSettings {
+  ticket_email: 'off' | 'your_turn' | 'all';
 }
 
 // ------------------------------------------------------------------
@@ -1887,9 +1957,16 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         body: sessionId ? JSON.stringify({ session_id: sessionId }) : undefined,
       }),
 
-    getMessages: (id: string, page = 1, pageSize = 50, order: 'oldest' | 'newest' = 'oldest') =>
+    getMessages: (
+      id: string,
+      page = 1,
+      pageSize = 50,
+      order: 'oldest' | 'newest' = 'oldest',
+      around?: number,
+    ) =>
       request<MessagesResponse>(
-        `/api/v1/sessions/${id}/messages?page=${page}&page_size=${pageSize}&order=${order}`,
+        `/api/v1/sessions/${id}/messages?page=${page}&page_size=${pageSize}&order=${order}` +
+          (around != null ? `&around=${around}` : ''),
       ),
 
     getChanges: (id: string) => request<ChangesResponse>(`/api/v1/sessions/${id}/changes`),
@@ -1981,6 +2058,10 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'DELETE',
       }),
 
+    // First-class LLM providers for the judge/helper pickers.
+    getLlmProviders: () =>
+      request<{ providers: LlmProvider[] }>('/api/v1/llm/providers'),
+
     // Org-wide LLM key for the session helper (Enterprise, owner/admin).
     getOrgLlmSettings: (orgId: string) =>
       request<OrgLlmSettings>(`/api/v1/orgs/${orgId}/llm-settings`),
@@ -2049,7 +2130,13 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     // Session helper (Enterprise) — read-only conversation management + status.
     // Turn streaming bypasses request() (raw fetch + ReadableStream) because it
     // needs to read the SSE body incrementally; see helper/HelperPanel.tsx.
-    getHelperStatus: () => request<HelperStatus>('/api/v1/helper/status'),
+    getHelperStatus: (scope?: { project_id?: string; session_ids?: string[] }) => {
+      const sp = new URLSearchParams();
+      if (scope?.project_id) sp.set('project_id', scope.project_id);
+      for (const id of scope?.session_ids ?? []) sp.append('session_ids', id);
+      const qs = sp.toString();
+      return request<HelperStatus>(`/api/v1/helper/status${qs ? `?${qs}` : ''}`);
+    },
 
     listHelperConversations: () =>
       request<HelperConversationSummary[]>('/api/v1/helper/conversations'),
@@ -2066,12 +2153,22 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       ),
 
     // POST so a typed API key travels in the body, never in a URL/access log.
-    discoverModels: (baseUrl: string, apiKey?: string) =>
-      request<{ models: { id: string; owned_by: string }[]; error?: string; base_url?: string }>(
+    // A registry provider id routes discovery to that provider's fixed
+    // /models endpoint; otherwise a custom base_url is queried.
+    discoverModels: (baseUrl: string, apiKey?: string, provider?: string) =>
+      request<{
+        models: { id: string; owned_by: string }[];
+        error?: string;
+        base_url?: string | null;
+        provider?: string;
+      }>(
         '/api/v1/settings/judge/models',
         {
           method: 'POST',
-          body: JSON.stringify({ base_url: baseUrl, ...(apiKey ? { api_key: apiKey } : {}) }),
+          body: JSON.stringify({
+            ...(provider ? { provider } : { base_url: baseUrl }),
+            ...(apiKey ? { api_key: apiKey } : {}),
+          }),
         },
       ),
 
@@ -2227,6 +2324,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         outcome: string | null;
         open_issues: string[] | null;
         narrative_model: string | null;
+        narrative_error: { code: string; message: string; status: number | null } | null;
         generated_at: string;
       }>(`/api/v1/sessions/${sessionId}/summary`),
 
@@ -2257,6 +2355,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         outcome: string | null;
         open_issues: string[] | null;
         narrative_model: string | null;
+        narrative_error: { code: string; message: string; status: number | null } | null;
         generated_at: string;
       }>(`/api/v1/sessions/${sessionId}/summary/narrative`, { method: 'POST', body: JSON.stringify(body) }),
 
@@ -2729,6 +2828,79 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       request<void>(`/api/v1/projects/${projectId}/tickets/${ticketId}/jira`, {
         method: 'DELETE',
       }),
+
+    // ── Ticket watchers + notifications (me-scoped) ──
+    listTicketNotifications: (
+      params: { unread?: boolean; limit?: number; before?: number } = {},
+    ) => {
+      const sp = new URLSearchParams();
+      if (params.unread) sp.set('unread', 'true');
+      if (params.limit) sp.set('limit', String(params.limit));
+      if (params.before) sp.set('before', String(params.before));
+      const qs = sp.toString();
+      return request<TicketNotificationList>(
+        `/api/v1/me/ticket-notifications${qs ? `?${qs}` : ''}`,
+      );
+    },
+
+    /**
+     * Unread count for the inbox badge. Polls with an If-None-Match header;
+     * a 304 resolves to `notModified` so the caller keeps its last count
+     * without a full re-render.
+     */
+    getTicketNotificationUnreadCount: async (
+      etag?: string,
+    ): Promise<{ count: number; etag: string; notModified: boolean }> => {
+      const resp = await fetch(
+        `${baseUrl}/api/v1/me/ticket-notifications/unread-count`,
+        {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            ...(etag ? { 'If-None-Match': etag } : {}),
+          },
+        },
+      );
+      if (resp.status === 304) {
+        return { count: 0, etag: etag ?? '', notModified: true };
+      }
+      if (!resp.ok) {
+        throw new ApiError(resp.status, await resp.text());
+      }
+      const data = (await resp.json()) as { count: number };
+      const newEtag = resp.headers.get('ETag') || resp.headers.get('etag') || '';
+      return { count: data.count, etag: newEtag, notModified: false };
+    },
+
+    markTicketNotificationsRead: (body: { ids?: number[]; all?: boolean }) =>
+      request<{ updated: number }>('/api/v1/me/ticket-notifications/read', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+
+    getNotificationSettings: () =>
+      request<TicketNotificationSettings>('/api/v1/me/notification-settings'),
+
+    putNotificationSettings: (body: { ticket_email: string }) =>
+      request<TicketNotificationSettings>('/api/v1/me/notification-settings', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+
+    watchTicket: (projectId: string, ticketId: string, muted = false) =>
+      request<TicketWatcher>(
+        `/api/v1/projects/${projectId}/tickets/${ticketId}/watch`,
+        { method: 'PUT', body: JSON.stringify({ muted }) },
+      ),
+
+    unwatchTicket: (projectId: string, ticketId: string) =>
+      request<void>(`/api/v1/projects/${projectId}/tickets/${ticketId}/watch`, {
+        method: 'DELETE',
+      }),
+
+    listTicketWatchers: (projectId: string, ticketId: string) =>
+      request<TicketWatcher[]>(
+        `/api/v1/projects/${projectId}/tickets/${ticketId}/watchers`,
+      ),
 
     // ── v0.10.2 AgentRuns (Team+) ──
     listAgentRuns: (

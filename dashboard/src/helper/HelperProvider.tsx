@@ -6,6 +6,8 @@ import HelperPanel from './HelperPanel';
 export interface HelperScope {
   project_id?: string;
   session_ids?: string[];
+  /** Display name for the scope chip (project name / session title). Never sent to the API. */
+  label?: string;
 }
 
 interface HelperContextValue {

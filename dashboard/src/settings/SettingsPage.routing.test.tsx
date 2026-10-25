@@ -23,6 +23,17 @@ vi.mock('../auth/AuthContext', () => ({
   useAuth: () => mockAuth(),
 }));
 
+// Preferences now renders a notification email preference; stub its hooks and
+// the toast provider so the section stays renderable without an AuthProvider
+// tree or the real query client wiring.
+vi.mock('../hooks/useToast', () => ({
+  useToast: () => ({ addToast: vi.fn() }),
+}));
+vi.mock('../hooks/useTicketNotifications', () => ({
+  useNotificationSettings: () => ({ data: { ticket_email: 'your_turn' } }),
+  useUpdateNotificationSettings: () => ({ mutate: vi.fn() }),
+}));
+
 // Heavy sections are covered by their own tests; stub the ones that fetch.
 vi.mock('./DataProtectionSection', () => ({ default: () => <div>data-protection-stub</div> }));
 vi.mock('./IntegrationsSection', () => ({ default: () => <div>integrations-stub</div> }));

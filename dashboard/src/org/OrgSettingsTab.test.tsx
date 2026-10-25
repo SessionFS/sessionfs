@@ -47,6 +47,7 @@ const DEFAULTS = {
   kb_retention_days: 90,
   kb_max_context_words: 4000,
   kb_section_page_limit: 50,
+  helper_retention_days: 90,
 };
 
 beforeEach(() => {
@@ -95,6 +96,13 @@ describe('OrgSettingsTab', () => {
     expect(screen.getByLabelText(/^KB section page limit$/)).toHaveValue(50);
   });
 
+  it('renders the helper retention field populated from server state', async () => {
+    render(<OrgSettingsTab orgId="org_x" canEdit={true} />);
+    expect(
+      await screen.findByLabelText(/^Helper message retention \(days\)$/),
+    ).toHaveValue(90);
+  });
+
   it('does NOT render the legacy retention_days or compile_model fields', () => {
     // Phase 6 Round 3 (KB entry 298) removed these inert fields. They
     // should not appear in the form until runtime consumers exist.
@@ -119,6 +127,7 @@ describe('OrgSettingsTab', () => {
     expect(body.kb_retention_days).toBe(365);
     expect(body.kb_max_context_words).toBe(4000);
     expect(body.kb_section_page_limit).toBe(50);
+    expect(body.helper_retention_days).toBe(90);
   });
 
   it('empty fields submit as null (clears the override)', async () => {

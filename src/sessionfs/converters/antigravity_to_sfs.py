@@ -1791,8 +1791,20 @@ def convert_antigravity_to_sfs(
     session: AntigravityParsedSession,
     session_dir: Path,
     session_id: str | None = None,
+    *,
+    retire: set[str] | None = None,
 ) -> Path:
-    """Write a parsed Antigravity conversation as a .sfs session directory."""
+    """Write a parsed Antigravity conversation as a .sfs session directory.
+
+    ``workspace.json`` and ``tools.json`` are only produced when the source has
+    a workspace root / used tools. When a re-capture no longer has them, the
+    previous files must not linger. Rather than unlink them here (which would
+    run before the commit-time exclusion recheck and could retire a live file
+    from a commit that is then skipped), the converter adds their names to the
+    caller-provided ``retire`` set. The watcher forwards that set to
+    ``commit_session``, which unlinks them under the per-session lock after
+    the recheck, right before ``manifest.json`` moves.
+    """
     from sessionfs.converters.skill_detector import detect_skills, skills_to_tools_json
     from sessionfs.session_id import validate_session_id
     from sessionfs.utils.title_utils import extract_smart_title, is_usable_title, sanitize_secrets
@@ -1881,8 +1893,10 @@ def convert_antigravity_to_sfs(
             workspace["metadata"] = {"source": session.workspace_source}
         (session_dir / "workspace.json").write_text(json.dumps(workspace, indent=2))
     else:
-        # A recapture without a workspace must not keep the previous one.
-        (session_dir / "workspace.json").unlink(missing_ok=True)
+        # A recapture without a workspace must not keep the previous one. The
+        # name is retired by commit_session under the lock, after the recheck.
+        if retire is not None:
+            retire.add("workspace.json")
 
     tools: dict[str, Any] = {}
     if session.tools_used:
@@ -1893,7 +1907,10 @@ def convert_antigravity_to_sfs(
     if tools:
         (session_dir / "tools.json").write_text(json.dumps(tools, indent=2))
     else:
-        (session_dir / "tools.json").unlink(missing_ok=True)
+        # Retire a previous tools.json the same way: under the lock, after
+        # the recheck, not here.
+        if retire is not None:
+            retire.add("tools.json")
 
     return session_dir
 

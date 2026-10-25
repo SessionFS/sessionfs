@@ -204,6 +204,20 @@ def _normalize_verdict(raw: str) -> str:
     return VERDICT_CHANGES
 
 
+def verdict_from_header(content: str) -> Optional[str]:
+    """Return the canonical verdict when ``content`` carries a recognized
+    Codex review header, else ``None``.
+
+    Mirrors ``_parse_codex_comment``'s header gate so the notification layer
+    can decide whether a trusted reviewer's comment is actually a verdict
+    (``Codex R{N} review on tk_...: VERDICT``) rather than free-form prose.
+    """
+    match = _HEADER_RE.search(content or "")
+    if not match:
+        return None
+    return _normalize_verdict(match.group("verdict"))
+
+
 def _is_strict_verified_clean(raw: str) -> bool:
     """True ONLY for the literal canonical `VERIFIED-CLEAN` phrase.
 

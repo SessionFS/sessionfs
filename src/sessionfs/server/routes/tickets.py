@@ -43,7 +43,7 @@ import secrets
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, field_validator
 from sqlalchemy import and_, func, insert, literal, or_, select, update
 from sqlalchemy import false as sa_false
@@ -63,11 +63,13 @@ from sessionfs.server.db.models import (
     TicketComment,
     TicketDependency,
     TicketEdit,
+    TicketWatcher,
     TrustedReviewer,
     User,
 )
 from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.routes.wiki import _get_project_or_404
+from sessionfs.server.services import ticket_watchers
 from sessionfs.server.tier_gate import UserContext, check_project_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/projects", tags=["tickets"])
@@ -1298,6 +1300,48 @@ async def create_ticket(
     db.add(ticket)
     await db.flush()
 
+    # Ticket watchers: the creator follows automatically, and so does the
+    # assignee's human owner when the assignment maps to a persona that
+    # represents one. Subscribing here (inside the same transaction) means
+    # the follow commits atomically with the ticket. A service key acts on
+    # its minter's behalf, so the minter is NOT auto-subscribed here.
+    if auth.key_kind != "service":
+        await ticket_watchers.subscribe_guarded(
+            db, ticket_id=ticket.id, user_id=user.id, source="creator"
+        )
+    if normalized_assigned_to is not None:
+        from sessionfs.server.services.personas import (
+            visible_persona_org_id_for_auth,
+        )
+
+        assignee_human = await ticket_watchers.map_persona_to_human(
+            db,
+            project_id=project_id,
+            name=normalized_assigned_to,
+            org_id=await visible_persona_org_id_for_auth(db, project, auth),
+        )
+        if assignee_human is not None:
+            assignee_user_id, persona_name = assignee_human
+            await ticket_watchers.subscribe_guarded(
+                db,
+                ticket_id=ticket.id,
+                user_id=assignee_user_id,
+                source="assignee",
+                persona_name=persona_name,
+            )
+            # A ticket filed already assigned hands the assignee's human
+            # owner a "your turn" right away.
+            await ticket_watchers.emit_notifications(
+                db,
+                ticket=ticket,
+                kind="assignment",
+                summary=f"Assigned to {normalized_assigned_to}",
+                actor_user_id=None if auth.key_kind == "service" else user.id,
+                actor_type=auth.actor_type,
+                service_key_name=auth.service_key_name,
+                your_turn_user_id=assignee_user_id,
+            )
+
     # Attach dependencies AFTER existence + cycle check.
     if body.depends_on:
         # v0.10.1 Phase 3 Round 2 (KB 328) — dedup before validation +
@@ -1591,6 +1635,36 @@ async def update_ticket(
         )
     )
 
+    # Ticket watchers: a reassignment notifies watchers and hands the new
+    # assignee's human owner a "your turn", auto-subscribing them if the
+    # assignment maps to a persona they represent.
+    assignment_edit = next((edit for edit in edits if edit[0] == "assigned_to"), None)
+    if assignment_edit is not None:
+        from sessionfs.server.services.personas import visible_persona_org_id
+
+        _, _, new_assigned = assignment_edit
+        new_assignee_human = await ticket_watchers.map_persona_to_human(
+            db,
+            project_id=project_id,
+            name=new_assigned or "",
+            org_id=await visible_persona_org_id(db, project, user_id=user.id),
+        )
+        await ticket_watchers.emit_notifications(
+            db,
+            ticket=ticket,
+            kind="assignment",
+            summary=f"Assigned to {new_assigned}" if new_assigned else "Unassigned",
+            actor_user_id=user.id,
+            your_turn_user_id=(
+                new_assignee_human[0] if new_assignee_human is not None else None
+            ),
+            subscribe_users=(
+                [(new_assignee_human[0], "assignee", new_assignee_human[1])]
+                if new_assignee_human is not None
+                else None
+            ),
+        )
+
     await db.commit()
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
@@ -1762,6 +1836,18 @@ async def start_ticket(
         created_by_user_id=user.id,
     )
     db.add(audit_context)
+    # Ticket watchers: moving into in_progress is a status event for
+    # followers (the assignee's human owner is already subscribed from
+    # create/update, so they hear about it too).
+    await ticket_watchers.emit_notifications(
+        db,
+        ticket=ticket,
+        kind="status",
+        summary="Started — in progress",
+        actor_user_id=None if auth.key_kind == "service" else user.id,
+        actor_type=auth.actor_type,
+        service_key_name=auth.service_key_name,
+    )
     deps = await _ticket_dependencies(db, ticket.id)
     compiled = await _compile_persona_context(db, persona, ticket, tool=tool)
     await db.commit()
@@ -1823,18 +1909,36 @@ async def complete_ticket(
         _assert_lease_epoch(ticket, body.lease_epoch)
         _assert_transition(ticket.status, "review", ticket.kind)
         raise HTTPException(409, "Cannot complete ticket due to concurrent update")
-    await db.commit()
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
+    # Ticket watchers: entering review hands the reporter a "your turn" to
+    # review and accept; every other watcher gets a plain status event.
+    await ticket_watchers.emit_notifications(
+        db,
+        ticket=ticket,
+        kind="status",
+        summary="Moved to review — awaiting reporter",
+        actor_user_id=None if auth.key_kind == "service" else user.id,
+        actor_type=auth.actor_type,
+        service_key_name=auth.service_key_name,
+        your_turn_user_id=ticket.created_by_user_id,
+    )
+    await db.commit()
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
     return _to_response(ticket, deps)
 
 
-async def _enrich_dependents(db: AsyncSession, completed: Ticket) -> None:
+async def _enrich_dependents(
+    db: AsyncSession, completed: Ticket, actor_user_id: str
+) -> None:
     """When a ticket transitions to 'done', enrich every ticket that
     depends on it: append a completion comment with the notes, merge
     knowledge_entry_ids into the dependent's context_refs, and
     auto-unblock if all upstream deps are now done.
+
+    ``actor_user_id`` is the user whose resolution of ``completed``
+    triggered the unblock; it is passed through to the watcher
+    notification so dependents' watchers can see who unblocked them.
 
     v0.10.1 Phase 3 Round 2 (KB 326) — defensive same-project filter.
     The pre-validation on create rejects cross-project depends_on
@@ -1913,6 +2017,54 @@ async def _enrich_dependents(db: AsyncSession, completed: Ticket) -> None:
             ).scalars().all()
             if len(done_count) == len(upstream) and dependent.status == "blocked":
                 dependent.status = "in_progress"
+                # Ticket watchers: the dependent became actionable again.
+                await ticket_watchers.emit_notifications(
+                    db,
+                    ticket=dependent,
+                    kind="dependency_unblocked",
+                    summary=f"Unblocked — dependency #{completed.id} completed",
+                    actor_user_id=actor_user_id,
+                )
+
+
+async def _emit_status_notification(
+    db: AsyncSession,
+    *,
+    ticket: Ticket,
+    project: Project,
+    summary: str,
+    actor_user_id: str,
+    your_turn_assignee: bool = False,
+) -> None:
+    """Emit a plain status notification, optionally handing the current
+    assignee's human owner a "your turn" (and auto-subscribing them).
+
+    ``your_turn_assignee`` is used for transitions that put the work back
+    in the assignee's court (reopen, approve); the mapping is resolved
+    from the persona's ``represented_user_id`` and is skipped when it is
+    missing or ambiguous.
+    """
+    your_turn_user_id: str | None = None
+    subscribe: list[tuple[str, str, str | None]] | None = None
+    if your_turn_assignee:
+        assignee_human = await ticket_watchers.map_persona_to_human(
+            db,
+            project_id=project.id,
+            name=ticket.assigned_to or "",
+            org_id=project.org_id,
+        )
+        if assignee_human is not None:
+            your_turn_user_id = assignee_human[0]
+            subscribe = [(assignee_human[0], "assignee", assignee_human[1])]
+    await ticket_watchers.emit_notifications(
+        db,
+        ticket=ticket,
+        kind="status",
+        summary=summary,
+        actor_user_id=actor_user_id,
+        your_turn_user_id=your_turn_user_id,
+        subscribe_users=subscribe,
+    )
 
 
 @router.post(
@@ -1991,7 +2143,15 @@ async def accept_ticket(
     # Refresh the row after the atomic transition so enrichment sees
     # status='done' and the new resolved_at/updated_at.
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
-    await _enrich_dependents(db, ticket)
+    await _enrich_dependents(db, ticket, actor_user_id=user.id)
+    # Ticket watchers: resolution is a plain status event for followers.
+    await ticket_watchers.emit_notifications(
+        db,
+        ticket=ticket,
+        kind="status",
+        summary="Resolved",
+        actor_user_id=user.id,
+    )
 
     await db.commit()
     await db.refresh(ticket)
@@ -2018,6 +2178,14 @@ async def reopen_ticket(
 
     ticket.status = "open"
     ticket.updated_at = datetime.now(timezone.utc)
+    await _emit_status_notification(
+        db,
+        ticket=ticket,
+        project=project,
+        summary="Reopened — changes requested",
+        actor_user_id=user.id,
+        your_turn_assignee=True,
+    )
     await db.commit()
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
@@ -2043,6 +2211,13 @@ async def block_ticket(
 
     ticket.status = "blocked"
     ticket.updated_at = datetime.now(timezone.utc)
+    await _emit_status_notification(
+        db,
+        ticket=ticket,
+        project=project,
+        summary="Blocked",
+        actor_user_id=user.id,
+    )
     await db.commit()
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
@@ -2068,6 +2243,13 @@ async def unblock_ticket(
 
     ticket.status = "in_progress"
     ticket.updated_at = datetime.now(timezone.utc)
+    await _emit_status_notification(
+        db,
+        ticket=ticket,
+        project=project,
+        summary="Unblocked",
+        actor_user_id=user.id,
+    )
     await db.commit()
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
@@ -2093,6 +2275,14 @@ async def approve_ticket(
 
     ticket.status = "open"
     ticket.updated_at = datetime.now(timezone.utc)
+    await _emit_status_notification(
+        db,
+        ticket=ticket,
+        project=project,
+        summary="Approved — ready to start",
+        actor_user_id=user.id,
+        your_turn_assignee=True,
+    )
     await db.commit()
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
@@ -2120,6 +2310,13 @@ async def dismiss_ticket(
 
     ticket.status = "cancelled"
     ticket.updated_at = datetime.now(timezone.utc)
+    await _emit_status_notification(
+        db,
+        ticket=ticket,
+        project=project,
+        summary="Cancelled",
+        actor_user_id=user.id,
+    )
     await db.commit()
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
@@ -2175,6 +2372,13 @@ async def close_issue(
     ticket.status = "closed"
     ticket.resolved_at = now
     ticket.updated_at = now
+    await _emit_status_notification(
+        db,
+        ticket=ticket,
+        project=project,
+        summary="Closed",
+        actor_user_id=user.id,
+    )
     await db.commit()
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
@@ -2412,6 +2616,68 @@ async def create_ticket_comment(
         ticket = await _get_ticket_or_404(project_id, ticket_id, db)
         _assert_lease_epoch(ticket, body.lease_epoch)
         raise HTTPException(409, "Cannot add comment due to concurrent update")
+
+    ticket = await _get_ticket_or_404(project_id, ticket_id, db)
+    # Ticket watchers: the author follows (as a commenter, or as a trusted
+    # reviewer when the comment is an authoritative verdict) and every other
+    # watcher learns about the new comment. A service key acts on its
+    # minter's behalf, so the minter is NOT auto-subscribed and the action
+    # is attributed to the service key (actor_user_id=None) — the minter is
+    # then notified like any other watcher instead of silently suppressed.
+    if auth.key_kind != "service":
+        await ticket_watchers.subscribe_guarded(
+            db,
+            ticket_id=ticket.id,
+            user_id=user.id,
+            source="reviewer" if verdict_trusted else "commenter",
+            persona_name=body.author_persona,
+        )
+    actor_user_id = None if auth.key_kind == "service" else user.id
+
+    # A trusted reviewer's comment is only a *review verdict* when it carries
+    # the structured Codex header the review-state parser recognizes;
+    # otherwise it is a plain comment.
+    verdict = ticket_watchers.parse_verdict(body.content) if verdict_trusted else None
+    if verdict is not None:
+        from sessionfs.server.services.review_state import VERDICT_CHANGES
+
+        changes = verdict == VERDICT_CHANGES
+        verdict_label = "changes requested" if changes else "verified clean"
+        # A trusted "changes requested" verdict sends the implementer back
+        # to work; a clean verdict hands the reporter the accept decision.
+        your_turn_user_id: str | None
+        if changes:
+            assignee_human = await ticket_watchers.map_persona_to_human(
+                db,
+                project_id=project.id,
+                name=ticket.assigned_to or "",
+                org_id=project.org_id,
+            )
+            your_turn_user_id = (
+                assignee_human[0] if assignee_human is not None else None
+            )
+        else:
+            your_turn_user_id = ticket.created_by_user_id
+        await ticket_watchers.emit_notifications(
+            db,
+            ticket=ticket,
+            kind="review_verdict",
+            summary=f"Review verdict: {verdict_label}",
+            actor_user_id=actor_user_id,
+            actor_type=auth.actor_type,
+            service_key_name=auth.service_key_name,
+            your_turn_user_id=your_turn_user_id,
+        )
+    else:
+        await ticket_watchers.emit_notifications(
+            db,
+            ticket=ticket,
+            kind="comment",
+            summary="New comment",
+            actor_user_id=actor_user_id,
+            actor_type=auth.actor_type,
+            service_key_name=auth.service_key_name,
+        )
     await db.commit()
     comment = (
         await db.execute(select(TicketComment).where(TicketComment.id == comment_id))
@@ -2426,3 +2692,124 @@ async def create_ticket_comment(
         session_id=comment.session_id,
         created_at=comment.created_at,
     )
+
+
+# ── Ticket watching (follow / unfollow / mute / watchers) ──
+
+
+class WatchRequest(BaseModel):
+    muted: bool = False
+
+
+class WatcherResponse(BaseModel):
+    user_id: str
+    persona_name: str | None
+    source: str
+    muted: bool
+    created_at: datetime
+
+
+async def _get_watch_project_or_404(
+    project_id: str, db: AsyncSession, user_id: str
+) -> Project:
+    """Load a project for the watch routes, raising 404 (never 403) when
+    the user cannot access it, so a cross-org request can't learn that the
+    project (or its tickets) exists."""
+    from sessionfs.server.auth.project_access import user_can_access_project
+
+    project = (
+        await db.execute(select(Project).where(Project.id == project_id))
+    ).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(404, "Project not found")
+    if not await user_can_access_project(db, user_id, project):
+        raise HTTPException(404, "Project not found")
+    return project
+
+
+@router.put(
+    "/{project_id}/tickets/{ticket_id}/watch",
+    response_model=WatcherResponse,
+)
+async def watch_ticket(
+    project_id: str,
+    ticket_id: str,
+    body: WatchRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> WatcherResponse:
+    """Follow a ticket (optionally muted). Idempotent: a second PUT
+    updates the mute flag without duplicating the follow."""
+    await _get_watch_project_or_404(project_id, db, user.id)
+    await _get_ticket_or_404(project_id, ticket_id, db)
+
+    await ticket_watchers.subscribe(
+        db, ticket_id=ticket_id, user_id=user.id, source="explicit"
+    )
+    await ticket_watchers.set_muted(db, ticket_id=ticket_id, user_id=user.id, muted=body.muted)
+    await db.commit()
+
+    row = (
+        await db.execute(
+            select(TicketWatcher).where(
+                TicketWatcher.ticket_id == ticket_id,
+                TicketWatcher.user_id == user.id,
+            )
+        )
+    ).scalar_one()
+    return WatcherResponse(
+        user_id=row.user_id,
+        persona_name=row.persona_name,
+        source=row.source,
+        muted=row.muted,
+        created_at=row.created_at,
+    )
+
+
+@router.delete(
+    "/{project_id}/tickets/{ticket_id}/watch",
+    status_code=204,
+)
+async def unwatch_ticket(
+    project_id: str,
+    ticket_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Stop following a ticket. Idempotent: unfollowing an unfollowed
+    ticket is a no-op."""
+    await _get_watch_project_or_404(project_id, db, user.id)
+    await _get_ticket_or_404(project_id, ticket_id, db)
+    await ticket_watchers.unsubscribe(db, ticket_id=ticket_id, user_id=user.id)
+    await db.commit()
+    return Response(status_code=204)
+
+
+@router.get(
+    "/{project_id}/tickets/{ticket_id}/watchers",
+    response_model=list[WatcherResponse],
+)
+async def list_ticket_watchers(
+    project_id: str,
+    ticket_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[WatcherResponse]:
+    """List a ticket's watchers (project members only)."""
+    await _get_watch_project_or_404(project_id, db, user.id)
+    await _get_ticket_or_404(project_id, ticket_id, db)
+    rows = (
+        await db.execute(
+            select(TicketWatcher).where(TicketWatcher.ticket_id == ticket_id)
+        )
+    ).scalars().all()
+    return [
+        WatcherResponse(
+            user_id=r.user_id,
+            persona_name=r.persona_name,
+            source=r.source,
+            muted=r.muted,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]

@@ -6,10 +6,11 @@ import { useHandoffInbox } from '../hooks/useHandoffs';
 import { useMe } from '../hooks/useMe';
 import { useTransfers } from '../transfers/useTransfers';
 import { useMyInvites } from '../invites/useInvites';
+import { useTicketNotificationUnreadCount } from '../hooks/useTicketNotifications';
 import SearchBar from './SearchBar';
 import ThemeToggle from './ThemeToggle';
 import { Badge } from './Badge';
-import { Dropdown, Tooltip } from './ui';
+import { Dropdown, IconButton, Tooltip } from './ui';
 import Wordmark from './Wordmark';
 import { displayTier } from '../utils/tier';
 import { useHelper } from '../helper/HelperProvider';
@@ -56,6 +57,9 @@ const settingsIcon = mkIcon(
 const helpIcon = mkIcon(
   <><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .9-1 1.7" /><line x1="12" y1="17" x2="12" y2="17.01" /></>
 );
+const bellIcon = mkIcon(
+  <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></>
+);
 const adminIcon = mkIcon(
   <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></>
 );
@@ -77,7 +81,7 @@ interface NavItem {
   match: (p: string) => boolean;
   orgOnly?: boolean;
   adminOnly?: boolean;
-  badgeKey?: 'pending' | 'transfers' | 'invites';
+  badgeKey?: 'pending' | 'transfers' | 'invites' | 'notifications';
 }
 
 interface NavGroup {
@@ -102,6 +106,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Inbox',
     items: [
+      { to: '/inbox', label: 'Notifications', icon: bellIcon, match: (p: string) => p.startsWith('/inbox'), badgeKey: 'notifications' },
       { to: '/invites', label: 'Invites', icon: invitesIcon, match: (p: string) => p.startsWith('/invites'), badgeKey: 'invites' },
       { to: '/transfers', label: 'Transfers', icon: transfersIcon, match: (p: string) => p.startsWith('/transfers'), badgeKey: 'transfers' },
     ],
@@ -199,6 +204,8 @@ export default function Layout() {
   const transfersPendingCount = incomingTransfers.data?.transfers.length ?? 0;
   const myInvites = useMyInvites();
   const invitesPendingCount = myInvites.data?.invites.length ?? 0;
+  const notificationCount = useTicketNotificationUnreadCount();
+  const notificationsUnread = notificationCount.data?.count ?? 0;
 
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -247,6 +254,7 @@ export default function Layout() {
       case 'pending': return pendingCount;
       case 'transfers': return transfersPendingCount;
       case 'invites': return invitesPendingCount;
+      case 'notifications': return notificationsUnread;
       default: return undefined;
     }
   }
@@ -455,8 +463,29 @@ export default function Layout() {
             </button>
           </div>
 
-          {/* Right: ThemeToggle + Account menu */}
+          {/* Right: notification bell + ThemeToggle + Account menu */}
           <div className="flex items-center gap-2 shrink-0">
+            <IconButton
+              label={`Inbox${notificationsUnread > 0 ? ` (${notificationsUnread} unread)` : ''}`}
+              variant="ghost"
+              className="relative"
+              onClick={() => navigate('/inbox')}
+            >
+              <span className="flex items-center justify-center w-5 h-5">{bellIcon}</span>
+              {notificationsUnread > 0 && (
+                <span
+                  className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full text-[10px] font-semibold tabular-nums flex items-center justify-center"
+                  style={{
+                    backgroundColor: 'color-mix(in srgb, var(--warning) 18%, transparent)',
+                    color: 'var(--warning)',
+                  }}
+                  role="status"
+                  aria-label={`${notificationsUnread} unread`}
+                >
+                  {notificationsUnread > 99 ? '99+' : notificationsUnread}
+                </span>
+              )}
+            </IconButton>
             <ThemeToggle theme={theme} onToggle={toggleTheme} />
             <Dropdown
               trigger={(open) => (

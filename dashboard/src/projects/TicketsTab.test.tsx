@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TicketsTab from './TicketsTab';
 
-const { hooks, mockAddToast } = vi.hoisted(() => ({
+const { hooks, mockAddToast, mockUseMe } = vi.hoisted(() => ({
   hooks: {
     useTickets: vi.fn(),
     useTicket: vi.fn(),
@@ -14,11 +14,18 @@ const { hooks, mockAddToast } = vi.hoisted(() => ({
     useDismissTicket: vi.fn(),
     useCloseTicket: vi.fn(),
     useAddTicketComment: vi.fn(),
+    useTicketWatchers: vi.fn(),
+    useWatchTicket: vi.fn(),
+    useUnwatchTicket: vi.fn(),
   },
   mockAddToast: vi.fn(),
+  mockUseMe: vi.fn(),
 }));
 
 vi.mock('../hooks/useTickets', () => hooks);
+vi.mock('../hooks/useMe', () => ({
+  useMe: mockUseMe,
+}));
 vi.mock('../hooks/useToast', () => ({
   useToast: () => ({ addToast: mockAddToast }),
 }));
@@ -69,6 +76,17 @@ function ticket(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function watcher(overrides: Record<string, unknown> = {}) {
+  return {
+    user_id: 'u1',
+    persona_name: null,
+    source: 'explicit',
+    muted: false,
+    created_at: '2026-05-14T01:00:00Z',
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   hooks.useTickets.mockReturnValue({ data: [ticket()], isLoading: false, error: null });
   hooks.useTicket.mockReturnValue({ data: undefined });
@@ -79,6 +97,10 @@ beforeEach(() => {
   hooks.useDismissTicket.mockReturnValue(makeMutation());
   hooks.useCloseTicket.mockReturnValue(makeMutation());
   hooks.useAddTicketComment.mockReturnValue(makeMutation());
+  hooks.useTicketWatchers.mockReturnValue({ data: [] });
+  hooks.useWatchTicket.mockReturnValue(makeMutation());
+  hooks.useUnwatchTicket.mockReturnValue(makeMutation());
+  mockUseMe.mockReturnValue({ data: { user_id: 'u1' }, isLoading: false });
 });
 
 afterEach(() => {
@@ -371,5 +393,55 @@ describe('TicketsTab', () => {
     fireEvent.click(screen.getByText('Add session export'));
     expect(screen.getByRole('button', { name: /Approve/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument();
+  });
+
+  /* ── Follow / unfollow / mute (ticket watchers) ── */
+
+  it('renders a Follow button when the current user is not watching', () => {
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('Add session export'));
+    expect(screen.getByRole('button', { name: 'Follow' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Unfollow' })).toBeNull();
+  });
+
+  it('follows the ticket when the Follow button is clicked', async () => {
+    const watch = makeMutation({ mutateAsync: vi.fn().mockResolvedValue({}) });
+    hooks.useWatchTicket.mockReturnValue(watch);
+    const user = userEvent.setup();
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('Add session export'));
+    await user.click(screen.getByRole('button', { name: 'Follow' }));
+    expect(watch.mutateAsync).toHaveBeenCalledWith(
+      { ticketId: 'tk_1', muted: false },
+    );
+  });
+
+  it('shows Following + Unfollow + Mute when the current user is watching', () => {
+    hooks.useTicketWatchers.mockReturnValue({ data: [watcher()] });
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('Add session export'));
+    expect(screen.getByText('Following')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unfollow' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Mute' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Follow' })).toBeNull();
+  });
+
+  it('shows the muted state and Unmute when watching muted', () => {
+    hooks.useTicketWatchers.mockReturnValue({ data: [watcher({ muted: true })] });
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('Add session export'));
+    expect(screen.getByText('Following (muted)')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unmute' })).toBeInTheDocument();
+  });
+
+  it('unfollows when the Unfollow button is clicked', async () => {
+    hooks.useTicketWatchers.mockReturnValue({ data: [watcher()] });
+    const unwatch = makeMutation({ mutateAsync: vi.fn().mockResolvedValue(undefined) });
+    hooks.useUnwatchTicket.mockReturnValue(unwatch);
+    const user = userEvent.setup();
+    render(<TicketsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('Add session export'));
+    await user.click(screen.getByRole('button', { name: 'Unfollow' }));
+    expect(unwatch.mutateAsync).toHaveBeenCalledWith('tk_1');
   });
 });

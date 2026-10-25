@@ -4,6 +4,7 @@ import { useAuth } from '../auth/AuthContext';
 import { useJudgeSettings } from '../hooks/useJudgeSettings';
 import { Button } from '../components/ui/Button';
 import Skeleton from '../components/Skeleton';
+import { Alert } from '../components/ui/Alert';
 import { Card } from '../components/ui/Card';
 
 interface Props {
@@ -206,7 +207,13 @@ export default function SummaryTab({ sessionId }: Props) {
         </Card>
       ) : (
         <Card className="mb-4 flex flex-col items-center py-6">
-          <p className="text-sm text-text-secondary mb-2">No narrative summary yet.</p>
+          {summary.narrative_error ? (
+            <Alert variant="danger" title="Could not generate narrative" className="w-full mb-2">
+              {summary.narrative_error.message}
+            </Alert>
+          ) : (
+            <p className="text-sm text-text-secondary mb-2">No narrative summary yet.</p>
+          )}
           {!judgeSettings?.key_set ? (
             <p className="text-xs text-text-tertiary">Configure judge settings to enable narrative generation.</p>
           ) : (

@@ -33,9 +33,11 @@ import { errorMessage } from '../utils/errorMessage';
 interface TicketsTabProps {
   projectId: string;
   jira?: TicketJiraSurface;
+  /** Ticket id from a deep link (?ticket=…) — expanded on first mount. */
+  initialTicketId?: string | null;
 }
 
-export default function TicketsTab({ projectId, jira }: TicketsTabProps) {
+export default function TicketsTab({ projectId, jira, initialTicketId }: TicketsTabProps) {
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [kindFilter, setKindFilter] = useState<string>('');
   const { data, isLoading, error } = useTickets(projectId, {
@@ -43,7 +45,7 @@ export default function TicketsTab({ projectId, jira }: TicketsTabProps) {
     kind: kindFilter || undefined,
   });
   const [creating, setCreating] = useState(false);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string | null>(initialTicketId ?? null);
   const [viewMode, setViewMode] = useState<'list' | 'board'>(() => {
     const stored =
       typeof window !== 'undefined'

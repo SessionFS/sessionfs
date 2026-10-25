@@ -162,7 +162,7 @@ class TestOpenRouterDetection:
     def test_unknown_model_routes_to_openrouter(self):
         from sessionfs.judge.providers import _detect_provider
 
-        assert _detect_provider("mistral-large-2") == "openrouter"
+        assert _detect_provider("mistral-large-2") == "mistral"
 
     def test_known_models_still_work(self):
         from sessionfs.judge.providers import _detect_provider

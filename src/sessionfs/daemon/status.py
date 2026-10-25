@@ -52,16 +52,12 @@ class DaemonStatus(BaseModel):
 
 
 def write_status(status: DaemonStatus, status_path: Path) -> None:
-    """Write daemon status atomically (write to temp, rename)."""
+    """Write daemon status atomically and durably (temp + fsync + rename)."""
     try:
+        from sessionfs.store.fsutil import atomic_write_text
+
         status.last_updated_at = datetime.now(timezone.utc).isoformat()
-        status_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = status_path.with_suffix(".tmp")
-        tmp_path.write_text(json.dumps(status.model_dump(), indent=2))
-        import os as _os
-        import stat as _stat
-        _os.chmod(tmp_path, _stat.S_IRUSR | _stat.S_IWUSR)  # 0o600
-        tmp_path.rename(status_path)
+        atomic_write_text(status_path, json.dumps(status.model_dump(), indent=2))
     except OSError:
         pass  # Non-fatal — status is informational, don't crash the daemon
 

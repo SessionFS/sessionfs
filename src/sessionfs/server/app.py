@@ -13,7 +13,7 @@ from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
 from sessionfs.server.middleware import MetricsMiddleware, RequestLoggingMiddleware
-from sessionfs.server.routes import activation, admin, admin_licenses, agent_feedback, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, dlp, handoffs, health, helm, helper, jira, knowledge, marketplace, marketplace_disclosure, marketplace_discovery, marketplace_moderation, marketplace_publishers, marketplace_scanning, metrics, native_catalogs, org, org_llm_settings, org_members, personas, project_transfers, projects, residents, retrieval_audit, rules, sessions, settings, skill_policy, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, uploads, webhooks, wiki, work_queues
+from sessionfs.server.routes import activation, admin, admin_licenses, agent_feedback, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, dlp, handoffs, health, helm, helper, jira, knowledge, llm_providers, marketplace, marketplace_disclosure, marketplace_discovery, marketplace_moderation, marketplace_publishers, marketplace_scanning, me, metrics, native_catalogs, org, org_llm_settings, org_members, personas, project_transfers, projects, residents, retrieval_audit, rules, sessions, settings, skill_policy, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, uploads, webhooks, wiki, work_queues
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -174,6 +174,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(residents.router)
     app.include_router(audit.router)
     app.include_router(settings.router)
+    app.include_router(llm_providers.router)
     app.include_router(bookmarks.router)
     app.include_router(admin.router)
     app.include_router(metrics.router)
@@ -194,6 +195,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     # Tickets same precedence (v0.10.1 Phase 3): `/tickets` subpath
     # under projects must beat the catch-all.
     app.include_router(tickets.router)
+    app.include_router(me.router)
     # Jira promotion routes register before projects.router's catch-all
     # `/{git_remote_normalized:path}` (same precedence trick as
     # rules/transfers/personas/tickets); org-scoped connection routes are

@@ -20,6 +20,14 @@ vi.mock('../auth/AuthContext', () => ({
   }),
 }));
 
+// The notification email preference card is audited for real; only its data
+// and toast hooks are stubbed.
+vi.mock('../hooks/useToast', () => ({ useToast: () => ({ addToast: vi.fn() }) }));
+vi.mock('../hooks/useTicketNotifications', () => ({
+  useNotificationSettings: () => ({ data: { ticket_email: 'your_turn' }, isLoading: false }),
+  useUpdateNotificationSettings: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
 // Fetch-heavy sections have their own suites; the shell, Account and
 // Preferences sections are audited for real.
 vi.mock('../settings/DataProtectionSection', () => ({ default: () => <p>data protection</p> }));

@@ -101,7 +101,29 @@ async def test_discovery_post_public(client, auth_headers, upstream):
     assert upstream[0].headers["Authorization"] == "Bearer sk-x"
 
 
-async def test_discovery_get_uses_saved_key(client, auth_headers, upstream):
+async def test_discovery_get_uses_saved_key_for_its_own_endpoint(client, auth_headers, upstream):
+    await client.put(
+        "/api/v1/settings/judge",
+        json={
+            "provider": "openai",
+            "model": "m",
+            "api_key": "sk-saved",
+            "base_url": "https://llm.example.com/v1",
+        },
+        headers=auth_headers,
+    )
+    r = await client.get(
+        "/api/v1/settings/judge/models",
+        params={"base_url": "https://llm.example.com/v1"},
+        headers=auth_headers,
+    )
+    assert r.status_code == 200
+    assert upstream[0].headers["Authorization"] == "Bearer sk-saved"
+
+
+async def test_discovery_never_sends_saved_key_to_another_endpoint(client, auth_headers, upstream):
+    """A saved key is write-only: listing models at a different URL must not
+    carry it there (that would hand the key to whoever runs that host)."""
     await client.put(
         "/api/v1/settings/judge",
         json={"provider": "openai", "model": "m", "api_key": "sk-saved", "base_url": None},
@@ -113,7 +135,7 @@ async def test_discovery_get_uses_saved_key(client, auth_headers, upstream):
         headers=auth_headers,
     )
     assert r.status_code == 200
-    assert upstream[0].headers["Authorization"] == "Bearer sk-saved"
+    assert "Authorization" not in upstream[0].headers
 
 
 @pytest.mark.parametrize(

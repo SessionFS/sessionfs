@@ -380,20 +380,28 @@ class SessionPruner:
         return result
 
     def _delete_session(self, session_id: str) -> None:
-        """Delete a session from disk and SQLite index."""
-        sfs_dir = self._sessions_dir / f"{session_id}.sfs"
+        """Delete a session from disk and SQLite index.
 
-        # Remove from disk first: if that fails the error propagates and the
-        # index rows stay, so the session is still listed and pruned later.
-        if sfs_dir.is_dir():
-            shutil.rmtree(sfs_dir)
-
-        # Remove the session row but keep its native tracking fingerprint, so
-        # the watcher does not treat the still-present source as new and
-        # recapture it on the next scan.
+        Runs under the same per-session lock a capture's ``commit_session``
+        takes, so a capture racing this prune can't resurrect a half-removed
+        directory (or commit over a directory mid-deletion).
+        """
+        from sessionfs.store.local import lock_session_dir
         from sessionfs.store.index import prune_session_rows
 
-        prune_session_rows(self._conn, session_id)
+        with lock_session_dir(self._sessions_dir, session_id):
+            sfs_dir = self._sessions_dir / f"{session_id}.sfs"
+
+            # Remove from disk first: if that fails the error propagates and
+            # the index rows stay, so the session is still listed and pruned
+            # later.
+            if sfs_dir.is_dir():
+                shutil.rmtree(sfs_dir)
+
+            # Remove the session row but keep its native tracking fingerprint,
+            # so the watcher does not treat the still-present source as new
+            # and recapture it on the next scan.
+            prune_session_rows(self._conn, session_id)
 
         logger.info("Deleted session %s", session_id)
 

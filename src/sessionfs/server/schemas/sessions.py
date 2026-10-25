@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class SessionSummary(BaseModel):
@@ -145,12 +145,32 @@ class SessionUploadStatusResponse(BaseModel):
     expires_at: datetime
 
 
+class MessageTarget(BaseModel):
+    """Where ``?around=<n>`` landed.
+
+    ``index`` is the requested 0-based ``messages.jsonl`` line number.
+    ``status`` is ``found`` when that message is on the returned page,
+    ``hidden`` when it exists but this view filters it out (sidechain or empty),
+    and ``missing`` when no message has that line number.  For ``hidden`` and
+    ``missing`` the page holds ``anchor_index`` instead — the nearest message the
+    view does show — or ``anchor_index`` is null when the view shows nothing.
+    """
+
+    index: int
+    status: Literal["found", "hidden", "missing"]
+    anchor_index: int | None = None
+
+
 class MessagesResponse(BaseModel):
     messages: list[dict]
+    # 0-based ``messages.jsonl`` line number of each entry in ``messages`` —
+    # the same index the session helper cites as ``msg:<n>``.
+    message_indexes: list[int] = Field(default_factory=list)
     total: int
     page: int
     page_size: int
     has_more: bool
+    target: MessageTarget | None = None
 
 
 class WorkspaceResponse(BaseModel):

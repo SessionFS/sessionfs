@@ -54,10 +54,17 @@ vi.mock('../helper/HelperProvider', () => ({
 // Stub heavy sub-components so we can focus on the main flow without
 // setting up their hooks.
 vi.mock('./ConversationView', () => ({
-  default: () => <div data-testid="conversation-view">Conversation</div>,
+  default: ({ targetMessage }: { targetMessage?: number }) => (
+    <div data-testid="conversation-view" data-target={targetMessage ?? ''}>Conversation</div>
+  ),
 }));
 vi.mock('./AuditTab', () => ({
-  default: () => <div data-testid="audit-tab">Audit findings</div>,
+  default: ({ onJumpToMessage }: { onJumpToMessage?: (idx: number) => void }) => (
+    <div data-testid="audit-tab">
+      Audit findings
+      <button onClick={() => onJumpToMessage?.(5)}>jump to message 5</button>
+    </div>
+  ),
 }));
 vi.mock('./SummaryTab', () => ({
   default: () => <div data-testid="summary-tab">Summary content</div>,
@@ -102,9 +109,9 @@ function baseSession(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function renderPage(sessionId = 'ses_abc123') {
+function renderPage(sessionId = 'ses_abc123', search = '') {
   return render(
-    <MemoryRouter initialEntries={[`/sessions/${sessionId}`]}>
+    <MemoryRouter initialEntries={[`/sessions/${sessionId}${search}`]}>
       <Routes>
         <Route path="/sessions/:id" element={<SessionDetail />} />
         <Route path="/" element={<div>home</div>} />
@@ -197,6 +204,22 @@ describe('SessionDetail', () => {
     expect(screen.queryByTestId('summary-tab')).not.toBeInTheDocument();
   });
 
+  it('passes a ?msg= deep link to the conversation view', () => {
+    hooks.useSession.mockReturnValue({ data: baseSession(), isLoading: false, error: null, refetch: vi.fn() });
+    renderPage('ses_abc123', '?msg=12');
+    expect(screen.getByTestId('conversation-view')).toHaveAttribute('data-target', '12');
+    expect(screen.getByRole('tab', { name: /messages/i })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('ignores a malformed ?msg= value', () => {
+    hooks.useSession.mockReturnValue({ data: baseSession(), isLoading: false, error: null, refetch: vi.fn() });
+    for (const bad of ['?msg=abc', '?msg=-3', '?msg=1.5', '?msg=']) {
+      const { unmount } = renderPage('ses_abc123', bad);
+      expect(screen.getByTestId('conversation-view')).toHaveAttribute('data-target', '');
+      unmount();
+    }
+  });
+
   it('switching to the Summary tab renders the summary panel', async () => {
     hooks.useSession.mockReturnValue({
       data: baseSession(),
@@ -230,6 +253,27 @@ describe('SessionDetail', () => {
     await waitFor(() => {
       expect(screen.getByTestId('audit-tab')).toBeInTheDocument();
     });
+  });
+
+  it('"Jump to message" in the audit tab deep-links via ?msg=<n>', async () => {
+    hooks.useSession.mockReturnValue({
+      data: baseSession(),
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    renderPage();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('tab', { name: /audit/i }));
+    await user.click(screen.getByRole('button', { name: /jump to message 5/i }));
+
+    // The jump routes through the same `?msg=<n>` deep link ConversationView
+    // reads, so the message tab reopens targeted at the exact 0-based line.
+    await waitFor(() => {
+      expect(screen.getByTestId('conversation-view')).toHaveAttribute('data-target', '5');
+    });
+    expect(screen.getByRole('tab', { name: /messages/i })).toHaveAttribute('aria-selected', 'true');
   });
 
   it('clicking the title opens a side-by-side title + alias edit form', async () => {

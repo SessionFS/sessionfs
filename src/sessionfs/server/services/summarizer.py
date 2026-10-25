@@ -7,6 +7,9 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Any
+
+import httpx
 
 logger = logging.getLogger("sessionfs.summarizer")
 
@@ -48,6 +51,10 @@ class SessionSummary:
     outcome: str | None = None
     open_issues: list[str] | None = None
     narrative_model: str | None = None
+
+    # Machine-readable failure from the narrative LLM call (transient — never
+    # persisted), so the endpoint can surface it instead of an empty 200.
+    narrative_error: dict[str, Any] | None = None
 
     generated_at: str = ""
 
@@ -175,6 +182,54 @@ def _build_narrative_prompt(summary: SessionSummary, messages: list[dict]) -> st
     return "\n".join(parts)
 
 
+def _narrative_error_snippet(exc: Exception, api_key: str) -> tuple[int | None, str]:
+    """Extract a short, sanitized description of an upstream LLM failure.
+
+    Returns ``(status, message)`` where ``message`` never contains the API key
+    and carries at most a 300-char snippet of the upstream body (preferring the
+    parsed ``error.message`` field when the body is JSON).
+    """
+    status: int | None = None
+    text = ""
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        try:
+            text = exc.response.text
+        except Exception:
+            text = ""
+    else:
+        # Never echo transport errors: with a caller-chosen endpoint they would
+        # tell connection-refused from TLS failure from a blocked address
+        # (a network probe). Model discovery follows the same rule.
+        if isinstance(exc, httpx.TimeoutException):
+            return None, "The LLM request timed out."
+        if isinstance(exc, httpx.RequestError):
+            return None, "Could not reach the LLM endpoint."
+        if isinstance(exc, (ValueError, KeyError, TypeError)):
+            return None, "The model's answer could not be read."
+        return None, "The LLM request failed."
+
+    try:
+        data = json.loads(text)
+    except Exception:
+        data = None
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict):
+            msg = err.get("message")
+            if isinstance(msg, str) and msg:
+                text = msg
+        elif isinstance(err, str) and err:
+            text = err
+
+    if api_key:
+        text = text.replace(api_key, "***")
+    text = "".join(ch if ch.isprintable() else " " for ch in text).strip() or "The LLM request failed."
+    if len(text) > 300:
+        text = text[:300] + "..."
+    return status, text
+
+
 async def generate_narrative(
     summary: SessionSummary,
     messages: list[dict],
@@ -215,8 +270,18 @@ async def generate_narrative(
         summary.outcome = data.get("outcome")
         summary.open_issues = data.get("open_issues") or []
         summary.narrative_model = model
-    except Exception:
-        logger.warning("Narrative generation failed — returning summary without narrative", exc_info=True)
+    except Exception as exc:
+        status, message = _narrative_error_snippet(exc, api_key)
+        summary.narrative_error = {
+            "code": "llm_request_failed",
+            "message": message,
+            "status": status,
+        }
+        logger.warning(
+            "Narrative generation failed — returning summary without narrative (%s): %s",
+            type(exc).__name__,
+            message,
+        )
 
     return summary
 

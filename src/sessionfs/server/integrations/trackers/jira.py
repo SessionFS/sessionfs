@@ -445,6 +445,12 @@ class JiraClient:
             "email": data.get("emailAddress"),
         }
 
+    async def myself_account_id(self) -> str:
+        """The connection's own Atlassian ``accountId`` (from ``/myself``)."""
+        data = await self._request("GET", "/rest/api/3/myself")
+        account_id = data.get("accountId") if isinstance(data, dict) else None
+        return str(account_id) if account_id else ""
+
     async def list_projects(self) -> list[TrackerProject]:
         """All projects the credentials can see (issue types left empty).
 
@@ -535,7 +541,11 @@ class JiraClient:
         data = await self._request(
             "GET",
             "/rest/api/3/search/jql",
-            params={"jql": jql, "fields": "key,id", "maxResults": 1},
+            params={
+                "jql": jql,
+                "fields": "key,id,project,creator,reporter,created",
+                "maxResults": 1,
+            },
         )
         issues = data.get("issues") if isinstance(data, dict) else None
         if not isinstance(issues, list):
@@ -549,11 +559,30 @@ class JiraClient:
             if not isinstance(key, str) or not _ISSUE_KEY_RE.match(key.strip()):
                 continue
             key = key.strip()
+            raw_fields = raw.get("fields")
+            fields = raw_fields if isinstance(raw_fields, dict) else {}
+            project = fields.get("project")
+            creator = fields.get("creator")
+            reporter = fields.get("reporter")
+            project_key_value = project.get("key") if isinstance(project, dict) else None
+            created_at = fields.get("created")
             return TrackerIssue(
                 key=key,
                 url=self._browse_url(key),
                 status="",
                 id=str(raw["id"]) if raw.get("id") is not None else None,
+                project_key=project_key_value if isinstance(project_key_value, str) else None,
+                creator_account_id=(
+                    creator.get("accountId")
+                    if isinstance(creator, dict) and isinstance(creator.get("accountId"), str)
+                    else None
+                ),
+                reporter_account_id=(
+                    reporter.get("accountId")
+                    if isinstance(reporter, dict) and isinstance(reporter.get("accountId"), str)
+                    else None
+                ),
+                created_at=created_at if isinstance(created_at, str) else None,
             )
         return None
 
@@ -603,23 +632,48 @@ class JiraClient:
         )
 
 
+# C0 control characters (plus DEL) that must never be echoed back from a
+# remote error body — a raw gateway page can smuggle them into logs / JSON.
+_CONTROL_STRIP_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def _strip_controls(text: str) -> str:
+    return _CONTROL_STRIP_RE.sub("", text)
+
+
+def _error_value_text(value: object) -> str:
+    """Flatten a Jira ``errors`` value (often a list) into a single string."""
+    if isinstance(value, (list, tuple)):
+        return "; ".join(str(item) for item in value)
+    return str(value)
+
+
 def _response_detail(resp: httpx.Response, body: bytes) -> str:
-    """Extract a short, safe reason from a Jira error response body."""
+    """Extract a short, safe reason from a Jira error response body.
+
+    Only structured ``errorMessages`` / ``errors`` values are surfaced, each
+    stripped of control characters and truncated to 300 chars.  A non-JSON
+    body (e.g. an HTML gateway error page) is never echoed verbatim.
+    """
     detail = ""
     try:
         data = json.loads(body)
     except Exception:
         data = None
     if isinstance(data, dict):
-        messages = data.get("errorMessages") or []
-        if messages:
-            detail = "; ".join(str(m) for m in messages[:3])
-        elif isinstance(data.get("errors"), dict):
+        messages = data.get("errorMessages")
+        if isinstance(messages, list):
+            cleaned = [
+                _strip_controls(str(m))[:300] for m in messages[:3] if m is not None
+            ]
+            detail = "; ".join(m for m in cleaned if m)
+        if not detail and isinstance(data.get("errors"), dict):
             errors = data.get("errors") or {}
-            detail = "; ".join(
-                f"{k}: {v}" for k, v in list(errors.items())[:3]
-            )
+            cleaned = [
+                f"{_strip_controls(str(k))}: {_strip_controls(_error_value_text(v))[:300]}"
+                for k, v in list(errors.items())[:3]
+            ]
+            detail = "; ".join(cleaned)
     if not detail:
-        text = body.decode("utf-8", errors="replace").strip()[:200]
-        detail = text or "unknown error"
-    return f"Jira API {resp.status_code}: {detail}"
+        return f"Jira API {resp.status_code}: the request was rejected"
+    return f"Jira API {resp.status_code}: {_strip_controls(detail)[:300]}"

@@ -113,7 +113,7 @@ Skeleton (note the **per-step** `env:` blocks — see "PR-injection hardening" b
     if [ "$route" = "success" ]; then
       SEVERITY=$(jq -r 'map(.severity) | (if any(.=="critical") then "critical" elif any(.=="high") then "high" elif any(.=="medium") then "medium" elif any(.=="low") then "low" else "none" end)' .sessionfs/findings.json)
       sfs agent complete "${{ steps.run.outputs.run }}" \
-        --summary "Sentinel reviewed PR #${PR_NUMBER}." \
+        --summary "Reviewed PR #${PR_NUMBER}." \
         --severity "$SEVERITY" \
         --findings-file .sessionfs/findings.json \
         --enforce

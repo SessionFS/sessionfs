@@ -24,6 +24,9 @@ vi.mock('../invites/useInvites', () => ({
 vi.mock('../components/SearchBar', () => ({
   default: () => <input aria-label="Search sessions" />,
 }));
+vi.mock('../hooks/useTicketNotifications', () => ({
+  useTicketNotificationUnreadCount: () => ({ data: { count: 3, etag: '' } }),
+}));
 vi.mock('../helper/HelperProvider', () => ({
   useHelper: () => ({ openHelper: vi.fn() }),
 }));

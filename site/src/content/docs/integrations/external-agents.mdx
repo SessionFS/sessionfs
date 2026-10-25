@@ -34,7 +34,7 @@ Three steps. Use MCP tools if your orchestrator speaks MCP, the `sfs agent` CLI 
 ### Via MCP
 
 ```text
-create_agent_run(persona_name="atlas", ticket_id="tk_xxx",
+create_agent_run(persona_name="implementer", ticket_id="tk_xxx",
                  tool="codex-cli", trigger_source="manual",
                  fail_on="high", start_now=true)
   → returns the run + compiled_context (persona + ticket, as markdown)
@@ -50,7 +50,7 @@ complete_agent_run(run_id="run_xxx", status="passed", severity="low",
 ### Via the `sfs` CLI
 
 ```bash
-RUN=$(sfs agent run atlas \
+RUN=$(sfs agent run implementer \
   --ticket tk_xxx \
   --tool codex-cli \
   --trigger-source manual \
@@ -61,15 +61,15 @@ RUN=$(sfs agent run atlas \
 # ... spawn the agent against .sessionfs/context.md ...
 
 sfs agent complete "$RUN" \
-  --summary "Atlas implemented tk_xxx via Codex CLI." \
+  --summary "Implementer completed tk_xxx via Codex CLI." \
   --severity low \
   --findings-file .sessionfs/findings.json \
   --session-id "<captured session id, if any>"
 ```
 
-## Worked example — Codex CLI as Atlas on a ticket
+## Worked example — Codex CLI as an implementer on a ticket
 
-This mirrors a real dogfooding shape: an orchestrator spins up Codex CLI to act as the `atlas` persona on a ticket — but with the AgentRun wiring that ties the run to the persona, the ticket, and the result.
+This shows a common shape: an orchestrator spins up Codex CLI to act as the `implementer` persona on a ticket — but with the AgentRun wiring that ties the run to the persona, the ticket, and the result.
 
 ```python
 import json
@@ -84,7 +84,7 @@ TICKET = "tk_xxx"
 #    persona + ticket context (acceptance criteria, dependencies,
 #    recent comments) as markdown.
 run = create_agent_run(
-    persona_name="atlas",         # lowercase — persona names are case-insensitive-unique
+    persona_name="implementer",   # lowercase — persona names are case-insensitive-unique
     ticket_id=TICKET,
     tool="codex-cli",             # token-budget hint; also recorded for audit
     trigger_source="manual",      # manual / ci / webhook / scheduled / mcp / api
@@ -118,7 +118,7 @@ complete_agent_run(
     status="passed" if proc.returncode == 0 else "failed",
     severity=severity,
     findings=findings,
-    result_summary=f"Atlas implemented {TICKET} via Codex CLI; commit {commit_sha}.",
+    result_summary=f"Implementer completed {TICKET} via Codex CLI; commit {commit_sha}.",
     # session_id="<id of the captured .sfs session, if the daemon watches Codex>",
 )
 ```
@@ -164,7 +164,7 @@ The same flow over plain REST:
 # create + start
 RUN=$(curl -s -X POST "$SESSIONFS_API_URL/api/v1/projects/$PROJECT_ID/agent-runs" \
   -H "Authorization: Bearer $SERVICE_KEY" -H "Content-Type: application/json" \
-  -d '{"persona_name":"atlas","ticket_id":"tk_xxx","tool":"codex-cli","trigger_source":"manual","fail_on":"high"}' \
+  -d '{"persona_name":"implementer","ticket_id":"tk_xxx","tool":"codex-cli","trigger_source":"manual","fail_on":"high"}' \
   | jq -r .id)
 curl -s -X POST "$SESSIONFS_API_URL/api/v1/projects/$PROJECT_ID/agent-runs/$RUN/start" \
   -H "Authorization: Bearer $SERVICE_KEY"

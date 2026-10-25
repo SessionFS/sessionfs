@@ -545,31 +545,32 @@ class ClaudeCodeWatcher:
                 self._tracked[native_id] = ref
                 return
 
-            session_dir = self._store.allocate_session_dir(sfs_id)
-            convert_session(
-                cc_session, session_dir.parent,
-                session_id=sfs_id, session_dir=session_dir,
-            )
-
             # Migration 028: annotate manifest with instruction provenance.
             from sessionfs.watchers.provenance import annotate_manifest_with_provenance
-            annotate_manifest_with_provenance(
-                session_dir, "claude-code", cc_session.project_path
-            )
             # v0.10.1 Phase 6: tag with active ticket + persona if any.
             from sessionfs.watchers.active_ticket_annot import (
                 annotate_manifest_with_active_ticket,
             )
-            annotate_manifest_with_active_ticket(session_dir)
 
-            # Read back manifest and index it (must happen before tracked
-            # session upsert due to FK constraint)
-            manifest_path = session_dir / "manifest.json"
-            if manifest_path.exists():
-                manifest = json.loads(manifest_path.read_text())
-                self._store.upsert_session_metadata(
-                    sfs_id, manifest, str(session_dir)
+            def _write(staging):
+                convert_session(
+                    cc_session, staging.parent,
+                    session_id=sfs_id, session_dir=staging,
                 )
+                annotate_manifest_with_provenance(
+                    staging, "claude-code", cc_session.project_path
+                )
+                annotate_manifest_with_active_ticket(staging)
+                # Read back manifest and index it (must happen before tracked
+                # session upsert due to FK constraint)
+                manifest_path = staging / "manifest.json"
+                if manifest_path.exists():
+                    return json.loads(manifest_path.read_text())
+                return None
+
+            outcome = self._store.commit_session(sfs_id, _write)
+            if outcome.skipped:
+                return
 
             ref = NativeSessionRef(
                 tool="claude-code",
@@ -583,7 +584,7 @@ class ClaudeCodeWatcher:
             )
             self._tracked[native_id] = ref
             self._store.upsert_tracked_session(ref)
-            logger.info("Captured session %s -> %s", native_id, session_dir)
+            logger.info("Captured session %s -> %s", native_id, outcome.session_dir)
             self._capture_health.record_success()
 
         except Exception as e:

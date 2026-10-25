@@ -9,7 +9,7 @@ SessionFS supports two kinds of API keys:
 | **Personal user key** | `sfs auth keys create` (or `POST /api/v1/auth/me/api-keys`) | Inherits the owning user's permissions (`scopes=["*"]`) | Interactive use, scripting, single-developer CI, anywhere a human's authority is the right ceiling. |
 | **Scoped service key** | `sfs admin service-keys create` (or `POST /api/v1/orgs/{org_id}/service-keys`) | Enumerated capability scopes (e.g. `handoffs:write`, `tickets:read`) | Cloud agents (Bedrock, Vertex), CI runners (GitHub Actions, GitLab MR), Slack/PagerDuty bots — anywhere a non-human caller acts on behalf of an org. |
 
-The CEO-mandated rule: **service keys are the recommended credential for any non-human caller**, even when a personal key would technically work. The scope vocabulary gives you a least-privilege envelope and audit trail that a wildcard-permissioned personal key cannot match.
+**Service keys are the recommended credential for any non-human caller**, even when a personal key would technically work. The scope vocabulary gives you a least-privilege envelope and audit trail that a wildcard-permissioned personal key cannot match.
 
 ---
 
@@ -17,12 +17,12 @@ The CEO-mandated rule: **service keys are the recommended credential for any non
 
 ### When to mint one
 
-At v0.10.19 the live capabilities are **handoff lifecycle**, **CI agent runs**, **ticket triage**, **Scout knowledge intake**, and **Scout runtime persona load** (see [Scope vocabulary](#scope-vocabulary) for the current opt-in status):
+At v0.10.19 the live capabilities are **handoff lifecycle**, **CI agent runs**, **ticket triage**, **knowledge intake**, and **runtime persona load** (see [Scope vocabulary](#scope-vocabulary) for the current opt-in status):
 
 - A cloud agent (Bedrock action group, Vertex function calling) that sends and claims handoffs on behalf of users — give it `handoffs:write`.
 - A GitHub Actions or GitLab MR runner that reports build/review findings — give it `agent_runs:write`. The same key can also `POST /handoffs/{id}/comments` if you add `handoffs:write`.
 - A triage or workflow bot that polls tickets, creates tickets, reads comments/review state, posts triage comments, and moves tickets through start/complete — give it `tickets:read` and `tickets:write`.
-- An n8n Scout-style research agent that loads its runtime persona, searches project knowledge, adds findings, and opens follow-up tickets — give it `personas:read`, `knowledge:read`, `knowledge:write`, and `tickets:write`.
+- An autonomous research agent that loads its runtime persona, searches project knowledge, adds findings, and opens follow-up tickets — give it `personas:read`, `knowledge:read`, `knowledge:write`, and `tickets:write`.
 
 For workloads that depend on the remaining reserved scopes (rules updates, read-side handoffs/sessions/agent-runs), continue using personal user keys until their route opt-in lands. The bookkeeping is identical — `SESSIONFS_API_KEY` works for either kind — so the eventual migration is just one line per CI job (the mint command's `--scope` flags).
 
@@ -32,7 +32,7 @@ Service keys live on an organization, are minted by an org admin, and are enforc
 
 The capability scopes defined for service keys (including `devices:report`). The `*` wildcard is **reserved for legacy personal user keys** and is rejected at create time for service keys.
 
-**Route opt-in is incremental.** v0.10.10 shipped the auth machinery (`require_scope(...)` decorator + `AuthContext`) and converted a first wave of write routes. Later releases opted in ticket read/write, ticket create, the Scout knowledge intake routes, and persona CRUD. Remaining read-side routes and higher-trust write surfaces stay on the legacy `get_current_user` dependency for now and reject service keys with `service_key_not_allowed`.
+**Route opt-in is incremental.** v0.10.10 shipped the auth machinery (`require_scope(...)` decorator + `AuthContext`) and converted a first wave of write routes. Later releases opted in ticket read/write, ticket create, the knowledge intake routes, and persona CRUD. Remaining read-side routes and higher-trust write surfaces stay on the legacy `get_current_user` dependency for now and reject service keys with `service_key_not_allowed`.
 
 | Scope | Status today | Routes that accept it |
 |---|---|---|
@@ -59,7 +59,7 @@ The capability scopes defined for service keys (including `devices:report`). The
 | `admin_metrics:read` | ✅ live (platform) | `GET /api/v1/admin/metrics` (Prometheus text exposition 0.0.4, GitHub #90). The operator-metrics scrape credential: only a platform admin may mint or rotate a key with it, and the key works only while the user it runs as and the admin who minted or last rotated it are both still active platform admins (demote or deactivate either and the key stops) |
 | `admin:*` | reserved | — |
 
-Practically, this means today's service keys are useful for **handoff lifecycle automation** (Bedrock/Vertex bots sending and claiming handoffs, GitHub Actions / GitLab MR runners posting handoff comments), **CI agent runs** (test runners reporting findings), **ticket triage automation** (bots polling tickets, creating follow-ups, reading review state, posting comments, and moving assigned tickets through start/complete), **Scout knowledge intake** (bots searching existing knowledge, adding new entries, and opening tickets for follow-up work), and **Scout persona management** (bots loading runtime persona content and, when explicitly trusted, creating/updating/deactivating project personas). Reserved scopes are safe to include on a key — they just won't unlock any routes until their opt-in lands. The key reject-by-default posture means a leak today exposes only the live scope surface.
+Practically, this means today's service keys are useful for **handoff lifecycle automation** (Bedrock/Vertex bots sending and claiming handoffs, GitHub Actions / GitLab MR runners posting handoff comments), **CI agent runs** (test runners reporting findings), **ticket triage automation** (bots polling tickets, creating follow-ups, reading review state, posting comments, and moving assigned tickets through start/complete), **knowledge intake** (bots searching existing knowledge, adding new entries, and opening tickets for follow-up work), and **persona management** (bots loading runtime persona content and, when explicitly trusted, creating/updating/deactivating project personas). Reserved scopes are safe to include on a key — they just won't unlock any routes until their opt-in lands. The key reject-by-default posture means a leak today exposes only the live scope surface.
 
 The following knowledge endpoints remain user-key only because they are higher-trust, heavier, or dashboard-oriented operations: `POST /api/v1/projects/{project_id}/compile`, `POST /api/v1/projects/{project_id}/rebuild`, `POST /api/v1/projects/{project_id}/entries/dismiss-stale`, `GET /api/v1/projects/{project_id}/health`, and `GET /api/v1/projects/{project_id}/compilations`.
 
@@ -90,7 +90,7 @@ Raw key: sk_sfs_584c9d12e7f3a8b4c2... (full key)
 Save this key now — it will not be shown again.
 ```
 
-The raw key is returned **exactly once** — on `create` and on `rotate`. Every subsequent read response only exposes `key_prefix` (first 12 chars). The CEO-mandated rule for any non-human caller: capture the raw key into the CI secret store / vault on the same machine that minted it, then never echo it again.
+The raw key is returned **exactly once** — on `create` and on `rotate`. Every subsequent read response only exposes `key_prefix` (first 12 chars). For any non-human caller: capture the raw key into the CI secret store / vault on the same machine that minted it, then never echo it again.
 
 For CI runners, use `--output-key` to emit only the raw key on stdout (no decorations, no warning):
 
@@ -146,13 +146,7 @@ curl -sS -X POST \
   "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/tickets/tk_123/comments"
 ```
 
-### Scout knowledge intake example
-
-> **Building a full n8n Scout workflow?** The complete contract —
-> startup sequence, AgentRun wrap, failure branch, dedupe via
-> `source_context`, scope matrix, and a live smoke-test procedure
-> — lives in [`integrations/scout-n8n.md`](integrations/scout-n8n.md).
-> This section covers just the request shape for a single KB write.
+### Knowledge intake example
 
 `POST /api/v1/projects/{project_id}/entries/add` accepts the usual
 knowledge fields plus optional `persona_name` and `author_class`.
@@ -162,7 +156,7 @@ policy and must match a persona in the project. `author_class` is
 `human` or `agent`; service keys are always forced to `agent` even if
 the request body sends `"author_class": "human"`.
 
-`GET /api/v1/projects/{project_id}/entries` can filter Scout retrieval
+`GET /api/v1/projects/{project_id}/entries` can filter retrieval
 with `persona_name=<exact>`, `author_class=human|agent`, and
 `source_filter=<substring of source_context>`. These compose with the
 existing `claim_class`, `freshness_class`, `dismissed`, `session_id`,
@@ -189,9 +183,9 @@ caller authenticated as a service key cannot persist
 surfaces the attribution that actually landed so callers can verify.
 
 ```bash
-SCOUT_KEY=$(sfs admin service-keys create \
+AGENT_KEY=$(sfs admin service-keys create \
   --org org_9e39b81833e6fdd5 \
-  --name "n8n-scout-agent" \
+  --name "n8n-research-agent" \
   --scope personas:read \
   --scope knowledge:read \
   --scope knowledge:write \
@@ -201,40 +195,40 @@ SCOUT_KEY=$(sfs admin service-keys create \
   --output-key)
 
 curl -sS \
-  -H "Authorization: Bearer $SCOUT_KEY" \
-  "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/personas/scout"
+  -H "Authorization: Bearer $AGENT_KEY" \
+  "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/personas/atlas"
 
 curl -sS \
-  -H "Authorization: Bearer $SCOUT_KEY" \
+  -H "Authorization: Bearer $AGENT_KEY" \
   "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/entries?search=auth&limit=10"
 
 curl -sS \
-  -H "Authorization: Bearer $SCOUT_KEY" \
-  "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/entries?persona_name=scout&limit=30"
+  -H "Authorization: Bearer $AGENT_KEY" \
+  "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/entries?persona_name=atlas&limit=30"
 
 curl -sS -X POST \
-  -H "Authorization: Bearer $SCOUT_KEY" \
+  -H "Authorization: Bearer $AGENT_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "entry_type": "discovery",
-    "content": "src/sessionfs/server/routes/knowledge.py supports service-key add-entry for Scout research intake.",
+    "content": "src/sessionfs/server/routes/knowledge.py supports service-key add-entry for agent research intake.",
     "confidence": 0.9,
-    "session_id": "scout-auth-pass",
-    "source_context": "Scout HN auth-route scan",
-    "persona_name": "scout",
+    "session_id": "agent-auth-pass",
+    "source_context": "research HN auth-route scan",
+    "persona_name": "atlas",
     "author_class": "agent"
   }' \
   "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/entries/add"
 
 curl -sS -X POST \
-  -H "Authorization: Bearer $SCOUT_KEY" \
+  -H "Authorization: Bearer $AGENT_KEY" \
   -H "Content-Type: application/json" \
   -d '{
-    "title": "Follow up on Scout auth-route finding",
-    "description": "Scout found an auth-route follow-up that needs backend review.",
+    "title": "Follow up on auth-route finding",
+    "description": "The agent found an auth-route follow-up that needs backend review.",
     "priority": "medium",
     "source": "agent",
-    "created_by_persona": "n8n-scout",
+    "created_by_persona": "n8n-research",
     "acceptance_criteria": ["Backend owner triages the finding"]
   }' \
   "https://api.sessionfs.dev/api/v1/projects/proj_c0242b0fccbd48b4/tickets"
@@ -261,7 +255,7 @@ sfs admin service-keys revoke a7e3dbe0-b3d2-4166-be57-1cc837a65205 \
 
 ### Rotation policy
 
-The product surface does not enforce a rotation schedule. The CEO recommendation, informed by typical enterprise compliance windows:
+The product surface does not enforce a rotation schedule. A reasonable starting point, informed by typical enterprise compliance windows:
 
 - **Long-lived service keys** (Bedrock agents, integration partners): `--expires-days 365`, rotate at the 9-month mark.
 - **CI runner keys** that bind to a specific job's lifecycle: `--expires-days 90`, rotate on job decommission.

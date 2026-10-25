@@ -25,33 +25,13 @@ pipx upgrade sessionfs
 pipx uninstall sessionfs
 ```
 
-## Homebrew (macOS)
-
-```bash
-brew tap sessionfs/tap
-brew install sessionfs
-```
-
-**Upgrade:**
-
-```bash
-brew upgrade sessionfs
-```
-
-**Uninstall:**
-
-```bash
-brew uninstall sessionfs
-brew untap sessionfs/tap
-```
-
 ## Curl installer (all platforms)
 
 A single command that detects the best available install method on your machine
 (pipx → uv → python3 venv + symlink).
 
 ```bash
-curl -fsSL https://get.sessionfs.dev | sh
+curl -fsSL https://sessionfs.dev/install.sh | sh
 ```
 
 **Upgrade:** re-run the same command — it upgrades in place.

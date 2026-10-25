@@ -1,63 +1,35 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { useJudgeSettings, useSaveJudgeSettings, useClearJudgeSettings } from '../hooks/useJudgeSettings';
+import { useLlmProviders } from '../hooks/useLlmProviders';
 import { useToast } from '../hooks/useToast';
 import { judgeSettingsSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
 import FieldError from '../components/FieldError';
 import { Card, Button, Input, Select } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
 
-const PROVIDERS = [
-  { value: 'openrouter', label: 'OpenRouter' },
-  { value: 'anthropic', label: 'Anthropic' },
-  { value: 'openai', label: 'OpenAI' },
-  { value: 'google', label: 'Google' },
-] as const;
-
-const PROVIDER_MODELS: Record<string, { value: string; label: string }[]> = {
-  anthropic: [
-    { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
-    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-    { value: 'claude-haiku-4-5', label: 'Claude Haiku 4.5' },
-  ],
-  openai: [
-    { value: 'gpt-5.2', label: 'GPT-5.2' },
-    { value: 'gpt-5.2-pro', label: 'GPT-5.2 Pro' },
-    { value: 'gpt-4o', label: 'GPT-4o' },
-    { value: 'o3', label: 'o3 (reasoning)' },
-    { value: 'o4-mini', label: 'o4 Mini (reasoning)' },
-  ],
-  google: [
-    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-  ],
-  openrouter: [
-    { value: 'anthropic/claude-opus-4-6', label: 'Claude Opus 4.6' },
-    { value: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
-    { value: 'openai/gpt-5.2', label: 'GPT-5.2' },
-    { value: 'openai/gpt-4o', label: 'GPT-4o' },
-    { value: 'openai/o3', label: 'o3 (reasoning)' },
-    { value: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-    { value: 'deepseek/deepseek-v3.2', label: 'DeepSeek V3.2' },
-    { value: 'deepseek/deepseek-r1', label: 'DeepSeek R1' },
-  ],
-};
-
 export default function AuditJudgeSettings() {
   const { auth } = useAuth();
   const { addToast } = useToast();
   const { data: judgeSettings, isLoading: judgeLoading } = useJudgeSettings();
+  const { data: providerData } = useLlmProviders();
   const saveJudge = useSaveJudgeSettings();
   const clearJudge = useClearJudgeSettings();
 
+  const providers = providerData?.providers ?? [];
   const [judgeProvider, setJudgeProvider] = useState('openrouter');
   const [judgeModel, setJudgeModel] = useState('');
   const [judgeApiKey, setJudgeApiKey] = useState('');
   const [judgeBaseUrl, setJudgeBaseUrl] = useState('');
   const [judgeSaved, setJudgeSaved] = useState(false);
   const [discoveredModels, setDiscoveredModels] = useState<{ id: string; owned_by: string }[]>([]);
+  const [fetchedProviderModels, setFetchedProviderModels] = useState<{ id: string; owned_by: string }[]>([]);
   const [discovering, setDiscovering] = useState(false);
+  const [fetchingModels, setFetchingModels] = useState(false);
   const [judgeErrors, setJudgeErrors] = useState<FieldErrors>({});
+
+  const currentProvider = providers.find((p) => p.id === judgeProvider);
+  const isDiscovery = currentProvider?.discovery === true;
 
   // Populate from saved settings
   useEffect(() => {
@@ -68,7 +40,7 @@ export default function AuditJudgeSettings() {
     }
   }, [judgeSettings]);
 
-  // Discover models when base URL changes
+  // Discover models when base URL changes (custom endpoints)
   useEffect(() => {
     if (!judgeBaseUrl || !auth) {
       setDiscoveredModels([]);
@@ -90,18 +62,28 @@ export default function AuditJudgeSettings() {
 
   if (!auth) return null;
 
-  const isOpenRouter = judgeProvider === 'openrouter';
-  const providerModels = PROVIDER_MODELS[judgeProvider] || [];
+  const providerOptions = providers.map((p) => ({ value: p.id, label: p.label }));
+  const suggestedOptions = (currentProvider?.suggested_models ?? []).map((m) => ({ value: m, label: m }));
   const keySet = judgeSettings?.key_set === true;
 
   function handleProviderChange(newProvider: string) {
     setJudgeProvider(newProvider);
     setJudgeSaved(false);
-    if (newProvider === 'openrouter') {
-      setJudgeModel('');
-    } else {
-      const models = PROVIDER_MODELS[newProvider];
-      if (models?.length) setJudgeModel(models[0].value);
+    setFetchedProviderModels([]);
+    const next = providers.find((p) => p.id === newProvider);
+    setJudgeModel(next?.suggested_models[0] ?? '');
+  }
+
+  async function handleFetchModels() {
+    if (!auth || !isDiscovery) return;
+    setFetchingModels(true);
+    try {
+      const result = await auth.client.discoverModels('', judgeApiKey || undefined, judgeProvider);
+      setFetchedProviderModels(result.models || []);
+    } catch {
+      setFetchedProviderModels([]);
+    } finally {
+      setFetchingModels(false);
     }
   }
 
@@ -139,11 +121,17 @@ export default function AuditJudgeSettings() {
     });
   }
 
+  const isOpenRouter = judgeProvider === 'openrouter';
   const keyPlaceholder =
     isOpenRouter ? 'sk-or-…' :
     judgeProvider === 'anthropic' ? 'sk-ant-…' :
-    judgeProvider === 'openai' ? 'sk-…' :
-    'AIza…';
+    judgeProvider === 'google' ? 'AIza…' :
+    'sk-…';
+
+  const fetchedOptions = fetchedProviderModels.map((m) => ({
+    value: m.id,
+    label: m.id + (m.owned_by ? ` (${m.owned_by})` : ''),
+  }));
 
   return (
     <div className="space-y-5">
@@ -163,7 +151,7 @@ export default function AuditJudgeSettings() {
               <Select
                 value={judgeProvider}
                 onValueChange={(v) => handleProviderChange(v)}
-                options={[...PROVIDERS]}
+                options={providerOptions}
               />
             </div>
 
@@ -171,6 +159,7 @@ export default function AuditJudgeSettings() {
               <label className="text-sm text-text-tertiary block mb-1">
                 Model
                 {discovering && <span className="text-text-tertiary opacity-50 ml-2">discovering…</span>}
+                {fetchingModels && <span className="text-text-tertiary opacity-50 ml-2">fetching…</span>}
               </label>
               {judgeBaseUrl && discoveredModels.length > 0 ? (
                 <Select
@@ -190,12 +179,18 @@ export default function AuditJudgeSettings() {
                   title="Model"
                   className="font-mono"
                 />
-              ) : isOpenRouter ? (
+              ) : fetchedOptions.length > 0 ? (
+                <Select
+                  value={judgeModel}
+                  onValueChange={(v) => { setJudgeModel(v); setJudgeSaved(false); }}
+                  options={[{ value: '', label: 'Select a model…' }, ...fetchedOptions]}
+                />
+              ) : isOpenRouter || suggestedOptions.length === 0 ? (
                 <Input
                   type="text"
                   value={judgeModel}
                   onChange={(e: React.ChangeEvent<HTMLInputElement>) => { setJudgeModel(e.target.value); setJudgeSaved(false); }}
-                  placeholder="anthropic/claude-sonnet-4"
+                  placeholder={isOpenRouter ? 'vendor/model-name' : 'model-name'}
                   title="Model"
                   className="font-mono"
                 />
@@ -203,8 +198,20 @@ export default function AuditJudgeSettings() {
                 <Select
                   value={judgeModel}
                   onValueChange={(v) => { setJudgeModel(v); setJudgeSaved(false); }}
-                  options={providerModels}
+                  options={suggestedOptions}
                 />
+              )}
+              {isDiscovery && !judgeBaseUrl && (
+                <Button
+                  type="button"
+                  variant="secondary"
+                  onClick={handleFetchModels}
+                  disabled={fetchingModels}
+                  loading={fetchingModels}
+                  className="mt-1.5"
+                >
+                  Fetch models
+                </Button>
               )}
               <FieldError message={judgeErrors.model} />
             </div>

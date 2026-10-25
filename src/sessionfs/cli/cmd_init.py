@@ -722,22 +722,31 @@ def _capture_one_session(
                 return None
 
         target_dir = store.sessions_dir / f"{sfs_id}.sfs"
+        # Install under the per-session lock and recheck the exclusion list
+        # inside it, so a delete that lands after the early check above but
+        # before the rename can't be resurrected by this first capture.
         # POSIX rename SUCCEEDS onto an existing EMPTY dir — and a dir the
         # daemon just allocated is exactly that. Any existing target (empty or
         # not) means the daemon owns this session now: back off. The remaining
         # exists→rename window is sub-millisecond and loses to ENOTEMPTY once
         # the daemon writes its first file.
-        if target_dir.exists():
-            if (target_dir / "manifest.json").exists():
-                return _read_display_info(target_dir, sfs_id, session_info)
-            return None  # daemon mid-write — its capture supersedes ours
-        try:
-            os.rename(session_dir, target_dir)
-        except OSError:
-            fresh = store.get_session_dir(sfs_id)
-            if fresh is not None and (fresh / "manifest.json").exists():
-                return _read_display_info(fresh, sfs_id, session_info)
-            return None
+        from sessionfs.store.deleted import is_excluded as _is_excluded
+        from sessionfs.store.local import lock_session_dir
+
+        with lock_session_dir(store.sessions_dir, sfs_id):
+            if _is_excluded(sfs_id, base_dir=get_store_dir()):
+                return None
+            if target_dir.exists():
+                if (target_dir / "manifest.json").exists():
+                    return _read_display_info(target_dir, sfs_id, session_info)
+                return None  # daemon mid-write — its capture supersedes ours
+            try:
+                os.rename(session_dir, target_dir)
+            except OSError:
+                fresh = store.get_session_dir(sfs_id)
+                if fresh is not None and (fresh / "manifest.json").exists():
+                    return _read_display_info(fresh, sfs_id, session_info)
+                return None
         session_dir = target_dir
         manifest_path = session_dir / "manifest.json"
 

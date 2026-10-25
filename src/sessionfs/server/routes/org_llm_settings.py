@@ -37,6 +37,7 @@ from sessionfs.server.db.models import (
 )
 from sessionfs.server.llm_keys import decrypt_llm_key, encrypt_llm_key
 from sessionfs.server.roles import has_minimum_role
+from sessionfs.server.routes.llm_providers import validate_provider_or_422
 from sessionfs.server.routes.settings import _check_llm_base_url_or_400
 from sessionfs.server.tier_gate import resolve_org_plan_tier
 from sessionfs.server.tiers import get_features_for_tier, get_minimum_tier_for_feature
@@ -254,6 +255,8 @@ async def put_org_llm_settings(
     Below Enterprise only a pure disable of an existing row is allowed.
     """
     org, role = await _authorize_role(db, user, org_id)
+
+    validate_provider_or_422(body.provider, body.base_url)
 
     row = (
         await db.execute(

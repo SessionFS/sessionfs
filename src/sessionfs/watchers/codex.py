@@ -603,22 +603,25 @@ class CodexWatcher:
                 self._tracked[native_id] = ref
                 return
 
-            session_dir = self._store.allocate_session_dir(sfs_id)
-            convert_codex_to_sfs(codex_session, session_dir, session_id=sfs_id)
-
             # Migration 028: annotate manifest with instruction provenance.
             from sessionfs.watchers.provenance import annotate_manifest_with_provenance
-            annotate_manifest_with_provenance(session_dir, "codex", codex_session.cwd)
             # v0.10.1 Phase 6: tag with active ticket + persona if any.
             from sessionfs.watchers.active_ticket_annot import (
                 annotate_manifest_with_active_ticket,
             )
-            annotate_manifest_with_active_ticket(session_dir)
 
-            manifest_path = session_dir / "manifest.json"
-            if manifest_path.exists():
-                manifest = json.loads(manifest_path.read_text())
-                self._store.upsert_session_metadata(sfs_id, manifest, str(session_dir))
+            def _write(staging):
+                convert_codex_to_sfs(codex_session, staging, session_id=sfs_id)
+                annotate_manifest_with_provenance(staging, "codex", codex_session.cwd)
+                annotate_manifest_with_active_ticket(staging)
+                manifest_path = staging / "manifest.json"
+                if manifest_path.exists():
+                    return json.loads(manifest_path.read_text())
+                return None
+
+            outcome = self._store.commit_session(sfs_id, _write)
+            if outcome.skipped:
+                return
 
             ref = NativeSessionRef(
                 tool="codex",

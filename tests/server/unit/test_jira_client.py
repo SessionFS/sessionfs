@@ -17,6 +17,7 @@ import pytest
 from sessionfs.server.integrations.trackers.base import TrackerError
 from sessionfs.server.integrations.trackers.jira import (
     JiraClient,
+    _response_detail,
     markdown_to_adf,
     sessionfs_label,
     validate_site_url,
@@ -228,6 +229,36 @@ async def test_400_error_messages_are_returned_but_scrubbed():
     assert "bad field" in str(exc.value)
     assert _TOKEN not in str(exc.value)
     assert "Jira API 400" in str(exc.value)
+
+
+def test_response_detail_never_echoes_raw_html():
+    """A non-JSON body (HTML gateway page) is reduced to a generic message."""
+    resp = httpx.Response(502, headers={"content-type": "text/html"})
+    body = b"<html><body><h1>502 Bad Gateway</h1>nginx</body></html>"
+    detail = _response_detail(resp, body)
+    assert detail == "Jira API 502: the request was rejected"
+    assert "<html" not in detail
+    assert "nginx" not in detail
+
+
+def test_response_detail_strips_controls_and_truncates_to_300():
+    resp = httpx.Response(400)
+    body = json.dumps({"errorMessages": ["bad\x00field\x1f" + "x" * 400]}).encode()
+    detail = _response_detail(resp, body)
+    assert "\x00" not in detail
+    assert "\x1f" not in detail
+    assert detail.startswith("Jira API 400: badfield")
+    # message capped at 300 chars after the fixed "Jira API 400: " prefix
+    assert len(detail) == len("Jira API 400: ") + 300
+
+
+def test_response_detail_uses_errors_dict_values():
+    resp = httpx.Response(400)
+    body = json.dumps({"errors": {"summary": ["too long"], "project": "missing"}}).encode()
+    detail = _response_detail(resp, body)
+    assert "summary: too long" in detail
+    assert "project: missing" in detail
+    assert detail.startswith("Jira API 400: ")
 
 
 @pytest.mark.asyncio

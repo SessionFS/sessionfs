@@ -1,20 +1,15 @@
 #!/bin/sh
 #===============================================================================
-# SessionFS Installer — https://get.sessionfs.dev
+# SessionFS Installer — https://sessionfs.dev/install.sh
 #
-# Intended hosting:  curl -fsSL https://get.sessionfs.dev | sh
+# Intended hosting:  curl -fsSL https://sessionfs.dev/install.sh | sh
 #
 # This file is the source of truth.  A byte-identical copy lives at
 # site/public/install.sh for serving via the Astro static site.
 # CI enforces they stay in sync (see .github/workflows/ci.yml install-sync job).
 #
-# To serve at get.sessionfs.dev:
-#   1. Create a Vercel project or alias for the get.sessionfs.dev domain.
-#   2. Configure a rewrite so that requests to get.sessionfs.dev/install.sh
-#      resolve to site/public/install.sh (the Astro + Vercel deploy serves
-#      public/ files at the domain root).
-#   3. If the domain is a separate Vercel project, set its output directory
-#      to site/public/ and deploy only that file.
+# Served at https://sessionfs.dev/install.sh — the Astro + Vercel deploy serves
+# public/ files at the domain root.
 #
 # Strategy (tried in order):
 #   pipx  →  uv tool install  →  python3 -m venv + symlink
@@ -43,8 +38,8 @@ success() { printf '\033[1;32m✓\033[0m %s\n' "$*"; }
 
 usage() {
 	cat <<'EOF'
-Usage: curl -fsSL https://get.sessionfs.dev | sh
-       curl -fsSL https://get.sessionfs.dev | sh -s -- --allow-root
+Usage: curl -fsSL https://sessionfs.dev/install.sh | sh
+       curl -fsSL https://sessionfs.dev/install.sh | sh -s -- --allow-root
 
 Options:
   --allow-root   Bypass the root-user guard (not recommended).

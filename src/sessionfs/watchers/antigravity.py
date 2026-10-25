@@ -52,7 +52,7 @@ from sessionfs.converters.antigravity_to_sfs import (
 from sessionfs.daemon.config import AntigravityWatcherConfig
 from sessionfs.daemon.status import WatcherStatus
 from sessionfs.store import deleted as _deleted
-from sessionfs.store.local import LocalStore
+from sessionfs.store.local import LocalStore, WriterResult
 from sessionfs.watchers.base import CaptureHealthTracker, NativeSessionRef
 
 logger = logging.getLogger("sfsd.watcher.antigravity")
@@ -928,30 +928,42 @@ class AntigravityWatcher:
                     self._remember(native_id, conv_dir, sfs_id, mtime, size)
                     return verdict
 
-            # Same store write path as every other watcher: allocate (which
-            # records the prior sync state), convert in place, annotate, then
-            # upsert (which carries the etag and marks the session dirty).
-            # Re-check the tombstone right before writing.
-            if _deleted.is_excluded(sfs_id, base_dir=base):
-                self._note_excluded(native_id, conv_dir, sfs_id, mtime, size)
-                self._release_parent_pending(native_id, summaries)
-                return CaptureOutcome.EXCLUDED
-            session_dir = self._store.allocate_session_dir(sfs_id)
-            convert_antigravity_to_sfs(session, session_dir, session_id=sfs_id)
+            # Same store write path as every other watcher: stage, convert,
+            # annotate, then commit under the per-session lock. commit_session
+            # re-checks the tombstone (and a planted symlink) at commit time,
+            # so a delete that races the capture leaves the session deleted.
             from sessionfs.watchers.provenance import (
                 annotate_manifest_with_provenance,
                 workspace_root_from_session,
             )
-            annotate_manifest_with_provenance(
-                session_dir, TOOL_NAME,
-                workspace_root_from_session(session_dir) or session.workspace_root,
-            )
             from sessionfs.watchers.active_ticket_annot import (
                 annotate_manifest_with_active_ticket,
             )
-            annotate_manifest_with_active_ticket(session_dir)
-            manifest = json.loads((session_dir / "manifest.json").read_text())
-            self._store.upsert_session_metadata(sfs_id, manifest, str(session_dir))
+
+            def _write(staging):
+                retire: set[str] = set()
+                convert_antigravity_to_sfs(
+                    session,
+                    staging,
+                    session_id=sfs_id,
+                    retire=retire,
+                )
+                annotate_manifest_with_provenance(
+                    staging, TOOL_NAME,
+                    workspace_root_from_session(staging) or session.workspace_root,
+                )
+                annotate_manifest_with_active_ticket(staging)
+                return WriterResult(
+                    json.loads((staging / "manifest.json").read_text()),
+                    frozenset(retire),
+                )
+
+            outcome = self._store.commit_session(sfs_id, _write)
+            if outcome.skipped:
+                self._note_excluded(native_id, conv_dir, sfs_id, mtime, size)
+                self._release_parent_pending(native_id, summaries)
+                return CaptureOutcome.EXCLUDED
+
             self._remember(
                 native_id, conv_dir, sfs_id, mtime, size,
                 project_path=session.workspace_root, captured=True,

@@ -12,6 +12,7 @@
 import { useEffect, useState } from 'react';
 
 import { useToast } from '../hooks/useToast';
+import { useLlmProviders } from '../hooks/useLlmProviders';
 import {
   useOrgLlmSettings,
   useSaveOrgLlmSettings,
@@ -20,13 +21,6 @@ import {
 import { Button, Input, Select, Switch } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
 
-const PROVIDERS = [
-  { value: 'openrouter', label: 'OpenRouter' },
-  { value: 'anthropic', label: 'Anthropic' },
-  { value: 'openai', label: 'OpenAI' },
-  { value: 'google', label: 'Google' },
-] as const;
-
 interface OrgHelperKeyCardProps {
   orgId: string;
 }
@@ -34,8 +28,14 @@ interface OrgHelperKeyCardProps {
 export default function OrgHelperKeyCard({ orgId }: OrgHelperKeyCardProps) {
   const { addToast } = useToast();
   const { data, isLoading } = useOrgLlmSettings(orgId);
+  const { data: providerData } = useLlmProviders();
   const save = useSaveOrgLlmSettings(orgId);
   const remove = useDeleteOrgLlmSettings(orgId);
+
+  const providerOptions = (providerData?.providers ?? []).map((p) => ({
+    value: p.id,
+    label: p.label,
+  }));
 
   const [provider, setProvider] = useState('openrouter');
   const [model, setModel] = useState('');
@@ -182,7 +182,7 @@ export default function OrgHelperKeyCard({ orgId }: OrgHelperKeyCardProps) {
         <Select
           value={provider}
           onValueChange={setProvider}
-          options={[...PROVIDERS]}
+          options={providerOptions}
           title="Provider"
           aria-label="Provider"
         />

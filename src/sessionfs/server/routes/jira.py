@@ -109,10 +109,13 @@ def _aware(dt: datetime | None) -> datetime | None:
 
 
 class JiraConnectionPut(BaseModel):
-    site_url: str
-    account_email: str
-    api_token: str
-    default_template: str
+    # Caps mirror the org_tracker_connections column widths so an oversize
+    # body is rejected with a 422 up front instead of overflowing the column
+    # (and surfacing as a 500) on insert.
+    site_url: str = Field(max_length=255)
+    account_email: str = Field(max_length=255)
+    api_token: str = Field(max_length=2048)
+    default_template: str = Field(max_length=50)
 
 
 class JiraMappingPut(BaseModel):
@@ -257,6 +260,80 @@ def _token_hint(encrypted: str) -> str:
     return "••••" + plain[-4:]
 
 
+# In-memory cache of a connection's Atlassian accountId (from /myself), keyed
+# by org_id.  Invalidated when the connection is written or deleted so a
+# reconnected account can never be shadowed by a stale id.
+_account_id_cache: dict[str, str] = {}
+
+
+async def _connection_account_id(client: JiraClient, *, org_id: str) -> str:
+    """The connection's own accountId, fetched once and cached per org."""
+    cached = _account_id_cache.get(org_id)
+    if cached is not None:
+        return cached
+    account_id = await client.myself_account_id()
+    _account_id_cache[org_id] = account_id
+    return account_id
+
+
+def _parse_jira_timestamp(value: str | None) -> datetime | None:
+    """Parse a Jira ``created``/``updated`` timestamp to aware UTC, or None.
+
+    Jira emits ``2026-10-25T12:00:00.000+0000`` (offset without a colon),
+    which ``datetime.fromisoformat`` on Python 3.10 rejects; normalize the
+    offset and a trailing ``Z`` first.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    match = re.search(r"[+-]\d{4}$", text)
+    if match and ":" not in match.group(0)[-3:]:
+        off = match.group(0)
+        text = text[: match.start()] + off[:3] + ":" + off[3:]
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _adoption_block(
+    adopted: TrackerIssue,
+    mapping: TrackerProjectMapping,
+    account_id: str,
+    unknown_since: datetime | None,
+) -> str | None:
+    """Reason the label-found issue may NOT be adopted, or None if adoptable.
+
+    Adoption requires the issue to be in the mapped Jira project, created by
+    the connection's own account (creator or reporter), and created after the
+    unknown publish began.  We fail closed: a missing project / creator /
+    reporter / created timestamp is a rejection, not a pass.
+    """
+    if not adopted.project_key:
+        return f"found Jira issue {adopted.key} without a project"
+    if adopted.project_key != mapping.jira_project_key:
+        return (
+            f"found Jira issue {adopted.key} in project {adopted.project_key}, "
+            f"not the mapped project {mapping.jira_project_key}"
+        )
+    owners = {a for a in (adopted.creator_account_id, adopted.reporter_account_id) if a}
+    if not account_id or account_id not in owners:
+        return f"found Jira issue {adopted.key} not created by this connection's Jira account"
+    created = _parse_jira_timestamp(adopted.created_at)
+    if created is None:
+        return f"found Jira issue {adopted.key} without a parseable created timestamp"
+    # Two minutes of slack for clock skew between Jira and this server; the
+    # account check above is what stops a planted issue.
+    if unknown_since is not None and created < unknown_since - timedelta(minutes=2):
+        return f"found Jira issue {adopted.key} created before the unknown publish began"
+    return None
+
+
 async def _get_connection(org_id: str, db: AsyncSession) -> OrgTrackerConnection | None:
     return (
         await db.execute(
@@ -368,6 +445,9 @@ async def put_jira_connection(
         after=_connection_response(conn),
     )
     await db.commit()
+    # The account may have changed (or been created); drop the cached
+    # accountId so the next adoption check refetches it.
+    _account_id_cache.pop(org_id, None)
     return _connection_response(conn)
 
 
@@ -394,6 +474,7 @@ async def delete_jira_connection(
     )
     await db.delete(conn)
     await db.commit()
+    _account_id_cache.pop(org_id, None)
 
 
 # ── Projects (mapping UI) ──
@@ -948,6 +1029,9 @@ async def _acquire_publish_claim(
         # A prior publish timed out mid-create; the issue may exist remotely.
         # Reclaim the row as a fresh pending claim (fenced on status='unknown')
         # so the caller searches Jira by label and adopts-or-creates exactly once.
+        # ``last_pushed_at`` is deliberately left alone: it records when the
+        # original (unknown) publish began, which the adopt check uses to refuse
+        # issues that predate it.
         token = secrets.token_hex(16)
         res = await db.execute(
             update(TicketTrackerLink)
@@ -958,7 +1042,6 @@ async def _acquire_publish_claim(
             .values(
                 status="pending",
                 claim_token=token,
-                last_pushed_at=now,
                 site_url=site_url,
                 org_id=org_id,
             )
@@ -1279,6 +1362,31 @@ async def publish_jira(
                         timeout=60,
                     )
             if adopted is not None:
+                if action == "adopt":
+                    # Validate before adopting: a label match alone is not proof
+                    # that THIS connection created the issue in the mapped
+                    # project after the unknown publish began.  A planted issue
+                    # (or one from a stale/duplicated connection) keeps the link
+                    # 'unknown' and is refused with a clear 409.
+                    account_id = await asyncio.wait_for(
+                        _connection_account_id(client, org_id=project.org_id),
+                        timeout=60,
+                    )
+                    block = _adoption_block(
+                        adopted, mapping, account_id, _aware(link.last_pushed_at)
+                    )
+                    if block is not None:
+                        marked_unknown = await _fenced_mark_unknown(
+                            db, ticket_id=ticket_id, claim_token=claim_token
+                        )
+                        await db.commit()
+                        raise HTTPException(
+                            409,
+                            {
+                                "error": "jira_adopt_rejected",
+                                "message": block,
+                            },
+                        )
                 issue = await asyncio.wait_for(
                     client.update_issue(adopted.key, body.summary, adf),
                     timeout=60,

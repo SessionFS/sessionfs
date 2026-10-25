@@ -1,44 +1,118 @@
 import { useState, useEffect, useRef } from 'react';
 import { useMessages } from '../hooks/useMessages';
 import MessageBlock from './MessageBlock';
+import { messageAnchorId } from './messageAnchor';
 import { Button } from '../components/ui/Button';
+import { Alert } from '../components/ui/Alert';
 import { errorMessage } from '../utils/errorMessage';
+import type { MessageTarget } from '../api/client';
 
 const PAGE_SIZE = 50;
+const HIGHLIGHT_MS = 2400;
 
 interface Props {
   sessionId: string;
-  initialPage?: number;
+  /**
+   * 0-based messages.jsonl line number to open at (the helper's `msg:<n>`,
+   * from `?msg=<n>`). The page holding it is loaded, scrolled to and
+   * briefly highlighted.
+   */
+  targetMessage?: number;
+  /** Changes on every navigation, so following the same link again re-jumps. */
+  targetKey?: string;
 }
 
-export default function ConversationView({ sessionId, initialPage }: Props) {
-  const [page, setPage] = useState(initialPage || 1);
-  const [order, setOrder] = useState<'oldest' | 'newest'>('newest');
+function targetNotice(target: MessageTarget): string | null {
+  if (target.status === 'found') return null;
+  if (target.anchor_index == null) {
+    return `Message ${target.index} isn't shown in this view.`;
+  }
+  if (target.status === 'hidden') {
+    return `Message ${target.index} is hidden in this view (it's a sidechain or empty entry). Showing the nearest message instead.`;
+  }
+  return `Message ${target.index} isn't in this transcript. Showing the closest message instead.`;
+}
 
-  // Jump to page when initialPage changes (from audit "Jump to message")
-  useEffect(() => {
-    if (initialPage) {
-      setPage(initialPage);
-      setOrder('oldest'); // Jump to message uses oldest-first indexing
+function prefersReducedMotion(): boolean {
+  return typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+}
+
+export default function ConversationView({ sessionId, targetMessage, targetKey }: Props) {
+  const [page, setPage] = useState(1);
+  // A cited message reads best in transcript order, like the audit jump.
+  const [order, setOrder] = useState<'oldest' | 'newest'>(targetMessage != null ? 'oldest' : 'newest');
+  // While set, the server picks the page that holds this message.
+  const [locate, setLocate] = useState<number | null>(targetMessage ?? null);
+  const [highlighted, setHighlighted] = useState<number | null>(null);
+  const [announcement, setAnnouncement] = useState('');
+  const handledRef = useRef<string | null>(null);
+
+  // Reset when session changes (adjusted during render, before the target
+  // check below, so a link into another session wins over the reset).
+  const [prevSessionId, setPrevSessionId] = useState(sessionId);
+  if (sessionId !== prevSessionId) {
+    setPrevSessionId(sessionId);
+    setPage(1);
+    setOrder('newest');
+    setLocate(null);
+  }
+
+  // A new deep link (or the same link followed again) re-locates.
+  const targetToken = targetMessage != null ? `${sessionId}:${targetMessage}:${targetKey ?? ''}` : null;
+  const [prevTargetToken, setPrevTargetToken] = useState(targetToken);
+  if (targetToken !== prevTargetToken) {
+    setPrevTargetToken(targetToken);
+    if (targetMessage != null) {
+      setLocate(targetMessage);
+      setOrder('oldest');
     }
-  }, [initialPage]);
-  const { data, isLoading, error } = useMessages(sessionId, page, PAGE_SIZE, order);
-  const prevSessionId = useRef(sessionId);
+  }
+
+  const { data, isLoading, error } = useMessages(sessionId, page, PAGE_SIZE, order, locate ?? undefined);
   const topRef = useRef<HTMLDivElement>(null);
 
-  // Reset when session changes
-  useEffect(() => {
-    if (sessionId !== prevSessionId.current) {
-      setPage(1);
-      setOrder('newest');
-      prevSessionId.current = sessionId;
-    }
-  }, [sessionId]);
+  // The page on screen: when locating, the server chose it.
+  const displayPage = data?.page ?? page;
+  const target = locate != null && data?.target?.index === locate ? data.target : null;
 
-  // Scroll to top when page changes
+  // Scroll to top when page changes (not while landing on a cited message)
   useEffect(() => {
+    if (locate != null) return;
     topRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [page]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only page changes scroll
+  }, [displayPage]);
+
+  // Land on the cited message once its page is rendered (once per link).
+  const anchorIndex = target?.anchor_index ?? null;
+  const notice = target ? targetNotice(target) : null;
+  const landToken = target && anchorIndex != null ? `${sessionId}:${target.index}:${targetKey ?? ''}` : null;
+  useEffect(() => {
+    if (landToken == null || anchorIndex == null || handledRef.current === landToken) return;
+    const frame = window.requestAnimationFrame(() => {
+      handledRef.current = landToken;
+      const el = document.getElementById(messageAnchorId(anchorIndex));
+      if (el) {
+        el.scrollIntoView({ block: 'center', behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
+        el.focus({ preventScroll: true });
+      }
+      setHighlighted(anchorIndex);
+      setAnnouncement(notice ?? `Showing message ${anchorIndex}.`);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [landToken, anchorIndex, notice]);
+
+  // The highlight fades on its own.
+  useEffect(() => {
+    if (highlighted == null) return;
+    const timer = window.setTimeout(() => setHighlighted(null), HIGHLIGHT_MS);
+    return () => window.clearTimeout(timer);
+  }, [highlighted]);
+
+  function goToPage(p: number) {
+    setLocate(null);
+    setHighlighted(null);
+    setPage(p);
+  }
 
   if (error) {
     return (
@@ -53,12 +127,14 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
   }
 
   const messages = data?.messages || [];
+  const indexes = data?.message_indexes;
   const total = data?.total ?? 0;
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
   return (
     <div className="flex flex-col gap-6 p-4">
       <div ref={topRef} />
+      <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
 
       {/* Order toggle + pagination */}
       <div className="flex items-center justify-between">
@@ -66,7 +142,7 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => { setOrder(o => o === 'newest' ? 'oldest' : 'newest'); setPage(1); }}
+            onClick={() => { setOrder(o => o === 'newest' ? 'oldest' : 'newest'); goToPage(1); }}
           >
             {order === 'newest' ? 'Newest first' : 'Oldest first'}
           </Button>
@@ -74,7 +150,7 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setPage(totalPages)}
+              onClick={() => goToPage(totalPages)}
             >
               Jump to latest →
             </Button>
@@ -84,8 +160,9 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
           {total} messages
         </span>
       </div>
+      {notice && <Alert variant="info">{notice}</Alert>}
       {totalPages > 1 && (
-        <Pagination page={page} totalPages={totalPages} total={total} onPageChange={setPage} isLoading={isLoading} />
+        <Pagination page={displayPage} totalPages={totalPages} total={total} onPageChange={goToPage} isLoading={isLoading} />
       )}
 
       {messages.length === 0 && !isLoading && (
@@ -99,16 +176,24 @@ export default function ConversationView({ sessionId, initialPage }: Props) {
       )}
 
       {isLoading && messages.length === 0 && (
-        <p className="text-text-muted text-sm">Loading page {page}…</p>
+        <p className="text-text-muted text-sm">Loading page {displayPage}…</p>
       )}
 
-      {messages.map((msg, i) => (
-        <MessageBlock key={`${page}-${i}`} message={msg} />
-      ))}
+      {messages.map((msg, i) => {
+        const index = indexes?.[i];
+        return (
+          <MessageBlock
+            key={index != null ? `m${index}` : `${displayPage}-${i}`}
+            message={msg}
+            index={index}
+            highlighted={index != null && index === highlighted}
+          />
+        );
+      })}
 
       {/* Bottom pagination */}
       {totalPages > 1 && (
-        <Pagination page={page} totalPages={totalPages} total={total} onPageChange={setPage} isLoading={isLoading} />
+        <Pagination page={displayPage} totalPages={totalPages} total={total} onPageChange={goToPage} isLoading={isLoading} />
       )}
     </div>
   );

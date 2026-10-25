@@ -128,27 +128,52 @@ def delete(
 
         # Local deletion
         if scope in ("local", "everywhere") and store:
-            session_dir = store.get_session_dir(full_id)
-            if session_dir and session_dir.is_dir():
-                shutil.rmtree(session_dir)
-                console.print(f"[green]Removed local directory: {session_dir}[/green]")
+            from sessionfs.store.local import lock_session_dir
 
-            # Remove from SQLite index (native refs first — foreign key).
-            try:
-                conn = store.index._conn
-                if conn is not None:
-                    from sessionfs.store.index import delete_session_rows
+            # Take the same per-session lock a capture's commit_session takes,
+            # and tombstone the session *inside* it — so a capture that was
+            # already in flight re-checks the exclusion list at commit time,
+            # sees it, and skips instead of resurrecting the just-deleted dir.
+            with lock_session_dir(store.sessions_dir, full_id):
+                session_dir = store.get_session_dir(full_id)
+                if session_dir and session_dir.is_dir():
+                    shutil.rmtree(session_dir)
+                    console.print(f"[green]Removed local directory: {session_dir}[/green]")
 
-                    delete_session_rows(conn, full_id)
-            except Exception as exc:
-                err_console.print(f"[yellow]Could not update the local index: {exc}[/yellow]")
+                # Remove from SQLite index (native refs first — foreign key).
+                try:
+                    conn = store.index._conn
+                    if conn is not None:
+                        from sessionfs.store.index import delete_session_rows
+
+                        delete_session_rows(conn, full_id)
+                except Exception as exc:
+                    err_console.print(f"[yellow]Could not update the local index: {exc}[/yellow]")
+
+                # Tombstone inside the lock so a racing capture sees it.
+                from sessionfs.cli.common import get_store_dir
+                mark_deleted(full_id, scope, base_dir=get_store_dir())
+                console.print(f"[green]Session {full_id[:16]} marked as deleted (scope={scope}).[/green]")
+
+        # ``--everywhere`` still records the local tombstone when the local
+        # store couldn't be opened (store is None): the session was deleted on
+        # the server, so a later capture/sync must not resurrect a local copy.
+        # The store can't be opened to remove a directory that may not even
+        # exist, but the exclusion marker is independent of the store and must
+        # be written either way.
+        if scope == "everywhere" and store is None:
+            from sessionfs.cli.common import get_store_dir
+            mark_deleted(full_id, scope, base_dir=get_store_dir())
+            console.print(f"[green]Session {full_id[:16]} marked as deleted (scope={scope}).[/green]")
 
         # Add to local exclusion list — scoped to the active profile's
         # store so two accounts don't share one deleted.json
-        # (tk_457d060822bc48c0 R1 MED #3).
-        from sessionfs.cli.common import get_store_dir
-        mark_deleted(full_id, scope, base_dir=get_store_dir())
-        console.print(f"[green]Session {full_id[:16]} marked as deleted (scope={scope}).[/green]")
+        # (tk_457d060822bc48c0 R1 MED #3). Cloud-only deletions keep the local
+        # copy, so there is no directory to protect with the per-session lock.
+        if scope == "cloud":
+            from sessionfs.cli.common import get_store_dir
+            mark_deleted(full_id, scope, base_dir=get_store_dir())
+            console.print(f"[green]Session {full_id[:16]} marked as deleted (scope={scope}).[/green]")
 
     finally:
         if store:

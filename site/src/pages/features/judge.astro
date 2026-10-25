@@ -17,7 +17,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         </h1>
         <p class="text-muted text-lg mb-4 leading-relaxed">The LLM Judge cross-references every AI claim against actual tool outputs. When the AI says "the test passes" but the exit code was 1 — that's a critical contradiction, flagged with full evidence.</p>
         <p class="text-muted text-lg mb-6 leading-relaxed">Severity-classified findings: <span class="text-danger font-medium">CRITICAL</span> for test failures and failed commands. <span class="text-warning font-medium">HIGH</span> for file mismatches and data misreads. Every finding links to the exact message.</p>
-        <p class="text-base text-muted-dim border-l-2 border-brand/30 pl-4 mb-8 leading-relaxed">BYOK — your key, never stored. Works with any OpenAI-compatible endpoint: OpenRouter, LiteLLM, vLLM, Ollama.</p>
+        <p class="text-base text-muted-dim border-l-2 border-brand/30 pl-4 mb-8 leading-relaxed">BYOK — your own key, encrypted at rest and never shown again. Works with 14 built-in providers or any OpenAI-compatible endpoint: OpenRouter, LiteLLM, vLLM, Ollama.</p>
         <a href="/judge/" class="inline-flex items-center gap-2 bg-brand text-white font-semibold rounded-lg px-6 py-3 hover:brightness-110 transition">
           Read the docs
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
@@ -115,7 +115,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> OpenRouter (multi-model consensus)</div>
           <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> LiteLLM / vLLM (internal gateway)</div>
           <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Ollama (local, fully air-gapped)</div>
-          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Azure OpenAI, Anthropic, Google</div>
+          <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> 14 built-in providers: Anthropic, OpenAI, Google Gemini, DeepSeek, Kimi, xAI, Mistral, Groq and more</div>
         </div>
       </div>
       <div class="lg:w-1/2 w-full fade-up">

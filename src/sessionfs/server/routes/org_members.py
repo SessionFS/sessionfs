@@ -62,6 +62,8 @@ from sessionfs.server.db.models import (
     OrgOwnerTransfer,
     Project,
     ProjectTransfer,
+    Ticket,
+    TicketWatcher,
     User,
 )
 from sessionfs.server.services.auto_join import org_has_oidc_sso
@@ -1283,6 +1285,22 @@ async def perform_member_removal(
     await db.execute(
         delete(OrgMember).where(
             OrgMember.org_id == org_id, OrgMember.user_id == target_user_id
+        )
+    )
+
+    # Drop the removed member's watcher subscriptions on this org's tickets so
+    # they stop accumulating notification rows for tickets they can no longer
+    # access. Watchers on other orgs' tickets (and on personal projects) are
+    # left untouched. The subquery keeps the delete set-served on large orgs
+    # instead of materializing a Python list of every ticket id.
+    await db.execute(
+        delete(TicketWatcher).where(
+            TicketWatcher.ticket_id.in_(
+                select(Ticket.id)
+                .join(Project, Project.id == Ticket.project_id)
+                .where(Project.org_id == org_id)
+            ),
+            TicketWatcher.user_id == target_user_id,
         )
     )
 

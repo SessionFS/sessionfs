@@ -34,8 +34,12 @@ from sessionfs.server.db.models import (
     Team,
     TeamMember,
     Ticket,
+    TicketNotification,
+    TicketWatcher,
+    TicketWatchCursor,
     TrustedReviewer,
     User,
+    UserNotificationSettings,
 )
 
 
@@ -421,3 +425,77 @@ async def test_unique_key_dedupe_and_persona(
         select(AgentPersona).where(AgentPersona.id == persona.id).execution_options(populate_existing=True)
     )).scalar_one()
     assert p.represented_user_id == tgt.id and p.created_by == tgt.id
+
+
+@pytest.mark.asyncio
+async def test_merge_reassigns_and_dedupes_ticket_watcher_tables(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The four watcher-era user-FK tables are classified: ticket_notifications
+    reassigns (no per-user unique key), while ticket_watchers /
+    ticket_watch_cursors / user_notification_settings dedupe with the target's
+    row winning."""
+    _, admin_key = await _user(db_session, "ops", "admin")
+    src, _ = await _user(db_session, "typo")
+    tgt, _ = await _user(db_session, "real")
+
+    project = Project(id=f"proj_{uuid.uuid4().hex[:12]}", name="p",
+                      git_remote_normalized=f"github.com/x/{uuid.uuid4().hex[:8]}",
+                      owner_id=tgt.id)
+    db_session.add(project)
+    await db_session.flush()
+    t1 = Ticket(id=f"tk_{uuid.uuid4().hex[:16]}", project_id=project.id, title="t1",
+                created_by_user_id=tgt.id)
+    t2 = Ticket(id=f"tk_{uuid.uuid4().hex[:16]}", project_id=project.id, title="t2",
+                created_by_user_id=tgt.id)
+    db_session.add_all([t1, t2])
+    await db_session.flush()
+
+    # Source rows: a notification to reassign, a conflicting watcher + cursor
+    # + settings (target wins), and one non-conflicting watcher to move.
+    db_session.add(TicketNotification(user_id=src.id, ticket_id=t1.id, project_id=project.id,
+                                      kind="comment", summary="x"))
+    db_session.add(TicketWatcher(ticket_id=t1.id, user_id=src.id, source="explicit"))
+    db_session.add(TicketWatcher(ticket_id=t2.id, user_id=src.id, source="explicit"))
+    db_session.add(TicketWatchCursor(user_id=src.id, persona_name="atlas",
+                                     last_seen_notification_id=5))
+    db_session.add(UserNotificationSettings(user_id=src.id, ticket_email="all"))
+    # Target rows that conflict on the dedupe keys.
+    db_session.add(TicketWatcher(ticket_id=t1.id, user_id=tgt.id, source="explicit", muted=True))
+    db_session.add(TicketWatchCursor(user_id=tgt.id, persona_name="atlas",
+                                     last_seen_notification_id=9))
+    db_session.add(UserNotificationSettings(user_id=tgt.id, ticket_email="off"))
+    await db_session.commit()
+
+    r = await _merge(client, admin_key, src.id, tgt.id, dry_run=False)
+    assert r.status_code == 200, r.text
+    plan = r.json()["plan"]
+
+    assert plan["reassigned"]["ticket_notifications.user_id"]["count"] == 1
+    dedup = plan["deduped"]
+    assert dedup["ticket_watchers"]["dropped_target_wins"]["count"] == 1
+    assert dedup["ticket_watchers"]["moved"]["count"] == 1
+    assert dedup["ticket_watch_cursors"]["dropped_target_wins"]["count"] == 1
+    assert dedup["user_notification_settings"]["dropped_target_wins"]["count"] == 1
+
+    # Reassignment: the notification now belongs to the target.
+    assert await _count(db_session, TicketNotification,
+                        TicketNotification.user_id == src.id) == 0
+    assert await _count(db_session, TicketNotification,
+                        TicketNotification.user_id == tgt.id) == 1
+
+    # Dedupe: the conflicting watcher/cursor/settings keep the target's row.
+    assert await _count(db_session, TicketWatcher, TicketWatcher.user_id == src.id) == 0
+    assert await _count(db_session, TicketWatcher, TicketWatcher.ticket_id == t1.id) == 1
+    moved = (await db_session.execute(
+        select(TicketWatcher).where(TicketWatcher.ticket_id == t2.id)
+    )).scalar_one()
+    assert moved.user_id == tgt.id
+    cursor = (await db_session.execute(
+        select(TicketWatchCursor).where(TicketWatchCursor.user_id == tgt.id)
+    )).scalars().all()
+    assert [(c.persona_name, c.last_seen_notification_id) for c in cursor] == [("atlas", 9)]
+    settings = (await db_session.execute(
+        select(UserNotificationSettings).where(UserNotificationSettings.user_id == tgt.id)
+    )).scalar_one()
+    assert settings.ticket_email == "off"

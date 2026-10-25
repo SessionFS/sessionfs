@@ -149,29 +149,36 @@ class CopilotWatcher:
                 self._tracked[native_id] = ref
                 return
 
-            session_dir = self._store.allocate_session_dir(sfs_id)
-            convert_copilot_to_sfs(native_path, session_dir, session_id=sfs_id)
-
-            # Read cwd from workspace.yaml via the parsed session
-            cwd = None
-            workspace_path = session_dir / "workspace.json"
-            if workspace_path.exists():
-                ws = json.loads(workspace_path.read_text())
-                cwd = ws.get("root_path")
-
             # Migration 028: annotate with instruction provenance.
             from sessionfs.watchers.provenance import annotate_manifest_with_provenance
-            annotate_manifest_with_provenance(session_dir, "copilot", cwd)
             # v0.10.1 Phase 6: tag with active ticket + persona if any.
             from sessionfs.watchers.active_ticket_annot import (
                 annotate_manifest_with_active_ticket,
             )
-            annotate_manifest_with_active_ticket(session_dir)
 
-            manifest_path = session_dir / "manifest.json"
-            if manifest_path.exists():
-                manifest = json.loads(manifest_path.read_text())
-                self._store.upsert_session_metadata(sfs_id, manifest, str(session_dir))
+            cwd_holder: dict[str, str | None] = {}
+
+            def _write(staging):
+                convert_copilot_to_sfs(native_path, staging, session_id=sfs_id)
+
+                # Read cwd from workspace.yaml via the parsed session
+                workspace_path = staging / "workspace.json"
+                if workspace_path.exists():
+                    ws = json.loads(workspace_path.read_text())
+                    cwd_holder["value"] = ws.get("root_path")
+
+                annotate_manifest_with_provenance(
+                    staging, "copilot", cwd_holder.get("value")
+                )
+                annotate_manifest_with_active_ticket(staging)
+                manifest_path = staging / "manifest.json"
+                if manifest_path.exists():
+                    return json.loads(manifest_path.read_text())
+                return None
+
+            outcome = self._store.commit_session(sfs_id, _write)
+            if outcome.skipped:
+                return
 
             ref = NativeSessionRef(
                 tool="copilot-cli",
@@ -181,7 +188,7 @@ class CopilotWatcher:
                 last_mtime=mtime,
                 last_size=size,
                 last_captured_at=datetime.now(timezone.utc).isoformat(),
-                project_path=cwd,
+                project_path=cwd_holder.get("value"),
             )
             self._tracked[native_id] = ref
             self._store.upsert_tracked_session(ref)
