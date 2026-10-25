@@ -191,10 +191,40 @@ def convert_sfs_to_codex(
                 elif btype == "tool_use":
                     tool_name = block.get("name", "unknown")
                     tool_input = block.get("input", {})
-                    call_id = f"call_{uuid_mod.uuid4().hex[:24]}"
+                    # Reuse the original tool id as the call_id so the matching
+                    # tool_result (which keeps its tool_use_id) lines up on resume.
+                    # Codex/CC tool_use blocks carry ``tool_use_id``; Cursor-style
+                    # blocks carry ``id``. Only generate when both are missing.
+                    call_id = (
+                        block.get("id")
+                        or block.get("tool_use_id")
+                        or f"call_{uuid_mod.uuid4().hex[:24]}"
+                    )
+                    codex_item_type = block.get("codex_item_type")
 
+                    # A custom_tool_call captured by the Codex watcher carries its
+                    # raw ``input`` string; round-trip it as the same item type
+                    # rather than collapsing it into a function_call with JSON args.
+                    if codex_item_type == "custom_tool_call":
+                        raw_input = (
+                            tool_input.get("input", "")
+                            if isinstance(tool_input, dict)
+                            else tool_input
+                        )
+                        lines.append({
+                            "timestamp": ts,
+                            "type": "response_item",
+                            "payload": {
+                                "type": "custom_tool_call",
+                                "id": f"ctc_{uuid_mod.uuid4().hex[:24]}",
+                                "status": "completed",
+                                "call_id": call_id,
+                                "name": tool_name,
+                                "input": raw_input,
+                            },
+                        })
                     # Shell tools → local_shell_call, others → function_call
-                    if tool_name in ("Bash", "bash", "shell", "execute_command"):
+                    elif tool_name in ("Bash", "bash", "shell", "execute_command"):
                         cmd = tool_input.get("command", "") if isinstance(tool_input, dict) else str(tool_input)
                         lines.append({
                             "timestamp": ts,
@@ -233,23 +263,7 @@ def convert_sfs_to_codex(
                         })
 
                 elif btype == "tool_result":
-                    output_text = block.get("content", "") or block.get("output", "")
-                    if isinstance(output_text, list):
-                        output_text = "\n".join(
-                            b.get("text", "") for b in output_text if isinstance(b, dict)
-                        )
-                    lines.append({
-                        "timestamp": ts,
-                        "type": "response_item",
-                        "payload": {
-                            "type": "function_call_output",
-                            "call_id": block.get("tool_use_id", f"call_{uuid_mod.uuid4().hex[:24]}"),
-                            "output": {
-                                "text": str(output_text),
-                                "metadata": None,
-                            },
-                        },
-                    })
+                    lines.append(_tool_result_item(ts, block))
 
                 elif btype == "image":
                     logger.info("Dropping image block (not supported in Codex import)")
@@ -279,20 +293,7 @@ def convert_sfs_to_codex(
                     continue
                 btype = block.get("type", "")
                 if btype == "tool_result":
-                    output_text = block.get("content", "") or block.get("output", "")
-                    if isinstance(output_text, list):
-                        output_text = "\n".join(
-                            b.get("text", "") for b in output_text if isinstance(b, dict)
-                        )
-                    lines.append({
-                        "timestamp": ts,
-                        "type": "response_item",
-                        "payload": {
-                            "type": "function_call_output",
-                            "call_id": block.get("tool_use_id", f"call_{uuid_mod.uuid4().hex[:24]}"),
-                            "output": {"text": str(output_text), "metadata": None},
-                        },
-                    })
+                    lines.append(_tool_result_item(ts, block))
                 elif btype == "text":
                     text = block.get("text", "")
                     if text:
@@ -396,4 +397,43 @@ def _event(event_type: str, ts: str, **payload_fields: Any) -> dict[str, Any]:
         "timestamp": ts,
         "type": "event_msg",
         "payload": {"type": event_type, **payload_fields},
+    }
+
+
+def _tool_result_item(ts: str, block: dict[str, Any]) -> dict[str, Any]:
+    """Build a Codex ``response_item`` for a ``tool_result`` block.
+
+    Custom tool outputs (captured from Codex ``custom_tool_call_output``) round-trip
+    as ``custom_tool_call_output`` with a string ``output``; everything else stays a
+    ``function_call_output``. The call_id reuses the original ``tool_use_id`` so it
+    matches the tool_use's call_id on resume.
+    """
+    output_text = block.get("content", "") or block.get("output", "")
+    if isinstance(output_text, list):
+        output_text = "\n".join(
+            b.get("text", "") for b in output_text if isinstance(b, dict)
+        )
+    call_id = (
+        block.get("tool_use_id")
+        or block.get("id")
+        or f"call_{uuid_mod.uuid4().hex[:24]}"
+    )
+    if block.get("codex_item_type") == "custom_tool_call_output":
+        return {
+            "timestamp": ts,
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "call_id": call_id,
+                "output": str(output_text),
+            },
+        }
+    return {
+        "timestamp": ts,
+        "type": "response_item",
+        "payload": {
+            "type": "function_call_output",
+            "call_id": call_id,
+            "output": {"text": str(output_text), "metadata": None},
+        },
     }

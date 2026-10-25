@@ -1,6 +1,10 @@
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
-import type { AgentRun } from '../api/client';
+import type {
+  AgentRun,
+  AgentRunCompareResult,
+  AgentRunReplayInput,
+} from '../api/client';
 
 /**
  * React-Query hooks for v0.10.2 AgentRuns (Team+).
@@ -44,6 +48,38 @@ export function useAgentRun(
     queryKey: ['agentRun', projectId, runId],
     queryFn: () => auth!.client.getAgentRun(projectId!, runId!),
     enabled: !!auth && !!projectId && !!runId,
+    staleTime: 15_000,
+  });
+}
+
+/**
+ * GitHub #95 — replay a run with edited prompt/ticket/context. Reuses the
+ * AgentRuns query cache so the new queued run appears without a reload.
+ */
+export function useReplayAgentRun(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ runId, body }: { runId: string; body: AgentRunReplayInput }) =>
+      auth!.client.replayAgentRun(projectId!, runId, body),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['agentRuns', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['agentRun', projectId] });
+    },
+  });
+}
+
+/** GitHub #95 — findings diff between two runs in the same project. */
+export function useCompareAgentRuns(
+  projectId: string | undefined,
+  aId: string | undefined,
+  bId: string | undefined,
+) {
+  const { auth } = useAuth();
+  return useQuery<AgentRunCompareResult>({
+    queryKey: ['agentRunCompare', projectId, aId, bId],
+    queryFn: () => auth!.client.compareAgentRuns(projectId!, aId!, bId!),
+    enabled: !!auth && !!projectId && !!aId && !!bId,
     staleTime: 15_000,
   });
 }

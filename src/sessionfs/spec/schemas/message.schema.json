@@ -159,6 +159,11 @@
           "description": "The tool input. Structure varies by tool. For shell commands, may be {\"command\": [...]} or {\"command\": \"...\"}.",
           "type": "object",
           "additionalProperties": true
+        },
+        "codex_item_type": {
+          "type": "string",
+          "description": "The original Codex response_item type this tool_use was captured from (e.g. \"custom_tool_call\", \"function_call\", \"local_shell_call\"). Preserved so resume-into-Codex can round-trip the original item type.",
+          "examples": ["custom_tool_call", "function_call", "local_shell_call"]
         }
       }
     },
@@ -191,6 +196,11 @@
           "type": ["number", "null"],
           "description": "Execution duration in milliseconds.",
           "default": null
+        },
+        "codex_item_type": {
+          "type": "string",
+          "description": "The original Codex response_item type this tool_result was captured from (e.g. \"custom_tool_call_output\"). Preserved so resume-into-Codex can round-trip the original item type.",
+          "examples": ["custom_tool_call_output", "function_call_output", "local_shell_call_output"]
         }
       }
     },

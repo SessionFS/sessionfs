@@ -16,6 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.auth.dependencies import AuthContext, get_current_user, require_scope
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import ContextCompilation, KnowledgeEntry, Project, User
+from sessionfs.server.services.knowledge import (
+    auto_promotable_evidence_clauses,
+    compile_work_condition,
+    pending_claim_clauses,
+)
 from sessionfs.server.services.personas import (
     resolve_persona,
     visible_persona_org_id_for_auth,
@@ -142,6 +147,29 @@ class CompilationResponse(BaseModel):
     # explicit that nothing was eligible AND health is the source of
     # truth for the last real compilation.
     noop_reason: str | None = None
+    # 'manual' (a user clicked Compile) or 'scheduled' (the KB compile
+    # sweep).
+    trigger: str = "manual"
+
+
+class CompileHistoryItem(BaseModel):
+    id: int
+    compiled_at: datetime
+    trigger: str
+    entries_compiled: int
+    context_words_before: int = 0
+    context_words_after: int = 0
+
+
+class CompileStatusResponse(BaseModel):
+    last_compile_at: datetime | None = None
+    pending_claims: int = 0
+    compile_needed: bool = False
+    compile_schedule: str = "nightly"
+    compile_after_claims: int | None = None
+    last_scheduled_compile_at: datetime | None = None
+    next_scheduled_at: datetime | None = None
+    compile_history: list[CompileHistoryItem] = Field(default_factory=list)
 
 
 class ContextSectionResponse(BaseModel):
@@ -1304,6 +1332,7 @@ async def compile_context(
         context_words_after=words_after,
         section_pages_updated=section_pages,
         concept_pages_updated=concept_pages,
+        trigger=compilation.trigger,
     )
 
 
@@ -1333,10 +1362,100 @@ async def list_compilations(
             entries_compiled=c.entries_compiled,
             context_before=c.context_before,
             context_after=c.context_after,
+            context_words_before=len((c.context_before or "").split()),
+            context_words_after=len((c.context_after or "").split()),
             compiled_at=c.compiled_at,
+            trigger=getattr(c, "trigger", "manual"),
         )
         for c in compilations
     ]
+
+
+@router.get("/{project_id}/compile-status", response_model=CompileStatusResponse)
+async def project_compile_status(
+    project_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CompileStatusResponse:
+    """Compile status + staleness signal for a project (GitHub #93).
+
+    ``compile_needed`` is the dashboard banner trigger: it fires when there
+    is at least one pending claim and the last compile is older than 24h (or
+    there has never been one), or when there are 20+ pending claims
+    regardless of age.
+    """
+    project = await _get_project_or_404(project_id, db, user.id)
+
+    now = datetime.now(timezone.utc)
+
+    pending_result = await db.execute(
+        select(func.count(KnowledgeEntry.id)).where(
+            KnowledgeEntry.project_id == project_id,
+            compile_work_condition(),
+        )
+    )
+    pending_claims = pending_result.scalar() or 0
+
+    last_compile_result = await db.execute(
+        select(ContextCompilation.compiled_at)
+        .where(ContextCompilation.project_id == project_id)
+        .order_by(ContextCompilation.compiled_at.desc())
+        .limit(1)
+    )
+    last_compile_at = last_compile_result.scalar_one_or_none()
+
+    def _as_utc(value: datetime | None) -> datetime | None:
+        # SQLite stores DateTime(timezone=True) as a naive UTC string, while
+        # PostgreSQL returns an aware value. Normalize both to aware UTC so
+        # the comparison never mixes naive and aware datetimes.
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    stale_window = now - timedelta(hours=24)
+    last_utc = _as_utc(last_compile_at)
+    older_than_24h = last_utc is None or last_utc < stale_window
+    compile_needed = (pending_claims >= 1 and older_than_24h) or pending_claims >= 20
+
+    schedule = getattr(project, "compile_schedule", "nightly")
+    last_scheduled = getattr(project, "last_scheduled_compile_at", None)
+    if schedule == "off" or last_scheduled is None:
+        next_scheduled_at = None
+    elif schedule == "weekly":
+        next_scheduled_at = last_scheduled + timedelta(days=7)
+    else:
+        next_scheduled_at = last_scheduled + timedelta(hours=24)
+
+    history_result = await db.execute(
+        select(ContextCompilation)
+        .where(ContextCompilation.project_id == project_id)
+        .order_by(ContextCompilation.compiled_at.desc())
+        .limit(10)
+    )
+    history = [
+        CompileHistoryItem(
+            id=c.id,
+            compiled_at=c.compiled_at,
+            trigger=getattr(c, "trigger", "manual"),
+            entries_compiled=c.entries_compiled,
+            context_words_before=len((c.context_before or "").split()),
+            context_words_after=len((c.context_after or "").split()),
+        )
+        for c in history_result.scalars().all()
+    ]
+
+    return CompileStatusResponse(
+        last_compile_at=last_compile_at,
+        pending_claims=pending_claims,
+        compile_needed=compile_needed,
+        compile_schedule=schedule,
+        compile_after_claims=getattr(project, "compile_after_claims", None),
+        last_scheduled_compile_at=last_scheduled,
+        next_scheduled_at=next_scheduled_at,
+        compile_history=history,
+    )
 
 
 @router.get(
@@ -1450,11 +1569,7 @@ async def project_health(
     pending_result = await db.execute(
         select(func.count(KnowledgeEntry.id)).where(
             KnowledgeEntry.project_id == project_id,
-            KnowledgeEntry.compiled_at.is_(None),
-            KnowledgeEntry.dismissed == False,  # noqa: E712
-            KnowledgeEntry.claim_class == "claim",
-            KnowledgeEntry.freshness_class.in_(["current", "aging"]),
-            KnowledgeEntry.superseded_by.is_(None),
+            *pending_claim_clauses(),
         )
     )
     pending_entries = pending_result.scalar() or 0
@@ -1485,13 +1600,7 @@ async def project_health(
     auto_promotable_result = await db.execute(
         select(func.count(KnowledgeEntry.id)).where(
             KnowledgeEntry.project_id == project_id,
-            KnowledgeEntry.claim_class == "evidence",
-            KnowledgeEntry.dismissed == False,  # noqa: E712
-            KnowledgeEntry.confidence >= 0.5,
-            func.length(KnowledgeEntry.content) >= 30,
-            KnowledgeEntry.compiled_at.is_(None),
-            KnowledgeEntry.freshness_class.in_(["current", "aging"]),
-            KnowledgeEntry.superseded_by.is_(None),
+            *auto_promotable_evidence_clauses(),
         )
     )
     auto_promotable_evidence = auto_promotable_result.scalar() or 0
@@ -1545,11 +1654,7 @@ async def project_health(
     if pending_entries > 0 and context_doc.strip():
         pending_stmt = select(KnowledgeEntry.content).where(
             KnowledgeEntry.project_id == project_id,
-            KnowledgeEntry.compiled_at.is_(None),
-            KnowledgeEntry.dismissed == False,  # noqa: E712
-            KnowledgeEntry.claim_class == "claim",
-            KnowledgeEntry.freshness_class.in_(["current", "aging"]),
-            KnowledgeEntry.superseded_by.is_(None),
+            *pending_claim_clauses(),
         )
         pending_result_entries = await db.execute(pending_stmt)
         pending_contents = [row[0] for row in pending_result_entries.all()]

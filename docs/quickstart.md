@@ -156,6 +156,11 @@ sfs handoff ses_abc --to colleague@company.com
 
 # Install MCP so AI agents remember past sessions
 sfs mcp install --for claude-code
+
+# Ask a question across your sessions (Enterprise, your own model key)
+sfs helper ask "Where did we fix the SSO redirect?"
+
+# See which files an agent changed: open a session in the dashboard → Changes
 ```
 
 See the full [CLI Reference](cli-reference.md) for all commands and options.

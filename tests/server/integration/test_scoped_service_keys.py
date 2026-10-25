@@ -800,6 +800,54 @@ async def test_service_key_cross_org_agent_run_create_denied(
 
 
 @pytest.mark.asyncio
+async def test_service_key_without_write_scope_cannot_replay_agent_run(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """GitHub #95 — replay requires agent_runs:write; a service key with
+    only agent_runs:read is denied 403 insufficient_scope before any
+    side effect."""
+    from sessionfs.server.db.models import AgentPersona, AgentRun
+    from sqlalchemy import func, select as _sel
+
+    org, admin, admin_raw = await _make_org_with_admin(db_session, slug="rp")
+    project = await _make_org_project(db_session, org, admin)
+    db_session.add(
+        AgentPersona(
+            id=f"per_{uuid.uuid4().hex[:8]}",
+            project_id=project.id,
+            name="atlas",
+            role="Backend",
+            created_by=admin.id,
+        )
+    )
+    await db_session.commit()
+
+    parent = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs",
+        headers=_hdrs(admin_raw),
+        json={"persona_name": "atlas"},
+    )
+    assert parent.status_code == 201, parent.text
+    parent_id = parent.json()["id"]
+
+    _row, svc_key = await _create_service_key(
+        db_session, org.id, admin, scopes=["agent_runs:read"]
+    )
+
+    before = (await db_session.execute(_sel(func.count(AgentRun.id)))).scalar()
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs/{parent_id}/replay",
+        headers=_hdrs(svc_key),
+        json={"prompt": "hi"},
+    )
+    assert resp.status_code == 403, resp.text
+    structured = _structured_error(resp.json())
+    assert structured.get("error") == "insufficient_scope", resp.json()
+    after = (await db_session.execute(_sel(func.count(AgentRun.id)))).scalar()
+    assert after == before, "no replay row may be inserted without write scope"
+
+
+@pytest.mark.asyncio
 async def test_service_key_event_records_service_key_id(
     client: AsyncClient, db_session: AsyncSession, sample_sfs_tar: bytes
 ):

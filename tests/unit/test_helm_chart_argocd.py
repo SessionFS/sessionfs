@@ -153,6 +153,19 @@ def test_api_proxy_waits_as_long_as_the_cli_upload_timeout():
     assert "proxy_read_timeout 900s;" in conf
 
 
+def test_helper_turns_stream_through_the_dashboard_nginx_unbuffered():
+    """Session helper answers are Server-Sent Events; buffering would hold
+    the whole answer back until the turn ends."""
+    conf = _doc(_render(), "ConfigMap", "dashboard-nginx")["data"]["default.conf"]
+    block = conf.split("location = /api/v1/helper/turns")[1].split("}")[0]
+    assert "proxy_buffering off;" in block
+    assert "proxy_http_version 1.1;" in block
+    assert "proxy_read_timeout 600s;" in block
+    # nginx picks an exact-match location over the /api/ prefix regardless of
+    # order, so the generic proxy still serves every other API route.
+    assert "location /api/" in conf
+
+
 def test_ingress_gives_ingress_nginx_the_same_limits_unless_overridden():
     ann = _annotations(_doc(_render(), "Ingress", "sessionfs"))
     assert ann["nginx.ingress.kubernetes.io/proxy-read-timeout"] == "300"

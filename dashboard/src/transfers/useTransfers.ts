@@ -27,8 +27,13 @@ export interface TransferInfo {
   target_user_id: string | null;
   from_scope: string;
   to_scope: string;
-  state: 'pending' | 'accepted' | 'rejected' | 'cancelled';
+  state: 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'expired';
   accepted_by: string | null;
+  // GH #96 — admin-proposed transfer fields (null for owner-initiated).
+  proposed_by_user_id: string | null;
+  proposed_by_name: string | null;
+  proposal_reason: string | null;
+  expires_at: string | null;
   created_at: string;
   accepted_at: string | null;
   updated_at: string;

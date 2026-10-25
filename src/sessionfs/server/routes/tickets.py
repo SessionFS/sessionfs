@@ -359,6 +359,14 @@ class TicketUpdate(BaseModel):
         return v
 
 
+class TicketJiraLink(BaseModel):
+    """Jira promotion link for a ticket (present only when promoted)."""
+
+    issue_key: str
+    issue_url: str
+    last_known_status: str | None = None
+
+
 class TicketResponse(BaseModel):
     id: str
     project_id: str
@@ -392,6 +400,14 @@ class TicketResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     resolved_at: datetime | None
+    # v0.23 — Jira promotion link (present only after `publish_jira`).
+    jira: TicketJiraLink | None = None
+    # True while a publish is in flight (a pending claim exists but the issue
+    # is not linked yet); `jira` stays None until the link is actually live.
+    jira_publish_in_progress: bool = False
+    # True when a prior publish timed out mid-create; the row is ``unknown``
+    # and a re-publish will search Jira by label and adopt-or-create.
+    jira_publish_unknown: bool = False
 
 
 class CompleteTicketRequest(BaseModel):
@@ -1005,7 +1021,30 @@ async def get_ticket(
             )
         ).scalars().all()
         child_ticket_ids = list(child_rows)
-    return _to_response(ticket, deps, child_ticket_ids)
+    response = _to_response(ticket, deps, child_ticket_ids)
+    from sessionfs.server.db.models import TicketTrackerLink
+
+    link = (
+        await db.execute(
+            select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+        )
+    ).scalar_one_or_none()
+    if link is not None:
+        if link.status == "linked":
+            response.jira = TicketJiraLink(
+                issue_key=link.issue_key,
+                issue_url=link.issue_url,
+                last_known_status=link.last_known_status,
+            )
+        elif link.status == "pending":
+            # A pending claim is a publish in flight, not a link: reads must
+            # never surface a half-written issue.
+            response.jira_publish_in_progress = True
+        elif link.status == "unknown":
+            # A timed-out publish left no confirmed issue; surface it so the
+            # caller knows a re-publish will adopt-or-create.
+            response.jira_publish_unknown = True
+    return response
 
 
 @router.get(

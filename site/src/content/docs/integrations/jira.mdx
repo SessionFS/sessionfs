@@ -1,0 +1,84 @@
+---
+title: Jira Cloud
+description: Promote SessionFS tickets to Jira Cloud issues with an editable preview. One way, Enterprise.
+---
+
+Promote a SessionFS ticket to a Jira Cloud issue. The link is **one way**: SessionFS creates or updates the Jira issue from the ticket and reads its status on demand. Changes made in Jira never come back, and status, assignee and sprint are never touched. The ticket stays the source of truth.
+
+Available on the **Enterprise** plan, from the dashboard, the CLI and the API. Added in v0.23.0.
+
+## What it does
+
+Anyone who can write to a ticket can:
+
+- **Preview** a Jira story built from the ticket, without sending anything to Jira. The preview is editable.
+- **Publish** it. The first publish creates the issue; later publishes update its summary and description.
+- **Check status**: the linked issue key, URL and current Jira status (cached for 60 seconds).
+- **Unlink** it (project admins). The Jira issue itself is left alone.
+
+A ticket links to at most one Jira issue, so publishing again updates the same issue instead of creating a duplicate. Publishing is safe to retry: each issue carries a `sessionfs-<ticket_id>` label, and if Jira doesn't answer in time the next publish finds and adopts the issue before creating a new one. Two publishes of the same ticket at once can't both create an issue, and a description over Jira's 32,000-character limit is refused before anything is sent.
+
+## Setup
+
+1. **Connect the org** (org owners and admins) from the Organization page's **Integrations** tab, or:
+
+   ```bash
+   sfs org jira connect \
+     --site-url https://acme.atlassian.net \
+     --email jira@acme.com \
+     --template agile
+   ```
+
+   The credentials are checked against Jira first. You'll be prompted for an Atlassian API token, which is encrypted at rest and never returned.
+
+2. **Map projects** to Jira projects in the Integrations tab, or with `PUT /api/v1/orgs/{org_id}/integrations/jira/mappings/{project_id}`. A mapping sets the Jira project key, issue type (default `Story`), an optional template override and an optional "done" status name.
+
+3. **Promote tickets.** On a ticket, **Promote to Jira** opens the preview; a linked ticket shows its issue key and an **Update Jira** button. From the CLI:
+
+   ```bash
+   sfs ticket jira preview tk_abc123 --out preview.json
+   sfs ticket jira publish tk_abc123 --from preview.json
+   sfs ticket jira status  tk_abc123
+   sfs ticket jira unlink  tk_abc123 --confirm
+   ```
+
+The Integrations tab also shows health: unmapped projects, failed updates and stale links (`sfs org jira health`).
+
+## Templates
+
+Four built-in templates: **Agile** (`agile`), **Compliance** (`compliance`), **SRE** (`sre`) and **Bug report** (`bug`). The org picks a default when connecting, and a project mapping can override it.
+
+Each template is a list of sections:
+
+- **Copied word for word** from the ticket: acceptance criteria, completion notes and linked sessions. These never come from a model.
+- **Reworded** sections are built from the ticket's fields and, when the org or user has an LLM key, reshaped by that model.
+
+Every reworded paragraph has to cite a real part of the ticket (a description line range, an acceptance-criteria entry, or a field such as `title` or `priority`). A paragraph whose citation doesn't resolve is dropped, and a section with nothing left falls back to the plain draft. With no LLM key, every section uses the plain draft.
+
+## Security
+
+- The Atlassian API token is encrypted at rest and never returned or logged.
+- Site URLs must be `https://<name>.atlassian.net`. Redirects aren't followed, requests time out after 20 seconds, and responses are capped at 2 MiB.
+- Ticket text is redacted for secrets before any of it reaches a model, even when the org has no DLP policy.
+- Org routes check membership and the org's plan; ticket routes check the project's org and use the existing `tickets:read` / `tickets:write` scopes.
+- If the org reconnects to a different Jira site, existing links are reported as stale (`409 jira_link_stale`) and must be unlinked before publishing again.
+
+## API
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET / PUT / DELETE | `/api/v1/orgs/{org_id}/integrations/jira` | Read, save or remove the connection |
+| GET | `/api/v1/orgs/{org_id}/integrations/jira/projects` | Jira projects and issue types |
+| GET / PUT / DELETE | `/api/v1/orgs/{org_id}/integrations/jira/mappings[/{project_id}]` | Read, save or remove mappings |
+| GET | `/api/v1/orgs/{org_id}/integrations/jira/health` | Unmapped projects, failures, stale links |
+| POST | `/api/v1/projects/{pid}/tickets/{tid}/jira/preview` | Draft the story |
+| POST | `/api/v1/projects/{pid}/tickets/{tid}/jira/publish` | Create or update the issue |
+| GET | `/api/v1/projects/{pid}/tickets/{tid}/jira` | Linked issue and cached status |
+| DELETE | `/api/v1/projects/{pid}/tickets/{tid}/jira` | Unlink (project admin) |
+
+`GET /api/v1/projects/{pid}/tickets/{tid}` and the `get_ticket` MCP tool include a `jira` object when the ticket has been promoted.
+
+## Limitations
+
+- Jira Cloud is the only tracker so far.
+- Failures are reported when you publish; there is no background retry. A failed update of a linked issue is listed in the health view until the next successful publish.

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Protocol
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select
@@ -19,7 +20,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import OrgMember, Organization, Project, ProjectFeatureGrandfather, User
+from sessionfs.server.db.models import (
+    Entitlement,
+    OrgMember,
+    Organization,
+    Project,
+    ProjectFeatureGrandfather,
+    User,
+)
 from sessionfs.server.roles import has_minimum_role
 from sessionfs.server.services.entitlements import resolve_entitlement
 from sessionfs.server.tiers import Tier, format_bytes, get_features_for_tier, get_minimum_tier_for_feature, get_storage_limit
@@ -314,6 +322,193 @@ async def resolve_project_plan_tier(project: Project, db: AsyncSession) -> Tier:
     if owner is None:
         return Tier.FREE
     return await get_effective_tier(owner, db)
+
+
+class _ProjectPlanSubject(Protocol):
+    """Structural contract for bulk plan resolution — the three fields
+    ``resolve_project_plan_tiers`` reads off each subject (a full ``Project``
+    row or the sweep's lightweight, frozen due-project row). Declared as
+    read-only properties so both settable ORM columns and frozen dataclass
+    attributes satisfy it."""
+
+    @property
+    def id(self) -> str: ...
+    @property
+    def org_id(self) -> str | None: ...
+    @property
+    def owner_id(self) -> str: ...
+
+
+# Chunk bulk ``IN (...)`` lookups so a very large due set never trips
+# SQLite's host-parameter limit nor builds a single pathological query
+# (GitHub #93 review round 2 LOW — the sweep selects a bounded batch, but a
+# member's primary org can pull extra org ids into the entitlement lookup).
+_IN_CHUNK_SIZE = 1000
+
+
+def _chunks(ids: set[str]) -> list[list[str]]:
+    ordered = list(ids)
+    return [
+        ordered[i : i + _IN_CHUNK_SIZE]
+        for i in range(0, len(ordered), _IN_CHUNK_SIZE)
+    ]
+
+
+async def resolve_project_plan_tiers(
+    projects: list[_ProjectPlanSubject], db: AsyncSession
+) -> dict[str, Tier]:
+    """Batched ``resolve_project_plan_tier`` for the KB compile sweep.
+
+    Mirrors the single-project resolution — an org project resolves its
+    org's active entitlement then legacy ``org.tier`` (unrecognised → TEAM);
+    a personal project resolves its owner's effective tier (org membership
+    first, then the user's own entitlement / tier). Issues a handful of bulk
+    queries instead of one round-trip per project, so the sweep's selection
+    stays O(1) round-trips even for a large due set (GitHub #93 review round
+    1 MEDIUM — the sweep must not compile Free/Starter projects).
+    """
+    org_projects = [p for p in projects if p.org_id]
+    personal_projects = [p for p in projects if not p.org_id]
+    org_ids = {p.org_id for p in org_projects if p.org_id}
+    owner_ids = {p.owner_id for p in personal_projects}
+
+    # Owner rows drive both the personal-project plan and each owner's
+    # primary org membership below.
+    owners: dict[str, User] = {}
+    if owner_ids:
+        owner_rows: list[User] = []
+        for chunk in _chunks(owner_ids):
+            owner_rows.extend(
+                (await db.execute(select(User).where(User.id.in_(chunk))))
+                .scalars()
+                .all()
+            )
+        owners = {u.id: u for u in owner_rows}
+
+    # Primary org membership per owner (default org first, then earliest
+    # joined), mirroring get_user_org_membership. Memberships may pull in
+    # org ids beyond org_projects'.
+    primary_membership: dict[str, OrgMember] = {}
+    if owner_ids:
+        from sqlalchemy import case
+
+        for chunk in _chunks(owner_ids):
+            member_rows = (
+                await db.execute(
+                    select(OrgMember, User.default_org_id)
+                    .join(User, User.id == OrgMember.user_id)
+                    .where(OrgMember.user_id.in_(chunk))
+                    .order_by(
+                        case((OrgMember.org_id == User.default_org_id, 0), else_=1),
+                        OrgMember.joined_at,
+                        OrgMember.org_id,
+                    )
+                )
+            ).all()
+            for member, _default_org in member_rows:
+                if member.user_id not in primary_membership:
+                    primary_membership[member.user_id] = member
+                    org_ids.add(member.org_id)
+
+    # Bulk-load active entitlements + legacy tiers for every org in scope,
+    # and active entitlements for every personal owner.
+    org_ent_tiers: dict[str, str] = {}
+    org_legacy_tiers: dict[str, str] = {}
+    if org_ids:
+        for chunk in _chunks(org_ids):
+            ent_rows = (
+                await db.execute(
+                    select(Entitlement.owner_id, Entitlement.tier).where(
+                        Entitlement.owner_type == "org",
+                        Entitlement.owner_id.in_(chunk),
+                        Entitlement.status == "active",
+                    )
+                )
+            ).all()
+            org_ent_tiers.update({owner_id: tier for owner_id, tier in ent_rows})
+        for chunk in _chunks(org_ids):
+            org_rows = (
+                await db.execute(
+                    select(Organization.id, Organization.tier).where(
+                        Organization.id.in_(chunk)
+                    )
+                )
+            ).all()
+            org_legacy_tiers.update({oid: tier for oid, tier in org_rows})
+
+    user_ent_tiers: dict[str, str] = {}
+    if owner_ids:
+        for chunk in _chunks(owner_ids):
+            user_ent_rows = (
+                await db.execute(
+                    select(Entitlement.owner_id, Entitlement.tier).where(
+                        Entitlement.owner_type == "user",
+                        Entitlement.owner_id.in_(chunk),
+                        Entitlement.status == "active",
+                    )
+                )
+            ).all()
+            user_ent_tiers.update(
+                {owner_id: tier for owner_id, tier in user_ent_rows}
+            )
+
+    def _tier(value: str | None, *, unrecognised: Tier) -> Tier:
+        if value is None:
+            return unrecognised
+        try:
+            return Tier(value)
+        except ValueError:
+            return unrecognised
+
+    def org_plan(org_id: str) -> Tier:
+        # resolve_org_plan_tier semantics: unrecognised values map to TEAM,
+        # but a missing org (deleted since selection) is FREE.
+        if org_id in org_ent_tiers:
+            return _tier(org_ent_tiers[org_id], unrecognised=Tier.TEAM)
+        if org_id in org_legacy_tiers:
+            return _tier(org_legacy_tiers[org_id], unrecognised=Tier.TEAM)
+        return Tier.FREE
+
+    def owner_tier(user_id: str) -> Tier:
+        # get_effective_tier semantics: admin always ENTERPRISE; otherwise
+        # org membership first, then the user's own entitlement/tier, with
+        # an unrecognised value falling THROUGH to the next source.
+        user = owners.get(user_id)
+        if user is None:
+            return Tier.FREE
+        if user.tier == "admin":
+            return Tier.ENTERPRISE
+        member = primary_membership.get(user_id)
+        if member is not None:
+            ent_tier = org_ent_tiers.get(member.org_id)
+            if ent_tier is not None:
+                try:
+                    return Tier(ent_tier)
+                except ValueError:
+                    pass
+            legacy_tier = org_legacy_tiers.get(member.org_id)
+            if legacy_tier is not None:
+                try:
+                    return Tier(legacy_tier)
+                except ValueError:
+                    pass
+        ent_tier = user_ent_tiers.get(user_id)
+        if ent_tier is not None:
+            try:
+                return Tier(ent_tier)
+            except ValueError:
+                pass
+        try:
+            return Tier(user.tier)
+        except ValueError:
+            return Tier.FREE
+
+    resolved: dict[str, Tier] = {}
+    for project in org_projects:
+        resolved[project.id] = org_plan(project.org_id) if project.org_id else Tier.FREE
+    for project in personal_projects:
+        resolved[project.id] = owner_tier(project.owner_id)
+    return resolved
 
 
 async def _is_grandfathered(project_id: str, feature: str, db: AsyncSession) -> bool:

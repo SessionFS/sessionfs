@@ -37,6 +37,9 @@ SWEEPS: list[tuple[str, dict, str | None]] = [
     ("/api/v1/admin/marketplace/publishers/recheck", {}, "skill_publisher_recheck"),
     ("/api/v1/admin/github-webhook-deliveries/sweep", {}, "purge_github_webhook_deliveries"),
     ("/api/v1/admin/github-webhook-deliveries/purge", {}, "purge_github_webhook_deliveries"),
+    ("/api/v1/admin/sweeps/org-digest", {}, "run_org_digest"),
+    ("/api/v1/admin/sweeps/kb-compile", {}, "kb_compile_sweep"),
+    ("/api/v1/admin/sweeps/helper-retention", {}, "helper_retention_sweep"),
 ]
 SWEEP_PATHS = {path for path, _, _ in SWEEPS}
 

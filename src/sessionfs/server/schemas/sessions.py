@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
@@ -121,6 +122,29 @@ class SyncPushResponse(BaseModel):
     synced_at: datetime
 
 
+class SessionUploadInitiateRequest(BaseModel):
+    """Initiate a chunked, resumable upload (GitHub #91)."""
+
+    total_size: int
+    sha256: str
+    part_size: int | None = None
+
+
+class SessionUploadInitiateResponse(BaseModel):
+    upload_id: str
+    part_size: int
+    part_count: int
+    expires_at: datetime
+
+
+class SessionUploadStatusResponse(BaseModel):
+    status: str
+    part_size: int
+    part_count: int
+    received: list[int]
+    expires_at: datetime
+
+
 class MessagesResponse(BaseModel):
     messages: list[dict]
     total: int
@@ -135,6 +159,22 @@ class WorkspaceResponse(BaseModel):
 
 class ToolsResponse(BaseModel):
     tools: dict
+
+
+class FileChange(BaseModel):
+    path: str
+    operation: Literal["created", "edited", "deleted", "unknown"]
+    diff: str
+    added_lines: int
+    removed_lines: int
+    message_indexes: list[int]
+    truncated: bool = False
+
+
+class SessionChangesResponse(BaseModel):
+    files: list[FileChange]
+    git_ref: str | None = None
+    truncated: bool = False
 
 
 class CreateShareLinkRequest(BaseModel):

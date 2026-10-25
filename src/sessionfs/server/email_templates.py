@@ -163,6 +163,282 @@ def org_invite_email(
     )
 
 
+def _project_url(dashboard_url: str, project_id: str) -> str:
+    """Filtered dashboard view for a project (Work section)."""
+    base = dashboard_url.rstrip("/")
+    return f"{base}/projects/{_html.escape(project_id, quote=True)}?tab=work"
+
+
+def _opt_out_url(dashboard_url: str) -> str:
+    base = dashboard_url.rstrip("/")
+    return _html.escape(f"{base}/settings/organization?tab=policies", quote=True)
+
+
+def org_digest_email(
+    *,
+    org_name: str,
+    week_label: str,
+    digest: dict,
+    dashboard_url: str,
+) -> str:
+    """HTML body for the weekly org activity digest.
+
+    Every user-controlled string (org name, project names, user display
+    names/emails, persona names, audit event types) is ``html.escape``d.
+    Links target the dashboard's filtered project views; the footer links
+    to org settings where the recipient can opt out.
+    """
+    org = _html.escape(org_name)
+    week = _html.escape(week_label)
+
+    sessions = digest.get("sessions", {})
+    tickets = digest.get("tickets", {})
+    runs = digest.get("agent_runs", {})
+    knowledge = digest.get("knowledge", {})
+    handoffs = digest.get("handoffs", {})
+    admin_actions = digest.get("admin_actions", {})
+
+    top_projects_html = ""
+    for p in sessions.get("top_projects", []):
+        name = _html.escape(p.get("name") or p.get("project_id") or "Unknown")
+        if dashboard_url:
+            url = _project_url(dashboard_url, p["project_id"])
+            name_cell = (
+                f"<a href='{url}' style='color: #4f9cf7; text-decoration: none;'>{name}</a>"
+            )
+        else:
+            name_cell = name
+        top_projects_html += (
+            f"<tr><td style='padding: 6px 12px; color: #e6edf3;'>{name_cell}</td>"
+            f"<td style='padding: 6px 12px; color: #8b949e; text-align: right;'>{p['sessions']}</td></tr>"
+        )
+
+    top_users_html = ""
+    for u in sessions.get("top_users", []):
+        display = _html.escape(u.get("display_name") or u.get("email") or u.get("user_id") or "Unknown")
+        top_users_html += (
+            f"<tr><td style='padding: 6px 12px; color: #e6edf3;'>{display}</td>"
+            f"<td style='padding: 6px 12px; color: #8b949e; text-align: right;'>{u['sessions']}</td></tr>"
+        )
+    former = sessions.get("former_members", 0)
+    if former:
+        top_users_html += (
+            f"<tr><td style='padding: 6px 12px; color: #8b949e;'>Former members</td>"
+            f"<td style='padding: 6px 12px; color: #8b949e; text-align: right;'>{former}</td></tr>"
+        )
+
+    def _kv_table(items: dict, label: str) -> str:
+        if not items:
+            return ""
+        rows = "".join(
+            f"<tr><td style='padding: 6px 12px; color: #e6edf3;'>{_html.escape(str(k))}</td>"
+            f"<td style='padding: 6px 12px; color: #8b949e; text-align: right;'>{v}</td></tr>"
+            for k, v in sorted(items.items(), key=lambda kv: (-kv[1], str(kv[0])))
+        )
+        return (
+            f"<p style='color: #8b949e; margin: 12px 0 4px 0; font-size: 13px;'>{label}</p>"
+            f"<table style='width: 100%; border-collapse: collapse; margin: 0 0 8px 0; "
+            f"background: #161b22; border-radius: 6px; overflow: hidden;'>{rows}</table>"
+        )
+
+    opened_persona = _kv_table(tickets.get("opened_by_persona", {}), "Opened by persona")
+    completed_persona = _kv_table(tickets.get("completed_by_persona", {}), "Completed by persona")
+    run_status = _kv_table(runs.get("by_status", {}), "By status")
+    severity = _kv_table(runs.get("severity_rollup", {}), "Findings by severity")
+    audit = _kv_table(admin_actions.get("by_action", {}), "By action")
+
+    return (
+        _shell()
+        + "<h2 style='margin: 0 0 4px 0; color: #e6edf3;'>"
+        + f"{org} weekly activity</h2>"
+        + f"<p style='color: #8b949e; margin: 0 0 24px 0;'>Week of {week}</p>"
+        # Sessions
+        + "<h3 style='color: #e6edf3; margin: 16px 0 8px 0;'>Sessions</h3>"
+        + f"<p style='color: #e6edf3; margin: 0 0 8px 0;'>{sessions.get('total', 0)} sessions</p>"
+        + ((
+            "<p style='color: #8b949e; margin: 12px 0 4px 0; font-size: 13px;'>Top projects</p>"
+            f"<table style='width: 100%; border-collapse: collapse; margin: 0 0 8px 0; "
+            f"background: #161b22; border-radius: 6px; overflow: hidden;'>{top_projects_html}</table>"
+        ) if top_projects_html else "")
+        + ((
+            "<p style='color: #8b949e; margin: 12px 0 4px 0; font-size: 13px;'>Top users</p>"
+            f"<table style='width: 100%; border-collapse: collapse; margin: 0 0 8px 0; "
+            f"background: #161b22; border-radius: 6px; overflow: hidden;'>{top_users_html}</table>"
+        ) if top_users_html else "")
+        # Tickets
+        + "<h3 style='color: #e6edf3; margin: 16px 0 8px 0;'>Tickets</h3>"
+        + "<p style='color: #e6edf3; margin: 0;'>"
+        + f"{tickets.get('opened', 0)} opened · {tickets.get('completed', 0)} completed</p>"
+        + opened_persona
+        + completed_persona
+        # Agent runs
+        + "<h3 style='color: #e6edf3; margin: 16px 0 8px 0;'>Agent runs</h3>"
+        + f"<p style='color: #e6edf3; margin: 0;'>{runs.get('total', 0)} runs</p>"
+        + run_status
+        + severity
+        # Knowledge
+        + "<h3 style='color: #e6edf3; margin: 16px 0 8px 0;'>Knowledge base</h3>"
+        + "<p style='color: #e6edf3; margin: 0;'>"
+        + f"{knowledge.get('claims_added', 0)} claims added · "
+        + f"{knowledge.get('claims_promoted', 0)} promoted · "
+        + f"{knowledge.get('claims_dismissed', 0)} dismissed</p>"
+        # Handoffs
+        + "<h3 style='color: #e6edf3; margin: 16px 0 8px 0;'>Handoffs</h3>"
+        + "<p style='color: #e6edf3; margin: 0;'>"
+        + f"{handoffs.get('created', 0)} created · {handoffs.get('claimed', 0)} claimed</p>"
+        # Admin actions
+        + "<h3 style='color: #e6edf3; margin: 16px 0 8px 0;'>Admin activity</h3>"
+        + f"<p style='color: #e6edf3; margin: 0;'>{admin_actions.get('total', 0)} actions</p>"
+        + audit
+        # Footer with opt-out (skipped when there is no dashboard URL to link to)
+        + (
+            "<p style='color: #484f58; font-size: 12px; margin-top: 24px; border-top: 1px solid #21262d; "
+            "padding-top: 16px;'>"
+            f"This weekly digest is sent to {org} owners and admins. "
+            + (
+                f"<a href='{_opt_out_url(dashboard_url)}' style='color: #4f9cf7;'>"
+                "Manage email preferences</a>."
+                if dashboard_url
+                else ""
+            )
+            + "</p>"
+            "</div>"
+        )
+    )
+
+
+def org_digest_text(
+    *,
+    org_name: str,
+    week_label: str,
+    digest: dict,
+    dashboard_url: str,
+) -> str:
+    """Plain-text alternative for the weekly org activity digest."""
+    lines: list[str] = [
+        f"SessionFS — {org_name} weekly activity",
+        f"Week of {week_label}",
+        "",
+    ]
+    sessions = digest.get("sessions", {})
+    lines.append(f"Sessions: {sessions.get('total', 0)}")
+    for p in sessions.get("top_projects", []):
+        lines.append(f"  - {p.get('name') or p.get('project_id')}: {p['sessions']}")
+    for u in sessions.get("top_users", []):
+        lines.append(f"  - {u.get('display_name') or u.get('email') or u.get('user_id')}: {u['sessions']}")
+    if sessions.get("former_members"):
+        lines.append(f"  - Former members: {sessions['former_members']}")
+
+    tickets = digest.get("tickets", {})
+    lines.append("")
+    lines.append(f"Tickets: {tickets.get('opened', 0)} opened · {tickets.get('completed', 0)} completed")
+    for k, v in sorted(tickets.get("opened_by_persona", {}).items(), key=lambda kv: (-kv[1], str(kv[0]))):
+        lines.append(f"  opened by {k}: {v}")
+    for k, v in sorted(tickets.get("completed_by_persona", {}).items(), key=lambda kv: (-kv[1], str(kv[0]))):
+        lines.append(f"  completed by {k}: {v}")
+
+    runs = digest.get("agent_runs", {})
+    lines.append("")
+    lines.append(f"Agent runs: {runs.get('total', 0)}")
+    for k, v in sorted(runs.get("by_status", {}).items()):
+        lines.append(f"  {k}: {v}")
+    for k, v in sorted(runs.get("severity_rollup", {}).items()):
+        lines.append(f"  findings ({k}): {v}")
+
+    knowledge = digest.get("knowledge", {})
+    lines.append("")
+    lines.append(
+        f"Knowledge base: {knowledge.get('claims_added', 0)} added · "
+        f"{knowledge.get('claims_promoted', 0)} promoted · {knowledge.get('claims_dismissed', 0)} dismissed"
+    )
+
+    handoffs = digest.get("handoffs", {})
+    lines.append("")
+    lines.append(f"Handoffs: {handoffs.get('created', 0)} created · {handoffs.get('claimed', 0)} claimed")
+
+    admin_actions = digest.get("admin_actions", {})
+    lines.append("")
+    lines.append(f"Admin activity: {admin_actions.get('total', 0)} actions")
+    for k, v in sorted(admin_actions.get("by_action", {}).items()):
+        lines.append(f"  {k}: {v}")
+
+    lines.append("")
+    if dashboard_url:
+        lines.append(
+            f"Manage email preferences: {dashboard_url.rstrip('/')}/settings/organization?tab=policies"
+        )
+    return "\n".join(lines)
+
+
+def transfer_proposed_email(
+    *,
+    project_name: str,
+    org_name: str,
+    proposer_name: str,
+    reason: str,
+    expires_at_human: str,
+) -> str:
+    """Email sent to a project owner when an org admin proposes a transfer."""
+    project = _html.escape(project_name or "Untitled project")
+    org = _html.escape(org_name)
+    proposer = _html.escape(proposer_name)
+    expires = _html.escape(expires_at_human)
+    return (
+        _shell()
+        + "<h2 style='margin: 0 0 8px 0; color: #e6edf3;'>Project transfer proposed</h2>"
+        + f"<p style='color: #8b949e;'>{proposer} proposed moving "
+        + f"<strong>{project}</strong> into the <strong>{org}</strong> "
+        + "organization on SessionFS.</p>"
+        + _quote_block(f"Reason from {proposer_name}:", reason)
+        + "<p style='color: #8b949e; font-size: 13px; margin-top: 16px;'>"
+        + "Open the Transfers inbox to accept or decline this proposal. "
+        + f"The proposal expires {expires} if you don't respond.</p>"
+        + _footer()
+    )
+
+
+def transfer_proposal_declined_email(
+    *,
+    project_name: str,
+    org_name: str,
+    owner_name: str,
+) -> str:
+    """Email sent to the proposer when the project owner declines a proposal."""
+    project = _html.escape(project_name or "Untitled project")
+    org = _html.escape(org_name)
+    owner = _html.escape(owner_name)
+    return (
+        _shell()
+        + "<h2 style='margin: 0 0 8px 0; color: #e6edf3;'>Transfer proposal declined</h2>"
+        + f"<p style='color: #8b949e;'>{owner} declined your proposal to move "
+        + f"<strong>{project}</strong> into the <strong>{org}</strong> "
+        + "organization.</p>"
+        + _footer()
+    )
+
+
+def transfer_proposal_expired_email(
+    *,
+    project_name: str,
+    org_name: str,
+    owner_name: str,
+) -> str:
+    """Email sent to the proposer when a proposal lapses without a response."""
+    project = _html.escape(project_name or "Untitled project")
+    org = _html.escape(org_name)
+    owner = _html.escape(owner_name)
+    return (
+        _shell()
+        + "<h2 style='margin: 0 0 8px 0; color: #e6edf3;'>Transfer proposal expired</h2>"
+        + f"<p style='color: #8b949e;'>Your proposal to move <strong>{project}</strong> "
+        + f"into the <strong>{org}</strong> organization expired without a "
+        + f"response from {owner}.</p>"
+        + "<p style='color: #8b949e; font-size: 13px;'>You can propose the transfer "
+        + "again if it is still needed.</p>"
+        + _footer()
+    )
+
+
 def handoff_email(
     *,
     sender_email: str,

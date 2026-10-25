@@ -3,7 +3,7 @@ import { useUpdateProjectSettings, useUpdateProjectName } from '../hooks/useProj
 import { useToast } from '../hooks/useToast';
 import { useMyOrgs } from '../transfers/useTransfers';
 import type { ProjectContext } from '../api/client';
-import { Card, Button } from '../components/ui';
+import { Card, Button, Select, Input } from '../components/ui';
 import ReposTab from './ReposTab';
 import MergeSurface from './MergeSurface';
 import TransferPanel from './TransferPanel';
@@ -35,6 +35,10 @@ export default function ProjectSettings({ project, onRequestDelete }: ProjectSet
 
   const [nameDraft, setNameDraft] = useState(project.name || '');
   const [autoNarrative, setAutoNarrative] = useState(project.auto_narrative ?? false);
+  const [schedule, setSchedule] = useState<string>(project.compile_schedule ?? 'nightly');
+  const [afterClaims, setAfterClaims] = useState(
+    project.compile_after_claims != null ? String(project.compile_after_claims) : '',
+  );
 
   const trimmed = nameDraft.trim();
   const nameUnchanged = trimmed === (project.name || '');
@@ -46,6 +50,49 @@ export default function ProjectSettings({ project, onRequestDelete }: ProjectSet
       onSuccess: () => addToast('success', `Project renamed to "${trimmed}"`),
       onError: (err) => addToast('error', `Rename failed: ${errorMessage(err)}`),
     });
+  }
+
+  // The settings route always requires auto_narrative, so fold the current
+  // (possibly optimistic) value into every schedule/threshold write.
+  function handleSchedule(next: string) {
+    const previous = schedule;
+    setSchedule(next);
+    updateSettings.mutate(
+      { auto_narrative: autoNarrative, compile_schedule: next as 'off' | 'nightly' | 'weekly' },
+      {
+        onSuccess: () => addToast('success', `Compile schedule set to ${next}.`),
+        onError: (err) => {
+          setSchedule(previous);
+          addToast('error', `Update failed: ${errorMessage(err)}`);
+        },
+      },
+    );
+  }
+
+  function handleApplyThreshold(e: FormEvent) {
+    e.preventDefault();
+    const trimmedInput = afterClaims.trim();
+    // An empty input clears the threshold (the backend treats an explicit
+    // null as "clear"), so the schedule becomes the only trigger again.
+    if (!trimmedInput) {
+      updateSettings.mutate(
+        { auto_narrative: autoNarrative, compile_after_claims: null },
+        {
+          onSuccess: () => addToast('success', 'Pending-claim threshold cleared.'),
+          onError: (err) => addToast('error', `Update failed: ${errorMessage(err)}`),
+        },
+      );
+      return;
+    }
+    const parsed = Number(trimmedInput);
+    if (!Number.isInteger(parsed) || parsed < 1) return;
+    updateSettings.mutate(
+      { auto_narrative: autoNarrative, compile_after_claims: parsed },
+      {
+        onSuccess: () => addToast('success', `Compile threshold set to ${parsed} pending claims.`),
+        onError: (err) => addToast('error', `Update failed: ${errorMessage(err)}`),
+      },
+    );
   }
 
   return (
@@ -102,6 +149,48 @@ export default function ProjectSettings({ project, onRequestDelete }: ProjectSet
             />
             Auto-narrative on sync
           </label>
+        </section>
+      </SettingsCard>
+
+      <SettingsCard>
+        <section aria-labelledby="settings-compile-heading" className="p-5">
+          <h2 id="settings-compile-heading" className="text-base font-semibold text-text-primary mb-1">
+            Scheduled KB compile
+          </h2>
+          <p className="text-sm text-text-tertiary mb-3">
+            How often the platform's scheduled sweep rebuilds this project's context
+            document. The pending-claim threshold compiles regardless of schedule.
+            Projects grandfathered before v0.17.2 are never auto-compiled by the sweep.
+          </p>
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="w-44">
+              <Select
+                value={schedule}
+                onValueChange={handleSchedule}
+                options={[
+                  { value: 'off', label: 'Off' },
+                  { value: 'nightly', label: 'Nightly' },
+                  { value: 'weekly', label: 'Weekly' },
+                ]}
+                title="Schedule"
+                aria-label="Compile schedule"
+              />
+            </div>
+            <form onSubmit={handleApplyThreshold} className="flex items-end gap-2">
+              <div className="w-44">
+                <Input
+                  type="number"
+                  min={1}
+                  value={afterClaims}
+                  onChange={(e) => setAfterClaims(e.target.value)}
+                  title="Compile after N claims"
+                />
+              </div>
+              <Button type="submit" size="sm" disabled={updateSettings.isPending}>
+                Apply
+              </Button>
+            </form>
+          </div>
         </section>
       </SettingsCard>
 

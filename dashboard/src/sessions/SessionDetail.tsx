@@ -14,6 +14,7 @@ import ConversationView from './ConversationView';
 import AuditTab from './AuditTab';
 import AuditModal from './AuditModal';
 import SummaryTab from './SummaryTab';
+import ChangesTab from './ChangesTab';
 import HandoffModal from '../handoffs/HandoffModal';
 import ShareDialog from './ShareDialog';
 import DeleteScopeDialog from './DeleteScopeDialog';
@@ -27,12 +28,14 @@ import { DEFAULT_FOLDER_COLOR } from '../utils/folderColors';
 import { Card } from '../components/ui/Card';
 import { Tabs, TabPanel } from '../components/ui/Tabs';
 import { Dropdown } from '../components/ui/Dropdown';
+import { useHelper } from '../helper/HelperProvider';
 import { errorMessage } from '../utils/errorMessage';
 
-type Tab = 'messages' | 'summary' | 'audit';
+type Tab = 'messages' | 'changes' | 'summary' | 'audit';
 
 const TAB_DEFS: Array<{ key: Tab; label: string }> = [
   { key: 'messages', label: 'Messages' },
+  { key: 'changes', label: 'Changes' },
   { key: 'summary', label: 'Summary' },
   { key: 'audit', label: 'Audit' },
 ];
@@ -46,6 +49,7 @@ export default function SessionDetail() {
   // Fetch newest messages for Quick Preview (page 1 newest-first = most recent)
   const { data: lastMessagesData } = useMessages(id!, 1, 50, 'newest');
   const { auth } = useAuth();
+  const { openHelper } = useHelper();
   const [showHandoff, setShowHandoff] = useState(false);
   const [showShare, setShowShare] = useState(false);
   const [showAuditModal, setShowAuditModal] = useState(false);
@@ -233,6 +237,11 @@ export default function SessionDetail() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            {openHelper && (
+              <Button onClick={() => openHelper({ session_ids: [session.id] })} size="sm" variant="secondary">
+                Ask the helper
+              </Button>
+            )}
             <Button onClick={() => setShowShare(true)} size="sm" variant="secondary">
               Share
             </Button>
@@ -455,6 +464,7 @@ export default function SessionDetail() {
       {/* Tab content */}
       <TabPanel idPrefix="session" tabKey={activeTab} className="flex-1 overflow-y-auto">
         {activeTab === 'messages' && <ConversationView sessionId={session.id} initialPage={jumpToPage} />}
+        {activeTab === 'changes' && <ChangesTab sessionId={session.id} />}
         {activeTab === 'summary' && <SummaryTab sessionId={session.id} />}
         {activeTab === 'audit' && (
           <AuditTab sessionId={session.id} messageCount={session.message_count} sessionTitle={session.title || undefined} onJumpToMessage={handleJumpToMessage} />

@@ -1473,11 +1473,81 @@ def get_org_dlp_policy(org: Organization) -> dict | None:
     return policy
 
 
-def validate_dlp_policy(policy: dict) -> dict:
+def well_formed_custom_patterns(policy: dict | None) -> list[dict]:
+    """The well-formed custom patterns in a stored policy.
+
+    Returns only dict entries that have a non-empty string ``name`` and
+    ``regex`` (category/severity left as stored), so a read API never echoes
+    malformed entries that can't be represented in the response model. The
+    dropped entries are reported by :func:`invalid_custom_patterns`.
+    """
+    if not isinstance(policy, dict):
+        return []
+    custom_patterns = policy.get("custom_patterns")
+    if not isinstance(custom_patterns, list):
+        return []
+    return [
+        cp
+        for cp in custom_patterns
+        if isinstance(cp, dict)
+        and isinstance(cp.get("name"), str) and cp.get("name")
+        and isinstance(cp.get("regex"), str) and cp.get("regex")
+    ]
+
+
+def invalid_custom_patterns(policy: dict | None) -> list[dict]:
+    """Malformed custom-pattern entries in a stored policy.
+
+    Returns one ``{"index": int | None, "name": str | None, "reason": str}``
+    per malformed entry — a non-dict entry, one missing ``name``/``regex``, or a
+    ``regex`` that doesn't compile (kept on save, skipped at scan time) —
+    so an admin can find and fix them.  ``index`` is the position in
+    ``custom_patterns`` (``None`` when ``custom_patterns`` itself isn't a list).
+    Well-formed entries are omitted.
+    """
+    if not isinstance(policy, dict):
+        return []
+    custom_patterns = policy.get("custom_patterns")
+    if custom_patterns is None:
+        return []
+    if not isinstance(custom_patterns, list):
+        return [
+            {"index": None, "name": None, "reason": "custom_patterns must be a list"}
+        ]
+    invalid: list[dict] = []
+    for index, cp in enumerate(custom_patterns):
+        if not isinstance(cp, dict):
+            invalid.append({"index": index, "name": None, "reason": "entry is not a dict"})
+            continue
+        name = cp.get("name")
+        regex = cp.get("regex")
+        if not isinstance(name, str) or not name:
+            invalid.append({"index": index, "name": None, "reason": "missing 'name'"})
+        elif not isinstance(regex, str) or not regex:
+            invalid.append({"index": index, "name": name, "reason": "missing 'regex'"})
+        else:
+            try:
+                re.compile(regex)
+            except re.error:
+                invalid.append({"index": index, "name": name, "reason": "invalid regex"})
+    return invalid
+
+
+def validate_dlp_policy(
+    policy: dict, request_keys: set[str] | None = None
+) -> dict:
     """Validate and normalize a DLP policy dict.
 
     Valid modes: "warn", "redact", "block".
     Valid categories: "secrets", "phi".
+
+    ``request_keys`` is the set of top-level policy keys the caller supplied
+    (or ``None`` to treat every key as caller-supplied).  Regex compilation is
+    enforced only for patterns in a caller-supplied ``custom_patterns`` list:
+    a stored policy whose patterns predate strict validation (missing
+    category/severity, or an uncompilable regex) must not block saving an
+    unrelated field — those are normalized here and skipped safely at scan
+    time by :func:`sessionfs.security.secrets.scan_dlp`.
 
     Returns the normalized policy dict.
     Raises ValueError on invalid input.
@@ -1513,12 +1583,60 @@ def validate_dlp_policy(policy: dict) -> dict:
         "categories": sorted(set(categories)),
     }
 
-    # Preserve custom_patterns and allowlist if provided
+    # Normalize custom_patterns; preserve allowlist if provided.
     custom_patterns = policy.get("custom_patterns")
     if custom_patterns is not None:
+        patterns_in_request = request_keys is None or "custom_patterns" in request_keys
         if not isinstance(custom_patterns, list):
-            raise ValueError("custom_patterns must be a list")
-        result["custom_patterns"] = custom_patterns
+            # A caller-supplied non-list is an error; a stored one is dropped
+            # silently (no well-formed patterns can be recovered from it).
+            if patterns_in_request:
+                raise ValueError("custom_patterns must be a list")
+            custom_patterns = []
+        normalized: list[dict] = []
+        for cp in custom_patterns:
+            # Stored patterns predating strict validation may be non-dict or
+            # missing name/regex: drop them silently, keep the well-formed ones.
+            # A caller-supplied malformed pattern is still an error.
+            if not isinstance(cp, dict):
+                if patterns_in_request:
+                    raise ValueError("custom_patterns entries must be dicts")
+                continue
+            name = cp.get("name")
+            regex = cp.get("regex")
+            if not isinstance(name, str) or not name:
+                if patterns_in_request:
+                    raise ValueError("custom_patterns entries require a 'name'")
+                continue
+            if not isinstance(regex, str) or not regex:
+                if patterns_in_request:
+                    raise ValueError("custom_patterns entries require a 'regex'")
+                continue
+            # Stored policies may predate these fields: default, don't reject.
+            category = cp.get("category")
+            severity = cp.get("severity")
+            if not isinstance(category, str) or not category:
+                category = "secret"
+            if not isinstance(severity, str) or not severity:
+                severity = "high"
+            # Only caller-supplied patterns must compile now; a stored bad
+            # regex is skipped (logged) at scan time instead.
+            if patterns_in_request:
+                try:
+                    re.compile(regex)
+                except re.error as exc:
+                    raise ValueError(
+                        f"Invalid custom pattern regex {name!r}: {exc}"
+                    ) from exc
+            normalized.append(
+                {
+                    "name": name,
+                    "regex": regex,
+                    "category": category,
+                    "severity": severity,
+                }
+            )
+        result["custom_patterns"] = normalized
 
     allowlist = policy.get("allowlist")
     if allowlist is not None:

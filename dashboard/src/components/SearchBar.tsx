@@ -6,6 +6,7 @@ import { abbreviateTool } from '../utils/models';
 import { renderSnippet } from '../utils/highlight';
 import RelativeDate from './RelativeDate';
 import { Kbd } from './ui/Kbd';
+import { useHelper } from '../helper/HelperProvider';
 
 interface GroupedResults {
   sessions: SearchResult[];
@@ -44,9 +45,11 @@ const GROUP_ORDER: (keyof GroupedResults)[] = ['sessions', 'projects', 'handoffs
 
 export default function SearchBar({ inputId, className }: { inputId?: string; className?: string }) {
   const navigate = useNavigate();
+  const { openHelper } = useHelper();
   const [input, setInput] = useState('');
   const [query, setQuery] = useState('');
   const [open, setOpen] = useState(false);
+  const [commandOpen, setCommandOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const wrapperRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -58,6 +61,7 @@ export default function SearchBar({ inputId, className }: { inputId?: string; cl
   // Debounce input -> query
   const handleChange = useCallback((value: string) => {
     setInput(value);
+    if (value.trim() !== '') setCommandOpen(false);
     clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       setQuery(value.trim());
@@ -100,6 +104,7 @@ export default function SearchBar({ inputId, className }: { inputId?: string; cl
     function handleClick(e: MouseEvent) {
       if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) {
         setOpen(false);
+        setCommandOpen(false);
       }
     }
     document.addEventListener('mousedown', handleClick);
@@ -135,10 +140,25 @@ export default function SearchBar({ inputId, className }: { inputId?: string; cl
     navigate(`/sessions/${sessionId}`);
   }
 
+  function askHelper() {
+    setOpen(false);
+    setCommandOpen(false);
+    setInput('');
+    setQuery('');
+    // Open before blurring so HelperProvider captures the search input as the
+    // element to restore focus to when the drawer closes.
+    openHelper?.();
+    inputRef.current?.blur();
+  }
+
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Escape') {
       setOpen(false);
+      setCommandOpen(false);
       inputRef.current?.blur();
+    } else if (e.key === 'Enter' && input.trim() === '' && commandOpen) {
+      e.preventDefault();
+      askHelper();
     } else if (e.key === 'ArrowDown') {
       e.preventDefault();
       if (!open && flatItems.length > 0) {
@@ -265,6 +285,7 @@ export default function SearchBar({ inputId, className }: { inputId?: string; cl
           onChange={(e) => handleChange(e.target.value)}
           onFocus={() => {
             if (results.length > 0) setOpen(true);
+            if (input.trim() === '') setCommandOpen(true);
           }}
           onKeyDown={handleKeyDown}
           placeholder="Search sessions…"
@@ -274,6 +295,44 @@ export default function SearchBar({ inputId, className }: { inputId?: string; cl
           <Kbd>{'\u2318'}K</Kbd>
         </span>
       </div>
+
+      {commandOpen && openHelper && (
+        <ul
+          role="listbox"
+          aria-label="Commands"
+          className="absolute top-full left-0 right-0 mt-1 border border-border rounded-lg overflow-auto z-50 bg-overlay py-1"
+          style={{ boxShadow: 'var(--shadow-overlay)' }}
+        >
+          <li
+            role="option"
+            aria-selected="true"
+            tabIndex={-1}
+            onClick={askHelper}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                askHelper();
+              }
+            }}
+            className="flex items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:bg-surface-hover hover:text-text-primary cursor-pointer transition-colors duration-150 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+          >
+            <svg
+              className="w-4 h-4 text-brand shrink-0"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8L12 3z" />
+              <path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z" />
+            </svg>
+            Ask the helper…
+          </li>
+        </ul>
+      )}
 
       {open && flatItems.length > 0 && (
         <ul

@@ -38,8 +38,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs mcp install --for claude-code</span></div>
             <div class="mt-2 text-muted">MCP server configured for Claude Code.</div>
             <div class="text-muted">Restart Claude Code to activate.</div>
-            <div class="mt-4 text-muted-dim">81 tools available to your AI agent:</div>
-            <div class="mt-1 text-muted-dim">Session tools (7):</div>
+            <div class="mt-4 text-muted-dim">83 tools available to your AI agent:</div>
+            <div class="mt-1 text-muted-dim">Session tools (8):</div>
             <div class="text-txt">&bull; <span class="text-brand">search_sessions</span> <span class="text-muted-dim">— Search past sessions</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_session_context</span> <span class="text-muted-dim">— Full conversation from a session</span></div>
             <div class="text-txt">&bull; <span class="text-brand">list_recent_sessions</span> <span class="text-muted-dim">— Browse recent work</span></div>
@@ -47,6 +47,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div class="text-txt">&bull; <span class="text-brand">get_session_summary</span> <span class="text-muted-dim">— Structured session summary</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_audit_report</span> <span class="text-muted-dim">— Trust audit report</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_session_provenance</span> <span class="text-muted-dim">— Which rules instructed a session</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">ask_session_helper</span> <span class="text-muted-dim">— Ask the helper over sessions you can read</span></div>
             <div class="mt-2 text-muted-dim">Knowledge read (9):</div>
             <div class="text-txt">&bull; <span class="text-brand">get_project_context</span> <span class="text-muted-dim">— Full wiki: overview + pages + concepts</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_context_section</span> <span class="text-muted-dim">— One section of the context doc</span></div>
@@ -82,6 +83,11 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div class="text-txt">&bull; <span class="text-accent">assign_persona</span> <span class="text-muted-dim">— Set the persona on a ticket</span></div>
             <div class="text-txt">&bull; <span class="text-accent">escalate_ticket</span> <span class="text-muted-dim">— Audit comment + raise priority</span></div>
             <div class="text-txt">&bull; <span class="text-accent">add_ticket_comment</span> <span class="text-muted-dim">— Slack-like thread</span></div>
+            <div class="mt-2 text-muted-dim">Agent runs (4) — <span class="text-accent">Team+</span>:</div>
+            <div class="text-txt">&bull; <span class="text-accent">create_agent_run</span> <span class="text-muted-dim">— Track a persona run, manual or CI</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">complete_agent_run</span> <span class="text-muted-dim">— Record findings, evaluate fail-on policy</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">replay_agent_run</span> <span class="text-muted-dim">— Re-run with an edited prompt or context</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">list_agent_runs</span> <span class="text-muted-dim">— Browse runs by persona / status / ticket</span></div>
             <div class="mt-2 text-muted-dim">Work queues (6):</div>
             <div class="text-txt">&bull; <span class="text-accent">create_work_queue</span> <span class="text-muted-dim">— Aim an agent at a queue of tickets</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_work_queue</span> <span class="text-muted-dim">— Queue config + progress</span></div>

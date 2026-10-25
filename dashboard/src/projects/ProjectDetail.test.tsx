@@ -34,6 +34,7 @@ const { hooks, mockAddToast } = vi.hoisted(() => ({
     useKnowledgeEntries: vi.fn(),
     useDismissEntry: vi.fn(),
     useCompileProject: vi.fn(),
+    useCompileStatus: vi.fn(),
     useCompilations: vi.fn(),
     useWikiPages: vi.fn(),
     useWikiPage: vi.fn(),
@@ -62,6 +63,10 @@ vi.mock('../hooks/useToast', () => ({
   useToast: () => ({ addToast: mockAddToast }),
 }));
 
+vi.mock('../helper/HelperProvider', () => ({
+  useHelper: () => ({ openHelper: vi.fn() }),
+}));
+
 // v0.10.0 Phase 4 added a Transfer tab to ProjectDetail. The
 // `useMyOrgs` hook calls `useAuth()` which would require an
 // AuthProvider; the inbox + panel surfaces are exercised by their own
@@ -69,6 +74,15 @@ vi.mock('../hooks/useToast', () => ({
 // context for the broader ProjectDetail suite.
 vi.mock('../transfers/useTransfers', () => ({
   useMyOrgs: () => ({ data: [], isLoading: false, error: null }),
+}));
+
+// The Jira ticket surface resolves the current user's tier/role; stub the me
+// query the same way so the broader suite stays free of an AuthProvider.
+vi.mock('../hooks/useMe', () => ({
+  useMe: () => ({
+    data: { user_id: 'u_1', tier: 'enterprise', effective_tier: 'enterprise' },
+    isLoading: false,
+  }),
 }));
 
 // The Work and Rules & Skills bodies have their own suites and their own
@@ -94,6 +108,23 @@ function makeMutation(extra: Record<string, unknown> = {}) {
     isError: false,
     error: null,
     ...extra,
+  };
+}
+
+function makeCompileStatus(overrides: Record<string, unknown> = {}) {
+  return {
+    data: {
+      last_compile_at: null,
+      pending_claims: 0,
+      compile_needed: false,
+      compile_schedule: 'nightly',
+      compile_after_claims: null,
+      last_scheduled_compile_at: null,
+      next_scheduled_at: null,
+      compile_history: [],
+      ...overrides,
+    },
+    isLoading: false,
   };
 }
 
@@ -152,6 +183,7 @@ describe('ProjectDetail', () => {
     hooks.useWikiPage.mockReturnValue({ data: null, isLoading: false });
     hooks.useDismissEntry.mockReturnValue(makeMutation());
     hooks.useCompileProject.mockReturnValue(makeMutation());
+    hooks.useCompileStatus.mockReturnValue(makeCompileStatus());
     hooks.useUpdateProjectContext.mockReturnValue(makeMutation());
     hooks.useDeleteProject.mockReturnValue(makeMutation());
     hooks.useUpdateWikiPage.mockReturnValue(makeMutation());
@@ -450,6 +482,51 @@ describe('ProjectDetail', () => {
     expect(screen.getByText(/3 pending entries/i)).toBeInTheDocument();
   });
 
+  describe('compile-needed banner (GitHub #93)', () => {
+    it('shows the banner with a one-click compile when the context is stale', async () => {
+      setProjectData();
+      hooks.useCompileStatus.mockReturnValue(
+        makeCompileStatus({ compile_needed: true, pending_claims: 7 }),
+      );
+      const compile = makeMutation();
+      hooks.useCompileProject.mockReturnValue(compile);
+      renderPage();
+
+      expect(screen.getByText(/compile needed/i)).toBeInTheDocument();
+      expect(screen.getByText(/7 pending claims not yet in context/i)).toBeInTheDocument();
+      await userEvent.setup().click(screen.getByRole('button', { name: /compile now/i }));
+      expect(compile.mutate).toHaveBeenCalled();
+    });
+
+    it('hides the banner when the context is fresh', () => {
+      setProjectData();
+      hooks.useCompileStatus.mockReturnValue(
+        makeCompileStatus({ compile_needed: false, pending_claims: 2, last_compile_at: '2026-10-23T10:00:00Z' }),
+      );
+      renderPage();
+      expect(screen.queryByText(/compile needed/i)).not.toBeInTheDocument();
+    });
+
+    it('shows the last-compiled and pending-claims line in the Overview card', () => {
+      setProjectData();
+      hooks.useCompileStatus.mockReturnValue(
+        makeCompileStatus({ pending_claims: 5, last_compile_at: '2026-10-23T10:00:00Z' }),
+      );
+      renderPage();
+      expect(screen.getByText(/5 pending claims/i)).toBeInTheDocument();
+      expect(screen.getByText(/last compiled/i)).toBeInTheDocument();
+    });
+
+    it('shows "Never compiled" when there is no compilation yet', () => {
+      setProjectData();
+      hooks.useCompileStatus.mockReturnValue(
+        makeCompileStatus({ pending_claims: 1, last_compile_at: null }),
+      );
+      renderPage();
+      expect(screen.getByText(/never compiled/i)).toBeInTheDocument();
+    });
+  });
+
   it('delete-project flow shows confirm dialog then calls deleteProject.mutate', async () => {
     setProjectData();
     const del = makeMutation();
@@ -476,6 +553,7 @@ describe('ProjectDetail routing by id', () => {
     for (const h of Object.values(hooks)) h.mockReset();
     hooks.useKnowledgeEntries.mockReturnValue({ data: { entries: [], total: 0 }, isLoading: false });
     hooks.useCompileProject.mockReturnValue(makeMutation());
+    hooks.useCompileStatus.mockReturnValue(makeCompileStatus());
     hooks.useUpdateProjectContext.mockReturnValue(makeMutation());
     hooks.useDeleteProject.mockReturnValue(makeMutation());
     hooks.useUpdateProjectSettings.mockReturnValue(makeMutation());

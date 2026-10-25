@@ -6,6 +6,7 @@ import { useMe } from './hooks/useMe';
 import Layout from './components/Layout';
 import { BackgroundTasksProvider } from './components/BackgroundTasks';
 import { ToastProvider } from './components/Toast';
+import { HelperProvider } from './helper/HelperProvider';
 
 // Lazy-loaded page components for code splitting
 const LoginPage = React.lazy(() => import('./auth/LoginPage'));
@@ -74,7 +75,9 @@ export default function App() {
             <Route
               element={
                 <ProtectedRoute>
-                  <Layout />
+                  <HelperProvider>
+                    <Layout />
+                  </HelperProvider>
                 </ProtectedRoute>
               }
             >

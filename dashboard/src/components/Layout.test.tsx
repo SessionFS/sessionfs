@@ -48,6 +48,10 @@ vi.mock('./SearchBar', () => ({
   default: () => <div data-testid="search-bar">Search</div>,
 }));
 
+vi.mock('../helper/HelperProvider', () => ({
+  useHelper: () => ({ openHelper: vi.fn() }),
+}));
+
 vi.mock('./ThemeToggle', () => ({
   default: () => <button type="button">Theme</button>,
 }));

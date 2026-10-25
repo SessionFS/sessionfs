@@ -118,6 +118,7 @@ export function useCompileProject(projectId: string | undefined) {
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['knowledgeEntries', projectId] });
       void queryClient.invalidateQueries({ queryKey: ['compilations', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['compileStatus', projectId] });
       void queryClient.invalidateQueries({ queryKey: ['projects'] });
       void queryClient.invalidateQueries({ queryKey: ['project'] });
       void queryClient.invalidateQueries({ queryKey: ['wikiPages', projectId] });
@@ -134,6 +135,16 @@ export function useCompilations(projectId: string | undefined) {
     queryFn: () => auth!.client.listCompilations(projectId!),
     enabled: !!auth && !!projectId,
     staleTime: 30_000,
+  });
+}
+
+export function useCompileStatus(projectId: string | undefined) {
+  const { auth } = useAuth();
+  return useQuery({
+    queryKey: ['compileStatus', projectId],
+    queryFn: () => auth!.client.getCompileStatus(projectId!),
+    enabled: !!auth && !!projectId,
+    staleTime: 15_000,
   });
 }
 
@@ -262,11 +273,15 @@ export function useUpdateProjectSettings(projectId: string | undefined) {
   const { auth } = useAuth();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (settings: { auto_narrative?: boolean }) =>
-      auth!.client.updateProjectSettings(projectId!, settings),
+    mutationFn: (settings: {
+      auto_narrative?: boolean;
+      compile_schedule?: 'off' | 'nightly' | 'weekly';
+      compile_after_claims?: number | null;
+    }) => auth!.client.updateProjectSettings(projectId!, settings),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['projects'] });
       void queryClient.invalidateQueries({ queryKey: ['project'] });
+      void queryClient.invalidateQueries({ queryKey: ['compileStatus', projectId] });
     },
   });
 }

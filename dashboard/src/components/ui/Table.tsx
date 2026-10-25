@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 
 interface Column<T> {
   key: string;
-  header: string;
+  header: ReactNode;
   render: (row: T) => ReactNode;
   /** Optional column width (Tailwind width class). */
   width?: string;

@@ -58,29 +58,38 @@ def _cfg(url: str) -> Config:
 
 
 def _seed(conn) -> None:
-    # Through the ORM so every column's Python default is filled in on both
-    # dialects; the rows are what 082 would hold.
+    # Build the rows from the ORM models so every column's Python default is
+    # filled in on both dialects, but insert only the columns the 082 schema
+    # actually has: later migrations add model columns that don't exist yet.
     from datetime import datetime, timezone
-
-    from sqlalchemy.orm import Session as OrmSession
 
     from sessionfs.server.db.models import Project, ProjectRepo, Session, User
 
+    def insert(obj) -> None:
+        table = sa.Table(obj.__table__.name, sa.MetaData(), autoload_with=conn)
+        values = {}
+        for column in obj.__table__.columns:
+            if column.name not in table.c:
+                continue
+            value = getattr(obj, column.key, None)
+            if value is None and column.default is not None:
+                arg = column.default.arg
+                value = arg(None) if callable(arg) else arg
+            if value is not None:
+                values[column.name] = value
+        conn.execute(table.insert().values(**values))
+
     now = datetime.now(timezone.utc)
-    with OrmSession(bind=conn) as db:
-        db.add(User(id="u_m083", email="m083@example.com", tier="free", created_at=now,
-                    email_verified=True))
-        db.flush()
-        for pid, remote in _PROJECTS.items():
-            db.add(Project(id=pid, name=pid, git_remote_normalized=remote, owner_id="u_m083"))
-        db.flush()
-        for rid, (pid, remote) in _REPOS.items():
-            db.add(ProjectRepo(id=rid, project_id=pid, git_remote_normalized=remote))
-        for sid, remote in _SESSIONS.items():
-            db.add(Session(id=sid, user_id="u_m083", source_tool="claude-code", blob_key="b",
-                           etag="e", git_remote_normalized=remote, created_at=now,
-                           updated_at=now))
-        db.commit()
+    insert(User(id="u_m083", email="m083@example.com", tier="free", created_at=now,
+                email_verified=True))
+    for pid, remote in _PROJECTS.items():
+        insert(Project(id=pid, name=pid, git_remote_normalized=remote, owner_id="u_m083"))
+    for rid, (pid, remote) in _REPOS.items():
+        insert(ProjectRepo(id=rid, project_id=pid, git_remote_normalized=remote))
+    for sid, remote in _SESSIONS.items():
+        insert(Session(id=sid, user_id="u_m083", source_tool="claude-code", blob_key="b",
+                       etag="e", git_remote_normalized=remote, created_at=now,
+                       updated_at=now))
 
 
 def _check(conn) -> None:

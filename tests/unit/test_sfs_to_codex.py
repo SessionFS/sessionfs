@@ -202,3 +202,148 @@ def test_sidechain_messages_skipped(tmp_path: Path):
     output = tmp_path / "output.jsonl"
     result = convert_sfs_to_codex(d, output_path=output)
     assert result["message_count"] == 1  # Only the user message, not sidechain
+
+
+def test_custom_tool_call_round_trips(tmp_path: Path):
+    """A Codex-watcher custom_tool_call must round-trip as a custom_tool_call with
+    the raw ``input`` string, not a function_call with JSON-encoded args."""
+    d = tmp_path / "ses_ctc1234abcdefgh.sfs"
+    d.mkdir()
+    (d / "manifest.json").write_text(json.dumps({
+        "sfs_version": "0.1.0", "session_id": "ses_ctc1234abcdefgh",
+        "created_at": "2026-03-20T10:00:00Z", "updated_at": "2026-03-20T10:00:00Z",
+        "source": {"tool": "codex"},
+    }))
+    patch = "*** Begin Patch\n*** Add File: /repo/new.py\n+print(1)\n*** End Patch\n"
+    with open(d / "messages.jsonl", "w") as f:
+        f.write(json.dumps({
+            "msg_id": "msg_001", "role": "assistant",
+            "content": [{
+                "type": "tool_use", "tool_use_id": "call_001", "name": "apply_patch",
+                "codex_item_type": "custom_tool_call",
+                "input": {"input": patch},
+            }],
+            "timestamp": "2026-03-20T10:00:00Z",
+        }) + "\n")
+    (d / "workspace.json").write_text(json.dumps({"root_path": "/repo"}))
+
+    output = tmp_path / "output.jsonl"
+    convert_sfs_to_codex(d, output_path=output)
+
+    lines = [json.loads(l) for l in output.read_text().strip().split("\n")]
+    ctc = [
+        l for l in lines
+        if l["type"] == "response_item" and l["payload"].get("type") == "custom_tool_call"
+    ]
+    assert len(ctc) == 1
+    assert ctc[0]["payload"]["name"] == "apply_patch"
+    assert ctc[0]["payload"]["input"] == patch
+
+    # It must not be collapsed into a function_call with JSON-encoded args.
+    fc = [
+        l for l in lines
+        if l["type"] == "response_item" and l["payload"].get("type") == "function_call"
+    ]
+    assert fc == []
+
+
+def test_tool_use_call_id_reused_from_tool_use_id(tmp_path: Path):
+    """A tool_use must keep its original id as call_id so the matching
+    tool_result (which keeps its tool_use_id) lines up on resume."""
+    d = tmp_path / "ses_callid1234abcdef.sfs"
+    d.mkdir()
+    (d / "manifest.json").write_text(json.dumps({
+        "sfs_version": "0.1.0", "session_id": "ses_callid1234abcdef",
+        "created_at": "2026-03-20T10:00:00Z", "updated_at": "2026-03-20T10:00:00Z",
+        "source": {"tool": "codex"},
+    }))
+    with open(d / "messages.jsonl", "w") as f:
+        f.write(json.dumps({
+            "msg_id": "m1", "role": "assistant",
+            "content": [{"type": "tool_use", "tool_use_id": "call_abc", "name": "Bash",
+                        "input": {"command": "ls"}}],
+        }) + "\n")
+        f.write(json.dumps({
+            "msg_id": "m2", "role": "tool",
+            "content": [{"type": "tool_result", "tool_use_id": "call_abc", "content": "out"}],
+        }) + "\n")
+
+    output = tmp_path / "output.jsonl"
+    convert_sfs_to_codex(d, output_path=output)
+
+    lines = [json.loads(l) for l in output.read_text().strip().split("\n")]
+    calls = [l for l in lines if l["type"] == "response_item" and l["payload"].get("type") == "local_shell_call"]
+    outputs = [l for l in lines if l["type"] == "response_item" and l["payload"].get("type") == "function_call_output"]
+    assert len(calls) == 1 and len(outputs) == 1
+    assert calls[0]["payload"]["call_id"] == "call_abc"
+    assert outputs[0]["payload"]["call_id"] == "call_abc"
+
+
+def test_tool_use_call_id_reused_from_id_field(tmp_path: Path):
+    """Cursor-style tool_use blocks carry ``id`` (not ``tool_use_id``); that id
+    must still be reused as the call_id."""
+    d = tmp_path / "ses_callid2bcdefghij.sfs"
+    d.mkdir()
+    (d / "manifest.json").write_text(json.dumps({
+        "sfs_version": "0.1.0", "session_id": "ses_callid2bcdefghij",
+        "created_at": "2026-03-20T10:00:00Z", "updated_at": "2026-03-20T10:00:00Z",
+        "source": {"tool": "cursor"},
+    }))
+    with open(d / "messages.jsonl", "w") as f:
+        f.write(json.dumps({
+            "msg_id": "m1", "role": "assistant",
+            "content": [{"type": "tool_use", "id": "tc_001", "name": "Read",
+                        "input": {"path": "a.py"}}],
+        }) + "\n")
+        f.write(json.dumps({
+            "msg_id": "m2", "role": "tool",
+            "content": [{"type": "tool_result", "tool_use_id": "tc_001", "content": "data"}],
+        }) + "\n")
+
+    output = tmp_path / "output.jsonl"
+    convert_sfs_to_codex(d, output_path=output)
+
+    lines = [json.loads(l) for l in output.read_text().strip().split("\n")]
+    calls = [l for l in lines if l["type"] == "response_item" and l["payload"].get("type") == "function_call"]
+    outputs = [l for l in lines if l["type"] == "response_item" and l["payload"].get("type") == "function_call_output"]
+    assert len(calls) == 1 and len(outputs) == 1
+    assert calls[0]["payload"]["call_id"] == "tc_001"
+    assert outputs[0]["payload"]["call_id"] == "tc_001"
+
+
+def test_custom_tool_call_output_round_trips(tmp_path: Path):
+    """A tool_result captured from custom_tool_call_output must round-trip as a
+    custom_tool_call_output with a string output."""
+    d = tmp_path / "ses_ctco1234abcdefg.sfs"
+    d.mkdir()
+    (d / "manifest.json").write_text(json.dumps({
+        "sfs_version": "0.1.0", "session_id": "ses_ctco1234abcdefg",
+        "created_at": "2026-03-20T10:00:00Z", "updated_at": "2026-03-20T10:00:00Z",
+        "source": {"tool": "codex"},
+    }))
+    with open(d / "messages.jsonl", "w") as f:
+        f.write(json.dumps({
+            "msg_id": "m1", "role": "assistant",
+            "content": [{"type": "tool_use", "tool_use_id": "call_001", "name": "apply_patch",
+                        "codex_item_type": "custom_tool_call",
+                        "input": {"input": "*** Begin Patch\n*** End Patch\n"}}],
+        }) + "\n")
+        f.write(json.dumps({
+            "msg_id": "m2", "role": "tool",
+            "content": [{"type": "tool_result", "tool_use_id": "call_001",
+                        "codex_item_type": "custom_tool_call_output",
+                        "content": "patch applied"}],
+        }) + "\n")
+
+    output = tmp_path / "output.jsonl"
+    convert_sfs_to_codex(d, output_path=output)
+
+    lines = [json.loads(l) for l in output.read_text().strip().split("\n")]
+    outputs = [l for l in lines if l["type"] == "response_item" and l["payload"].get("type") == "custom_tool_call_output"]
+    assert len(outputs) == 1
+    assert outputs[0]["payload"]["call_id"] == "call_001"
+    assert outputs[0]["payload"]["output"] == "patch applied"
+
+    # It must not also be emitted as a function_call_output.
+    fco = [l for l in lines if l["type"] == "response_item" and l["payload"].get("type") == "function_call_output"]
+    assert fco == []

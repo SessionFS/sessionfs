@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import bisect
 import itertools
+import logging
 import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
+
+logger = logging.getLogger("sessionfs.secrets")
 
 # ---------------------------------------------------------------------------
 # Regex patterns for common secrets
@@ -632,16 +635,38 @@ def scan_dlp(
     findings: list[DLPFinding] = []
     lines = text.splitlines()
 
-    # Pre-compile custom patterns once
+    # Pre-compile custom patterns once.  A stored pattern with a bad regex is
+    # skipped (logged), never fatal: an org policy saved before stricter
+    # validation must not take down every subsequent scan.  (Never log the
+    # regex itself — it may be a near-secret literal.)
     compiled_custom: list[tuple[str, re.Pattern[str], str, str]] = []
     if custom_patterns:
+        malformed = 0
         for cp in custom_patterns:
-            compiled_custom.append((
-                cp["name"],
-                re.compile(cp["regex"]),
-                cp["category"],
-                cp["severity"],
-            ))
+            # A stored policy can contain non-dict entries or a non-string
+            # regex (re.compile would raise TypeError on those). Skip them and
+            # log once, never take down the whole scan.
+            if not isinstance(cp, dict):
+                malformed += 1
+                continue
+            name = cp.get("name")
+            regex = cp.get("regex")
+            if not isinstance(regex, str) or not isinstance(name, str) or not name:
+                malformed += 1
+                continue
+            category = cp.get("category") or "secret"
+            severity = cp.get("severity") or "high"
+            try:
+                compiled_custom.append((name, re.compile(regex), category, severity))
+            except re.error as exc:
+                logger.warning(
+                    "Skipping invalid custom DLP pattern %r: %s", name, exc
+                )
+        if malformed:
+            logger.warning(
+                "Skipping %d malformed custom DLP pattern(s) (non-dict entry, missing name or non-string regex)",
+                malformed,
+            )
 
     plan = _ScanPlan(text, lines)
     secret_entries = plan.plan(SECRET_PATTERNS.items()) if "secrets" in categories else []

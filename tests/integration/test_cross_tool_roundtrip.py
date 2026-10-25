@@ -149,3 +149,78 @@ def test_codex_to_cc_roundtrip(tmp_path: Path):
     assert out_lines[0]["type"] == "session_meta"
     user_events = [l for l in out_lines if l["type"] == "event_msg" and l["payload"].get("type") == "user_message"]
     assert any("Fix the bug" in e["payload"].get("message", "") for e in user_events)
+
+
+def test_codex_roundtrip_preserves_call_ids_and_item_types(tmp_path: Path):
+    """Codex function_call + custom_tool_call pairs must round-trip with matching
+    call_ids and preserved item types.
+
+    Regression: sfs_to_codex regenerated a random call_id for every tool_use
+    while tool_results kept their original tool_use_id, so on resume no output
+    matched its call.
+    """
+    codex_path = tmp_path / "original.jsonl"
+    lines = [
+        {"timestamp": "2026-03-20T10:00:00Z", "type": "session_meta", "payload": {
+            "id": "roundtrip-uuid", "cwd": "/tmp/proj", "cli_version": "0.140.0",
+            "source": "cli", "model_provider": "openai",
+        }},
+        {"timestamp": "2026-03-20T10:00:01Z", "type": "turn_context", "payload": {
+            "turn_id": "t1", "cwd": "/tmp/proj", "model": "gpt-5",
+        }},
+        {"timestamp": "2026-03-20T10:00:02Z", "type": "event_msg", "payload": {
+            "type": "task_started", "turn_id": "t1",
+        }},
+        {"timestamp": "2026-03-20T10:00:03Z", "type": "event_msg", "payload": {
+            "type": "user_message", "message": "patch it",
+        }},
+        # function_call pair (a non-shell function so it stays a function_call)
+        {"timestamp": "2026-03-20T10:00:04Z", "type": "response_item", "payload": {
+            "type": "function_call", "id": "fc_1", "call_id": "call_fc_1",
+            "name": "grep", "arguments": "{\"pattern\": \"foo\"}",
+            "status": "completed",
+        }},
+        {"timestamp": "2026-03-20T10:00:05Z", "type": "response_item", "payload": {
+            "type": "function_call_output", "call_id": "call_fc_1",
+            "output": {"text": "match", "metadata": None},
+        }},
+        # custom_tool_call pair
+        {"timestamp": "2026-03-20T10:00:06Z", "type": "response_item", "payload": {
+            "type": "custom_tool_call", "id": "ctc_1", "call_id": "call_ctc_1",
+            "name": "apply_patch", "input": "*** Begin Patch\n*** End Patch\n",
+            "status": "completed",
+        }},
+        {"timestamp": "2026-03-20T10:00:07Z", "type": "response_item", "payload": {
+            "type": "custom_tool_call_output", "call_id": "call_ctc_1",
+            "output": [{"type": "input_text", "text": "patch applied"}],
+        }},
+        {"timestamp": "2026-03-20T10:00:08Z", "type": "event_msg", "payload": {
+            "type": "task_complete", "turn_id": "t1",
+        }},
+    ]
+    with open(codex_path, "w") as f:
+        for l in lines:
+            f.write(json.dumps(l) + "\n")
+
+    codex_session = parse_codex_session(codex_path)
+    sfs_dir = tmp_path / "intermediate.sfs"
+    convert_codex_to_sfs(codex_session, sfs_dir)
+
+    codex_out = tmp_path / "roundtrip.jsonl"
+    convert_sfs_to_codex(sfs_dir, output_path=codex_out)
+
+    out_lines = [json.loads(l) for l in codex_out.read_text().strip().split("\n")]
+    items = [l["payload"] for l in out_lines if l["type"] == "response_item"]
+
+    calls = [p for p in items if p.get("type") in ("function_call", "custom_tool_call")]
+    outputs = [p for p in items if p.get("type") in ("function_call_output", "custom_tool_call_output")]
+
+    # Item types are preserved exactly.
+    assert {p["type"] for p in calls} == {"function_call", "custom_tool_call"}
+    assert {p["type"] for p in outputs} == {"function_call_output", "custom_tool_call_output"}
+
+    # Every output's call_id matches a call's call_id.
+    call_ids = {p["call_id"] for p in calls}
+    assert len(call_ids) == 2
+    for output in outputs:
+        assert output["call_id"] in call_ids

@@ -103,7 +103,12 @@ async def _require_org_admin(
 # registry poller, the scheduled platform sweeps): only a platform admin may
 # mint or rotate a key that carries them.
 PLATFORM_ADMIN_SCOPES = frozenset(
-    {"skills_verify:run", "skills_registry:poll", "platform_sweeps:run"}
+    {
+        "skills_verify:run",
+        "skills_registry:poll",
+        "platform_sweeps:run",
+        "admin_metrics:read",
+    }
 )
 
 

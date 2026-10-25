@@ -24,6 +24,9 @@ vi.mock('../invites/useInvites', () => ({
 vi.mock('../components/SearchBar', () => ({
   default: () => <input aria-label="Search sessions" />,
 }));
+vi.mock('../helper/HelperProvider', () => ({
+  useHelper: () => ({ openHelper: vi.fn() }),
+}));
 
 beforeEach(() => {
   useMeMock.mockReturnValue({

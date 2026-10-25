@@ -142,6 +142,8 @@ TIER_FEATURES: dict[Tier, dict] = {
             "marketplace_access",
             "team_skill_library",
             "skills_policy",
+            "session_helper",
+            "jira_integration",
         },
         "storage_bytes": 0,  # Unlimited (self-hosted)
         "description": "Self-hosted + HIPAA + governance",

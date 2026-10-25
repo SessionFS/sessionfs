@@ -61,10 +61,18 @@ export function formatStatusLabel(status: string): string {
   return status.replace(/_/g, ' ');
 }
 
+/** Jira surface details for the ticket detail, resolved by the page owner. */
+export interface TicketJiraSurface {
+  orgId: string;
+  isProjectAdmin: boolean;
+  isEnterprise: boolean;
+}
+
 export interface ViewProps {
   tickets: Ticket[];
   projectId: string;
   selected: string | null;
   onSelect: (id: string) => void;
   onNavigate: (targetId: string) => void;
+  jira?: TicketJiraSurface;
 }

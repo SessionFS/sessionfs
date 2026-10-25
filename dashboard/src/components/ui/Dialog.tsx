@@ -18,10 +18,16 @@ export function Dialog({ open, onClose, titleId, className: panelClassName, chil
   useEffect(() => {
     if (!open) return;
     function handleKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
+      if (e.key !== 'Escape') return;
+      // A dialog sits above a drawer (and any other Escape-closing surface).
+      // Capture the key first and consume it so the surface underneath does not
+      // also close on the same press.
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
     }
-    document.addEventListener('keydown', handleKey);
-    return () => document.removeEventListener('keydown', handleKey);
+    document.addEventListener('keydown', handleKey, true);
+    return () => document.removeEventListener('keydown', handleKey, true);
   }, [open, onClose]);
 
   useEffect(() => {

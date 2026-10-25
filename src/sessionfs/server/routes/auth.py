@@ -23,7 +23,7 @@ from pydantic import BaseModel
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import ApiKey, Organization, OrgMember, User
+from sessionfs.server.db.models import AgentPersona, ApiKey, Organization, OrgMember, User
 from sessionfs.server.services.auto_join import maybe_auto_join
 from sessionfs.server.schemas.auth import (
     ApiKeySummary,
@@ -96,6 +96,20 @@ async def get_me(
     # re-query it (Codex R1 LOW — avoid redundant constant work).
     effective_tier = (await get_effective_tier(user, db, membership=membership)).value
 
+    # GitHub #92 — the org personas this user represents (any org), so the
+    # account page can show "You represent persona X" with a link to edit it.
+    represented_rows = (
+        await db.execute(
+            select(AgentPersona, Organization)
+            .join(Organization, Organization.id == AgentPersona.org_id)
+            .where(
+                AgentPersona.represented_user_id == user.id,
+                AgentPersona.is_active.is_(True),
+            )
+            .order_by(AgentPersona.name, AgentPersona.org_id)
+        )
+    ).all()
+
     response: dict = {
         "user_id": user.id,
         "email": user.email,
@@ -124,6 +138,17 @@ async def get_me(
         "capture_health": json.loads(user.capture_health)
         if user.capture_health
         else None,
+        # GitHub #92 — the org personas that represent this user.
+        "represented_personas": [
+            {
+                "persona_id": persona.id,
+                "name": persona.name,
+                "role": persona.role,
+                "org_id": persona.org_id,
+                "org_name": org.name,
+            }
+            for persona, org in represented_rows
+        ],
     }
     return response
 

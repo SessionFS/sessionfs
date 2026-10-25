@@ -42,6 +42,7 @@ from sessionfs.server.auth.keys import hash_api_key
 from sessionfs.server.auth.rate_limit import SlidingWindowRateLimiter
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import ApiKey, Project, User
+from sessionfs.server.metrics import AUTH_FAILURES_TOTAL
 
 logger = logging.getLogger("sessionfs.api")
 
@@ -156,6 +157,7 @@ async def _authenticate_and_build_context(
     """
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
+        AUTH_FAILURES_TOTAL.inc(reason="missing_bearer")
         raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
 
     raw_key = auth_header[7:]
@@ -179,12 +181,14 @@ async def _authenticate_and_build_context(
     result = await db.execute(select(ApiKey).where(ApiKey.key_hash == key_hash))
     api_key = result.scalar_one_or_none()
     if api_key is None:
+        AUTH_FAILURES_TOTAL.inc(reason="invalid_key")
         raise HTTPException(status_code=401, detail="Invalid API key")
 
     # Codex R3 MEDIUM 1 — revoked_at check BEFORE is_active so real
     # revoked keys (which also set is_active=False) surface the
     # structured api_key_revoked code instead of the generic 401.
     if api_key.revoked_at is not None:
+        AUTH_FAILURES_TOTAL.inc(reason="revoked")
         raise HTTPException(
             status_code=401,
             detail={
@@ -193,12 +197,14 @@ async def _authenticate_and_build_context(
             },
         )
     if not api_key.is_active:
+        AUTH_FAILURES_TOTAL.inc(reason="inactive_key")
         raise HTTPException(status_code=401, detail="Invalid API key")
     if api_key.expires_at is not None:
         exp = api_key.expires_at
         if exp.tzinfo is None:
             exp = exp.replace(tzinfo=timezone.utc)
         if exp <= datetime.now(timezone.utc):
+            AUTH_FAILURES_TOTAL.inc(reason="expired")
             raise HTTPException(
                 status_code=401,
                 detail={
@@ -211,6 +217,7 @@ async def _authenticate_and_build_context(
     result = await db.execute(select(User).where(User.id == api_key.user_id))
     user = result.scalar_one_or_none()
     if user is None or not user.is_active:
+        AUTH_FAILURES_TOTAL.inc(reason="inactive_user")
         raise HTTPException(status_code=403, detail="User account is inactive")
 
     # Update last_used_at + last_used_ip
@@ -509,6 +516,56 @@ def require_platform_sweeper():
             )
         await assert_platform_key_minter_active(
             ctx, db, error="platform_sweeper_denied", scope=PLATFORM_SWEEPS_SCOPE
+        )
+        return ctx
+
+    return _dep
+
+
+# Operator metrics scrape (GitHub #90). Same shape as the platform sweeps:
+# a platform-admin user key, or a narrow service key minted and run by active
+# platform admins.
+ADMIN_METRICS_SCOPE = "admin_metrics:read"
+
+
+def require_admin_metrics():
+    """Dependency for the operator metrics endpoint.
+
+    Admits EITHER a platform-admin (tier ``admin``) user key, exactly as
+    ``require_admin`` did, OR a service key that carries
+    ``admin_metrics:read`` and whose owner (the user it runs as) and minter
+    (``created_by_user_id``; the rotator after a rotation) are both CURRENTLY
+    active platform admins. Demoting or deactivating either stops the key on
+    the next request. Any other service key is refused before the route runs.
+    """
+    required = {ADMIN_METRICS_SCOPE}
+
+    async def _dep(
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        limiter: SlidingWindowRateLimiter = Depends(get_rate_limiter),
+    ) -> AuthContext:
+        ctx = await _authenticate_and_build_context(request, db, limiter)
+        if ctx.key_kind != "service":
+            await _sso_enforcement_check(ctx, db)
+            if ctx.user.tier != "admin":
+                raise HTTPException(status_code=403, detail="Admin access required")
+            return ctx
+        if not required.intersection(ctx.scopes):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "insufficient_scope",
+                    "required": sorted(required),
+                    "current": ctx.scopes,
+                    "message": (
+                        f"Scope required: one of {sorted(required)}. "
+                        f"Key has: {ctx.scopes}."
+                    ),
+                },
+            )
+        await assert_platform_key_minter_active(
+            ctx, db, error="admin_metrics_denied", scope=ADMIN_METRICS_SCOPE
         )
         return ctx
 

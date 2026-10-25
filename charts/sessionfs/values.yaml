@@ -58,6 +58,14 @@ api:
   logLevel: "INFO"
   corsOrigins: ""
 
+  # Operator metrics (GitHub #90). When enabled, prometheus.io scrape
+  # annotations are added to the API pods pointing Prometheus at
+  # /api/v1/admin/metrics. That endpoint is NOT anonymous: the scraper must
+  # send a platform-admin user key or a service key with the
+  # `admin_metrics:read` scope in a Bearer header (see docs/observability.md).
+  metrics:
+    scrapeAnnotations: false
+
   # Organization SSO (OIDC, v0.13+). Enable + set the callback URL you
   # registered with your IdP and the dashboard origin for browser login.
   # Provider client secrets are configured in-app as env: references — put
@@ -183,6 +191,23 @@ api:
       # platform admin (sfs admin service-keys create ... --scope skills_registry:poll).
       existingSecret: ""
       secretKey: "registry-poll-api-key"
+      image: curlimages/curl:8.12.1
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
+  # Scheduled hard-delete of expired session-helper messages (see
+  # docs/self-hosted.md "Scheduled helper retention sweep"). The API pod's own
+  # scheduler never runs: this optional CronJob posts to the sweep endpoint with
+  # a platform_sweeps:run service key from a Secret.
+  helperRetention:
+    # enabled: false by default — operators opt in with an existingSecret.
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "0 3 * * *"
+      # Secret holding a platform_sweeps:run service key minted by a
+      # platform admin (sfs admin service-keys create ... --scope platform_sweeps:run).
+      existingSecret: ""
+      secretKey: "helper-retention-api-key"
       image: curlimages/curl:8.12.1
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3

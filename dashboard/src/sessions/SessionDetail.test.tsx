@@ -47,6 +47,10 @@ vi.mock('../hooks/useToast', () => ({
   useToast: () => ({ addToast: vi.fn(), removeToast: vi.fn(), toasts: [] }),
 }));
 
+vi.mock('../helper/HelperProvider', () => ({
+  useHelper: () => ({ openHelper: vi.fn() }),
+}));
+
 // Stub heavy sub-components so we can focus on the main flow without
 // setting up their hooks.
 vi.mock('./ConversationView', () => ({

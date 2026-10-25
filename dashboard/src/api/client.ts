@@ -61,6 +61,22 @@ export interface MessagesResponse {
   has_more: boolean;
 }
 
+export interface FileChange {
+  path: string;
+  operation: 'created' | 'edited' | 'deleted' | 'unknown';
+  diff: string;
+  added_lines: number;
+  removed_lines: number;
+  message_indexes: number[];
+  truncated: boolean;
+}
+
+export interface ChangesResponse {
+  files: FileChange[];
+  git_ref: string | null;
+  truncated: boolean;
+}
+
 export interface HandoffSummary {
   id: string;
   session_id: string;
@@ -152,6 +168,58 @@ export interface JudgeSettings {
   base_url: string | null;
 }
 
+export interface OrgLlmSettings {
+  provider: string;
+  model: string;
+  has_api_key: boolean;
+  key_hint: string | null;
+  base_url: string | null;
+  enabled: boolean;
+  plan_includes_helper: boolean;
+}
+
+// ── Session helper (Enterprise) ──
+export interface HelperStatus {
+  enabled: boolean;
+  key_source: string | null;
+  provider: string | null;
+  model: string | null;
+}
+
+export interface HelperConversationSummary {
+  id: string;
+  org_id: string | null;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface HelperCitation {
+  session_id: string;
+  message_index: number | null;
+  title: string;
+}
+
+export interface HelperMessage {
+  id: string;
+  role: 'user' | 'assistant' | 'tool';
+  content: string;
+  tool_name: string | null;
+  tool_call_id: string | null;
+  tool_args: Record<string, unknown> | null;
+  citations: HelperCitation[] | null;
+  key_source: string | null;
+  input_tokens: number;
+  output_tokens: number;
+  created_at: string;
+}
+
+export interface HelperConversation extends HelperConversationSummary {
+  /** The last scope the thread was used with (project_id/session_ids), or null for personal threads. */
+  scope: { project_id: string | null; session_ids: string[] } | null;
+  messages: HelperMessage[];
+}
+
 export interface AdminUser {
   id: string;
   email: string;
@@ -227,6 +295,144 @@ export interface GitLabSettingsRequest {
   instance_url: string;
   access_token: string;
   webhook_secret?: string;
+}
+
+/* ── Jira integration (Enterprise, org owner/admin) ── */
+
+/**
+ * Org Jira connection. The API token is write-only: the server reports
+ * `has_token` plus a last-4 `token_hint` and never the credential itself.
+ * When no connection exists the GET collapses to `{ connected: false,
+ * has_token: false }`.
+ */
+export interface JiraConnection {
+  connected: boolean;
+  provider?: string;
+  site_url?: string;
+  account_email?: string;
+  has_token: boolean;
+  token_hint?: string;
+  default_template?: string;
+  enabled?: boolean;
+  last_verified_at?: string | null;
+  connected_by_user_id?: string;
+}
+
+export interface JiraConnectionRequest {
+  site_url: string;
+  account_email: string;
+  api_token: string;
+  default_template: string;
+}
+
+export interface JiraProject {
+  key: string;
+  name: string;
+  /** Empty on the list endpoint — issue types are fetched lazily per project. */
+  issue_types: { name: string; id: string }[];
+}
+
+export interface JiraIssueType {
+  name: string;
+  id: string;
+}
+
+export interface JiraMapping {
+  project_id: string;
+  jira_project_key: string;
+  issue_type: string;
+  template: string | null;
+  done_status_name: string | null;
+}
+
+export interface JiraMappingRequest {
+  jira_project_key: string;
+  issue_type?: string;
+  template?: string | null;
+  done_status_name?: string | null;
+}
+
+export interface JiraPushFailure {
+  ticket_id: string;
+  issue_key: string | null;
+  failed_at: string | null;
+  reason: string | null;
+}
+
+export interface JiraStaleLink {
+  ticket_id: string;
+  issue_key: string | null;
+  last_status_checked_at: string | null;
+}
+
+export interface JiraPublishActivity {
+  ticket_id: string;
+  started_at: string | null;
+}
+
+export interface JiraHealth {
+  unmapped_project_count: number;
+  last_push_failures: JiraPushFailure[];
+  stale_links: JiraStaleLink[];
+  publishes_in_progress: JiraPublishActivity[];
+  publishes_unknown: JiraPublishActivity[];
+}
+
+export interface JiraParagraph {
+  text: string;
+  citations: string[];
+}
+
+export interface JiraSection {
+  key: string;
+  heading: string;
+  /** Present on previews ("verbatim" vs "rewrite"); dropped on publish. */
+  mode?: 'verbatim' | 'rewrite';
+  paragraphs: JiraParagraph[];
+}
+
+export interface JiraPreview {
+  summary: string;
+  sections: JiraSection[];
+  citations: string[];
+  issue_type: string;
+  jira_project_key: string;
+  llm_used: boolean;
+  key_source: string;
+  ticket_id: string;
+  project_id: string;
+  /** Present when the ticket already links a Jira issue (re-publish). */
+  existing?: {
+    issue_key: string;
+    issue_url: string;
+    last_known_status: string | null;
+  };
+  /** Unified diff against the last published text, when re-publishing. */
+  diff?: string[];
+}
+
+export interface JiraPublishRequest {
+  summary: string;
+  sections: JiraSection[];
+  confirm: boolean;
+}
+
+export interface JiraLink {
+  ticket_id: string;
+  provider: string;
+  issue_key: string;
+  issue_url: string;
+  last_pushed_at: string | null;
+  last_known_status: string | null;
+  last_status_checked_at: string | null;
+  payload_hash: string | null;
+}
+
+/** Single-ticket link summary embedded on the ticket response. */
+export interface TicketJiraLink {
+  issue_key: string;
+  issue_url: string;
+  last_known_status: string | null;
 }
 
 export type GitHubClaimFlow = 'install' | 'authorize';
@@ -352,6 +558,12 @@ export interface ProjectContext {
   /** Multi-repo: set when this project was merged into another. */
   merged_into_project_id?: string | null;
   merged_at?: string | null;
+  /** Scheduled KB compile cadence (GitHub #93): off, nightly, or weekly. */
+  compile_schedule?: string;
+  /** Optional pending-claim threshold that compiles regardless of schedule. */
+  compile_after_claims?: number | null;
+  /** Last time the scheduled sweep compiled this project, if any. */
+  last_scheduled_compile_at?: string | null;
 }
 
 export interface LinkRepoRequest {
@@ -451,6 +663,30 @@ export interface ContextCompilation {
   context_before: string;
   context_after: string;
   compiled_at: string;
+  /** 'manual' (a user clicked Compile) or 'scheduled' (the KB compile sweep). */
+  trigger: string;
+  context_words_before: number;
+  context_words_after: number;
+}
+
+export interface CompileHistoryItem {
+  id: number;
+  compiled_at: string;
+  trigger: string;
+  entries_compiled: number;
+  context_words_before: number;
+  context_words_after: number;
+}
+
+export interface CompileStatusResponse {
+  last_compile_at: string | null;
+  pending_claims: number;
+  compile_needed: boolean;
+  compile_schedule: string;
+  compile_after_claims: number | null;
+  last_scheduled_compile_at: string | null;
+  next_scheduled_at: string | null;
+  compile_history: CompileHistoryItem[];
 }
 
 export interface ProjectHealthResponse {
@@ -588,6 +824,67 @@ export interface PersonaUpdate {
 }
 
 // ------------------------------------------------------------------
+// GitHub #92 — persona roll-up + represent-history
+// ------------------------------------------------------------------
+
+export interface RollupSession {
+  id: string;
+  title: string | null;
+  created_at: string;
+  project_id: string | null;
+  ticket_id: string | null;
+}
+
+export interface RollupTicket {
+  id: string;
+  title: string;
+  status: string;
+  project_id: string;
+  created_at: string;
+}
+
+export interface RollupKnowledgeEntry {
+  id: number;
+  entry_type: string;
+  content: string;
+  project_id: string;
+  created_at: string;
+}
+
+export interface RollupAgentRun {
+  id: string;
+  status: string;
+  project_id: string;
+  created_at: string;
+}
+
+export interface PersonaRollup {
+  persona: Persona;
+  recent_sessions: RollupSession[];
+  open_tickets: RollupTicket[];
+  last_knowledge_entry: RollupKnowledgeEntry | null;
+  last_agent_run: RollupAgentRun | null;
+}
+
+export interface RepresentHistoryEntry {
+  actor_user_id: string | null;
+  actor_email: string | null;
+  actor_role: string | null;
+  from_user_id: string | null;
+  to_user_id: string | null;
+  created_at: string;
+}
+
+/** An org persona that represents the caller (surfaced by /auth/me). */
+export interface RepresentedPersona {
+  persona_id: string;
+  name: string;
+  role: string;
+  org_id: string;
+  org_name: string;
+}
+
+// ------------------------------------------------------------------
 // Tickets (v0.10.1, Team+)
 // ------------------------------------------------------------------
 
@@ -631,6 +928,10 @@ export interface Ticket {
   created_at: string;
   updated_at: string;
   resolved_at: string | null;
+  /** Jira link, present once the ticket has been promoted (Enterprise). */
+  jira?: TicketJiraLink | null;
+  jira_publish_in_progress?: boolean;
+  jira_publish_unknown?: boolean;
 }
 
 export interface TicketCreate {
@@ -692,10 +993,44 @@ export interface AgentRun {
   session_id: string | null;
   triggered_by_user_id: string | null;
   triggered_by_persona: string | null;
+  // GitHub #95 — replay provenance + edited prompt/context.
+  replayed_from: string | null;
+  prompt: string | null;
+  context_refs: string[];
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
   duration_seconds: number | null;
+}
+
+/** GitHub #95 — replay payload (omitted fields copy from the parent run). */
+export interface AgentRunReplayInput {
+  persona_name?: string;
+  ticket_id?: string;
+  prompt?: string;
+  context_refs?: string[];
+  fail_on?: string;
+  trigger_ref?: string;
+}
+
+export interface AgentRunReplayResult {
+  run: AgentRun;
+  command: string;
+  ci_hint: string;
+}
+
+export interface AgentRunCompareResult {
+  a_id: string;
+  b_id: string;
+  a_findings_count: number;
+  b_findings_count: number;
+  a_severity_counts: Record<string, number>;
+  b_severity_counts: Record<string, number>;
+  added: Record<string, unknown>[];
+  removed: Record<string, unknown>[];
+  unchanged: Record<string, unknown>[];
+  /** True when any of added/removed/unchanged was capped for the response. */
+  truncated?: boolean;
 }
 
 // ------------------------------------------------------------------
@@ -1516,6 +1851,8 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         last_error: string | null;
         sessions_tracked: number;
       }[] | null;
+      /** GitHub #92 — org personas that represent this user. */
+      represented_personas: RepresentedPersona[];
     }>('/api/v1/auth/me'),
 
     listSessions: (params: {
@@ -1554,6 +1891,8 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       request<MessagesResponse>(
         `/api/v1/sessions/${id}/messages?page=${page}&page_size=${pageSize}&order=${order}`,
       ),
+
+    getChanges: (id: string) => request<ChangesResponse>(`/api/v1/sessions/${id}/changes`),
 
     search: (params: URLSearchParams) =>
       request<{
@@ -1641,6 +1980,90 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       request<void>('/api/v1/settings/judge', {
         method: 'DELETE',
       }),
+
+    // Org-wide LLM key for the session helper (Enterprise, owner/admin).
+    getOrgLlmSettings: (orgId: string) =>
+      request<OrgLlmSettings>(`/api/v1/orgs/${orgId}/llm-settings`),
+
+    saveOrgLlmSettings: (
+      orgId: string,
+      body: { provider: string; model: string; apiKey?: string; baseUrl?: string | null; enabled: boolean },
+    ) =>
+      request<OrgLlmSettings>(`/api/v1/orgs/${orgId}/llm-settings`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          provider: body.provider,
+          model: body.model,
+          api_key: body.apiKey ?? '',
+          base_url: body.baseUrl ?? null,
+          enabled: body.enabled,
+        }),
+      }),
+
+    deleteOrgLlmSettings: (orgId: string) =>
+      request<{ deleted: boolean }>(`/api/v1/orgs/${orgId}/llm-settings`, {
+        method: 'DELETE',
+      }),
+
+    // Jira integration (Enterprise, org owner/admin). The connection GET is
+    // admin-only too, since it exposes credential/config state; a non-admin
+    // member learns a ticket's Jira state from the ticket response instead.
+    getJiraConnection: (orgId: string) =>
+      request<JiraConnection>(`/api/v1/orgs/${orgId}/integrations/jira`),
+
+    saveJiraConnection: (orgId: string, body: JiraConnectionRequest) =>
+      request<JiraConnection>(`/api/v1/orgs/${orgId}/integrations/jira`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+
+    deleteJiraConnection: (orgId: string) =>
+      request<void>(`/api/v1/orgs/${orgId}/integrations/jira`, { method: 'DELETE' }),
+
+    listJiraProjects: (orgId: string) =>
+      request<JiraProject[]>(`/api/v1/orgs/${orgId}/integrations/jira/projects`),
+
+    listJiraIssueTypes: (orgId: string, projectKey: string) =>
+      request<JiraIssueType[]>(
+        `/api/v1/orgs/${orgId}/integrations/jira/projects/${encodeURIComponent(projectKey)}/issue-types`,
+      ),
+
+    listJiraMappings: (orgId: string) =>
+      request<JiraMapping[]>(`/api/v1/orgs/${orgId}/integrations/jira/mappings`),
+
+    saveJiraMapping: (orgId: string, projectId: string, body: JiraMappingRequest) =>
+      request<JiraMapping>(
+        `/api/v1/orgs/${orgId}/integrations/jira/mappings/${encodeURIComponent(projectId)}`,
+        { method: 'PUT', body: JSON.stringify(body) },
+      ),
+
+    deleteJiraMapping: (orgId: string, projectId: string) =>
+      request<void>(
+        `/api/v1/orgs/${orgId}/integrations/jira/mappings/${encodeURIComponent(projectId)}`,
+        { method: 'DELETE' },
+      ),
+
+    getJiraHealth: (orgId: string) =>
+      request<JiraHealth>(`/api/v1/orgs/${orgId}/integrations/jira/health`),
+
+    // Session helper (Enterprise) — read-only conversation management + status.
+    // Turn streaming bypasses request() (raw fetch + ReadableStream) because it
+    // needs to read the SSE body incrementally; see helper/HelperPanel.tsx.
+    getHelperStatus: () => request<HelperStatus>('/api/v1/helper/status'),
+
+    listHelperConversations: () =>
+      request<HelperConversationSummary[]>('/api/v1/helper/conversations'),
+
+    getHelperConversation: (conversationId: string) =>
+      request<HelperConversation>(
+        `/api/v1/helper/conversations/${encodeURIComponent(conversationId)}`,
+      ),
+
+    deleteHelperConversation: (conversationId: string) =>
+      request<{ deleted: boolean }>(
+        `/api/v1/helper/conversations/${encodeURIComponent(conversationId)}`,
+        { method: 'DELETE' },
+      ),
 
     // POST so a typed API key travels in the body, never in a URL/access log.
     discoverModels: (baseUrl: string, apiKey?: string) =>
@@ -2028,6 +2451,9 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       return resp;
     },
 
+    getCompileStatus: (projectId: string) =>
+      request<CompileStatusResponse>(`/api/v1/projects/${projectId}/compile-status`),
+
     getProjectHealth: (projectId: string) =>
       request<ProjectHealthResponse>(`/api/v1/projects/${projectId}/health`),
 
@@ -2091,7 +2517,14 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         { method: 'POST' },
       ),
 
-    updateProjectSettings: (projectId: string, settings: { auto_narrative?: boolean }) =>
+    updateProjectSettings: (
+      projectId: string,
+      settings: {
+        auto_narrative?: boolean;
+        compile_schedule?: 'off' | 'nightly' | 'weekly';
+        compile_after_claims?: number | null;
+      },
+    ) =>
       request<{ status: string }>(`/api/v1/projects/${projectId}/settings`, {
         method: 'PUT',
         body: JSON.stringify(settings),
@@ -2198,6 +2631,22 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         { method: 'DELETE' },
       ),
 
+    // ── GitHub #92 — persona roll-up + represent-history ──
+    getOrgPersonaRollup: (orgId: string, name: string) =>
+      request<PersonaRollup>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/personas/${encodeURIComponent(name)}/rollup`,
+      ),
+
+    getOrgPersonaRepresentHistory: (orgId: string, name: string) =>
+      request<RepresentHistoryEntry[]>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/personas/${encodeURIComponent(name)}/represent-history`,
+      ),
+
+    getProjectPersonaRollup: (projectId: string, name: string) =>
+      request<PersonaRollup>(
+        `/api/v1/projects/${projectId}/personas/${encodeURIComponent(name)}/rollup`,
+      ),
+
     // ── v0.10.1 Tickets (Team+) ──
     listTickets: (
       projectId: string,
@@ -2259,6 +2708,28 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         },
       ),
 
+    // Jira promotion (any project member with ticket write access; unlink is
+    // project-admin only).
+    previewJira: (projectId: string, ticketId: string) =>
+      request<JiraPreview>(
+        `/api/v1/projects/${projectId}/tickets/${ticketId}/jira/preview`,
+        { method: 'POST' },
+      ),
+
+    publishJira: (projectId: string, ticketId: string, body: JiraPublishRequest) =>
+      request<JiraLink>(
+        `/api/v1/projects/${projectId}/tickets/${ticketId}/jira/publish`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+
+    getJiraLink: (projectId: string, ticketId: string) =>
+      request<JiraLink>(`/api/v1/projects/${projectId}/tickets/${ticketId}/jira`),
+
+    unlinkJira: (projectId: string, ticketId: string) =>
+      request<void>(`/api/v1/projects/${projectId}/tickets/${ticketId}/jira`, {
+        method: 'DELETE',
+      }),
+
     // ── v0.10.2 AgentRuns (Team+) ──
     listAgentRuns: (
       projectId: string,
@@ -2284,6 +2755,21 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     getAgentRun: (projectId: string, runId: string) =>
       request<AgentRun>(`/api/v1/projects/${projectId}/agent-runs/${runId}`),
+
+    replayAgentRun: (
+      projectId: string,
+      runId: string,
+      body: AgentRunReplayInput = {},
+    ) =>
+      request<AgentRunReplayResult>(
+        `/api/v1/projects/${projectId}/agent-runs/${runId}/replay`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+
+    compareAgentRuns: (projectId: string, aId: string, bId: string) =>
+      request<AgentRunCompareResult>(
+        `/api/v1/projects/${projectId}/agent-runs/${aId}/compare/${bId}`,
+      ),
 
     // ── v0.16 Skills and plugins marketplace ──
     searchMarketplace: (params: MarketplaceSearchFilters = {}) => {

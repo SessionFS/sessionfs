@@ -260,6 +260,36 @@ def test_terminal_outcomes_drop_backoff_rows(tmp_path, monkeypatch):
     assert "ses_gone" not in syncer.backoff.entries
 
 
+def test_conflict_stores_remote_etag_and_does_not_back_off(tmp_path, monkeypatch):
+    """A SyncConflictError is not a transient server failure: the daemon stores
+    the remote etag (so the next push sends the right If-Match) and re-queues
+    the session instead of waiting out the backoff schedule."""
+    from sessionfs.sync.client import SyncConflictError
+
+    syncer = _make_syncer(tmp_path, monkeypatch)
+    session_dir = tmp_path / "ses_conflict.sfs"
+    session_dir.mkdir()
+    (session_dir / "messages.jsonl").write_text("{}\n")
+    syncer.store.get_session_dir.return_value = session_dir
+    syncer._pending_sessions.add("ses_conflict")
+
+    client = AsyncMock()
+    client.push_session.side_effect = SyncConflictError("remote_etag_abc")
+    with patch.object(syncer, "_get_client", return_value=client), patch(
+        "sessionfs.daemon.sync_backoff.now_pair", lambda: (10_000.0, 10_000.0)
+    ), patch("sessionfs.sync.archive.pack_session", return_value=b"tar"), patch.object(
+        syncer, "_get_local_etag", return_value=None
+    ), patch.object(syncer, "_store_local_etag") as store_etag, patch.object(
+        syncer, "_mark_session_dirty_flag"
+    ) as mark_dirty, patch.object(syncer, "_maybe_auto_audit", AsyncMock()):
+        asyncio.run(syncer._sync_sessions({"ses_conflict"}))
+
+    store_etag.assert_called_once_with("ses_conflict", "remote_etag_abc")
+    mark_dirty.assert_called_once_with("ses_conflict")
+    # No backoff row: a conflict retries on the next cycle, not after a delay.
+    assert syncer.backoff.snapshot() == []
+
+
 def test_retry_accepts_a_unique_prefix():
     b = SyncBackoff()
     b.record_failure("ses_aaaa1111bbbb2222", "fp", "500", now_mono=0.0, now_wall=0.0)

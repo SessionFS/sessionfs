@@ -42,6 +42,8 @@ Every knowledge entry has a `claim_class` that controls its lifecycle:
 
 Past the window, `freshness_class` moves `current` &rarr; `stale` &rarr; `archived`. Stale entries are surfaced in the dashboard review queue; only `current` active claims feed compile by default.
 
+**Confidence decay.** Claims nobody has referenced for 90 days lose confidence (&times;0.8), at most once every 30 days. Since v0.23.0 this depends on elapsed time only; before, it was applied on every compile, so frequently compiled projects aged their claims much faster.
+
 **Supersession.** Retire an old claim in favor of a new one with `PUT /api/v1/projects/{id}/entries/{entry_id}/supersede`. The old entry remains readable for audit but is excluded from compile.
 
 **Refresh.** Extend an entry's validity window with `PUT /api/v1/projects/{id}/entries/{entry_id}/refresh` — updates `last_relevant_at` and resets `freshness_class` to `current`.
@@ -103,13 +105,24 @@ Entries with confidence below 0.5 are marked as *(unverified)* in the compiled o
 
 Compilation merges pending entries into the project context document and generates section wiki pages.
 
-**Compile is human-driven — there is no automatic background scheduler.**
-Pending claims sit in the queue until somebody compiles. Three places to
-trigger a compile pass:
+Pending claims sit in the queue until a compile runs, either on the
+project's schedule or by hand.
 
-- **Dashboard.** A "Compile now" CTA appears in the project page workflow
-  hint banner whenever pending count > 0, plus the prominent buttons on
-  the Entries and Context tabs.
+**Scheduled compile (v0.23.0).** Each project can compile on a schedule:
+`nightly`, `weekly` or `off`, optionally also once a number of claims are
+waiting. Set it under the project's **Settings → Scheduled KB compile** or
+with `sfs project compile-schedule weekly --after-claims 20`. Scheduled
+compiles use the deterministic compiler, never an LLM. New projects start at
+`nightly` when their plan includes project context; projects created before
+v0.23.0 start at `off`. On self-hosted servers the schedule takes effect only
+once the operator runs the [compile sweep](/self-hosted/#scheduled-sweeps).
+The compile history marks which compiles were manual and which were scheduled.
+
+To compile by hand:
+
+- **Dashboard.** The project Overview shows when the context was last
+  compiled and how many claims are waiting, with a one-click compile when
+  it is out of date, plus the buttons on the Entries and Context tabs.
 - **Agent (MCP).** Agents are instructed to check `get_knowledge_health`
   after writing knowledge, surface the pending count to the user, and
   call `compile_knowledge_base` only on explicit consent.
@@ -285,7 +298,8 @@ All endpoints are under `/api/v1/projects/{project_id}` and require authenticati
 | POST | `/entries/dismiss-stale` | Bulk-dismiss low-confidence stale entries (`confidence < 0.5` + > 90 days unreferenced) |
 | POST | `/compile` | Compile pending entries. Auto-promotes evidence &ge; 0.5 confidence to claim before merging |
 | POST | `/rebuild` | Reset `compiled_at=NULL` on all active claims and clear `context_document` to force a full re-compile |
-| GET | `/compilations` | List compilation history |
+| GET | `/compilations` | List compilation history (each marked manual or scheduled) |
+| GET | `/compile-status` | Last compile, claims waiting, and whether a compile is recommended (v0.23.0) |
 | GET | `/health` | Health status: entry counts, staleness, word count, score inputs, stale review queue |
 | GET | `/pages` | List wiki pages |
 | GET | `/pages/{slug}` | Get page content with backlinks |

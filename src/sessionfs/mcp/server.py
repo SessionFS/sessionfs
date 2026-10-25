@@ -1546,6 +1546,40 @@ _TOOLS = [
         },
     ),
     Tool(
+        name="replay_agent_run",
+        description=(
+            "Replay an existing agent run with an edited prompt, ticket, "
+            "persona, fail_on, trigger_ref, and/or context references "
+            "(GitHub #95). Unspecified fields copy from the parent run; "
+            "the parent's ticket must still belong to the same project. "
+            "Creates a queued run and returns the new run plus a "
+            "shell-quoted `sfs agent run` command and a CI hint block "
+            "for GitHub Actions / GitLab.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs agent replay` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "persona_name": {"type": "string"},
+                "ticket_id": {"type": "string"},
+                "prompt": {"type": "string"},
+                "context_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+                "fail_on": {
+                    "type": "string",
+                    "enum": ["none", "low", "medium", "high", "critical"],
+                },
+                "trigger_ref": {"type": "string"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["run_id"],
+        },
+    ),
+    Tool(
         name="list_agent_runs",
         description=(
             "List recent agent runs in the project. Filter by persona, "
@@ -2470,6 +2504,48 @@ _TOOLS = [
             "required": ["request_id"],
         },
     ),
+    Tool(
+        name="ask_session_helper",
+        description=(
+            "Ask the SessionFS session helper a question over sessions and "
+            "project knowledge you can already read. Returns a non-streaming "
+            "answer with citations (session_id, message_index, title). Use this "
+            "instead of running 'sfs helper ask' from a shell. Requires an "
+            "Enterprise plan and a configured LLM key."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "question": {
+                    "type": "string",
+                    "description": "The question to ask over your sessions and project knowledge",
+                },
+                "project": {
+                    "type": "string",
+                    "description": (
+                        "Optional project ID (proj_...) to scope the question to. "
+                        "The helper will only read sessions within this project."
+                    ),
+                },
+                "session_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional session IDs (ses_...) to scope the question to. "
+                        "The helper will only read these sessions."
+                    ),
+                },
+                "conversation_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional conversation ID (hc_...) to continue an existing "
+                        "helper thread. Omit to start a new one."
+                    ),
+                },
+            },
+            "required": ["question"],
+        },
+    ),
 ]
 
 
@@ -2606,6 +2682,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_complete_agent_run(arguments)
         elif name == "list_agent_runs":
             result = await _handle_list_agent_runs(arguments)
+        elif name == "replay_agent_run":
+            result = await _handle_replay_agent_run(arguments)
         elif name == "record_agent_feedback":
             result = await _handle_record_agent_feedback(arguments)
         elif name == "list_agent_feedback":
@@ -2676,6 +2754,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_list_skill_install_requests(arguments)
         elif name == "cancel_skill_install_request":
             result = await _handle_cancel_skill_install_request(arguments)
+        elif name == "ask_session_helper":
+            result = await _handle_ask_session_helper(arguments)
+            if not _result_is_error(result):
+                _emit_first_magic()
         else:
             result = {"error": f"Unknown tool: {name}"}
     except Exception as exc:
@@ -3594,6 +3676,125 @@ async def _handle_list_wiki_pages(args: dict) -> str:
 
     except Exception as exc:
         return f"Failed: {exc}"
+
+
+# The helper turn can stream a long answer, so the MCP client waits far longer
+# than the default tool timeout before giving up.
+_ASK_SESSION_HELPER_TIMEOUT_SECONDS = 600.0
+_ASK_SESSION_HELPER_MAX_QUESTION_CHARS = 20_000  # matches the helper route
+_ASK_SESSION_HELPER_MAX_SESSION_IDS = 100
+
+
+async def _handle_ask_session_helper(args: dict) -> dict:
+    """Ask the session helper a question (non-streaming, JSON mode).
+
+    Calls POST /api/v1/helper/turns with stream=false and returns the answer
+    plus citations. Unlike most project-scoped tools this endpoint is
+    user-scoped (not project-scoped), so it authenticates with the caller's
+    user key directly and never resolves a git remote. The optional `project`
+    argument is a project ID (proj_...) forwarded as `scope.project_id`.
+    """
+    # MCP clients can send arbitrary JSON, so validate types up front: a
+    # wrong-typed argument must return a clean error instead of crashing the
+    # tool (or worse, forwarding `str(None)` as a session id).
+    question = args.get("question")
+    if not isinstance(question, str):
+        return {"error": "question must be a string."}
+    question = question.strip()
+    if not question:
+        return {"error": "A question is required."}
+    if len(question) > _ASK_SESSION_HELPER_MAX_QUESTION_CHARS:
+        return {
+            "error": (
+                f"The question must be at most "
+                f"{_ASK_SESSION_HELPER_MAX_QUESTION_CHARS} characters."
+            )
+        }
+
+    project_id = args.get("project")
+    if project_id is not None and not isinstance(project_id, str):
+        return {"error": "project must be a string."}
+
+    conversation_id = args.get("conversation_id")
+    if conversation_id is not None and not isinstance(conversation_id, str):
+        return {"error": "conversation_id must be a string."}
+
+    session_ids = args.get("session_ids")
+    ids: list[str] | None = None
+    if session_ids is not None:
+        if isinstance(session_ids, str):
+            raw_ids: list[Any] = [session_ids]
+        elif isinstance(session_ids, list):
+            raw_ids = session_ids
+        else:
+            return {"error": "session_ids must be a list of strings."}
+        if len(raw_ids) > _ASK_SESSION_HELPER_MAX_SESSION_IDS:
+            return {
+                "error": (
+                    f"session_ids accepts at most "
+                    f"{_ASK_SESSION_HELPER_MAX_SESSION_IDS} IDs."
+                )
+            }
+        if not all(isinstance(s, str) for s in raw_ids):
+            return {"error": "session_ids must be a list of strings."}
+        ids = [s.strip() for s in raw_ids if s.strip()]
+
+    scope: dict[str, Any] = {}
+    if project_id:
+        scope["project_id"] = project_id
+    if ids:
+        scope["session_ids"] = ids
+
+    config = load_config()
+    if not config.sync.api_key:
+        return {"error": "Not authenticated. Run 'sfs auth login' first."}
+
+    payload: dict[str, Any] = {
+        "message": question,
+        "stream": False,
+    }
+    if conversation_id:
+        payload["conversation_id"] = conversation_id
+    if scope:
+        payload["scope"] = scope
+
+    import httpx
+    async with httpx.AsyncClient(timeout=_ASK_SESSION_HELPER_TIMEOUT_SECONDS) as client:
+        resp = await client.post(
+            f"{config.sync.api_url.rstrip('/')}/api/v1/helper/turns",
+            json=payload,
+            headers={"Authorization": f"Bearer {config.sync.api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
+    try:
+        return resp.json()
+    except Exception:
+        return {"error": f"Unexpected API response: {resp.text[:200]}"}
+
+
+def _helper_error_message(resp: Any) -> str:
+    """Extract a readable message from a helper route error response.
+
+    FastAPI wraps the helper's HTTPException(detail={code, error, message})
+    as {"detail": {...}}; older/other shapes fall back to the raw text.
+    """
+    try:
+        body = resp.json()
+    except Exception:
+        return f"API error {resp.status_code}: {resp.text[:200]}"
+    if isinstance(body, dict):
+        detail = body.get("detail")
+        if isinstance(detail, dict):
+            message = detail.get("message") or detail.get("error") or detail.get("code")
+            if message:
+                return f"API error {resp.status_code}: {message}"
+        error = body.get("error")
+        if isinstance(error, dict):
+            message = error.get("message") or error.get("code")
+            if message:
+                return f"API error {resp.status_code}: {message}"
+    return f"API error {resp.status_code}"
 
 
 async def _handle_ask_project(args: dict) -> dict:
@@ -5582,6 +5783,47 @@ async def _handle_list_agent_runs(args: dict) -> dict:
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return {"agent_runs": resp.json()}
+
+
+async def _handle_replay_agent_run(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/agent-runs/{run_id}/replay."""
+    run_id = (args.get("run_id") or "").strip()
+    if not run_id:
+        return {"error": "run_id is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {}
+    for key in ("persona_name", "ticket_id", "fail_on", "trigger_ref"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            body[key] = val.strip()
+    # prompt is prose — pass it through untouched (leading/trailing
+    # whitespace can be meaningful), and forward an explicit "" so the
+    # caller can clear the inherited prompt rather than copy it.
+    prompt = args.get("prompt")
+    if isinstance(prompt, str):
+        body["prompt"] = prompt
+    context_refs = args.get("context_refs")
+    if isinstance(context_refs, list):
+        body["context_refs"] = [str(r) for r in context_refs]
+
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/agent-runs/{_path_segment(run_id)}/replay",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code == 404:
+        return {"error": f"Agent run '{run_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
 
 
 async def _handle_record_agent_feedback(args: dict) -> dict:

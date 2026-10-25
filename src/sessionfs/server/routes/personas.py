@@ -47,7 +47,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -69,6 +69,7 @@ from sessionfs.server.db.models import (
     AgentPersona,
     AgentRun,
     Handoff,
+    KnowledgeEntry,
     Session,
     OrgAuditEvent,
     OrgMember,
@@ -209,6 +210,222 @@ def _to_response(p: AgentPersona) -> PersonaResponse:
     )
 
 
+# ── Rollup / represent-history response models (GitHub #92) ──
+
+
+class RollupSession(BaseModel):
+    id: str
+    title: str | None
+    created_at: datetime
+    project_id: str | None
+    ticket_id: str | None
+
+
+class RollupTicket(BaseModel):
+    id: str
+    title: str
+    status: str
+    project_id: str
+    created_at: datetime
+
+
+class RollupKnowledgeEntry(BaseModel):
+    id: int
+    entry_type: str
+    content: str
+    project_id: str
+    created_at: datetime
+
+
+class RollupAgentRun(BaseModel):
+    id: str
+    status: str
+    project_id: str
+    created_at: datetime
+
+
+class PersonaRollup(BaseModel):
+    """Everything we know about a persona's recent activity, minus anything
+    the caller cannot read."""
+
+    persona: PersonaResponse
+    recent_sessions: list[RollupSession]
+    open_tickets: list[RollupTicket]
+    last_knowledge_entry: RollupKnowledgeEntry | None
+    last_agent_run: RollupAgentRun | None
+
+
+class RepresentHistoryEntry(BaseModel):
+    """One represent/clear action on an org persona, from its audit rows."""
+
+    actor_user_id: str | None
+    actor_email: str | None
+    actor_role: str | None
+    from_user_id: str | None
+    to_user_id: str | None
+    created_at: datetime
+
+
+def _parse_represented_user_id(raw: str | None) -> str | None:
+    """Pull `represented_user_id` out of an audit before/after JSON blob.
+
+    Only a string value is a valid user id; a non-string (e.g. a numeric id
+    in a hand-edited row) would otherwise flow into the pydantic response
+    model and 500."""
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(value, dict):
+        return None
+    result = value.get("represented_user_id")
+    return result if isinstance(result, str) else None
+
+
+async def _persona_rollup(
+    db: AsyncSession,
+    auth: AuthContext,
+    persona: AgentPersona,
+    *,
+    project_filter,
+) -> PersonaRollup:
+    """Build the roll-up for one persona.
+
+    ``project_filter`` scopes every project-owned item (sessions, tickets,
+    KB entries, agent runs) to the projects the caller may read. Sessions
+    join Project on Session.project_id, so a session with no project never
+    appears. Sessions remain user-owned — the caller sees only its own —
+    and a service key additionally needs ``sessions:read``, otherwise its
+    creator's sessions must not leak."""
+    name_lc = persona.name.lower()
+
+    # A service key runs as its creator (auth.user), so without
+    # sessions:read the creator's own sessions must not be exposed.
+    if auth.key_kind == "service" and "sessions:read" not in auth.scopes:
+        session_rows: list = []
+    else:
+        session_rows = (
+            await db.execute(
+                select(
+                    Session.id,
+                    Session.title,
+                    Session.created_at,
+                    Session.project_id,
+                    Session.ticket_id,
+                )
+                .join(Project, Project.id == Session.project_id)
+                .where(
+                    project_filter,
+                    Session.user_id == auth.user.id,
+                    func.lower(Session.persona_name) == name_lc,
+                    Session.is_deleted.is_(False),
+                )
+                .order_by(Session.created_at.desc(), Session.id.desc())
+                .limit(10)
+            )
+        ).all()
+
+    tickets = (
+        await db.execute(
+            select(
+                Ticket.id,
+                Ticket.title,
+                Ticket.status,
+                Ticket.project_id,
+                Ticket.created_at,
+            )
+            .join(Project, Project.id == Ticket.project_id)
+            .where(
+                project_filter,
+                func.lower(Ticket.assigned_to) == name_lc,
+                Ticket.status.in_(_NON_TERMINAL_TICKET_STATUSES),
+            )
+            .order_by(Ticket.created_at.desc(), Ticket.id.desc())
+        )
+    ).all()
+
+    kb = (
+        await db.execute(
+            select(
+                KnowledgeEntry.id,
+                KnowledgeEntry.entry_type,
+                KnowledgeEntry.content,
+                KnowledgeEntry.project_id,
+                KnowledgeEntry.created_at,
+            )
+            .join(Project, Project.id == KnowledgeEntry.project_id)
+            .where(
+                project_filter,
+                func.lower(KnowledgeEntry.persona_name) == name_lc,
+                KnowledgeEntry.dismissed.is_(False),
+                KnowledgeEntry.superseded_by.is_(None),
+            )
+            .order_by(KnowledgeEntry.created_at.desc(), KnowledgeEntry.id.desc())
+            .limit(1)
+        )
+    ).first()
+
+    run = (
+        await db.execute(
+            select(
+                AgentRun.id,
+                AgentRun.status,
+                AgentRun.project_id,
+                AgentRun.created_at,
+            )
+            .join(Project, Project.id == AgentRun.project_id)
+            .where(project_filter, func.lower(AgentRun.persona_name) == name_lc)
+            .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+            .limit(1)
+        )
+    ).first()
+
+    return PersonaRollup(
+        persona=_to_response(persona),
+        recent_sessions=[
+            RollupSession(
+                id=r.id,
+                title=r.title,
+                created_at=r.created_at,
+                project_id=r.project_id,
+                ticket_id=r.ticket_id,
+            )
+            for r in session_rows
+        ],
+        open_tickets=[
+            RollupTicket(
+                id=r.id,
+                title=r.title,
+                status=r.status,
+                project_id=r.project_id,
+                created_at=r.created_at,
+            )
+            for r in tickets
+        ],
+        last_knowledge_entry=(
+            RollupKnowledgeEntry(
+                id=kb.id,
+                entry_type=kb.entry_type,
+                content=kb.content,
+                project_id=kb.project_id,
+                created_at=kb.created_at,
+            )
+            if kb is not None
+            else None
+        ),
+        last_agent_run=(
+            RollupAgentRun(
+                id=run.id, status=run.status, project_id=run.project_id,
+                created_at=run.created_at,
+            )
+            if run is not None
+            else None
+        ),
+    )
+
+
 # ── Routes ──
 
 
@@ -275,6 +492,38 @@ async def get_persona(
     if row is None:
         raise HTTPException(404, "Persona not found")
     return _to_response(row)
+
+
+@router.get(
+    "/{project_id}/personas/{name}/rollup", response_model=PersonaRollup
+)
+async def project_persona_rollup(
+    project_id: str,
+    name: str,
+    auth: AuthContext = Depends(require_scope("personas:read")),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> PersonaRollup:
+    """GitHub #92 — a persona's recent activity inside one project.
+
+    Resolves the persona like GET /personas/{name} (project first, then
+    the project's org). Every project-owned item is already scoped to
+    this project, which the caller has access to by virtue of passing
+    the same access gate as the read route."""
+    project = await _get_project_for_auth(project_id, db, auth)
+    await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_personas", project, db)
+
+    row = await resolve_persona(
+        db,
+        project_id,
+        name,
+        org_id=await visible_persona_org_id_for_auth(db, project, auth),
+        active_only=True,
+    )
+    if row is None:
+        raise HTTPException(404, "Persona not found")
+    return await _persona_rollup(db, auth, row, project_filter=Project.id == project_id)
 
 
 @router.post(
@@ -843,6 +1092,96 @@ async def get_org_persona(
     if row is None:
         raise HTTPException(404, "Persona not found")
     return _to_response(row)
+
+
+@org_router.get("/{org_id}/personas/{name}/rollup", response_model=PersonaRollup)
+async def org_persona_rollup(
+    org_id: str,
+    name: str,
+    auth: AuthContext = Depends(require_scope("personas:read")),
+    db: AsyncSession = Depends(get_db),
+) -> PersonaRollup:
+    """GitHub #92 — a persona's recent activity across the org's projects.
+
+    An org persona reaches every project in the org, so the roll-up spans
+    the org. Project-owned items are filtered to what the caller may read:
+    org members see every org project; a project-restricted service key
+    sees only its allowlist. Projects with their own active same-named
+    project persona are excluded — there the project persona overrides this
+    org persona, so its activity belongs to the project persona, not here."""
+    await _authorize_org_personas(db, auth, org_id, write=False)
+    row = await find_org_persona(db, org_id, name, active_only=True)
+    if row is None:
+        raise HTTPException(404, "Persona not found")
+
+    overriding_projects = select(AgentPersona.project_id).where(
+        AgentPersona.project_id.is_not(None),
+        func.lower(AgentPersona.name) == name.lower(),
+        AgentPersona.is_active.is_(True),
+    )
+    project_filter = and_(
+        Project.org_id == org_id,
+        Project.id.not_in(overriding_projects),
+    )
+    if auth.project_ids is not None:
+        project_filter = and_(project_filter, Project.id.in_(auth.project_ids))
+    return await _persona_rollup(db, auth, row, project_filter=project_filter)
+
+
+@org_router.get(
+    "/{org_id}/personas/{name}/represent-history",
+    response_model=list[RepresentHistoryEntry],
+)
+async def org_persona_represent_history(
+    org_id: str,
+    name: str,
+    auth: AuthContext = Depends(require_scope("personas:write")),
+    db: AsyncSession = Depends(get_db),
+) -> list[RepresentHistoryEntry]:
+    """GitHub #92 — who has represented this persona, over time.
+
+    Reads every ``persona_*`` OrgAuditEvent for the persona and keeps only
+    the rows whose before/after snapshots change ``represented_user_id``.
+    A representative can be set three ways — create-with-representative
+    (``persona_created``), a representative/role change (``persona_updated``),
+    or an explicit represent/clear (``persona_represented_user_changed``) —
+    and each carries its own event type, so reading just one type missed the
+    others. Admin-only, like every other write-gated org route."""
+    await _authorize_org_personas(db, auth, org_id, write=True)
+    row = await find_org_persona(db, org_id, name)
+    if row is None:
+        raise HTTPException(404, "Persona not found")
+
+    events = (
+        await db.execute(
+            select(OrgAuditEvent)
+            .where(
+                OrgAuditEvent.org_id == org_id,
+                OrgAuditEvent.event_type.startswith("persona_"),
+                OrgAuditEvent.target_id == row.id,
+            )
+            .order_by(OrgAuditEvent.created_at.desc(), OrgAuditEvent.id.desc())
+        )
+    ).scalars().all()
+    entries: list[RepresentHistoryEntry] = []
+    for e in events:
+        from_user_id = _parse_represented_user_id(e.before)
+        to_user_id = _parse_represented_user_id(e.after)
+        # Deactivation (persona_deleted) and role-only edits keep the same
+        # representative, so their snapshots are equal and drop out here.
+        if from_user_id == to_user_id:
+            continue
+        entries.append(
+            RepresentHistoryEntry(
+                actor_user_id=e.actor_user_id,
+                actor_email=e.actor_email_snapshot,
+                actor_role=e.actor_role_at_time,
+                from_user_id=from_user_id,
+                to_user_id=to_user_id,
+                created_at=e.created_at,
+            )
+        )
+    return entries
 
 
 @org_router.post(

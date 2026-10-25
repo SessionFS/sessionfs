@@ -1128,13 +1128,34 @@ Transfer initiated. Awaiting target acceptance: xfer_a1b2c3
 List project transfers involving the caller.
 
 ```
-sfs project transfers [--direction incoming|outgoing] [--state pending|accepted|rejected|cancelled]
+sfs project transfers [--direction incoming|outgoing] [--state pending|accepted|rejected|cancelled|expired]
 ```
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--direction` | string | both | Filter by incoming or outgoing transfers |
 | `--state` | string | all | Filter by transfer state |
+
+A transfer proposed by an org admin (v0.23.0) appears in the project owner's **incoming** list labelled `Proposed by <admin> for <org>: <reason>` with its expiry, and in the proposer's **outgoing** list the same way. Accept or decline it with `sfs project transfer --accept` / `--reject`.
+
+### `sfs project compile-schedule`
+
+Set the scheduled knowledge-base compile for the current project (v0.23.0). `sfs project show` displays the current schedule.
+
+```
+sfs project compile-schedule nightly
+sfs project compile-schedule weekly --after-claims 20
+sfs project compile-schedule off
+sfs project compile-schedule weekly --no-after-claims
+```
+
+| Argument / option | Type | Description |
+|-------------------|------|-------------|
+| `schedule` | `off` \| `nightly` \| `weekly` | How often the scheduled compile rebuilds the context document |
+| `--after-claims` | int | Also compile once this many claims are waiting, whatever the schedule (1+) |
+| `--no-after-claims` | flag | Clear the waiting-claims threshold so the project compiles only on schedule |
+
+`nightly` makes the project eligible every 24 hours, `weekly` every 7 days. `off` turns off the time-based schedule, but an `--after-claims` threshold still applies. Scheduled compiles use the deterministic compiler, never an LLM. On self-hosted servers the schedule takes effect only when something calls the compile sweep (see [Self-Hosted](/self-hosted/)).
 
 ---
 
@@ -1465,7 +1486,7 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed: `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_project_context`, `add_knowledge`, `update_wiki_page`, `list_wiki_pages`, `search_project_knowledge`, `ask_project`, `get_session_summary`, `get_audit_report`.
+Tools exposed: 83, covering sessions (including `ask_session_helper`), knowledge, rules, personas, tickets, agent runs (including `replay_agent_run`), agent feedback, handoffs, work queues and the skills marketplace. See [MCP Server](/mcp/) for the full catalogue.
 
 ---
 
@@ -1761,12 +1782,13 @@ Audited operator overrides (platform admin only).
 
 ```
 sfs admin override project-transfer PROJECT_ID --to-org ORG_ID --reason "..." [--new-owner USER_ID] [--expect-from ORG_ID|personal] [--force] [--yes]
+sfs admin override project-transfer --propose --project PROJECT_ID --org ORG_ID --reason "..."
 sfs admin override record --action NAME --target-type TYPE --target-id ID --reason "..." [--before-file F] [--after-file F]
 sfs admin override user-merge SOURCE_USER_ID TARGET_USER_ID --reason "..." [--apply] [--yes] [--json]
 sfs admin override project-merge SOURCE_PROJECT_ID TARGET_PROJECT_ID --reason "..." [--persona-policy rename|skip|merge_content] [--apply] [--yes] [--json]
 ```
 
-`project-transfer` moves a project into an organization without the owner's consent. It keeps the normal transfer checks (merged projects and stranded org personas are refused unless `--force`), cancels any pending transfer, and commits the move together with an audit entry holding the reason and before/after state. The owner must be a member of the destination organization; otherwise pass `--new-owner` with an active member, who becomes the owner. `--expect-from` refuses the move unless the project is still in the given org (or `personal`), so a retried command cannot move it twice. `record` logs an action performed outside the API, such as raw SQL; it is stored with source `operator_record`. Reasons are 1-500 characters; state files must hold a JSON object of at most 64 KiB.
+`project-transfer` moves a project into an organization without the owner's consent. It keeps the normal transfer checks (merged projects and stranded org personas are refused unless `--force`), cancels any pending transfer, and commits the move together with an audit entry holding the reason and before/after state. The owner must be a member of the destination organization; otherwise pass `--new-owner` with an active member, who becomes the owner. `--expect-from` refuses the move unless the project is still in the given org (or `personal`), so a retried command cannot move it twice. With `--propose` (v0.23.0) nothing is forced: the command asks the owner of a **personal** project to move it into an org, and the project moves only when the owner accepts (`POST /api/v1/orgs/{org_id}/projects/{project_id}/propose-transfer`). The caller must be an owner or admin of the destination org, and the project owner must be an active member of it. One pending transfer per project (`409 transfer_pending`); the same project and org can't be proposed again for 7 days after a decline or 24 hours after a cancel (`409 proposal_cooldown`); an org can hold at most 10 pending proposals (`409 proposal_limit`); proposals expire after 7 days. Use `--project` and `--org` in this mode. `record` logs an action performed outside the API, such as raw SQL; it is stored with source `operator_record`. Reasons are 1-500 characters; state files must hold a JSON object of at most 64 KiB.
 
 ### `sfs admin override user-merge`
 
@@ -1853,6 +1875,10 @@ Manage tickets with a server-enforced FSM (`suggested → open → in_progress �
 | `sfs ticket assign <id> --persona NAME` | Attach a persona to a ticket |
 | `sfs ticket resolve <id>` | Move from `review` to `done` (atomic with rowcount guard) |
 | `sfs ticket escalate <id> --reason "..."` | Raise priority + append audit comment |
+| `sfs ticket jira preview <id> [--out FILE]` | Draft a Jira story from the ticket without sending anything (Enterprise, v0.23.0) |
+| `sfs ticket jira publish <id> --from FILE [--yes]` | Create the Jira issue from a saved preview, or update its summary and description |
+| `sfs ticket jira status <id>` | Linked issue key, URL and current Jira status |
+| `sfs ticket jira unlink <id> --confirm` | Remove the link (project admin); the Jira issue is left alone |
 
 The active-ticket bundle is stored locally and read by all 10 daemon watchers (claude_code, codex, copilot, cursor, gemini, amp, cline, roo_code, kilo_code, antigravity). Captured sessions carry the bundle in their `manifest.json` and the server populates `sessions.persona_name` + `sessions.ticket_id` on upload.
 
@@ -1910,6 +1936,28 @@ Native plugin catalogs: read-only git repositories of approved packages that eac
 | `sfs catalog add --for TOOL [--org ORG \| --personal] [--run] [--no-credential-helper]` | Print the tool's own command to add a catalog (`claude-code`, `copilot`, `codex`, `cursor`, `gemini`, `antigravity`); `--run` runs it where supported. Configures git to authenticate to the SessionFS host only through `sfs catalog credential`, so your key never appears in a URL |
 | `sfs catalog doctor` | Check that git sends your SessionFS key only through the SessionFS credential helper (run it inside a repository to check that repository's config too) |
 | `sfs catalog export --to REMOTE [--org ORG \| --personal] [--branch main] [--dry-run] [--ssh-key-file PATH] [--known-hosts PATH]` | Copy a catalog to a git repository you own (for example, for a Cursor team marketplace). The destination branch is overwritten with the generated catalog commit, and nothing is pushed when it is already current. With `--ssh-key-file` only that deploy key is used, over SSH with strict host-key checking, so it can run unattended |
+
+## `sfs helper` (Enterprise)
+
+Ask the session helper a question over the sessions and project knowledge you can read (v0.23.0). Answers cite the sessions and messages they used. The model call uses your own key (**Settings → Data protection → Security review model**) or your org's helper key. See [Session Helper](/session-helper/).
+
+| Command | Description |
+|---|---|
+| `sfs helper ask "QUESTION" [--project ID] [--session ID ...] [--conversation ID] [--no-stream] [--json]` | Ask a question. Streams the answer to the terminal and lists citations at the end. `--project` / `--session` scope the question; `--conversation` continues a thread; `--no-stream` fetches the whole answer in one request; `--json` prints the raw JSON |
+| `sfs helper conversations list` | Your helper threads, newest first |
+| `sfs helper conversations show <id>` | One thread with its messages and citations |
+| `sfs helper conversations delete <id> [--yes]` | Permanently delete a thread |
+| `sfs helper status` | Whether the helper is available to you, and which key, provider and model it would use |
+
+## `sfs org jira` (Enterprise)
+
+Connect the org's Jira Cloud site (org admins, v0.23.0). The API token is encrypted at rest and never printed back. See [Jira Cloud](/integrations/jira/).
+
+| Command | Description |
+|---|---|
+| `sfs org jira connect --site-url https://NAME.atlassian.net --email EMAIL --template agile\|compliance\|sre\|bug [--api-token TOKEN]` | Check the credentials against Jira and save the connection; the token is prompted for (hidden) when omitted |
+| `sfs org jira mappings` | Project to Jira project mappings (key, issue type, template override, done status) |
+| `sfs org jira health` | Unmapped projects, failed updates, and links not checked in 7+ days |
 
 ## `sfs policy` (Enterprise)
 

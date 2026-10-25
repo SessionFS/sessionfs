@@ -93,6 +93,45 @@ sfs sync push <session_id>
 sfs sync pull <session_id>
 ```
 
+## Resumable Uploads
+
+Large sessions (over 8 MiB) are uploaded in chunks rather than a single
+request. This keeps an interrupted push from restarting from zero: the client
+splits the archive into parts, uploads each one, and only reassembles the
+session on the server once every part has arrived.
+
+- The server picks the part size (default 8 MiB, clamped to 5–32 MiB).
+- Each part is retried up to three times with exponential backoff.
+- Resume state is stored under `<store_dir>/uploads/<session_id>.json`, so a
+  retried push sends only the parts the server has not recorded yet.
+- If a pending upload is abandoned, it expires 24 hours after it was started
+  and its staged parts are cleaned up.
+
+A `completing` upload that appears to have died (a process crash or a lost DB
+session before finalize) is reclaimed back to `pending` after a 30-minute grace
+window, so a retry can reuse its staged parts. That window must stay larger
+than the platform's maximum request duration — Cloud Run caps a request at
+1500 s — so a live, slow complete is never reclaimed while it is still running.
+A completion token on the row is the backstop for the rare overlap: the
+reclaim clears it, so a reclaimed complete's late finalize matches zero rows and
+never overwrites the result of a newer complete.
+
+When the server does not implement chunked uploads (an older deployment), the
+client falls back to the single-shot push automatically. No configuration is
+needed on either side.
+
+## Behaviour Changes
+
+### Non-ETag 409s are transient errors
+
+A `409 Conflict` from a push is only treated as a version conflict when the
+server marks it with `code: etag_mismatch`. Any other 409 — for example a
+session ID already claimed by another user, or an upload that is no longer
+pending — raises `SyncError` (a transient failure the daemon retries with
+backoff) rather than `SyncConflictError` (which would store a remote ETag and
+drop the local change). This keeps conflict detection scoped to genuine ETag
+mismatches.
+
 ## Self-Hosted Server {#self-hosted}
 
 Run your own SessionFS API server with Docker Compose:

@@ -14,6 +14,7 @@ import { type Ticket } from '../../api/client';
 import { Button, Textarea } from '../../components/ui';
 import { Badge } from '../../components/Badge';
 import { STATUS_VARIANT, formatStatusLabel } from './constants';
+import { JiraTicketSection } from './JiraPromote';
 import { errorMessage } from '../../utils/errorMessage';
 
 /* ── Detail panel (unchanged logic, restyled onto primitives) ── */
@@ -23,11 +24,24 @@ interface DetailProps {
   ticketId: string;
   fallback: Ticket;
   onNavigate: (targetId: string) => void;
+  // Jira surface, resolved by the page owner (ProjectDetail) and threaded
+  // down so this panel stays testable without an AuthProvider.
+  orgId?: string | null;
+  isProjectAdmin?: boolean;
+  isEnterprise?: boolean;
 }
 
 type Action = 'approve' | 'dismiss' | 'close' | 'comment';
 
-export function TicketDetail({ projectId, ticketId, fallback, onNavigate }: DetailProps) {
+export function TicketDetail({
+  projectId,
+  ticketId,
+  fallback,
+  onNavigate,
+  orgId,
+  isProjectAdmin,
+  isEnterprise,
+}: DetailProps) {
   const { data: detail } = useTicket(projectId, ticketId);
   const t = detail ?? fallback;
   const { data: comments } = useTicketComments(projectId, ticketId);
@@ -102,6 +116,16 @@ export function TicketDetail({ projectId, ticketId, fallback, onNavigate }: Deta
       <p className="whitespace-pre-wrap text-text-primary">
         {t.description}
       </p>
+
+      {orgId && (
+        <JiraTicketSection
+          projectId={projectId}
+          ticket={t}
+          orgId={orgId}
+          isProjectAdmin={isProjectAdmin ?? false}
+          isEnterprise={isEnterprise ?? false}
+        />
+      )}
 
       {t.acceptance_criteria.length > 0 && (
         <div>

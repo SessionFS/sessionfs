@@ -6,6 +6,8 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from sqlalchemy import and_, func, or_
+
 from sessionfs.server.db.models import KnowledgeEntry
 from sessionfs.server.sanitize import strip_nul
 
@@ -15,6 +17,57 @@ if TYPE_CHECKING:
     from sessionfs.server.services.summarizer import SessionSummary
 
 logger = logging.getLogger("sessionfs.knowledge")
+
+
+# -- Compile-eligibility predicates ------------------------------------------
+#
+# These are the single source of truth for "does this entry count toward the
+# next compile". The compiler's pending filter, the health route's pending
+# and auto-promotable counts, the sweep's due-date selection and the
+# compile-status endpoint must all agree, so they import these instead of
+# copying the WHERE clauses (GitHub #93 review round 1, MEDIUM).
+
+
+def pending_claim_clauses() -> list:
+    """WHERE clauses for a claim the compiler will pick up next pass."""
+    return [
+        KnowledgeEntry.compiled_at.is_(None),
+        KnowledgeEntry.dismissed == False,  # noqa: E712
+        KnowledgeEntry.claim_class == "claim",
+        KnowledgeEntry.freshness_class.in_(["current", "aging"]),
+        KnowledgeEntry.superseded_by.is_(None),
+    ]
+
+
+def auto_promotable_evidence_clauses() -> list:
+    """WHERE clauses for evidence that auto-promotes to a pending claim.
+
+    Mirrors compiler.py Phase 2a auto-promotion exactly (claim_class='evidence'
+    AND confidence >= 0.5 AND length(content) >= 30 AND not dismissed) plus the
+    Phase 2b survival predicates (compiled_at IS NULL, current/aging freshness,
+    superseded_by IS NULL), so the count matches what Phase 2b sees
+    post-promotion.
+    """
+    return [
+        KnowledgeEntry.claim_class == "evidence",
+        KnowledgeEntry.dismissed == False,  # noqa: E712
+        KnowledgeEntry.confidence >= 0.5,
+        func.length(KnowledgeEntry.content) >= 30,
+        KnowledgeEntry.compiled_at.is_(None),
+        KnowledgeEntry.freshness_class.in_(["current", "aging"]),
+        KnowledgeEntry.superseded_by.is_(None),
+    ]
+
+
+def compile_work_condition():
+    """One boolean expression: an entry counts toward the next compile when it
+    is either a pending claim or auto-promotable evidence (the sweep selects
+    on this, so a project whose only new material is evidence still gets
+    compiled and the evidence is promoted + folded in the same pass)."""
+    return or_(
+        and_(*pending_claim_clauses()),
+        and_(*auto_promotable_evidence_clauses()),
+    )
 
 
 # -- Semantic dedup helpers ---------------------------------------------------

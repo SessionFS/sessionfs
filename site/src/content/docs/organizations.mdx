@@ -187,7 +187,7 @@ Storage is pooled across all org members. The `GET /api/v1/org` response include
 
 ## Dashboard
 
-Open **Organization** (under **Manage** in the sidebar) in the web dashboard. It has four tabs: **Members** (view members, change roles, send invites), **Personas** (org-wide agent personas), **Policies** (organization defaults and domain auto-join) and, for admins, **Security** (single sign-on). Subscription management is under **Billing**. Members see the org info and their role but cannot modify settings.
+Open **Organization** (under **Manage** in the sidebar) in the web dashboard. Its tabs are **Members** (view members, change roles, send invites), **Personas** (org-wide agent personas), **Policies** (organization defaults, domain auto-join, notifications and, on Enterprise, the session helper AI key), **Integrations** (Jira Cloud, Enterprise) and, for admins, **Security** (single sign-on). Subscription management is under **Billing**. Members see the org info and their role but cannot modify settings.
 
 ## Multi-org membership (v0.10.0)
 
@@ -195,7 +195,7 @@ Starting in v0.10.0, a user can belong to more than one organization. The new mu
 
 - `GET /api/v1/orgs` — list the caller's memberships with role.
 - `GET/POST/PUT/DELETE /api/v1/orgs/{org_id}/members[/...]` — list, invite, promote/demote, and remove members in a specific org.
-- `GET/PUT /api/v1/orgs/{org_id}/settings` — read/write the org's knowledge base creation defaults (`kb_retention_days`, `kb_max_context_words`, `kb_section_page_limit`) and verified-domain auto-join (`auto_join_domains`). New org-scoped projects inherit these defaults at create time.
+- `GET/PUT /api/v1/orgs/{org_id}/settings` — read/write the org's knowledge base creation defaults (`kb_retention_days`, `kb_max_context_words`, `kb_section_page_limit`), verified-domain auto-join (`auto_join_domains`) and session helper retention (`helper_retention_days`). New org-scoped projects inherit these defaults at create time. Since v0.23.0 a save merges: general settings you leave out are kept, and an explicit `null` returns a setting to its default.
 - `GET /api/v1/auth/me` includes `default_org_id`; `PUT /api/v1/auth/me/default-org` sets it (membership validated).
 
 Removal preserves all member-authored data — sessions stay user-owned, org-scoped projects auto-transfer to the removing admin (with a `ProjectTransfer` audit row), KB entries keep their authorship, and pending transfers tied to the removed user's standing are cancelled. The legacy `/api/v1/org/members/...` routes still work and delegate to the same services as the multi-org routes, so both URL surfaces enforce the same invariants.
@@ -209,6 +209,8 @@ Projects carry an explicit org scope (`projects.org_id`, nullable). Transfers mo
 - `GET /api/v1/transfers?direction=&state=` lists incoming and outgoing transfers.
 
 Auto-accept fires when the initiator and target are the same user/org (e.g. moving a personal project into your own org). Standing is re-validated at accept/reject — a member demoted between initiate and accept loses the right to act on the transfer.
+
+**Admin-proposed transfers (v0.23.0).** An owner or admin of an organization can ask the owner of a personal project to move it into that org, with a reason (`POST /api/v1/orgs/{org_id}/projects/{project_id}/propose-transfer`). The project owner must already be an active member of the org. The owner sees the proposal in their transfer inbox, labelled with the proposer, org, reason and expiry, and by email; nothing moves until they accept. The proposer can cancel it before then. Proposals expire after 7 days, a declined proposal can't be repeated for 7 days (24 hours after a cancel), and an org can have at most 10 pending.
 
 The CLI surface mirrors the API: `sfs project transfer --to | --accept | --reject | --cancel`, `sfs project transfers --direction --state`, and `sfs config default-org [<id>|--clear]`. See the [CLI reference](/docs/cli/) for full options.
 
@@ -247,3 +249,23 @@ Every organization has exactly one **owner**. The owner can transfer ownership t
 3. On accept, the target becomes the new owner.
 
 The owner role is shown in the members list, and the owner row is protected from demotion or removal. Both parties' standing is re-validated at accept time, and a pending transfer expires if it is not accepted. **Last-owner safety** is enforced throughout: an org can never be left without an owner, so removing or deactivating the last owner is blocked until ownership is transferred, and admins have a force-transfer path with a full audit trail. (This is organization ownership transfer, distinct from [project transfers](#project-transfers-v0100).)
+
+## Org personas: activity and history (v0.23.0)
+
+Clicking an org persona opens a panel with its recent sessions, open tickets, latest knowledge entry and latest agent run, limited to the projects you can see. Org admins also see who has represented the persona over time. Your account page lists the org personas you represent, each linking to its organization.
+
+- `GET /api/v1/projects/{id}/personas/{name}/rollup`
+- `GET /api/v1/orgs/{org_id}/personas/{name}/rollup`
+- `GET /api/v1/orgs/{org_id}/personas/{name}/represent-history`
+
+## Weekly activity digest (v0.23.0)
+
+Owners and admins of Team and Enterprise orgs get a weekly email covering the previous week (Monday to Sunday, UTC): sessions, tickets, agent runs, knowledge claims, handoffs and admin actions, each linking to the matching view in the dashboard. Each owner or admin can turn it off for themselves under **Organization → Policies → Notifications**, or with `PUT /api/v1/orgs/{org_id}/members/me/digest` (`{"opt_out": true}`). On self-hosted servers the digest is sent by a scheduled sweep; see [Self-Hosted](/self-hosted/#scheduled-sweeps).
+
+## Session helper AI key (Enterprise, v0.23.0)
+
+Owners and admins can set one provider, model, API key and optional base URL that the [session helper](/session-helper/) uses for members without a key of their own: **Organization → Policies → AI key for the session helper**, or `GET/PUT/DELETE /api/v1/orgs/{org_id}/llm-settings`. The key is encrypted at rest and never shown again after saving (only its last four characters). It can be switched off without deleting it, and a custom base URL passes the same address checks as other user-supplied LLM endpoints. A member's own key always takes precedence.
+
+## Jira Cloud (Enterprise, v0.23.0)
+
+Owners and admins connect the org to Jira Cloud from the **Integrations** tab (or `sfs org jira connect`), map projects to Jira projects and check the integration's health. Members then promote tickets to Jira issues from the ticket panel. See [Jira Cloud](/integrations/jira/).

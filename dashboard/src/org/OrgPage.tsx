@@ -6,13 +6,16 @@ import { getAvatarColor } from '../utils/avatar';
 import { useSearchParams } from 'react-router-dom';
 import { Dropdown, Button, Dialog, DialogHeader, DialogFooter, PageContainer, PageHeader, Tabs } from '../components/ui';
 import OrgSettingsTab from './OrgSettingsTab';
+import OrgHelperKeyCard from './OrgHelperKeyCard';
 import SsoTab from './SsoTab';
 import OrgPersonasSection, { type OrgPersonaMember } from './OrgPersonasSection';
+import SecondaryOrgPage from './SecondaryOrgPage';
 import ActivateLicensePanel from './ActivateLicensePanel';
 import OwnerTransferDialog from './OwnerTransferDialog';
+import { JiraCard } from './JiraCard';
 import { errorMessage } from '../utils/errorMessage';
 
-type OrgTab = 'members' | 'personas' | 'policies' | 'security';
+type OrgTab = 'members' | 'personas' | 'policies' | 'security' | 'integrations';
 
 export default function OrgPage() {
   const { auth } = useAuth();
@@ -157,10 +160,18 @@ export default function OrgPage() {
     );
   }
 
+  // GitHub #92 — a represented-persona badge can deep-link to a secondary
+  // org's personas via ?org=<id>. Show that org instead of the primary one.
+  const requestedOrg = searchParams.get('org');
+  if (requestedOrg && requestedOrg !== org.id) {
+    return <SecondaryOrgPage orgId={requestedOrg} />;
+  }
+
   const visibleTabs: OrgTab[] = ['members'];
   if (org.id && (isAdmin || myUserId)) visibleTabs.push('personas');
   if (org.id) visibleTabs.push('policies');
   if (org.id && isAdmin) visibleTabs.push('security');
+  if (org.id && isAdmin) visibleTabs.push('integrations');
   const requestedTab = searchParams.get('tab');
   const activeTab: OrgTab = visibleTabs.includes(requestedTab as OrgTab) ? (requestedTab as OrgTab) : 'members';
   const selectTab = (key: string) => {
@@ -179,6 +190,7 @@ export default function OrgPage() {
     personas: 'Personas',
     policies: 'Policies',
     security: 'Security',
+    integrations: 'Integrations',
   };
 
   const tabContent: Record<OrgTab, ReactNode> = {
@@ -379,6 +391,15 @@ export default function OrgPage() {
         </div>
       )}
 
+      {/* Migration 084 — org-wide helper LLM key (owner/admin). The card
+          drops to a "remove or disable" state once the plan no longer
+          includes the helper, so it is rendered for admins on every tier. */}
+      {org?.id && isAdmin && (
+        <div className="bg-bg-elevated border border-border rounded-xl p-5 mt-6">
+          <OrgHelperKeyCard orgId={org.id} />
+        </div>
+      )}
+
       </>
     ),
     security: (
@@ -388,6 +409,16 @@ export default function OrgPage() {
         <div className="bg-bg-elevated border border-border rounded-xl p-5">
           <SsoTab orgId={org.id} canEdit={isAdmin} isOwner={isOwner} />
         </div>
+      )}
+
+      </>
+    ),
+    integrations: (
+      <>
+      {/* Jira integration (Enterprise). Admins on lower tiers see an upgrade
+          note inside the card; members never see this tab at all. */}
+      {org?.id && (
+        <JiraCard orgId={org.id} tier={org.tier} />
       )}
 
       </>

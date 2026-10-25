@@ -18,8 +18,10 @@ from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import Organization, Session
 from sessionfs.server.dlp import (
     DEFAULT_DLP_POLICY,
+    invalid_custom_patterns,
     scan_dlp,
     validate_dlp_policy,
+    well_formed_custom_patterns,
 )
 from sessionfs.server.tier_gate import (
     UserContext,
@@ -43,6 +45,7 @@ class DLPPolicyResponse(BaseModel):
     categories: list[str]
     custom_patterns: list[dict] = []
     allowlist: list[str] = []
+    invalid_custom_patterns: list[dict] = []
 
 
 class DLPPolicyUpdate(BaseModel):
@@ -100,8 +103,9 @@ async def get_dlp_policy(
         enabled=policy.get("enabled", False),
         mode=policy.get("mode", "warn"),
         categories=policy.get("categories", ["secrets"]),
-        custom_patterns=policy.get("custom_patterns", []),
+        custom_patterns=well_formed_custom_patterns(policy),
         allowlist=policy.get("allowlist", []),
+        invalid_custom_patterns=invalid_custom_patterns(policy),
     )
 
 
@@ -150,9 +154,11 @@ async def update_dlp_policy(
     updates = body.model_dump(exclude_none=True)
     merged = {**existing_dlp, **updates}
 
-    # Validate the merged result
+    # Validate the merged result.  Only the fields this request supplied are
+    # subject to strict regex validation; stored patterns predating that check
+    # are normalized instead of blocking an unrelated save.
     try:
-        validated = validate_dlp_policy(merged)
+        validated = validate_dlp_policy(merged, request_keys=set(updates))
     except ValueError as e:
         raise HTTPException(422, str(e))
 

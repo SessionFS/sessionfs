@@ -273,6 +273,49 @@ def _expire_kb_objects(db: AsyncSession) -> None:
             db.expire(obj)
 
 
+# Time-based confidence decay (GitHub #93 review round 1): decay is applied
+# once per 30-day period since the project last decayed, never once per
+# compile. With nightly compiles a claim would otherwise lose 0.8 confidence
+# every night and a 400-day-old 0.95 claim would be retention-dismissed in
+# a few days instead of decaying gradually.
+_DECAY_PERIOD_DAYS = 30
+_DECAY_FACTOR = 0.8
+_DECAY_STALENESS_DAYS = 90
+
+
+def _as_utc(value: datetime | None) -> datetime | None:
+    """Normalize a stored timestamp to aware UTC (SQLite stores naive UTC)."""
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _decay_multiplier(
+    last_decay_at: datetime | None, now: datetime
+) -> tuple[float | None, datetime | None]:
+    """Return ``(multiplier, new_last_decay_at)`` for one housekeeping pass.
+
+    A ``None`` multiplier means no full decay period has elapsed: the caller
+    must not change any confidence values nor advance ``last_decay_at``. A
+    null ``last_decay_at`` (first decay ever) counts as at most one period,
+    so a very old project never takes a big catch-up confidence hit.
+    """
+    if last_decay_at is None:
+        return _DECAY_FACTOR, now
+    last = _as_utc(last_decay_at)
+    assert last is not None  # last_decay_at is non-None here
+    periods = (now - last).days // _DECAY_PERIOD_DAYS
+    if periods <= 0:
+        return None, None
+    # GitHub #93 review round 2 HIGH: cap at one decay period per pass. A
+    # single compile after a long gap must not retroactively apply months of
+    # decay (and retention-dismiss long-lived claims); it advances the clock
+    # by one period; last_decay_at is then reset to now, so the rest of the gap is forgiven rather than applied later.
+    return _DECAY_FACTOR ** min(periods, 1), now
+
+
 async def _run_compile_housekeeping(
     db: AsyncSession,
     project: Project,
@@ -299,29 +342,48 @@ async def _run_compile_housekeeping(
     # Auto-supersession: same entity_ref + same entry_type + newer + high confidence + high overlap
     await _auto_supersede(project_id, db)
 
-    # Decay: reduce confidence of entries not referenced recently.
-    # "Not recent" = last_relevant_at is NULL and created > 90 days ago,
-    # OR last_relevant_at itself is > 90 days ago.
+    # Decay: reduce confidence of entries not referenced recently, once per
+    # 30-day period since the project last decayed (time-based, not
+    # per-compile). "Not recent" = last_relevant_at is NULL and created > 90
+    # days ago, OR last_relevant_at itself is > 90 days ago. Empty-batch and
+    # losing-concurrent compiles never advance last_decay_at, so they cannot
+    # compound decay.
     from sqlalchemy import or_
-    decay_cutoff = datetime.now(timezone.utc) - timedelta(days=90)
-    await db.execute(
-        update(KnowledgeEntry)
-        .where(
-            KnowledgeEntry.project_id == project_id,
-            KnowledgeEntry.dismissed == False,  # noqa: E712
-            KnowledgeEntry.confidence > 0.1,
-            or_(
-                KnowledgeEntry.last_relevant_at.is_(None) & (KnowledgeEntry.created_at < decay_cutoff),
-                KnowledgeEntry.last_relevant_at < decay_cutoff,
-            ),
-        )
-        .values(confidence=KnowledgeEntry.confidence * 0.8)
-        .execution_options(synchronize_session=False)
+    now = datetime.now(timezone.utc)
+    decay_cutoff = now - timedelta(days=_DECAY_STALENESS_DAYS)
+    multiplier, new_last_decay_at = _decay_multiplier(
+        getattr(project, "last_decay_at", None), now
     )
+    if multiplier is not None:
+        await db.execute(
+            update(KnowledgeEntry)
+            .where(
+                KnowledgeEntry.project_id == project_id,
+                KnowledgeEntry.dismissed == False,  # noqa: E712
+                KnowledgeEntry.confidence > 0.1,
+                or_(
+                    KnowledgeEntry.last_relevant_at.is_(None) & (KnowledgeEntry.created_at < decay_cutoff),
+                    KnowledgeEntry.last_relevant_at < decay_cutoff,
+                ),
+            )
+            .values(confidence=KnowledgeEntry.confidence * multiplier)
+            .execution_options(synchronize_session=False)
+        )
+        # Update the project's decay clock via a bulk UPDATE, not by mutating
+        # the `project` ORM instance. Mutating the instance marks it dirty, so
+        # a discarded planning pass (savepoint rollback) would expire it and
+        # the next loop iteration would lazy-load `project.id` from a greenlet
+        # context that is already gone (MissingGreenlet).
+        await db.execute(
+            update(Project)
+            .where(Project.id == project_id)
+            .values(last_decay_at=new_last_decay_at)
+            .execution_options(synchronize_session=False)
+        )
 
     # Retention: auto-dismiss entries older than project retention setting
     retention_days = getattr(project, "kb_retention_days", 180) or 180
-    retention_cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    retention_cutoff = now - timedelta(days=retention_days)
     await db.execute(
         update(KnowledgeEntry)
         .where(
@@ -467,6 +529,8 @@ async def compile_project_context(
     base_url: str | None = None,
     force_rebuild: bool = False,
     stats: dict | None = None,
+    trigger: str = "manual",
+    skip_access_check: bool = False,
 ) -> ContextCompilation | None:
     """Compile pending knowledge entries into project context via LLM.
 
@@ -507,6 +571,14 @@ async def compile_project_context(
 
     `stats` (optional dict) receives `freshness_updated` from the pass
     that committed.
+
+    `trigger` is 'manual' (a user clicked Compile) or 'scheduled' (the KB
+    compile sweep). A scheduled compile records `project.last_scheduled_
+    compile_at` so the sweep's due-date math advances.
+
+    `skip_access_check=True` lets the sweep compile a project it selected by
+    id without re-running the user-key access predicate (platform admins are
+    not project members), matching `load_project_for_user(user_id=None)`.
     """
     from sessionfs.server.services.scope_locks import (
         lock_project_scope_authorized,
@@ -527,7 +599,9 @@ async def compile_project_context(
         # may have landed while we waited) and refuses (409 project_merged)
         # a merged-away project. On SQLite its UPDATE also opens the real
         # transaction, so the SAVEPOINT below is never the outermost one.
-        await lock_project_scope_authorized(db, project, user_id=user_id)
+        await lock_project_scope_authorized(
+            db, project, user_id=None if skip_access_check else user_id
+        )
         # Row lock so concurrent compile callers serialize (SQLite ignores
         # FOR UPDATE; its writer lock already serializes). Taken outside the
         # savepoint: a row lock taken inside a rolled-back savepoint is lost.
@@ -555,6 +629,11 @@ async def compile_project_context(
 
         if not inputs.pending:
             logger.info("No pending entries for project %s", project_id)
+            # A scheduled compile still advances the clock even when the
+            # batch was empty (a manual compile may have drained it since
+            # the sweep selected the project).
+            if trigger == "scheduled":
+                project.last_scheduled_compile_at = datetime.now(timezone.utc)
             # Persist the housekeeping and release the scope + row locks
             # now — the caller may go on to LLM concept generation.
             await savepoint.commit()
@@ -663,6 +742,8 @@ async def compile_project_context(
     now = datetime.now(timezone.utc)
     project.context_document = context_after
     project.updated_at = now
+    if trigger == "scheduled":
+        project.last_scheduled_compile_at = now
 
     # 6. Mark entries as compiled and update relevance + usage
     for entry in pending:
@@ -678,6 +759,7 @@ async def compile_project_context(
         context_before=context_before,
         context_after=context_after,
         source_manifest=source_manifest,
+        trigger=trigger,
     )
     db.add(compilation)
     # tk_bc3c02a63e994717 — flush instead of commit so we get the

@@ -63,7 +63,8 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | `skills:read`, `skills:request`, `skills:approve`, `skills:admin` | ✅ live (v0.16) | Approved instruction load, install-request lifecycle, org registries/packages/assignments |
 | `skills_verify:run` | ✅ live (platform) | The works-in harness protocol (claim / projection / result). Only a platform admin may mint or rotate a key with it |
 | `skills_registry:poll` | ✅ live (platform) | The registry poller's scheduler credential (`POST /api/v1/admin/skills/registries/poll`). Only a platform admin may mint or rotate a key with it |
-| `platform_sweeps:run` | ✅ live (platform) | The scheduled sweeps' credential: catalog regenerate, verify sweep, freshness sweep, rescan, publisher recheck and the GitHub webhook-delivery sweep. Only a platform admin may mint or rotate a key with it, and it stops working when that admin is demoted or deactivated |
+| `platform_sweeps:run` | ✅ live (platform) | The scheduled sweeps' credential: catalog regenerate, verify sweep, freshness sweep, rescan, publisher recheck, the GitHub webhook-delivery sweep, and (v0.23.0) the KB compile, org digest and helper retention sweeps. Only a platform admin may mint or rotate a key with it, and it stops working when that admin is demoted or deactivated |
+| `admin_metrics:read` | ✅ live (platform, v0.23.0) | `GET /api/v1/admin/metrics` (Prometheus). Only a platform admin may mint or rotate a key with it |
 | `sessions:read`, `rules:read`, `rules:write`, `retrieval_audit:read`, `admin:*` | Reserved | Not yet opted in on any route |
 
 ### Sessions
@@ -86,6 +87,18 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | GET | `/api/v1/sessions/share/{token}` | None | Access shared session (public) |
 | POST | `/api/v1/sessions/share/{token}` | None | Access password-protected share link |
 | GET | `/api/v1/sessions/search` | Bearer | Full-text search |
+| GET | `/api/v1/sessions/{id}/changes` | Bearer | Files the session created, edited or deleted, with line counts and per-file diffs (v0.23.0) |
+| POST | `/api/v1/sessions/{id}/uploads` | Bearer | Start a resumable upload for a session over 8 MiB; then `PUT /api/v1/uploads/{upload_id}/parts/{n}`, `GET /api/v1/uploads/{upload_id}`, `POST /api/v1/uploads/{upload_id}/complete` (v0.23.0). The CLI and daemon use this automatically |
+
+### Session Helper (Enterprise)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/helper/turns` | Bearer (user key) | Ask a question; Server-Sent Events by default, one JSON document with `stream: false`. See [Session Helper](/session-helper/) |
+| GET | `/api/v1/helper/conversations` | Bearer (user key) | List your helper threads |
+| GET | `/api/v1/helper/conversations/{id}` | Bearer (user key) | One thread with its messages |
+| DELETE | `/api/v1/helper/conversations/{id}` | Bearer (user key) | Delete a thread |
+| GET | `/api/v1/helper/status` | Bearer (user key) | Whether the helper is enabled and which key it would use |
 
 ### Audit
 
@@ -145,6 +158,10 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | GET | `/api/v1/projects/{remote}` | Bearer | Get project context by git remote |
 | PUT | `/api/v1/projects/{remote}/context` | Bearer | Update context document |
 | DELETE | `/api/v1/projects/{project_id}` | Bearer | Delete project (owner or admin only) |
+| GET | `/api/v1/projects/{id}/compile-status` | Bearer | Last compile, claims waiting, whether a compile is recommended (v0.23.0) |
+| GET | `/api/v1/projects/{id}/personas/{name}/rollup` | Bearer | Persona activity: recent sessions, open tickets, latest knowledge entry and agent run (v0.23.0) |
+| POST | `/api/v1/projects/{id}/agent-runs/{run_id}/replay` | Bearer | Queue a copy of a run with an edited prompt, ticket, persona, context references, fail-on or trigger ref (v0.23.0) |
+| GET | `/api/v1/projects/{id}/agent-runs/{run_id}/compare/{other_id}` | Bearer | Findings added, removed or unchanged between two runs (v0.23.0) |
 
 ### Knowledge Base
 
@@ -186,6 +203,10 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | POST | `/api/v1/projects/{id}/tickets/{tid}/comments` | Bearer (`tickets:write`) | Append a comment to the ticket thread |
 | GET | `/api/v1/projects/{id}/tickets/{tid}/comments` | Bearer (`tickets:read`) | Paginated comment thread (query: `since`, `since_id`, `limit`) |
 | GET | `/api/v1/projects/{id}/tickets/{tid}/review-state` | Bearer (`tickets:read`) | Derived review state — open/closed findings, last verdict, severity counts |
+| POST | `/api/v1/projects/{id}/tickets/{tid}/jira/preview` | Bearer (`tickets:write`) | Draft a Jira story from the ticket (Enterprise, v0.23.0). See [Jira Cloud](/integrations/jira/) |
+| POST | `/api/v1/projects/{id}/tickets/{tid}/jira/publish` | Bearer (`tickets:write`) | Create or update the linked Jira issue |
+| GET | `/api/v1/projects/{id}/tickets/{tid}/jira` | Bearer (`tickets:read`) | Linked Jira issue and cached status |
+| DELETE | `/api/v1/projects/{id}/tickets/{tid}/jira` | Bearer (`tickets:write`, project admin) | Unlink the Jira issue |
 
 ### Organizations
 
@@ -203,6 +224,13 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | POST | `/api/v1/orgs/{org_id}/invite` | Bearer | Org-scoped invite path (admin only). Same UPSERT-over-stale semantics as `/api/v1/org/invite` since v0.10.28. |
 | PUT | `/api/v1/org/members/{user_id}/role` | Bearer | Change a member's role (admin only) |
 | DELETE | `/api/v1/org/members/{user_id}` | Bearer | Remove a member from the org (admin only) |
+| PUT | `/api/v1/orgs/{org_id}/settings` | Bearer | Update org settings (admin only). Merges since v0.23.0: settings left out are kept, an explicit `null` restores the default. Includes `helper_retention_days` (1–3650) |
+| POST | `/api/v1/orgs/{org_id}/projects/{project_id}/propose-transfer` | Bearer | Propose moving a member's personal project into the org (owner or admin; the project owner must accept) — v0.23.0 |
+| PUT | `/api/v1/orgs/{org_id}/members/me/digest` | Bearer | Turn your weekly activity digest off or on (`{"opt_out": true}`) — v0.23.0 |
+| GET / PUT / DELETE | `/api/v1/orgs/{org_id}/llm-settings` | Bearer | Org AI key for the session helper (owner or admin, Enterprise) — v0.23.0 |
+| GET / PUT / DELETE | `/api/v1/orgs/{org_id}/integrations/jira` | Bearer | Jira Cloud connection (admin, Enterprise); also `/projects`, `/mappings[/{project_id}]`, `/health` — v0.23.0 |
+| GET | `/api/v1/orgs/{org_id}/personas/{name}/rollup` | Bearer | Org persona activity across the projects you can see — v0.23.0 |
+| GET | `/api/v1/orgs/{org_id}/personas/{name}/represent-history` | Bearer | Who has represented an org persona over time (admin) — v0.23.0 |
 
 ### Skills Marketplace
 
@@ -260,6 +288,10 @@ All package versions are immutable and addressed by `content_hash`. Visibility f
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/api/v1/admin/users/{user_id}/api-keys` | Bearer (admin) | Mint a user-kind `ApiKey` on behalf of any active user as a lost-key recovery path. Raw key returned exactly once; audit row via `_log_action(action="mint_api_key_on_behalf", details={key_id, name})`. Guards: 404 unknown user, 403 inactive user (no backdoor for disabled accounts), 403 non-admin caller. Service keys are NOT minted here — they remain at `/api/v1/orgs/{org_id}/service-keys` per v0.10.10. (v0.10.28) |
+| GET | `/api/v1/admin/metrics` | Bearer (admin or `admin_metrics:read`) | Prometheus metrics: request latency by route, push outcomes and sizes, pulls, handoffs, DLP findings, auth failures, active users, sessions, DB pool (v0.23.0) |
+| POST | `/api/v1/admin/sweeps/kb-compile` | Bearer (admin or `platform_sweeps:run`) | Compile projects whose schedule or claims threshold is due (v0.23.0) |
+| POST | `/api/v1/admin/sweeps/org-digest` | Bearer (admin or `platform_sweeps:run`) | Send the weekly org activity digest, once per org per week (v0.23.0) |
+| POST | `/api/v1/admin/sweeps/helper-retention` | Bearer (admin or `platform_sweeps:run`) | Delete expired session helper messages (v0.23.0) |
 | POST | `/api/v1/admin/projects/{project_id}/restore-from-compilation` | Bearer (admin) | Restore `project.context_document` from a prior `ContextCompilation.context_after`; restore `compiled_at` on participating entries. Body: `{compilation_id: int, dry_run: bool = true}`. Single atomic transaction. Audit-logged. (v0.10.13) |
 
 ### Billing

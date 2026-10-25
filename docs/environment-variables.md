@@ -42,7 +42,7 @@ All SessionFS server environment variables use the `SFS_` prefix.
 | `SFS_REQUIRE_EMAIL_VERIFICATION` | Require email verification on signup | `true` |
 | `SFS_SSO_CALLBACK_URL` | The OIDC redirect/callback URL registered with each org's IdP — where the provider returns the authorization code | `https://api.sessionfs.dev/api/v1/auth/sso/callback` |
 | `SFS_SSO_REDIRECT_ORIGINS` | Comma-separated allowlist of absolute origins permitted as the post-login `redirect_after` destination (relative paths are always allowed; everything else is rejected) | — |
-| `SFS_DASHBOARD_URL` | Dashboard origin the **browser** SSO login redirects back to (the one-time-code handoff lands at `<SFS_DASHBOARD_URL>/sso/callback`). Server-config only — never derived from request input. If unset, browser SSO login returns 500 (the CLI SSO flow is unaffected). | — |
+| `SFS_DASHBOARD_URL` | Dashboard origin the **browser** SSO login redirects back to (the one-time-code handoff lands at `<SFS_DASHBOARD_URL>/sso/callback`). Server-config only — never derived from request input. If unset, browser SSO login returns 500 (the CLI SSO flow is unaffected). Also the origin for links in the weekly org activity digest email (falls back to an explicitly set `SFS_APP_URL`; links are left out when neither is set). | — |
 | `SFS_NO_TELEMETRY` | **Client-side.** Set to any non-empty value to disable anonymous usage telemetry entirely (the other opt-out is `[telemetry] enabled = false` in config.toml). See docs/telemetry.md for the full disclosure. | — |
 
 ## Blob Storage
@@ -71,7 +71,7 @@ All SessionFS server environment variables use the `SFS_` prefix.
 | `SFS_JUDGE_BASE_URL` | Custom OpenAI-compatible endpoint for LLM Judge (LiteLLM, vLLM, Ollama, etc.). Operator configuration: this exact URL may be on a private host even when `SFS_LLM_ALLOW_PRIVATE_HOSTS` is false (link-local and cloud-metadata addresses are still refused) | — |
 | `SFS_LLM_ALLOW_PRIVATE_HOSTS` | Let users point their own LLM endpoint (judge settings `base_url`, and `base_url` on audit, narrative-summary and knowledge compile requests) at private, loopback or plain-http hosts, e.g. an in-cluster Ollama or vLLM. When false the URL must be https and resolve to public addresses only. The URL is checked when it is saved or submitted and again before every outbound request; redirects are never followed. Link-local, unspecified and cloud-metadata addresses are blocked in both modes. Helm: `api.llm.allowPrivateHosts` (default `true` in the chart, since self-hosted model gateways usually live on the private network) | `false` |
 | `SFS_DASHBOARD_DIR` | Path to dashboard static files | `./static` |
-| `SFS_APP_URL` | Dashboard origin used in links the server generates (organization invite emails, return pages after billing) | `https://app.sessionfs.dev` |
+| `SFS_APP_URL` | Dashboard origin used in links the server generates (organization invite emails, return pages after billing; weekly digest links only when `SFS_DASHBOARD_URL` is unset and this is set explicitly) | `https://app.sessionfs.dev` |
 | `SFS_API_URL` | Public API origin used in generated share links (and by the remote MCP server to reach the API) | `https://api.sessionfs.dev` |
 
 ## Sync Limits

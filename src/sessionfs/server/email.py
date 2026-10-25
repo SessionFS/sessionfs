@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import ssl
 from abc import ABC, abstractmethod
 from email.mime.multipart import MIMEMultipart
@@ -18,6 +19,15 @@ from typing import Any
 import httpx
 
 logger = logging.getLogger("sessionfs.email")
+
+# C0 control characters (and DEL) that must never reach an email header such
+# as the subject: newlines and other controls enable header/smuggling attacks.
+_SUBJECT_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def strip_subject_controls(value: str) -> str:
+    """Remove C0 control characters from a value used in an email subject."""
+    return _SUBJECT_CTRL_RE.sub("", value)
 
 
 def mask_address(address: object) -> str:
@@ -40,8 +50,11 @@ class EmailProvider(ABC):
     """Abstract email provider interface."""
 
     @abstractmethod
-    async def send(self, to: str, subject: str, html: str) -> bool:
-        """Send an email. Returns True on success."""
+    async def send(self, to: str, subject: str, html: str, text: str | None = None) -> bool:
+        """Send an email. Returns True on success.
+
+        ``text`` is an optional plain-text alternative; providers that
+        support a text part attach it, others ignore it."""
         ...
 
     # Convenience methods used by the rest of the codebase
@@ -217,6 +230,90 @@ class EmailProvider(ABC):
         ok = await self.send(to_email, subject, html)
         return {"status": "sent" if ok else "failed"}
 
+    async def send_org_digest(
+        self,
+        to_email: str,
+        org_name: str,
+        week_label: str,
+        digest: dict,
+        dashboard_url: str,
+    ) -> dict[str, Any]:
+        from sessionfs.server.email_templates import org_digest_email, org_digest_text
+
+        html = org_digest_email(
+            org_name=org_name,
+            week_label=week_label,
+            digest=digest,
+            dashboard_url=dashboard_url,
+        )
+        text = org_digest_text(
+            org_name=org_name,
+            week_label=week_label,
+            digest=digest,
+            dashboard_url=dashboard_url,
+        )
+        subject = f"SessionFS: {strip_subject_controls(org_name)} weekly activity ({week_label})"
+        ok = await self.send(to_email, subject, html, text=text)
+        return {"status": "sent" if ok else "failed"}
+
+    async def send_transfer_proposed(
+        self,
+        to_email: str,
+        project_name: str,
+        org_name: str,
+        proposer_name: str,
+        reason: str,
+        expires_at_human: str,
+    ) -> dict[str, Any]:
+        from sessionfs.server.email_templates import transfer_proposed_email
+
+        html = transfer_proposed_email(
+            project_name=project_name,
+            org_name=org_name,
+            proposer_name=proposer_name,
+            reason=reason,
+            expires_at_human=expires_at_human,
+        )
+        subject = f"SessionFS: transfer of {strip_subject_controls(project_name or 'a project')} proposed"
+        ok = await self.send(to_email, subject, html)
+        return {"status": "sent" if ok else "failed"}
+
+    async def send_transfer_proposal_declined(
+        self,
+        to_email: str,
+        project_name: str,
+        org_name: str,
+        owner_name: str,
+    ) -> dict[str, Any]:
+        from sessionfs.server.email_templates import transfer_proposal_declined_email
+
+        html = transfer_proposal_declined_email(
+            project_name=project_name,
+            org_name=org_name,
+            owner_name=owner_name,
+        )
+        subject = f"SessionFS: transfer of {strip_subject_controls(project_name or 'a project')} declined"
+        ok = await self.send(to_email, subject, html)
+        return {"status": "sent" if ok else "failed"}
+
+    async def send_transfer_proposal_expired(
+        self,
+        to_email: str,
+        project_name: str,
+        org_name: str,
+        owner_name: str,
+    ) -> dict[str, Any]:
+        from sessionfs.server.email_templates import transfer_proposal_expired_email
+
+        html = transfer_proposal_expired_email(
+            project_name=project_name,
+            org_name=org_name,
+            owner_name=owner_name,
+        )
+        subject = f"SessionFS: transfer of {strip_subject_controls(project_name or 'a project')} expired"
+        ok = await self.send(to_email, subject, html)
+        return {"status": "sent" if ok else "failed"}
+
     async def send_retention_notice(
         self, to_email: str, purged_count: int, session_titles: list[str],
     ) -> dict[str, Any]:
@@ -252,18 +349,21 @@ class ResendProvider(EmailProvider):
         self._api_key = api_key
         self._from_email = from_email
 
-    async def send(self, to: str, subject: str, html: str) -> bool:
+    async def send(self, to: str, subject: str, html: str, text: str | None = None) -> bool:
         try:
+            payload: dict[str, Any] = {
+                "from": self._from_email,
+                "to": [to],
+                "subject": subject,
+                "html": html,
+            }
+            if text is not None:
+                payload["text"] = text
             async with httpx.AsyncClient() as client:
                 resp = await client.post(
                     RESEND_API,
                     headers={"Authorization": f"Bearer {self._api_key}"},
-                    json={
-                        "from": self._from_email,
-                        "to": [to],
-                        "subject": subject,
-                        "html": html,
-                    },
+                    json=payload,
                     timeout=30.0,
                 )
                 resp.raise_for_status()
@@ -301,11 +401,13 @@ class SMTPProvider(EmailProvider):
         self._use_ssl = use_ssl
         self._verify_ssl = verify_ssl
 
-    async def send(self, to: str, subject: str, html: str) -> bool:
+    async def send(self, to: str, subject: str, html: str, text: str | None = None) -> bool:
         msg = MIMEMultipart("alternative")
         msg["From"] = self._from_email
         msg["To"] = to
         msg["Subject"] = subject
+        if text is not None:
+            msg.attach(MIMEText(text, "plain"))
         msg.attach(MIMEText(html, "html"))
         return await asyncio.to_thread(self._send_sync, msg)
 
@@ -354,7 +456,7 @@ class SMTPProvider(EmailProvider):
 class NullProvider(EmailProvider):
     """No-op email provider — logs instead of sending."""
 
-    async def send(self, to: str, subject: str, html: str) -> bool:
+    async def send(self, to: str, subject: str, html: str, text: str | None = None) -> bool:
         logger.info("Email suppressed (no provider): to=%s", mask_address(to))
         return True
 

@@ -15,6 +15,7 @@ const { hooks } = vi.hoisted(() => ({
     useKnowledgeEntries: vi.fn(),
     useDismissEntry: vi.fn(),
     useCompileProject: vi.fn(),
+    useCompileStatus: vi.fn(),
     useCompilations: vi.fn(),
     useWikiPages: vi.fn(),
     useWikiPage: vi.fn(),
@@ -38,8 +39,15 @@ const { hooks } = vi.hoisted(() => ({
 
 vi.mock('../hooks/useProjects', () => hooks);
 vi.mock('../hooks/useToast', () => ({ useToast: () => ({ addToast: vi.fn() }) }));
+vi.mock('../helper/HelperProvider', () => ({ useHelper: () => ({ openHelper: vi.fn() }) }));
 vi.mock('../transfers/useTransfers', () => ({
   useMyOrgs: () => ({ data: [], isLoading: false, error: null }),
+}));
+vi.mock('../hooks/useMe', () => ({
+  useMe: () => ({
+    data: { user_id: 'u_1', tier: 'enterprise', effective_tier: 'enterprise' },
+    isLoading: false,
+  }),
 }));
 vi.mock('../projects/TicketsTab', () => ({ default: () => <p>tickets body</p> }));
 vi.mock('../projects/AgentRunsTab', () => ({ default: () => <p>agent runs body</p> }));
@@ -68,6 +76,19 @@ beforeEach(() => {
     error: null,
   });
   hooks.useKnowledgeEntries.mockReturnValue({ data: { entries: [], total: 0 }, isLoading: false });
+  hooks.useCompileStatus.mockReturnValue({
+    data: {
+      last_compile_at: null,
+      pending_claims: 0,
+      compile_needed: false,
+      compile_schedule: 'nightly',
+      compile_after_claims: null,
+      last_scheduled_compile_at: null,
+      next_scheduled_at: null,
+      compile_history: [],
+    },
+    isLoading: false,
+  });
   hooks.useCompilations.mockReturnValue({ data: { compilations: [] }, isLoading: false });
   hooks.useWikiPages.mockReturnValue({ data: { pages: [] }, isLoading: false });
   hooks.useWikiPage.mockReturnValue({ data: null, isLoading: false });

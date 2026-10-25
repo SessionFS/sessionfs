@@ -165,6 +165,7 @@ def test_parse_tool_use(codex_session_file: Path):
     ]
     assert len(tool_msgs) >= 1
     assert tool_msgs[0]["content"][0]["name"] == "Bash"
+    assert tool_msgs[0]["content"][0]["codex_item_type"] == "local_shell_call"
 
 
 def test_parse_token_count(codex_session_file: Path):
@@ -411,3 +412,89 @@ def test_parse_token_count_with_null_total_usage(tmp_path: Path):
     assert session.message_count == 1
     assert session.total_input_tokens == 0
     assert session.total_output_tokens == 0
+
+
+# ---------- Regression: custom_tool_call / custom_tool_call_output ----------
+
+
+def test_parse_custom_tool_call_captures_apply_patch(tmp_path: Path):
+    """Codex's custom_tool_call must be captured as a tool_use with the raw
+    ``input`` string preserved, so the changes service can parse apply_patch."""
+    sessions_dir = tmp_path / "sessions" / "2026" / "06" / "01"
+    sessions_dir.mkdir(parents=True)
+    path = sessions_dir / "rollout-2026-06-01T10-00-00-ddddeeee-ffff-aaaa-bbbb-cccccccccccc.jsonl"
+
+    patch = (
+        "*** Begin Patch\n"
+        "*** Add File: /repo/new.py\n"
+        "+print(1)\n"
+        "*** End Patch\n"
+    )
+    lines = [
+        {
+            "timestamp": "2026-06-01T10:00:00Z",
+            "type": "session_meta",
+            "payload": {
+                "id": "ddddeeee-ffff-aaaa-bbbb-cccccccccccc",
+                "cwd": "/repo",
+                "originator": "codex_cli",
+                "cli_version": "0.140.0",
+                "model_provider": "openai",
+                "git": None,
+            },
+        },
+        {
+            "timestamp": "2026-06-01T10:00:01Z",
+            "type": "turn_context",
+            "payload": {"turn_id": "turn-001", "cwd": "/repo", "model": "gpt-5"},
+        },
+        {
+            "timestamp": "2026-06-01T10:00:02Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call",
+                "id": "ctc_001",
+                "status": "completed",
+                "call_id": "call_001",
+                "name": "apply_patch",
+                "input": patch,
+            },
+        },
+        {
+            "timestamp": "2026-06-01T10:00:03Z",
+            "type": "response_item",
+            "payload": {
+                "type": "custom_tool_call_output",
+                "id": "ctco_001",
+                "call_id": "call_001",
+                "output": [{"type": "input_text", "text": "patch applied"}],
+            },
+        },
+    ]
+
+    with open(path, "w") as f:
+        for line in lines:
+            f.write(json.dumps(line) + "\n")
+
+    session = parse_codex_session(path)
+    assert session is not None
+
+    tool_uses = [
+        b for m in session.messages
+        for b in m.get("content", [])
+        if b.get("type") == "tool_use"
+    ]
+    assert len(tool_uses) == 1
+    assert tool_uses[0]["name"] == "apply_patch"
+    assert tool_uses[0]["input"] == {"input": patch}
+    assert tool_uses[0]["codex_item_type"] == "custom_tool_call"
+
+    tool_results = [
+        b for m in session.messages
+        for b in m.get("content", [])
+        if b.get("type") == "tool_result"
+    ]
+    assert len(tool_results) == 1
+    assert tool_results[0]["content"] == "patch applied"
+    assert tool_results[0]["tool_use_id"] == "call_001"
+    assert tool_results[0]["codex_item_type"] == "custom_tool_call_output"

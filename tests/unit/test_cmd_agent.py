@@ -396,3 +396,263 @@ def test_agent_feedback_summary_json_emits_parseable_object(monkeypatch):
     parsed = json.loads(result.output.strip())
     assert parsed["total"] == 3
     assert len(parsed["groups"]) == 2
+
+
+# ── GitHub #95 `sfs agent replay` / `sfs agent compare` ───────────
+
+
+def _replay_response() -> dict:
+    return {
+        "run": {
+            "id": "run_new",
+            "project_id": "proj_a",
+            "persona_name": "atlas",
+            "tool": "generic",
+            "trigger_source": "manual",
+            "status": "queued",
+            "replayed_from": "run_parent",
+            "prompt": "edited",
+            "context_refs": ["a", "b"],
+        },
+        "command": "sfs agent run --run-id run_new",
+        "ci_hint": (
+            "# Replay this agent run in CI.\n"
+            "github_actions:\n"
+            "  - name: Replay agent run\n"
+            "    run: sfs agent run --run-id run_new\n"
+            "gitlab_ci:\n"
+            "  replay:\n"
+            "    script:\n"
+            "      - sfs agent run --run-id run_new\n"
+        ),
+    }
+
+
+def test_agent_replay_posts_body_and_output_id_prints_only_id(monkeypatch):
+    from sessionfs.cli import cmd_agent
+
+    captured = {}
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json_data"] = json_data
+        return (201, _replay_response(), {})
+
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, [
+        "replay", "run_parent",
+        "--prompt", "edited",
+        "--ticket", "tk_2",
+        "--persona", "sentinel",
+        "--context-ref", "a",
+        "--context-ref", "b",
+        "--output-id",
+    ])
+    assert result.exit_code == 0, result.output
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/v1/projects/proj_a/agent-runs/run_parent/replay"
+    assert captured["json_data"] == {
+        "prompt": "edited",
+        "ticket_id": "tk_2",
+        "persona_name": "sentinel",
+        "context_refs": ["a", "b"],
+    }
+    assert result.output.strip() == "run_new"
+
+
+def test_agent_replay_prompt_file_reads_content(monkeypatch, tmp_path):
+    from sessionfs.cli import cmd_agent
+
+    captured = {}
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        captured["json_data"] = json_data
+        return (201, _replay_response(), {})
+
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("prompt from a file\nline two")
+
+    result = runner.invoke(agent_app, ["replay", "run_parent", "--prompt-file", str(prompt_file)])
+    assert result.exit_code == 0, result.output
+    assert captured["json_data"] == {"prompt": "prompt from a file\nline two"}
+
+
+def test_agent_replay_rejects_prompt_and_prompt_file_together(monkeypatch):
+    from sessionfs.cli import cmd_agent
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+    result = runner.invoke(
+        agent_app,
+        ["replay", "run_parent", "--prompt", "x", "--prompt-file", "/tmp/x"],
+    )
+    assert result.exit_code == 2
+    assert "not both" in result.output
+
+
+def test_agent_compare_json_emits_parseable_object(monkeypatch):
+    import json
+    from sessionfs.cli import cmd_agent
+
+    captured = {}
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        captured["path"] = path
+        return (200, {
+            "a_id": "run_a",
+            "b_id": "run_b",
+            "a_findings_count": 2,
+            "b_findings_count": 1,
+            "a_severity_counts": {"high": 1, "low": 1},
+            "b_severity_counts": {"high": 1},
+            "added": [{"rule": "r3"}],
+            "removed": [{"rule": "r2"}],
+            "unchanged": [{"rule": "r1"}],
+        }, {})
+
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, ["compare", "run_a", "run_b", "--format", "json"])
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == "/api/v1/projects/proj_a/agent-runs/run_a/compare/run_b"
+    parsed = json.loads(result.output.strip())
+    assert parsed["a_id"] == "run_a"
+    assert [f["rule"] for f in parsed["added"]] == ["r3"]
+
+
+def test_agent_run_resume_run_id_starts_existing_run(monkeypatch):
+    """GitHub #95: `--run-id` resumes the queued replay instead of creating."""
+    from sessionfs.cli import cmd_agent
+
+    captured = {}
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json_data"] = json_data
+        return (200, {"id": "run_x", "status": "running"}, {})
+
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, ["run", "--run-id", "run_x", "--output-id"])
+    assert result.exit_code == 0, result.output
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/v1/projects/proj_a/agent-runs/run_x/start"
+    assert captured["json_data"] is None
+    assert result.output.strip() == "run_x"
+
+
+def test_agent_run_run_id_and_persona_mutually_exclusive(monkeypatch):
+    from sessionfs.cli import cmd_agent
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+    result = runner.invoke(agent_app, ["run", "atlas", "--run-id", "run_x"])
+    assert result.exit_code == 2
+    assert "not both" in result.output
+
+
+def test_agent_replay_route_404_prints_upgrade_hint(monkeypatch):
+    """GitHub #95: servers without the replay route answer 405 (another
+    route owns the path) in the standard error envelope."""
+    from sessionfs.cli import cmd_agent
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        return (405, {"error": {"code": "405", "message": "Method Not Allowed"}}, {})
+
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, ["replay", "run_parent"])
+    assert result.exit_code == 1
+    assert "doesn't support replay" in result.output
+
+
+def test_agent_replay_domain_404_prints_not_found(monkeypatch):
+    """GitHub #95: a domain 404 means the run itself is missing."""
+    from sessionfs.cli import cmd_agent
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        return (404, {"error": {"code": "404", "message": "Agent run not found"}}, {})
+
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, ["replay", "run_parent"])
+    assert result.exit_code == 1
+    assert "Run run_parent not found" in result.output
+
+
+def test_agent_replay_bare_not_found_prints_upgrade_hint(monkeypatch):
+    from sessionfs.cli import cmd_agent
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        return (404, {"error": {"code": "404", "message": "Not Found"}}, {})
+
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, ["replay", "run_parent"])
+    assert result.exit_code == 1
+    assert "doesn't support replay" in result.output
+
+
+def test_agent_run_run_id_rejects_create_only_flags(monkeypatch):
+    from sessionfs.cli import cmd_agent
+
+    calls: list[str] = []
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        calls.append(path)
+        return (200, {}, {})
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, ["run", "--run-id", "run_x", "--fail-on", "high"])
+    assert result.exit_code == 2
+    assert "--fail-on" in result.output
+    assert calls == []

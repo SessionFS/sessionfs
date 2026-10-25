@@ -22,6 +22,7 @@ import { type Persona } from '../api/client';
 import { Button, Select, Table } from '../components/ui';
 import { DeleteConfirmModal, PersonaEditModal, type EditState } from '../projects/PersonasTab';
 import { errorMessage } from '../utils/errorMessage';
+import PersonaDetailDrawer from './PersonaDetailDrawer';
 
 export interface OrgPersonaMember {
   user_id: string;
@@ -53,6 +54,7 @@ export default function OrgPersonasSection({
 
   const [edit, setEdit] = useState<EditState | null>(null);
   const [deleting, setDeleting] = useState<Persona | null>(null);
+  const [selected, setSelected] = useState<Persona | null>(null);
 
   const data = isAdmin
     ? allPersonas
@@ -156,6 +158,9 @@ export default function OrgPersonasSection({
               width: 'w-0',
               render: (p) => (
                 <div className="flex items-center gap-1 justify-end whitespace-nowrap">
+                  <Button variant="secondary" size="sm" onClick={() => setSelected(p)}>
+                    Details
+                  </Button>
                   <Button variant="secondary" size="sm" onClick={() => setEdit({ mode: 'edit', persona: p })}>
                     Edit
                   </Button>
@@ -213,6 +218,16 @@ export default function OrgPersonasSection({
               addToast('error', `Delete failed: ${errorMessage(exc)}`);
             }
           }}
+        />
+      )}
+
+      {selected && (
+        <PersonaDetailDrawer
+          persona={selected}
+          orgId={orgId}
+          isAdmin={isAdmin}
+          members={members}
+          onClose={() => setSelected(null)}
         />
       )}
     </section>

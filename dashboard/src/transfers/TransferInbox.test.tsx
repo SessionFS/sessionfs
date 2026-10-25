@@ -203,4 +203,31 @@ describe('TransferInbox', () => {
     render(<TransferInbox />);
     expect(screen.getByText(/\(deleted\)/i)).toBeInTheDocument();
   });
+
+  it('renders proposal details for an admin-proposed transfer', () => {
+    hooks.useTransfers.mockImplementation((direction: string) => ({
+      data: {
+        transfers:
+          direction === 'incoming'
+            ? [
+                incomingTransfer({
+                  proposed_by_user_id: 'u_admin',
+                  proposed_by_name: 'Ada Admin',
+                  proposal_reason: 'Consolidate under the platform org',
+                  expires_at: '2026-06-01T00:00:00Z',
+                }),
+              ]
+            : [],
+      },
+      isLoading: false,
+      error: null,
+    }));
+    render(<TransferInbox />);
+    const row = screen.getByTestId('incoming-xfer_in1');
+    expect(row).toHaveTextContent(/Proposed by Ada Admin for Org org_beta/);
+    expect(row).toHaveTextContent(/Consolidate under the platform org/);
+    expect(row).toHaveTextContent(/Expires/);
+    // The plain initiator footer is not shown for proposals.
+    expect(row).not.toHaveTextContent(/Initiated by/);
+  });
 });

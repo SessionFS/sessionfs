@@ -24,6 +24,11 @@ spec:
       annotations:
         checksum/config: {{ include (print $.Template.BasePath "/api-configmap.yaml") . | sha256sum }}
         checksum/secrets: {{ include (print $.Template.BasePath "/secrets.yaml") . | sha256sum }}
+        {{- if .Values.api.metrics.scrapeAnnotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/api/v1/admin/metrics"
+        prometheus.io/port: "{{ .Values.api.service.port }}"
+        {{- end }}
     spec:
       {{- include "sessionfs.imagePullSecrets" . | nindent 6 }}
       serviceAccountName: {{ include "sessionfs.serviceAccountName" . }}

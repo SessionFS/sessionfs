@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import OrgSettingsTab from './OrgSettingsTab';
 
-const { hooks, toastHook, toastApi, ssoHooks } = vi.hoisted(() => {
+const { hooks, toastHook, toastApi, ssoHooks, digestHooks } = vi.hoisted(() => {
   const toastApi = { addToast: vi.fn(), removeToast: vi.fn(), toasts: [] };
   return {
     hooks: {
@@ -20,11 +20,16 @@ const { hooks, toastHook, toastApi, ssoHooks } = vi.hoisted(() => {
     toastHook: { useToast: vi.fn() },
     toastApi,
     ssoHooks: { useDomains: vi.fn() },
+    digestHooks: {
+      useOrgDigestPrefs: vi.fn(),
+      useUpdateOrgDigestPrefs: vi.fn(),
+    },
   };
 });
 
 vi.mock('./useOrgSettings', () => hooks);
 vi.mock('./useSso', () => ({ useDomains: ssoHooks.useDomains }));
+vi.mock('./useOrgDigestPrefs', () => digestHooks);
 vi.mock('../hooks/useToast', () => toastHook);
 
 function makeMutation(extra: Record<string, unknown> = {}) {
@@ -49,10 +54,19 @@ beforeEach(() => {
   toastHook.useToast.mockReset();
   toastApi.addToast.mockReset();
   ssoHooks.useDomains.mockReset();
+  digestHooks.useOrgDigestPrefs.mockReset();
+  digestHooks.useUpdateOrgDigestPrefs.mockReset();
   hooks.useOrgSettings.mockReturnValue({ data: DEFAULTS, isLoading: false, error: null });
   hooks.useUpdateOrgSettings.mockReturnValue(makeMutation());
   toastHook.useToast.mockReturnValue(toastApi);
   ssoHooks.useDomains.mockReturnValue({ data: [], isLoading: false, isSuccess: true, isError: false, error: null });
+  digestHooks.useOrgDigestPrefs.mockReturnValue({
+    data: { org_id: 'org_x', opt_out: false },
+    isLoading: false,
+    isError: false,
+    error: null,
+  });
+  digestHooks.useUpdateOrgDigestPrefs.mockReturnValue(makeMutation());
 });
 
 describe('OrgSettingsTab', () => {
@@ -291,5 +305,54 @@ describe('OrgSettingsTab', () => {
     expect(await screen.findByText('corp.com')).toBeInTheDocument();
     expect(screen.queryByText(/no longer verified/i)).toBeNull();
     expect(ssoHooks.useDomains).toHaveBeenCalledWith(undefined);
+  });
+
+  it('checks the weekly-digest box by default (opt_out false)', async () => {
+    render(<OrgSettingsTab orgId="org_x" canEdit={true} />);
+    expect(await screen.findByLabelText(/weekly activity digest/i)).toBeChecked();
+  });
+
+  it('unchecks the weekly-digest box when the admin has opted out', async () => {
+    digestHooks.useOrgDigestPrefs.mockReturnValue({
+      data: { org_id: 'org_x', opt_out: true },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    render(<OrgSettingsTab orgId="org_x" canEdit={true} />);
+    expect(await screen.findByLabelText(/weekly activity digest/i)).not.toBeChecked();
+  });
+
+  it('toggling the digest box updates the opt-out preference', async () => {
+    const update = makeMutation();
+    digestHooks.useUpdateOrgDigestPrefs.mockReturnValue(update);
+    render(<OrgSettingsTab orgId="org_x" canEdit={true} />);
+    const user = userEvent.setup();
+
+    // Starts checked (opt_out=false); unchecking opts out.
+    await user.click(await screen.findByLabelText(/weekly activity digest/i));
+    expect(update.mutate).toHaveBeenCalledTimes(1);
+    expect(update.mutate.mock.calls[0][0]).toBe(true);
+  });
+
+  it('surfaces a success toast when the digest preference updates', async () => {
+    const update = makeMutation();
+    update.mutate.mockImplementation((_body: unknown, opts: { onSuccess?: () => void }) =>
+      opts?.onSuccess?.(),
+    );
+    digestHooks.useUpdateOrgDigestPrefs.mockReturnValue(update);
+    render(<OrgSettingsTab orgId="org_x" canEdit={true} />);
+    const user = userEvent.setup();
+    await user.click(await screen.findByLabelText(/weekly activity digest/i));
+    expect(toastApi.addToast).toHaveBeenCalledWith(
+      'success',
+      expect.stringMatching(/digest disabled/i),
+    );
+  });
+
+  it('members see the digest box disabled and never request the pref', async () => {
+    render(<OrgSettingsTab orgId="org_x" canEdit={false} />);
+    expect(await screen.findByLabelText(/weekly activity digest/i)).toBeDisabled();
+    expect(digestHooks.useOrgDigestPrefs).toHaveBeenCalledWith('org_x', false);
   });
 });

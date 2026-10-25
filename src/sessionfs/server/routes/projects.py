@@ -130,6 +130,9 @@ class ProjectResponse(BaseModel):
     kb_retention_days: int = 180
     kb_max_context_words: int = 2000
     kb_section_page_limit: int = 30
+    compile_schedule: str = "nightly"
+    compile_after_claims: int | None = None
+    last_scheduled_compile_at: datetime | None = None
     # P3: populated on detail endpoints only (omitted on list to avoid N+1).
     repos: list[ProjectRepoResponse] | None = None
     # Empty string for a repo-reclaimed project (its column is NULL);
@@ -258,6 +261,9 @@ def _project_response(
         kb_retention_days=getattr(project, "kb_retention_days", 180),
         kb_max_context_words=getattr(project, "kb_max_context_words", 8000),
         kb_section_page_limit=getattr(project, "kb_section_page_limit", 30),
+        compile_schedule=getattr(project, "compile_schedule", "nightly"),
+        compile_after_claims=getattr(project, "compile_after_claims", None),
+        last_scheduled_compile_at=getattr(project, "last_scheduled_compile_at", None),
         repos=repos,
         repo_reclaimed=project.repo_reclaimed_at is not None,
     )
@@ -513,6 +519,12 @@ async def create_project(
         raise HTTPException(409, "Account is inactive or no longer exists")
 
     org_general: dict = {}
+    # GitHub #93 review round 2 LOW: the compile schedule defaults to 'off'
+    # and only flips to 'nightly' once the project's paying plan is known to
+    # include project_context. The gates below already reject plans without
+    # the feature, so 'off' is a defensive fallback that keeps the sweep from
+    # ever compiling a project whose plan shouldn't.
+    compile_schedule = "off"
     if body.org_id is not None:
         # Single consolidated membership check under the org lock (folds in
         # the former duplicate pre-insert check). Membership is checked
@@ -536,6 +548,7 @@ async def create_project(
         plan = await resolve_org_plan_tier(body.org_id, db)
         if "project_context" not in get_features_for_tier(plan):
             raise_project_upgrade_required("project_context", plan, None)
+        compile_schedule = "nightly"
 
         # v0.10.0 Phase 6 Round 2 (KB entry 296) — pragmatic
         # inheritance: seed the new project's kb_* defaults from the
@@ -566,6 +579,7 @@ async def create_project(
                     org_general = general
     else:
         check_feature(ctx, "project_context")
+        compile_schedule = "nightly"
 
     # Check for existing project — both the legacy projects table column
     # AND the project_repos join table (multi-repo P2 A4).
@@ -590,6 +604,10 @@ async def create_project(
         "context_document": DEFAULT_TEMPLATE,
         "owner_id": user.id,
         "org_id": body.org_id,
+        # New projects opt into the scheduled KB compile sweep; migration 089
+        # backfills 'off' onto pre-existing rows so the sweep never surprises
+        # an operator with compiles they did not opt in to.
+        "compile_schedule": compile_schedule,
     }
     # Apply org-default seeds only when the org has a non-null value
     # for each field. Server's hardcoded column defaults still apply

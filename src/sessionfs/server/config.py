@@ -52,6 +52,10 @@ class ServerConfig(BaseSettings):
 
     # App URL for billing redirects (configurable for staging/self-hosted)
     app_url: str = "https://app.sessionfs.dev"
+    # Dashboard origin for building filtered-view links (org digest emails).
+    # Empty by default so self-hosted installs never link to the hosted
+    # dashboard; the digest sweep falls back to app_url, then skips links.
+    dashboard_url: str = ""
 
     # Deployment environment ("development"/"test" relax production-only
     # checks; unset = development when the database is SQLite).

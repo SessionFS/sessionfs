@@ -22,6 +22,8 @@ this ticket. Tier-gated TEAM+ via the `agent_tickets` feature flag.
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 
 import typer
 from rich.markdown import Markdown
@@ -41,7 +43,13 @@ from sessionfs.cli.cmd_rules import (
     _normalize_remote,
     _resolve_project_id,
 )
-from sessionfs.cli.common import console, err_console, format_api_error, handle_errors
+from sessionfs.cli.common import (
+    confirm_or_exit,
+    console,
+    err_console,
+    format_api_error,
+    handle_errors,
+)
 
 ticket_app = typer.Typer(
     name="ticket",
@@ -1101,3 +1109,213 @@ def escalate_ticket_cmd(
             err_console.print(
                 f"[yellow]Priority bumped, but audit comment failed ({s3}).[/yellow]"
             )
+
+
+# ── sfs ticket jira … ──
+
+
+jira_app = typer.Typer(
+    name="jira",
+    help="Promote this project's tickets to Jira Cloud.",
+    no_args_is_help=True,
+)
+
+
+def _jira_preview(api_url: str, api_key: str, project_id: str, ticket_id: str) -> dict:
+    s, body, _ = asyncio.run(
+        _api_request(
+            "POST",
+            f"/api/v1/projects/{project_id}/tickets/{ticket_id}/jira/preview",
+            api_url, api_key,
+        )
+    )
+    if s >= 400 or not isinstance(body, dict):
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
+        raise typer.Exit(1)
+    return body
+
+
+def _render_preview(body: dict) -> None:
+    console.print(
+        f"[bold]{body.get('summary', '')}[/bold]\n"
+        f"[dim]Jira project:[/dim] {body.get('jira_project_key', '')}  "
+        f"[dim]issue type:[/dim] {body.get('issue_type', '')}"
+    )
+    existing = body.get("existing")
+    if existing:
+        console.print(
+            f"[yellow]Already linked:[/yellow] {existing.get('issue_key', '')} "
+            f"{existing.get('issue_url', '')}"
+        )
+    for section in body.get("sections", []):
+        heading = section.get("heading") or section.get("key") or ""
+        console.print(f"\n[bold cyan]{heading}[/bold cyan]")
+        for para in section.get("paragraphs", []):
+            console.print(Markdown(para.get("text", "")))
+            cites = para.get("citations") or []
+            if cites:
+                console.print(
+                    f"[dim]  ↳ {', '.join(cites)}[/dim]", soft_wrap=True
+                )
+    if body.get("llm_used"):
+        console.print(
+            f"\n[dim]Rewritten with the {body.get('key_source', 'user')} LLM key.[/dim]"
+        )
+    else:
+        console.print("\n[dim]Deterministic draft (no LLM key configured).[/dim]")
+
+
+def _load_publish_payload(from_file: str, ticket_id: str) -> dict:
+    """Load a preview JSON (from ``preview --out``) into a publish payload.
+
+    A preview file records the ticket (and project) it was generated for; a
+    publish must target the same ticket, or the file was produced for a
+    different ticket and would silently overwrite the wrong issue.
+    """
+    path = Path(from_file)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        err_console.print(f"[red]File not found: {from_file}[/red]")
+        raise typer.Exit(1)
+    except json.JSONDecodeError as exc:
+        err_console.print(f"[red]Invalid JSON in {from_file}: {exc}[/red]")
+        raise typer.Exit(1)
+    if not isinstance(data, dict) or "summary" not in data or "sections" not in data:
+        err_console.print(
+            f"[red]{from_file} must be a preview JSON with 'summary' and 'sections' "
+            "(from `sfs ticket jira preview --out`).[/red]"
+        )
+        raise typer.Exit(1)
+    file_ticket = data.get("ticket_id")
+    if file_ticket != ticket_id:
+        err_console.print(
+            f"[red]{from_file} was generated for ticket '{file_ticket}', not "
+            f"'{ticket_id}'; re-run `sfs ticket jira preview {ticket_id} --out`. "
+            "[/red]"
+        )
+        raise typer.Exit(1)
+    return data
+
+
+@jira_app.command("preview")
+@handle_errors
+def jira_preview_cmd(
+    ticket_id: str = typer.Argument(..., help="Ticket id (e.g. tk_...)"),
+    out: str | None = typer.Option(
+        None, "--out", help="Write the preview JSON to this file instead of rendering."
+    ),
+) -> None:
+    """Draft the Jira story for a ticket without publishing it."""
+    api_url, api_key, project_id = _resolve_project()
+    body = _jira_preview(api_url, api_key, project_id, ticket_id)
+    if out:
+        Path(out).write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
+        console.print(f"[green]Preview written to {out}.[/green]")
+    else:
+        _render_preview(body)
+
+
+@jira_app.command("publish")
+@handle_errors
+def jira_publish_cmd(
+    ticket_id: str = typer.Argument(..., help="Ticket id (e.g. tk_...)"),
+    from_file: str = typer.Option(
+        ..., "--from", help="Preview JSON file (from `sfs ticket jira preview --out`)."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+) -> None:
+    """Push a previewed draft to Jira (creates or updates the linked issue).
+
+    Publish always operates on a preview file: generate it first with
+    ``sfs ticket jira preview <ticket> --out preview.json``, then publish with
+    ``--from preview.json``.
+    """
+    api_url, api_key, project_id = _resolve_project()
+    payload = _load_publish_payload(from_file, ticket_id)
+    confirm_or_exit(
+        f"Publish '{payload['summary']}' to Jira?",
+        yes=yes,
+        yes_hint="Pass --yes to publish this draft without prompting.",
+    )
+    s, body, _ = asyncio.run(
+        _api_request(
+            "POST",
+            f"/api/v1/projects/{project_id}/tickets/{ticket_id}/jira/publish",
+            api_url, api_key,
+            json_data={
+                "summary": payload["summary"],
+                "sections": payload["sections"],
+                "confirm": True,
+            },
+        )
+    )
+    if s >= 400 or not isinstance(body, dict):
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"[green]Published to Jira:[/green] [bold]{body.get('issue_key', '')}[/bold]\n"
+        f"  {body.get('issue_url', '')}"
+    )
+
+
+@jira_app.command("status")
+@handle_errors
+def jira_status_cmd(
+    ticket_id: str = typer.Argument(..., help="Ticket id (e.g. tk_...)"),
+) -> None:
+    """Show the linked Jira issue and its current status."""
+    api_url, api_key, project_id = _resolve_project()
+    s, body, _ = asyncio.run(
+        _api_request(
+            "GET",
+            f"/api/v1/projects/{project_id}/tickets/{ticket_id}/jira",
+            api_url, api_key,
+        )
+    )
+    if s == 404:
+        err_console.print(f"[red]Ticket '{ticket_id}' has no Jira link.[/red]")
+        raise typer.Exit(1)
+    if s >= 400 or not isinstance(body, dict):
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
+        raise typer.Exit(1)
+    status = body.get("last_known_status") or "unknown"
+    style = _status_style(status.lower())
+    status_text = f"[{style}]{status}[/]" if style else status
+    console.print(
+        f"[bold]{body.get('issue_key', '')}[/bold]  "
+        f"{status_text}\n"
+        f"  {body.get('issue_url', '')}"
+    )
+
+
+@jira_app.command("unlink")
+@handle_errors
+def jira_unlink_cmd(
+    ticket_id: str = typer.Argument(..., help="Ticket id (e.g. tk_...)"),
+    confirm: bool = typer.Option(
+        False, "--confirm", help="Required to remove the Jira link."
+    ),
+) -> None:
+    """Remove the Jira link (the Jira issue itself is left untouched)."""
+    api_url, api_key, project_id = _resolve_project()
+    if not confirm:
+        err_console.print(
+            "[yellow]This removes the link between the ticket and its Jira issue "
+            "(the Jira issue is not deleted). Re-run with --confirm to proceed.[/yellow]"
+        )
+        raise typer.Exit(1)
+    s, body, _ = asyncio.run(
+        _api_request(
+            "DELETE",
+            f"/api/v1/projects/{project_id}/tickets/{ticket_id}/jira",
+            api_url, api_key,
+        )
+    )
+    if s >= 400:
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]Unlinked Jira issue from {ticket_id}.[/green]")
+
+
+ticket_app.add_typer(jira_app, name="jira")

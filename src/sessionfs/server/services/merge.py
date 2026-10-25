@@ -40,6 +40,7 @@ from sessionfs.server.db.models import (
     User,
     WikiPageRevision,
 )
+from sessionfs.server.services.tracker_scope import drop_project_tracker_mapping
 
 logger = logging.getLogger("sessionfs.server.services.merge")
 
@@ -1445,6 +1446,10 @@ async def merge_projects(
         source.merged_into_project_id = target_id
         source.merged_at = func.now()
         source.git_remote_normalized = None
+
+        # The source project no longer exists as its own org-scoped unit, so
+        # drop its tracker mapping; any links on its tickets go stale.
+        await drop_project_tracker_mapping(db, source_id)
 
         # Step 17: Catch-up UPDATE for concurrent-sync race.
         await db.execute(

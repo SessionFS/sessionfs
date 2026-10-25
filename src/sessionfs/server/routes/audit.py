@@ -201,21 +201,13 @@ async def run_audit(
 
     if not llm_api_key:
         from sessionfs.server.db.models import UserJudgeSettings
+        from sessionfs.server.llm_keys import decrypt_llm_key
 
         stmt = select(UserJudgeSettings).where(UserJudgeSettings.user_id == user.id)
         result = await db.execute(stmt)
         settings = result.scalar_one_or_none()
         if settings:
-            import base64
-            import hashlib
-            import os
-
-            from cryptography.fernet import Fernet
-
-            secret = os.environ.get("SFS_VERIFICATION_SECRET", "dev-secret")
-            key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
-            fernet = Fernet(key)
-            llm_api_key = fernet.decrypt(settings.encrypted_api_key.encode()).decode()
+            llm_api_key = decrypt_llm_key(settings.encrypted_api_key)
             if not body.model:
                 model = settings.model
             if not provider:

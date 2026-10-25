@@ -23,6 +23,8 @@ from sessionfs.server.db.models import (
     AgentPersona,
     ApiKey,
     Project,
+    RetrievalAuditContext,
+    RetrievalAuditEvent,
     Session,
     Ticket,
     User,
@@ -424,3 +426,60 @@ async def test_marketplace_skill_refs_round_trip_through_the_audit_api(
             json={"context_id": context_id, "tool_name": "load_marketplace_skill", "returned_refs": bad},
         )
         assert rejected.status_code == 422, bad
+
+
+@pytest.mark.asyncio
+async def test_session_retrieval_log_reads_null_project_event(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A helper turn's NULL-project event must serialize (not 500) on read.
+
+    Migration 090 makes project_id nullable for helper turns; the read model
+    used to declare ``project_id: str``, so a NULL value raised a validation
+    error.  ``get_session_retrieval_log`` is the one route that reads events
+    without a project filter, so it's the surface that exposed this.
+    """
+    user, key = await _make_user(db_session)
+    context = RetrievalAuditContext(
+        id=f"ra_{uuid.uuid4().hex[:16]}",
+        project_id=None,
+        created_by_user_id=user.id,
+    )
+    db_session.add(context)
+    await db_session.commit()
+
+    db_session.add(
+        RetrievalAuditEvent(
+            context_id=context.id,
+            project_id=None,
+            session_id="ses_nullproj",
+            tool_name="search_sessions",
+            arguments="{}",
+            returned_refs="{}",
+            source="helper",
+            caller_user_id=user.id,
+        )
+    )
+    db_session.add(
+        Session(
+            id="ses_nullproj",
+            user_id=user.id,
+            project_id=None,
+            source_tool="claude-code",
+            blob_key="sessions/ses_nullproj.sfs",
+            blob_size_bytes=1,
+            etag="etag",
+            messages_text="",
+            retrieval_audit_id=context.id,
+        )
+    )
+    await db_session.commit()
+
+    resp = await client.get(
+        "/api/v1/sessions/ses_nullproj/retrieval-log", headers=_hdrs(key)
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["count"] == 1
+    assert body["events"][0]["project_id"] is None
+    assert body["events"][0]["source"] == "helper"

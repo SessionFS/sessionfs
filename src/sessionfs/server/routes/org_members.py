@@ -116,6 +116,15 @@ class RemoveMemberResponse(BaseModel):
     pending_transfers_cancelled: int
 
 
+class DigestPrefsResponse(BaseModel):
+    org_id: str
+    opt_out: bool
+
+
+class DigestPrefsRequest(BaseModel):
+    opt_out: bool
+
+
 # ── Helpers ──
 
 
@@ -259,6 +268,9 @@ class OrgGeneralSettings(BaseModel):
     kb_retention_days: int | None = None
     kb_max_context_words: int | None = None
     kb_section_page_limit: int | None = None
+    # Session-helper retention window in days (per message). ``None`` means
+    # "use the platform default (90)"; the stored value is validated 1–3650.
+    helper_retention_days: int | None = None
     # GitHub #59 — verified-email-domain auto-join (v0.17.0). ``None``
     # is the "leave unchanged on partial PUT" sentinel; the stored/returned
     # value is always a list ([] when unset).
@@ -279,6 +291,7 @@ def _read_general_settings(org: Organization) -> OrgGeneralSettings:
         kb_retention_days=general.get("kb_retention_days"),
         kb_max_context_words=general.get("kb_max_context_words"),
         kb_section_page_limit=general.get("kb_section_page_limit"),
+        helper_retention_days=general.get("helper_retention_days"),
         auto_join_domains=auto_join,
     )
 
@@ -337,6 +350,10 @@ async def update_org_settings(
         1 <= body.kb_section_page_limit <= 200
     ):
         raise HTTPException(400, "kb_section_page_limit must be between 1 and 200")
+    if body.helper_retention_days is not None and not (
+        1 <= body.helper_retention_days <= 3650
+    ):
+        raise HTTPException(400, "helper_retention_days must be between 1 and 3650")
 
     # GitHub #59 — auto-join domains: normalize, validate against THIS
     # org's verified domains, and gate the feature on oidc_sso (only when
@@ -409,11 +426,26 @@ async def update_org_settings(
         raw = {}
     stored_general = raw.get("general")
     previous_general: dict = stored_general if isinstance(stored_general, dict) else {}
-    general = {k: v for k, v in body.model_dump().items() if v is not None}
-    # auto_join_domains omitted (None) means "leave unchanged": a client that
-    # only edits KB settings must not silently switch auto-join off.
-    if body.auto_join_domains is None and "auto_join_domains" in previous_general:
-        general["auto_join_domains"] = previous_general["auto_join_domains"]
+    # Merge into the stored general block: keys the caller omits are preserved,
+    # so an unrelated save (e.g. only kb_retention_days) can no longer wipe
+    # helper_retention_days / kb_* fields (N4).  ``model_fields_set`` separates
+    # an omitted key from an explicit ``null``: omitted leaves the stored value
+    # alone, explicit ``null`` clears the override (drops the key so it reverts
+    # to the platform default).  ``auto_join_domains`` keeps its own sentinel —
+    # ``[]`` clears it, ``null``/omitted leaves it unchanged.
+    general = dict(previous_general)
+    fields_set = body.model_fields_set
+    for key, value in body.model_dump().items():
+        if key not in fields_set:
+            continue
+        if key == "auto_join_domains":
+            if value is not None:
+                general[key] = value
+            continue
+        if value is None:
+            general.pop(key, None)
+        else:
+            general[key] = value
     raw["general"] = general
     org.settings = _json.dumps(raw)
     await db.commit()
@@ -456,6 +488,53 @@ async def list_members(
         seats_limit=org.seats_limit,
         current_user_role=role,
     )
+
+
+@router.get("/{org_id}/members/me/digest", response_model=DigestPrefsResponse)
+async def get_my_digest_prefs(
+    org_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> DigestPrefsResponse:
+    """Read the caller's weekly-digest opt-out for this org. Owner/admin only."""
+    await _org_or_404(db, org_id)
+    await _require_admin(db, user, org_id)
+    member = (
+        await db.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == user.id,
+            )
+        )
+    ).scalar_one()
+    return DigestPrefsResponse(org_id=org_id, opt_out=member.digest_opt_out)
+
+
+@router.put("/{org_id}/members/me/digest", response_model=DigestPrefsResponse)
+async def update_my_digest_prefs(
+    org_id: str,
+    data: DigestPrefsRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> DigestPrefsResponse:
+    """Set the caller's weekly-digest opt-out for this org. Owner/admin only.
+
+    Opt-out is per member, per org, and ON by default. Only owners and
+    admins receive the digest, so only they can opt out.
+    """
+    await _org_or_404(db, org_id)
+    await _require_admin(db, user, org_id)
+    member = (
+        await db.execute(
+            select(OrgMember).where(
+                OrgMember.org_id == org_id,
+                OrgMember.user_id == user.id,
+            )
+        )
+    ).scalar_one()
+    member.digest_opt_out = data.opt_out
+    await db.commit()
+    return DigestPrefsResponse(org_id=org_id, opt_out=member.digest_opt_out)
 
 
 @router.post("/{org_id}/members/invite", response_model=InviteResponse)

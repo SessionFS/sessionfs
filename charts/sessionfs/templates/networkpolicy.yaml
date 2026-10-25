@@ -45,6 +45,17 @@ spec:
         - port: {{ .Values.api.service.port }}
           protocol: TCP
     {{- end }}
+    {{- $retention := .Values.api.helperRetention | default dict }}
+    {{- if and $retention.enabled ($retention.cronJob | default dict).enabled }}
+    # Allow from the helper-retention CronJob
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "sessionfs.componentSelectorLabels" (list . "helper-retention") | nindent 14 }}
+      ports:
+        - port: {{ .Values.api.service.port }}
+          protocol: TCP
+    {{- end }}
   egress:
     {{- if and $polling.enabled $polling.allowedPrivateCidrs }}
     # Registry polling opt-in: internal Git hosts (https only)

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AgentRunsTab from './AgentRunsTab';
@@ -6,6 +6,8 @@ import AgentRunsTab from './AgentRunsTab';
 const { hooks } = vi.hoisted(() => ({
   hooks: {
     useAgentRuns: vi.fn(),
+    useReplayAgentRun: vi.fn(),
+    useCompareAgentRuns: vi.fn(),
   },
 }));
 
@@ -36,6 +38,9 @@ function run(overrides: Record<string, unknown> = {}) {
     session_id: null,
     triggered_by_user_id: 'u1',
     triggered_by_persona: 'sentinel',
+    replayed_from: null,
+    prompt: null,
+    context_refs: [],
     created_at: '2026-05-14T00:00:00Z',
     started_at: '2026-05-14T00:00:01Z',
     completed_at: '2026-05-14T00:01:00Z',
@@ -51,6 +56,16 @@ beforeEach(() => {
     error: null,
     refetch: vi.fn(),
     isFetching: false,
+  });
+  hooks.useReplayAgentRun.mockReturnValue({
+    mutate: vi.fn(),
+    isPending: false,
+    error: null,
+  });
+  hooks.useCompareAgentRuns.mockReturnValue({
+    data: null,
+    isFetching: false,
+    error: null,
   });
 });
 
@@ -151,5 +166,142 @@ describe('AgentRunsTab', () => {
     expect(screen.getByText('failed')).toBeInTheDocument();
     expect(screen.getByText('fail')).toBeInTheDocument();
     expect(screen.getByText(/exit 1/)).toBeInTheDocument();
+  });
+
+  it('shows a replayed-from link on child runs', () => {
+    hooks.useAgentRuns.mockReturnValue({
+      data: [run({ replayed_from: 'run_parent' })],
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+      isFetching: false,
+    });
+    render(<AgentRunsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('run_abc'));
+    expect(screen.getByText('Replayed from')).toBeInTheDocument();
+    const link = screen.getByRole('button', { name: 'run_parent' });
+    expect(link).toBeInTheDocument();
+  });
+
+  it('opens the replay dialog and submits edited fields', async () => {
+    const user = userEvent.setup();
+    const mutate = vi.fn();
+    hooks.useReplayAgentRun.mockReturnValue({
+      mutate,
+      isPending: false,
+      error: null,
+    });
+    render(<AgentRunsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('run_abc'));
+    await user.click(screen.getByRole('button', { name: 'Replay' }));
+    expect(screen.getByText(/Replay run/)).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText('Prompt'), 'review the change');
+    await user.type(screen.getByLabelText('Ticket'), 'tk_9');
+    await user.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Replay' }),
+    );
+
+    expect(mutate).toHaveBeenCalledWith(
+      { runId: 'run_abc', body: { prompt: 'review the change', ticket_id: 'tk_9' } },
+      expect.anything(),
+    );
+  });
+
+  it('shows the generated command with copy after a successful replay', async () => {
+    const user = userEvent.setup();
+    const mutate = vi.fn((_vars, opts) => opts.onSuccess({
+      run: run({ id: 'run_new', replayed_from: 'run_abc' }),
+      command: 'sfs agent run --run-id run_new',
+      ci_hint: '# Replay this agent run in CI.\ngithub_actions:\n  - name: Replay agent run\n    run: sfs agent run --run-id run_new',
+    }));
+    hooks.useReplayAgentRun.mockReturnValue({
+      mutate,
+      isPending: false,
+      error: null,
+    });
+    render(<AgentRunsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('run_abc'));
+    await user.click(screen.getByRole('button', { name: 'Replay' }));
+    await user.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Replay' }),
+    );
+
+    expect(screen.getAllByText(/sfs agent run --run-id run_new/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/github_actions/)).toBeInTheDocument();
+  });
+
+  it('opens the compare dialog and shows the findings diff', async () => {
+    const user = userEvent.setup();
+    hooks.useAgentRuns.mockReturnValue({
+      data: [run(), run({ id: 'run_xyz' })],
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+      isFetching: false,
+    });
+    hooks.useCompareAgentRuns.mockReturnValue({
+      data: {
+        a_id: 'run_abc',
+        b_id: 'run_xyz',
+        a_findings_count: 2,
+        b_findings_count: 1,
+        a_severity_counts: { low: 2 },
+        b_severity_counts: { high: 1 },
+        added: [{ rule: 'missing-rule' }],
+        removed: [{ title: 'docstring missing' }],
+        unchanged: [{ title: 'unused import' }],
+      },
+      isFetching: false,
+      error: null,
+    });
+    render(<AgentRunsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('run_abc'));
+    await user.click(screen.getByRole('button', { name: 'Compare' }));
+    expect(screen.getByText(/Compare findings/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Compare with run/i }));
+    await user.click(screen.getByRole('option', { name: 'run_xyz' }));
+
+    const dialog = within(screen.getByRole('dialog'));
+    expect(dialog.getByText(/Added \(1\)/)).toBeInTheDocument();
+    expect(dialog.getByText(/missing-rule/)).toBeInTheDocument();
+    expect(dialog.getByText(/Removed \(1\)/)).toBeInTheDocument();
+    expect(dialog.getByText(/docstring missing/)).toBeInTheDocument();
+    expect(dialog.getByText(/Unchanged \(1\)/)).toBeInTheDocument();
+  });
+
+  it('flags a truncated compare diff', async () => {
+    const user = userEvent.setup();
+    hooks.useAgentRuns.mockReturnValue({
+      data: [run(), run({ id: 'run_xyz' })],
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+      isFetching: false,
+    });
+    hooks.useCompareAgentRuns.mockReturnValue({
+      data: {
+        a_id: 'run_abc',
+        b_id: 'run_xyz',
+        a_findings_count: 600,
+        b_findings_count: 600,
+        a_severity_counts: { low: 600 },
+        b_severity_counts: { high: 600 },
+        added: [{ rule: 'x' }],
+        removed: [{ rule: 'y' }],
+        unchanged: [],
+        truncated: true,
+      },
+      isFetching: false,
+      error: null,
+    });
+    render(<AgentRunsTab projectId="proj_1" />);
+    fireEvent.click(screen.getByText('run_abc'));
+    await user.click(screen.getByRole('button', { name: 'Compare' }));
+    await user.click(screen.getByRole('button', { name: /Compare with run/i }));
+    await user.click(screen.getByRole('option', { name: 'run_xyz' }));
+
+    expect(screen.getByText(/truncated/i)).toBeInTheDocument();
   });
 });

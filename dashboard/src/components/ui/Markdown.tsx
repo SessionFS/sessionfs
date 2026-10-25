@@ -1,5 +1,5 @@
 import { isValidElement, type ReactNode } from 'react';
-import ReactMarkdown, { type Components } from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import CopyButton from '../CopyButton';
@@ -73,6 +73,13 @@ function safeHref(href: string | undefined): string | null {
   }
 }
 
+/** react-markdown's default sanitizer drops `data:` URLs, but inline
+ *  `data:image/…` srcs are safe to render (no network request). Allow exactly
+ *  those through and delegate everything else to the default sanitizer. */
+function urlTransform(url: string): string {
+  return url.startsWith('data:image/') ? url : defaultUrlTransform(url);
+}
+
 // Long ids, URLs and paths are common in project documents; let them wrap
 // instead of pushing the column wider than the screen.
 const WRAP = '[overflow-wrap:anywhere]';
@@ -120,6 +127,31 @@ const components: Components = {
         {children}
       </a>
     );
+  },
+  // Remote images must never be loaded: a markdown image to another origin
+  // could exfiltrate secrets via the URL query, so it renders as a plain link
+  // instead. Only same-origin (`/…`) and inline data:image srcs load as <img>.
+  img: ({ node, src, alt, ...props }) => {
+    void node;
+    const altText = typeof alt === 'string' ? alt : '';
+    const local = src != null && (src.startsWith('data:image/') || (src.startsWith('/') && safeHref(src) !== null));
+    if (local) {
+      return <img src={src} alt={altText} className="max-w-full rounded-md my-2" {...props} />;
+    }
+    const safe = safeHref(src);
+    if (safe) {
+      const external = /^(https?:|mailto:)/.test(safe);
+      return (
+        <a
+          href={safe}
+          className={`text-brand underline underline-offset-2 decoration-brand/40 hover:decoration-brand ${WRAP}`}
+          {...(external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
+        >
+          {altText || safe}
+        </a>
+      );
+    }
+    return <span className={WRAP}>{altText || '[image]'}</span>;
   },
   ul: ({ node, children, ...props }) => (
     <ul className="list-disc pl-5 my-3 space-y-1.5 marker:text-text-tertiary" {...props}>{children}</ul>
@@ -210,6 +242,7 @@ export function Markdown({ children, headingIdPrefix, className = '' }: Markdown
     <div className={`text-base leading-7 text-text-secondary ${className}`}>
       <ReactMarkdown
         skipHtml
+        urlTransform={urlTransform}
         remarkPlugins={[remarkGfm, remarkBreaks]}
         rehypePlugins={headingIdPrefix ? [rehypeHeadingIds(headingIdPrefix)] : []}
         components={components}

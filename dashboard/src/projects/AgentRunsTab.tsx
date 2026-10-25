@@ -9,35 +9,39 @@
  *
  * Phase 3 restyle: status chips → Badge variants, filters → Select,
  * actions → Button, IDs → mono-chip, detail panel → sunken ladder.
+ *
+ * GitHub #95: each run can be replayed with an edited prompt/ticket/
+ * context from a dialog (which surfaces the server-generated command +
+ * CI snippet), child runs link back to their parent, and two runs can
+ * be compared for a findings diff.
  */
 
 import { useState } from 'react';
-import { useAgentRuns } from '../hooks/useAgentRuns';
+import {
+  useAgentRuns,
+  useCompareAgentRuns,
+  useReplayAgentRun,
+} from '../hooks/useAgentRuns';
 import RelativeDate from '../components/RelativeDate';
+import CopyButton from '../components/CopyButton';
 import { Badge } from '../components/Badge';
-import { Select, Button, Card } from '../components/ui';
-import type { AgentRun } from '../api/client';
+import {
+  Select,
+  Button,
+  Card,
+  Input,
+  Textarea,
+  Dialog,
+  DialogHeader,
+  DialogFooter,
+} from '../components/ui';
+import type { AgentRun, AgentRunReplayInput, AgentRunReplayResult } from '../api/client';
 import { errorMessage } from '../utils/errorMessage';
+import { safeHttpUrl } from '../utils/url';
 
-/**
- * AgentRun `ci_run_url` is operator-supplied (`--ci-run-url` flag on
- * `sfs agent run`) and stored verbatim. Treat it as untrusted — only
- * render it as a clickable link when the scheme is http(s). Anything
- * else (`javascript:`, `data:`, malformed) falls back to plain text so
- * a crafted run row cannot execute code on click. Codex R1 HIGH fix.
- */
-function safeHttpUrl(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  try {
-    const u = new URL(raw);
-    if (u.protocol === 'http:' || u.protocol === 'https:') {
-      return u.toString();
-    }
-  } catch {
-    // Falls through to null — malformed URLs are not clickable.
-  }
-  return null;
-}
+// AgentRun `ci_run_url` is operator-supplied and stored verbatim, so it is
+// treated as untrusted: safeHttpUrl only links http(s) URLs and falls back to
+// plain text for anything else.
 
 interface AgentRunsTabProps {
   projectId: string;
@@ -63,6 +67,15 @@ const TRIGGER_FILTERS: { value: string; label: string }[] = [
   { value: 'api', label: 'API' },
 ];
 
+const FAIL_ON_OPTIONS: { value: string; label: string }[] = [
+  { value: '', label: 'Inherit from parent' },
+  { value: 'none', label: 'none' },
+  { value: 'low', label: 'low' },
+  { value: 'medium', label: 'medium' },
+  { value: 'high', label: 'high' },
+  { value: 'critical', label: 'critical' },
+];
+
 /** Map AgentRun statuses to Badge variants. */
 const STATUS_VARIANT: Record<string, 'default' | 'success' | 'warning' | 'danger' | 'info'> = {
   queued: 'default',
@@ -86,6 +99,8 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
   const [triggerFilter, setTriggerFilter] = useState<string>('');
   const [personaFilter, setPersonaFilter] = useState<string>('');
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [replayTarget, setReplayTarget] = useState<AgentRun | null>(null);
+  const [compareTarget, setCompareTarget] = useState<AgentRun | null>(null);
 
   const { data, isLoading, error, refetch, isFetching } = useAgentRuns(projectId, {
     status: statusFilter || undefined,
@@ -93,6 +108,13 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
     persona_name: personaFilter.trim() || undefined,
     limit: 50,
   });
+
+  function openRun(id: string) {
+    setExpanded(id);
+    requestAnimationFrame(() => {
+      document.getElementById(`run-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
+  }
 
   if (isLoading) return <p className="text-text-tertiary p-4">Loading runs…</p>;
   if (error) return <p role="alert" className="text-danger p-4">Failed to load runs: {errorMessage(error)}</p>;
@@ -162,7 +184,7 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
       ) : (
         <Card className="divide-y divide-[var(--border)] p-0">
           {runs.map((r) => (
-            <div key={r.id}>
+            <div key={r.id} id={`run-${r.id}`}>
               <button
                 type="button"
                 onClick={() => setExpanded(expanded === r.id ? null : r.id)}
@@ -179,6 +201,11 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
                   />
                   <span className="font-mono text-sm text-text-secondary">{r.persona_name}</span>
                   <span className="text-xs text-text-tertiary">via {r.trigger_source}</span>
+                  {r.replayed_from && (
+                    <span className="text-xs text-text-tertiary" title={`Replayed from ${r.replayed_from}`}>
+                      ↩ <code className="text-mono-chip">{r.replayed_from}</code>
+                    </span>
+                  )}
                   {r.severity && (
                     <span className={`text-xs ${SEVERITY_TONE[r.severity] ?? ''}`}>
                       severity: {r.severity}
@@ -210,16 +237,49 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
                   <div className="text-sm text-text-tertiary mt-1 truncate">{r.result_summary}</div>
                 )}
               </button>
-              {expanded === r.id && <RunDetail run={r} />}
+              {expanded === r.id && (
+                <RunDetail
+                  run={r}
+                  onReplay={() => setReplayTarget(r)}
+                  onCompare={() => setCompareTarget(r)}
+                  onOpenRun={openRun}
+                />
+              )}
             </div>
           ))}
         </Card>
+      )}
+
+      {replayTarget && (
+        <ReplayDialog
+          projectId={projectId}
+          run={replayTarget}
+          onClose={() => setReplayTarget(null)}
+        />
+      )}
+      {compareTarget && (
+        <CompareDialog
+          projectId={projectId}
+          baseRun={compareTarget}
+          otherRuns={runs.filter((r) => r.id !== compareTarget.id)}
+          onClose={() => setCompareTarget(null)}
+        />
       )}
     </section>
   );
 }
 
-function RunDetail({ run }: { run: AgentRun }) {
+function RunDetail({
+  run,
+  onReplay,
+  onCompare,
+  onOpenRun,
+}: {
+  run: AgentRun;
+  onReplay: () => void;
+  onCompare: () => void;
+  onOpenRun: (id: string) => void;
+}) {
   return (
     <div className="px-4 py-3 text-sm space-y-3 bg-bg-sunken">
       <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
@@ -266,7 +326,39 @@ function RunDetail({ run }: { run: AgentRun }) {
             {run.duration_seconds !== null ? `${run.duration_seconds}s` : '—'}
           </dd>
         </div>
+        {run.replayed_from && (
+          <div>
+            <dt className="text-2xs uppercase tracking-[0.04em] text-text-tertiary">Replayed from</dt>
+            <dd className="mt-0.5">
+              <button
+                type="button"
+                onClick={() => onOpenRun(run.replayed_from!)}
+                className="text-brand hover:underline font-mono"
+              >
+                {run.replayed_from}
+              </button>
+            </dd>
+          </div>
+        )}
       </dl>
+
+      {run.prompt && (
+        <div>
+          <h4 className="text-micro text-text-tertiary mb-1">Prompt</h4>
+          <p className="text-text-secondary whitespace-pre-wrap">{run.prompt}</p>
+        </div>
+      )}
+
+      {run.context_refs.length > 0 && (
+        <div>
+          <h4 className="text-micro text-text-tertiary mb-1">Context refs</h4>
+          <ul className="list-disc list-inside text-text-secondary">
+            {run.context_refs.map((ref, i) => (
+              <li key={`${ref}-${i}`} className="font-mono text-xs">{ref}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {run.result_summary && (
         <div>
@@ -287,6 +379,237 @@ function RunDetail({ run }: { run: AgentRun }) {
           </pre>
         </div>
       )}
+
+      <div className="flex items-center gap-2 pt-1">
+        <Button variant="secondary" size="sm" onClick={onReplay}>
+          Replay
+        </Button>
+        <Button variant="secondary" size="sm" onClick={onCompare}>
+          Compare
+        </Button>
+      </div>
     </div>
+  );
+}
+
+function ReplayDialog({
+  projectId,
+  run,
+  onClose,
+}: {
+  projectId: string;
+  run: AgentRun;
+  onClose: () => void;
+}) {
+  const replay = useReplayAgentRun(projectId);
+  const [personaName, setPersonaName] = useState('');
+  const [ticketId, setTicketId] = useState('');
+  const [prompt, setPrompt] = useState('');
+  const [contextRefs, setContextRefs] = useState('');
+  const [failOn, setFailOn] = useState('');
+  const [triggerRef, setTriggerRef] = useState('');
+  const [result, setResult] = useState<AgentRunReplayResult | null>(null);
+
+  function submit() {
+    const body: AgentRunReplayInput = {};
+    if (personaName.trim()) body.persona_name = personaName.trim();
+    if (ticketId.trim()) body.ticket_id = ticketId.trim();
+    if (prompt) body.prompt = prompt;
+    // Match the server's context_refs limits: ≤50 refs, each ≤500 chars,
+    // stripped, empties dropped.
+    const refs = contextRefs
+      .split('\n')
+      .map((line) => line.trim().slice(0, 500))
+      .filter(Boolean)
+      .slice(0, 50);
+    if (refs.length) body.context_refs = refs;
+    if (failOn) body.fail_on = failOn;
+    if (triggerRef.trim()) body.trigger_ref = triggerRef.trim();
+    replay.mutate({ runId: run.id, body }, { onSuccess: setResult });
+  }
+
+  return (
+    <Dialog open onClose={onClose} titleId="replay-dialog-title" className="max-w-2xl">
+      <DialogHeader titleId="replay-dialog-title">
+        Replay run <code className="font-mono">{run.id}</code>
+      </DialogHeader>
+
+      {result ? (
+        <div className="space-y-3">
+          <p className="text-sm text-text-primary">
+            Queued replay <code className="text-mono-chip">{result.run.id}</code>.
+          </p>
+          <div>
+            <h4 className="text-micro text-text-tertiary mb-1">Command</h4>
+            <div className="flex items-start gap-2">
+              <code className="flex-1 font-mono text-xs p-2 rounded-lg border border-border bg-bg-primary break-all">
+                {result.command}
+              </code>
+              <CopyButton text={result.command} />
+            </div>
+          </div>
+          <div>
+            <h4 className="text-micro text-text-tertiary mb-1">CI snippet</h4>
+            <pre className="text-xs p-2 rounded-lg border border-border overflow-x-auto bg-bg-primary whitespace-pre-wrap">
+              {result.ci_hint}
+            </pre>
+          </div>
+          <DialogFooter>
+            <Button onClick={onClose}>Done</Button>
+          </DialogFooter>
+        </div>
+      ) : (
+        <>
+          <p className="text-xs text-text-tertiary -mt-1 mb-3">
+            Leave a field blank to copy it from the parent run.
+          </p>
+          <div className="space-y-3">
+            <Input
+              title="Persona"
+              placeholder={run.persona_name}
+              value={personaName}
+              maxLength={50}
+              onChange={(e) => setPersonaName(e.target.value)}
+            />
+            <Input
+              title="Ticket"
+              placeholder={run.ticket_id ?? 'none'}
+              value={ticketId}
+              maxLength={64}
+              onChange={(e) => setTicketId(e.target.value)}
+            />
+            <Textarea
+              title="Prompt"
+              value={prompt}
+              maxLength={20000}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="(inherit)"
+            />
+            <Textarea
+              title="Context refs (one per line)"
+              value={contextRefs}
+              onChange={(e) => setContextRefs(e.target.value)}
+              placeholder={run.context_refs.join('\n') || '(inherit)'}
+            />
+            <Select
+              title="Fail-on"
+              value={failOn}
+              onValueChange={setFailOn}
+              options={FAIL_ON_OPTIONS}
+            />
+            <Input
+              title="Trigger ref"
+              placeholder={run.trigger_ref ?? '(inherit)'}
+              value={triggerRef}
+              maxLength={200}
+              onChange={(e) => setTriggerRef(e.target.value)}
+            />
+          </div>
+          {replay.error && (
+            <p role="alert" className="text-danger text-sm mt-3">{errorMessage(replay.error)}</p>
+          )}
+          <DialogFooter>
+            <Button variant="secondary" onClick={onClose}>Cancel</Button>
+            <Button onClick={submit} loading={replay.isPending}>Replay</Button>
+          </DialogFooter>
+        </>
+      )}
+    </Dialog>
+  );
+}
+
+function findingLabel(f: Record<string, unknown>): string {
+  const rule = f.rule;
+  const title = f.title;
+  if (typeof rule === 'string' && rule) return rule;
+  if (typeof title === 'string' && title) return title;
+  return '(unnamed finding)';
+}
+
+function FindingList({ label, items }: { label: string; items: Record<string, unknown>[] }) {
+  if (items.length === 0) {
+    return <p className="text-xs text-text-tertiary">No {label.toLowerCase()} findings.</p>;
+  }
+  return (
+    <div>
+      <h4 className="text-micro text-text-tertiary mb-1">
+        {label} ({items.length})
+      </h4>
+      <ul className="list-disc list-inside">
+        {items.map((f, i) => (
+          <li key={`${label}-${i}`} className="text-xs text-text-secondary font-mono">
+            {findingLabel(f)}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function CompareDialog({
+  projectId,
+  baseRun,
+  otherRuns,
+  onClose,
+}: {
+  projectId: string;
+  baseRun: AgentRun;
+  otherRuns: AgentRun[];
+  onClose: () => void;
+}) {
+  const [otherId, setOtherId] = useState('');
+  const { data, isFetching, error } = useCompareAgentRuns(
+    projectId,
+    baseRun.id,
+    otherId || undefined,
+  );
+
+  return (
+    <Dialog open onClose={onClose} titleId="compare-dialog-title" className="max-w-2xl">
+      <DialogHeader titleId="compare-dialog-title">Compare findings</DialogHeader>
+      <div className="space-y-3">
+        <p className="text-sm text-text-secondary">
+          Base run <code className="text-mono-chip">{baseRun.id}</code>
+        </p>
+        <Select
+          aria-label="Compare with run"
+          value={otherId}
+          onValueChange={setOtherId}
+          options={otherRuns.map((r) => ({ value: r.id, label: r.id }))}
+          placeholder="Choose another run…"
+        />
+        {error && <p role="alert" className="text-danger text-sm">{errorMessage(error)}</p>}
+        {isFetching && <p className="text-sm text-text-tertiary">Comparing…</p>}
+        {data && !isFetching && (
+          <div className="space-y-3 border-t border-border pt-3">
+            <div className="flex gap-4 flex-wrap text-xs">
+              <span className="text-text-secondary">
+                {baseRun.id}: {data.a_findings_count} findings
+                {Object.entries(data.a_severity_counts).map(([sev, n]) => (
+                  <span key={sev} className="ml-1 text-text-tertiary">{sev} {n}</span>
+                ))}
+              </span>
+              <span className="text-text-secondary">
+                {data.b_id}: {data.b_findings_count} findings
+                {Object.entries(data.b_severity_counts).map(([sev, n]) => (
+                  <span key={sev} className="ml-1 text-text-tertiary">{sev} {n}</span>
+                ))}
+              </span>
+            </div>
+            <FindingList label="Added" items={data.added} />
+            <FindingList label="Removed" items={data.removed} />
+            <FindingList label="Unchanged" items={data.unchanged} />
+            {data.truncated && (
+              <p className="text-xs text-text-tertiary">
+                Diff was truncated to fit the response.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+      <DialogFooter>
+        <Button variant="secondary" onClick={onClose}>Close</Button>
+      </DialogFooter>
+    </Dialog>
   );
 }

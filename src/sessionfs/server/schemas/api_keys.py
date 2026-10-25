@@ -71,6 +71,10 @@ VALID_SCOPES = frozenset(
         # accepted only by those endpoints, and only while the minter is
         # still a platform admin.
         "platform_sweeps:run",
+        # GitHub #90: operator metrics scrape (GET /api/v1/admin/metrics).
+        # Platform-admin mint only; the key works only while its owner and
+        # minter are still active platform admins.
+        "admin_metrics:read",
         # Marketplace v2 §8.6: devices post advisory skills-policy
         # compliance reports (CI runners included).
         "devices:report",

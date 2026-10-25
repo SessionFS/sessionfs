@@ -240,6 +240,83 @@ class Session(Base):
     retrieval_audit_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
 
+class SessionUpload(Base):
+    """A chunked, resumable session upload (GitHub #91).
+
+    The single-shot ``PUT /sessions/{id}/sync`` route has to receive the whole
+    archive in one request; large transcripts run into proxy and read-timeout
+    ceilings. A chunked upload instead: (1) initiates an upload row, (2) PUTs
+    each part into blob storage, (3) completes, which assembles the parts and
+    runs them through the exact same validation/quote/DLP/project-routing path
+    as the single-shot push.
+
+    Parts live in the ``session_upload_parts`` child table and under blob key
+    ``uploads/{upload_id}/part-{n:05d}``. If-Match is NOT stored here: complete
+    takes it from the complete request so a retried complete never replays the
+    (possibly stale) ETag captured at initiate. After a successful complete the
+    push result is stored on the row (``result_etag``, ``result_size``,
+    ``result_synced_at``, ``result_created``) so a retried complete returns the
+    same 200/201 without re-pushing.
+
+    The ``completion_token`` fences a slow, live complete against the stale-
+    completing reclaim: the complete that claims the row writes a fresh random
+    token, and finalize/revert only apply when that token is still on the row.
+    A reclaim that has since reverted (or re-claimed) the row clears the token,
+    so the original complete's finalize matches zero rows and never overwrites
+    the newer claimant's stored result.
+    """
+
+    __tablename__ = "session_uploads"
+    __table_args__ = (
+        # The "max 3 pending per user" gate and the owner-scoped reads.
+        Index("idx_session_uploads_user_status", "user_id", "status"),
+        # The retention sweeper aborts expired pending uploads.
+        Index("idx_session_uploads_status_expires", "status", "expires_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    session_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    total_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    part_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    part_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    completing_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completion_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_etag: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    result_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    result_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    result_created: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class SessionUploadPart(Base):
+    """One received part of a chunked session upload."""
+
+    __tablename__ = "session_upload_parts"
+
+    upload_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("session_uploads.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    part_number: Mapped[int] = mapped_column(Integer, primary_key=True)
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
 class Handoff(Base):
     __tablename__ = "handoffs"
     __table_args__ = (
@@ -517,7 +594,41 @@ class UserJudgeSettings(Base):
     encrypted_api_key: Mapped[str] = mapped_column(Text, nullable=False)
     base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class OrgLlmSettings(Base):
+    """Org-wide LLM key for the session helper (migration 084).
+
+    One row per org (``org_id`` is the primary key). An org admin sets a
+    provider / model / encrypted key that any active member can use when
+    they have no personal judge settings. The key is Fernet-encrypted with
+    the same derivation as ``UserJudgeSettings`` (``server/llm_keys.py``)
+    and is never returned by the API — ``has_api_key`` plus a last-4 hint
+    stand in for it.
+    """
+
+    __tablename__ = "org_llm_settings"
+
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), nullable=False)
+    encrypted_api_key: Mapped[str] = mapped_column(Text, nullable=False)
+    base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    updated_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
 
@@ -870,6 +981,27 @@ class Project(Base):
     kb_retention_days: Mapped[int] = mapped_column(Integer, default=180, server_default="180")
     kb_max_context_words: Mapped[int] = mapped_column(Integer, default=2000, server_default="2000")
     kb_section_page_limit: Mapped[int] = mapped_column(Integer, default=30, server_default="30")
+    # Scheduled KB compile (GitHub #93). compile_schedule is 'off', 'nightly'
+    # or 'weekly'; compile_after_claims compiles once that many claims are
+    # pending regardless of schedule. last_scheduled_compile_at is set by the
+    # sweep only (never by a manual compile). The server default is 'off' so
+    # existing rows (and any raw insert that omits the column) opt out of the
+    # sweep; new projects are created with an explicit 'nightly' (the Python
+    # default below) at the single creation path in routes/projects.py.
+    compile_schedule: Mapped[str] = mapped_column(
+        String(16), default="nightly", server_default="off"
+    )
+    compile_after_claims: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_scheduled_compile_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # When confidence decay last ran for this project. Decay is time-based —
+    # at most one 0.8 factor per compile pass, once per elapsed 30-day period
+    # since this timestamp — rather than applied every compile, so a long gap
+    # never retroactively decays long-lived claims in a single pass.
+    last_decay_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -1016,6 +1148,41 @@ class OrgMember(Base):
     joined_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+    # GH #97 — per-member opt-out for the weekly org activity digest.
+    # ON by default; owners/admins can disable it for themselves via
+    # PUT /api/v1/orgs/{org_id}/members/me/digest.
+    digest_opt_out: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+
+
+class OrgDigestRun(Base):
+    """Idempotency ledger for the weekly org activity digest (GH #97).
+
+    One row per (org, week_start) once a digest has been sent for that
+    week. The sweep inserts the row BEFORE sending so a concurrent
+    re-run (or a crash mid-send) cannot double-send; ``week_start`` is
+    the Monday 00:00 UTC that opens the 7-day window.
+    """
+
+    __tablename__ = "org_digest_runs"
+
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    week_start: Mapped[date] = mapped_column(Date, primary_key=True)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    recipient_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    # Number of recipients actually delivered to. Updated AFTER sending so
+    # a fully-failed send records zero and the sweep releases the (org, week)
+    # reservation for a later retry (see routes/admin.py).
+    sent_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
 
 
 class OrgOwnerTransfer(Base):
@@ -1100,8 +1267,9 @@ class ProjectTransfer(Base):
     """v0.10.0 — durable state machine + audit row for project
     ownership transfers (personal ↔ org, org ↔ org).
 
-    State machine: ``pending`` → ``accepted`` | ``rejected`` | ``cancelled``.
-    Rows are NEVER deleted post-resolution — the audit trail is the
+    State machine: ``pending`` → ``accepted`` | ``rejected`` | ``cancelled``
+    (and ``expired`` for admin-proposed transfers past their consent window,
+    GH #96). Rows are NEVER deleted post-resolution — the audit trail is the
     compliance artifact (CEO directive, KB entry 230 #1).
 
     ``from_scope`` / ``to_scope`` hold either the literal string
@@ -1141,6 +1309,11 @@ class ProjectTransfer(Base):
             postgresql_where=text("state = 'pending'"),
             sqlite_where=text("state = 'pending'"),
         ),
+        # Admin-proposed transfers (GH #96): the proposer is also
+        # `initiated_by`, but this index keeps "which proposals did this
+        # admin make" lookups cheap when `initiated_by` is not the
+        # proposal flag (e.g. after a future initiator/on-behalf split).
+        Index("idx_project_transfers_proposed_by", "proposed_by_user_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -1184,6 +1357,24 @@ class ProjectTransfer(Base):
     )
     accepted_by: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id"), nullable=True
+    )
+    # GH #96 — admin-proposed transfers. `proposed_by_user_id` marks the
+    # proposal shape (non-NULL = the destination-org admin who proposed the
+    # move); `proposal_reason` is the justification shown to the owner and
+    # quoted in decline/expiry emails; `expires_at` bounds the consent
+    # window (lazily flipped pending → expired, like owner transfers).
+    proposed_by_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey(
+            "users.id",
+            ondelete="SET NULL",
+            name="fk_project_transfers_proposed_by_user_id",
+        ),
+        nullable=True,
+    )
+    proposal_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -1528,6 +1719,10 @@ class ContextCompilation(Base):
     )
     compiled_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+    # 'manual' (a user clicked Compile) or 'scheduled' (the KB compile sweep).
+    trigger: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="manual", server_default="manual"
     )
 
 
@@ -2292,6 +2487,7 @@ class AgentRun(Base):
             "trigger_ref",
         ),
         Index("idx_agent_run_project_created", "project_id", "created_at"),
+        Index("idx_agent_run_replayed_from", "replayed_from"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # run_<hex>
@@ -2338,6 +2534,15 @@ class AgentRun(Base):
 
     # Session linkage (.sfs session that captured this run).
     session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Replay provenance + edited prompt/context (GitHub #95, migration 085).
+    # `replayed_from` is a plain string (no FK) so the audit row survives
+    # even if the parent run is later hard-deleted, same as persona_name /
+    # ticket_id / session_id. `context_refs` is JSON-encoded list[str] as
+    # Text (cross-DB, matching `findings`).
+    replayed_from: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context_refs: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Triggerer provenance.
     triggered_by_user_id: Mapped[str | None] = mapped_column(
@@ -2721,10 +2926,12 @@ class RetrievalAuditContext(Base):
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    project_id: Mapped[str] = mapped_column(
+    # Nullable (090): a helper turn scoped to sessions without a single
+    # project still writes audit events; API-created contexts always set it.
+    project_id: Mapped[str | None] = mapped_column(
         String(64),
         ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     persona_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
@@ -2755,10 +2962,10 @@ class RetrievalAuditEvent(Base):
         ForeignKey("retrieval_audit_contexts.id", ondelete="CASCADE"),
         nullable=False,
     )
-    project_id: Mapped[str] = mapped_column(
+    project_id: Mapped[str | None] = mapped_column(
         String(64),
         ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
@@ -3076,6 +3283,140 @@ class OrgAuditEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+# v0.23 — Jira integration (migration 091).
+
+
+class OrgTrackerConnection(Base):
+    """An org's connection to an external tracker (Jira Cloud only in the MVP).
+
+    One row per org (org_id is the PK). The API token is Fernet-encrypted at
+    rest with the same derivation the judge settings use; it is never
+    returned by any route. ``default_template`` is the template slug the org
+    admin picks when connecting — the mapping UI defaults new mappings to it.
+    """
+
+    __tablename__ = "org_tracker_connections"
+
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="jira", server_default="jira"
+    )
+    site_url: Mapped[str] = mapped_column(String(255), nullable=False)
+    account_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    encrypted_api_token: Mapped[str] = mapped_column(Text, nullable=False)
+    default_template: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="agile", server_default="agile"
+    )
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    connected_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    last_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class TrackerProjectMapping(Base):
+    """Maps a SessionFS project to a Jira project for ticket promotion.
+
+    One mapping per SessionFS project (project_id unique). ``template`` NULL
+    means "use the org's default template". ``issue_type`` defaults to
+    "Story" but may name any issue type the Jira project exposes.
+    """
+
+    __tablename__ = "tracker_project_mappings"
+    __table_args__ = (
+        Index("idx_tracker_mapping_org", "org_id"),
+        UniqueConstraint("project_id", name="uq_tracker_mapping_project"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    jira_project_key: Mapped[str] = mapped_column(String(50), nullable=False)
+    issue_type: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="Story", server_default="Story"
+    )
+    template: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    done_status_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    created_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class TicketTrackerLink(Base):
+    """Strict 1:1 link from a SessionFS ticket to a promoted Jira issue.
+
+    ``ticket_id`` is the PK and FK (CASCADE) — deleting a ticket removes its
+    link, and the PK guarantees at most one link per ticket. ``org_id`` is a
+    denormalized copy for org-scoped queries (the ticket's org is reachable
+    through its project, but health checks scan links directly).
+
+    ``status`` is ``pending`` while a publish is claiming the ticket (a second
+    concurrent publish hits the unique ticket PK and gets 409
+    ``publish_in_progress``) and flips to ``linked`` only after the remote
+    issue exists. ``site_url``/``issue_id`` snapshot the connection at publish
+    time; a link whose org/site no longer matches the current connection is
+    stale and never updated.
+    """
+
+    __tablename__ = "ticket_tracker_links"
+    __table_args__ = (
+        Index("idx_ticket_tracker_link_org", "org_id"),
+        Index("idx_ticket_tracker_link_status_checked", "last_status_checked_at"),
+    )
+
+    ticket_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tickets.id", ondelete="CASCADE"), primary_key=True
+    )
+    org_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="jira", server_default="jira"
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="linked", server_default="linked"
+    )
+    # Fences the pending publish claim (see the migration 091 comment): set to a
+    # fresh ``secrets.token_hex(16)`` on claim/reclaim and cleared once linked.
+    claim_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    site_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    issue_id: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    issue_key: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    issue_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    last_pushed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_pushed_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_known_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    last_status_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    payload_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_published_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    last_push_failed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_push_failure: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
 
 # v0.16 — portable skills/plugins marketplace (migration 063).
@@ -5296,6 +5637,89 @@ class SkillPackageToolFreshness(Base):
     stale: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text("false"))
     computed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow, server_default=func.now()
+    )
+
+
+class HelperConversation(Base):
+    """A session-helper thread (migration 092; Enterprise feature).
+
+    ``org_id`` names the org that owns the conversation's scope (the
+    project's org, when the turn is project-scoped) and is NULL for
+    personal scope. ON DELETE SET NULL keeps the thread if the org is
+    deleted, matching the project/session data-stays-access-revoked
+    invariant. Threads are private to their user; the v1 DELETE endpoint
+    and the admin retention sweep hard-delete rows (``deleted_at`` is
+    reserved for a future soft-delete).
+    """
+
+    __tablename__ = "helper_conversations"
+    __table_args__ = (
+        Index("idx_helper_conversations_user_updated", "user_id", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    org_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True
+    )
+    title: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # JSON-as-Text (mirrors helper_messages.citations for cross-DB
+    # compatibility): the project/session scope this conversation was created
+    # with, restored on resume so an org-bound thread can continue without the
+    # caller re-supplying its scope.
+    scope: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class HelperMessage(Base):
+    """One message in a session-helper conversation (migration 092).
+
+    ``content`` is the model-visible text after DLP redaction. Tool messages
+    carry the sanitized call identity (``tool_name`` / ``tool_call_id``) and
+    sanitized ``tool_args``; assistant messages carry the answer text and a
+    JSON ``citations`` list of ``{session_id, message_index?}``. ``key_source``
+    records ``user`` or ``org`` for the turn — never the key itself.
+    ``stop_reason`` records how the turn ended (``stop``, ``max_tokens``,
+    ``max_steps``, ``deadline``, …) and ``client_disconnected`` when the
+    caller dropped the stream mid-answer.
+    """
+
+    __tablename__ = "helper_messages"
+    __table_args__ = (
+        Index("idx_helper_messages_conversation", "conversation_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("helper_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
+    tool_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    tool_call_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    tool_args: Mapped[str | None] = mapped_column(Text, nullable=True)
+    citations: Mapped[str | None] = mapped_column(Text, nullable=True)
+    key_source: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    output_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    stop_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        # Python-side default so messages flushed in one turn get distinct
+        # sub-second timestamps; the server_default is the raw-SQL fallback.
+        default=_utcnow,
+        server_default=func.now(),
     )
 
 

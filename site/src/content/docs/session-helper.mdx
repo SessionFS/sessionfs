@@ -1,0 +1,93 @@
+---
+title: "Session Helper"
+description: Ask questions across the sessions and project knowledge you can already read, with answers that cite the sessions they used. Enterprise.
+---
+
+The session helper answers questions over the sessions and project knowledge you can already read: "find the session where we fixed the SSO redirect", "what did we decide about Redis and why?", "summarize these three sessions". It searches sessions, reads summaries and excerpts, searches project knowledge and finds sessions that touched a file, then answers with citations back to the sessions and messages it used.
+
+It sees exactly what you can see: your own sessions, the projects you can access, and your org memberships. An org admin doesn't get a wider view through it.
+
+Available on the **Enterprise** plan. Added in v0.23.0.
+
+## Requirements
+
+- **Enterprise plan.** A project-scoped question uses the plan of the project's org; otherwise your own plan. Other plans get `upgrade_required`.
+- **A model key you supply.** SessionFS never supplies one. For each question the helper uses, in order:
+  1. your own key, from **Settings → Data protection → Security review model**;
+  2. your org's helper key, when an org owner or admin has set one and switched it on;
+  3. otherwise the request returns `409 helper_key_required`.
+
+Answers and audit rows record which of the two was used (`user` or `org`), never the key.
+
+## Where to use it
+
+- **Dashboard.** **Ask the helper** in the sidebar or the Cmd+K palette opens a drawer. The same button on a project or session page scopes the question to it. Answers stream in with links to the cited sessions; earlier threads are under **Conversations**.
+- **CLI.** `sfs helper ask "Where did we fix the SSO redirect?"` streams the answer to the terminal. `sfs helper conversations list|show|delete` manages threads, and `sfs helper status` shows whether the helper is available and which key it would use. See the [CLI reference](/cli/#sfs-helper-enterprise).
+- **MCP.** The `ask_session_helper` tool returns the whole answer with its citations, so an agent can ask without shelling out. See [MCP Server](/mcp/#ask_session_helper).
+
+## Org AI key
+
+Enterprise org owners and admins can set one provider, model, API key and optional base URL for members who don't have a key of their own: **Organization → Policies → AI key for the session helper**, or `GET/PUT/DELETE /api/v1/orgs/{org_id}/llm-settings`.
+
+- The key is encrypted at rest and never shown again after saving; only its last four characters are displayed.
+- It can be switched off without deleting it.
+- A custom base URL goes through the same address checks as other user-supplied LLM endpoints.
+
+## API
+
+User API keys only; service keys get `service_key_not_allowed`. Each user can run 2 questions at a time per server process (`409 helper_busy`).
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| POST | `/api/v1/helper/turns` | Ask a question. Server-Sent Events by default; one JSON document with `"stream": false` |
+| GET | `/api/v1/helper/conversations` | Your threads, newest first |
+| GET | `/api/v1/helper/conversations/{id}` | One thread with its messages |
+| DELETE | `/api/v1/helper/conversations/{id}` | Delete a thread and its messages |
+| GET | `/api/v1/helper/status` | Whether the helper is enabled for you, and which key source, provider and model it would use |
+
+Request body for `POST /api/v1/helper/turns`:
+
+```json
+{
+  "conversation_id": "hc_…",
+  "message": "What did we decide about Redis and why?",
+  "scope": { "project_id": "proj_…", "session_ids": ["ses_…"] },
+  "stream": true
+}
+```
+
+`conversation_id` and `scope` are optional (`session_ids` takes up to 100 ids). When streaming, the events are `conversation` (always first), `text`, `tool_call`, `tool_result`, `citation`, `done` and `error`. A keep-alive comment is sent every 15 seconds. If the client disconnects, the model call is cancelled and the partial answer is kept.
+
+With `"stream": false` the response is:
+
+```json
+{
+  "conversation_id": "hc_…",
+  "answer": "…",
+  "citations": [{ "session_id": "ses_…", "message_index": 0, "title": "…" }],
+  "tool_calls": [{ "id": "…", "name": "…", "args": {} }],
+  "usage": { "input_tokens": 0, "output_tokens": 0 },
+  "stop_reason": "stop",
+  "key_source": "user"
+}
+```
+
+Provider failures return `502 provider_error` with a sanitized message.
+
+## Retention
+
+Threads are private to the user who started them. Helper messages are deleted 90 days after they were written by default. An org can set 1–3650 days with `helper_retention_days` on `PUT /api/v1/orgs/{org_id}/settings`; an explicit `null` returns it to the default. Threads without an org use the 90-day default.
+
+Deletion runs from the sweep `POST /api/v1/admin/sweeps/helper-retention` (a platform admin or a `platform_sweeps:run` service key). On self-hosted servers the Helm chart can schedule it; see [Self-Hosted](/self-hosted/#scheduled-sweeps).
+
+## Data protection
+
+- Every excerpt, summary and knowledge text sent to the model is redacted with your org's DLP policy (the default policy for personal scope). When several orgs are involved, the strictest policy applies.
+- The helper's tools check your access on every call, and a thread bound to an org re-checks your membership on every turn.
+- Messages are stored redacted.
+- Each question writes one retrieval-audit context and one event per tool call, so an org can answer "what did the helper send to the model?"
+- Logs record ids, token counts and timings, never prompts, excerpts or keys.
+
+## Proxies
+
+Answers stream as they are written. The Helm chart's dashboard nginx already passes `/api/v1/helper/turns` through unbuffered with a 600-second timeout. If you run another proxy in front of SessionFS, turn off response buffering for that path.

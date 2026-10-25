@@ -999,7 +999,12 @@ sfs project transfers [-d incoming|outgoing] [--state STATE]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--direction`, `-d` | `incoming` | `incoming` (waiting on you) or `outgoing` (you initiated). |
-| `--state` | — | Filter: `pending` / `accepted` / `rejected` / `cancelled`. |
+| `--state` | — | Filter: `pending` / `accepted` / `rejected` / `cancelled` / `expired`. |
+
+An admin-proposed transfer (GitHub #96) appears in your **incoming** list (if
+you're the project owner) labelled `Proposed by <admin> for <org>: <reason>`
+with its expiry, and in the proposer's **outgoing** list the same way.
+Accepting or declining it works through the usual `sfs project transfer`.
 
 ### `sfs project show`
 
@@ -1075,6 +1080,40 @@ sfs project promote-eligible [OPTIONS]
 | `--confidence` | float | — | Set each candidate's confidence to this value before the duplicate check |
 | `--entry-type` | string | — | Only promote this entry type (`decision`, `pattern`, …) |
 | `--confirm` | flag | off | Apply the promotions |
+
+### `sfs project compile-schedule`
+
+Set the scheduled knowledge-base compile cadence for the current project.
+`sfs project show` displays the current schedule.
+
+```
+sfs project compile-schedule nightly
+sfs project compile-schedule weekly --after-claims 20
+sfs project compile-schedule off
+sfs project compile-schedule weekly --no-after-claims
+```
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `schedule` | `off` \| `nightly` \| `weekly` | How often the platform's scheduled compile sweep should rebuild the context document |
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `--after-claims` | int | — | Also compile once this many pending claims are reached, regardless of schedule (1+) |
+| `--no-after-claims` | flag | off | Clear the pending-claim threshold so the project compiles only on schedule |
+
+A project compiled `nightly` is eligible for the platform sweep every 24
+hours; `weekly` every 7 days. `off` disables the time-based schedule, but
+the `--after-claims` threshold still fires regardless of schedule. The
+dashboard's "compile needed" banner uses its own fixed threshold (20 pending
+claims) and is not driven by this setting. The schedule is a setting, not an
+on-box cron job — the platform operator runs the sweep endpoint (see
+[self-hosted.md](self-hosted.md)).
+
+Projects grandfathered under migration 065 (they used `project_context`
+before v0.17.2) can still edit their schedule, but the platform sweep never
+auto-compiles them — the grandfather exemption applies to the settings
+editor's plan, not to the sweep's project-plan resolution.
 
 ---
 
@@ -1687,6 +1726,22 @@ $ sfs org auto-join remove example.com
 Disabled auto-join for example.com.
 ```
 
+### `sfs org jira` (v0.23)
+
+Manage the org's Jira Cloud integration (admin only). Requires the org's plan to include the Enterprise `jira_integration` feature. The API token is stored Fernet-encrypted at rest and is never printed back.
+
+```bash
+sfs org jira connect --site-url https://acme.atlassian.net --email jira@acme.com --template agile
+sfs org jira mappings
+sfs org jira health
+```
+
+| Command | Description |
+|---------|-------------|
+| `connect` | Validate the Jira Cloud credentials (`GET /rest/api/3/myself`) and upsert the org connection. `--api-token` is prompted for (hidden) when omitted. `--template` is required and one of `agile`, `compliance`, `sre`, `bug`. |
+| `mappings` | List project → Jira project mappings (key, issue type, template override, done status). Mappings are created/updated via the API, not this CLI. |
+| `health` | Show unmapped project count, push-failure count, and links whose status hasn't been checked in 7+ days. |
+
 ---
 
 ## `sfs mcp serve`
@@ -1697,15 +1752,15 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed (80):
+Tools exposed (83):
 
-- **Sessions:** `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_session_summary`, `get_audit_report`, `get_session_provenance`, `get_session_retrieval_log`, `rename_session`, `checkpoint_session`, `list_checkpoints`, `fork_session`
+- **Sessions:** `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_session_summary`, `get_audit_report`, `get_session_provenance`, `get_session_retrieval_log`, `rename_session`, `checkpoint_session`, `list_checkpoints`, `fork_session`, `ask_session_helper`
 - **Knowledge (read):** `get_project_context`, `get_context_section`, `get_wiki_page`, `get_wiki_page_history`, `search_project_knowledge`, `list_knowledge_entries`, `get_knowledge_entry`, `get_knowledge_health`, `ask_project`
 - **Knowledge (write):** `add_knowledge`, `update_wiki_page`, `list_wiki_pages`, `compile_knowledge_base`, `dismiss_knowledge_entry`, `update_entry_confidence`, `promote_entry`, `promote_eligible_entries`
 - **Rules (read-only):** `get_rules`, `get_compiled_rules`
 - **Personas:** `list_personas`, `get_persona`, `create_persona`, `update_persona`, `delete_persona`, `assume_persona`, `forget_persona`
 - **Tickets:** `list_tickets`, `get_ticket`, `create_ticket`, `update_ticket`, `start_ticket`, `complete_ticket`, `resolve_ticket`, `approve_ticket`, `assign_persona`, `escalate_ticket`, `add_ticket_comment`, `list_ticket_comments`, `get_ticket_review_state`
-- **Agent runs and feedback:** `create_agent_run`, `complete_agent_run`, `list_agent_runs`, `record_agent_feedback`, `list_agent_feedback`, `get_agent_feedback_summary`
+- **Agent runs and feedback:** `create_agent_run`, `replay_agent_run`, `complete_agent_run`, `list_agent_runs`, `record_agent_feedback`, `list_agent_feedback`, `get_agent_feedback_summary`
 - **Work queues:** `create_work_queue`, `list_work_queues`, `get_work_queue`, `set_work_queue_status`, `run_work_queue_step`, `complete_work_queue_step`
 - **Handoffs:** `create_handoff`, `get_handoff`, `list_inbox_handoffs`, `list_sent_handoffs`, `claim_handoff`, `decline_handoff`, `revoke_handoff`, `add_handoff_comment`
 - **Marketplace (never writes files or enables executable content):** `search_skill_marketplace`, `get_marketplace_package`, `diff_marketplace_versions`, `get_skill_policy`, `preview_marketplace_skill`, `load_marketplace_skill`, `request_skill_install`, `list_skill_install_requests`, `get_skill_install_request`, `cancel_skill_install_request`
@@ -1907,18 +1962,26 @@ sfs admin audit-log [--target-type TYPE] [--target-id ID] [--action NAME] [--sou
 
 Move a project into an organization without the owner's consent (platform admin only). Calls `POST /api/v1/admin/projects/{project_id}/force-transfer`. The server takes the same project and org locks as a normal transfer, refuses a merged project (`409 project_merged`) or a project already in that org (`409 already_in_org`), refuses when open tickets, agent runs or handoffs use org personas the destination lacks (`409 personas_stranded`, unless `--force`), and cancels any pending transfer for the project. The owner of an organization project must be a member of that organization, so when the current owner is not a member the server refuses with `409 owner_not_member` unless `--new-owner` names an active member, who becomes the owner (`409 new_owner_not_member` otherwise). The move, any owner change, an accepted transfer record, an audit entry with the reason and before/after state, and organization audit events are committed in one transaction. Prompts for confirmation unless `--yes`.
 
+With `--propose` it does not force the move. It calls `POST /api/v1/orgs/{org_id}/projects/{project_id}/propose-transfer` to create a pending proposal addressed to the project owner, who must accept before the project moves. The caller must be an owner or admin of the destination org (`403` otherwise); the project must be a **personal** project whose owner is an active member of the destination org, and it must not already be in that org (`409 already_in_org`). A personal project the caller has no relationship with — or one whose owner is not a member — returns the same `404` as a missing project. Only one pending transfer may exist per project (`409 transfer_pending`); a proposal for the same project + org is refused for 7 days after a decline or 24 hours after a cancel (`409 proposal_cooldown`, with a `Retry-After` header); and an org may hold at most 10 pending proposals (`409 proposal_limit`). The proposal expires 7 days after creation. Use `--project` and `--org` (not the positional `PROJECT_ID` / `--to-org`) to identify the project and destination org in this mode.
+
 ```
 sfs admin override project-transfer PROJECT_ID --to-org ORG_ID --reason "..." [--new-owner USER_ID] [--expect-from ORG_ID|personal] [--force] [--yes]
+sfs admin override project-transfer --propose --project PROJECT_ID --org ORG_ID --reason "..."
 ```
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `--to-org` | string | required | Destination organization id |
-| `--reason`, `-r` | string | required | Why the override is needed (1-500 characters), stored in the audit log |
+| `--to-org` | string | required¹ | Destination organization id |
+| `--reason`, `-r` | string | required | Why the override or proposal is needed, stored in the audit log |
 | `--new-owner` | string | — | User id of an active member of the destination org to own the project. Required when the current owner is not a member; may also be used to reassign ownership with the move |
 | `--expect-from` | string | — | Refuse (`409 unexpected_source_scope`) unless the project is currently in this org id, or `personal`. Use it in scripts so a retried command cannot move a project that has moved since |
 | `--force` | flag | off | Move even when open work uses org personas the destination does not have |
 | `--yes`, `-y` | flag | off | Skip the confirmation prompt |
+| `--propose` | flag | off | Propose the transfer for the owner's consent instead of forcing it |
+| `--project` | string | —² | Project id to propose moving (with `--propose`) |
+| `--org` | string | —² | Destination org id to propose into (with `--propose`) |
+
+¹ Required unless `--propose` is given. ² Required with `--propose`.
 
 ---
 
@@ -1933,7 +1996,7 @@ What happens to each kind of data:
 - **Revoked, never moved:** API keys (including service keys), trusted-reviewer bindings, SSO break-glass grants and SSO identities, and pending ownership or project transfers involving the source.
 - **Left alone:** audit and history tables, so past actions keep the original actor.
 
-The merge refuses, changing nothing, when: source and target are the same (`400`); either user does not exist (`404`); the target is inactive (`409 target_inactive`); the source is a platform admin (`409 source_is_platform_admin`); the source has Stripe billing pointers (`409 source_has_billing`); both users hold an active entitlement (`409 entitlement_conflict`, it never guesses which plan to keep); the source owns skill marketplace packages, publishers, listings or registries (`409 marketplace_assets_owned`); both have a GitHub installation (`409 github_installation_conflict`); or the source owns org projects in an org neither user belongs to (`409 project_owner_not_member`).
+The merge refuses, changing nothing, when: source and target are the same (`400`); either user does not exist (`404`); the target is inactive (`409 target_inactive`); the source is a platform admin (`409 source_is_platform_admin`); the source has billing records (`409 source_has_billing`); both users hold an active entitlement (`409 entitlement_conflict`, it never guesses which plan to keep); the source owns skill marketplace packages, publishers, listings or registries (`409 marketplace_assets_owned`); both have a GitHub installation (`409 github_installation_conflict`); or the source owns org projects in an org neither user belongs to (`409 project_owner_not_member`).
 
 ```
 sfs admin override user-merge SOURCE_USER_ID TARGET_USER_ID --reason "..." [--apply] [--yes] [--json]
@@ -2682,6 +2745,26 @@ sfs ticket escalate tk_abc123
 sfs ticket escalate tk_abc123 --reason "Customer-facing outage in prod"
 ```
 
+### `sfs ticket jira` (v0.23)
+
+Promote a ticket to a Jira Cloud story. One-way: SessionFS creates or updates the Jira issue and reads its status on demand; Jira edits never write back. Requires the org to have connected Jira (`sfs org jira connect`) and mapped the project (`PUT /api/v1/orgs/{org_id}/integrations/jira/mappings/{project_id}`); the routes are gated on the Enterprise `jira_integration` feature.
+
+```bash
+sfs ticket jira preview tk_abc123
+sfs ticket jira preview tk_abc123 --out preview.json
+sfs ticket jira publish tk_abc123 --from preview.json
+sfs ticket jira publish tk_abc123 --from preview.json --yes
+sfs ticket jira status  tk_abc123
+sfs ticket jira unlink  tk_abc123 --confirm
+```
+
+| Command | Description |
+|---------|-------------|
+| `preview` | Draft the Jira story (summary + sections) without publishing. Verbatim sections (acceptance criteria, completion notes, linked sessions) are copied from the ticket; rewrite sections are reshaped by the configured LLM key when one exists, else filled deterministically. Every model-written paragraph must carry a citation back to a real source span or it is dropped. `--out file.json` writes the raw preview JSON (for `publish --from`) instead of rendering it. |
+| `publish` | Pushes a previewed draft to Jira. `--from file.json` (the file produced by `preview --out`) is required — publish always operates on a saved preview, never a live re-draft. Creates the issue on first publish, updates summary/description on later publishes (status/assignee/sprint are never touched). Posts a system comment with the Jira link and writes an org audit row. Prompts for confirmation unless `--yes` is passed. |
+| `status` | Show the linked issue key, URL and current Jira status (cached 60s). |
+| `unlink` | Remove the link between the ticket and its Jira issue (the Jira issue itself is untouched). Project-admin only. `--confirm` is required. |
+
 ---
 
 ## `sfs agent` (v0.10.2)
@@ -2694,7 +2777,7 @@ Record auditable runs of an agent persona against a ticket, with policy enforcem
 
 ### `sfs agent run <persona>`
 
-Create + start an AgentRun, emit the compiled persona + ticket context, and optionally poll until completion.
+Create + start an AgentRun, emit the compiled persona + ticket context, and optionally poll until completion. `--run-id` resumes an existing queued run instead of creating one — the persona and create-only flags are ignored in that mode.
 
 ```
 sfs agent run <persona> [--ticket TK_ID]
@@ -2704,20 +2787,34 @@ sfs agent run <persona> [--ticket TK_ID]
                         [--ci-run-url <url>]
                         [--tool generic|claude-code|codex|gemini|bedrock|vertex|...]
                         [--fail-on none|low|medium|high|critical]
+                        [--prompt "..." ]
+                        [--context-ref REF]...
                         [--context-file PATH]
                         [--timeout SECONDS]
                         [--format text|json|markdown]
                         [--output-id]
 ```
 
+Resume a queued run (e.g. one created by `sfs agent replay`):
+
+```
+sfs agent run --run-id RUN_ID [--context-file PATH]
+                              [--timeout SECONDS]
+                              [--format text|json|markdown]
+                              [--output-id]
+```
+
 | Flag | Description |
 |------|-------------|
+| `--run-id` | Start an existing queued run instead of creating a new one. Mutually exclusive with `<persona>`. |
 | `--ticket` | Scope the run to a ticket (must be same project; cross-project ticket-id is rejected with 422). |
 | `--trigger-source` | Where the run originated. CI runners pass `ci`. |
 | `--trigger-ref` | Free-form ref (PR commit SHA, branch, cron expr). |
 | `--ci-provider`, `--ci-run-url` | Deep-link the run back to your CI UI. |
 | `--tool` | Token budget hint when compiling persona + ticket context. `claude-code`=16k, `codex/gemini/copilot/amp/antigravity/generic`=8k, `cursor/windsurf/cline/roo-code/kilo-code`=4k, `bedrock`=16k, `vertex`=8k. |
 | `--fail-on` | Severity threshold for `policy_result = "fail"` at complete time. |
+| `--prompt` | Edited prompt stored on the run (GitHub #95). |
+| `--context-ref` | Context reference stored on the run; repeatable (GitHub #95). |
 | `--context-file` | Write the compiled context to this file instead of stdout (use this with `--output-id`). |
 | `--timeout` | Block and poll until the run reaches a terminal status or `SECONDS` elapse. |
 | `--format` | Status output format when polling. `markdown` is GitHub/GitLab step-summary-compatible. |
@@ -2765,6 +2862,35 @@ sfs agent list [--persona NAME] [--status STATUS]
 ```
 
 Default sort: `created_at` descending. See `docs/integrations/github-actions-agent-run.yml` and `docs/integrations/gitlab-agent-run.yml` for full CI-workflow examples wired up against `sfs agent run/complete/status` + the `--output-id` capture pattern.
+
+### `sfs agent replay <run_id>` (GitHub #95)
+
+Create a queued replay of an existing run with an edited prompt, ticket, persona, fail-on and/or context references. Fields you do not pass copy from the parent run; the parent's ticket must still belong to the same project. Prints the new run id, the equivalent `sfs agent run --run-id <new-id>` command, and a YAML CI hint block for GitHub Actions / GitLab. A replay is a fresh, manual re-invocation: it does not copy the parent's CI provenance (`ci_provider`, `ci_run_url`), trigger source, or triggering persona.
+
+```
+sfs agent replay <run_id> [--prompt "..."] [--prompt-file PATH]
+                          [--ticket TK_ID] [--persona NAME]
+                          [--context-ref REF]... [--output-id]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--prompt` | Edited prompt for the replayed run. Mutually exclusive with `--prompt-file`. |
+| `--prompt-file` | Read the edited prompt from a file. Mutually exclusive with `--prompt`. |
+| `--ticket` | Override the ticket id (same-project validation applies). |
+| `--persona` | Override the persona (must exist and be active in the project). |
+| `--context-ref` | Context reference attached to the replayed run; repeatable. |
+| `--output-id` | Print **only** the new run id on stdout. |
+
+### `sfs agent compare <a> <b>` (GitHub #95)
+
+Diff the findings of two runs in the same project. Findings are matched by rule/title + file + line (when present) and split into added / removed / unchanged, with severity counts per side. Both runs must belong to the project.
+
+```
+sfs agent compare <a> <b> [--format text|json]
+```
+
+`--format json` emits the full diff (added/removed/unchanged findings + per-side severity counts) as machine-parseable JSON on stdout.
 
 ### `sfs agent feedback …` (v0.17.0)
 
@@ -2816,6 +2942,20 @@ Run a **resident** — an operator-hosted, always-on agent that drives a work qu
 | `sfs resident health --config <name>` | Read-only summary of the resident's config + today's LLM budget spend (does not contact the server or start the loop). |
 
 The implementer resident runs inside a hardened sandbox (`deploy/resident-sandbox/`). Merging a resident-authored, resident-auto-closed change in a high-risk class follows the mandatory checklist in `docs/operations/high-risk-merge-checklist.md`.
+
+## `sfs helper` (Enterprise, BYOK)
+
+Ask the **session helper** a question over the sessions you can read, with a bring-your-own-key (BYOK) model key. The helper answers with citations back to the specific session messages it drew from, so you can verify every claim. See [Session helper](session-helper.md).
+
+| Command | Description |
+|---------|-------------|
+| `sfs helper ask "QUESTION" [--project ID] [--session ID ...] [--conversation ID] [--no-stream] [--json]` | Ask a question. Streams the answer to the terminal (Rich live markdown on a TTY, plain text otherwise) and lists citations at the end. `--project` (`-P`) scopes to a project ID (`proj_...`); `--session` (`-s`, repeatable) scopes to specific session IDs (`ses_...`); `--conversation` (`-c`) continues an existing conversation (`hc_...`). `--no-stream` fetches the full JSON answer in one request and renders it the same way; `--json` prints the raw JSON document (non-streaming) for scripting. |
+| `sfs helper conversations list` | List your helper conversations, newest first. |
+| `sfs helper conversations show <id>` | Show one conversation with its user/assistant messages and citations. |
+| `sfs helper conversations delete <id> [--yes]` | Permanently delete a conversation (prompts for confirmation; `--yes` skips). |
+| `sfs helper status` | Show whether the helper is enabled, and which key source / provider / model it would use. |
+
+The helper is an Enterprise feature and requires a BYOK model key (your own key under **Settings → Data protection → Security review model**, or an org-wide key an org admin sets on the Organization page's Policies tab). `sfs helper status` tells you which of these is missing.
 
 ## `sfs skill` / `sfs plugin` (v0.16.0)
 

@@ -6,12 +6,17 @@ import {
   useDeleteProject,
   useKnowledgeEntries,
   useCompileProject,
+  useCompileStatus,
 } from '../hooks/useProjects';
 import { useToast } from '../hooks/useToast';
+import { useMe } from '../hooks/useMe';
+import { useMyOrgs } from '../transfers/useTransfers';
+import { canUnlinkTicket, hasJiraEnterpriseTier } from '../utils/jira';
 import RelativeDate from '../components/RelativeDate';
 import RulesTab from './RulesTab';
 import PersonasTab from './PersonasTab';
 import TicketsTab from './TicketsTab';
+import type { TicketJiraSurface } from './tickets/constants';
 import AgentRunsTab from './AgentRunsTab';
 import MarketplaceTab from './MarketplaceTab';
 import ProjectSettings from './ProjectSettings';
@@ -20,9 +25,10 @@ import ContextDocument from './ContextDocument';
 import KnowledgeEntriesTab from './knowledge/EntriesTab';
 import PagesTab from './knowledge/PagesTab';
 import HistoryTab from './knowledge/HistoryTab';
-import { Card, Button, Textarea, Dialog, DialogHeader, DialogFooter, Tabs, TabPanel } from '../components/ui';
+import { Card, Button, Textarea, Dialog, DialogHeader, DialogFooter, Tabs, TabPanel, Alert } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
 import { ApiError } from '../api/client';
+import { useHelper } from '../helper/HelperProvider';
 
 // The page has five sections. The active one lives in the URL as
 // `?tab=<section>`, and the active sub-tab of the sections that have them as
@@ -128,6 +134,9 @@ export default function ProjectDetail() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const { data: project, isLoading, error } = useProject(idOrRemote);
+  const { data: me } = useMe();
+  const { data: myOrgs } = useMyOrgs();
+  const { openHelper } = useHelper();
 
   // Land every project on its id URL, keeping ?tab=&sub= and the rest.
   const search = searchParams.toString();
@@ -157,6 +166,9 @@ export default function ProjectDetail() {
   const { data: pendingData } = useKnowledgeEntries(project?.id, { pending: true, limit: 1 });
   const pendingCount = pendingData?.total ?? 0;
   const compile = useCompileProject(project?.id);
+  // Compile staleness signal (GitHub #93): last compile + pending claims and
+  // the banner that offers a one-click compile when the context is stale.
+  const { data: compileStatus } = useCompileStatus(project?.id);
 
   const { section, sub } = resolveView(searchParams.get('tab'), searchParams.get('sub'));
 
@@ -261,15 +273,34 @@ export default function ProjectDetail() {
 
   const subTabs = SUB_TABS[section];
 
+  // Jira surface for the tickets tab, resolved here (the page already has the
+  // project + user + membership) and threaded down so the ticket detail stays
+  // free of auth wiring. `canUnlinkTicket` uses the full org membership rather
+  // than the primary-org `me.org_id`.
+  const jira: TicketJiraSurface | undefined = project.org_id
+    ? {
+        orgId: project.org_id,
+        isProjectAdmin: canUnlinkTicket(project, me, myOrgs),
+        isEnterprise: hasJiraEnterpriseTier(me),
+      }
+    : undefined;
+
   return (
     <div className="max-w-6xl w-full mx-auto px-4 py-6">
-      {/* Back link */}
-      <Button variant="ghost" onClick={() => navigate('/projects')} className="mb-4">
-        <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="15 18 9 12 15 6" />
-        </svg>
-        Back to Projects
-      </Button>
+      {/* Back link + helper action */}
+      <div className="flex items-center justify-between mb-4">
+        <Button variant="ghost" onClick={() => navigate('/projects')}>
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="15 18 9 12 15 6" />
+          </svg>
+          Back to Projects
+        </Button>
+        {openHelper && (
+          <Button variant="secondary" size="sm" onClick={() => openHelper({ project_id: project.id })}>
+            Ask the helper
+          </Button>
+        )}
+      </div>
 
       <ProjectHeader
         project={project}
@@ -310,6 +341,27 @@ export default function ProjectDetail() {
 
       {section === 'context' && (
         <div className="mt-4">
+          {/* Compile-needed banner (GitHub #93): the context is stale and a
+              compile would fold pending claims in. Advisory — the operator
+              sweep is what actually keeps projects fresh, but this is the
+              one-click path for the owner. */}
+          {compileStatus?.compile_needed && (
+            <Alert
+              variant="warning"
+              className="mb-3 items-center py-2 flex-wrap"
+              action={
+                <Button size="sm" onClick={handleCompileFromContext} disabled={compile.isPending}>
+                  {compile.isPending ? 'Compiling…' : 'Compile now'}
+                </Button>
+              }
+            >
+              <span className="text-xs font-medium">
+                Compile needed — {compileStatus.pending_claims} pending{' '}
+                {compileStatus.pending_claims === 1 ? 'claim' : 'claims'} not yet in context
+              </span>
+            </Alert>
+          )}
+
           {/* Context hero header card */}
           {!editing && (
             <Card level="elevated" className="mb-3 rounded-xl shadow-[var(--shadow-sm)] px-5 py-4">
@@ -327,6 +379,18 @@ export default function ProjectDetail() {
                       <span>No context compiled yet</span>
                     )}
                   </div>
+                  {/* Compile status: pending claims + last compile (GitHub #93). */}
+                  {compileStatus && (
+                    <div className="flex items-center gap-3 mt-1 text-xs text-text-tertiary">
+                      <span>{compileStatus.pending_claims} pending {compileStatus.pending_claims === 1 ? 'claim' : 'claims'}</span>
+                      <span>&middot;</span>
+                      <span>
+                        {compileStatus.last_compile_at
+                          ? <>Last compiled <RelativeDate iso={compileStatus.last_compile_at} /></>
+                          : 'Never compiled'}
+                      </span>
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <Button variant="secondary" onClick={handleEdit}>Edit</Button>
@@ -387,7 +451,7 @@ export default function ProjectDetail() {
       )}
 
       {section === 'work' && sub === 'tickets' && (
-        <Panel padded sub={sub}><TicketsTab projectId={project.id} /></Panel>
+        <Panel padded sub={sub}><TicketsTab projectId={project.id} jira={jira} /></Panel>
       )}
       {section === 'work' && sub === 'agent-runs' && (
         <Panel padded sub={sub}><AgentRunsTab projectId={project.id} /></Panel>

@@ -299,11 +299,11 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_81(self):
+    def test_tool_count_is_83(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 81, (
-            "Expected 81 MCP tools after the org skills policy added "
-            f"get_skill_policy, got {len(_TOOLS)}"
+        assert len(_TOOLS) == 83, (
+            "Expected 83 MCP tools after ask_session_helper (session helper), "
+            f"got {len(_TOOLS)}"
         )
 
     def test_new_tools_registered(self):
@@ -373,6 +373,10 @@ class TestToolRegistryV0996:
             "record_agent_feedback",
             "list_agent_feedback",
             "get_agent_feedback_summary",
+            # GitHub #95 — replay an agent run with an edited prompt/ticket/context
+            "replay_agent_run",
+            # Session helper (Enterprise, BYOK) — non-streaming answer + citations
+            "ask_session_helper",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
         # A3: approval is dashboard/CLI/API only — never brokered over MCP,
@@ -667,6 +671,65 @@ class TestNewToolDispatch:
         assert captured["params"]["since_id"] == "afb_1"
         assert captured["params"]["limit"] == "50"
         assert "agent_feedback" in result
+
+    @pytest.mark.asyncio
+    async def test_dispatch_replay_agent_run(self, fake_resolver, fake_httpx, captured):
+        result = await mcp_server._handle_replay_agent_run({
+            "run_id": "run_parent",
+            "persona_name": "sentinel",
+            "ticket_id": "tk_2",
+            "prompt": "edited prompt",
+            "fail_on": "severity",
+            "trigger_ref": "ci-ref",
+            "context_refs": ["a", "b"],
+        })
+        assert captured["method"] == "POST"
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_test"
+            "/agent-runs/run_parent/replay"
+        )
+        assert captured["json"] == {
+            "persona_name": "sentinel",
+            "ticket_id": "tk_2",
+            "prompt": "edited prompt",
+            "fail_on": "severity",
+            "trigger_ref": "ci-ref",
+            "context_refs": ["a", "b"],
+        }
+        assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_dispatch_replay_agent_run_requires_run_id(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_replay_agent_run({})
+        assert "run_id is required" in result["error"]
+        assert not captured
+
+    @pytest.mark.asyncio
+    async def test_dispatch_replay_agent_run_passes_prompt_through_and_allows_clearing(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        # Prompt is prose: whitespace is preserved verbatim, not stripped.
+        result = await mcp_server._handle_replay_agent_run({
+            "run_id": "run_parent",
+            "prompt": "  keep leading/trailing  ",
+            "context_refs": [],
+        })
+        assert captured["json"] == {
+            "prompt": "  keep leading/trailing  ",
+            "context_refs": [],
+        }
+        assert "error" not in result
+
+        # An explicit empty prompt/context_refs forwards as a clear signal.
+        captured.clear()
+        result = await mcp_server._handle_replay_agent_run({
+            "run_id": "run_parent",
+            "prompt": "",
+        })
+        assert captured["json"] == {"prompt": ""}
+        assert "error" not in result
 
     @pytest.mark.asyncio
     async def test_dispatch_get_agent_feedback_summary(
@@ -3912,3 +3975,197 @@ class TestGitRemotePathArgument:
             prop = tool.inputSchema.get("properties", {}).get("git_remote")
             if prop is not None:
                 assert prop.get("description") == mcp_server._GIT_REMOTE_DESCRIPTION, tool.name
+
+
+class TestAskSessionHelper:
+    """ask_session_helper routes to POST /api/v1/helper/turns (JSON mode).
+
+    The handler authenticates with the user key from load_config() and does
+    NOT resolve a git remote, so tests patch load_config + httpx.AsyncClient
+    directly.
+    """
+
+    class _Cfg:
+        class sync:
+            api_key = "test-key"
+            api_url = "https://api.test"
+
+    @pytest.fixture
+    def fake_client(self, monkeypatch):
+        import httpx
+
+        captured = {}
+
+        class _FakeResponse:
+            def __init__(self, status_code, body, text=None):
+                self.status_code = status_code
+                self._body = body
+                self.text = text if text is not None else json.dumps(body)
+
+            def json(self):
+                return self._body
+
+        class _FakeAsyncClient:
+            def __init__(self, *a, **k):
+                captured["timeout"] = k.get("timeout")
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def post(self, url, *, json=None, headers=None):
+                captured["url"] = url
+                captured["json"] = json
+                captured["headers"] = headers or {}
+                return captured["response"]()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeAsyncClient)
+        monkeypatch.setattr(mcp_server, "load_config", lambda: self._Cfg)
+        return captured
+
+    @pytest.mark.asyncio
+    async def test_posts_turn_and_returns_answer(self, fake_client):
+        fake_client["response"] = lambda: type(
+            "R", (), {
+                "status_code": 200,
+                "text": "",
+                "json": lambda self: {
+                    "conversation_id": "hc_1",
+                    "answer": "It was the auth middleware.",
+                    "citations": [{"session_id": "ses_1", "message_index": 2, "title": "Auth"}],
+                    "tool_calls": [],
+                    "usage": {"input_tokens": 10, "output_tokens": 5},
+                    "stop_reason": "stop",
+                    "key_source": "user",
+                },
+            },
+        )()
+        result = await mcp_server._handle_ask_session_helper({"question": "what failed?"})
+        assert result["answer"] == "It was the auth middleware."
+        assert result["citations"][0]["session_id"] == "ses_1"
+        assert fake_client["url"] == "https://api.test/api/v1/helper/turns"
+        assert fake_client["json"] == {"message": "what failed?", "stream": False}
+        assert fake_client["headers"]["Authorization"] == "Bearer test-key"
+
+    @pytest.mark.asyncio
+    async def test_scopes_project_and_sessions(self, fake_client):
+        fake_client["response"] = lambda: type(
+            "R", (), {"status_code": 200, "text": "{}", "json": lambda self: {}},
+        )()
+        await mcp_server._handle_ask_session_helper({
+            "question": "summarize",
+            "project": "proj_1",
+            "session_ids": ["ses_1", "ses_2"],
+            "conversation_id": "hc_1",
+        })
+        assert fake_client["json"] == {
+            "message": "summarize",
+            "stream": False,
+            "conversation_id": "hc_1",
+            "scope": {"project_id": "proj_1", "session_ids": ["ses_1", "ses_2"]},
+        }
+
+    @pytest.mark.asyncio
+    async def test_requires_question(self, fake_client):
+        result = await mcp_server._handle_ask_session_helper({"question": "   "})
+        assert result == {"error": "A question is required."}
+
+    @pytest.mark.asyncio
+    async def test_uses_600_second_timeout(self, fake_client):
+        fake_client["response"] = lambda: type(
+            "R", (), {"status_code": 200, "text": "{}", "json": lambda self: {}},
+        )()
+        await mcp_server._handle_ask_session_helper({"question": "hi"})
+        assert fake_client["timeout"] == 600.0
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_string_question(self, fake_client):
+        result = await mcp_server._handle_ask_session_helper({"question": 42})
+        assert result == {"error": "question must be a string."}
+
+    @pytest.mark.asyncio
+    async def test_rejects_question_over_max_chars(self, fake_client):
+        result = await mcp_server._handle_ask_session_helper({"question": "x" * 20_001})
+        assert result == {"error": "The question must be at most 20000 characters."}
+
+    @pytest.mark.asyncio
+    async def test_accepts_question_at_max_chars(self, fake_client):
+        fake_client["response"] = lambda: type(
+            "R", (), {"status_code": 200, "text": "{}", "json": lambda self: {}},
+        )()
+        question = "x" * 20_000
+        await mcp_server._handle_ask_session_helper({"question": question})
+        assert fake_client["json"]["message"] == question
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_string_project(self, fake_client):
+        result = await mcp_server._handle_ask_session_helper(
+            {"question": "hi", "project": 42},
+        )
+        assert result == {"error": "project must be a string."}
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_string_conversation_id(self, fake_client):
+        result = await mcp_server._handle_ask_session_helper(
+            {"question": "hi", "conversation_id": 42},
+        )
+        assert result == {"error": "conversation_id must be a string."}
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_list_session_ids(self, fake_client):
+        result = await mcp_server._handle_ask_session_helper(
+            {"question": "hi", "session_ids": 42},
+        )
+        assert result == {"error": "session_ids must be a list of strings."}
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_string_session_id(self, fake_client):
+        # None must be rejected, not coerced to the string "None".
+        result = await mcp_server._handle_ask_session_helper(
+            {"question": "hi", "session_ids": ["ses_1", None]},
+        )
+        assert result == {"error": "session_ids must be a list of strings."}
+
+    @pytest.mark.asyncio
+    async def test_rejects_too_many_session_ids(self, fake_client):
+        result = await mcp_server._handle_ask_session_helper(
+            {"question": "hi", "session_ids": [f"ses_{i}" for i in range(101)]},
+        )
+        assert result == {"error": "session_ids accepts at most 100 IDs."}
+
+    @pytest.mark.asyncio
+    async def test_filters_blank_session_ids(self, fake_client):
+        fake_client["response"] = lambda: type(
+            "R", (), {"status_code": 200, "text": "{}", "json": lambda self: {}},
+        )()
+        await mcp_server._handle_ask_session_helper(
+            {"question": "hi", "session_ids": ["ses_1", "", "  "]},
+        )
+        assert fake_client["json"]["scope"] == {"session_ids": ["ses_1"]}
+
+    @pytest.mark.asyncio
+    async def test_error_extracts_detail_message(self, fake_client):
+        fake_client["response"] = lambda: type(
+            "R", (), {
+                "status_code": 409,
+                "text": '{"detail": {"code": "helper_key_required", "message": "No LLM key"}}',
+                "json": lambda self: {
+                    "detail": {"code": "helper_key_required", "message": "No LLM key"}
+                },
+            },
+        )()
+        result = await mcp_server._handle_ask_session_helper({"question": "hi"})
+        assert result["error"] == "API error 409: No LLM key"
+
+    @pytest.mark.asyncio
+    async def test_not_authenticated(self, monkeypatch):
+        class _NoKeyCfg:
+            class sync:
+                api_key = ""
+                api_url = "https://api.test"
+
+        monkeypatch.setattr(mcp_server, "load_config", lambda: _NoKeyCfg)
+        result = await mcp_server._handle_ask_session_helper({"question": "hi"})
+        assert result == {"error": "Not authenticated. Run 'sfs auth login' first."}

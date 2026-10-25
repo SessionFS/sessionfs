@@ -7,14 +7,12 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 import httpx
-from cryptography.fernet import Fernet
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Response
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field, StrictInt
@@ -32,6 +30,7 @@ from sessionfs.server.db.models import (
     User,
     UserJudgeSettings,
 )
+from sessionfs.server.llm_keys import decrypt_llm_key, encrypt_llm_key, encrypt_secret
 from sessionfs.server.services import github_oauth
 
 logger = logging.getLogger("sessionfs.server.routes.settings")
@@ -53,13 +52,6 @@ class JudgeSettingsResponse(BaseModel):
     base_url: str | None = None
 
 
-def _get_fernet() -> Fernet:
-    """Derive a Fernet key from the verification secret."""
-    secret = os.environ.get("SFS_VERIFICATION_SECRET", "dev-secret")
-    key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
-    return Fernet(key)
-
-
 @router.put("/judge", response_model=JudgeSettingsResponse)
 async def put_judge_settings(
     body: JudgeSettingsRequest,
@@ -68,8 +60,7 @@ async def put_judge_settings(
 ) -> JudgeSettingsResponse:
     """Store judge LLM settings with encrypted API key."""
     body.base_url = await _check_llm_base_url_or_400(body.base_url)
-    fernet = _get_fernet()
-    encrypted_key = fernet.encrypt(body.api_key.encode()).decode()
+    encrypted_key = encrypt_llm_key(body.api_key)
 
     stmt = select(UserJudgeSettings).where(UserJudgeSettings.user_id == user.id)
     result = await db.execute(stmt)
@@ -219,7 +210,7 @@ async def _saved_judge_api_key(user: User, db: AsyncSession) -> str:
     settings = result.scalar_one_or_none()
     if settings and settings.encrypted_api_key:
         try:
-            return _get_fernet().decrypt(settings.encrypted_api_key.encode()).decode()
+            return decrypt_llm_key(settings.encrypted_api_key)
         except Exception:
             return ""
     return ""
@@ -1440,16 +1431,9 @@ async def update_gitlab_settings(
             },
         ) from exc
     body.instance_url = instance_url
-    import base64
-    import hashlib as _hashlib
     import secrets as _secrets
 
-    from cryptography.fernet import Fernet
-
-    secret = os.environ.get("SFS_VERIFICATION_SECRET", "dev-secret")
-    key = base64.urlsafe_b64encode(_hashlib.sha256(secret.encode()).digest())
-    fernet = Fernet(key)
-    encrypted = fernet.encrypt(body.access_token.encode()).decode()
+    encrypted = encrypt_secret(body.access_token)
 
     result = await db.execute(
         select(GitLabSettings).where(GitLabSettings.user_id == user.id)

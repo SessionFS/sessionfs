@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -27,9 +29,12 @@ from sessionfs.server.db.models import (
     ApiKey,
     Handoff,
     HelmLicense,
+    HelperConversation,
+    HelperMessage,
     OidcLoginAttempt,
     Organization,
     OrgAuditEvent,
+    OrgDigestRun,
     OrgMember,
     Project,
     ProjectTransfer,
@@ -42,8 +47,11 @@ from sessionfs.server.roles import OrgRole
 from sessionfs.server.services.entitlements import apply_entitlement, lock_billing_owner
 from sessionfs.server.services.personas import clear_represented_user
 from sessionfs.server.services.publishers import advisory_xact_lock
+from sessionfs.server.services.tracker_scope import drop_project_tracker_mapping
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
+
+logger = logging.getLogger("sessionfs.admin")
 
 VALID_TIERS = {"free", "starter", "pro", "team", "enterprise", "admin"}
 
@@ -1605,6 +1613,7 @@ async def sweep_github_webhook_deliveries(
     body: dict | None = None,
     auth: AuthContext = Depends(require_platform_sweeper()),
     db: AsyncSession = Depends(get_db),
+    request: Request = None,
 ):
     """Process and purge GitHub webhook deliveries; reap dead claim attempts.
 
@@ -1625,6 +1634,7 @@ async def sweep_github_webhook_deliveries(
        state/nonce/verifier hashes and any parked chooser go with them);
        'processing' attempts survive a 10-minute grace so an in-flight
        callback never loses its row mid-flight.
+    3. Abort expired pending session uploads and delete their staged parts.
     """
     from sessionfs.server.db.models import GitHubClaimAttempt
     from sessionfs.server.routes.webhooks import (
@@ -1710,10 +1720,18 @@ async def sweep_github_webhook_deliveries(
         )
         .execution_options(synchronize_session=False)
     )
+    # Abort expired pending session uploads and delete their staged parts.
+    from sessionfs.server.routes.uploads import abort_expired_pending_uploads
+
+    uploads_aborted = await abort_expired_pending_uploads(
+        db, request.app.state.blob_store, now
+    )
+
     result = {
         "payloads_purged": payloads_purged,
         "deliveries_purged": tombstones_purged,
         "claim_attempts_purged": attempts.rowcount or 0,
+        "uploads_aborted": uploads_aborted,
         "deliveries_retried": retry_stats["retried"],
         "retries_succeeded": retry_stats["succeeded"],
         "retries_failed": retry_stats["failed"],
@@ -1730,6 +1748,457 @@ async def sweep_github_webhook_deliveries(
     )
     await db.commit()
     return result
+
+
+def _digest_dashboard_url(config) -> str:
+    """Dashboard base URL for the digest's filtered-view links.
+
+    Resolution order: ``SFS_DASHBOARD_URL`` (``config.dashboard_url``), then
+    ``config.app_url`` (what invite emails already use), then ``""`` which
+    means "skip links". There is no hosted-dashboard fallback so self-hosted
+    installs never link recipients to the hosted app.
+    """
+    explicit_app_url = "app_url" in getattr(config, "model_fields_set", set()) or bool(
+        os.environ.get("SFS_APP_URL")
+    )
+    return str(
+        getattr(config, "dashboard_url", None)
+        or (getattr(config, "app_url", None) if explicit_app_url else None)
+        or ""
+    ).strip().rstrip("/")
+
+
+@router.post("/sweeps/org-digest")
+async def sweep_org_digest(
+    request: Request,
+    auth: AuthContext = Depends(require_platform_sweeper()),
+    db: AsyncSession = Depends(get_db),
+):
+    """Send the weekly org activity digest (GitHub #97).
+
+    Accepts a platform-admin user key or a ``platform_sweeps:run`` service
+    key (the scheduled job). For every Team/Enterprise org with activity in
+    the most recently completed Monday-to-Monday week, builds one digest and
+    emails each non-opted-out owner/admin. Idempotent per org per week via
+    the ``org_digest_runs`` primary key: the run row is reserved with an
+    ON CONFLICT guard BEFORE any email is sent, so re-running the same week
+    sends nothing. The email provider "none" is a no-op that still records
+    the run (air-gapped/self-hosted). Recipients are masked in logs.
+    """
+    from sessionfs.server.email import create_email_provider, mask_address
+    from sessionfs.server.services.org_digest import build_org_digest, digest_week
+    from sessionfs.server.tier_gate import resolve_org_plan_tier
+    from sessionfs.server.tiers import Tier
+
+    config = getattr(request.app.state, "config", None)
+    dashboard_url = _digest_dashboard_url(config)
+    provider = create_email_provider(config)
+
+    admin_id = auth.user.id
+    actor = sweep_actor_details(auth)
+    now = datetime.now(timezone.utc)
+    week_start, _, _ = digest_week(now)
+    week_end = week_start + timedelta(days=6)
+    week_label = f"{week_start.isoformat()} – {week_end.isoformat()}"
+
+    # The request session opened a transaction during authentication; end it
+    # before per-org commits below so the reservation commits are isolated.
+    await db.rollback()
+
+    # Materialize (id, name) as plain strings up front: the per-org error
+    # handler rolls the session back, which expires ORM objects, so the loop
+    # must not rely on lazy attribute loads from the org rows.
+    orgs = (await db.execute(select(Organization.id, Organization.name))).all()
+    sent_orgs: list[dict] = []
+    skipped_orgs: list[dict] = []
+    recipient_total = 0
+
+    dialect = db.bind.dialect.name if db.bind is not None else ""
+    if dialect == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert as dialect_insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert as dialect_insert
+
+    already_reserved = set(
+        (
+            await db.execute(
+                select(OrgDigestRun.org_id).where(OrgDigestRun.week_start == week_start)
+            )
+        ).scalars()
+    )
+
+    for org_id, org_name in orgs:
+        reserved = False
+        sent = 0
+        try:
+            if org_id in already_reserved:
+                skipped_orgs.append({"org_id": org_id, "reason": "already_sent"})
+                continue
+            tier = await resolve_org_plan_tier(org_id, db)
+            if tier not in (Tier.TEAM, Tier.ENTERPRISE):
+                continue
+
+            digest = await build_org_digest(db, org_id, week_start)
+            if not _digest_has_activity(digest):
+                continue
+
+            recipients = await _digest_recipients(db, org_id)
+            if not recipients:
+                continue
+
+            # Reserve the (org, week) slot before sending. rowcount == 0 means
+            # another run already sent this week, so skip to avoid a double send.
+            stmt = dialect_insert(OrgDigestRun).values(
+                org_id=org_id,
+                week_start=week_start,
+                sent_at=now,
+                recipient_count=len(recipients),
+                sent_count=0,
+            ).on_conflict_do_nothing(index_elements=["org_id", "week_start"])
+            result = await db.execute(stmt)
+            if result.rowcount == 0:
+                skipped_orgs.append({"org_id": org_id, "reason": "already_sent"})
+                continue
+            await db.commit()  # durable reservation before any send
+            reserved = True
+
+            for email, member_id in recipients:
+                outcome = await provider.send_org_digest(
+                    to_email=email,
+                    org_name=org_name,
+                    week_label=week_label,
+                    digest=digest,
+                    dashboard_url=dashboard_url,
+                )
+                if outcome.get("status") == "sent":
+                    sent += 1
+                else:
+                    logger.warning(
+                        "org digest send failed to member %s", mask_address(email)
+                    )
+            recipient_total += sent
+
+            if sent == 0:
+                # Every recipient failed: release the reservation so a later
+                # run this week retries instead of silently losing the week.
+                await db.execute(
+                    delete(OrgDigestRun).where(
+                        OrgDigestRun.org_id == org_id,
+                        OrgDigestRun.week_start == week_start,
+                    )
+                )
+                await db.commit()
+                skipped_orgs.append({"org_id": org_id, "reason": "send_failed"})
+                continue
+
+            await db.execute(
+                update(OrgDigestRun)
+                .where(
+                    OrgDigestRun.org_id == org_id,
+                    OrgDigestRun.week_start == week_start,
+                )
+                .values(sent_count=sent)
+            )
+            await db.commit()
+            sent_orgs.append(
+                {"org_id": org_id, "recipients": len(recipients), "sent": sent}
+            )
+        except Exception as exc:
+            await db.rollback()
+            logger.warning(
+                "org digest failed for org %s: %s", org_id, type(exc).__name__
+            )
+            if reserved:
+                # The reservation is already committed: release it when nobody
+                # got the email so a later run retries, else record what went out.
+                try:
+                    where = (
+                        OrgDigestRun.org_id == org_id,
+                        OrgDigestRun.week_start == week_start,
+                    )
+                    if sent == 0:
+                        await db.execute(delete(OrgDigestRun).where(*where))
+                    else:
+                        await db.execute(
+                            update(OrgDigestRun).where(*where).values(sent_count=sent)
+                        )
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+                    logger.warning(
+                        "org digest could not settle the reservation for org %s",
+                        org_id,
+                    )
+            skipped_orgs.append({"org_id": org_id, "reason": "error"})
+            continue
+
+    result_payload = {
+        "week_start": week_start.isoformat(),
+        "orgs_processed": len(sent_orgs),
+        "orgs_skipped": len(skipped_orgs),
+        "recipients": recipient_total,
+        "orgs": sent_orgs,
+        "skipped": skipped_orgs,
+    }
+    await _log_action(
+        db,
+        admin_id,
+        "run_org_digest",
+        "org_digest",
+        "bulk",
+        {**result_payload, **actor},
+    )
+    await db.commit()
+    return result_payload
+
+
+def _digest_has_activity(digest: dict) -> bool:
+    """A digest is worth sending when at least one org-scoped metric moved."""
+    return bool(
+        digest["sessions"]["total"]
+        or digest["tickets"]["opened"]
+        or digest["tickets"]["completed"]
+        or digest["agent_runs"]["total"]
+        or digest["knowledge"]["claims_added"]
+        or digest["knowledge"]["claims_promoted"]
+        or digest["knowledge"]["claims_dismissed"]
+        or digest["handoffs"]["created"]
+        or digest["handoffs"]["claimed"]
+        or digest["admin_actions"]["total"]
+    )
+
+
+async def _digest_recipients(
+    db: AsyncSession, org_id: str
+) -> list[tuple[str, str]]:
+    """Owner/admins who have not opted out, with a deliverable email."""
+    rows = (
+        await db.execute(
+            select(OrgMember, User)
+            .join(User, OrgMember.user_id == User.id)
+            .where(
+                OrgMember.org_id == org_id,
+                OrgMember.role.in_(("owner", "admin")),
+                OrgMember.digest_opt_out.is_(False),
+                User.email.is_not(None),
+                User.is_active.is_(True),
+            )
+        )
+    ).all()
+    return [(u.email, m.user_id) for m, u in rows]
+
+
+@router.post("/sweeps/kb-compile")
+async def sweep_kb_compile(
+    body: dict | None = None,
+    auth: AuthContext = Depends(require_platform_sweeper()),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run the scheduled knowledge-base compile sweep (GitHub #93).
+
+    Compiles every project whose schedule is due — or whose pending-claim
+    threshold is reached — with the deterministic compiler (never the LLM).
+    Accepts a platform-admin user key or a ``platform_sweeps:run`` service
+    key. Optional body {"limit": N} caps how many projects are compiled
+    (default 100, max 1000).
+
+    Each project compiles in its own transaction; a failure is reported in
+    ``errors`` and does not stop the batch. Safe to run repeatedly: a
+    compiled project advances ``last_scheduled_compile_at`` and is not
+    selected again until its schedule lapses.
+    """
+    from sessionfs.server.db.engine import _session_factory
+    from sessionfs.server.services.scheduled_compile import run_kb_compile_sweep
+
+    limit = 100
+    if body and isinstance(body.get("limit"), int) and not isinstance(
+        body.get("limit"), bool
+    ):
+        limit = max(1, min(1000, body["limit"]))
+    if _session_factory is None:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    admin_id = auth.user.id
+    actor = sweep_actor_details(auth)
+    # End the request session's auth transaction; the sweep selects in a
+    # fresh short transaction and compiles each project in its own session.
+    await db.rollback()
+    result = await run_kb_compile_sweep(
+        db,
+        limit=limit,
+        session_factory=_session_factory,
+    )
+    await _log_action(
+        db,
+        admin_id,
+        "kb_compile_sweep",
+        "project",
+        "bulk",
+        {**result, **actor},
+    )
+    await db.commit()
+    return result
+
+
+# Default retention window (days) for session-helper messages when an org has
+# not overridden it via ``organizations.settings`` → ``general.helper_retention_days``.
+_HELPER_RETENTION_DAYS = 90
+
+# Max rows hard-deleted per transaction during the retention sweep, so a large
+# backlog is drained in bounded batches instead of one unbounded transaction.
+_HELPER_RETENTION_BATCH = 1000
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """Normalize a DB datetime to aware UTC (SQLite returns naive datetimes)."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _helper_retention_days_from_settings(settings: str | dict | None) -> int:
+    """Read ``general.helper_retention_days`` from raw settings JSON (default 90, min 1)."""
+    if isinstance(settings, str):
+        try:
+            parsed = json.loads(settings)
+        except (TypeError, ValueError):
+            return _HELPER_RETENTION_DAYS
+        settings = parsed
+    if not isinstance(settings, dict):
+        return _HELPER_RETENTION_DAYS
+    general = settings.get("general")
+    days = (
+        general.get("helper_retention_days", _HELPER_RETENTION_DAYS)
+        if isinstance(general, dict)
+        else _HELPER_RETENTION_DAYS
+    )
+    if isinstance(days, bool) or not isinstance(days, int) or days < 1:
+        return _HELPER_RETENTION_DAYS
+    return days
+
+
+def _helper_retention_days(org: Organization) -> int:
+    """Read an org's ``general.helper_retention_days`` setting (default 90, min 1)."""
+    return _helper_retention_days_from_settings(org.settings)
+
+
+@router.post("/sweeps/helper-retention")
+async def sweep_helper_retention(
+    body: dict | None = None,
+    batch_size: int = Query(default=_HELPER_RETENTION_BATCH, ge=1, le=10000),
+    auth: AuthContext = Depends(require_platform_sweeper()),
+    db: AsyncSession = Depends(get_db),
+):
+    """Hard-delete helper messages past their retention window.
+
+    Retention is per message (not per conversation): each message expires once
+    its ``created_at`` is older than its conversation org's
+    ``general.helper_retention_days`` (default 90); personal conversations use
+    the same default. Conversations left with no messages are then purged, but
+    only once their ``updated_at`` is at least an hour old, so a thread that is
+    still being written to (or was just created) is never purged mid-flight.
+    Deletes run in bounded batches and never load every expired id into memory
+    (a keyset pages through candidates one batch at a time). Runs as the
+    scheduled retention sweep — platform-admin user key or the
+    ``platform_sweeps:run`` service key.
+    """
+    now = datetime.now(timezone.utc)
+    batch = batch_size
+
+    # Retention window per org (settings["general"]["helper_retention_days"]).
+    org_days: dict[str, int] = {}
+    for org_id, settings in (
+        await db.execute(select(Organization.id, Organization.settings))
+    ).all():
+        org_days[org_id] = _helper_retention_days_from_settings(settings)
+
+    # Expired messages are filtered in Python (per-org windows can't be
+    # expressed portably across SQLite/Postgres inside the settings JSON) and
+    # hard-deleted one batch at a time: page through candidates with a keyset
+    # on id, delete the page's expired ids, repeat until a short page (N5d).
+    messages_deleted = 0
+    cursor: str | None = None
+    while True:
+        stmt = (
+            select(
+                HelperMessage.id,
+                HelperMessage.created_at,
+                HelperConversation.org_id,
+            )
+            .join(
+                HelperConversation,
+                HelperMessage.conversation_id == HelperConversation.id,
+            )
+            .order_by(HelperMessage.id.asc())
+            .limit(batch)
+        )
+        if cursor is not None:
+            stmt = stmt.where(HelperMessage.id > cursor)
+        page = (await db.execute(stmt)).all()
+        if not page:
+            break
+        expired_ids = [
+            message_id
+            for message_id, created_at, org_id in page
+            if created_at is not None
+            and _as_utc(created_at)
+            < now - timedelta(days=org_days.get(org_id, _HELPER_RETENTION_DAYS))
+        ]
+        if expired_ids:
+            result = await db.execute(
+                delete(HelperMessage).where(HelperMessage.id.in_(expired_ids))
+            )
+            messages_deleted += result.rowcount or 0
+            await db.commit()
+        cursor = page[-1][0]
+        if len(page) < batch:
+            break
+
+    # Purge conversations the per-message sweep emptied (explicit delete: the
+    # FK cascade only fires when a conversation row is removed, not its
+    # children), but leave any conversation touched within the last hour.
+    conversations_purged = 0
+    cursor = None
+    while True:
+        stmt = (
+            select(HelperConversation.id)
+            .outerjoin(
+                HelperMessage,
+                HelperMessage.conversation_id == HelperConversation.id,
+            )
+            .where(HelperMessage.id.is_(None))
+            .where(HelperConversation.updated_at < now - timedelta(hours=1))
+            .order_by(HelperConversation.id.asc())
+            .limit(batch)
+        )
+        if cursor is not None:
+            stmt = stmt.where(HelperConversation.id > cursor)
+        page = (await db.execute(stmt)).scalars().all()
+        if not page:
+            break
+        result = await db.execute(
+            delete(HelperConversation).where(HelperConversation.id.in_(page))
+        )
+        conversations_purged += result.rowcount or 0
+        await db.commit()
+        cursor = page[-1]
+        if len(page) < batch:
+            break
+
+    await _log_action(
+        db,
+        auth.user.id,
+        "helper_retention_sweep",
+        "helper_conversation",
+        "bulk",
+        {
+            **sweep_actor_details(auth),
+            "purged": conversations_purged,
+            "messages_deleted": messages_deleted,
+        },
+    )
+    await db.commit()
+    return {"purged": conversations_purged, "messages_deleted": messages_deleted}
 
 
 @router.post("/github-webhook-deliveries/{fingerprint}/retry")
@@ -2235,6 +2704,8 @@ async def force_transfer_project(
     project.org_id = dest_org.id
     project.owner_id = new_owner_id
     project.updated_at = now
+    # Drop the old org's tracker mapping; existing links go stale.
+    await drop_project_tracker_mapping(db, project.id)
     after = {
         "org_id": dest_org.id,
         "scope": dest_org.id,

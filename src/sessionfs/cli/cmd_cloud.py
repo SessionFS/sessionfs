@@ -704,6 +704,7 @@ def push(
                 return await client.push_session(
                     full_id, archive_data, etag=local_etag,
                     extra_headers=extra_headers if extra_headers else None,
+                    store_dir=_del_base,
                 )
             finally:
                 await client.close()
@@ -1017,7 +1018,9 @@ def sync_all() -> None:
                         # would have pushed the deleted session.
                         if not acquire_for_retry(sid, base_dir=_del_base):
                             return
-                        result = await client.push_session(sid, archive_data, etag=local_etag)
+                        result = await client.push_session(
+                            sid, archive_data, etag=local_etag, store_dir=_del_base
+                        )
                         _update_manifest_sync(session_dir, result.etag)
                         push_results[sid] = "pushed"
                     except SyncConflictError:
@@ -1217,6 +1220,7 @@ def handoff(
 
     from sessionfs.sync.archive import pack_session
     from sessionfs.sync.client import SyncConflictError, SyncDeletedError, SyncTooLargeError
+    from sessionfs.cli.common import get_store_dir
 
     store = open_store()
     client = _get_sync_client()
@@ -1255,7 +1259,9 @@ def handoff(
 
         async def _push_and_handoff():
             try:
-                push_result = await client.push_session(full_id, archive_data, etag=local_etag)
+                push_result = await client.push_session(
+                    full_id, archive_data, etag=local_etag, store_dir=get_store_dir()
+                )
                 return push_result
             finally:
                 await client.close()

@@ -1,6 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
-import type { Persona, PersonaCreate, PersonaUpdate } from '../api/client';
+import type {
+  Persona,
+  PersonaCreate,
+  PersonaRollup,
+  PersonaUpdate,
+  RepresentHistoryEntry,
+} from '../api/client';
 
 /**
  * React-Query hooks for v0.10.1 Personas (Pro+).
@@ -122,5 +128,34 @@ export function useDeleteOrgPersona(orgId: string | undefined) {
     mutationFn: ({ name, force }: { name: string; force?: boolean }) =>
       auth!.client.deleteOrgPersona(orgId!, name, force),
     onSuccess: () => invalidateOrgPersonas(qc, orgId),
+  });
+}
+
+/**
+ * GH #92 — org persona roll-up and represent-history.
+ *
+ *   GET /api/v1/orgs/{orgId}/personas/{name}/rollup
+ *   GET /api/v1/orgs/{orgId}/personas/{name}/represent-history  (admins only)
+ */
+export function useOrgPersonaRollup(orgId: string | undefined, name: string | undefined) {
+  const { auth } = useAuth();
+  return useQuery<PersonaRollup>({
+    queryKey: ['org-persona-rollup', orgId, name],
+    queryFn: () => auth!.client.getOrgPersonaRollup(orgId!, name!),
+    enabled: !!auth && !!orgId && !!name,
+    staleTime: 30_000,
+  });
+}
+
+export function useOrgPersonaRepresentHistory(
+  orgId: string | undefined,
+  name: string | undefined,
+) {
+  const { auth } = useAuth();
+  return useQuery<RepresentHistoryEntry[]>({
+    queryKey: ['org-persona-represent-history', orgId, name],
+    queryFn: () => auth!.client.getOrgPersonaRepresentHistory(orgId!, name!),
+    enabled: !!auth && !!orgId && !!name,
+    staleTime: 30_000,
   });
 }

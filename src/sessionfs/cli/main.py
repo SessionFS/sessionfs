@@ -84,6 +84,7 @@ from sessionfs.cli.cmd_skill import skill_app
 from sessionfs.cli.cmd_catalog import catalog_app
 from sessionfs.cli.cmd_policy import policy_app
 from sessionfs.cli.cmd_resident import resident_app
+from sessionfs.cli.cmd_helper import helper_app
 from sessionfs.cli.cmd_keys import (
     auth_keys_app,
     service_keys_app,
@@ -124,6 +125,9 @@ app.add_typer(policy_app, name="policy")
 
 # Register the resident runner (R1: reviewer-runner skeleton)
 app.add_typer(resident_app, name="resident")
+
+# Register the session helper (Enterprise, BYOK)
+app.add_typer(helper_app, name="helper")
 
 # Register top-level commands (wrapped with handle_errors for resilient error reporting)
 from sessionfs.cli.common import handle_errors

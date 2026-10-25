@@ -19,6 +19,7 @@ from sessionfs.sync.client import (
     SyncConflictError,
     SyncError,
     SyncResult,
+    SyncTooLargeError,
     _validate_url,
 )
 
@@ -150,6 +151,31 @@ async def test_push_conflict_raises():
 
 
 @pytest.mark.asyncio
+async def test_push_non_etag_409_raises_transient_sync_error():
+    """A 409 without `code: etag_mismatch` is a transient failure, not a version
+    conflict — the daemon retries it with backoff instead of storing an ETag."""
+    def handler(request: httpx.Request):
+        return httpx.Response(
+            409,
+            json={
+                "error": {
+                    "code": "upload_not_pending",
+                    "message": "Upload is no longer pending",
+                }
+            },
+        )
+
+    client = SyncClient("http://localhost:8000", "test-key")
+    client._client = httpx.AsyncClient(transport=MockTransport(handler))
+
+    with pytest.raises(SyncError) as exc_info:
+        await client.push_session("ses_abc123", b"data", etag=None)
+    assert not isinstance(exc_info.value, SyncConflictError)
+    assert "409" in str(exc_info.value)
+    await client.close()
+
+
+@pytest.mark.asyncio
 async def test_push_auth_error():
     """Push with bad auth → SyncAuthError."""
 
@@ -160,6 +186,30 @@ async def test_push_auth_error():
     client._client = httpx.AsyncClient(transport=MockTransport(handler))
 
     with pytest.raises(SyncAuthError):
+        await client.push_session("ses_abc123", b"data")
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_push_member_too_large_maps_to_too_large():
+    """Finding #10: single-shot push maps a 400 "Member too large" to
+    SyncTooLargeError (same mapping the chunked complete shares)."""
+
+    def handler(request: httpx.Request):
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "PAYLOAD_TOO_LARGE",
+                    "message": "Member too large in session",
+                }
+            },
+        )
+
+    client = SyncClient("http://localhost:8000", "test-key")
+    client._client = httpx.AsyncClient(transport=MockTransport(handler))
+
+    with pytest.raises(SyncTooLargeError):
         await client.push_session("ses_abc123", b"data")
     await client.close()
 

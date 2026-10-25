@@ -337,6 +337,134 @@ monitoring:
       release: prometheus
 ```
 
+### Operator metrics
+
+The API serves Prometheus metrics at `GET /api/v1/admin/metrics` (request latency by route, push outcomes, DLP findings, auth failures, active users, DB pool use). The endpoint is not anonymous: scrape it with a platform-admin user key or a service key with the `admin_metrics:read` scope. Set `api.metrics.scrapeAnnotations: true` to add `prometheus.io/*` scrape annotations to the API pods, and supply the Bearer token in your Prometheus scrape config. See [Operator metrics](observability.md) for the metric reference, how to aggregate across replicas, and a ready-to-import Grafana dashboard.
+
+## Scheduled KB compile sweep
+
+Projects keep a per-project compile schedule (`nightly` or `weekly`) and an
+optional pending-claim threshold (`compile_after_claims`), set from the
+dashboard's project config or with `sfs project compile-schedule`. The server
+does not run its own scheduler: an operator cron calls the sweep endpoint,
+which compiles every project that is due and does nothing for the rest.
+
+```bash
+curl -s -X POST https://your-api/api/v1/admin/sweeps/kb-compile \
+  -H "Authorization: Bearer $SWEEP_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"limit": 100}'
+```
+
+- **Auth** — a platform-admin user key or a `platform_sweeps:run` service key
+  (see [API keys](./api-keys.md#service-keys)). The service key is preferred
+  for cron: it works only while the platform admin who minted it and the user
+  it runs as are both still active platform admins.
+- **Body** — `{"limit": N}` caps how many projects are compiled (default 100,
+  max 1000).
+- **Selection** — a project is due when it has at least one pending claim and
+  either its schedule has elapsed since its last scheduled compile (a project
+  never compiled is immediately due), or its pending-claim threshold is
+  reached. The threshold fires regardless of schedule, so `off` still compiles
+  once enough claims accumulate. Projects with no pending claims are skipped.
+- **Grandfathered projects are not swept** — a project grandfathered under
+  migration 065 (it used `project_context` before v0.17.2, recorded in
+  `ProjectFeatureGrandfather`) is never auto-compiled. The exemption only lets
+  a settings editor whose own plan includes the feature keep editing the
+  schedule; the sweep resolves the project's own plan alone, so a
+  grandfathered project whose plan lacks the feature stays out of the sweep.
+- **Deterministic only** — the sweep always uses the deterministic compiler,
+  never the LLM.
+- **Isolation and idempotency** — each project compiles in its own transaction,
+  so one failure does not stop the batch (it is reported in `errors` and the
+  sweep returns `{selected, compiled, skipped_no_pending, failed, errors}`).
+  Re-running is safe: a compiled project advances its
+  `last_scheduled_compile_at` and is not selected again until its schedule
+  lapses.
+
+Run it on a schedule. For example, a Kubernetes CronJob every 15 minutes:
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sessionfs-kb-compile
+  namespace: sessionfs
+spec:
+  schedule: "*/15 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: sweep
+              image: curlimages/curl:latest
+              args:
+                - -s
+                - -X
+                - POST
+                - https://your-api/api/v1/admin/sweeps/kb-compile
+                - -H
+                - "Authorization: Bearer $(SWEEP_KEY)"
+                - -H
+                - "Content-Type: application/json"
+                - -d
+                - '{"limit": 100}'
+              env:
+                - name: SWEEP_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: sessionfs-sweep-key
+                      key: token
+```
+
+The same mechanism drives the dashboard's "compile needed" banner: when a
+project has a pending claim and its last compile is older than 24 hours (or 20
+or more pending claims), the dashboard offers a one-click compile. The banner
+is advisory — the sweep above is what actually keeps projects fresh.
+
+## Scheduled helper retention sweep
+
+Session-helper messages expire **per message**, not per conversation. A message
+is deleted once it is older than the conversation org's retention window —
+`general.helper_retention_days` in the org's settings JSON (default **90**,
+allowed **1–3650**) — or the 90-day default for personal threads. Conversations
+left with no messages are then purged. As with the KB compile sweep, the server
+does not run its own scheduler: an operator cron calls the sweep endpoint.
+
+```bash
+curl -s -X POST https://your-api/api/v1/admin/sweeps/helper-retention \
+  -H "Authorization: Bearer $SWEEP_KEY"
+```
+
+- **Auth** — a platform-admin user key or a `platform_sweeps:run` service key
+  (see [API keys](./api-keys.md#service-keys)).
+- **Retention window** — set per org via `PUT /api/v1/orgs/{org_id}/settings`
+  with a flat body `{"helper_retention_days": 30}` (the route merges into the
+  stored general settings, so fields you omit are preserved; send an explicit
+  `"helper_retention_days": null` to clear the override and revert to the 90-day
+  default). The dashboard does not edit this setting yet.
+- **Batching** — deletes run in bounded batches of 1000 rows and page through
+  candidates with a keyset, so a large backlog is drained without one unbounded
+  transaction or loading every expired id into memory.
+
+Run it on a schedule with a CronJob, mirroring the [KB compile sweep
+example](#scheduled-kb-compile-sweep), or let the chart create one. Mint a
+`platform_sweeps:run` service key, store it in a Secret, and enable the
+built-in CronJob (off by default; it runs daily at 03:00 and, when network
+policies are enabled, the chart allows it to reach the API):
+
+```yaml
+api:
+  helperRetention:
+    enabled: true
+    cronJob:
+      schedule: "0 3 * * *"
+      existingSecret: sessionfs-sweep-key     # required when enabled
+      secretKey: helper-retention-api-key
+```
+
 ## Upgrading
 
 ```bash
@@ -458,6 +586,36 @@ helm install sessionfs sessionfs/sessionfs \
 
 Users will be auto-verified on signup. Email notifications (handoff, retention) will be logged but not sent.
 
+### Weekly org activity digest
+
+A weekly email summarizing each Team/Enterprise org's activity (sessions,
+tickets, agent runs, KB claims, handoffs, admin actions) is sent to that
+org's owners and admins. Each admin can opt out individually from the
+dashboard (org settings → Notifications) or via the API. The digest is sent
+by an external scheduled job that calls a key-authenticated sweep endpoint —
+the server has no scheduler of its own:
+
+```text
+POST /api/v1/admin/sweeps/org-digest
+```
+
+Authenticate with a platform-admin user key, or a `platform_sweeps:run`
+service key minted by a platform admin. The sweep is idempotent per org per
+week (`org_digest_runs`), so a duplicate schedule tick is safe: a second run
+in the same week sends nothing. But the digest always summarizes the most
+recently *completed* week, so a missed weekly tick permanently loses that
+week unless the sweep runs again before the following Monday. Run the job
+daily (or more often) — it is idempotent, so the extra runs are free and
+only the first successful run of a given week sends.
+
+With `email.provider=none` the sweep is a no-op for delivery but still
+records each org's run, so self-hosted air-gapped deployments can keep the
+job enabled (and the audit ledger accurate) without an SMTP or Resend
+provider. Digest links resolve to `SFS_DASHBOARD_URL` when set, falling back
+to `SFS_APP_URL` (the same origin invite emails use), and are omitted when
+neither is set, so self-hosted installs never link recipients to the hosted
+dashboard.
+
 ### SMTP with Kubernetes Secrets
 
 ```bash
@@ -523,7 +681,7 @@ sfs admin override user-merge <duplicate-id> <kept-id> --reason "Typo in email d
 sfs admin override user-merge <duplicate-id> <kept-id> --reason "Typo in email domain (ticket OPS-77)" --apply
 ```
 
-This calls `POST /api/v1/admin/users/{source_id}/merge-into/{target_id}`. The dry run lists the rows that would move; `--apply` reassigns them, deduplicates org memberships (higher role wins), revokes the duplicate's API keys, deactivates it and writes one `user_merge` audit entry, all in one transaction. It refuses when both accounts hold an active entitlement or the duplicate owns marketplace assets or Stripe billing; resolve those first. See the [CLI reference](./cli-reference.md#sfs-admin-override-user-merge).
+This calls `POST /api/v1/admin/users/{source_id}/merge-into/{target_id}`. The dry run lists the rows that would move; `--apply` reassigns them, deduplicates org memberships (higher role wins), revokes the duplicate's API keys, deactivates it and writes one `user_merge` audit entry, all in one transaction. It refuses when both accounts hold an active entitlement or the duplicate owns marketplace assets or has billing records; resolve those first. See the [CLI reference](./cli-reference.md#sfs-admin-override-user-merge).
 
 **Merge duplicate projects.** When the same repository ended up as two projects, the owner can run `sfs project merge`. When the twins belong to different users, merge them as an operator:
 
@@ -582,6 +740,8 @@ Internet -> Ingress -> Dashboard Nginx -> API Service (ClusterIP)
 ```
 
 The ingress template routes everything to the dashboard service. Do NOT create separate ingress rules for `/api` or `/mcp` — this causes ALB target groups to stay in "unused" state.
+
+The session helper streams its answers as Server-Sent Events from `POST /api/v1/helper/turns`. The chart's dashboard nginx passes that route through unbuffered with a 600-second read timeout, so answers appear as they are written. If you put another proxy or load balancer in front of the chart, turn off response buffering for that path and allow long-lived responses there too (the API sends a keep-alive comment every 15 seconds).
 
 ### Upload size limit
 

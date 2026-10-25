@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
@@ -3276,3 +3276,204 @@ async def test_compile_crash_after_llm_preserves_prior_state(tmp_path, monkeypat
             )).scalar_one() == 0
     finally:
         await engine.dispose()
+
+
+# ── GitHub #93 review round 1: time-based confidence decay ────────────────────
+
+
+def test_decay_multiplier_is_time_based():
+    """GitHub #93 review round 1 HIGH — decay advances by 30-day periods, not
+    per compile. A null last_decay_at (first decay) counts as at most one
+    period, and any gap longer than one period is still capped at a single
+    0.8 factor (review round 2 HIGH), so a very old project never takes a
+    catch-up confidence hit."""
+    from sessionfs.server.services.compiler import _as_utc, _decay_multiplier
+
+    now = datetime.now(timezone.utc)
+
+    # First decay ever → exactly one period.
+    multiplier, new_last = _decay_multiplier(None, now)
+    assert multiplier == pytest.approx(0.8)
+    assert new_last == now
+
+    # No full period elapsed → no decay, no advance.
+    assert _decay_multiplier(now, now) == (None, None)
+    assert _decay_multiplier(now - timedelta(days=10), now) == (None, None)
+    assert _decay_multiplier(now - timedelta(days=29), now) == (None, None)
+
+    # 30 days → one period; 60 or 200 days → still one period (capped).
+    assert _decay_multiplier(now - timedelta(days=30), now)[0] == pytest.approx(0.8)
+    assert _decay_multiplier(now - timedelta(days=60), now)[0] == pytest.approx(0.8)
+    assert _decay_multiplier(now - timedelta(days=200), now)[0] == pytest.approx(0.8)
+
+    # Simulate 10 nightly compiles over 10 days: the first pass decays once
+    # (0.8), the following nine (one day apart) must not decay again.
+    total = 1.0
+    last = None
+    for day in range(10):
+        multiplier, new_last = _decay_multiplier(last, now + timedelta(days=day))
+        if multiplier is not None:
+            total *= multiplier
+            last = new_last
+    assert total == pytest.approx(0.8)
+
+    # _as_utc normalizes naive SQLite timestamps to aware UTC.
+    assert _as_utc(None) is None
+    assert _as_utc(datetime(2026, 1, 1)).tzinfo is not None
+    assert _as_utc(datetime(2026, 1, 1, tzinfo=timezone.utc)).tzinfo is not None
+
+
+def test_decay_multiplier_nightly_over_60_days():
+    """GitHub #93 review round 2 HIGH — the single-period cap must not stall
+    the nightly cadence. Sixty nightly passes (one per day) still advance
+    exactly two 30-day periods, so a claim decays 0.8² across them rather
+    than being frozen at a single 0.8."""
+    from sessionfs.server.services.compiler import _decay_multiplier
+
+    now = datetime.now(timezone.utc)
+    total = 1.0
+    last = None
+    steps = 0
+    for day in range(60):
+        multiplier, new_last = _decay_multiplier(last, now + timedelta(days=day))
+        if multiplier is not None:
+            total *= multiplier
+            last = new_last
+            steps += 1
+    assert steps == 2
+    assert total == pytest.approx(0.8 ** 2)
+
+
+@pytest.mark.asyncio
+async def test_decay_caps_long_gap_to_single_period(
+    db_session: AsyncSession, test_user: User, test_project: Project
+):
+    """GitHub #93 review round 2 HIGH — one compile after a long gap applies at
+    most one decay period. Two 0.95 claims with last_decay_at 200 days ago
+    both land at 0.76 after a single compile and neither is retention-
+    dismissed (the pre-fix 0.8^6 ≈ 0.26 would have dismissed both)."""
+    from sessionfs.server.services.compiler import compile_project_context
+
+    now = datetime.now(timezone.utc)
+    test_project.last_decay_at = now - timedelta(days=200)
+    await db_session.commit()
+
+    claims: list[KnowledgeEntry] = []
+    for label in ("A", "B"):
+        claim = KnowledgeEntry(
+            project_id=test_project.id,
+            session_id=f"ses_gap_{label.lower()}",
+            user_id=test_user.id,
+            entry_type="decision",
+            content=f"Claim {label} that has not been referenced for 400 days",
+            confidence=0.95,
+            claim_class="claim",
+            freshness_class="current",
+            created_at=now - timedelta(days=400),
+            compiled_at=now - timedelta(days=400),
+            last_relevant_at=None,
+        )
+        db_session.add(claim)
+        claims.append(claim)
+    await db_session.commit()
+
+    await compile_project_context(
+        project_id=test_project.id, user_id=test_user.id, db=db_session
+    )
+
+    for claim in claims:
+        row = (
+            await db_session.execute(
+                select(KnowledgeEntry)
+                .where(KnowledgeEntry.id == claim.id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
+        assert row.dismissed is False
+        assert row.confidence == pytest.approx(0.76)
+
+
+@pytest.mark.asyncio
+async def test_decay_survives_six_nights(
+    db_session: AsyncSession, test_user: User, test_project: Project
+):
+    """GitHub #93 review round 1 HIGH — a 400-day-old 0.95 claim decays at
+    most once across six nightly compiles (0.95 → 0.76) and survives
+    retention. The pre-fix per-compile decay would have taken 0.8^6 ≈ 0.26
+    and auto-dismissed it (confidence < 0.3)."""
+    from sessionfs.server.services.compiler import compile_project_context
+
+    now = datetime.now(timezone.utc)
+    claim = KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_decay",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="A claim that has not been referenced for 400 days",
+        confidence=0.95,
+        claim_class="claim",
+        freshness_class="current",
+        created_at=now - timedelta(days=400),
+        # Already compiled long ago (so it is NOT pending and will not be
+        # re-referenced), but never fetched since (decay-eligible).
+        compiled_at=now - timedelta(days=400),
+        last_relevant_at=None,
+    )
+    db_session.add(claim)
+    await db_session.commit()
+
+    for _ in range(6):
+        await compile_project_context(
+            project_id=test_project.id,
+            user_id=test_user.id,
+            db=db_session,
+        )
+
+    row = (
+        await db_session.execute(
+            select(KnowledgeEntry)
+            .where(KnowledgeEntry.id == claim.id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    assert row.dismissed is False
+    assert row.confidence == pytest.approx(0.95 * 0.8)
+
+
+@pytest.mark.asyncio
+async def test_list_compilations_reports_word_counts(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession,
+    test_user: User, test_project: Project,
+):
+    """GitHub #93 review round 1 LOW — the compilation history endpoint must
+    derive context_words_before/after from the stored context so the
+    dashboard can render word counts that were previously always 0."""
+    from sessionfs.server.services.compiler import compile_project_context
+
+    test_project.context_document = "one two three four five"
+    await db_session.commit()
+    db_session.add(KnowledgeEntry(
+        project_id=test_project.id,
+        session_id="ses_words",
+        user_id=test_user.id,
+        entry_type="decision",
+        content="A pending claim that will be compiled",
+        confidence=0.9,
+        claim_class="claim",
+        freshness_class="current",
+    ))
+    await db_session.commit()
+    await compile_project_context(
+        project_id=test_project.id, user_id=test_user.id, db=db_session
+    )
+
+    resp = await client.get(
+        f"/api/v1/projects/{test_project.id}/compilations", headers=auth_headers
+    )
+    assert resp.status_code == 200, resp.text
+    history = resp.json()
+    assert len(history) == 1
+    item = history[0]
+    assert item["context_words_before"] == len("one two three four five".split())
+    assert item["context_words_after"] > 0
+    assert item["context_words_after"] == len(item["context_after"].split())

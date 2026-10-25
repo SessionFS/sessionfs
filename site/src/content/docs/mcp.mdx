@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 81 tools in eleven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, and Skills Marketplace.
+The MCP server exposes 83 tools in eleven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, and Skills Marketplace.
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -112,6 +112,17 @@ Return the retrieval audit log for a session. When `start_ticket` creates a serv
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `session_id` | string | yes | Session ID whose retrieval log should be returned |
+
+#### `ask_session_helper`
+
+Ask the session helper a question over sessions and project knowledge you can already read (Enterprise plan + a configured LLM key). Returns a non-streaming answer plus a `citations` list — `[{session_id, message_index, title}]`. Use instead of shelling out to `sfs helper ask`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `question` | string | yes | The question to ask over your sessions and project knowledge |
+| `project` | string | no | Project ID (`proj_...`) to scope the question to |
+| `session_ids` | array | no | Session IDs (`ses_...`) to scope the question to |
+| `conversation_id` | string | no | Conversation ID (`hc_...`) to continue an existing helper thread |
 
 ### Knowledge Read
 
@@ -608,6 +619,57 @@ Heartbeat: return one bounded directive (a single intent plus a small comment de
 #### `complete_work_queue_step`
 
 Report the result of the directive returned by `run_work_queue_step`. This is the only call that durably advances the queue.
+
+### AgentRun (Team+)
+
+Tracked execution records for persona runs, manual or in CI. These tools record that a run happened and evaluate a `fail_on` policy at completion; they never start the model themselves. See [CI Integration](/integrations/ci-integration).
+
+#### `create_agent_run`
+
+Create a run for a persona. Pass `start_now=true` to create and start it in one call; the response then includes the compiled persona and ticket context.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `persona_name` | string | yes | Persona that runs |
+| `tool` | string | no | Tool label (default `generic`) |
+| `trigger_source` | string | no | `manual`, `ci`, `webhook`, `scheduled`, `mcp` (default) or `api` |
+| `ticket_id` | string | no | Ticket the run works on (same project) |
+| `trigger_ref` | string | no | Commit, PR or other reference |
+| `ci_provider` / `ci_run_url` | string | no | CI provenance |
+| `fail_on` | string | no | `none`, `low`, `medium`, `high` or `critical` |
+| `start_now` | boolean | no | Start the run immediately (default `false`) |
+| `git_remote` | string | no | Project selector (see above) |
+
+#### `complete_agent_run`
+
+Record the result of a queued or running run. The server evaluates `fail_on` and stores `policy_result` and `exit_code`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `run_id` | string | yes | Run ID |
+| `status` | string | no | `passed` (default), `failed` or `errored` |
+| `severity` | string | no | Highest finding severity (`none` default) |
+| `findings` | array | no | Structured findings (objects) |
+| `result_summary` | string | no | Short summary |
+| `session_id` | string | no | Session that did the work |
+
+#### `replay_agent_run`
+
+Create a queued copy of an existing run with an edited prompt, ticket, persona, context references, `fail_on` or `trigger_ref`. Fields you leave out are copied from the original, and the new run records which run it came from. Returns the new run plus the `sfs agent run --run-id` command and a CI snippet to run it.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `run_id` | string | yes | Run to replay |
+| `prompt` | string | no | Edited prompt |
+| `context_refs` | array | no | Context references for the new run |
+| `ticket_id` | string | no | Override the ticket (same project) |
+| `persona_name` | string | no | Override the persona |
+| `fail_on` | string | no | Override the fail-on level |
+| `trigger_ref` | string | no | Override the trigger reference |
+
+#### `list_agent_runs`
+
+List recent runs, newest first. Filter by `persona_name`, `status`, `trigger_source` or `ticket_id`; `limit` defaults to 50 (max 200).
 
 ### Agent Feedback (Team+)
 

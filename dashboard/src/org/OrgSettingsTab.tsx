@@ -36,6 +36,7 @@ import {
 import { useDomains } from './useSso';
 import { Button, Input } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
+import { useOrgDigestPrefs, useUpdateOrgDigestPrefs } from './useOrgDigestPrefs';
 
 interface OrgSettingsTabProps {
   orgId: string;
@@ -72,6 +73,9 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
   const domains = useDomains(canEdit ? orgId : undefined);
   const update = useUpdateOrgSettings(orgId);
   const { addToast } = useToast();
+  // Digest opt-out is owner/admin-only; never fetch for plain members.
+  const digestPrefs = useOrgDigestPrefs(orgId, canEdit);
+  const updateDigest = useUpdateOrgDigestPrefs(orgId);
 
   const [form, setForm] = useState<FormState>(settingsToForm(undefined));
 
@@ -119,6 +123,13 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
     }));
   };
 
+  const toggleDigest = (optOut: boolean) => {
+    updateDigest.mutate(optOut, {
+      onSuccess: () => addToast('success', optOut ? 'Digest disabled' : 'Digest enabled'),
+      onError: (err) => addToast('error', `Update failed: ${errorMessage(err)}`),
+    });
+  };
+
   const verifiedDomains = (domains.data ?? []).filter((d) => d.status === 'verified');
   // Configured domains that are no longer verified (deleted or re-pending).
   // Auto-join ignores them; show them so they can be removed. Only judged once
@@ -142,6 +153,7 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
   );
 
   return (
+    <>
     <section aria-labelledby="org-settings-heading">
       <h3 id="org-settings-heading">Org defaults</h3>
       <p className="text-sm text-text-secondary">
@@ -245,5 +257,30 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
         </Button>
       </form>
     </section>
+
+    <section aria-labelledby="org-notifications-heading" className="mt-8">
+      <h3 id="org-notifications-heading">Notifications</h3>
+      <p className="text-sm text-text-secondary">
+        A weekly email summarizing this org's activity, sent to owners and
+        admins. You can opt out here without affecting anyone else.
+      </p>
+      <label className="flex items-center gap-2 px-3 py-2 border border-border rounded-lg bg-bg-primary cursor-pointer hover:bg-surface-hover transition-colors max-w-md">
+        <input
+          type="checkbox"
+          checked={!digestPrefs.data?.opt_out}
+          onChange={(e) => toggleDigest(!e.target.checked)}
+          disabled={!canEdit || updateDigest.isPending || digestPrefs.isLoading}
+          className="accent-[var(--brand)]"
+          aria-label="Receive the weekly activity digest"
+        />
+        <span className="text-sm text-text-primary">Send me the weekly activity digest</span>
+      </label>
+      {digestPrefs.isError && (
+        <span role="alert" className="block text-xs text-text-tertiary mt-1">
+          Could not load your digest preference.
+        </span>
+      )}
+    </section>
+    </>
   );
 }

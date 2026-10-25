@@ -53,6 +53,22 @@ vi.mock('./OrgPersonasSection', () => ({
   ),
 }));
 
+// GH #92: SecondaryOrgPage deep-links from a represented-persona badge; it
+// has its own test file.
+vi.mock('./SecondaryOrgPage', () => ({
+  default: ({ orgId }: { orgId: string }) => (
+    <div data-testid={`secondary-org-stub-${orgId}`}>secondary org</div>
+  ),
+}));
+
+// JiraCard mounts the typed client; it has its own test file. Stub it so this
+// suite can assert the Integrations tab's admin-only gating.
+vi.mock('./JiraCard', () => ({
+  JiraCard: ({ orgId }: { orgId: string }) => (
+    <div data-testid={`jira-card-stub-${orgId}`}>jira card</div>
+  ),
+}));
+
 function makeQueryClient() {
   return new QueryClient({
     defaultOptions: {
@@ -226,9 +242,50 @@ describe('OrgPage', () => {
     });
     expect(screen.queryByRole('button', { name: /invite member/i })).not.toBeInTheDocument();
     expect(screen.queryByTestId('org-personas-stub-org_x')).not.toBeInTheDocument();
-    // Admin-only Security tab is not offered; the policies tab stays visible.
+    // Admin-only Security and Integrations tabs are not offered; the policies
+    // tab stays visible.
     expect(screen.queryByRole('tab', { name: 'Security' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Integrations' })).not.toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Policies' })).toBeInTheDocument();
+  });
+
+  it('admins see the Integrations tab and its Jira card', async () => {
+    stubFetch((url) => {
+      if (url.endsWith('/api/v1/org')) {
+        return jsonOk({
+          org: {
+            id: 'org_x',
+            name: 'SessionFS',
+            slug: 'sessionfs',
+            tier: 'enterprise',
+            seats_used: 1,
+            seats_limit: 100,
+          },
+          members: [
+            {
+              user_id: 'u_1',
+              email: 'admin@example.com',
+              display_name: 'Admin One',
+              role: 'admin',
+              joined_at: '2026-03-01T12:00:00Z',
+            },
+          ],
+          current_user_role: 'admin',
+        });
+      }
+      if (url.endsWith('/api/v1/org/invites')) {
+        return jsonOk({ invites: [] });
+      }
+      throw new Error(`unexpected url: ${url}`);
+    });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(screen.getByRole('heading', { name: /sessionfs/i })).toBeInTheDocument();
+    });
+    await userEvent.setup().click(screen.getByRole('tab', { name: 'Integrations' }));
+    expect(screen.getByTestId('jira-card-stub-org_x')).toBeInTheDocument();
   });
 
   it('clicking Invite Member opens the invite form and submits the POST', async () => {
@@ -346,6 +403,20 @@ describe('OrgPage', () => {
     renderPage('/settings/organization?tab=bogus');
     expect(await screen.findByText('admin@example.com')).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Members' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('?org= pointing at a secondary org renders that org instead of the primary', async () => {
+    stubFetch(adminOrg());
+    renderPage('/settings/organization?tab=personas&org=org_secondary');
+    expect(await screen.findByTestId('secondary-org-stub-org_secondary')).toBeInTheDocument();
+    expect(screen.queryByTestId('org-personas-stub-org_x')).not.toBeInTheDocument();
+  });
+
+  it('?org= matching the primary org id stays on the primary page', async () => {
+    stubFetch(adminOrg());
+    renderPage('/settings/organization?tab=personas&org=org_x');
+    expect(await screen.findByTestId('org-personas-stub-org_x')).toBeInTheDocument();
+    expect(screen.queryByTestId('secondary-org-stub-org_x')).not.toBeInTheDocument();
   });
 
   it('removing a member asks for confirmation in a dialog before the DELETE', async () => {

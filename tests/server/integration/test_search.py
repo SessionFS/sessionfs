@@ -14,6 +14,7 @@ from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.models import Session, User
+from sessionfs.server.services.session_search import search_sessions
 
 
 def _make_sfs_tar(
@@ -438,3 +439,31 @@ async def test_search_sync_push_populates_messages_text(
     assert data["total"] >= 1
     found = any(r["session_id"] == "ses_srchsync12345678" for r in data["results"])
     assert found, f"Expected ses_srchsync12345678 in results: {data['results']}"
+
+
+@pytest.mark.asyncio
+async def test_search_sessions_include_text_controls_full_text_selection(
+    db_session: AsyncSession, test_user: User
+):
+    """The public search path must not materialize the full messages_text.
+
+    ``include_text=False`` (the default the route uses) selects NULL for the
+    column, so only the SQL-side snippet is available; the helper path opts in
+    with ``include_text=True`` to build its own redacted snippet.
+    """
+    await _create_session_with_text(
+        db_session, test_user,
+        title="deploy",
+        messages_text="we rotated the deploy key on staging",
+    )
+
+    hits_off, total = await search_sessions(
+        db_session, user_id=test_user.id, query="deploy"
+    )
+    assert total >= 1
+    assert all(h.messages_text is None for h in hits_off)
+
+    hits_on, _ = await search_sessions(
+        db_session, user_id=test_user.id, query="deploy", include_text=True
+    )
+    assert any(h.messages_text and "deploy" in h.messages_text for h in hits_on)

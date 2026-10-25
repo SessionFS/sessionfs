@@ -297,6 +297,35 @@ def test_transfer_initiate_404_project_not_found():
     assert "project not found" in _combined(result).lower()
 
 
+def test_transfers_list_escapes_markup_in_server_strings():
+    """L2 — server-echoed strings containing `[...]` markup render literally
+    (and never crash the list), via `rich.markup.escape`."""
+    hostile = _ok_transfer(
+        id="xfer_[/cyan]abc",
+        project_name_snapshot="[link=https://evil.example]pwned[/link]",
+        state="pending[/bold]",
+        proposed_by_user_id="u_admin",
+        proposed_by_name="[reverse]Mallory[/reverse]",
+        proposal_reason="[/magenta]join us[/magenta]",
+        expires_at="2026-06-01T00:00:00Z",
+    )
+    with patch(
+        "sessionfs.cli.cmd_project._get_project_client",
+        return_value=("https://api.example.com", "k"),
+    ), patch(
+        "sessionfs.cli.cmd_project._api_request",
+        return_value={"transfers": [hostile]},
+    ):
+        result = runner.invoke(project_app, ["transfers"])
+
+    assert result.exit_code == 0, result.output
+    out = _plain(result.stdout)
+    assert "[/cyan]" in out
+    assert "[link=https://evil.example]pwned[/link]" in out
+    assert "[/reverse]" in out
+    assert "[/magenta]" in out
+
+
 # ── GH #70 — stranded org personas ──
 
 _STRANDED = {

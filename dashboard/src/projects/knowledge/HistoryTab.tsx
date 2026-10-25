@@ -30,12 +30,13 @@ export default function HistoryTab({ projectId }: { projectId: string }) {
               {c.entries_compiled} {c.entries_compiled === 1 ? 'entry' : 'entries'} compiled
             </span>
             <span className="text-xs text-text-tertiary">
+              {c.trigger === 'scheduled' ? 'scheduled' : 'manual'} &middot;{' '}
               <RelativeDate iso={c.compiled_at} />
             </span>
           </div>
-          {c.context_after && c.context_before && (
+          {(c.context_words_before > 0 || c.context_words_after > 0) && (
             <p className="text-xs text-text-tertiary mt-1">
-              Context: {c.context_before.length} chars &rarr; {c.context_after.length} chars
+              Context: {c.context_words_before} words &rarr; {c.context_words_after} words
             </p>
           )}
         </div>

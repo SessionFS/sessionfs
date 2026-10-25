@@ -119,6 +119,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs project merge` | Consolidate two projects into one (dry-run by default) |
 | `sfs project transfer\|transfers` | Move a project between personal and org scope |
 | `sfs project rebuild\|promote-eligible` | Rebuild compiled context from scratch; bulk-promote eligible notes to claims |
+| `sfs project compile-schedule off\|nightly\|weekly [--after-claims N]` | Set when the scheduled compile rebuilds the project's context |
 | `sfs rules init\|edit\|show\|compile` | Manage canonical project rules — compile once, drive every tool |
 | `sfs rules push\|pull\|emit` | Sync canonical rules through the SessionFS API; print compiled rules offline |
 | `sfs hooks install\|uninstall\|status` | Install and manage SessionFS hooks for native AI tools |
@@ -126,9 +127,14 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs ticket list\|show\|create\|update\|start\|complete\|comment\|comments\|watch\|review-state` | Manage agent tickets — start/complete writes a local provenance bundle so the daemon tags captured sessions (Team+) |
 | `sfs ticket assign\|resolve\|escalate` | Re-route, close out (review→done with dep enrichment), or bump priority |
 | `sfs ticket status\|block\|unblock\|reopen\|approve\|close\|dismiss` | Ticket lifecycle transitions and active-bundle inspection |
+| `sfs ticket jira preview\|publish\|status\|unlink` | Promote a ticket to a Jira Cloud issue with a reviewable preview (Enterprise) |
 | `sfs agent run\|complete\|status\|list` | Record agent runs (e.g. CI reviews) with findings (Team+) |
+| `sfs agent replay\|compare` | Re-run a recorded agent run with an edited prompt or context, and compare two runs side by side |
 | `sfs agent feedback add\|list\|summary` | Record and summarize whether agent work was useful (Team+) |
 | `sfs resident run\|health` | Run an operator-hosted resident reviewer or implementer against a work queue |
+| `sfs helper ask "..." [--project ID] [--session ID ...] [--conversation ID] [--no-stream] [--json]` | Ask the session helper over sessions you can read, streaming the answer to your terminal (Enterprise, BYOK) |
+| `sfs helper conversations list\|show\|delete` | List, inspect, and delete your helper conversations |
+| `sfs helper status` | Show whether the session helper is enabled and which key/model it would use |
 | `sfs doctor` | Run health checks with auto-repair |
 | `sfs version` | Show the installed version (also `sfs --version`) |
 | `sfs storage` | Show local disk usage and retention policy |
@@ -141,7 +147,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs auth use\|profiles\|whoami` | Switch between named account profiles |
 | `sfs auth keys list\|create\|revoke` | Manage your personal API keys |
 | `sfs config show\|set\|default-org` | Manage configuration and your default organization |
-| `sfs mcp serve` | Start MCP server (81 tools) for AI tool integration |
+| `sfs mcp serve` | Start MCP server (83 tools) for AI tool integration |
 | `sfs mcp install\|uninstall --for TOOL` | Add or remove the MCP registration for any of the 10 supported tools |
 | `sfs mcp index` | Rebuild the local full-text search index |
 | `sfs init` | Interactive setup wizard — auto-detects tools, optional sync |
@@ -149,6 +155,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs dlp scan\|policy` | Scan sessions for secrets and PHI; view or set the org DLP policy |
 | `sfs org info\|create\|invite\|members\|set-role\|remove` | Manage organizations, members, and roles |
 | `sfs org auto-join list\|add\|remove` | Auto-join by verified email domain |
+| `sfs org jira connect\|mappings\|health` | Connect the organization to Jira Cloud and check the integration (Enterprise) |
 | `sfs skill inspect\|add\|list\|show\|plan\|compile\|sync\|update\|diff\|remove\|rollback\|doctor` | Install portable Agent Skills / Agent Plugins across tools (`sfs plugin` is an alias) |
 | `sfs skill search\|categories\|works-in\|usage\|pull\|validate\|publish` | Find, install and publish packages on the hosted SessionFS Marketplace; see where they work and what your org uses |
 | `sfs skill marketplace add\|list\|refresh\|remove` | Manage local marketplace sources |
@@ -159,6 +166,8 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs admin create-trial\|create-license\|list-licenses\|extend-trial\|revoke-license` | Manage self-hosted licenses |
 | `sfs admin service-keys list\|create\|rotate\|revoke\|scopes` | Manage scoped service API keys for an organization |
 | `sfs admin trusted-reviewers list\|add\|revoke` | Register reviewers whose verdicts work queues trust |
+| `sfs admin override project-transfer\|project-merge\|user-merge\|record` | Audited operator overrides; `project-transfer --propose` asks the project owner to accept a move into an org |
+| `sfs admin audit-log` | Browse the audit log of administrator actions |
 
 See the full [CLI Reference](docs/cli-reference.md) for options and examples.
 
@@ -252,6 +261,8 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
+**v0.23.0 — Public Beta.** 8402 backend tests + 972 dashboard tests passing. Database migrations 001–092 (067 and 068 unused). 83 MCP tools. **Ask questions across your sessions:** the Enterprise session helper answers questions about the sessions and project knowledge you can read, with citations to the exact messages, streaming into a dashboard drawer, `sfs helper ask`, or the MCP tool `ask_session_helper`, always on your own or your org's model key. **Jira Cloud** (Enterprise): promote a ticket to a Jira issue from a reviewable preview, one way. Also: a **Changes** tab with per-file diffs of what a session's agent changed (GitHub #94), replaying an agent run with an edited prompt or context and comparing runs (GitHub #95), scheduled knowledge-base compiles with an out-of-date banner (GitHub #93), resumable uploads for large sessions (GitHub #91), org admins proposing a project move for the owner to accept (GitHub #96), a weekly org activity digest (GitHub #97), persona activity and history panels (GitHub #92), and Prometheus metrics with a Grafana dashboard for operators (GitHub #90). Migrations 084–092.
+
 **v0.22.0 — Public Beta.** 7740 backend tests + 815 dashboard tests passing. Database migrations 001–083 (067 and 068 unused). 81 MCP tools. **One project per repository:** remotes written as `ssh://`, `git://`, scp style with any user, with an uppercase scheme or a trailing slash now map to the same project instead of creating a duplicate, and migration 083 rewrites stored remotes and lists any existing duplicate pairs for merging (GitHub #88). Operators get audited merge tools for duplicate accounts (`sfs admin override user-merge`) and duplicate projects (`sfs admin override project-merge`, GitHub #89). Also: project pages link by project id, GitLab instance URLs are checked against private and cloud-metadata addresses on save and before every request (`SFS_GITLAB_ALLOW_PRIVATE_HOSTS` for self-hosted GitLab on a private network), and the SSRF guards handle IPv4-mapped IPv6 addresses. Migration 083.
 
 **v0.21.1 — Public Beta.** 7609 backend tests + 806 dashboard tests passing. Database migrations 001–082 (unchanged; 067 and 068 unused). 81 MCP tools. **Project context you can actually read:** project context and wiki pages render as documents (lists, quotes, tables, task lists and code blocks display properly, long ids wrap) with an "On this page" section list on the project Overview. GitLab gets a card in **Settings → Integrations** to connect, update or disconnect an instance, and GitLab trusted publishing now pins the project's namespace by default (`--gitlab-namespace` / `--no-namespace-pin`). Also: the session list no longer nests buttons inside clickable rows, platform administrators always count as Enterprise in plan checks, and `GET /api/v1/settings/gitlab` no longer returns the stored webhook secret. No migrations.
@@ -315,12 +326,15 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 - **Full-text search** across all sessions (CLI, dashboard, API), tier-aware
 - **Session browsing** — inspect, export, fork, checkpoint, compare; multi-select bulk delete + Find Duplicates in dashboard
 - **Message pagination** — newest-first default, order toggle, sidechain/empty filtering
+- **Changes tab** — per-file diffs of everything an agent created, edited or deleted in a session, rebuilt from the captured (redacted) tool calls
+- **Session helper** (Enterprise) — ask questions across the sessions and project knowledge you can read and get answers that cite the exact messages, streamed in the dashboard, the terminal (`sfs helper ask`) or over MCP; uses your own or your org's model key
 
 ### Project knowledge
 
 - **Shared project context** — one document per repo, shared across the team, readable via MCP, manageable from dashboard
 - **Living Project Context** — auto-summarize on sync, knowledge entries (6 types), wiki pages with backlinks, structured compilation, concept auto-generation
 - **Rules portability** — canonical project rules compiled into `CLAUDE.md`, `codex.md`, `.cursorrules`, `.github/copilot-instructions.md`, `GEMINI.md`; managed-file safety, deterministic output, optimistic-concurrency API; sessions persist `rules_version` + `rules_hash` + `instruction_artifacts` for full instruction provenance
+- **Scheduled compiles** — keep a project's context fresh nightly, weekly or after a number of new claims, with an out-of-date banner and one-click compile
 - **Knowledge base lifecycle** — entry decay after 90 days unreferenced, auto-dismiss past retention, context-document budget, section page caps, concept auto-refresh, quality gates on contributions
 - **LLM Judge** — confidence scores (0-100), CWE mapping, evidence linking, dismiss/confirm workflow
 
@@ -331,9 +345,12 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 - **Team handoff** — email notification, status stepper, session context card, smart workspace resolution
 - **GitHub PR App** (signature enforcement) + **GitLab MR integration** (per-user webhook secrets, comment dedup) — auto-comment AI session context on pull requests and merge requests
 - **RBAC** with admin and member roles; seat enforcement on invite accept
+- **Jira Cloud** (Enterprise) — promote tickets to Jira issues from an editable preview; one way, the ticket stays the source of truth
+- **Org administration** — weekly activity digest for owners and admins, project-move proposals the owner accepts, persona activity and represent history
 
 ### Cloud, sync, and reliability
 
+- **Resumable uploads** — sessions over 8 MiB upload in parts and resume where they stopped
 - **Cloud sync** with push/pull, email verification, ETag conflict detection, bounded per-user concurrency (5 client-side, 3 server-side), 429 + Retry-After backoff
 - **Connection pool optimization** — configurable via `SFS_DATABASE_POOL_SIZE`/`MAX_OVERFLOW`/`POOL_TIMEOUT`/`POOL_RECYCLE`; sync_push splits into 3 phases so DB connections are held ~70ms (not ~5s)
 - **Sync atomicity** — commit-then-promote blob invariant; temp blob preserved until second commit succeeds
@@ -345,6 +362,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 ### Agent personas and tickets (v0.10.1)
 
 - **Agent personas** — portable AI roles per project (atlas, prism, scribe, ...), shared by humans and AI agents; CRUD via `sfs persona` (CLI) or 5 MCP tools (`list_personas`, `get_persona`, `create_persona`, `assume_persona`, `forget_persona`); ASCII name regex (1–50 chars), soft-delete preserves history. **Pro+** tier-gated. Dashboard management UI shipped in v0.10.3.
+- **Agent run replay** — re-run a recorded agent run with an edited prompt, ticket, persona or context and compare the findings of two runs (`sfs agent replay|compare`, MCP `replay_agent_run`)
 - **Agent tickets** — full ticket FSM (`suggested → open → in_progress → blocked → review → done`) with acceptance criteria, context refs, file refs, dependencies, comments; CRUD + lifecycle via `sfs ticket` (15 commands) or 9 MCP tools (`list_tickets`, `get_ticket`, `create_ticket`, `start_ticket`, `complete_ticket`, `resolve_ticket`, `assign_persona`, `escalate_ticket`, `add_ticket_comment`); atomic state transitions with rowcount-1 guard; agent-created tickets require ≥1 acceptance criterion + ≥20-char description (max 3/session); persona-delete refuses when non-terminal tickets reference it (`--force` bypass). **Team+** tier-gated. Dashboard UI shipped in v0.10.3.
 - **Compiled persona+ticket context** — `start_ticket` returns markdown context (persona + ticket + criteria + file refs + active KB claims + completed-dep notes + recent comments) sized to the target tool's token budget (`?tool=claude-code|cursor|codex|gemini|copilot|generic`); same project_id + active-state filters applied across KB claims and dep notes.
 - **Local provenance bundle** — `~/.sessionfs/active_ticket.json` written by `start_ticket` (CLI + MCP) and consumed by all 7 watchers (claude_code/codex/copilot/cursor/gemini/amp/cline); the bundle's `ticket_id` + `persona_name` flow into the manifest at capture time and through sync into the `sessions` table (migration 037).
@@ -352,7 +370,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### MCP and dashboard
 
-- **MCP server** (local, stdio) with 81 tools — sessions, knowledge read and write, rules, personas, tickets, agent runs and feedback, work queues, handoffs, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
+- **MCP server** (local, stdio) with 83 tools — sessions, knowledge read and write, rules, personas, tickets, agent runs and feedback, work queues, handoffs, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
 - **`sfs mcp install --for <tool>`** for all 10 tools (stale registration repair, malformed config handling)
 - **Web dashboard** with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, command palette (Cmd+K), mobile nav, accessibility (focus trapping, ARIA live regions), product identity
 - **`/help` page** — MCP-first guidance, 10-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference
@@ -373,6 +391,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 - **Helm chart** (EKS / GKE / AKS tested) with license validation, single-ingress via nginx, seed job
 - **Hardened security posture** — all containers run as non-root (UID 10001) with `readOnlyRootFilesystem: true`, `allowPrivilegeEscalation: false`, all capabilities dropped, `seccompProfile: RuntimeDefault`; PostgreSQL container mounts `emptyDir` at `/tmp` and `/var/run/postgresql` so it works with read-only root; `helm test` hook pod matches the posture
+- **Operator metrics** — Prometheus endpoint (`/api/v1/admin/metrics`) and a ready-made Grafana dashboard; see [Operator metrics](docs/observability.md)
 - See [self-hosted docs](docs/self-hosted.md) for the full Security Posture section
 
 ### On the roadmap

@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -116,6 +117,11 @@ class ProjectSettingsRequest(BaseModel):
     kb_retention_days: int | None = None
     kb_max_context_words: int | None = None
     kb_section_page_limit: int | None = None
+    # Scheduled KB compile (GitHub #93). compile_schedule is 'off',
+    # 'nightly' or 'weekly'; compile_after_claims compiles once that many
+    # claims are pending regardless of schedule.
+    compile_schedule: Literal["off", "nightly", "weekly"] | None = None
+    compile_after_claims: int | None = Field(default=None, ge=1)
 
 
 # ---------------------------------------------------------------------------
@@ -747,7 +753,29 @@ async def update_project_settings(
 ) -> dict:
     """Update project settings (auto_narrative, lifecycle settings)."""
     project = await _get_project_or_404(project_id, db, user.id)
-    await check_project_feature(ctx, "project_context", project, db)
+
+    # The project_context feature pays for compiling the project's context.
+    # Turning the schedule OFF is always allowed for a settings editor (it is
+    # the migration-089 default for existing rows, and the sweep never
+    # compiles a Free/Starter project anyway). Enabling a schedule or setting
+    # a pending-claim threshold still requires the feature (GitHub #93 review
+    # round 1 MEDIUM).
+    #
+    # GitHub #93 review round 2 MEDIUM: the off exemption must not smuggle in
+    # changes to any other setting. It only bypasses the gate when the body
+    # is nothing but "schedule off" (plus an optional explicit-null clear of
+    # the pending-claim threshold); any other changed field re-applies the
+    # gate so the request is rejected outright rather than partially applied.
+    turning_off_only = (
+        body.compile_schedule == "off"
+        and body.compile_after_claims is None
+        and body.auto_narrative == project.auto_narrative
+        and body.kb_retention_days is None
+        and body.kb_max_context_words is None
+        and body.kb_section_page_limit is None
+    )
+    if not turning_off_only:
+        await check_project_feature(ctx, "project_context", project, db)
 
     project.auto_narrative = body.auto_narrative
     if body.kb_retention_days is not None:
@@ -756,6 +784,13 @@ async def update_project_settings(
         project.kb_max_context_words = body.kb_max_context_words
     if body.kb_section_page_limit is not None:
         project.kb_section_page_limit = body.kb_section_page_limit
+    if body.compile_schedule is not None:
+        project.compile_schedule = body.compile_schedule
+    # model_fields_set distinguishes "field absent" from "explicit null", so
+    # a client can clear the threshold by sending compile_after_claims: null
+    # (GitHub #93 review round 1 LOW).
+    if "compile_after_claims" in body.model_fields_set:
+        project.compile_after_claims = body.compile_after_claims
     project.updated_at = datetime.now(timezone.utc)
     await db.commit()
 
@@ -765,4 +800,6 @@ async def update_project_settings(
         "kb_retention_days": project.kb_retention_days,
         "kb_max_context_words": project.kb_max_context_words,
         "kb_section_page_limit": project.kb_section_page_limit,
+        "compile_schedule": project.compile_schedule,
+        "compile_after_claims": project.compile_after_claims,
     }

@@ -1,0 +1,72 @@
+{{- $retention := .Values.api.helperRetention | default dict }}
+{{- $cron := $retention.cronJob | default dict }}
+{{- if and $retention.enabled $cron.enabled }}
+{{- $secret := required "api.helperRetention.cronJob.existingSecret is required when the helper retention CronJob is enabled" $cron.existingSecret }}
+# Calls the API's helper-retention sweep on a schedule. The deletes run in the
+# API pods (with their egress policy); this pod only sends one authenticated
+# request. Overlapping runs are safe (the sweep is idempotent and bounded).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "sessionfs.fullname" . }}-helper-retention
+  labels:
+    {{- include "sessionfs.componentLabels" (list . "helper-retention") | nindent 4 }}
+spec:
+  schedule: {{ $cron.schedule | default "0 3 * * *" | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ $cron.successfulJobsHistoryLimit | default 1 }}
+  failedJobsHistoryLimit: {{ $cron.failedJobsHistoryLimit | default 3 }}
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            {{- include "sessionfs.componentSelectorLabels" (list . "helper-retention") | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          {{- include "sessionfs.imagePullSecrets" . | nindent 10 }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: sweep
+              image: {{ $cron.image | default "curlimages/curl:8.12.1" }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 10001
+                capabilities:
+                  drop:
+                    - ALL
+              env:
+                - name: SFS_HELPER_RETENTION_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $secret }}
+                      key: {{ $cron.secretKey | default "helper-retention-api-key" }}
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  # The key is sent as a header read from the environment;
+                  # it never appears in argv or in the job's output.
+                  curl --fail-with-body --silent --show-error \
+                    --max-time 1500 \
+                    -H "Authorization: Bearer $SFS_HELPER_RETENTION_API_KEY" \
+                    -H "Content-Type: application/json" \
+                    -X POST \
+                    "http://{{ include "sessionfs.fullname" . }}-api:{{ .Values.api.service.port }}/api/v1/admin/sweeps/helper-retention"
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+{{- end }}

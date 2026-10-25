@@ -44,6 +44,28 @@ function ProjectLabel({ t }: { t: TransferInfo }) {
   return <span className="font-semibold text-text-primary">{name}</span>;
 }
 
+/**
+ * GH #96 — an admin-proposed transfer renders a proposal line instead of
+ * the plain "Initiated by / Waiting on" footer: who proposed it, for which
+ * org, their reason, and when consent expires.
+ */
+function ProposalMeta({ t }: { t: TransferInfo }) {
+  const proposer = t.proposed_by_name ?? t.proposed_by_user_id;
+  return (
+    <div className="text-xs text-text-tertiary mt-0.5">
+      <span className="text-text-secondary">
+        Proposed by {proposer} for {scopeLabel(t.to_scope)}
+      </span>
+      {t.proposal_reason ? `: ${t.proposal_reason}` : null}
+      {t.expires_at ? (
+        <span className="block text-text-tertiary">
+          Expires {new Date(t.expires_at).toLocaleString()}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 export default function TransferInbox() {
   const incoming = useTransfers('incoming', 'pending');
   const outgoing = useTransfers('outgoing', 'pending');
@@ -113,7 +135,11 @@ export default function TransferInbox() {
                     <span className="text-text-tertiary"> from {scopeLabel(t.from_scope)} → {scopeLabel(t.to_scope)}</span>
                   </div>
                   <div className="text-xs text-text-tertiary mt-0.5">
-                    Initiated by {t.initiated_by}
+                    {t.proposed_by_user_id ? (
+                      <ProposalMeta t={t} />
+                    ) : (
+                      <>Initiated by {t.initiated_by}</>
+                    )}
                   </div>
                 </div>
                 <div className="flex gap-2 flex-shrink-0">
@@ -146,7 +172,11 @@ export default function TransferInbox() {
                     <span className="text-text-tertiary"> from {scopeLabel(t.from_scope)} → {scopeLabel(t.to_scope)}</span>
                   </div>
                   <div className="text-xs text-text-tertiary mt-0.5">
-                    Waiting on {t.target_user_id ?? '(target removed)'}
+                    {t.proposed_by_user_id ? (
+                      <ProposalMeta t={t} />
+                    ) : (
+                      <>Waiting on {t.target_user_id ?? '(target removed)'}</>
+                    )}
                   </div>
                 </div>
                 <Button variant="danger" size="sm" onClick={() => handleCancel(t)} disabled={busy} aria-label={`Cancel transfer ${t.id}`}>

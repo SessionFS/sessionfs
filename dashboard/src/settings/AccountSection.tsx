@@ -1,4 +1,6 @@
-import { Card, Button } from '../components/ui';
+import { Link } from 'react-router-dom';
+import { Card, Button, Badge } from '../components/ui';
+import type { RepresentedPersona } from '../api/client';
 import { displayTier } from '../utils/tier';
 
 export default function AccountSection({ profile, logout }: { profile: any; logout: () => void }) {
@@ -19,6 +21,28 @@ export default function AccountSection({ profile, logout }: { profile: any; logo
                 : <span className="text-warning">no</span>
               }</span>
             </div>
+          </div>
+        </Card>
+      )}
+
+      {/* GitHub #92 — the org personas that represent this user */}
+      {profile?.represented_personas?.length > 0 && (
+        <Card level="elevated" className="p-5">
+          <h2 className="text-lg font-semibold text-text-primary mb-3">Represented personas</h2>
+          <p className="text-sm text-text-tertiary mb-3">
+            You represent these org personas. Edit them on the organization page.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {profile.represented_personas.map((p: RepresentedPersona) => (
+              <Link
+                key={`${p.org_id}:${p.persona_id}`}
+                to={`/settings/organization?tab=personas&org=${p.org_id}`}
+                title={`${p.role} · ${p.org_name}`}
+                className="rounded-full outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+              >
+                <Badge variant="info" label={p.name} size="md" />
+              </Link>
+            ))}
           </div>
         </Card>
       )}

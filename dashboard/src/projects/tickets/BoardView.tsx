@@ -13,7 +13,7 @@ import { TicketDetail } from './TicketDetail';
  * (approve/dismiss/close) which appear as explicit buttons inside the
  * expanded detail — not via drag. */
 
-export function BoardView({ tickets, projectId, selected, onSelect, onNavigate }: ViewProps) {
+export function BoardView({ tickets, projectId, selected, onSelect, onNavigate, jira }: ViewProps) {
   const selectedTicket = tickets.find((t) => t.id === selected) ?? null;
 
   return (
@@ -73,6 +73,9 @@ export function BoardView({ tickets, projectId, selected, onSelect, onNavigate }
               ticketId={selectedTicket.id}
               fallback={selectedTicket}
               onNavigate={onNavigate}
+              orgId={jira?.orgId}
+              isProjectAdmin={jira?.isProjectAdmin}
+              isEnterprise={jira?.isEnterprise}
             />
           </div>
         )}

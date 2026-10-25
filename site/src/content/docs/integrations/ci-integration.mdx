@@ -239,9 +239,29 @@ sfs agent run <persona>      Create + start a run; print compiled context.
 sfs agent complete <run_id>  Record result, exit per fail_on policy.
 sfs agent status <run_id>    Show run detail (text / json / markdown).
 sfs agent list               List recent runs with filters.
+sfs agent replay <run_id>    Queue a copy of a run with an edited prompt, ticket, persona or context.
+sfs agent compare <a> <b>    Show findings added, removed or unchanged between two runs.
 ```
 
-Same operations are available through 3 MCP tools (`create_agent_run`, `complete_agent_run`, `list_agent_runs`) and the underlying REST API at `/api/v1/projects/{project_id}/agent-runs`.
+Same operations are available through 4 MCP tools (`create_agent_run`, `complete_agent_run`, `list_agent_runs`, `replay_agent_run`) and the underlying REST API at `/api/v1/projects/{project_id}/agent-runs`.
+
+## Replay and compare runs
+
+To see whether a different prompt or more context changes what a reviewer finds, replay the run instead of re-creating it by hand:
+
+```bash
+NEW=$(sfs agent replay run_abc123 --prompt-file review-prompt.md \
+        --context-ref docs/threat-model.md --output-id)
+sfs agent run --run-id "$NEW" --context-file .sessionfs/context.md
+# ... run your agent, then complete as usual ...
+sfs agent compare run_abc123 "$NEW"
+```
+
+`sfs agent replay` creates a **queued** copy of the run. Fields you don't pass (`--prompt` / `--prompt-file`, `--ticket`, `--persona`, `--context-ref`) are copied from the original; the ticket must still belong to the same project. The new run records which run it came from, and the command prints the matching `sfs agent run --run-id` line plus a GitHub Actions / GitLab snippet to run it in CI. A replay is a fresh, manual run: it doesn't copy the original's CI provider, run URL or trigger source.
+
+`sfs agent run --run-id RUN_ID` starts an existing queued run instead of creating one. `sfs agent run` also accepts `--prompt` and a repeatable `--context-ref` to store the prompt and context references on a new run.
+
+`sfs agent compare A B` matches findings by rule or title, file and line, and lists them as added, removed or unchanged, with severity counts for each run (`--format json` for scripts). Both runs must be in the same project. In the dashboard, open a run and use **Replay** or **Compare**.
 
 ## Agent feedback (outcome records)
 

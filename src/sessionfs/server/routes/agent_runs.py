@@ -36,7 +36,10 @@ are typically execution records tied to ticket work).
 from __future__ import annotations
 
 import json
+import re
+import shlex
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
@@ -84,6 +87,37 @@ _VALID_CI_PROVIDERS: set[str] = {
     "azure", "drone", "other",
 }
 
+# Persona names must stay CLI/MCP-friendly ASCII identifiers (same regex as
+# personas.py). Anchored start-to-end so empty + over-long inputs fail.
+_PERSONA_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,50}$")
+
+# GitHub Actions expression injection marker. Replayed/prompted user values
+# must never be pasted into a `run:` step, so any value carrying `${{` is
+# refused outright as defense-in-depth (even though the replay command no
+# longer embeds user values — it only references the server-owned run id).
+_UNSAFE_CI_MARKER = "${{"
+
+# Field limits for run/replay inputs (match the DB column widths + a sane
+# prompt ceiling so oversized prompts fail fast instead of round-tripping).
+_MAX_PROMPT_CHARS = 20_000
+_MAX_CONTEXT_REFS = 50
+_MAX_CONTEXT_REF_CHARS = 500
+_MAX_TRIGGER_REF_CHARS = 200
+_MAX_TICKET_ID_CHARS = 64
+# Compare caps: no more than this many findings per side enter the diff,
+# and no more than this many per output list (added/removed/unchanged).
+_MAX_FINDINGS_PER_SIDE = 2_000
+_MAX_DIFF_ITEMS_PER_LIST = 500
+
+
+def _reject_unsafe_ci(value: str, field: str) -> str:
+    if _UNSAFE_CI_MARKER in value:
+        raise ValueError(
+            f"unsafe_ci_value: {field} must not contain GitHub Actions "
+            "expression syntax ('${{...}}')."
+        )
+    return value
+
 
 # ── Pydantic models ──
 
@@ -98,15 +132,19 @@ class AgentRunCreate(BaseModel):
     ci_run_url: str | None = None
     fail_on: str | None = None
     triggered_by_persona: str | None = None
+    # GitHub #95 — an edited prompt and context refs for the run.
+    prompt: str | None = None
+    context_refs: list[str] | None = None
 
     @field_validator("persona_name")
     @classmethod
     def _persona_shape(cls, v: str) -> str:
         v = v.strip()
-        if not v:
-            raise ValueError("persona_name is required")
-        if len(v) > 50:
-            raise ValueError("persona_name must be 50 characters or fewer")
+        if not _PERSONA_NAME_RE.match(v):
+            raise ValueError(
+                "persona_name must be 1-50 ASCII letters, digits, "
+                "underscores or hyphens"
+            )
         return v
 
     @field_validator("tool")
@@ -150,6 +188,67 @@ class AgentRunCreate(BaseModel):
                 f"ci_provider must be one of: {sorted(_VALID_CI_PROVIDERS)}"
             )
         return v
+
+    @field_validator("ticket_id")
+    @classmethod
+    def _ticket_id_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) > _MAX_TICKET_ID_CHARS:
+            raise ValueError(
+                f"ticket_id must be {_MAX_TICKET_ID_CHARS} characters or fewer"
+            )
+        return v
+
+    @field_validator("trigger_ref")
+    @classmethod
+    def _trigger_ref_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) > _MAX_TRIGGER_REF_CHARS:
+            raise ValueError(
+                f"trigger_ref must be {_MAX_TRIGGER_REF_CHARS} characters or fewer"
+            )
+        return _reject_unsafe_ci(v, "trigger_ref")
+
+    @field_validator("prompt")
+    @classmethod
+    def _prompt_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if len(v) > _MAX_PROMPT_CHARS:
+            raise ValueError(
+                f"prompt must be {_MAX_PROMPT_CHARS} characters or fewer"
+            )
+        return _reject_unsafe_ci(v, "prompt")
+
+    @field_validator("context_refs")
+    @classmethod
+    def _context_refs_shape(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        cleaned: list[str] = []
+        for ref in v:
+            ref = str(ref).strip()
+            if not ref:
+                continue
+            if len(ref) > _MAX_CONTEXT_REF_CHARS:
+                raise ValueError(
+                    f"each context_ref must be {_MAX_CONTEXT_REF_CHARS} "
+                    "characters or fewer"
+                )
+            cleaned.append(_reject_unsafe_ci(ref, "context_refs"))
+        if len(cleaned) > _MAX_CONTEXT_REFS:
+            raise ValueError(
+                f"context_refs must be {_MAX_CONTEXT_REFS} items or fewer"
+            )
+        return cleaned
 
 
 class AgentRunComplete(BaseModel):
@@ -203,6 +302,10 @@ class AgentRunResponse(BaseModel):
     session_id: str | None
     triggered_by_user_id: str | None
     triggered_by_persona: str | None
+    # GitHub #95 — replay provenance + edited prompt/context.
+    replayed_from: str | None = None
+    prompt: str | None = None
+    context_refs: list[str] = []
     # v0.10.21 (tk_a77b671fd86a42fb) — service-key provenance triple,
     # populated at create time (v0.10.10 migration 042 columns). Reads
     # expose them additively so dashboards and the Scout v4 n8n smoke
@@ -223,16 +326,264 @@ class StartAgentRunResponse(BaseModel):
     compiled_context: str
 
 
+class AgentRunReplayCreate(BaseModel):
+    """Editable fields for a replay (GitHub #95). None = copy from parent."""
+
+    persona_name: str | None = None
+    ticket_id: str | None = None
+    prompt: str | None = None
+    context_refs: list[str] | None = None
+    fail_on: str | None = None
+    trigger_ref: str | None = None
+
+    @field_validator("persona_name")
+    @classmethod
+    def _persona_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not _PERSONA_NAME_RE.match(v):
+            raise ValueError(
+                "persona_name must be 1-50 ASCII letters, digits, "
+                "underscores or hyphens"
+            )
+        return v
+
+    @field_validator("fail_on")
+    @classmethod
+    def _fail_on_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip().lower()
+        if v not in _VALID_FAIL_ON:
+            raise ValueError(
+                f"fail_on must be one of: {list(_VALID_FAIL_ON)}"
+            )
+        return v
+
+    @field_validator("ticket_id")
+    @classmethod
+    def _ticket_id_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) > _MAX_TICKET_ID_CHARS:
+            raise ValueError(
+                f"ticket_id must be {_MAX_TICKET_ID_CHARS} characters or fewer"
+            )
+        return v
+
+    @field_validator("trigger_ref")
+    @classmethod
+    def _trigger_ref_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) > _MAX_TRIGGER_REF_CHARS:
+            raise ValueError(
+                f"trigger_ref must be {_MAX_TRIGGER_REF_CHARS} characters or fewer"
+            )
+        return _reject_unsafe_ci(v, "trigger_ref")
+
+    @field_validator("prompt")
+    @classmethod
+    def _prompt_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if len(v) > _MAX_PROMPT_CHARS:
+            raise ValueError(
+                f"prompt must be {_MAX_PROMPT_CHARS} characters or fewer"
+            )
+        return _reject_unsafe_ci(v, "prompt")
+
+    @field_validator("context_refs")
+    @classmethod
+    def _context_refs_shape(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        cleaned: list[str] = []
+        for ref in v:
+            ref = str(ref).strip()
+            if not ref:
+                continue
+            if len(ref) > _MAX_CONTEXT_REF_CHARS:
+                raise ValueError(
+                    f"each context_ref must be {_MAX_CONTEXT_REF_CHARS} "
+                    "characters or fewer"
+                )
+            cleaned.append(_reject_unsafe_ci(ref, "context_refs"))
+        if len(cleaned) > _MAX_CONTEXT_REFS:
+            raise ValueError(
+                f"context_refs must be {_MAX_CONTEXT_REFS} items or fewer"
+            )
+        return cleaned
+
+
+class AgentRunReplayResponse(BaseModel):
+    run: AgentRunResponse
+    command: str
+    ci_hint: str
+
+
+class AgentRunCompareResponse(BaseModel):
+    """Findings diff between two runs in the same project (GitHub #95)."""
+
+    a_id: str
+    b_id: str
+    a_findings_count: int
+    b_findings_count: int
+    a_severity_counts: dict[str, int]
+    b_severity_counts: dict[str, int]
+    added: list[dict[str, Any]]
+    removed: list[dict[str, Any]]
+    unchanged: list[dict[str, Any]]
+    # True when any of added/removed/unchanged was capped to fit the
+    # response (input cap or per-list cap).
+    truncated: bool = False
+
+
 # ── Helpers ──
 
 
-def _row_to_response(row: AgentRun) -> AgentRunResponse:
+def _decode_context_refs(value: str | None) -> list[str]:
+    """Decode the JSON-encoded context_refs Text column to a list[str]."""
+    if not value:
+        return []
     try:
-        findings = json.loads(row.findings) if row.findings else []
+        decoded = json.loads(value)
+    except (ValueError, TypeError):
+        return []
+    if not isinstance(decoded, list):
+        return []
+    return [str(item) for item in decoded]
+
+
+def _decode_findings(value: str | None) -> list[dict[str, Any]]:
+    try:
+        findings = json.loads(value) if value else []
         if not isinstance(findings, list):
             findings = []
     except (ValueError, TypeError):
         findings = []
+    return [f for f in findings if isinstance(f, dict)]
+
+
+def _finding_line_key(value: Any) -> str:
+    """Normalise a finding's `line` to a hashable string.
+
+    Findings are dicts under caller control, so `line` can be an int, a
+    string, or an unhashable list/dict (e.g. a SAST finding encoding the
+    location as an object). Hashable scalars become `str(...)`; anything
+    else is JSON-encoded with a stable key order so the same location
+    always matches the same key.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (str, int, float, bool)):
+        return str(value)
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _finding_key(finding: dict[str, Any]) -> tuple[str, str, str]:
+    """Match key for a finding: rule/title + file + line (when present)."""
+    rule = finding.get("rule") or finding.get("title") or ""
+    return (
+        str(rule),
+        str(finding.get("file") or ""),
+        _finding_line_key(finding.get("line")),
+    )
+
+
+def _severity_counts(findings: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for f in findings:
+        sev = str(f.get("severity") or "none")
+        counts[sev] = counts.get(sev, 0) + 1
+    return counts
+
+
+def _diff_findings(
+    a: list[dict[str, Any]], b: list[dict[str, Any]]
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    bool,
+]:
+    """Split `b` vs `a` into added / removed / unchanged by match key.
+
+    Inputs are capped at `_MAX_FINDINGS_PER_SIDE` and each output list at
+    `_MAX_DIFF_ITEMS_PER_LIST`; the trailing bool signals truncation so a
+    pathological run can't bloat the compare response.
+    """
+    a = a[:_MAX_FINDINGS_PER_SIDE]
+    b = b[:_MAX_FINDINGS_PER_SIDE]
+    b_remaining = Counter(_finding_key(f) for f in b)
+    removed: list[dict[str, Any]] = []
+    unchanged: list[dict[str, Any]] = []
+    for f in a:
+        key = _finding_key(f)
+        if b_remaining.get(key, 0) > 0:
+            unchanged.append(f)
+            b_remaining[key] -= 1
+        else:
+            removed.append(f)
+    added: list[dict[str, Any]] = []
+    for f in b:
+        key = _finding_key(f)
+        if b_remaining.get(key, 0) > 0:
+            added.append(f)
+            b_remaining[key] -= 1
+    truncated = (
+        len(added) > _MAX_DIFF_ITEMS_PER_LIST
+        or len(removed) > _MAX_DIFF_ITEMS_PER_LIST
+        or len(unchanged) > _MAX_DIFF_ITEMS_PER_LIST
+    )
+    return (
+        added[:_MAX_DIFF_ITEMS_PER_LIST],
+        removed[:_MAX_DIFF_ITEMS_PER_LIST],
+        unchanged[:_MAX_DIFF_ITEMS_PER_LIST],
+        truncated,
+    )
+
+
+def _build_replay_command(run_id: str) -> str:
+    """The `sfs agent run` invocation that resumes the queued replay.
+
+    The new run's fields live on the server row, so the command only
+    references the run id — no user-controlled prompt/ticket/ref values
+    are pasted into a shell or CI `run:` step. `--run-id` tells the CLI
+    to start the existing queued run instead of creating a fresh one.
+    """
+    return f"sfs agent run --run-id {shlex.quote(run_id)}"
+
+
+def _build_ci_hint(command: str) -> str:
+    """A YAML-safe CI hint block.
+
+    The `run:` value is the server-owned run id only, so there is no
+    user-controlled text to inject. The block is a real YAML mapping
+    (not commented-out lines), so tooling can `yaml.safe_load` it and
+    read `github_actions[0].run` / `gitlab_ci.replay.script[0]` directly.
+    """
+    return (
+        "# Replay this agent run in CI.\n"
+        "github_actions:\n"
+        "  - name: Replay agent run\n"
+        "    run: " + command + "\n"
+        "gitlab_ci:\n"
+        "  replay:\n"
+        "    script:\n"
+        "      - " + command + "\n"
+    )
+
+
+def _row_to_response(row: AgentRun) -> AgentRunResponse:
+    findings = _decode_findings(row.findings)
     return AgentRunResponse(
         id=row.id,
         project_id=row.project_id,
@@ -261,6 +612,9 @@ def _row_to_response(row: AgentRun) -> AgentRunResponse:
         started_at=row.started_at,
         completed_at=row.completed_at,
         duration_seconds=row.duration_seconds,
+        replayed_from=row.replayed_from,
+        prompt=row.prompt,
+        context_refs=_decode_context_refs(row.context_refs),
     )
 
 
@@ -413,6 +767,8 @@ async def create_agent_run(
         ci_provider=body.ci_provider,
         ci_run_url=body.ci_run_url,
         fail_on=body.fail_on,
+        prompt=body.prompt,
+        context_refs=json.dumps(body.context_refs) if body.context_refs else None,
         triggered_by_user_id=user.id,
         triggered_by_persona=body.triggered_by_persona,
         # v0.10.10 — service-key provenance (Codex R1 HIGH 2).
@@ -747,3 +1103,153 @@ async def cancel_agent_run(
         )
     await db.commit()
     return _row_to_response(await _get_run_or_404(project_id, run_id, db))
+
+
+@router.post(
+    "/{project_id}/agent-runs/{run_id}/replay",
+    response_model=AgentRunReplayResponse,
+    status_code=201,
+)
+async def replay_agent_run(
+    project_id: str,
+    run_id: str,
+    body: AgentRunReplayCreate,
+    auth: AuthContext = Depends(require_scope("agent_runs:write")),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> AgentRunReplayResponse:
+    """Create a queued replay of an existing run (GitHub #95).
+
+    Unspecified fields copy from the parent; the body overrides persona,
+    ticket, prompt, context_refs, fail_on and trigger_ref. Same auth,
+    tier and same-project ticket validation as creating a run. Returns
+    the new run plus an `sfs agent run --run-id <id>` command and a
+    YAML CI hint block (GitHub Actions / GitLab).
+
+    A replay is a fresh, manual re-invocation: it does NOT copy the
+    parent's CI provenance (`ci_provider`, `ci_run_url`), trigger
+    source, or triggering persona. The new run records `trigger_source`
+    as `"manual"` and its `triggered_by_user_id` as the replaying actor.
+    An explicit empty prompt (`""`) or empty `context_refs` (`[]`)
+    clears the inherited value.
+    """
+    user = auth.user
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_runs", project, db)
+    from sessionfs.server.services.scope_locks import (
+        lock_project_scope_authorized,
+    )
+    await lock_project_scope_authorized(db, project, auth=auth, ctx=ctx, feature="agent_runs")
+
+    parent = await _get_run_or_404(project_id, run_id, db)
+
+    # Body wins when set; otherwise inherit the parent's value. An empty
+    # prompt / empty context_refs clears rather than inherits.
+    persona_name = body.persona_name if body.persona_name is not None else parent.persona_name
+    ticket_id = body.ticket_id if body.ticket_id is not None else parent.ticket_id
+    prompt = body.prompt if body.prompt is not None else parent.prompt
+    if prompt == "":
+        prompt = None
+    context_refs = (
+        list(body.context_refs)
+        if body.context_refs is not None
+        else _decode_context_refs(parent.context_refs)
+    )
+    fail_on = body.fail_on if body.fail_on is not None else parent.fail_on
+    trigger_ref = body.trigger_ref if body.trigger_ref is not None else parent.trigger_ref
+
+    # Validate the (possibly overridden) persona + ticket like create does.
+    persona = await _validate_active_persona(
+        project_id,
+        persona_name,
+        db,
+        org_id=await visible_persona_org_id_for_auth(db, project, auth),
+    )
+    if ticket_id:
+        await _validate_same_project_ticket(project_id, ticket_id, db)
+
+    now = datetime.now(timezone.utc)
+    row = AgentRun(
+        id=_new_run_id(),
+        project_id=project_id,
+        persona_name=persona.name,
+        tool=parent.tool,
+        trigger_source="manual",
+        status="queued",
+        ticket_id=ticket_id,
+        trigger_ref=trigger_ref,
+        ci_provider=None,
+        ci_run_url=None,
+        fail_on=fail_on,
+        prompt=prompt,
+        context_refs=json.dumps(context_refs) if context_refs else None,
+        replayed_from=parent.id,
+        triggered_by_user_id=user.id,
+        triggered_by_persona=None,
+        actor_type=auth.actor_type,
+        service_key_id=auth.service_key_id,
+        service_key_name=auth.service_key_name,
+        created_at=now,
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+
+    run_response = _row_to_response(row)
+    command = _build_replay_command(run_response.id)
+    return AgentRunReplayResponse(
+        run=run_response,
+        command=command,
+        ci_hint=_build_ci_hint(command),
+    )
+
+
+@router.get(
+    "/{project_id}/agent-runs/{run_id}/compare/{other_id}",
+    response_model=AgentRunCompareResponse,
+)
+async def compare_agent_runs(
+    project_id: str,
+    run_id: str,
+    other_id: str,
+    auth: AuthContext = Depends(require_scope("agent_runs:read")),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> AgentRunCompareResponse:
+    """Diff the findings of two runs in this project (GitHub #95).
+
+    Findings are matched by rule/title + file + line (when present) and
+    split into added (only in `other`), removed (only in `run`) and
+    unchanged, with severity counts per side. Both runs must belong to
+    the project — a cross-project other_id surfaces as 404.
+    """
+    project = await _get_project_for_auth(project_id, db, auth)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_runs", project, db)
+
+    a = await _get_run_or_404(project_id, run_id, db)
+    b = await _get_run_or_404(project_id, other_id, db)
+
+    a_findings = _decode_findings(a.findings)
+    b_findings = _decode_findings(b.findings)
+    added, removed, unchanged, truncated = _diff_findings(a_findings, b_findings)
+
+    return AgentRunCompareResponse(
+        a_id=a.id,
+        b_id=b.id,
+        a_findings_count=len(a_findings),
+        b_findings_count=len(b_findings),
+        a_severity_counts=_severity_counts(a_findings),
+        b_severity_counts=_severity_counts(b_findings),
+        added=added,
+        removed=removed,
+        unchanged=unchanged,
+        truncated=truncated,
+    )

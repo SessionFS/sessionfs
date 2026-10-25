@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+from typing import NoReturn, cast
+
 import typer
 from rich.table import Table
 
-from sessionfs.cli.common import console, err_console
+from sessionfs.cli.cmd_rules import _api_request
+from sessionfs.cli.common import console, err_console, format_api_error
 
 org_app = typer.Typer(name="org", help="Organization management.")
 
@@ -506,3 +510,126 @@ def auto_join_remove(domain: str = typer.Argument(help="Domain to remove from au
 
 
 org_app.add_typer(auto_join_app, name="auto-join")
+
+
+# ── sfs org jira … ──
+
+
+org_jira_app = typer.Typer(
+    name="jira",
+    help="Manage the org's Jira Cloud integration.",
+    no_args_is_help=True,
+)
+
+
+def _jira_error(status: int, body) -> NoReturn:
+    err_console.print(f"[red]API error ({status}): {format_api_error(body, status)}[/red]")
+    raise typer.Exit(1)
+
+
+@org_jira_app.command("connect")
+def jira_connect(
+    site_url: str = typer.Option(
+        ..., "--site-url", help="Jira Cloud site, e.g. https://acme.atlassian.net"
+    ),
+    account_email: str = typer.Option(..., "--email", help="Atlassian account email"),
+    api_token: str = typer.Option(
+        ...,
+        "--api-token",
+        "-t",
+        help="Atlassian API token (prompted if omitted).",
+        prompt=True,
+        hide_input=True,
+    ),
+    default_template: str = typer.Option(
+        ..., "--template", help="Template slug: agile, compliance, sre, bug"
+    ),
+) -> None:
+    """Connect this org to Jira Cloud (admin only)."""
+    api_url, api_key = _load_api_config()
+    org_id = _org_id(api_url, api_key)
+    s, body, _ = asyncio.run(
+        _api_request(
+            "PUT",
+            f"/api/v1/orgs/{org_id}/integrations/jira",
+            api_url, api_key,
+            json_data={
+                "site_url": site_url,
+                "account_email": account_email,
+                "api_token": api_token,
+                "default_template": default_template,
+            },
+        )
+    )
+    if s >= 400 or not isinstance(body, dict):
+        _jira_error(s, body)
+    console.print(
+        f"[green]Connected Jira:[/green] {body.get('site_url')} "
+        f"({body.get('account_email')})"
+    )
+
+
+@org_jira_app.command("mappings")
+def jira_mappings() -> None:
+    """List project → Jira project mappings."""
+    api_url, api_key = _load_api_config()
+    org_id = _org_id(api_url, api_key)
+    s, body, _ = asyncio.run(
+        _api_request(
+            "GET",
+            f"/api/v1/orgs/{org_id}/integrations/jira/mappings",
+            api_url, api_key,
+        )
+    )
+    if s >= 400:
+        _jira_error(s, body)
+    mappings = cast(list[dict], body)
+    if not mappings:
+        console.print("[dim]No Jira project mappings yet.[/dim]")
+        return
+    table = Table()
+    table.add_column("Project", style="cyan")
+    table.add_column("Jira project", style="magenta")
+    table.add_column("Issue type")
+    table.add_column("Template")
+    table.add_column("Done status")
+    for m in mappings:
+        table.add_row(
+            m.get("project_id", ""),
+            m.get("jira_project_key", ""),
+            m.get("issue_type", ""),
+            m.get("template") or "(org default)",
+            m.get("done_status_name") or "—",
+        )
+    console.print(table)
+
+
+@org_jira_app.command("health")
+def jira_health() -> None:
+    """Show Jira integration health (unmapped projects, stale links)."""
+    api_url, api_key = _load_api_config()
+    org_id = _org_id(api_url, api_key)
+    s, body, _ = asyncio.run(
+        _api_request(
+            "GET",
+            f"/api/v1/orgs/{org_id}/integrations/jira/health",
+            api_url, api_key,
+        )
+    )
+    if s >= 400 or not isinstance(body, dict):
+        _jira_error(s, body)
+    console.print(
+        f"[bold]Unmapped projects:[/bold] {body.get('unmapped_project_count', 0)}"
+    )
+    failures = body.get("last_push_failures") or []
+    console.print(f"[bold]Push failures:[/bold] {len(failures)}")
+    stale = body.get("stale_links") or []
+    if stale:
+        console.print(f"[bold yellow]Stale links ({len(stale)}):[/bold yellow]")
+        for link in stale:
+            console.print(f"  - {link.get('issue_key')} (ticket {link.get('ticket_id')})")
+    else:
+        console.print("[dim]No stale links.[/dim]")
+
+
+org_app.add_typer(org_jira_app, name="jira")

@@ -24,6 +24,12 @@ _MAX_RETRIES = 3
 _BACKOFF_BASE = 1.0  # seconds
 _RETRYABLE_STATUS = {429, 502, 503, 504}
 
+# Chunked uploads (GitHub #91): archives above this size use the resumable
+# multipart path when the server supports it. Below it, a single-shot PUT is
+# simpler and just as reliable, so we don't pay the initiate/complete
+# round-trips on small sessions.
+CHUNK_THRESHOLD_BYTES = 8 * 1024 * 1024
+
 # Timeouts
 _METADATA_TIMEOUT = 10.0
 _CONNECT_TIMEOUT = 10.0
@@ -166,6 +172,61 @@ class SyncTooLargeError(SyncError):
     def __init__(self, session_id: str, message: str):
         self.session_id = session_id
         super().__init__(message)
+
+
+def _raise_push_error(
+    resp: httpx.Response, session_id: str, size_bytes: int | None = None
+) -> None:
+    """Map a non-2xx push or chunked-complete response to a SyncError subclass.
+
+    Single-shot push and chunked complete must raise identical error types so
+    the daemon's permanent-exclusion logic (SyncTooLargeError) and the CLI's
+    conflict/deleted handling behave the same on either path.
+    """
+    try:
+        body = resp.json()
+        if not isinstance(body, dict):
+            body = {}
+    except ValueError:
+        body = {}
+
+    error = body.get("error", {})
+    if not isinstance(error, dict):
+        error = {}
+    message = error.get("message", resp.text)
+    code = error.get("code")
+    details = error.get("details", {})
+    if not isinstance(details, dict):
+        details = {}
+
+    if resp.status_code == 409:
+        if code == "etag_mismatch":
+            raise SyncConflictError(
+                current_etag=details.get("current_etag", ""), message=message
+            )
+        # Other 409s (chunked missing_parts / upload_not_pending /
+        # upload_expired) are transient state, not a version conflict.
+        raise SyncError(f"Push failed (409): {message}")
+
+    if resp.status_code == 410:
+        raise SyncDeletedError(session_id)
+
+    if "Member too large" in message or resp.status_code == 413:
+        detail = body.get("detail") if isinstance(body, dict) else None
+        if isinstance(detail, dict) and detail.get("message"):
+            server_msg = detail["message"]
+            suggestion = detail.get("suggestion") or (
+                "Try /compact in your AI tool to start a fresh session."
+            )
+            raise SyncTooLargeError(session_id, f"{server_msg} {suggestion}")
+        raise SyncTooLargeError(
+            session_id,
+            f"Session too large to sync ({(size_bytes or 0) // (1024*1024)}MB). "
+            f"This session exceeds the upload limit. "
+            f"Try /compact in your AI tool to start a fresh session.",
+        )
+
+    raise SyncError(f"Push failed ({resp.status_code}): {message}")
 
 
 @dataclass
@@ -355,12 +416,35 @@ class SyncClient:
     async def push_session(
         self, session_id: str, archive_data: bytes, etag: str | None = None,
         extra_headers: dict[str, str] | None = None,
+        *,
+        store_dir: str | os.PathLike | None = None,
     ) -> SyncResult:
         """Push a session archive to the server.
 
         Uses PUT /api/v1/sessions/{id}/sync with If-Match header for updates.
-        Returns new ETag or raises SyncConflictError.
+        When ``store_dir`` is given and the archive is large, the resumable
+        chunked path (GitHub #91) is preferred, falling back to single-shot
+        if the server does not implement it. Returns new ETag or raises
+        SyncConflictError.
         """
+        if store_dir is not None and len(archive_data) > CHUNK_THRESHOLD_BYTES:
+            from sessionfs.sync.upload import ChunkedUnsupported, push_session_chunked
+
+            try:
+                return await push_session_chunked(
+                    self,
+                    session_id,
+                    archive_data,
+                    etag=etag,
+                    extra_headers=extra_headers,
+                    store_dir=store_dir,
+                )
+            except ChunkedUnsupported:
+                logger.info(
+                    "Server %s does not support chunked uploads; falling back to single-shot",
+                    self.api_url,
+                )
+
         headers: dict[str, str] = {}
         if etag:
             headers["If-Match"] = f'"{etag}"'
@@ -382,52 +466,8 @@ class SyncClient:
             ) from exc
         self._check_auth(resp)
 
-        if resp.status_code == 409:
-            body = resp.json()
-            # Server wraps errors as {"error": {"code": ..., "message": ..., "details": {...}}}
-            error = body.get("error", {})
-            details = error.get("details", {})
-            raise SyncConflictError(
-                current_etag=details.get("current_etag", ""),
-                message=error.get("message", "ETag mismatch"),
-            )
-
-        if resp.status_code == 410:
-            raise SyncDeletedError(session_id)
-
         if resp.status_code not in (200, 201):
-            # Parse friendly error message from server response
-            try:
-                body = resp.json()
-                error = body.get("error", {})
-                message = error.get("message", resp.text) if isinstance(error, dict) else str(error)
-            except Exception:
-                body = {}
-                message = resp.text
-
-            if "Member too large" in message or resp.status_code == 413:
-                # Prefer the server's structured detail (which includes
-                # tier-aware suggestion text) when available — otherwise
-                # fall back to a generic message that matches the legacy
-                # contract. Server detail since v0.9.9.7 carries:
-                # detail.message, detail.suggestion, detail.limit_bytes.
-                detail = body.get("detail") if isinstance(body, dict) else None
-                if isinstance(detail, dict) and detail.get("message"):
-                    server_msg = detail["message"]
-                    suggestion = detail.get("suggestion") or (
-                        "Try /compact in your AI tool to start a fresh session."
-                    )
-                    raise SyncTooLargeError(
-                        session_id, f"{server_msg} {suggestion}"
-                    )
-                raise SyncTooLargeError(
-                    session_id,
-                    f"Session too large to sync ({len(archive_data) // (1024*1024)}MB). "
-                    f"This session exceeds the upload limit. "
-                    f"Try /compact in your AI tool to start a fresh session."
-                )
-
-            raise SyncError(f"Push failed ({resp.status_code}): {message}")
+            _raise_push_error(resp, session_id, len(archive_data))
 
         data = resp.json()
         return SyncResult(

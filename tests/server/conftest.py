@@ -128,6 +128,9 @@ async def client(db_engine, blob_store, test_user, test_api_key):
 
     app.dependency_overrides[get_db] = override_get_db
     app.state.blob_store = blob_store
+    # The lifespan is not run under ASGITransport, but sweep routes read
+    # request.app.state.config (email provider, dashboard_url). Mirror it.
+    app.state.config = config
 
     # Set module-level _session_factory so sync_push Phase 3 can create fresh sessions
     import sessionfs.server.db.engine as _engine_mod

@@ -85,21 +85,41 @@ Org admins can move project ownership between scopes:
   the **Transfers inbox**.
 * **Org → Personal** — an admin of the source org initiates. The target user
   (the project's owner) accepts via their inbox.
+* **Admin-proposed transfer** — an owner or admin of the **destination** org
+  proposes moving a **personal** project into that org. The project's owner
+  must already be an active member of the destination org (org → org moves
+  keep the source-org-admin-gated flows above). The proposal lands in the
+  project owner's inbox labelled *"Proposed by <admin> for <org>: <reason>"*;
+  the owner accepts or declines. Nothing moves until the owner accepts.
+  Proposals expire 7 days after creation, and a decline or cancel puts the
+  project + org on a cooldown before it can be proposed again (7 days after
+  a decline, 24 hours after a cancel); an org may hold at most 10 pending
+  proposals at once.
 
 The inbox lives at `/transfers` in the dashboard. It surfaces:
 
 * **Incoming pending** — transfers waiting on you with Accept / Reject.
+  Incoming proposals show the proposer, destination org, reason and expiry.
 * **Outgoing pending** — transfers you initiated, with Cancel (recall before
-  the target acts).
+  the target acts). An admin who proposed a transfer sees it here as outgoing
+  and can cancel it before the owner responds.
 
 CLI parity: `sfs project transfer --to <dest>` initiates from the cwd repo;
 `sfs project transfer --accept|--reject|--cancel <id>` acts on a specific
-transfer; `sfs project transfers --direction outgoing` lists. See
-`docs/cli-reference.md`.
+transfer; `sfs project transfers --direction outgoing` lists. An admin with
+platform access can also propose a transfer via
+`sfs admin override project-transfer --propose --project <id> --org <org_id>
+--reason "..."`. See `docs/cli-reference.md`.
 
-State machine: `pending → accepted | rejected | cancelled`. Every state
-transition mutates the same row in place (no separate audit table) so the
-ProjectTransfer row itself IS the audit log. Atomic `UPDATE ... WHERE
+State machine: `pending → accepted | rejected | cancelled`, plus `expired`
+for admin-proposed transfers that lapse before the owner responds, or whose
+preconditions (personal project, owner still an active member, proposer
+still an owner/admin of the destination org) no longer hold at accept.
+Expiry is lazy — overdue proposals are flipped to `expired` on read/act, so
+they never show as pending and never block a new transfer (the same lazy
+pattern as owner-initiated transfer expiry). Every
+state transition mutates the same row in place (no separate audit table) so
+the ProjectTransfer row itself IS the audit log. Atomic `UPDATE ... WHERE
 state='pending'` with rowcount check prevents double-accept races.
 
 If the project is hard-deleted between initiate and accept, the audit row
@@ -131,6 +151,49 @@ override.
 
 DLP policy edit lives on its own panel (existing `/api/v1/dlp/policy`
 surface). That route remains feature-gated on `dlp_secrets` (PRO+).
+
+## Session helper AI key
+
+On **Enterprise** orgs, owners and admins can set an org-wide LLM key the
+session helper falls back to when a member has no personal judge key. It lives
+in the **AI key for the session helper** card on the Organization page's
+Policies tab.
+
+* **Provider / model** — the LLM the helper uses (e.g. Anthropic with
+  `claude-sonnet-5-5`).
+* **API key** — stored server-side, encrypted at rest. It is never returned
+  after save; the card shows only *key ending in ••••1234*. Saving with the
+  field blank keeps the stored key.
+* **Base URL (optional)** — for LiteLLM, vLLM, Ollama, or any
+  OpenAI-compatible gateway. Validated against the same SSRF policy as
+  user-supplied judge endpoints.
+* **Enabled** — turn the fallback off without deleting the key.
+
+Resolution order for the helper is: the member's own judge key first, then
+this org key (only if the org key is enabled and the user is an active member
+of the org), otherwise the helper has no key. Deleting the key removes the org
+row and falls back to member-only resolution.
+
+## Weekly activity digest
+
+Owners and admins of Team and Enterprise orgs receive a weekly email
+summarizing the previous week (Monday to Sunday, UTC): sessions, tickets,
+agent runs, knowledge claims, handoffs and admin actions, each linking to a
+filtered view in the dashboard. Each owner or admin can turn it off for
+themselves under **Organization → Policies → Notifications** ("Send me the
+weekly activity digest"), or with `PUT /api/v1/orgs/{org_id}/members/me/digest`
+(`{"opt_out": true}`). Turning it off affects only your own copy.
+
+On self-hosted installs the digest is sent by a scheduled job; see
+[Self-hosted: Weekly org activity digest](self-hosted.md#weekly-org-activity-digest).
+
+## Jira Cloud
+
+On **Enterprise** orgs, owners and admins connect the org to Jira Cloud from
+the **Integrations** tab of the Organization page (or `sfs org jira connect`),
+map SessionFS projects to Jira projects, and check the integration's health.
+Members then promote tickets to Jira issues from the ticket detail panel. See
+[Jira Cloud integration](integrations/jira.md).
 
 ## Default org
 
@@ -204,8 +267,9 @@ The org admin console (members + transfers + settings) is available on the
 **team** tier and above. Free and starter tiers can capture and sync personal
 sessions but cannot create or join orgs.
 
-Per-feature gating (DLP, knowledge-base compile, etc.) is independent and
-documented in `docs/pricing.md`.
+Per-feature gating (DLP, knowledge-base compile, etc.) is independent of the
+org console; see the [pricing page](https://sessionfs.dev/pricing) for what
+each plan includes.
 
 ## See also
 

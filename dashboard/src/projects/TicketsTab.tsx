@@ -23,7 +23,7 @@
 import { useState } from 'react';
 import { useTickets } from '../hooks/useTickets';
 import { Button, IconButton, Select } from '../components/ui';
-import { KIND_FILTERS, STATUS_FILTERS } from './tickets/constants';
+import { KIND_FILTERS, STATUS_FILTERS, type TicketJiraSurface } from './tickets/constants';
 import { ListView } from './tickets/ListView';
 import { BoardView } from './tickets/BoardView';
 import { EmptyState } from './tickets/EmptyState';
@@ -32,9 +32,10 @@ import { errorMessage } from '../utils/errorMessage';
 
 interface TicketsTabProps {
   projectId: string;
+  jira?: TicketJiraSurface;
 }
 
-export default function TicketsTab({ projectId }: TicketsTabProps) {
+export default function TicketsTab({ projectId, jira }: TicketsTabProps) {
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [kindFilter, setKindFilter] = useState<string>('');
   const { data, isLoading, error } = useTickets(projectId, {
@@ -174,6 +175,7 @@ export default function TicketsTab({ projectId }: TicketsTabProps) {
           selected={selected}
           onSelect={(id) => setSelected(selected === id ? null : id)}
           onNavigate={navigateTo}
+          jira={jira}
         />
       ) : (
         <ListView
@@ -182,6 +184,7 @@ export default function TicketsTab({ projectId }: TicketsTabProps) {
           selected={selected}
           onSelect={(id) => setSelected(selected === id ? null : id)}
           onNavigate={navigateTo}
+          jira={jira}
         />
       )}
 

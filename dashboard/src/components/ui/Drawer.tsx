@@ -41,7 +41,9 @@ export function Drawer({ open, onClose, titleId, children }: DrawerProps) {
   useEffect(() => {
     if (!open) return;
     function handleKey(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose();
+      // A nested dialog consumes Escape (preventDefault) before it reaches this
+      // bubble listener, so a dialog's Escape closes only the dialog.
+      if (e.key === 'Escape' && !e.defaultPrevented) onClose();
     }
     document.addEventListener('keydown', handleKey);
     return () => document.removeEventListener('keydown', handleKey);

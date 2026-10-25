@@ -12,6 +12,7 @@ import { Badge } from './Badge';
 import { Dropdown, Tooltip } from './ui';
 import Wordmark from './Wordmark';
 import { displayTier } from '../utils/tier';
+import { useHelper } from '../helper/HelperProvider';
 
 // ── Icon factory ──
 const iconProps = {
@@ -63,6 +64,9 @@ const collapseIcon = mkIcon(
 );
 const expandIcon = mkIcon(
   <><polyline points="13 17 18 12 13 7" /><polyline points="6 17 11 12 6 7" /></>
+);
+const helperIcon = mkIcon(
+  <><path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8L12 3z" /><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z" /></>
 );
 
 // ── Nav config ──
@@ -187,6 +191,7 @@ export default function Layout() {
   const location = useLocation();
   const inbox = useHandoffInbox();
   const me = useMe();
+  const { openHelper } = useHelper();
   const isAdmin = me.data?.tier === 'admin';
   const hasOrg = !!me.data?.org_id;
   const pendingCount = inbox.data?.handoffs.filter((h) => h.status === 'pending').length ?? 0;
@@ -384,6 +389,24 @@ export default function Layout() {
         <div className="px-2 pb-2">
           <SearchBar inputId="sidebar-search-input" className="relative w-full" />
         </div>
+
+        {/* Ask the helper — only when the provider/drawer is available. */}
+        {openHelper && (
+          <div className="px-2 pb-1">
+            <button
+              type="button"
+              onClick={() => openHelper()}
+              className={`flex items-center gap-2.5 rounded-md text-sm font-medium text-text-secondary hover:text-text-primary hover:bg-surface-hover transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] w-full ${
+                collapsed ? 'justify-center w-9 h-9 mx-auto' : 'px-3 py-1.5'
+              }`}
+              aria-label="Ask the helper"
+              title="Ask the helper"
+            >
+              <span className="shrink-0 flex items-center justify-center w-4 h-4">{helperIcon}</span>
+              {!collapsed && <span className="truncate">Ask the helper</span>}
+            </button>
+          </div>
+        )}
 
         {/* Nav groups — scrollable middle section */}
         <nav aria-label="Primary" className="flex flex-col flex-1 px-2 overflow-y-auto">

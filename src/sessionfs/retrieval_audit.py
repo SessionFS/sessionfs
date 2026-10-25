@@ -98,11 +98,29 @@ def audit_context_id(args: dict[str, Any] | None = None) -> str | None:
 
 def sanitize_arguments(args: dict[str, Any]) -> dict[str, Any]:
     sensitive_fragments = ("api_key", "token", "secret", "password", "auth", "credential")
+    # Known non-secret argument names that must survive the blocklist even when
+    # they happen to contain a sensitive fragment (e.g. "max_tokens" contains
+    # "token" but is a plain integer cap, not a credential).
+    allowlist = {
+        "query",
+        "limit",
+        "max_tokens",
+        "path",
+        "session_id",
+        "session_ids",
+        "project_id",
+        "since",
+        "until",
+        "tool",
+    }
     return {
         key: value
         for key, value in args.items()
-        if key not in {"git_remote"}
-        and not any(fragment in key.lower() for fragment in sensitive_fragments)
+        if key in allowlist
+        or (
+            key not in {"git_remote"}
+            and not any(fragment in key.lower() for fragment in sensitive_fragments)
+        )
     }
 
 

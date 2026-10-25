@@ -145,3 +145,14 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         raise RuntimeError("Database engine not initialized. Call init_engine() first.")
     async with _session_factory() as session:
         yield session
+
+
+def get_session_factory() -> async_sessionmaker[AsyncSession]:
+    """Return the configured session factory for callers that need fresh
+    sessions (e.g. helper turns, which persist outside the request scope).
+
+    Raises when the engine is not initialized, mirroring :func:`get_db`.
+    """
+    if _session_factory is None:
+        raise RuntimeError("Database engine not initialized. Call init_engine() first.")
+    return _session_factory

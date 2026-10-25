@@ -12,10 +12,12 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import shlex
 import uuid
 from datetime import datetime, timezone
 
 import pytest
+import yaml
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,7 +28,7 @@ from sessionfs.server.db.models import (
     Project,
     User,
 )
-from sessionfs.server.routes.agent_runs import _evaluate_policy
+from sessionfs.server.routes.agent_runs import _diff_findings, _evaluate_policy
 
 
 async def _make_user(
@@ -568,3 +570,482 @@ async def test_concurrent_starts_only_one_wins(
     results = await asyncio.gather(_start(), _start())
     statuses = sorted(r.status_code for r in results)
     assert statuses == [200, 409]
+
+
+# ── Replay (GitHub #95) ───────────────────────────────────────────
+
+
+async def _complete_run(
+    client: AsyncClient,
+    project: Project,
+    key: str,
+    run_id: str,
+    findings: list[dict],
+) -> dict:
+    await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs/{run_id}/start",
+        headers=_hdrs(key),
+    )
+    cp = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs/{run_id}/complete",
+        headers=_hdrs(key),
+        json={"status": "passed", "severity": "none", "findings": findings},
+    )
+    assert cp.status_code == 200, cp.text
+    return cp.json()
+
+
+@pytest.mark.asyncio
+async def test_replay_copies_unspecified_and_overrides_provided(
+    client: AsyncClient, db_session: AsyncSession
+):
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, "atlas")
+
+    tk = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "replay parent"},
+    )
+    ticket_id = tk.json()["id"]
+
+    parent = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs",
+        headers=_hdrs(key),
+        json={
+            "persona_name": "atlas",
+            "ticket_id": ticket_id,
+            "fail_on": "high",
+            "trigger_ref": "ref-1",
+            "prompt": "original prompt",
+            "context_refs": ["ref-a"],
+        },
+    )
+    assert parent.status_code == 201, parent.text
+    parent_id = parent.json()["id"]
+    assert parent.json()["prompt"] == "original prompt"
+    assert parent.json()["context_refs"] == ["ref-a"]
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs/{parent_id}/replay",
+        headers=_hdrs(key),
+        json={"prompt": "new prompt", "context_refs": ["ref-b", "ref-c"]},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    run = body["run"]
+    assert run["id"] != parent_id
+    assert run["replayed_from"] == parent_id
+    assert run["status"] == "queued"
+    # Overridden fields.
+    assert run["prompt"] == "new prompt"
+    assert run["context_refs"] == ["ref-b", "ref-c"]
+    # Copied fields.
+    assert run["persona_name"] == "atlas"
+    assert run["ticket_id"] == ticket_id
+    assert run["fail_on"] == "high"
+    assert run["trigger_ref"] == "ref-1"
+
+    # Command references only the server-owned run id (fields live on the
+    # row); no user-controlled prompt/ticket/ref is shell-pasted.
+    tokens = shlex.split(body["command"])
+    assert tokens == ["sfs", "agent", "run", "--run-id", run["id"]]
+    assert body["ci_hint"]
+
+
+@pytest.mark.asyncio
+async def test_replay_overrides_persona_and_ticket(
+    client: AsyncClient, db_session: AsyncSession
+):
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, "atlas")
+    await _make_persona(db_session, project, user, "sentinel")
+
+    tk1 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "t1"},
+    )
+    tk2 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "t2"},
+    )
+    parent = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs",
+        headers=_hdrs(key),
+        json={"persona_name": "atlas", "ticket_id": tk1.json()["id"]},
+    )
+    parent_id = parent.json()["id"]
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs/{parent_id}/replay",
+        headers=_hdrs(key),
+        json={"persona_name": "sentinel", "ticket_id": tk2.json()["id"]},
+    )
+    assert resp.status_code == 201, resp.text
+    run = resp.json()["run"]
+    assert run["persona_name"] == "sentinel"
+    assert run["ticket_id"] == tk2.json()["id"]
+    assert run["replayed_from"] == parent_id
+
+
+@pytest.mark.asyncio
+async def test_replay_cross_project_ticket_rejected(
+    client: AsyncClient, db_session: AsyncSession
+):
+    user, key = await _make_user(db_session)
+    project_a = await _make_project(db_session, user)
+    project_b = await _make_project(db_session, user)
+    await _make_persona(db_session, project_a, user, "atlas")
+    await _make_persona(db_session, project_b, user, "atlas")
+
+    tk_b = await client.post(
+        f"/api/v1/projects/{project_b.id}/tickets",
+        headers=_hdrs(key),
+        json={"title": "in B"},
+    )
+    parent = await client.post(
+        f"/api/v1/projects/{project_a.id}/agent-runs",
+        headers=_hdrs(key),
+        json={"persona_name": "atlas"},
+    )
+    resp = await client.post(
+        f"/api/v1/projects/{project_a.id}/agent-runs/{parent.json()['id']}/replay",
+        headers=_hdrs(key),
+        json={"ticket_id": tk_b.json()["id"]},
+    )
+    assert resp.status_code == 422
+    assert "Ticket" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_replay_ci_hint_is_yaml_safe_with_nasty_prompt(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """GitHub #95 review HIGH: user values never reach the CI `run:` step.
+
+    A prompt carrying `#`, `: `, newlines, quotes and `$()` must not
+    break the CI hint. The hint parses as YAML and its `run` value is
+    exactly `sfs agent run --run-id <id>` (server-owned id only).
+    """
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, "atlas")
+
+    parent = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs",
+        headers=_hdrs(key),
+        json={"persona_name": "atlas"},
+    )
+    parent_id = parent.json()["id"]
+
+    nasty = "fix \"the bug\"\n# comment: $(rm -rf /tmp/x)\nline with 'single quotes'"
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs/{parent_id}/replay",
+        headers=_hdrs(key),
+        json={"prompt": nasty},
+    )
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    command = body["command"]
+    run_id = body["run"]["id"]
+    assert command == f"sfs agent run --run-id {run_id}"
+
+    parsed = yaml.safe_load(body["ci_hint"])
+    assert isinstance(parsed, dict)
+    assert parsed["github_actions"][0]["run"] == command
+    assert parsed["gitlab_ci"]["replay"]["script"] == [command]
+
+
+# ── Compare (GitHub #95) ──────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_compare_findings_added_removed_unchanged(
+    client: AsyncClient, db_session: AsyncSession
+):
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, "atlas")
+
+    run_a = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/agent-runs",
+            headers=_hdrs(key),
+            json={"persona_name": "atlas"},
+        )
+    ).json()["id"]
+    run_b = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/agent-runs",
+            headers=_hdrs(key),
+            json={"persona_name": "atlas"},
+        )
+    ).json()["id"]
+
+    await _complete_run(
+        client, project, key, run_a,
+        [
+            {"rule": "r1", "file": "a.py", "line": 1, "severity": "high"},
+            {"rule": "r2", "severity": "low"},
+        ],
+    )
+    await _complete_run(
+        client, project, key, run_b,
+        [
+            {"rule": "r1", "file": "a.py", "line": 1, "severity": "high"},
+            {"rule": "r3", "severity": "medium"},
+        ],
+    )
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/agent-runs/{run_a}/compare/{run_b}",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["a_id"] == run_a
+    assert body["b_id"] == run_b
+    assert body["a_findings_count"] == 2
+    assert body["b_findings_count"] == 2
+    assert body["a_severity_counts"] == {"high": 1, "low": 1}
+    assert body["b_severity_counts"] == {"high": 1, "medium": 1}
+
+    assert [f["rule"] for f in body["added"]] == ["r3"]
+    assert [f["rule"] for f in body["removed"]] == ["r2"]
+    assert [f["rule"] for f in body["unchanged"]] == ["r1"]
+
+
+@pytest.mark.asyncio
+async def test_compare_cross_project_other_returns_404(
+    client: AsyncClient, db_session: AsyncSession
+):
+    user, key = await _make_user(db_session)
+    project_a = await _make_project(db_session, user)
+    project_b = await _make_project(db_session, user)
+    await _make_persona(db_session, project_a, user, "atlas")
+    await _make_persona(db_session, project_b, user, "atlas")
+
+    run_a = (
+        await client.post(
+            f"/api/v1/projects/{project_a.id}/agent-runs",
+            headers=_hdrs(key),
+            json={"persona_name": "atlas"},
+        )
+    ).json()["id"]
+    run_b = (
+        await client.post(
+            f"/api/v1/projects/{project_b.id}/agent-runs",
+            headers=_hdrs(key),
+            json={"persona_name": "atlas"},
+        )
+    ).json()["id"]
+
+    resp = await client.get(
+        f"/api/v1/projects/{project_a.id}/agent-runs/{run_a}/compare/{run_b}",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 404
+
+
+# ── Review round 1 regressions ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_unsafe_ci_expression_rejected(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """HIGH: `${{ }}` is refused with 422 at create and replay, never pasted."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, "atlas")
+
+    for payload in (
+        {"persona_name": "atlas", "prompt": "echo ${{ secrets.TOKEN }}"},
+        {"persona_name": "atlas", "context_refs": ["ref ${{ github.token }}"]},
+        {"persona_name": "atlas", "trigger_ref": "${{ inputs.x }}"},
+    ):
+        resp = await client.post(
+            f"/api/v1/projects/{project.id}/agent-runs",
+            headers=_hdrs(key),
+            json=payload,
+        )
+        assert resp.status_code == 422, resp.text
+        assert "unsafe_ci_value" in resp.text
+
+    parent = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs",
+        headers=_hdrs(key),
+        json={"persona_name": "atlas"},
+    )
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs/{parent.json()['id']}/replay",
+        headers=_hdrs(key),
+        json={"prompt": "${{ secrets.TOKEN }}"},
+    )
+    assert resp.status_code == 422
+    assert "unsafe_ci_value" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_compare_handles_non_hashable_line(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """MEDIUM: a list/dict `line` used to 500; it now diffs cleanly."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, "atlas")
+
+    run_a = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/agent-runs",
+            headers=_hdrs(key),
+            json={"persona_name": "atlas"},
+        )
+    ).json()["id"]
+    run_b = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/agent-runs",
+            headers=_hdrs(key),
+            json={"persona_name": "atlas"},
+        )
+    ).json()["id"]
+
+    await _complete_run(
+        client, project, key, run_a,
+        [
+            {"rule": "r1", "file": "a.py", "line": [10, 20], "severity": "high"},
+            {"rule": "r2", "line": {"start": 1, "end": 5}, "severity": "low"},
+        ],
+    )
+    await _complete_run(
+        client, project, key, run_b,
+        [
+            {"rule": "r1", "file": "a.py", "line": [10, 20], "severity": "high"},
+            {"rule": "r3", "line": {"start": 1, "end": 5}, "severity": "medium"},
+        ],
+    )
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/agent-runs/{run_a}/compare/{run_b}",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert [f["rule"] for f in body["unchanged"]] == ["r1"]
+    assert [f["rule"] for f in body["removed"]] == ["r2"]
+    assert [f["rule"] for f in body["added"]] == ["r3"]
+    assert body["truncated"] is False
+
+
+def test_diff_findings_caps_lists_and_flags_truncation():
+    """MEDIUM: >500 findings per side are capped and flagged, not dumped."""
+    a = [{"rule": f"r-removed-{i}", "severity": "low"} for i in range(1200)]
+    b = [{"rule": f"r-added-{i}", "severity": "low"} for i in range(1200)]
+    added, removed, unchanged, truncated = _diff_findings(a, b)
+    assert len(added) == 500
+    assert len(removed) == 500
+    assert unchanged == []
+    assert truncated is True
+
+
+@pytest.mark.asyncio
+async def test_replay_does_not_copy_ci_provenance(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """MEDIUM: replay is a fresh manual run, not a clone of CI provenance."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, "atlas")
+
+    parent = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs",
+        headers=_hdrs(key),
+        json={
+            "persona_name": "atlas",
+            "trigger_source": "ci",
+            "ci_provider": "github",
+            "ci_run_url": "https://example.com/actions/runs/123",
+            "triggered_by_persona": "atlas",
+        },
+    )
+    assert parent.status_code == 201, parent.text
+    parent_id = parent.json()["id"]
+    assert parent.json()["trigger_source"] == "ci"
+    assert parent.json()["ci_provider"] == "github"
+    assert parent.json()["ci_run_url"] == "https://example.com/actions/runs/123"
+    assert parent.json()["triggered_by_persona"] == "atlas"
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs/{parent_id}/replay",
+        headers=_hdrs(key),
+        json={},
+    )
+    assert resp.status_code == 201, resp.text
+    run = resp.json()["run"]
+    assert run["trigger_source"] == "manual"
+    assert run["ci_provider"] is None
+    assert run["ci_run_url"] is None
+    assert run["triggered_by_persona"] is None
+
+
+@pytest.mark.asyncio
+async def test_replay_empty_prompt_and_context_refs_clear_inherited(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """LOW: `""` prompt / `[]` context_refs clear instead of inherit."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, "atlas")
+
+    parent = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs",
+        headers=_hdrs(key),
+        json={
+            "persona_name": "atlas",
+            "prompt": "inherited prompt",
+            "context_refs": ["ref-a"],
+        },
+    )
+    parent_id = parent.json()["id"]
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/agent-runs/{parent_id}/replay",
+        headers=_hdrs(key),
+        json={"prompt": "", "context_refs": []},
+    )
+    assert resp.status_code == 201, resp.text
+    run = resp.json()["run"]
+    assert run["prompt"] is None
+    assert run["context_refs"] == []
+
+
+@pytest.mark.asyncio
+async def test_create_rejects_oversized_fields(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """MEDIUM: field limits are enforced before a row is written."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, "atlas")
+
+    base = {"persona_name": "atlas"}
+    cases = [
+        ({"prompt": "x" * 20_001}, "prompt"),
+        ({"context_refs": [f"ref-{i}" for i in range(51)]}, "context_refs"),
+        ({"context_refs": ["x" * 501]}, "context_ref"),
+        ({"trigger_ref": "x" * 201}, "trigger_ref"),
+        ({"ticket_id": "x" * 65}, "ticket_id"),
+        ({"persona_name": "has space"}, "persona_name"),
+    ]
+    for extra, needle in cases:
+        resp = await client.post(
+            f"/api/v1/projects/{project.id}/agent-runs",
+            headers=_hdrs(key),
+            json={**base, **extra},
+        )
+        assert resp.status_code == 422, (needle, resp.text)
+        assert needle in resp.text

@@ -88,7 +88,12 @@ def _get(path: str) -> tuple[int, dict | list | str]:
 @agent_app.command("run")
 @handle_errors
 def run_agent(
-    persona: str = typer.Argument(..., help="Persona to run as"),
+    persona: str | None = typer.Argument(None, help="Persona to run as"),
+    run_id: str | None = typer.Option(
+        None, "--run-id",
+        help="Resume an existing queued run (created by `sfs agent replay`) "
+             "instead of creating a new one.",
+    ),
     ticket: str | None = typer.Option(None, "--ticket", help="Ticket id to scope the run"),
     tool: str = typer.Option("generic", "--tool", help="Token budget hint"),
     trigger_source: str = typer.Option(
@@ -102,6 +107,14 @@ def run_agent(
         None, "--fail-on",
         help="Severity threshold (low/medium/high/critical) — exit non-zero "
              "at `complete` time when met.",
+    ),
+    prompt: str | None = typer.Option(
+        None, "--prompt",
+        help="Edited prompt for the run (GitHub #95).",
+    ),
+    context_ref: list[str] = typer.Option(
+        None, "--context-ref",
+        help="Context reference to attach to the run (repeatable, GitHub #95).",
     ),
     timeout: int = typer.Option(
         0, "--timeout",
@@ -121,32 +134,76 @@ def run_agent(
         help="Status output format when polling: text / json / markdown.",
     ),
 ) -> None:
-    """Create + start an agent run, return run id + compiled context."""
-    # Create.
-    create_path = "/api/v1/projects/{p}/agent-runs"
-    body: dict = {
-        "persona_name": persona,
-        "tool": tool,
-        "trigger_source": trigger_source,
-    }
-    for k, v in (("ticket_id", ticket), ("trigger_ref", trigger_ref),
-                 ("ci_provider", ci_provider), ("ci_run_url", ci_run_url),
-                 ("fail_on", fail_on)):
-        if v:
-            body[k] = v
+    """Create + start an agent run (or resume one via --run-id).
 
-    s, resp = _post(create_path, body)
-    if s >= 400 or not isinstance(resp, dict):
-        err_console.print(f"[red]Create failed ({s}): {resp}[/red]")
-        raise typer.Exit(1)
-    run_id = resp["id"]
+    `--run-id` starts an already-queued run (e.g. one created by
+    `sfs agent replay`) without creating a new row. The persona and
+    create-only flags are ignored in that mode — the queued row already
+    carries its persona, prompt and context refs.
+    """
+    if persona and run_id:
+        err_console.print("[red]Pass either a persona or --run-id, not both.[/red]")
+        raise typer.Exit(2)
+    if not persona and not run_id:
+        err_console.print(
+            "[red]A persona is required (or pass --run-id to resume an "
+            "existing run).[/red]"
+        )
+        raise typer.Exit(2)
 
-    # Start.
-    s2, resp2 = _post(f"/api/v1/projects/{{p}}/agent-runs/{run_id}/start", None)
-    if s2 >= 400 or not isinstance(resp2, dict):
-        err_console.print(f"[red]Start failed ({s2}): {resp2}[/red]")
-        raise typer.Exit(1)
-    compiled = resp2.get("compiled_context", "")
+    if run_id:
+        create_only = [
+            name for name, given in (
+                ("--ticket", ticket), ("--trigger-ref", trigger_ref),
+                ("--ci-provider", ci_provider), ("--ci-run-url", ci_run_url),
+                ("--fail-on", fail_on), ("--prompt", prompt),
+                ("--context-ref", context_ref),
+                ("--tool", tool != "generic"),
+                ("--trigger-source", trigger_source != "manual"),
+            ) if given
+        ]
+        if create_only:
+            err_console.print(
+                f"[red]{', '.join(create_only)} can't be combined with --run-id: "
+                "the queued run already carries its settings.[/red]"
+            )
+            raise typer.Exit(2)
+        # Resume the queued row — its fields already live on the server.
+        s2, resp2 = _post(f"/api/v1/projects/{{p}}/agent-runs/{run_id}/start", None)
+        if s2 >= 400 or not isinstance(resp2, dict):
+            err_console.print(f"[red]Start failed ({s2}): {resp2}[/red]")
+            raise typer.Exit(1)
+        compiled = resp2.get("compiled_context", "")
+    else:
+        # Create.
+        create_path = "/api/v1/projects/{p}/agent-runs"
+        body: dict = {
+            "persona_name": persona,
+            "tool": tool,
+            "trigger_source": trigger_source,
+        }
+        for k, v in (("ticket_id", ticket), ("trigger_ref", trigger_ref),
+                     ("ci_provider", ci_provider), ("ci_run_url", ci_run_url),
+                     ("fail_on", fail_on)):
+            if v:
+                body[k] = v
+        if prompt:
+            body["prompt"] = prompt
+        if context_ref:
+            body["context_refs"] = context_ref
+
+        s, resp = _post(create_path, body)
+        if s >= 400 or not isinstance(resp, dict):
+            err_console.print(f"[red]Create failed ({s}): {resp}[/red]")
+            raise typer.Exit(1)
+        run_id = resp["id"]
+
+        # Start.
+        s2, resp2 = _post(f"/api/v1/projects/{{p}}/agent-runs/{run_id}/start", None)
+        if s2 >= 400 or not isinstance(resp2, dict):
+            err_console.print(f"[red]Start failed ({s2}): {resp2}[/red]")
+            raise typer.Exit(1)
+        compiled = resp2.get("compiled_context", "")
 
     # Output modes.
     if output_id:
@@ -388,6 +445,137 @@ def list_agents(
             r.get("created_at", "")[:19],
         )
     console.print(table)
+
+
+@agent_app.command("replay")
+@handle_errors
+def replay_agent(
+    run_id: str = typer.Argument(..., help="Run to replay"),
+    prompt: str | None = typer.Option(
+        None, "--prompt", help="Edited prompt for the replayed run",
+    ),
+    prompt_file: Path | None = typer.Option(
+        None, "--prompt-file", help="Read the edited prompt from a file",
+    ),
+    ticket: str | None = typer.Option(
+        None, "--ticket", help="Override the ticket id",
+    ),
+    persona: str | None = typer.Option(
+        None, "--persona", help="Override the persona",
+    ),
+    context_ref: list[str] = typer.Option(
+        None, "--context-ref", help="Context reference to attach (repeatable)",
+    ),
+    output_id: bool = typer.Option(
+        False, "--output-id",
+        help="Print ONLY the new run id to stdout (CI-safe).",
+    ),
+) -> None:
+    """Replay a run with an edited prompt/ticket/context (GitHub #95).
+
+    Unspecified fields copy from the parent run. Prints the new run id,
+    the equivalent `sfs agent run` command, and a CI hint block.
+    """
+    if prompt is not None and prompt_file is not None:
+        err_console.print("[red]Pass --prompt or --prompt-file, not both.[/red]")
+        raise typer.Exit(2)
+    if prompt_file is not None:
+        try:
+            prompt = prompt_file.read_text()
+        except OSError as exc:
+            err_console.print(f"[red]Could not read prompt file: {exc}[/red]")
+            raise typer.Exit(2)
+
+    body: dict = {}
+    if prompt is not None:
+        body["prompt"] = prompt
+    if ticket:
+        body["ticket_id"] = ticket
+    if persona:
+        body["persona_name"] = persona
+    if context_ref:
+        body["context_refs"] = context_ref
+
+    s, resp = _post(f"/api/v1/projects/{{p}}/agent-runs/{run_id}/replay", body)
+    if s in (404, 405):
+        # Servers without the replay route answer 405 (another route owns the
+        # path) or a bare "Not Found"; a missing run says "Agent run not found".
+        message = ""
+        if isinstance(resp, dict):
+            err = resp.get("error")
+            message = str(err.get("message", "")) if isinstance(err, dict) else str(resp.get("detail", ""))
+        if s == 405 or message == "Not Found":
+            err_console.print(
+                "[red]This server doesn't support replay (upgrade the server).[/red]"
+            )
+        else:
+            err_console.print(f"[red]Run {run_id} not found.[/red]")
+        raise typer.Exit(1)
+    if s >= 400 or not isinstance(resp, dict):
+        err_console.print(f"[red]Replay failed ({s}): {resp}[/red]")
+        raise typer.Exit(1)
+
+    new_run = resp["run"]
+    if output_id:
+        print(new_run["id"])
+        return
+
+    console.print(f"[green]Replayed {run_id} as {new_run['id']}.[/green]")
+    console.print("[dim]Equivalent command:[/dim]")
+    console.print(resp["command"])
+    console.print("[dim]CI hint:[/dim]")
+    console.print(resp["ci_hint"])
+
+
+@agent_app.command("compare")
+@handle_errors
+def compare_agents(
+    a: str = typer.Argument(..., help="Baseline run id"),
+    b: str = typer.Argument(..., help="Run to compare against the baseline"),
+    format_: str = typer.Option("text", "--format", help="text / json"),
+) -> None:
+    """Diff the findings of two agent runs (GitHub #95)."""
+    s, resp = _get(f"/api/v1/projects/{{p}}/agent-runs/{a}/compare/{b}")
+    if s == 404:
+        err_console.print("[red]One of the runs was not found.[/red]")
+        raise typer.Exit(1)
+    if s >= 400 or not isinstance(resp, dict):
+        err_console.print(f"[red]API error ({s}): {resp}[/red]")
+        raise typer.Exit(1)
+
+    if format_ == "json":
+        sys.stdout.write(_json.dumps(resp, indent=2, default=str) + "\n")
+        return
+    _render_compare(resp, console)
+
+
+def _render_compare(resp: dict, stream) -> None:
+    stream.print(
+        f"[bold]{resp['a_id']}[/bold] → [bold]{resp['b_id']}[/bold]  "
+        f"findings {resp['a_findings_count']} → {resp['b_findings_count']}"
+    )
+    stream.print(
+        f"added={len(resp['added'])}  removed={len(resp['removed'])}  "
+        f"unchanged={len(resp['unchanged'])}"
+    )
+    for label, key, color in (
+        ("Added", "added", "green"),
+        ("Removed", "removed", "red"),
+        ("Unchanged", "unchanged", "dim"),
+    ):
+        items = resp.get(key, [])
+        if not items:
+            continue
+        stream.print(f"[{color}]{label} ({len(items)}):[/{color}]")
+        for f in items:
+            title = f.get("title") or f.get("rule") or "(no title)"
+            sev = f.get("severity") or "none"
+            loc = str(f.get("file") or "")
+            if f.get("line") is not None:
+                loc += f":{f['line']}"
+            stream.print(
+                f"  - [{sev}] {title}" + (f"  ({loc})" if loc else "")
+            )
 
 
 # ── `sfs agent feedback …` — structured feedback/outcome records ──

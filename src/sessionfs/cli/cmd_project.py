@@ -6,8 +6,10 @@ import asyncio
 import os
 import subprocess
 import tempfile
+from typing import Literal
 
 import typer
+from rich.markup import escape
 
 from sessionfs.cli.common import console, err_console
 
@@ -233,6 +235,12 @@ def project_show() -> None:
     console.print(f"[bold]Project:[/bold] {result['name']}")
     console.print(f"[bold]Remote:[/bold]  {result['git_remote_normalized']}")
     console.print(f"[bold]Updated:[/bold] {result['updated_at'][:10]}")
+    schedule = result.get("compile_schedule", "nightly")
+    after_claims = result.get("compile_after_claims")
+    schedule_line = schedule
+    if after_claims is not None:
+        schedule_line += f" (compile after {after_claims} pending claims)"
+    console.print(f"[bold]Compile:[/bold] {schedule_line}")
     console.print()
     console.print(result.get("context_document", ""))
 
@@ -369,6 +377,66 @@ def project_compile() -> None:
         console.print("No pending entries to compile.")
     else:
         console.print(f"Project context updated. [bold]{entries_compiled}[/bold] entries compiled.")
+
+
+@project_app.command("compile-schedule")
+def project_compile_schedule(
+    schedule: Literal["off", "nightly", "weekly"] = typer.Argument(
+        ..., help="Compile cadence: off, nightly, or weekly."
+    ),
+    after_claims: int | None = typer.Option(
+        None,
+        "--after-claims",
+        min=1,
+        help=(
+            "Also compile once this many pending claims are reached, "
+            "regardless of schedule."
+        ),
+    ),
+    no_after_claims: bool = typer.Option(
+        False,
+        "--no-after-claims",
+        help="Clear the pending-claim threshold (compile only on schedule).",
+    ),
+) -> None:
+    """Set the scheduled KB compile cadence for the current project.
+
+    The schedule drives the platform's sweep, not a local cron job. Projects
+    grandfathered before v0.17.2 keep schedule editing but are never
+    auto-compiled by the sweep.
+    """
+    git_remote = _get_git_remote()
+    if not git_remote:
+        err_console.print("[red]Not a git repository.[/red]")
+        raise typer.Exit(1)
+
+    normalized = _normalize_remote(git_remote)
+    api_url, api_key = _get_project_client()
+
+    project = asyncio.run(_api_request("GET", f"/api/v1/projects/{normalized}", api_url, api_key))
+    if project.get("_status") == 404:
+        err_console.print("[yellow]No project context found. Run 'sfs project init' first.[/yellow]")
+        raise typer.Exit(1)
+
+    body: dict = {"auto_narrative": project.get("auto_narrative", False)}
+    if schedule is not None:
+        body["compile_schedule"] = schedule
+    if no_after_claims:
+        body["compile_after_claims"] = None
+    elif after_claims is not None:
+        body["compile_after_claims"] = after_claims
+
+    result = asyncio.run(_api_request(
+        "PUT", f"/api/v1/projects/{project['id']}/settings",
+        api_url, api_key, json_data=body,
+    ))
+
+    parts = [f"Compile schedule set to [bold]{result['compile_schedule']}[/bold]"]
+    if no_after_claims:
+        parts.append("pending-claim threshold cleared")
+    elif result.get("compile_after_claims") is not None:
+        parts.append(f"[bold]{result['compile_after_claims']}[/bold] pending-claim threshold")
+    console.print(" ".join(parts))
 
 
 @project_app.command("promote-eligible")
@@ -1155,12 +1223,26 @@ def _print_stranded_personas(result: dict) -> bool:
 
 
 def _print_transfer(t: dict) -> None:
+    # GH #96 review round 1 (L2) — every server-echoed string is escaped for
+    # Rich so ids, names, scopes, proposers, reasons and expiries containing
+    # `[...]` render literally instead of being styled or raising MarkupError.
     console.print(
-        f"  [bold]{t['id']}[/bold]  "
-        f"{t.get('project_name_snapshot') or '(project)'}  "
-        f"{t['from_scope']} → {t['to_scope']}  "
-        f"[dim]{t['state']}[/dim]"
+        f"  [bold]{escape(str(t['id']))}[/bold]  "
+        f"{escape(str(t.get('project_name_snapshot') or '(project)'))}  "
+        f"{escape(str(t['from_scope']))} → {escape(str(t['to_scope']))}  "
+        f"[dim]{escape(str(t['state']))}[/dim]"
     )
+    # GH #96 — an admin-proposed transfer carries a proposer + reason + expiry.
+    if t.get("proposed_by_user_id"):
+        proposer = t.get("proposed_by_name") or t.get("proposed_by_user_id")
+        line = (
+            f"    Proposed by {escape(str(proposer))} for {escape(str(t['to_scope']))}"
+        )
+        if t.get("proposal_reason"):
+            line += f": {escape(str(t['proposal_reason']))}"
+        console.print(f"    [cyan]{line}[/cyan]")
+        if t.get("expires_at"):
+            console.print(f"    [dim]expires {escape(str(t['expires_at']))}[/dim]")
 
 
 @project_app.command("transfer")

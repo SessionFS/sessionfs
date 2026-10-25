@@ -375,6 +375,37 @@ def _summarize_state(state: object, width: int = 60) -> str:
     return text if len(text) <= width else text[: width - 1] + "…"
 
 
+def _propose_project_transfer(
+    *, project: Optional[str], org: Optional[str], reason: str
+) -> None:
+    """GH #96 — create a pending proposal addressed to the project owner
+    (via the propose-transfer endpoint) instead of forcing the move."""
+    if not project:
+        err_console.print("[red]Error[/red]: --project is required with --propose.")
+        raise typer.Exit(2)
+    if not org:
+        err_console.print("[red]Error[/red]: --org is required with --propose.")
+        raise typer.Exit(2)
+    status, body = _call(
+        "POST",
+        f"/api/v1/orgs/{quote(org, safe='')}/projects/{quote(project, safe='')}/propose-transfer",
+        {"reason": reason},
+    )
+    if status >= 400 or not isinstance(body, dict):
+        _fail(status, body)
+    assert isinstance(body, dict)
+    # GH #96 review round 1 (M1) — the propose response is deliberately
+    # minimal ({transfer_id, project_id, status, expires_at}); the owner's id
+    # is no longer echoed, and the destination is the --org the caller named.
+    console.print(
+        f"[green]Transfer proposed[/green]: {_e(project)} → {_e(org)} "
+        f"({_e(body.get('status'))})"
+    )
+    if body.get("expires_at"):
+        console.print(f"  Expires: {_e(body.get('expires_at'))}")
+    console.print(f"  Transfer: {_e(body.get('transfer_id'))}")
+
+
 @admin_app.command("audit-log")
 def audit_log(
     target_type: Optional[str] = typer.Option(None, "--target-type", help="Filter by target type (project, user, org, ...)"),
@@ -447,8 +478,12 @@ def audit_log(
 
 @override_app.command("project-transfer")
 def override_project_transfer(
-    project_id: str = typer.Argument(..., help="Project id to move"),
-    to_org: str = typer.Option(..., "--to-org", help="Destination org id"),
+    project_id: Optional[str] = typer.Argument(
+        None, help="Project id to move (force-transfer mode)"
+    ),
+    to_org: Optional[str] = typer.Option(
+        None, "--to-org", help="Destination org id (force-transfer mode)"
+    ),
     reason: str = typer.Option(..., "--reason", "-r", help="Why this override is needed (stored in the audit log)"),
     force: bool = typer.Option(
         False,
@@ -472,14 +507,43 @@ def override_project_transfer(
         ),
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt"),
+    propose: bool = typer.Option(
+        False,
+        "--propose",
+        help="Propose the transfer for the owner's consent (GH #96) instead of forcing it",
+    ),
+    project: Optional[str] = typer.Option(
+        None, "--project", help="Project id to propose moving (with --propose)"
+    ),
+    org: Optional[str] = typer.Option(
+        None, "--org", help="Destination org id to propose into (with --propose)"
+    ),
 ) -> None:
     """Move a project into an org without the owner's consent (platform admin).
 
     Cancels any pending transfer for the project and writes an audit entry
-    with the reason and before/after state in the same transaction."""
+    with the reason and before/after state in the same transaction.
+
+    With ``--propose``, instead of forcing the move it creates a pending
+    proposal (GH #96) addressed to the project owner, who must accept before
+    the project moves. ``--project`` and ``--org`` identify the project and
+    destination org in that mode."""
     reason = reason.strip()
     if not reason:
         err_console.print("[red]Error[/red]: --reason must not be blank.")
+        raise typer.Exit(2)
+
+    if propose:
+        _propose_project_transfer(project=project, org=org, reason=reason)
+        return
+
+    if not project_id:
+        err_console.print(
+            "[red]Error[/red]: a positional project id is required (or use --propose with --project)."
+        )
+        raise typer.Exit(2)
+    if not to_org:
+        err_console.print("[red]Error[/red]: --to-org is required (or use --propose with --org).")
         raise typer.Exit(2)
     payload: dict = {"to_org_id": to_org, "reason": reason, "force": force}
     if new_owner:

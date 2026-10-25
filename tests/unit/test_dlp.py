@@ -245,6 +245,41 @@ class TestScanDLPCustomPatterns:
         )
         assert [f for f in findings if f.pattern_name == "internal_id"] == []
 
+    def test_invalid_custom_regex_skipped_not_fatal(self):
+        """A stored pattern with an uncompilable regex is skipped (not fatal),
+        while the valid patterns alongside it still run."""
+        custom = [
+            {"name": "bad", "regex": "(", "category": "secret", "severity": "high"},
+            {"name": "internal_id", "regex": r"INTID-\d{8}", "category": "pii", "severity": "high"},
+        ]
+        findings = scan_dlp("ref INTID-20240101 done", custom_patterns=custom)
+        names = [f.pattern_name for f in findings]
+        assert "bad" not in names
+        assert "internal_id" in names
+
+    def test_non_dict_custom_pattern_skipped_not_fatal(self):
+        """A non-dict entry used to raise AttributeError (cp.get) and take down
+        the whole scan; it must be skipped while valid patterns still run."""
+        custom = [
+            "not-a-dict",
+            {"name": "internal_id", "regex": r"INTID-\d{8}", "category": "pii", "severity": "high"},
+        ]
+        findings = scan_dlp("ref INTID-20240101 done", custom_patterns=custom)
+        names = [f.pattern_name for f in findings]
+        assert "internal_id" in names
+
+    def test_non_string_regex_skipped_not_fatal(self):
+        """A non-string regex used to raise TypeError in re.compile; it must be
+        skipped while valid patterns still run."""
+        custom = [
+            {"name": "bad", "regex": None, "category": "secret", "severity": "high"},
+            {"name": "internal_id", "regex": r"INTID-\d{8}", "category": "pii", "severity": "high"},
+        ]
+        findings = scan_dlp("ref INTID-20240101 done", custom_patterns=custom)
+        names = [f.pattern_name for f in findings]
+        assert "bad" not in names
+        assert "internal_id" in names
+
 
 # =========================================================================
 # scan_dlp() — Edge Cases
@@ -414,6 +449,104 @@ class TestValidateDLPPolicy:
             {"mode": "warn", "categories": ["secrets", "secrets", "phi"]}
         )
         assert result["categories"] == ["phi", "secrets"]
+
+    def test_invalid_custom_pattern_regex_raises(self):
+        with pytest.raises(ValueError, match="Invalid custom pattern regex"):
+            validate_dlp_policy(
+                {
+                    "mode": "warn",
+                    "categories": ["secrets"],
+                    "custom_patterns": [
+                        {"name": "bad", "regex": "(", "category": "secret", "severity": "high"}
+                    ],
+                }
+            )
+
+    def test_valid_custom_pattern_regex_passes(self):
+        policy = {
+            "mode": "warn",
+            "categories": ["secrets"],
+            "custom_patterns": [
+                {"name": "proj", "regex": r"PROJ-\d+", "category": "secret", "severity": "high"}
+            ],
+        }
+        result = validate_dlp_policy(policy)
+        assert result["custom_patterns"][0]["regex"] == r"PROJ-\d+"
+
+    def test_missing_category_severity_defaulted(self):
+        """Old stored patterns lacked category/severity: default, don't reject."""
+        policy = {
+            "mode": "warn",
+            "categories": ["secrets"],
+            "custom_patterns": [{"name": "old", "regex": r"SECRET-\d+"}],
+        }
+        result = validate_dlp_policy(policy)
+        assert result["custom_patterns"][0]["category"] == "secret"
+        assert result["custom_patterns"][0]["severity"] == "high"
+
+    def test_stored_invalid_regex_not_compiled_when_not_in_request(self):
+        """A stored uncompilable regex is normalized, not rejected, when the
+        caller isn't supplying custom_patterns in this request."""
+        policy = {
+            "mode": "warn",
+            "categories": ["secrets"],
+            "custom_patterns": [{"name": "bad", "regex": "(", "category": "secret", "severity": "high"}],
+        }
+        result = validate_dlp_policy(policy, request_keys=set())
+        assert result["custom_patterns"][0]["regex"] == "("
+
+    def test_request_invalid_regex_still_raises(self):
+        """But a caller-supplied invalid regex still fails validation."""
+        with pytest.raises(ValueError, match="Invalid custom pattern regex"):
+            validate_dlp_policy(
+                {
+                    "mode": "warn",
+                    "categories": ["secrets"],
+                    "custom_patterns": [
+                        {"name": "bad", "regex": "(", "category": "secret", "severity": "high"}
+                    ],
+                },
+                request_keys={"custom_patterns"},
+            )
+
+    def test_stored_malformed_entries_dropped_when_not_in_request(self):
+        """Non-dict / missing-name / missing-regex stored patterns are dropped
+        silently, keeping only the well-formed ones, when the caller isn't
+        supplying custom_patterns in this request."""
+        policy = {
+            "mode": "warn",
+            "categories": ["secrets"],
+            "custom_patterns": [
+                "not-a-dict",
+                {"regex": r"NO-NAME-\d+"},
+                {"name": "no_regex"},
+                {"name": "ok", "regex": r"OK-\d+", "category": "secret", "severity": "high"},
+            ],
+        }
+        result = validate_dlp_policy(policy, request_keys=set())
+        assert result["custom_patterns"] == [
+            {"name": "ok", "regex": r"OK-\d+", "category": "secret", "severity": "high"}
+        ]
+
+    def test_request_malformed_entry_still_raises(self):
+        """A caller-supplied non-dict entry is still rejected."""
+        with pytest.raises(ValueError, match="must be dicts"):
+            validate_dlp_policy(
+                {
+                    "mode": "warn",
+                    "categories": ["secrets"],
+                    "custom_patterns": ["not-a-dict"],
+                },
+                request_keys={"custom_patterns"},
+            )
+
+    def test_stored_non_list_custom_patterns_dropped(self):
+        """A stored non-list custom_patterns is dropped, not an error."""
+        result = validate_dlp_policy(
+            {"mode": "warn", "categories": ["secrets"], "custom_patterns": "oops"},
+            request_keys=set(),
+        )
+        assert result["custom_patterns"] == []
 
 
 # =========================================================================
@@ -1237,3 +1370,23 @@ class TestValueLevelRedaction:
         repacked_text = self._read_messages(repacked).decode("utf-8")
         assert "supersecretvalue123" not in repacked_text
         assert "[REDACTED:generic_password_assignment]" in repacked_text
+
+
+def test_scan_dlp_skips_custom_pattern_without_name():
+    from sessionfs.security.secrets import scan_dlp as secrets_scan_dlp
+
+    findings = secrets_scan_dlp(
+        "QQQQ AKIA1234567890ABCDEF",
+        categories=["secrets"],
+        custom_patterns=[{"regex": "Q+"}, {"name": 5, "regex": "Q+"}],
+    )
+    assert all(f.pattern_name != "None" for f in findings)
+
+
+def test_invalid_custom_patterns_reports_uncompilable_regex():
+    from sessionfs.server.dlp import invalid_custom_patterns
+
+    invalid = invalid_custom_patterns(
+        {"custom_patterns": [{"name": "bad", "regex": "("}, {"name": "ok", "regex": "Q+"}]}
+    )
+    assert invalid == [{"index": 0, "name": "bad", "reason": "invalid regex"}]

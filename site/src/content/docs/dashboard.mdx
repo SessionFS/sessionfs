@@ -48,6 +48,10 @@ Click a session to open its detail view (`/sessions/:id`). The header shows the 
 
 The default tab displays the full captured conversation as a readable transcript with paginated messages (50 per page). Tool calls and tool results are rendered with tool-aware formatting — file edits, command runs, and search results show as structured blocks rather than raw JSON. Use the order toggle to switch between oldest-first and newest-first. Sidechain and empty messages can be filtered out for readability. Click a page number or use the jump control to navigate long sessions.
 
+### Changes Tab
+
+Lists every file the agent created, edited or deleted in the session, with line counts and a diff per file (v0.23.0). It is rebuilt from the edit, write and patch tool calls captured for Claude Code, Codex, Cursor, Gemini CLI, Cline, Roo Code, Kilo Code, Amp, Copilot CLI and Antigravity. Diffs come from the stored, already-redacted session, so a redacted secret never reappears. A session that only read files shows no changes. API: `GET /api/v1/sessions/{id}/changes`.
+
 ### Summary Tab
 
 Shows the deterministic summary (key decisions, files touched, commands run) and, if available, the narrative LLM summary generated during sync.
@@ -58,6 +62,7 @@ Displays the LLM Judge trust score (0--100), individual findings with CWE mappin
 
 ### Actions
 
+- **Ask the helper** — opens the [session helper](/session-helper/) scoped to this session (Enterprise).
 - **Resume** — copies the `sfs resume` command for this session to your clipboard.
 - **Handoff** — opens the handoff modal to send the session to a teammate.
 - **Share** — creates a public share link. The recipient sees the session as a read-only page at `/s/{token}` — no account required. Links are owner-revocable, can be password-protected, are never cached or search-indexed, and are hard-gated by a DLP scan of exactly the content served (tool inputs included), re-run whenever the underlying session changes.
@@ -86,11 +91,11 @@ Click **New Project** to create one. Provide a name and optionally link a git re
 
 A project is organized into five sections. The current section and sub-tab are kept in the address bar, so you can link straight to them and the back button works.
 
-- **Overview** — the project's compiled context document, shown as a readable document (lists, quotes, tables, task lists and code blocks render properly) with an **On this page** list of its sections beside the text that highlights the one you're reading; on a phone the list is a collapsible menu above the text. Click **Edit** to change it in the markdown editor. This document is injected into sessions via MCP or `--append-system-prompt-file`.
+- **Overview** — when the context was last compiled and how many claims are waiting, with a one-click compile when it is out of date, then the project's compiled context document, shown as a readable document (lists, quotes, tables, task lists and code blocks render properly) with an **On this page** list of its sections beside the text that highlights the one you're reading; on a phone the list is a collapsible menu above the text. Click **Edit** to change it in the markdown editor. This document is injected into sessions via MCP or `--append-system-prompt-file`.
 - **Knowledge** — **Entries** (structured facts captured with `add_knowledge`, with type, text, confidence and creation date), **Pages** (wiki pages with backlinks, including compiled section pages) and **History** (past compilations).
-- **Work** — **Tickets**, **Agent runs** and **Personas** for the project's agent team.
+- **Work** — **Tickets**, **Agent runs** and **Personas** for the project's agent team. On a ticket, **Promote to Jira** opens an editable Jira preview (Enterprise). On an agent run, **Replay** queues a copy with an edited prompt or context, and **Compare** shows which findings were added, removed or unchanged between two runs. Clicking an org persona opens its recent activity.
 - **Rules & Skills** — **Rules** (canonical project rules compiled into each tool's instruction file) and **Skills** (the project's installed skills and pending install requests from the marketplace).
-- **Settings** — rename the project, the narrative summary toggle, linked **Repositories**, merging another project into this one, transferring the project, and deleting it.
+- **Settings** — rename the project, the narrative summary toggle, the **Scheduled KB compile** (nightly, weekly or off), linked **Repositories**, merging another project into this one, transferring the project, and deleting it.
 
 ---
 
@@ -133,7 +138,7 @@ The Billing page (`/settings/billing`) shows your current tier and usage.
 
 ## Organization
 
-The Organization page (`/settings/organization`) has four tabs: **Members** (members, roles and invites), **Personas** (org-wide agent personas), **Policies** (organization defaults) and, for admins, **Security** (single sign-on). Members inherit the org tier for all sync and feature limits.
+The Organization page (`/settings/organization`) has these tabs: **Members** (members, roles and invites), **Personas** (org-wide agent personas, each with an activity panel), **Policies** (organization defaults, the weekly digest opt-out under **Notifications** and, on Enterprise, the session helper AI key), **Integrations** (Jira Cloud, Enterprise) and, for admins, **Security** (single sign-on). Members inherit the org tier for all sync and feature limits.
 
 ---
 
@@ -151,7 +156,7 @@ The Admin page (`/admin`) is only visible to users with the **admin** tier.
 
 | Shortcut | Action |
 |----------|--------|
-| `Cmd+K` / `Ctrl+K` | Open command palette (search) |
+| `Cmd+K` / `Ctrl+K` | Open command palette (search, and **Ask the helper** on Enterprise) |
 | `Escape` | Close any open modal or palette |
 | `Arrow Up` / `Arrow Down` | Navigate search results |
 | `Enter` | Open selected search result |
@@ -160,7 +165,7 @@ The Admin page (`/admin`) is only visible to users with the **admin** tier.
 
 ## Sidebar and Layout
 
-The left sidebar puts **Sessions**, **Projects** and **Handoffs** first, then groups the rest into **Library** (Marketplace), **Inbox** (Invites, Transfers) and **Manage** (Organization, Billing). The marketplace pages share one sub-navigation. The session list supports both list and grid layouts — toggle between them to scan many sessions at a glance or focus on detail.
+The left sidebar puts **Sessions**, **Projects** and **Handoffs** first, then groups the rest into **Library** (Marketplace), **Inbox** (Invites, Transfers) and **Manage** (Organization, Billing). The marketplace pages share one sub-navigation. On Enterprise, **Ask the helper** in the sidebar opens the [session helper](/session-helper/) drawer, where answers stream in with links to the sessions they cite and earlier threads are listed under **Conversations**. The session list supports both list and grid layouts — toggle between them to scan many sessions at a glance or focus on detail.
 
 The dashboard works on phones: every page fits a 375 px screen without sideways scrolling, the sidebar becomes a menu, and tab bars scroll instead of overflowing. Tabs follow the standard keyboard pattern (arrow keys, Home, End), and notifications are announced to screen readers.
 

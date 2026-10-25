@@ -174,22 +174,14 @@ async def generate_narrative_summary(
 
     if not api_key:
         # Try saved judge settings (same pattern as audit route)
-        import base64
-        import hashlib
-        import os
-
-        from cryptography.fernet import Fernet
-
         from sessionfs.server.db.models import UserJudgeSettings
+        from sessionfs.server.llm_keys import decrypt_llm_key
 
         judge_stmt = select(UserJudgeSettings).where(UserJudgeSettings.user_id == user.id)
         judge_result = await db.execute(judge_stmt)
         judge_settings = judge_result.scalar_one_or_none()
         if judge_settings and judge_settings.encrypted_api_key:
-            secret = os.environ.get("SFS_VERIFICATION_SECRET", "dev-secret")
-            key = base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest())
-            fernet = Fernet(key)
-            api_key = fernet.decrypt(judge_settings.encrypted_api_key.encode()).decode()
+            api_key = decrypt_llm_key(judge_settings.encrypted_api_key)
             if not body.model and judge_settings.model:
                 model = judge_settings.model
             if not body.provider and judge_settings.provider:

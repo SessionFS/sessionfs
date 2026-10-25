@@ -4,7 +4,7 @@ import { KindBadge } from './KindBadge';
 import { StatusCell } from './StatusCell';
 import { TicketDetail } from './TicketDetail';
 
-export function ListView({ tickets, projectId, selected, onSelect, onNavigate }: ViewProps) {
+export function ListView({ tickets, projectId, selected, onSelect, onNavigate, jira }: ViewProps) {
   return (
     <ul className="border border-border rounded-lg divide-y divide-[var(--border)]">
       {tickets.map((t) => (
@@ -62,6 +62,9 @@ export function ListView({ tickets, projectId, selected, onSelect, onNavigate }:
               ticketId={t.id}
               fallback={t}
               onNavigate={onNavigate}
+              orgId={jira?.orgId}
+              isProjectAdmin={jira?.isProjectAdmin}
+              isEnterprise={jira?.isEnterprise}
             />
           )}
         </li>

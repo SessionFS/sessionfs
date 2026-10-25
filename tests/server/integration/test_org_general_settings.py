@@ -91,6 +91,7 @@ async def test_get_settings_returns_defaults_when_unset(
     # All fields are None when no override is set.
     assert all(body[k] is None for k in (
         "kb_retention_days", "kb_max_context_words", "kb_section_page_limit",
+        "helper_retention_days",
     ))
     # auto_join_domains defaults to an empty list (GitHub #59, v0.17.0).
     assert body["auto_join_domains"] == []
@@ -110,6 +111,7 @@ async def test_admin_can_update_all_fields(
         "kb_retention_days": 90,
         "kb_max_context_words": 4000,
         "kb_section_page_limit": 50,
+        "helper_retention_days": 30,
         "auto_join_domains": [],
     }
     resp = await client.put(
@@ -127,13 +129,8 @@ async def test_admin_can_update_all_fields(
 async def test_partial_update_preserves_other_fields(
     client: AsyncClient, db_session: AsyncSession
 ):
-    """PUT with only one field set rewrites the entire general block.
-
-    This is the documented contract — caller submits the full state
-    they want. If they want to keep other fields, they must include
-    them in the PUT body. The route returns the full settings so the
-    client can re-PUT what it sees.
-    """
+    """A partial PUT merges into the stored general block: fields the caller
+    doesn't provide are preserved, not wiped (N4)."""
     admin, key = await _make_user(db_session, "admin")
     org = await _make_org_with(db_session, admin)
     # Establish baseline.
@@ -142,7 +139,7 @@ async def test_partial_update_preserves_other_fields(
         headers=_hdrs(key),
         json={"kb_retention_days": 365, "kb_max_context_words": 1000},
     )
-    # Partial update — only kb_retention_days, drops kb_max_context_words.
+    # Partial update — only kb_retention_days; kb_max_context_words survives.
     resp = await client.put(
         f"/api/v1/orgs/{org.id}/settings",
         headers=_hdrs(key),
@@ -151,7 +148,114 @@ async def test_partial_update_preserves_other_fields(
     assert resp.status_code == 200
     body = resp.json()
     assert body["kb_retention_days"] == 180
-    assert body["kb_max_context_words"] is None  # dropped
+    assert body["kb_max_context_words"] == 1000  # preserved by the merge
+
+    # Round-trip via GET confirms the stored value, not just the response.
+    got = await client.get(f"/api/v1/orgs/{org.id}/settings", headers=_hdrs(key))
+    assert got.json()["kb_max_context_words"] == 1000
+
+
+@pytest.mark.asyncio
+async def test_unrelated_save_preserves_helper_retention_and_kb_fields(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Setting helper_retention_days and then saving only a kb_* field must
+    leave the retention window intact, and vice versa (N4)."""
+    admin, key = await _make_user(db_session, "admin")
+    org = await _make_org_with(db_session, admin)
+
+    await client.put(
+        f"/api/v1/orgs/{org.id}/settings",
+        headers=_hdrs(key),
+        json={"helper_retention_days": 30, "kb_section_page_limit": 50},
+    )
+
+    # An unrelated kb_* save must not wipe helper_retention_days.
+    resp = await client.put(
+        f"/api/v1/orgs/{org.id}/settings",
+        headers=_hdrs(key),
+        json={"kb_max_context_words": 4000},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["helper_retention_days"] == 30
+    assert body["kb_section_page_limit"] == 50
+    assert body["kb_max_context_words"] == 4000
+
+    # And an unrelated helper_retention_days save must not wipe kb_* fields.
+    resp2 = await client.put(
+        f"/api/v1/orgs/{org.id}/settings",
+        headers=_hdrs(key),
+        json={"helper_retention_days": 7},
+    )
+    assert resp2.status_code == 200
+    assert resp2.json()["kb_max_context_words"] == 4000
+    assert resp2.json()["kb_section_page_limit"] == 50
+    assert resp2.json()["helper_retention_days"] == 7
+
+
+@pytest.mark.asyncio
+async def test_explicit_null_clears_helper_retention_days(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Sending ``"helper_retention_days": null`` clears the override (the key is
+    removed), while omitting the field leaves it unchanged (R3-4)."""
+    admin, key = await _make_user(db_session, "admin")
+    org = await _make_org_with(db_session, admin)
+
+    await client.put(
+        f"/api/v1/orgs/{org.id}/settings",
+        headers=_hdrs(key),
+        json={"helper_retention_days": 30, "kb_retention_days": 90},
+    )
+
+    # Explicit null clears the override -> reverts to the platform default.
+    resp = await client.put(
+        f"/api/v1/orgs/{org.id}/settings",
+        headers=_hdrs(key),
+        json={"helper_retention_days": None},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["helper_retention_days"] is None
+    assert body["kb_retention_days"] == 90  # untouched by the merge
+
+    got = await client.get(f"/api/v1/orgs/{org.id}/settings", headers=_hdrs(key))
+    assert got.json()["helper_retention_days"] is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_null_clears_kb_field_keeps_others(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Sending ``"kb_retention_days": null`` clears only that override, leaving
+    the other kb_* and helper fields intact (R3-4)."""
+    admin, key = await _make_user(db_session, "admin")
+    org = await _make_org_with(db_session, admin)
+
+    await client.put(
+        f"/api/v1/orgs/{org.id}/settings",
+        headers=_hdrs(key),
+        json={
+            "kb_retention_days": 365,
+            "kb_max_context_words": 4000,
+            "helper_retention_days": 30,
+        },
+    )
+
+    resp = await client.put(
+        f"/api/v1/orgs/{org.id}/settings",
+        headers=_hdrs(key),
+        json={"kb_retention_days": None},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["kb_retention_days"] is None
+    assert body["kb_max_context_words"] == 4000
+    assert body["helper_retention_days"] == 30
+
+    got = await client.get(f"/api/v1/orgs/{org.id}/settings", headers=_hdrs(key))
+    assert got.json()["kb_retention_days"] is None
 
 
 @pytest.mark.asyncio
@@ -206,6 +310,9 @@ async def test_member_can_read(
         ("kb_max_context_words", 50001),
         ("kb_section_page_limit", 0),
         ("kb_section_page_limit", 201),
+        ("helper_retention_days", 0),
+        ("helper_retention_days", 3651),
+        ("helper_retention_days", -1),
     ],
 )
 async def test_validation_rejects_out_of_range(

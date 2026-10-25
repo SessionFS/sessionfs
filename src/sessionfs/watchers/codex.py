@@ -217,6 +217,7 @@ def parse_codex_session(jsonl_path: Path) -> CodexParsedSession:
                         "role": "assistant",
                         "content": [{
                             "type": "tool_use",
+                            "codex_item_type": ri_type,
                             "tool_use_id": call_id,
                             "name": "Bash",
                             "input": {"command": cmd_str},
@@ -233,6 +234,7 @@ def parse_codex_session(jsonl_path: Path) -> CodexParsedSession:
                         "role": "assistant",
                         "content": [{
                             "type": "tool_use",
+                            "codex_item_type": ri_type,
                             "tool_use_id": payload.get("call_id", ""),
                             "name": payload.get("name", "unknown"),
                             "input": json.loads(payload.get("arguments", "{}"))
@@ -260,9 +262,68 @@ def parse_codex_session(jsonl_path: Path) -> CodexParsedSession:
                         "turn_id": current_turn_id,
                     })
 
+                elif ri_type == "custom_tool_call":
+                    # Codex's newer custom tools (e.g. apply_patch) send the raw
+                    # invocation as a single ``input`` string rather than a JSON
+                    # ``arguments`` payload. Preserve it verbatim so the changes
+                    # derivation service can parse the ``*** Begin Patch`` text.
+                    raw_input = payload.get("input", "")
+                    input_payload = (
+                        {"input": raw_input}
+                        if isinstance(raw_input, str)
+                        else (raw_input if isinstance(raw_input, dict) else {})
+                    )
+                    sfs_messages.append({
+                        "msg_id": f"msg_{len(sfs_messages):04d}",
+                        "role": "assistant",
+                        "content": [{
+                            "type": "tool_use",
+                            "codex_item_type": ri_type,
+                            "tool_use_id": payload.get("call_id", ""),
+                            "name": payload.get("name", "unknown"),
+                            "input": input_payload,
+                        }],
+                        "timestamp": ts,
+                        "model": session.model,
+                        "turn_id": current_turn_id,
+                    })
+                    session.tool_use_count += 1
+
+                elif ri_type == "custom_tool_call_output":
+                    text = _extract_custom_output_text(payload.get("output"))
+                    sfs_messages.append({
+                        "msg_id": f"msg_{len(sfs_messages):04d}",
+                        "role": "tool",
+                        "content": [{
+                            "type": "tool_result",
+                            "codex_item_type": ri_type,
+                            "tool_use_id": payload.get("call_id", ""),
+                            "content": text,
+                        }],
+                        "timestamp": ts,
+                        "turn_id": current_turn_id,
+                    })
+
     session.messages = sfs_messages
     session.message_count = len(sfs_messages)
     return session
+
+
+def _extract_custom_output_text(output: Any) -> str:
+    """Flatten a ``custom_tool_call_output`` payload's ``output`` list into text."""
+    if isinstance(output, str):
+        return output
+    if isinstance(output, list):
+        parts: list[str] = []
+        for item in output:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+            elif isinstance(item, str):
+                parts.append(item)
+        return "\n".join(parts)
+    return "" if output is None else str(output)
 
 
 def _extract_session_id_from_path(path: Path) -> str:

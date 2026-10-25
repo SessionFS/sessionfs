@@ -1514,15 +1514,9 @@ async def _handle_gitlab_mr(
                 return
 
             # Decrypt token
-            import base64
-            import hashlib as _hashlib
+            from sessionfs.server.llm_keys import decrypt_secret
 
-            from cryptography.fernet import Fernet
-
-            secret = os.environ.get("SFS_VERIFICATION_SECRET", "dev-secret")
-            key = base64.urlsafe_b64encode(_hashlib.sha256(secret.encode()).digest())
-            fernet = Fernet(key)
-            access_token = fernet.decrypt(gitlab_settings.encrypted_access_token.encode()).decode()
+            access_token = decrypt_secret(gitlab_settings.encrypted_access_token)
 
             # Post or update comment (avoid duplicates on MR updates)
             from sessionfs.server.gitlab_client import GitLabClient

@@ -47,7 +47,8 @@ class RetrievalAuditContextCreate(BaseModel):
 
 class RetrievalAuditContextResponse(BaseModel):
     id: str
-    project_id: str
+    # Nullable (090): helper turns may open a context without a single project.
+    project_id: str | None
     ticket_id: str | None
     persona_name: str | None
     lease_epoch: int | None
@@ -98,7 +99,8 @@ class RetrievalAuditEventCreate(BaseModel):
 class RetrievalAuditEventResponse(BaseModel):
     id: int
     context_id: str
-    project_id: str
+    # Nullable (090): helper events may carry no project.
+    project_id: str | None
     session_id: str | None
     tool_name: str
     arguments: dict[str, Any]

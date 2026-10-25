@@ -78,6 +78,26 @@ The new name appears in `sfs project show` and the dashboard. This
 renames the **project**, not a session (see `sfs session rename` for
 that).
 
+### `sfs project compile-schedule`
+
+Choose when the project's knowledge is compiled into the context document
+without anyone clicking **Compile**: `nightly`, `weekly` or `off`, optionally
+with a pending-claim threshold that triggers a compile on its own. The same
+setting is on the dashboard under the project's **Settings → Scheduled KB
+compile**. Scheduled compiles use the deterministic compiler (no LLM).
+
+```bash
+sfs project compile-schedule weekly --after-claims 20
+sfs project compile-schedule off --no-after-claims
+```
+
+Projects created from v0.23.0 on start at `nightly` when the owner's plan
+includes project context; existing projects start at `off`. The project
+Overview shows when the context was last compiled and how many claims are
+waiting, and offers a one-click compile when it is out of date. On a
+self-hosted server the schedule only takes effect once the operator runs the
+[compile sweep](self-hosted.md#scheduled-kb-compile-sweep).
+
 ### `sfs project set-context`
 
 Set the context from a file (useful for CI or scripting).
@@ -150,6 +170,7 @@ Write whatever is useful for your team. Some ideas:
 | GET | `/api/v1/projects/{remote}` | Get project context by git remote |
 | PATCH | `/api/v1/projects/{id}` | Rename the project (`{"name": "…"}`, project-admin only) |
 | PUT | `/api/v1/projects/{remote}/context` | Update the context document |
+| GET | `/api/v1/projects/{id}/compile-status` | Last compile, pending claims and whether a compile is recommended |
 
 ## Related: Project Rules
 

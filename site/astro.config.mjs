@@ -67,6 +67,7 @@ export default defineConfig({
             { label: 'Git Integration', slug: 'git-integration' },
             { label: 'Project Context', slug: 'project-context' },
             { label: 'Skills Marketplace', slug: 'skills-marketplace' },
+            { label: 'Session Helper', slug: 'session-helper' },
           ],
         },
         {
@@ -83,6 +84,7 @@ export default defineConfig({
             { label: 'Cloud Agents (Bedrock, Vertex)', slug: 'integrations/cloud-agents' },
             { label: 'External Agent Orchestration', slug: 'integrations/external-agents' },
             { label: 'CI Integration (Agent Runs)', slug: 'integrations/ci-integration' },
+            { label: 'Jira Cloud', slug: 'integrations/jira' },
           ],
         },
         {

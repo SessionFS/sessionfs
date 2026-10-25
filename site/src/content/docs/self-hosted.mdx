@@ -340,6 +340,10 @@ monitoring:
       release: prometheus
 ```
 
+### Operator metrics
+
+The API serves Prometheus metrics at `GET /api/v1/admin/metrics`: request latency by route, push outcomes and sizes, pulls, handoffs, DLP findings, authentication failures, active users, session count and database pool use. Labels never contain ids or raw paths. The endpoint isn't anonymous: scrape it with a platform admin key or a service key with the `admin_metrics:read` scope, supplied as a Bearer token in your scrape config. Set `api.metrics.scrapeAnnotations: true` to add `prometheus.io/*` scrape annotations to the API pods. A ready-made Grafana dashboard ships in the repository at `docs/observability/sessionfs-ops.json`.
+
 ## Upgrading
 
 ```bash
@@ -350,6 +354,8 @@ helm upgrade sessionfs sessionfs/sessionfs \
 ```
 
 Database migrations run automatically as a Helm pre-upgrade hook.
+
+**Upgrading to v0.23.0** runs migrations 084–092 (org helper keys, agent run replay columns, the org digest ledger, transfer proposals, resumable uploads, compile schedules, helper audit rows without a project, Jira tables and helper conversations). All are additive except 090, whose downgrade deletes helper audit rows that have no project. Existing projects keep compile scheduling `off` until someone turns it on. The scheduled compile, org digest and helper retention only run once something calls their sweeps; see [Scheduled sweeps](#scheduled-sweeps).
 
 ## Troubleshooting
 
@@ -608,6 +614,59 @@ sfs admin audit-log --source operator_record --json
 
 `PUT /api/v1/admin/users/{id}/tier`, `PUT /api/v1/admin/orgs/{id}/tier` and `POST /api/v1/admin/orgs/{id}/force-transfer-owner` also accept an optional `reason` in their request body and record the before and after values. The audit log does not protect against someone with direct database access; restrict who holds database credentials, and use database-level logging if you need that guarantee.
 
+## Scheduled Sweeps
+
+SessionFS has no scheduler of its own. Three v0.23.0 features run only when a scheduled job calls their sweep endpoint. Authenticate with a platform admin key or, better for cron, a `platform_sweeps:run` service key: it works only while the platform admin who minted it and the user it runs as are both still active platform admins.
+
+| Sweep | Endpoint | What it does |
+|-------|----------|--------------|
+| KB compile | `POST /api/v1/admin/sweeps/kb-compile` | Compiles every project whose schedule (`nightly` / `weekly`) has elapsed or whose waiting-claims threshold is reached. Deterministic compiler only, one transaction per project; body `{"limit": N}` (default 100, max 1000) |
+| Org digest | `POST /api/v1/admin/sweeps/org-digest` | Sends the weekly activity digest to owners and admins of Team and Enterprise orgs. Sends once per org per week however often it runs, and always covers the last completed week, so run it daily |
+| Helper retention | `POST /api/v1/admin/sweeps/helper-retention` | Deletes session helper messages older than the org's `helper_retention_days` (default 90), then removes empty threads |
+
+Example CronJob for the KB compile sweep, every 15 minutes:
+
+```yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: sessionfs-kb-compile
+  namespace: sessionfs
+spec:
+  schedule: "*/15 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: sweep
+              image: curlimages/curl:latest
+              args: ["-s", "-X", "POST", "https://your-api/api/v1/admin/sweeps/kb-compile",
+                     "-H", "Authorization: Bearer $(SWEEP_KEY)",
+                     "-H", "Content-Type: application/json", "-d", '{"limit": 100}']
+              env:
+                - name: SWEEP_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: sessionfs-sweep-key
+                      key: token
+```
+
+The chart can create the helper retention CronJob for you (off by default, daily at 03:00):
+
+```yaml
+api:
+  helperRetention:
+    enabled: true
+    cronJob:
+      schedule: "0 3 * * *"
+      existingSecret: sessionfs-sweep-key     # required when enabled
+      secretKey: helper-retention-api-key
+```
+
+With `email.provider=none` the digest sweep sends nothing but still records each org's run. Digest links use `SFS_DASHBOARD_URL`, falling back to an explicitly set `SFS_APP_URL`, and are left out when neither is set.
+
 ## Rate Limiting
 
 Rate limiting is per API key, defaulting to 120 requests per minute.
@@ -661,6 +720,12 @@ export SFS_UPLOAD_TIMEOUT=600   # or upload_timeout = 600 under [sync] in ~/.ses
 ```
 
 The chart's Ingress passes matching timeout and body-size annotations to ingress-nginx by default; anything you set under `ingress.annotations` takes precedence. Other ingress controllers need their own timeout set.
+
+Sessions over 8 MiB are uploaded in resumable parts (8 MiB by default), each retried on its own; an interrupted push resends only the missing parts, and unfinished uploads expire after 24 hours. Older servers get the single-request push automatically.
+
+### Session helper streaming
+
+The session helper streams answers as Server-Sent Events from `POST /api/v1/helper/turns`. The chart's dashboard nginx passes that route through unbuffered with a 600-second timeout. If you put another proxy or load balancer in front of the chart, turn off response buffering for that path and allow long-lived responses (the API sends a keep-alive comment every 15 seconds).
 
 ## GitLab Integration
 

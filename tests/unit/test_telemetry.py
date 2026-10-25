@@ -549,7 +549,8 @@ class TestRound9Fixes:
 
     def test_mcp_error_results_do_not_consume_marker(self):
         src = Path("src/sessionfs/mcp/server.py").read_text()
-        assert src.count("if not _result_is_error(result):") == 3
+        # search_sessions, get_session_context, ask_project, ask_session_helper
+        assert src.count("if not _result_is_error(result):") == 4
 
     def test_installer_verifies_with_help_not_version(self):
         """sfs gained --version only in 0.21 (GitHub #85); older published

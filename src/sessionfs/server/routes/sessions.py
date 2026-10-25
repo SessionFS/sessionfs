@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -21,14 +22,21 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel as _BaseModel
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from sessionfs.server.auth.dependencies import get_current_user, require_verified_user
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import RetrievalAuditContext, Session, ShareLink, User
+from sessionfs.server.db.models import (
+    RetrievalAuditContext,
+    Session,
+    SessionUpload,
+    SessionUploadPart,
+    ShareLink,
+    User,
+)
 from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 from sessionfs.server.schemas.sessions import (
     CreateShareLinkRequest,
@@ -42,15 +50,32 @@ from sessionfs.server.schemas.sessions import (
     SessionListResponse,
     SessionMetadataUpdate,
     SessionSummary,
+    SessionUploadInitiateRequest,
+    SessionUploadInitiateResponse,
     SessionUploadResponse,
     ShareLinkResponse,
     SyncPushResponse,
     WorkspaceResponse,
     ToolsResponse,
+    SessionChangesResponse,
 )
 from sessionfs.server.sanitize import sanitize_meta, strip_nul
+from sessionfs.server.services.session_search import (
+    search_sessions as _search_sessions_service,
+    source_tool_filter_values as _source_tool_filter_values,
+)
 from sessionfs.server.storage.base import BlobStore
 from sessionfs.server.timing import PhaseTimer
+from sessionfs.server.metrics import (
+    DLP_FINDINGS_TOTAL,
+    PUSH_TOTAL,
+    SYNC_PULL_TOTAL,
+    action_label,
+    push_outcome,
+    push_size_bytes,
+    severity_label,
+    size_bucket,
+)
 
 logger = logging.getLogger("sessionfs.api")
 
@@ -63,6 +88,205 @@ SFS_MAX_SYNC_BYTES_PAID = int(os.environ.get("SFS_MAX_SYNC_BYTES_PAID", str(300 
 _user_sync_semaphores: dict[str, asyncio.Semaphore] = defaultdict(
     lambda: asyncio.Semaphore(3)
 )
+
+# --- Chunked, resumable uploads (GitHub #91) ---
+
+UPLOAD_DEFAULT_PART_SIZE = 8 * 1024 * 1024
+UPLOAD_MIN_PART_SIZE = 5 * 1024 * 1024
+UPLOAD_MAX_PART_SIZE = 32 * 1024 * 1024
+UPLOAD_TTL_HOURS = 24
+UPLOAD_MAX_PENDING_PER_USER = 3
+# The grace window before a `completing` row is reclaimed. Must exceed the
+# platform's maximum request duration (Cloud Run: 1500 s) so a live, slow
+# complete finalizes before it can be reclaimed; the completion_token fence is
+# the backstop for the rare overlap.
+COMPLETING_RECLAIM_MINUTES = 30
+
+_UPLOAD_SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+
+
+def _validate_upload_sha256(sha256: str) -> str:
+    """Normalize and validate a sha256 hex digest, or raise 400."""
+    value = sha256.strip().lower()
+    if not _UPLOAD_SHA256_RE.match(value):
+        raise HTTPException(
+            status_code=400, detail="Invalid sha256 (expected 64 hex characters)"
+        )
+    return value
+
+
+def _pick_part_size(requested: int | None) -> int:
+    """Clamp a client-suggested part size into [min, max]; default otherwise."""
+    if requested is None:
+        return UPLOAD_DEFAULT_PART_SIZE
+    return max(UPLOAD_MIN_PART_SIZE, min(UPLOAD_MAX_PART_SIZE, requested))
+
+
+def _upload_part_blob_key(upload_id: str, part_number: int) -> str:
+    return f"uploads/{upload_id}/part-{part_number:05d}"
+
+
+def _new_upload_id() -> str:
+    return "up_" + secrets.token_hex(12)
+
+
+_ETAG_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _validate_if_match(value: str | None) -> str | None:
+    """Validate a client-supplied If-Match ETag, or return None when absent.
+
+    The server issues ETags as ``"<64 hex>"`` (``sha256(...).hexdigest()``).
+    Anything else — including a value longer than 64 that the old initiate
+    path used to store — is a client bug and returns 400 rather than a
+    PostgreSQL 500 later in the flow.
+    """
+    if value is None:
+        return None
+    if not _ETAG_RE.match(value):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "invalid_if_match",
+                "message": "If-Match must be a 64-character hex ETag",
+            },
+        )
+    return value
+
+
+def _upload_lock_key(user_id: str) -> int:
+    """Deterministic advisory-lock key for one user's upload bookkeeping."""
+    digest = hashlib.sha256(f"sessionfs-upload:{user_id}".encode()).digest()
+    return int.from_bytes(digest[:8], "big", signed=True)
+
+
+async def _lock_user_uploads(db: AsyncSession, user_id: str) -> None:
+    """Serialize a user's pending-upload bookkeeping until commit.
+
+    PostgreSQL: a transaction-scoped advisory lock keyed on the user id.
+    SQLite: a zero-row UPDATE opens the write transaction so the single-writer
+    lock is held (best-effort — SQLite ignores ``FOR UPDATE``).
+    """
+    connection = await db.connection()
+    if connection.dialect.name == "postgresql":
+        await db.execute(
+            text("SELECT pg_advisory_xact_lock(:key)"),
+            {"key": _upload_lock_key(user_id)},
+        )
+    else:
+        await db.execute(text("UPDATE session_uploads SET id = id WHERE 1 = 0"))
+
+
+async def _delete_part_blobs(
+    blob_store: BlobStore, upload_id: str, part_numbers: list[int]
+) -> None:
+    """Best-effort cleanup of staged part payloads."""
+    for n in part_numbers:
+        try:
+            await blob_store.delete(_upload_part_blob_key(upload_id, n))
+        except Exception:
+            pass
+
+
+async def _lazily_abort_expired_pending_uploads(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    now: datetime,
+    exclude_id: str | None = None,
+) -> list[tuple[str, list[int]]]:
+    """Abort the caller's expired pending uploads in the request path.
+
+    Expiry no longer depends on the platform retention sweeper running: a
+    request touching the user's uploads marks overdue rows aborted and returns
+    their staged part numbers so the caller can delete the blobs after this
+    transaction commits.
+    """
+    result = await db.execute(
+        select(SessionUpload).where(
+            SessionUpload.user_id == user_id,
+            SessionUpload.status == "pending",
+            SessionUpload.expires_at <= now,
+        )
+    )
+    uploads = result.scalars().all()
+
+    cleaned: list[tuple[str, list[int]]] = []
+    for upload in uploads:
+        if exclude_id is not None and upload.id == exclude_id:
+            continue
+        parts = (
+            await db.execute(
+                select(SessionUploadPart.part_number).where(
+                    SessionUploadPart.upload_id == upload.id
+                )
+            )
+        ).scalars().all()
+        await db.execute(
+            delete(SessionUploadPart).where(SessionUploadPart.upload_id == upload.id)
+        )
+        upload.status = "aborted"
+        cleaned.append((upload.id, list(parts)))
+    return cleaned
+
+
+async def _reclaim_stale_completing_uploads(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    now: datetime,
+    exclude_id: str | None = None,
+) -> list[tuple[str, list[int]]]:
+    """Reclaim the caller's completing uploads stuck past the grace window.
+
+    A ``completing`` row means a complete request claimed it and then died —
+    a process crash, a lost DB session, or a revert that itself failed —
+    before finalizing it. Rows younger than the window are left alone: their
+    complete may still be running. Older rows revert to ``pending`` so a
+    retry reuses the staged parts, unless the upload has expired, in which
+    case it is aborted and its part numbers returned for blob deletion after
+    this transaction commits.
+
+    Reclaiming also clears ``completion_token``. The window
+    (``COMPLETING_RECLAIM_MINUTES``) must exceed the maximum request duration
+    of the platform (Cloud Run's 1500 s), so a live complete normally
+    finalizes before it can be reclaimed; the token is the backstop for the
+    rare case where reclaim and a still-running complete overlap.
+    """
+    cutoff = now - timedelta(minutes=COMPLETING_RECLAIM_MINUTES)
+    result = await db.execute(
+        select(SessionUpload).where(
+            SessionUpload.user_id == user_id,
+            SessionUpload.status == "completing",
+            SessionUpload.completing_since < cutoff,
+        )
+    )
+    uploads = result.scalars().all()
+
+    cleaned: list[tuple[str, list[int]]] = []
+    for upload in uploads:
+        if exclude_id is not None and upload.id == exclude_id:
+            continue
+        if upload.expires_at.replace(tzinfo=None) > now.replace(tzinfo=None):
+            upload.status = "pending"
+            upload.completing_since = None
+            upload.completion_token = None
+        else:
+            parts = (
+                await db.execute(
+                    select(SessionUploadPart.part_number).where(
+                        SessionUploadPart.upload_id == upload.id
+                    )
+                )
+            ).scalars().all()
+            await db.execute(
+                delete(SessionUploadPart).where(SessionUploadPart.upload_id == upload.id)
+            )
+            upload.status = "aborted"
+            upload.completion_token = None
+            cleaned.append((upload.id, list(parts)))
+    return cleaned
+
 
 def _sync_limit_for_tier(tier) -> int:
     """Return sync byte limit based on a resolved effective Tier enum value.
@@ -87,14 +311,6 @@ def _sync_limit_human(limit: int) -> str:
 _SESSION_ID_RE = re.compile(r"^ses_[a-z0-9]{8,40}$")
 MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # 100 MB
 
-_SOURCE_TOOL_ALIASES: dict[str, tuple[str, ...]] = {
-    "gemini": ("gemini", "gemini-cli"),
-    "gemini-cli": ("gemini", "gemini-cli"),
-    "copilot": ("copilot", "copilot-cli"),
-    "copilot-cli": ("copilot", "copilot-cli"),
-}
-
-
 def _validate_session_id(session_id: str) -> str:
     """Validate and return session ID, or raise 400."""
     if not _SESSION_ID_RE.match(session_id):
@@ -115,16 +331,6 @@ def _validate_session_id_or_alias(session_id_or_alias: str) -> str:
     if re.match(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{2,99}$", session_id_or_alias):
         return session_id_or_alias
     raise HTTPException(status_code=400, detail="Invalid session ID or alias format")
-
-
-def _source_tool_filter_values(source_tool: str) -> tuple[str, ...]:
-    """Return the source_tool values that should be treated as equivalent.
-
-    The dashboard uses friendlier filter values like ``gemini`` and ``copilot``,
-    while captured sessions may be stored as ``gemini-cli`` / ``copilot-cli``.
-    Treat those as one logical family so the filter behaves how users expect.
-    """
-    return _SOURCE_TOOL_ALIASES.get(source_tool.lower(), (source_tool,))
 
 
 async def _read_upload(file: UploadFile, max_bytes: int = MAX_UPLOAD_BYTES) -> bytes:
@@ -730,8 +936,13 @@ def _extract_archive_content(data: bytes) -> dict[str, object]:
                     if f is not None:
                         for line in f:
                             line = line.strip()
-                            if line:
-                                messages.append(json.loads(line))
+                            if not line:
+                                continue
+                            parsed = json.loads(line)
+                            # A non-object line (e.g. a bare string/number) would
+                            # crash downstream `.get()` calls — skip it.
+                            if isinstance(parsed, dict):
+                                messages.append(parsed)
                 elif basename == "workspace.json":
                     f = tar.extractfile(member)
                     if f is not None:
@@ -747,9 +958,121 @@ def _extract_archive_content(data: bytes) -> dict[str, object]:
 
 
 def clear_archive_cache() -> None:
-    """Clear the archive content cache. Exposed for testing."""
+    """Clear the archive content cache (and derived changes cache). Exposed for testing."""
     with _cache_lock:
         _archive_cache.clear()
+    with _changes_cache_lock:
+        _changes_cache.clear()
+        _changes_inflight.clear()
+
+
+# --- Session changes derivation cache ---
+
+_CHANGES_CACHE_MAX_SIZE = 50
+_changes_cache: OrderedDict[tuple[str, str], dict[str, object]] = OrderedDict()
+_changes_cache_lock = threading.Lock()
+# Per-cache-key single-flight: concurrent requests for the same uncached key wait
+# on the first request's computation instead of each running difflib themselves.
+_changes_inflight: dict[tuple[str, str], "_ChangesInflight"] = {}
+
+
+class _ChangesInflight:
+    """Shared state for waiters on one in-progress derivation.
+
+    The computing owner stores either ``result`` (success) or ``error`` (failure)
+    before setting ``event``, so a waiter can re-raise the same error rather than
+    hitting a ``KeyError`` on a cache that never got the result.
+    """
+
+    __slots__ = ("event", "result", "error")
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.result: dict[str, object] | None = None
+        self.error: BaseException | None = None
+
+
+def _get_cached_session_changes(
+    session_id: str, etag: str, content: dict[str, object]
+) -> dict[str, object]:
+    """Derive session changes, cached by (session_id, etag).
+
+    Derivation runs inside ``run_in_threadpool`` because difflib is CPU-bound;
+    caching keeps repeat views of the same archive cheap. A per-key single-flight
+    guard ensures concurrent requests for the same uncached key wait for one
+    computation instead of each paying the difflib cost.
+    """
+    cache_key = (session_id, etag)
+    with _changes_cache_lock:
+        if cache_key in _changes_cache:
+            _changes_cache.move_to_end(cache_key)
+            return _changes_cache[cache_key]
+
+        inflight = _changes_inflight.get(cache_key)
+        if inflight is None:
+            inflight = _ChangesInflight()
+            _changes_inflight[cache_key] = inflight
+            owner = True
+        else:
+            owner = False
+
+    if not owner:
+        inflight.event.wait()
+        if inflight.error is not None:
+            raise inflight.error
+        result = inflight.result
+        assert result is not None
+        return result
+
+    try:
+        from sessionfs.server.services.session_changes import derive_session_changes
+
+        result = derive_session_changes(content["messages"], content["workspace"])
+        inflight.result = result
+
+        with _changes_cache_lock:
+            _changes_cache[cache_key] = result
+            _changes_cache.move_to_end(cache_key)
+            while len(_changes_cache) > _CHANGES_CACHE_MAX_SIZE:
+                _changes_cache.popitem(last=False)
+        return result
+    except BaseException as exc:
+        inflight.error = exc
+        raise
+    finally:
+        with _changes_cache_lock:
+            _changes_inflight.pop(cache_key, None)
+        inflight.event.set()
+
+
+# --- Session changes ETag ---
+
+# Bump whenever the derivation output shape changes so cached 304s are revalidated.
+_CHANGES_ETAG_SUFFIX = "chg2"
+
+
+def _changes_etag(session_etag: str) -> str:
+    return f'"{session_etag}-{_CHANGES_ETAG_SUFFIX}"'
+
+
+def _etag_matches(if_none_match: str | None, etag: str) -> bool:
+    """True when an If-None-Match header matches an ETag.
+
+    Handles weak prefixes (``W/"..."``), comma-separated lists, and ``*``.
+    """
+    if not if_none_match:
+        return False
+    bare = etag.strip('"')
+    for candidate in if_none_match.split(","):
+        candidate = candidate.strip()
+        if candidate == "*":
+            return True
+        if candidate.startswith("W/"):
+            candidate = candidate[2:]
+        candidate = candidate.strip('"')
+        if candidate == bare:
+            return True
+    return False
 
 
 # --- Routes ---
@@ -975,114 +1298,29 @@ async def search_sessions(
 
     offset = (page - 1) * page_size
 
-    # Build the search query — use SQLite LIKE fallback for test environments,
-    # PostgreSQL ts_vector for production
-    dialect = db.bind.dialect.name if db.bind else "sqlite"
-    tool_values = _source_tool_filter_values(tool) if tool else ()
-    tool_params = {f"tool_{i}": value for i, value in enumerate(tool_values)}
-    if len(tool_values) == 1:
-        tool_clause = "AND source_tool = :tool_0"
-    elif len(tool_values) > 1:
-        placeholders = ", ".join(f":tool_{i}" for i in range(len(tool_values)))
-        tool_clause = f"AND source_tool IN ({placeholders})"
-    else:
-        tool_clause = ""
+    hits, total = await _search_sessions_service(
+        db,
+        user_id=user.id,
+        query=q,
+        tool=tool,
+        days=days,
+        limit=page_size,
+        offset=offset,
+    )
 
-    if dialect == "postgresql":
-        # PostgreSQL full-text search with ts_vector
-        from sqlalchemy import text as sa_text
-
-        # Build query dynamically to avoid asyncpg ambiguous param types
-        cutoff_clause = "AND updated_at >= CAST(:cutoff AS timestamptz)" if days else ""
-
-        search_sql = sa_text(f"""
-            SELECT id, title, alias, source_tool, model_id, message_count, updated_at,
-                   ts_headline('english', messages_text, query,
-                               'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') as snippet
-            FROM sessions, plainto_tsquery('english', :q) query
-            WHERE user_id = :user_id
-              AND search_vector @@ query
-              AND is_deleted = false
-              {tool_clause}
-              {cutoff_clause}
-            ORDER BY ts_rank(search_vector, query) DESC
-            LIMIT :limit OFFSET :offset
-        """)
-        count_sql = sa_text(f"""
-            SELECT count(*)
-            FROM sessions, plainto_tsquery('english', :q) query
-            WHERE user_id = :user_id
-              AND search_vector @@ query
-              AND is_deleted = false
-              {tool_clause}
-              {cutoff_clause}
-        """)
-    else:
-        # SQLite fallback: simple LIKE-based search
-        from sqlalchemy import text as sa_text
-
-        cutoff_clause = "AND updated_at >= :cutoff" if days else ""
-
-        search_sql = sa_text(f"""
-            SELECT id, title, alias, source_tool, model_id, message_count, updated_at,
-                   substr(messages_text, max(1, instr(lower(messages_text), lower(:q)) - 40), 100) as snippet
-            FROM sessions
-            WHERE user_id = :user_id
-              AND (lower(title) LIKE '%' || lower(:q) || '%'
-                   OR lower(messages_text) LIKE '%' || lower(:q) || '%')
-              AND is_deleted = 0
-              {tool_clause}
-              {cutoff_clause}
-            ORDER BY updated_at DESC
-            LIMIT :limit OFFSET :offset
-        """)
-        count_sql = sa_text(f"""
-            SELECT count(*)
-            FROM sessions
-            WHERE user_id = :user_id
-              AND (lower(title) LIKE '%' || lower(:q) || '%'
-                   OR lower(messages_text) LIKE '%' || lower(:q) || '%')
-              AND is_deleted = 0
-              {tool_clause}
-              {cutoff_clause}
-        """)
-
-    cutoff = None
-    if days is not None:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-
-    params: dict = {
-        "q": q,
-        "user_id": user.id,
-        "limit": page_size,
-        "offset": offset,
-    }
-    count_params: dict = {"q": q, "user_id": user.id}
-    params.update(tool_params)
-    count_params.update(tool_params)
-    if cutoff:
-        params["cutoff"] = cutoff
-        count_params["cutoff"] = cutoff
-
-    result = await db.execute(search_sql, params)
-    rows = result.fetchall()
-
-    count_result = await db.execute(count_sql, count_params)
-    total = count_result.scalar() or 0
-
-    results = []
-    for row in rows:
-        snippet = row.snippet or ""
-        results.append(SearchResult(
-            session_id=row.id,
-            title=row.title,
-            alias=row.alias,
-            source_tool=row.source_tool,
-            model_id=row.model_id,
-            message_count=row.message_count,
-            updated_at=row.updated_at,
-            matches=[SearchMatch(snippet=snippet)] if snippet else [],
-        ))
+    results = [
+        SearchResult(
+            session_id=hit.session_id,
+            title=hit.title,
+            alias=hit.alias,
+            source_tool=hit.source_tool,
+            model_id=hit.model_id,
+            message_count=hit.message_count,
+            updated_at=hit.updated_at,
+            matches=[SearchMatch(snippet=hit.snippet)] if hit.snippet else [],
+        )
+        for hit in hits
+    ]
 
     return SearchResponse(
         results=results,
@@ -1182,6 +1420,7 @@ async def download_session(
     if data is None:
         raise HTTPException(status_code=404, detail="Session blob not found")
 
+    SYNC_PULL_TOTAL.inc()
     return Response(
         content=data,
         media_type="application/gzip",
@@ -1395,10 +1634,17 @@ async def restore_session(
     )
 
 
-def _raise_on_etag_mismatch(request: Request, current_etag: str | None, message: str) -> None:
+def _if_match_from_request(request: Request) -> str | None:
+    """The stripped If-Match ETag a push claims, or None when absent."""
+    value = request.headers.get("If-Match", "").strip('"')
+    return value or None
+
+
+def _raise_on_etag_mismatch(
+    if_match: str | None, current_etag: str | None, message: str
+) -> None:
     """409 when the push's If-Match names a different version than the
     server's (no If-Match: unconditional push)."""
-    if_match = request.headers.get("If-Match", "").strip('"')
     if if_match and if_match != current_etag:
         raise HTTPException(
             status_code=409,
@@ -1541,6 +1787,13 @@ def _prepare_sync_archive(
             )
         mode = dlp_policy.get("mode", "warn")
         timer.facts["dlp_findings"] = len(findings)
+        for f in findings:
+            # Bounded vocabulary: severity is one of critical/high/medium/low,
+            # action is the policy mode (block/redact/warn). Severity comes
+            # from tenant-defined custom-pattern text, so clamp both labels.
+            DLP_FINDINGS_TOTAL.inc(
+                severity=severity_label(f.severity), action=action_label(mode)
+            )
         dlp_scan_results = {
             "scanned_at": datetime.now(timezone.utc).isoformat(),
             "findings_count": len(findings),
@@ -1689,6 +1942,7 @@ async def sync_push(
     """
     timer = PhaseTimer()
     status = 500
+    outcome_detail = None
     try:
         result = await _sync_push(
             session_id, file, background_tasks, user, ctx, db, request, timer
@@ -1702,26 +1956,33 @@ async def sync_push(
         return result
     except HTTPException as exc:
         status = exc.status_code
+        outcome_detail = exc.detail
         exc.headers = {**(exc.headers or {}), "Server-Timing": timer.server_timing()}
         raise
     finally:
+        # Operator metrics (GH #90): outcome is a bounded vocabulary derived
+        # from the status + error envelope, size from the bytes we actually
+        # read (or the declared Content-Length when a 413 rejected the request
+        # before the body was read). Never records a session id or raw path.
+        PUSH_TOTAL.inc(
+            outcome=push_outcome(status, outcome_detail),
+            size_bucket=size_bucket(
+                push_size_bytes(
+                    timer.facts.get("bytes_in"),
+                    request.headers.get("content-length") if request is not None else None,
+                )
+            ),
+        )
         logger.info(
             "sync_push session=%s status=%d %s", session_id, status, timer.log_fields()
         )
 
 
-async def _sync_push(
-    session_id: str,
-    file: UploadFile,
-    background_tasks: BackgroundTasks,
-    user: User,
-    ctx: UserContext,
-    db: AsyncSession,
-    request: Request,
-    timer: PhaseTimer,
-):
-    # Per-user concurrency limit
-    semaphore = _user_sync_semaphores[user.id]
+async def _acquire_user_sync_semaphore(
+    user_id: str, timer: PhaseTimer
+) -> asyncio.Semaphore:
+    """Acquire the caller's per-user sync semaphore (with 30s admission timeout)."""
+    semaphore = _user_sync_semaphores[user_id]
     try:
         with timer.phase("wait"):
             await asyncio.wait_for(semaphore.acquire(), timeout=30)
@@ -1731,6 +1992,44 @@ async def _sync_push(
             detail={"error": "sync_rate_limit", "message": "Too many concurrent syncs. Please wait."},
             headers={"Retry-After": "5"},
         )
+    return semaphore
+
+
+async def _sync_push(
+    session_id: str,
+    file: UploadFile | None,
+    background_tasks: BackgroundTasks,
+    user: User,
+    ctx: UserContext,
+    db: AsyncSession,
+    request: Request,
+    timer: PhaseTimer,
+    *,
+    data: bytes | None = None,
+    if_match: str | None = None,
+    held_semaphore: asyncio.Semaphore | None = None,
+):
+    """Single code path for both single-shot and chunked-complete pushes.
+
+    Single-shot callers pass ``file`` and no ``data``; the chunked-complete
+    route has already assembled the archive and passes ``data`` plus the
+    ``if_match`` from the complete request. Everything below — tier limits,
+    ETag conflict, DLP, quota, project routing, blob promotion and summaries —
+    is shared verbatim.
+
+    Callers that must run their own serialized work before the push (chunked
+    complete) acquire the semaphore first and pass it as ``held_semaphore``;
+    ``_sync_push`` then skips the re-acquire that would otherwise deadlock.
+    """
+    if if_match is None:
+        if_match = _if_match_from_request(request)
+    # Per-user concurrency limit
+    owns_semaphore = held_semaphore is None
+    semaphore = (
+        await _acquire_user_sync_semaphore(user.id, timer)
+        if held_semaphore is None
+        else held_semaphore
+    )
 
     try:
         check_feature(ctx, "cloud_sync")
@@ -1763,23 +2062,28 @@ async def _sync_push(
         limit_str = _sync_limit_human(sync_limit)
 
         # Check content-length against sync limit
-        content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > sync_limit:
-            raise HTTPException(
-                status_code=413,
-                detail={
-                    "code": "PAYLOAD_TOO_LARGE",
-                    "message": (
-                        f"Session exceeds {limit_str} cloud limit for your tier. "
-                        "Upgrade your plan for a larger per-session limit."
-                    ),
-                },
-            )
+        if data is None:
+            if file is None:
+                raise HTTPException(status_code=400, detail="Missing upload body")
+            content_length = request.headers.get("content-length")
+            if content_length and int(content_length) > sync_limit:
+                raise HTTPException(
+                    status_code=413,
+                    detail={
+                        "code": "PAYLOAD_TOO_LARGE",
+                        "message": (
+                            f"Session exceeds {limit_str} cloud limit for your tier. "
+                            "Upgrade your plan for a larger per-session limit."
+                        ),
+                    },
+                )
 
-        # M3: Upload size limit
-        with timer.phase("read"):
-            data = await _read_upload(file, max_bytes=sync_limit)
-        timer.facts["bytes_in"] = len(data)
+            # M3: Upload size limit
+            with timer.phase("read"):
+                data = await _read_upload(file, max_bytes=sync_limit)
+            timer.facts["bytes_in"] = len(data)
+        else:
+            timer.facts["bytes_in"] = len(data)
 
         # Enforce sync byte limit on actual data
         if len(data) > sync_limit:
@@ -1829,7 +2133,7 @@ async def _sync_push(
             # Fail a stale push before the expensive part (GH #71: a retried
             # push spent minutes in DLP only to end in this 409). The check
             # is repeated under the row lock before anything is written.
-            _raise_on_etag_mismatch(request, existing.etag, "ETag mismatch — session has been updated")
+            _raise_on_etag_mismatch(if_match, existing.etag, "ETag mismatch — session has been updated")
 
         # Capture the DLP policy while we still have DB context.
         dlp_policy = None
@@ -2026,7 +2330,7 @@ async def _sync_push(
                 # A stale local copy could otherwise overwrite the server
                 # session content without the user realising the server
                 # state diverged before the soft-delete.
-                _raise_on_etag_mismatch(request, sess.etag, "ETag mismatch — session was modified before deletion")
+                _raise_on_etag_mismatch(if_match, sess.etag, "ETag mismatch — session was modified before deletion")
 
                 # Expire old handoffs and revoke share links
                 await db2.execute(
@@ -2058,7 +2362,7 @@ async def _sync_push(
                     raise HTTPException(status_code=404, detail="Session not found")
 
                 # Re-check ETag against fresh data
-                _raise_on_etag_mismatch(request, sess.etag, "ETag mismatch — session has been updated")
+                _raise_on_etag_mismatch(if_match, sess.etag, "ETag mismatch — session has been updated")
 
             # Update metadata with temp blob key first, commit under lock,
             # then promote blob after commit succeeds.
@@ -2152,7 +2456,153 @@ async def _sync_push(
                 - (timer.phases.get("blob_promote", 0.0) - promote_before),
             )
     finally:
-        semaphore.release()
+        if owns_semaphore:
+            semaphore.release()
+
+
+@router.post("/{session_id}/uploads", status_code=201)
+async def initiate_upload(
+    session_id: str,
+    body: SessionUploadInitiateRequest,
+    request: Request,
+    user: User = Depends(require_verified_user),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+):
+    """Initiate a chunked, resumable session upload (GitHub #91).
+
+    The declared ``total_size`` is checked against the caller's tier archive
+    limit up front, so a session the single-shot push would reject as 413
+    fails before any part is uploaded. The same cheap ownership/deleted/ETag
+    checks the push runs are done here too, so a doomed upload is rejected
+    before any part is staged. The server picks the part size (clamping any
+    client hint into [5 MiB, 32 MiB]).
+    """
+    check_feature(ctx, "cloud_sync")
+    _validate_session_id(session_id)
+
+    if_match = _validate_if_match(_if_match_from_request(request))
+
+    if body.total_size <= 0:
+        raise HTTPException(status_code=400, detail="total_size must be positive")
+    sha256 = _validate_upload_sha256(body.sha256)
+
+    from sessionfs.server.tier_gate import get_effective_tier
+
+    effective_tier = await get_effective_tier(user, db)
+    sync_limit = _sync_limit_for_tier(effective_tier)
+    if body.total_size > sync_limit:
+        limit_str = _sync_limit_human(sync_limit)
+        raise HTTPException(
+            status_code=413,
+            detail={
+                "code": "PAYLOAD_TOO_LARGE",
+                "message": (
+                    f"Session exceeds {limit_str} cloud limit for your tier. "
+                    "Upgrade your plan for a larger per-session limit."
+                ),
+            },
+        )
+
+    # Cheap ownership/deleted/ETag checks — same as the single-shot push — so
+    # a doomed upload is rejected before any part is staged.
+    existing = (
+        await db.execute(
+            select(Session).where(
+                Session.id == session_id,
+                Session.user_id == user.id,
+                Session.is_deleted == False,  # noqa: E712
+            )
+        )
+    ).scalar_one_or_none()
+    if existing is None:
+        any_existing = (
+            await db.execute(select(Session).where(Session.id == session_id))
+        ).scalar_one_or_none()
+        if any_existing is not None:
+            if any_existing.user_id != user.id:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Session ID already claimed by another user",
+                )
+            # Only un-delete when the client explicitly asks via header, the
+            # same as the single-shot push.
+            undelete_header = request.headers.get("X-SessionFS-Undelete", "").lower()
+            if undelete_header != "true":
+                raise HTTPException(
+                    status_code=410,
+                    detail="Session is deleted. Send X-SessionFS-Undelete: true to restore.",
+                )
+    else:
+        _raise_on_etag_mismatch(
+            if_match, existing.etag, "ETag mismatch — session has been updated"
+        )
+
+    # Serialize pending-upload bookkeeping, then abort the caller's own
+    # expired pending uploads (and reclaim stale completing rows) so their
+    # slots don't count against the cap.
+    await _lock_user_uploads(db, user.id)
+
+    now = datetime.now(timezone.utc)
+    expired = await _lazily_abort_expired_pending_uploads(
+        db, user_id=user.id, now=now
+    )
+    reclaimed = await _reclaim_stale_completing_uploads(
+        db, user_id=user.id, now=now
+    )
+
+    pending = await db.scalar(
+        select(func.count())
+        .select_from(SessionUpload)
+        .where(
+            SessionUpload.user_id == user.id,
+            SessionUpload.status == "pending",
+            SessionUpload.expires_at > now,
+        )
+    )
+    if pending is not None and pending >= UPLOAD_MAX_PENDING_PER_USER:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "too_many_pending_uploads",
+                "message": (
+                    "Too many pending uploads. Wait for existing uploads to "
+                    "complete or abort them, then retry."
+                ),
+            },
+        )
+
+    part_size = _pick_part_size(body.part_size)
+    part_count = math.ceil(body.total_size / part_size)
+    now = datetime.now(timezone.utc)
+    upload = SessionUpload(
+        id=_new_upload_id(),
+        user_id=user.id,
+        session_id=session_id,
+        total_size=body.total_size,
+        sha256=sha256,
+        part_size=part_size,
+        part_count=part_count,
+        status="pending",
+        created_at=now,
+        expires_at=now + timedelta(hours=UPLOAD_TTL_HOURS),
+    )
+    db.add(upload)
+    await db.commit()
+    await db.refresh(upload)
+
+    # The expired/reclaimed uploads' part rows are gone; delete their staged
+    # blobs now that the transaction has committed.
+    blob_store = _get_blob_store(request)
+    for cleaned_id, part_numbers in [*expired, *reclaimed]:
+        await _delete_part_blobs(blob_store, cleaned_id, part_numbers)
+
+    return SessionUploadInitiateResponse(
+        upload_id=upload.id,
+        part_size=upload.part_size,
+        part_count=upload.part_count,
+        expires_at=upload.expires_at,
+    )
 
 
 async def _auto_extract_knowledge(
@@ -2387,6 +2837,37 @@ async def get_session_tools(
         raise HTTPException(status_code=404, detail="No tools.json in session archive")
 
     return {"tools": tools}
+
+
+@router.get("/{session_id}/changes", response_model=SessionChangesResponse)
+async def get_session_changes(
+    session_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    request: Request = None,
+    response: Response = None,
+):
+    """Get per-file changes (diffs) derived from a session archive."""
+    _validate_session_id_or_alias(session_id)
+    session = await _get_user_session(db, user.id, session_id)
+
+    etag = _changes_etag(session.etag)
+    response.headers["ETag"] = etag
+    if_none_match = request.headers.get("If-None-Match", "") if request else ""
+    if _etag_matches(if_none_match, etag):
+        return Response(status_code=304, headers={"ETag": etag})
+
+    blob_store = _get_blob_store(request)
+    data = await blob_store.get(session.blob_key)
+    if data is None:
+        raise HTTPException(status_code=404, detail="Session blob not found")
+
+    content = _get_cached_archive_content(session_id, session.etag, data)
+    # Cache under the canonical session id, not the path parameter: a request by
+    # alias must share the cache entry with a request by id.
+    return await run_in_threadpool(
+        _get_cached_session_changes, session.id, session.etag, content
+    )
 
 
 @router.post("/admin/reindex")

@@ -342,7 +342,10 @@ class DaemonSyncer:
                 # Read current etag from manifest sync state
                 etag = self._get_local_etag(session_id)
 
-                result = await client.push_session(session_id, archive_data, etag=etag)
+                result = await client.push_session(
+                    session_id, archive_data, etag=etag,
+                    store_dir=self.config.store_dir,
+                )
 
                 # Store the new etag
                 self._store_local_etag(session_id, result.etag)

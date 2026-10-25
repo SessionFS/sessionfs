@@ -108,7 +108,8 @@ Hosted billing configuration is SessionFS Cloud infrastructure only. Self-hosted
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `SFS_APP_URL` | Dashboard URL for billing redirects | `https://app.sessionfs.dev` |
+| `SFS_APP_URL` | Dashboard URL for links the server generates (invite emails, billing return pages; weekly digest links only when `SFS_DASHBOARD_URL` is unset and this is set explicitly) | `https://app.sessionfs.dev` |
+| `SFS_DASHBOARD_URL` | Dashboard origin for browser SSO login redirects and GitHub installation linking; also the origin of links in the weekly org activity digest. Links are left out of the digest when neither this nor an explicit `SFS_APP_URL` is set | — |
 | `SFS_API_URL` | API URL for share links and internal references | `https://api.sessionfs.dev` |
 | `SFS_PUBLIC_API_URL` | This deployment's public API origin, e.g. `https://api.sessionfs.dev`. Default OIDC audience for marketplace trusted publishing | — |
 | `SFS_GITLAB_OIDC_ISSUERS` | GitLab instances whose CI ID tokens may be used for marketplace trusted publishing: comma-separated `https://` origins. Listed values replace the default (include `https://gitlab.com` to keep it); `none` disables GitLab. Keys are fetched only for a listed instance, from `<origin>/oauth/discovery/keys`, and only from a public address. An invalid entry refuses startup | `https://gitlab.com` |

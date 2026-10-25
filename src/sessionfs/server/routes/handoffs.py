@@ -42,6 +42,7 @@ from sessionfs.server.services.handoff_helpers import (
     validate_provenance_for_sender,
     write_event,
 )
+from sessionfs.server.metrics import HANDOFF_CLAIM_TOTAL, HANDOFF_CREATE_TOTAL
 from sessionfs.server.tier_gate import UserContext, check_feature, get_user_context
 from sessionfs.session_id import generate_session_id
 
@@ -470,6 +471,7 @@ async def create_handoff(
 
     await db.commit()
     await db.refresh(handoff)
+    HANDOFF_CREATE_TOTAL.inc()
 
     # Send handoff email if email service is available.
     # Team handoffs without a recipient_email skip the email step here —
@@ -1212,6 +1214,7 @@ async def claim_handoff(
 
     await db.commit()
     await db.refresh(handoff)
+    HANDOFF_CLAIM_TOTAL.inc()
 
     logger.info(
         "Handoff %s claimed: session %s copied to %s for user %s",
