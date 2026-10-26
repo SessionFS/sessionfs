@@ -77,7 +77,7 @@ def validate_repo_path(path: str) -> str:
 
 def _object(kind: str, payload: bytes) -> tuple[str, bytes]:
     raw = kind.encode("ascii") + b" " + str(len(payload)).encode("ascii") + b"\0" + payload
-    return hashlib.sha1(raw).hexdigest(), raw  # noqa: S324 - git object ids are SHA-1
+    return hashlib.sha1(raw, usedforsecurity=False).hexdigest(), raw  # noqa: S324 - git object ids are SHA-1
 
 
 @dataclass
@@ -149,7 +149,7 @@ def build_pack(raw_objects: dict[str, bytes]) -> tuple[str, bytes, bytes]:
         offsets[object_id] = len(body)
         crcs[object_id] = zlib.crc32(entry) & 0xFFFFFFFF
         body += entry
-    pack_checksum = hashlib.sha1(bytes(body)).digest()  # noqa: S324 - pack trailer is SHA-1
+    pack_checksum = hashlib.sha1(bytes(body), usedforsecurity=False).digest()  # noqa: S324 - pack trailer is SHA-1
     body += pack_checksum
     fanout = [0] * 256
     for object_id in ids:
@@ -168,7 +168,7 @@ def build_pack(raw_objects: dict[str, bytes]) -> tuple[str, bytes, bytes]:
             raise GitCatalogError("catalog pack exceeds 2 GiB")
         index += struct.pack(">I", offsets[object_id])
     index += pack_checksum
-    index += hashlib.sha1(bytes(index)).digest()  # noqa: S324 - index trailer is SHA-1
+    index += hashlib.sha1(bytes(index), usedforsecurity=False).digest()  # noqa: S324 - index trailer is SHA-1
     return f"pack-{pack_checksum.hex()}", bytes(body), bytes(index)
 
 

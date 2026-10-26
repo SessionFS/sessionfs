@@ -46,8 +46,10 @@ FROM python:3.12.15-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a
 ARG TOOL
 
 # git + CA roots only: some installers resolve a local marketplace through
-# git; nothing else is needed (the harness reads /proc directly).
+# git; nothing else is needed (the harness reads /proc directly). The upgrade
+# pulls Debian security fixes released after the pinned base digest.
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
