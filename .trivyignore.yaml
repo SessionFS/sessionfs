@@ -1,0 +1,10 @@
+# Trivy ignore rules for the misconfig scan in .github/workflows/security.yml.
+# Keep every entry scoped to a path and explain why it is safe.
+misconfigurations:
+  # KSV-0109 matches key names containing "secret". The API ConfigMap's
+  # SFS_REGISTRY_SECRETS_DIR holds the mount path of the registry credentials
+  # Secret, not a secret value.
+  - id: KSV-0109
+    paths:
+      - "rendered/chart.yaml"
+    statement: SFS_REGISTRY_SECRETS_DIR is a directory path, not a secret

@@ -148,6 +148,7 @@ jobs:
             --exit-code 1 \
             --format sarif \
             --output trivy-misconfig.sarif \
+            --ignorefile .trivyignore.yaml \
             --skip-dirs charts/sessionfs/templates \
             --skip-dirs node_modules \
             --skip-dirs dashboard/node_modules \
