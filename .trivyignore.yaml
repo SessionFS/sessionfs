@@ -8,3 +8,11 @@ misconfigurations:
     paths:
       - "rendered/chart.yaml"
     statement: SFS_REGISTRY_SECRETS_DIR is a directory path, not a secret
+  # DS-0002 wants a non-root USER. The works-in harness runs as root on
+  # purpose: it drops every tool command to the unprivileged sfs-tool user and
+  # needs root to reap that user's processes (see the Dockerfile header and
+  # src/sessionfs/skills/works_in_harness.py).
+  - id: DS-0002
+    paths:
+      - "deploy/harness/Dockerfile"
+    statement: the harness drops tool commands to sfs-tool and needs root to reap them
