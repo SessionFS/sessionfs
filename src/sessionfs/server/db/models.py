@@ -5896,6 +5896,165 @@ class HelperMessage(Base):
     )
 
 
+class HelperAction(Base):
+    """A proposed, human-confirmed write action from the session helper
+    (migration 094).
+
+    The helper can only PROPOSE: a row starts ``pending`` and nothing changes
+    until the caller confirms it in the dashboard. ``kind`` is
+    ``set_auto_narrative`` or ``trash_sessions``. ``params`` holds the exact
+    target ids + desired value that confirm applies (the targets that would
+    actually change); ``preview`` holds the per-target before/after + display
+    names computed at proposal time (including skipped/unchanged targets);
+    ``result`` holds the per-target ok/error once applied. JSON-as-Text for
+    cross-DB compatibility, mirroring ``helper_messages``. ``expires_at`` is
+    proposal time + 15 minutes; ``decided_at`` records confirm/cancel/expiry.
+    ``message_id`` is the id of the ``helper_messages`` tool row that carried
+    the proposal (written even though that row lands at the end of the turn).
+    ``created_at`` is set at tool-call time and strictly increases within a
+    process, so the pending cap can order proposals deterministically.
+    """
+
+    __tablename__ = "helper_actions"
+    __table_args__ = (
+        Index("idx_helper_actions_user_status", "user_id", "status"),
+        Index("idx_helper_actions_conversation", "conversation_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("helper_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    kind: Mapped[str] = mapped_column(String(40), nullable=False)
+    params: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default="pending"
+    )
+    result: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=func.now(),
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class HelperConfig(Base):
+    """Session-helper configuration for one org or one user (migration 095).
+
+    Kept apart from the key rows (``org_llm_settings`` /
+    ``user_judge_settings``) so deleting or rotating a key never touches the
+    configuration, and saving a configuration never creates a key row.
+    ``scope`` is ``org`` (``org_id`` set) or ``user`` (``user_id`` set) —
+    exactly one, enforced by a CHECK. ``settings`` is JSON-as-Text holding only
+    the keys the owner set explicitly (unset keys use the defaults);
+    ``instructions`` is stored DLP-redacted; ``monthly_token_budget`` is
+    org-only.
+    """
+
+    __tablename__ = "helper_configs"
+    __table_args__ = (
+        CheckConstraint(
+            "(scope = 'org' AND org_id IS NOT NULL AND user_id IS NULL) OR "
+            "(scope = 'user' AND user_id IS NOT NULL AND org_id IS NULL)",
+            name="ck_helper_configs_scope_owner",
+        ),
+        CheckConstraint(
+            "monthly_token_budget IS NULL OR "
+            "(scope = 'org' AND monthly_token_budget >= 0)",
+            name="ck_helper_configs_budget_org_only",
+        ),
+        Index(
+            "uq_helper_configs_org",
+            "org_id",
+            unique=True,
+            postgresql_where=text("org_id IS NOT NULL"),
+            sqlite_where=text("org_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_helper_configs_user",
+            "user_id",
+            unique=True,
+            postgresql_where=text("user_id IS NOT NULL"),
+            sqlite_where=text("user_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope: Mapped[str] = mapped_column(String(10), nullable=False)
+    org_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True
+    )
+    user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )
+    settings: Mapped[str | None] = mapped_column(Text, nullable=True)
+    instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    monthly_token_budget: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=func.now(),
+        onupdate=_utcnow,
+    )
+    updated_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class HelperUsage(Base):
+    """Append-only session-helper token ledger (migration 095).
+
+    One row per turn that reported any tokens — including turns that ended
+    with a client disconnect, a provider error, the deadline or max_steps.
+    ``key_source`` is ``user`` or ``org``; ``org_id`` is the org whose key the
+    turn used (NULL for a user-key turn). ``conversation_id`` is a plain column
+    with no foreign key, so deleting a conversation (or the helper-retention
+    sweep purging it) keeps the ledger row: budgets and usage summaries read
+    only this table. Retention: 13 months — the helper-retention sweep deletes
+    rows older than 400 days.
+    """
+
+    __tablename__ = "helper_usage"
+    __table_args__ = (
+        CheckConstraint(
+            "key_source IN ('user', 'org')", name="ck_helper_usage_key_source"
+        ),
+        Index("idx_helper_usage_org_created", "org_id", "created_at"),
+        Index("idx_helper_usage_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # SET NULL: deleting an org keeps its members' rows in their own totals.
+    org_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    key_source: Mapped[str] = mapped_column(String(20), nullable=False)
+    conversation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    input_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    output_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
+    stop_reason: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+        server_default=func.now(),
+    )
+
+
 def _changed(target, attribute: str, inserting: bool) -> bool:
     """On insert every facet is derived; on update only when its source
     column changed in this flush (never loads an unloaded attribute)."""

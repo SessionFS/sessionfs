@@ -21,6 +21,7 @@
  */
 
 import { useState } from 'react';
+import { TicketViewerContext, type TicketViewer } from './tickets/viewer';
 import { useTickets } from '../hooks/useTickets';
 import { Button, IconButton, Select } from '../components/ui';
 import { KIND_FILTERS, STATUS_FILTERS, type TicketJiraSurface } from './tickets/constants';
@@ -30,14 +31,18 @@ import { EmptyState } from './tickets/EmptyState';
 import { NewTicketModal } from './tickets/NewTicketModal';
 import { errorMessage } from '../utils/errorMessage';
 
+const DEFAULT_VIEWER: TicketViewer = { canEdit: true, userId: null };
+
 interface TicketsTabProps {
   projectId: string;
   jira?: TicketJiraSurface;
   /** Ticket id from a deep link (?ticket=…) — expanded on first mount. */
   initialTicketId?: string | null;
+  /** Who is viewing: hides actions the server would refuse (see tickets/viewer). */
+  viewer?: TicketViewer;
 }
 
-export default function TicketsTab({ projectId, jira, initialTicketId }: TicketsTabProps) {
+export default function TicketsTab({ projectId, jira, initialTicketId, viewer }: TicketsTabProps) {
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [kindFilter, setKindFilter] = useState<string>('');
   const { data, isLoading, error } = useTickets(projectId, {
@@ -82,6 +87,7 @@ export default function TicketsTab({ projectId, jira, initialTicketId }: Tickets
   const tickets = data;
 
   return (
+    <TicketViewerContext.Provider value={viewer ?? DEFAULT_VIEWER}>
     <section aria-labelledby="tickets-heading" className="space-y-4">
       {/* ── Header row ── */}
       <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -198,5 +204,6 @@ export default function TicketsTab({ projectId, jira, initialTicketId }: Tickets
         />
       )}
     </section>
+    </TicketViewerContext.Provider>
   );
 }

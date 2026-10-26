@@ -1,11 +1,11 @@
 import type { SessionSummary } from '../../api/client';
-import { fullToolName } from '../../utils/models';
+import { friendlyModelName, fullToolName, isUnknownModelId } from '../../utils/models';
 
 export interface SessionSummaryWithAudit extends SessionSummary {
   audit_trust_score?: number | null;
 }
 
-export type SortKey = 'date' | 'messages' | 'tokens' | 'title' | 'tool';
+export type SortKey = 'date' | 'messages' | 'tokens' | 'title' | 'tool' | 'model';
 export type SortDir = 'desc' | 'asc';
 
 export interface LineageGroup {
@@ -106,8 +106,29 @@ function compareByTool(a: SessionSummary, b: SessionSummary): number {
   return toolCmp !== 0 ? toolCmp : compareByDate(a, b);
 }
 
+/** Mirrors the server's `sort=model`: model id asc/desc, the unknown bucket
+ *  (null, "", "unknown", "<synthetic>") LAST in both directions, ties newest
+ *  first. Used where the list isn't server-paginated (folders). */
+function compareByModel(dir: SortDir) {
+  return (a: SessionSummary, b: SessionSummary): number => {
+    const aUnknown = isUnknownModelId(a.model_id);
+    const bUnknown = isUnknownModelId(b.model_id);
+    if (aUnknown !== bUnknown) return aUnknown ? 1 : -1;
+    if (!aUnknown) {
+      const am = a.model_id as string;
+      const bm = b.model_id as string;
+      // Code-point order, like the database's default collation for ids.
+      const modelCmp = am < bm ? -1 : am > bm ? 1 : 0;
+      if (modelCmp !== 0) return dir === 'asc' ? modelCmp : -modelCmp;
+    }
+    return compareByDate(a, b);
+  };
+}
+
 export function sortSessions(list: SessionSummary[], sortBy: SortKey, sortDir: SortDir = 'desc'): SessionSummary[] {
   const sorted = [...list];
+  // Model sort applies its own direction so unknown models stay last.
+  if (sortBy === 'model') return sorted.sort(compareByModel(sortDir));
   if (sortBy === 'messages') sorted.sort(compareByMessages);
   else if (sortBy === 'tokens') sorted.sort(compareByTokens);
   else if (sortBy === 'title') sorted.sort(compareByTitle);
@@ -140,10 +161,17 @@ export type GroupedSessions =
 
 /** Date buckets by default; "Sort: Tool" switches to one bucket per tool. */
 export function groupSessions(list: SessionSummary[], sortBy: SortKey): GroupedSessions {
-  if (sortBy === 'tool') {
+  // Tool and model sorts group under their own headings so the sort order is
+  // not split up by date buckets (model order can come from the server).
+  if (sortBy === 'tool' || sortBy === 'model') {
     const toolGroups = new Map<string, SessionSummary[]>();
     for (const s of list) {
-      const label = fullToolName(s.source_tool);
+      const label =
+        sortBy === 'tool'
+          ? fullToolName(s.source_tool)
+          : isUnknownModelId(s.model_id)
+            ? 'Unknown model'
+            : friendlyModelName(s.model_id);
       if (!toolGroups.has(label)) toolGroups.set(label, []);
       toolGroups.get(label)!.push(s);
     }

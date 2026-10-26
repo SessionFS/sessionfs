@@ -80,7 +80,10 @@ from sessionfs.server.db.models import (
     User,
 )
 from sessionfs.server.roles import has_minimum_role
-from sessionfs.server.routes.knowledge import _get_project_for_auth
+from sessionfs.server.routes.knowledge import (
+    _get_project_for_auth,
+    _get_project_for_editor,
+)
 from sessionfs.server.services.personas import (
     find_org_persona,
     find_project_persona,
@@ -546,7 +549,7 @@ async def create_persona(
     user = auth.user
     if body.represented_user is not None:
         raise HTTPException(422, _PROJECT_REPRESENTED_USER)
-    project = await _get_project_for_auth(project_id, db, auth)
+    project = await _get_project_for_editor(project_id, db, auth)
     await assert_service_key_can_access_project(db, auth, project)
     await check_project_feature(ctx, "agent_personas", project, db)
 
@@ -555,7 +558,7 @@ async def create_persona(
     # (a phantom insert no row lock can stop), and so creates serialize
     # with the project-transfer guard.
     # GH #70 — lock, then re-authorize against the re-read project.
-    await lock_project_scope_authorized(db, project, auth=auth, ctx=ctx, feature="agent_personas")
+    await lock_project_scope_authorized(db, project, edit=True, auth=auth, ctx=ctx, feature="agent_personas")
 
     # v0.10.1 Phase 2 Round 2 (KB 322) — pre-check by (project_id, name)
     # so the 409 path is reachable WITHOUT relying on IntegrityError
@@ -656,14 +659,14 @@ async def update_persona(
     `is_active=true`."""
     if "represented_user" in body.model_fields_set:
         raise HTTPException(422, _PROJECT_REPRESENTED_USER)
-    project = await _get_project_for_auth(project_id, db, auth)
+    project = await _get_project_for_editor(project_id, db, auth)
     await assert_service_key_can_access_project(db, auth, project)
     await check_project_feature(ctx, "agent_personas", project, db)
 
     # GH #70 — serialize with creates / the transfer guard (reactivation
     # changes the effective persona set).
     # GH #70 — lock, then re-authorize against the re-read project.
-    await lock_project_scope_authorized(db, project, auth=auth, ctx=ctx, feature="agent_personas")
+    await lock_project_scope_authorized(db, project, edit=True, auth=auth, ctx=ctx, feature="agent_personas")
     # GH #70 — case-insensitive like every other persona lookup.
     persona = await find_project_persona(db, project_id, name)
     if persona is None:
@@ -766,12 +769,12 @@ async def delete_persona(
     review tickets — start_ticket later refuses to load an inactive
     persona, leaving no supported workflow to recover.
     """
-    project = await _get_project_for_auth(project_id, db, auth)
+    project = await _get_project_for_editor(project_id, db, auth)
     await assert_service_key_can_access_project(db, auth, project)
     await check_project_feature(ctx, "agent_personas", project, db)
 
     # GH #70 — lock, then re-authorize against the re-read project.
-    await lock_project_scope_authorized(db, project, auth=auth, ctx=ctx, feature="agent_personas")
+    await lock_project_scope_authorized(db, project, edit=True, auth=auth, ctx=ctx, feature="agent_personas")
     persona = await find_project_persona(db, project_id, name, active_only=True)
     if persona is None:
         raise HTTPException(

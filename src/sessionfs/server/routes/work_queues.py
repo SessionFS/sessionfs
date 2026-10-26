@@ -62,7 +62,10 @@ from sessionfs.server.auth.dependencies import (
 from sessionfs.server.auth.rate_limit import SlidingWindowRateLimiter
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import Resident, Ticket, WorkQueue, WorkQueueItem
-from sessionfs.server.routes.knowledge import _get_project_for_auth
+from sessionfs.server.routes.knowledge import (
+    _get_project_for_auth,
+    _get_project_for_editor,
+)
 from sessionfs.server.services import work_queues as wq_engine
 
 router = APIRouter(prefix="/api/v1/projects", tags=["work-queues"])
@@ -499,7 +502,7 @@ async def create_work_queue(
     stamped from AuthContext (+ optional session/persona).
     """
     await _enforce_resident_active(auth, db)
-    project = await _get_project_for_auth(project_id, db, auth)
+    project = await _get_project_for_editor(project_id, db, auth)
     # Cross-org / allowlist boundary BEFORE any side effect.
     await assert_service_key_can_access_project(db, auth, project)
 
@@ -698,7 +701,7 @@ async def set_work_queue_status(
     success.
     """
     await _enforce_resident_active(auth, db)
-    project = await _get_project_for_auth(project_id, db, auth)
+    project = await _get_project_for_editor(project_id, db, auth)
     await assert_service_key_can_access_project(db, auth, project)
 
     queue = await _get_queue_or_404(project_id, queue_id, db)
@@ -811,7 +814,7 @@ async def run_work_queue_step(
     wake_ref = body.wake_ref if body is not None else None
     max_tickets = body.max_tickets if body is not None else None
 
-    project = await _get_project_for_auth(project_id, db, auth)
+    project = await _get_project_for_editor(project_id, db, auth)
     await assert_service_key_can_access_project(db, auth, project)
     queue = await _get_queue_or_404(project_id, queue_id, db)
 
@@ -874,7 +877,7 @@ async def complete_work_queue_step(
     _require_downstream_scopes(auth, *needed)
     await _enforce_resident_active(auth, db)
 
-    project = await _get_project_for_auth(project_id, db, auth)
+    project = await _get_project_for_editor(project_id, db, auth)
     await assert_service_key_can_access_project(db, auth, project)
     queue = await _get_queue_or_404(project_id, queue_id, db)
 

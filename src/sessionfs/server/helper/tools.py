@@ -1,11 +1,17 @@
-"""Session helper tool registry and executor (piece 3).
+"""Session helper tool registry and executor (piece 3 + piece 6).
 
-The 9 tools from ``docs/design/session-helper.md``.  Every handler receives a
-:class:`HelperContext` and calls the same access-checked queries the API routes
-use — never ad-hoc queries that skip the ownership / project-access gates.
-Access is re-checked on every call; a session or project the caller cannot read
-is reported as "not found" (no existence oracle).  ``ctx.scope`` is a hard
-filter: the model may narrow it further but can never widen it.
+The 9 read tools from ``docs/design/session-helper.md`` plus the write-action
+tools (``list_projects``, ``get_project_settings``, ``set_project_auto_narrative``,
+``trash_sessions``).  Every handler receives a :class:`HelperContext` and calls
+the same access-checked queries the API routes use — never ad-hoc queries that
+skip the ownership / project-access gates.  Access is re-checked on every call;
+a session or project the caller cannot read is reported as "not found" (no
+existence oracle).  ``ctx.scope`` is a hard filter: the model may narrow it
+further but can never widen it.
+
+The write-action tools can only PROPOSE: they queue a pending action on
+``ctx.pending_actions`` and return "Proposed action ha_… — waiting for the
+user to confirm"; nothing changes until the caller confirms in the dashboard.
 
 Output is compact plain text: session lines are ``[session:<id>]`` and excerpt
 lines are ``[session:<id> msg:<index>]``.  Redaction, the per-turn retrieval
@@ -17,17 +23,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
+from fastapi import HTTPException
 from sqlalchemy import func, select
 
 from sessionfs.judge.agent_stream import ToolCall, ToolResult, ToolSpec
 from sessionfs.retrieval_audit import sanitize_arguments
-from sessionfs.server.auth.project_access import user_can_access_project
-from sessionfs.server.db.models import KnowledgeEntry, Project, Session
+from sessionfs.server.auth.project_access import (
+    list_accessible_projects,
+    user_can_access_project,
+    user_can_edit_project,
+)
+from sessionfs.server.db.models import KnowledgeEntry, Organization, Project, Session
 from sessionfs.server.helper.context import HelperContext
+from sessionfs.server.helper.docs import MAX_QUERY_CHARS, MAX_QUERY_TERMS, get_docs_index
 from sessionfs.server.helper.excerpts import (
     DEFAULT_EXCERPT_TOKENS,
     MAX_EXCERPT_TOKENS,
@@ -46,6 +60,8 @@ from sessionfs.server.services.session_search import (
     search_sessions as search_sessions_service,
 )
 from sessionfs.server.services.summarizer import SessionSummary, summarize_session
+from sessionfs.server.services.project_settings import check_auto_narrative_gate
+from sessionfs.server.tier_gate import UserContext, build_user_context, resolve_project_plan_tiers
 
 logger = logging.getLogger("sessionfs.helper")
 
@@ -65,6 +81,15 @@ MAX_PATH_BLOB_BYTES = 64 * 1024 * 1024
 # Summarization redacts + summarizes at most the 5000 most recent messages —
 # the same cap as excerpt ranking (excerpts.MAX_SCAN_MESSAGES).
 MAX_SUMMARY_MESSAGES = MAX_SCAN_MESSAGES
+
+# Write-action proposals (piece 6).  The helper can only PROPOSE; nothing
+# changes until the caller confirms in the dashboard.
+MAX_ACTION_TARGETS = 100
+ACTION_TTL_MINUTES = 15
+MAX_LIST_PROJECTS = 200
+
+# Official-docs search (piece: session helper can search the SessionFS docs).
+MAX_DOC_SEARCH_RESULTS = 8
 
 
 class ToolArgumentError(ValueError):
@@ -149,6 +174,7 @@ def _refs(
     message_indexes: list[int] | None = None,
     kb_entry_ids: list[int] | None = None,
     project_ids: list[str] | None = None,
+    doc_slugs: list[str] | None = None,
 ) -> dict[str, list[Any]]:
     out: dict[str, list[Any]] = {}
     if session_ids:
@@ -159,6 +185,8 @@ def _refs(
         out["kb_entry_ids"] = sorted(set(kb_entry_ids))
     if project_ids:
         out["project_ids"] = sorted(set(project_ids))
+    if doc_slugs:
+        out["doc_slugs"] = sorted(set(doc_slugs))
     return out
 
 
@@ -738,6 +766,423 @@ async def _sessions_touching_path(
 
 
 # ---------------------------------------------------------------------------
+# Read tools: projects + settings (piece 6)
+# ---------------------------------------------------------------------------
+
+
+def _new_action_id() -> str:
+    return "ha_" + uuid.uuid4().hex[:24]
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """Aware UTC (SQLite returns naive datetimes for timezone columns)."""
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
+_proposal_clock_lock = threading.Lock()
+_last_proposal_time: datetime | None = None
+
+
+def _proposal_time() -> datetime:
+    """Proposal timestamp, strictly increasing within this process.
+
+    The pending cap expires the OLDEST proposals first by ``created_at``; two
+    proposals from one turn must never tie (a tie would leave the order to
+    the random id), so a clock that hasn't advanced is nudged by 1 µs.
+    """
+    global _last_proposal_time
+    with _proposal_clock_lock:
+        now = datetime.now(timezone.utc)
+        if _last_proposal_time is not None and now <= _last_proposal_time:
+            now = _last_proposal_time + timedelta(microseconds=1)
+        _last_proposal_time = now
+        return now
+
+
+async def _list_projects(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    """Every project the caller can reach, same predicate as the projects route.
+
+    A project-scoped conversation returns just its scope project (the model
+    can never widen the scope); otherwise the full accessible list, capped at
+    ``MAX_LIST_PROJECTS`` with a truncation note.
+    """
+    if ctx.scope.project_id is not None:
+        project = await _accessible_project(ctx, ctx.scope.project_id)
+        projects = [project] if project is not None else []
+    elif ctx.scope.session_ids:
+        # A session-scoped conversation only reaches the projects its
+        # sessions belong to (same rule as ``_accessible_project``).
+        allowed = await _scoped_session_project_ids(ctx)
+        projects = [
+            p for p in await list_accessible_projects(ctx.db, ctx.user.id) if p.id in allowed
+        ]
+    else:
+        projects = await list_accessible_projects(ctx.db, ctx.user.id)
+
+    truncated = len(projects) > MAX_LIST_PROJECTS
+    shown = projects[:MAX_LIST_PROJECTS]
+
+    plan_tiers = await resolve_project_plan_tiers(shown, ctx.db) if shown else {}
+    org_ids = {p.org_id for p in shown if p.org_id}
+    org_names: dict[str, str] = {}
+    if org_ids:
+        orgs = (
+            await ctx.db.execute(select(Organization).where(Organization.id.in_(org_ids)))
+        ).scalars().all()
+        org_names = {o.id: o.name for o in orgs}
+
+    lines: list[str] = []
+    for p in shown:
+        tier = plan_tiers.get(p.id)
+        scope = org_names.get(p.org_id, "personal") if p.org_id else "personal"
+        lines.append(
+            f"[project:{p.id}] {p.name} "
+            f"(scope: {scope}, tier: {tier.value if tier else 'unknown'}, "
+            f"auto_narrative: {'on' if p.auto_narrative else 'off'})"
+        )
+    if not lines:
+        return ToolOutput("No projects accessible.", refs=_refs())
+    text = "\n".join(lines)
+    if truncated:
+        text += f"\n[showing {MAX_LIST_PROJECTS} of {len(projects)} projects]"
+    return ToolOutput(text, refs=_refs(project_ids=[p.id for p in shown]))
+
+
+async def _get_project_settings(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    project_id = _require_str(args, "project_id")
+    project = await _accessible_project(ctx, project_id)
+    if project is None:
+        return ToolOutput("Project not found.", refs=_refs())
+    lines = [
+        f"[project:{project.id}] {project.name}",
+        f"auto_narrative: {'on' if project.auto_narrative else 'off'}",
+        f"compile_schedule: {project.compile_schedule or 'off'}",
+        f"kb_retention_days: {project.kb_retention_days}",
+        f"kb_max_context_words: {project.kb_max_context_words}",
+        f"kb_section_page_limit: {project.kb_section_page_limit}",
+    ]
+    if project.compile_after_claims is not None:
+        lines.append(f"compile_after_claims: {project.compile_after_claims}")
+    return ToolOutput("\n".join(lines), refs=_refs(project_ids=[project_id]))
+
+
+# ---------------------------------------------------------------------------
+# Write-action tools: propose only (piece 6)
+# ---------------------------------------------------------------------------
+
+
+def _session_name(session: Session) -> str:
+    return session.title or session.alias or "(untitled)"
+
+
+def _format_action_targets(targets: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for t in targets:
+        if t["change"] == "will_change":
+            lines.append(
+                f"- [{t['id']}] {t['name']}: {t['before']} -> {t['after']} (will change)"
+            )
+        elif t["change"] == "unchanged":
+            lines.append(f"- [{t['id']}] {t['name']}: already {t['after']} (unchanged)")
+        else:
+            lines.append(f"- [{t['id']}] {t['name']}: skipped ({t['reason']})")
+    return "\n".join(lines)
+
+
+def _redact_targets(ctx: HelperContext, targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Run every display name through the turn's DLP policy.
+
+    Names are user-authored (session titles, project names) and land in the
+    stored preview and the ``action_proposed`` event, so they get the same
+    redaction as tool output.  Raises :class:`RedactionError` (the caller's
+    ``execute`` fails the call closed and the proposal is dropped).
+    """
+    out: list[dict[str, Any]] = []
+    for target in targets:
+        t = dict(target)
+        if isinstance(t.get("name"), str):
+            t["name"] = redact(t["name"], ctx.dlp_policy)
+        out.append(t)
+    return out
+
+
+def _propose_action(
+    ctx: HelperContext,
+    *,
+    kind: str,
+    params: dict[str, Any],
+    targets: list[dict[str, Any]],
+    summary: str,
+) -> ToolOutput:
+    """Queue a pending write-action proposal; never mutates anything.
+
+    The proposal is only queued here.  The turn handler persists it (and only
+    then emits ``action_proposed``) once ``execute`` returns a successful
+    result, so a call that fails redaction or the audit write never leaves a
+    row or a card behind.
+    """
+    action_id = _new_action_id()
+    created_at = _proposal_time()
+    expires_at = created_at + timedelta(minutes=ACTION_TTL_MINUTES)
+    targets = _redact_targets(ctx, targets)
+    ctx.pending_actions.append(
+        {
+            "id": action_id,
+            "kind": kind,
+            "params": params,
+            "preview": {"summary": summary, "targets": targets},
+            "created_at": created_at,
+            "expires_at": expires_at,
+        }
+    )
+    text = (
+        f"Proposed action {action_id} — waiting for the user to confirm. "
+        "Do not claim it is done.\n"
+        "Targets:\n"
+        f"{_format_action_targets(targets)}"
+    )
+    return ToolOutput(
+        text,
+        refs=_refs(
+            project_ids=params.get("project_ids"),
+            session_ids=params.get("session_ids"),
+        ),
+    )
+
+
+def _project_ids_arg(args: dict[str, Any]) -> list[str]:
+    raw = args.get("project_ids")
+    if not isinstance(raw, list) or not raw or not all(isinstance(s, str) for s in raw):
+        raise ToolArgumentError("'project_ids' must be a non-empty list of project ids")
+    ids = sorted({s for s in raw if s.strip()})
+    if not ids:
+        raise ToolArgumentError("'project_ids' must be a non-empty list of project ids")
+    if len(ids) > MAX_ACTION_TARGETS:
+        raise ToolArgumentError(f"at most {MAX_ACTION_TARGETS} projects per proposal")
+    return ids
+
+
+def _session_ids_arg(args: dict[str, Any]) -> list[str]:
+    raw = args.get("session_ids")
+    if not isinstance(raw, list) or not raw or not all(isinstance(s, str) for s in raw):
+        raise ToolArgumentError("'session_ids' must be a non-empty list of session ids")
+    ids = sorted({s for s in raw if s.strip()})
+    if not ids:
+        raise ToolArgumentError("'session_ids' must be a non-empty list of session ids")
+    if len(ids) > MAX_ACTION_TARGETS:
+        raise ToolArgumentError(f"at most {MAX_ACTION_TARGETS} sessions per proposal")
+    return ids
+
+
+async def _set_project_auto_narrative(
+    ctx: HelperContext, args: dict[str, Any]
+) -> ToolOutput:
+    project_ids = _project_ids_arg(args)
+    enabled = args.get("enabled")
+    if not isinstance(enabled, bool):
+        raise ToolArgumentError("'enabled' must be a boolean")
+
+    targets: list[dict[str, Any]] = []
+    will_change: list[str] = []
+    user_ctx: UserContext | None = None
+    for pid in project_ids:
+        # Same edit rule as PUT /projects/{id}/settings: project access (inside
+        # this conversation's scope), editor standing (owner or org member —
+        # a captured-session reader can view but not change the project),
+        # then the project_context plan gate.
+        project = await _accessible_project(ctx, pid)
+        if project is None:
+            targets.append(
+                {"id": pid, "name": pid, "change": "skipped", "reason": "not_accessible"}
+            )
+            continue
+        if not await user_can_edit_project(ctx.db, ctx.user.id, project):
+            targets.append(
+                {"id": pid, "name": project.name, "change": "skipped", "reason": "not_editor"}
+            )
+            continue
+        before = bool(project.auto_narrative)
+        if before != enabled:
+            if user_ctx is None:
+                user_ctx = await build_user_context(ctx.user, ctx.db)
+            try:
+                await check_auto_narrative_gate(project, ctx=user_ctx, db=ctx.db)
+            except HTTPException as exc:
+                if exc.status_code != 403:
+                    raise
+                targets.append(
+                    {
+                        "id": pid,
+                        "name": project.name,
+                        "change": "skipped",
+                        "reason": "upgrade_required",
+                    }
+                )
+                continue
+        if before == enabled:
+            targets.append(
+                {
+                    "id": pid,
+                    "name": project.name,
+                    "change": "unchanged",
+                    "before": before,
+                    "after": enabled,
+                }
+            )
+        else:
+            targets.append(
+                {
+                    "id": pid,
+                    "name": project.name,
+                    "change": "will_change",
+                    "before": before,
+                    "after": enabled,
+                }
+            )
+            will_change.append(pid)
+
+    if not will_change:
+        return ToolOutput(
+            "Nothing to change.\n" + _format_action_targets(targets),
+            refs=_refs(project_ids=project_ids),
+        )
+
+    summary = f"Set auto-narrative {'on' if enabled else 'off'} for {len(will_change)} project(s)"
+    return _propose_action(
+        ctx,
+        kind="set_auto_narrative",
+        params={"project_ids": will_change, "enabled": enabled},
+        targets=targets,
+        summary=summary,
+    )
+
+
+async def _trash_sessions(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    session_ids = _session_ids_arg(args)
+    reason = _optional_str(args, "reason")
+
+    targets: list[dict[str, Any]] = []
+    will_change: list[str] = []
+    for sid in session_ids:
+        session = (
+            await ctx.db.execute(select(Session).where(Session.id == sid))
+        ).scalar_one_or_none()
+        if session is None or session.user_id != ctx.user.id:
+            targets.append(
+                {"id": sid, "name": sid, "change": "skipped", "reason": "not_owned"}
+            )
+            continue
+        if session.is_deleted:
+            targets.append(
+                {"id": sid, "name": _session_name(session), "change": "skipped", "reason": "already_trashed"}
+            )
+            continue
+        if ctx.scope.session_ids and sid not in ctx.scope.session_ids:
+            targets.append(
+                {"id": sid, "name": _session_name(session), "change": "skipped", "reason": "not_in_scope"}
+            )
+            continue
+        if ctx.scope.project_id is not None and session.project_id != ctx.scope.project_id:
+            targets.append(
+                {"id": sid, "name": _session_name(session), "change": "skipped", "reason": "not_in_scope"}
+            )
+            continue
+        targets.append(
+            {
+                "id": sid,
+                "name": _session_name(session),
+                "change": "will_change",
+                "before": "active",
+                "after": "trashed",
+                "tool": session.source_tool,
+                "created_at": (
+                    _as_utc(session.created_at).isoformat() if session.created_at else None
+                ),
+            }
+        )
+        will_change.append(sid)
+
+    if not will_change:
+        return ToolOutput(
+            "Nothing to change.\n" + _format_action_targets(targets),
+            refs=_refs(session_ids=session_ids),
+        )
+
+    summary = f"Move {len(will_change)} session(s) to Trash"
+    params: dict[str, Any] = {"session_ids": will_change}
+    if reason:
+        # Model-written free text: stored and audited, so redacted first.
+        params["reason"] = redact(reason, ctx.dlp_policy)[:500]
+    return _propose_action(
+        ctx,
+        kind="trash_sessions",
+        params=params,
+        targets=targets,
+        summary=summary,
+    )
+
+
+async def _search_sessionfs_docs(
+    ctx: HelperContext, args: dict[str, Any]
+) -> ToolOutput:
+    """Answer "how do I …?" from the official SessionFS docs (read-only)."""
+    # Bound the work a query can cause: the first 500 characters and the
+    # first 32 distinct words (docs.search caps its stemmed terms again).
+    words = _require_str(args, "query")[:MAX_QUERY_CHARS].split()
+    query = " ".join(list(dict.fromkeys(words))[:MAX_QUERY_TERMS])
+    limit = _capped_int(
+        args, "limit", MAX_DOC_SEARCH_RESULTS, 1, MAX_DOC_SEARCH_RESULTS
+    )
+    results = get_docs_index().search(query, limit)
+    if not results:
+        return ToolOutput("No SessionFS docs matched that query.", refs=_refs())
+
+    lines: list[str] = []
+    for r in results:
+        marker = f"[doc:{r['slug']}"
+        if r["anchor"]:
+            marker += f"#{r['anchor']}"
+        marker += "]"
+        heading = (
+            f"{r['page_title']} › {r['heading']}" if r["heading"] else r["page_title"]
+        )
+        lines.append(f"{marker} {heading}\n{r['url']}\n{r['excerpt']}")
+    return ToolOutput(
+        "\n\n".join(lines),
+        refs=_refs(doc_slugs=[r["slug"] for r in results]),
+    )
+
+
+async def _get_sessionfs_doc(
+    ctx: HelperContext, args: dict[str, Any]
+) -> ToolOutput:
+    """Return one docs page (or a single section when ``anchor`` is given)."""
+    slug = _require_str(args, "slug")
+    anchor = _optional_str(args, "anchor")
+    doc = get_docs_index().get(slug, anchor)
+    if doc is None:
+        suggestions = get_docs_index().close_slugs(slug, 10)
+        text = f"Doc '{slug}' not found."
+        if suggestions:
+            text += "\nDid you mean one of these?\n" + "\n".join(
+                f"- {s}" for s in suggestions
+            )
+        return ToolOutput(text, refs=_refs())
+
+    marker = f"[doc:{doc['slug']}"
+    if doc["anchor"]:
+        marker += f"#{doc['anchor']}"
+    marker += "]"
+    heading = (
+        f"{doc['page_title']} › {doc['heading']}" if doc["heading"] else doc["page_title"]
+    )
+    return ToolOutput(
+        f"{marker} {heading}\n{doc['url']}\n{doc['text']}",
+        refs=_refs(doc_slugs=[doc["slug"]]),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
 
@@ -874,6 +1319,105 @@ TOOLS: dict[str, HelperTool] = {
                 "additionalProperties": False,
             },
             handler=_sessions_touching_path,
+        ),
+        HelperTool(
+            name="list_projects",
+            description="Projects the caller can access, with scope, plan tier and auto_narrative.",
+            input_schema={"type": "object", "properties": {}, "additionalProperties": False},
+            handler=_list_projects,
+        ),
+        HelperTool(
+            name="get_project_settings",
+            description="A project's auto_narrative and knowledge-base settings.",
+            input_schema={
+                "type": "object",
+                "properties": {"project_id": {"type": "string"}},
+                "required": ["project_id"],
+                "additionalProperties": False,
+            },
+            handler=_get_project_settings,
+        ),
+        HelperTool(
+            name="set_project_auto_narrative",
+            description=(
+                "PROPOSE turning a project's auto-narrative on or off. Nothing "
+                "changes until the user confirms the proposal in the dashboard."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "project_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": MAX_ACTION_TARGETS,
+                    },
+                    "enabled": {"type": "boolean"},
+                },
+                "required": ["project_ids", "enabled"],
+                "additionalProperties": False,
+            },
+            handler=_set_project_auto_narrative,
+        ),
+        HelperTool(
+            name="search_sessionfs_docs",
+            description=(
+                "Search the official SessionFS docs for how-to, setup, commands, "
+                "settings, plans and troubleshooting questions."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_DOC_SEARCH_RESULTS,
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+            handler=_search_sessionfs_docs,
+        ),
+        HelperTool(
+            name="get_sessionfs_doc",
+            description=(
+                "Return one SessionFS docs page, or a single section when the "
+                "anchor is given."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "slug": {"type": "string"},
+                    "anchor": {"type": "string"},
+                },
+                "required": ["slug"],
+                "additionalProperties": False,
+            },
+            handler=_get_sessionfs_doc,
+        ),
+        HelperTool(
+            name="trash_sessions",
+            description=(
+                "PROPOSE moving the caller's own sessions to Trash (restorable for "
+                "30 days). Nothing changes until the user confirms in the dashboard."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "session_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "minItems": 1,
+                        "maxItems": MAX_ACTION_TARGETS,
+                    },
+                    "reason": {"type": "string"},
+                },
+                "required": ["session_ids"],
+                "additionalProperties": False,
+            },
+            handler=_trash_sessions,
         ),
     ]
 }

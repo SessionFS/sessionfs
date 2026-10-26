@@ -65,6 +65,7 @@ from uuid import uuid4
 
 import httpx
 
+from sessionfs.judge import llm_errors
 from sessionfs.judge.provider_registry import get_provider
 from sessionfs.judge.providers import (
     _ANTHROPIC_URL,
@@ -157,11 +158,31 @@ Message = dict[str, Any]
 
 
 class ProviderError(Exception):
-    """An HTTP error from a provider. Carries only a sanitised message."""
+    """An HTTP error from a provider. Carries only a sanitised message.
 
-    def __init__(self, status: int, message: str) -> None:
+    ``code`` is the readable failure class from ``llm_errors`` (for example
+    ``endpoint_not_api`` or ``invalid_key``) when one could be determined.
+    """
+
+    def __init__(
+        self,
+        status: int,
+        message: str,
+        code: str | None = None,
+        *,
+        definitive: bool = False,
+        detail: str | None = None,
+    ) -> None:
         self.status = status
         self.message = message
+        self.code = code
+        # A sanitised snippet of the provider's own JSON error message (or
+        # our own text), safe to show; ``None`` when the body wasn't JSON.
+        self.detail = detail
+        # The reply is certain: for ``endpoint_not_api`` it proves the
+        # address is not an API (405, a web page, a console host); for
+        # ``invalid_key`` it is a 401 or a 400 that says the key is invalid.
+        self.definitive = definitive
         super().__init__(f"Provider error {status}: {message}")
 
 
@@ -210,9 +231,73 @@ def _make_client(timeout: float) -> httpx.AsyncClient:
     return httpx.AsyncClient(timeout=timeout)
 
 
-async def _iter_sse_json(resp: httpx.Response) -> AsyncIterator[dict[str, Any]]:
-    """Yield parsed JSON objects from ``data:`` lines of an SSE stream."""
-    async for raw in resp.aiter_lines():
+async def _iter_lines_capped(
+    chunks: AsyncIterator[bytes], max_bytes: int | None
+) -> AsyncIterator[str]:
+    """Split a byte stream into lines, refusing more than ``max_bytes``
+    (``None`` = no cap)."""
+    import codecs
+
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    buffer = ""
+    total = 0
+    async for chunk in chunks:
+        total += len(chunk)
+        if max_bytes is not None and total > max_bytes:
+            raise ProviderError(
+                502,
+                "The provider's response was too large.",
+                llm_errors.PROVIDER_ERROR,
+                detail="The provider's response was too large.",
+            )
+        buffer += decoder.decode(chunk)
+        while "\n" in buffer:
+            line, buffer = buffer.split("\n", 1)
+            yield line.rstrip("\r")
+    buffer += decoder.decode(b"", final=True)
+    if buffer:
+        yield buffer.rstrip("\r")
+
+
+async def _iter_sse_json(
+    resp: httpx.Response, max_bytes: int | None = None
+) -> AsyncIterator[dict[str, Any]]:
+    """Yield parsed JSON objects from ``data:`` lines of an SSE stream.
+
+    ``max_bytes`` caps the whole body (the connection test sets it); ``None``
+    keeps the historical unbounded read for long helper answers.
+    """
+    lines = (
+        resp.aiter_lines()
+        if max_bytes is None
+        else _iter_lines_capped(resp.aiter_bytes(), max_bytes)
+    )
+    async for data in _sse_json_from_lines(lines):
+        yield data
+
+
+async def _iter_sse_json_bytes(
+    chunks: AsyncIterator[bytes], max_bytes: int | None = None
+) -> AsyncIterator[dict[str, Any]]:
+    """``_iter_sse_json`` over an explicit byte iterator (already-peeked bytes)."""
+    async for data in _sse_json_from_lines(_iter_lines_capped(chunks, max_bytes)):
+        yield data
+
+
+async def _prefixed(prefix: bytes, rest: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    if prefix:
+        yield prefix
+    async for chunk in rest:
+        yield chunk
+
+
+def _looks_like_sse(head: bytes) -> bool:
+    text = head.lstrip()[:16]
+    return text.startswith(b"data:") or text.startswith(b":") or text.startswith(b"event:")
+
+
+async def _sse_json_from_lines(lines: AsyncIterator[str]) -> AsyncIterator[dict[str, Any]]:
+    async for raw in lines:
         line = raw.strip()
         if not line or line.startswith(":"):
             continue
@@ -231,22 +316,7 @@ async def _iter_sse_json(resp: httpx.Response) -> AsyncIterator[dict[str, Any]]:
 
 def _extract_error_message(raw: str) -> str:
     """Pull a short, human-readable message out of a provider error body."""
-    try:
-        data = json.loads(raw)
-    except Exception:
-        data = None
-    if isinstance(data, dict):
-        err = data.get("error")
-        if isinstance(err, dict):
-            msg = err.get("message")
-            if isinstance(msg, str) and msg:
-                return msg
-        elif isinstance(err, str) and err:
-            return err
-        msg = data.get("message")
-        if isinstance(msg, str) and msg:
-            return msg
-    return raw.strip() or "unknown error"
+    return llm_errors.extract_error_message(raw)
 
 
 def _sanitise_error_message(message: str, api_key: str) -> str:
@@ -271,21 +341,117 @@ def _raise_stream_error(err: Any, api_key: str) -> None:
             message = msg
     elif isinstance(err, str) and err:
         message = err
-    raise ProviderError(status, _sanitise_error_message(message, api_key))
+    clean = _sanitise_error_message(message, api_key)
+    raise ProviderError(status, clean, detail=clean if message != "unknown error" else None)
+
+
+_ERROR_BODY_MAX_BYTES = 64 * 1024
+_JSON_COMPLETION_MAX_BYTES = 8 * 1024 * 1024
+
+
+async def _json_labelled_body(
+    resp: httpx.Response, max_bytes: int | None
+) -> tuple[Any, AsyncIterator[dict[str, Any]] | None]:
+    """Handle a 2xx body labelled ``application/json``.
+
+    Returns ``(completion, None)`` for a non-streamed chat completion, or
+    ``(None, sse_events)`` when the body is really an SSE stream mislabelled
+    as JSON (some gateways do this). The stream case is detected from the
+    first bytes, so it keeps streaming; a buffered body that isn't valid
+    JSON is also parsed as SSE lines, exactly as the normal path would.
+    """
+    chunks = resp.aiter_bytes()
+    head = b""
+    async for chunk in chunks:
+        head += chunk
+        if head.strip():
+            break
+    if _looks_like_sse(head):
+        return None, _iter_sse_json_bytes(_prefixed(head, chunks), max_bytes)
+    limit = max_bytes or _JSON_COMPLETION_MAX_BYTES
+    parts = [head]
+    size = len(head)
+    async for chunk in chunks:
+        size += len(chunk)
+        if size > limit:
+            raise ProviderError(
+                502,
+                "The provider's response was too large.",
+                llm_errors.PROVIDER_ERROR,
+                detail="The provider's response was too large.",
+            )
+        parts.append(chunk)
+    body = b"".join(parts)
+    try:
+        return json.loads(body), None
+    except ValueError:
+
+        async def single() -> AsyncIterator[bytes]:
+            yield body
+
+        return None, _iter_sse_json_bytes(single(), max_bytes)
 
 
 async def _read_error_body(resp: httpx.Response) -> str:
-    """Read a provider error body as text without ever raising."""
+    """Read (at most 64 KiB of) a provider error body as text, never raising."""
+    chunks: list[bytes] = []
+    size = 0
     try:
-        raw = await resp.aread()
+        async for chunk in resp.aiter_bytes():
+            chunks.append(chunk)
+            size += len(chunk)
+            if size >= _ERROR_BODY_MAX_BYTES:
+                break
     except Exception:
-        return ""
-    return raw.decode("utf-8", errors="replace")
+        pass
+    return b"".join(chunks)[:_ERROR_BODY_MAX_BYTES].decode("utf-8", errors="replace")
 
 
-async def _raise_provider_error(resp: httpx.Response, api_key: str) -> None:
-    message = _extract_error_message(await _read_error_body(resp))
-    raise ProviderError(resp.status_code, _sanitise_error_message(message, api_key))
+async def _raise_provider_error(
+    resp: httpx.Response,
+    api_key: str,
+    *,
+    base_url: str | None = None,
+    provider: str | None = None,
+    body: str | None = None,
+) -> None:
+    """Raise a :class:`ProviderError` for an HTTP error response.
+
+    ``base_url`` is the caller-supplied endpoint, if any. When that endpoint
+    is not an API (404/405/HTML — e.g. a provider's web console), the message
+    names the right API address instead of echoing the upstream body.
+    """
+    if body is None:
+        body = await _read_error_body(resp)
+    content_type = resp.headers.get("content-type", "")
+    code = llm_errors.classify_http_failure(
+        resp.status_code, body, content_type, base_url=base_url
+    )
+    definitive = False
+    if code == llm_errors.ENDPOINT_NOT_API:
+        definitive = llm_errors.is_definitive_not_api(
+            resp.status_code, body, content_type, base_url=base_url
+        )
+        message = llm_errors.endpoint_not_api_message(
+            base_url, provider, definitive=definitive
+        )
+    else:
+        # Only the provider's own JSON error field is surfaced; an HTML page
+        # or a proxy's plain-text body is never echoed.
+        own = llm_errors.json_error_message(body)
+        message = (
+            _sanitise_error_message(own, api_key)
+            if own
+            else f"The provider returned HTTP {resp.status_code}."
+        )
+        detail = message if own else None
+        definitive = code == llm_errors.INVALID_KEY and llm_errors.is_definitive_invalid_key(
+            resp.status_code, body
+        )
+        raise ProviderError(
+            resp.status_code, message, code, detail=detail, definitive=definitive
+        )
+    raise ProviderError(resp.status_code, message, code, definitive=definitive)
 
 
 # ---------------------------------------------------------------------------
@@ -514,7 +680,7 @@ async def _stream_openai_compatible(
     messages: list[Message],
     tools: list[ToolSpec],
     api_key: str,
-    temperature: float,
+    temperature: float | None,
     max_tokens: int,
     timeout: float,
     token_field: str = "max_completion_tokens",
@@ -524,6 +690,11 @@ async def _stream_openai_compatible(
     reasoning_object: bool = False,
     echo_reasoning: bool = False,
     thinking_disable_on_replay: bool = False,
+    top_p: float | None = None,
+    reasoning_effort_value: str | None = None,
+    custom_base_url: str | None = None,
+    provider_hint: str | None = None,
+    max_response_bytes: int | None = None,
 ) -> AsyncIterator[StreamEvent]:
     url = _chat_completions_url(url)
 
@@ -558,6 +729,8 @@ async def _stream_openai_compatible(
             reasoning_effort=reasoning_effort,
             reasoning_object=reasoning_object,
             drop=drop,
+            top_p=top_p,
+            reasoning_effort_value=reasoning_effort_value,
         )
         if tools:
             body["tools"] = _openai_tools(tools)
@@ -568,6 +741,7 @@ async def _stream_openai_compatible(
     input_tokens = 0
     output_tokens = 0
     finish_reason: str | None = None
+    saw_data = False
 
     drop = _omitted_params(url, model)
 
@@ -576,17 +750,72 @@ async def _stream_openai_compatible(
             body = build(drop)
             async with client.stream("POST", url, json=body, headers=headers) as resp:
                 if resp.status_code >= 400:
+                    error_body = await _read_error_body(resp)
                     if attempt == 0:
-                        new_drop = _classify_param_error(
-                            resp.status_code, await _read_error_body(resp)
-                        )
+                        new_drop = _classify_param_error(resp.status_code, error_body)
                         effective = new_drop - drop
                         if effective and any(_has_param(body, param) for param in effective):
                             drop = drop | new_drop
                             _remember_omission(url, model, drop)
                             continue
-                    await _raise_provider_error(resp, api_key)
-                async for data in _iter_sse_json(resp):
+                    await _raise_provider_error(
+                        resp,
+                        api_key,
+                        base_url=custom_base_url,
+                        provider=provider_hint,
+                        body=error_body,
+                    )
+                if custom_base_url and llm_errors.looks_like_html(
+                    "", resp.headers.get("content-type", "")
+                ):
+                    # A web page, not an API (a console URL that answers 200).
+                    raise ProviderError(
+                        resp.status_code,
+                        llm_errors.endpoint_not_api_message(custom_base_url, provider_hint),
+                        llm_errors.ENDPOINT_NOT_API,
+                        definitive=True,
+                    )
+                content_type = resp.headers.get("content-type", "").lower()
+                events: AsyncIterator[dict[str, Any]] | None = None
+                completion: Any = None
+                is_json_label = "json" in content_type and "event-stream" not in content_type
+                if is_json_label:
+                    # Some gateways ignore ``stream: true`` and answer with one
+                    # JSON chat completion (accepted as a single-chunk stream);
+                    # others send a real SSE stream labelled as JSON.
+                    completion, events = await _json_labelled_body(resp, max_response_bytes)
+                if is_json_label and events is None:
+                    if isinstance(completion, dict) and "error" in completion:
+                        _raise_stream_error(completion["error"], api_key)
+                    choices = (completion or {}).get("choices") if isinstance(completion, dict) else None
+                    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                        message = choices[0].get("message")
+                        if isinstance(message, dict):
+                            saw_data = True
+                            if isinstance(message.get("content"), str) and message["content"]:
+                                yield TextDelta(message["content"])
+                            if isinstance(message.get("reasoning_content"), str):
+                                reasoning_parts.append(message["reasoning_content"])
+                            for idx, call in enumerate(message.get("tool_calls") or []):
+                                if not isinstance(call, dict):
+                                    continue
+                                fn = call.get("function") or {}
+                                args = fn.get("arguments") or ""
+                                tool_frags[idx] = {
+                                    "id": str(call.get("id") or ""),
+                                    "name": str(fn.get("name") or ""),
+                                    "args": args if isinstance(args, str) else json.dumps(args),
+                                }
+                            finish_reason = choices[0].get("finish_reason") or "stop"
+                    usage = completion.get("usage") if isinstance(completion, dict) else None
+                    if isinstance(usage, dict):
+                        input_tokens = usage.get("prompt_tokens", 0)
+                        output_tokens = usage.get("completion_tokens", 0)
+                    break
+                if events is None:
+                    events = _iter_sse_json(resp, max_response_bytes)
+                async for data in events:
+                    saw_data = True
                     if "error" in data:
                         _raise_stream_error(data["error"], api_key)
                     choices = data.get("choices") or []
@@ -618,6 +847,15 @@ async def _stream_openai_compatible(
             break
 
     if finish_reason is None:
+        if custom_base_url and not saw_data:
+            # Nothing that looks like a chat-completions stream came back:
+            # the address answers, but it isn't an OpenAI-compatible API.
+            raise ProviderError(
+                502,
+                llm_errors.endpoint_not_api_message(custom_base_url, provider_hint),
+                llm_errors.ENDPOINT_NOT_API,
+                definitive=True,
+            )
         raise ProviderError(502, "Provider stream ended before a finish_reason.")
 
     for idx in sorted(tool_frags):
@@ -646,9 +884,11 @@ async def _stream_anthropic(
     messages: list[Message],
     tools: list[ToolSpec],
     api_key: str,
-    temperature: float,
+    temperature: float | None,
     max_tokens: int,
     timeout: float,
+    top_p: float | None = None,
+    max_response_bytes: int | None = None,
 ) -> AsyncIterator[StreamEvent]:
     headers = {
         "x-api-key": api_key,
@@ -658,11 +898,16 @@ async def _stream_anthropic(
     body: dict[str, Any] = {
         "model": model,
         "max_tokens": max_tokens,
-        "temperature": temperature,
         "system": system,
         "messages": _anthropic_messages(messages),
         "stream": True,
     }
+    # Anthropic rejects temperature and top_p together on current models:
+    # when the caller set top_p, it wins and temperature is not sent.
+    if top_p is not None:
+        body["top_p"] = top_p
+    elif temperature is not None:
+        body["temperature"] = temperature
     if tools:
         body["tools"] = _anthropic_tools(tools)
 
@@ -676,7 +921,7 @@ async def _stream_anthropic(
         async with client.stream("POST", _ANTHROPIC_URL, json=body, headers=headers) as resp:
             if resp.status_code >= 400:
                 await _raise_provider_error(resp, api_key)
-            async for data in _iter_sse_json(resp):
+            async for data in _iter_sse_json(resp, max_response_bytes):
                 event_type = data.get("type")
                 if event_type == "error":
                     _raise_stream_error(data.get("error"), api_key)
@@ -740,16 +985,23 @@ async def _stream_google(
     messages: list[Message],
     tools: list[ToolSpec],
     api_key: str,
-    temperature: float,
+    temperature: float | None,
     max_tokens: int,
     timeout: float,
+    top_p: float | None = None,
+    max_response_bytes: int | None = None,
 ) -> AsyncIterator[StreamEvent]:
     url = _GOOGLE_STREAM_URL_TEMPLATE.format(model=model)
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
+    generation_config: dict[str, Any] = {"maxOutputTokens": max_tokens}
+    if temperature is not None:
+        generation_config["temperature"] = temperature
+    if top_p is not None:
+        generation_config["topP"] = top_p
     body: dict[str, Any] = {
         "system_instruction": {"parts": [{"text": system}]},
         "contents": _google_messages(messages),
-        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": temperature},
+        "generationConfig": generation_config,
     }
     if tools:
         body["tools"] = _google_tools(tools)
@@ -763,7 +1015,7 @@ async def _stream_google(
         async with client.stream("POST", url, json=body, headers=headers) as resp:
             if resp.status_code >= 400:
                 await _raise_provider_error(resp, api_key)
-            async for data in _iter_sse_json(resp):
+            async for data in _iter_sse_json(resp, max_response_bytes):
                 candidates = data.get("candidates") or []
                 if candidates:
                     content = candidates[0].get("content") or {}
@@ -807,15 +1059,19 @@ async def stream_chat(
     api_key: str,
     provider: str | None = None,
     base_url: str | None = None,
-    temperature: float = 0,
+    temperature: float | None = 0,
     max_tokens: int = 4096,
     timeout: float = 120,
+    top_p: float | None = None,
+    reasoning_effort_value: str | None = None,
+    max_response_bytes: int | None = None,
 ) -> AsyncIterator[StreamEvent]:
     """Stream a single model turn, translating neutral messages/tools and back.
 
     ``base_url`` forces the OpenAI-compatible chat-completions format (matching
     ``_call_openai_compatible``). Otherwise the provider is auto-detected from
-    the model name when not given. Reasoning models omit temperature.
+    the model name when not given. Reasoning models omit temperature. ``top_p``
+    and ``reasoning_effort_value`` are only sent when set.
     """
     if provider is None:
         provider = _detect_provider(model)
@@ -831,7 +1087,9 @@ async def stream_chat(
         try:
             await _check_base_url(base_url)
         except Exception as exc:  # noqa: BLE001 - never surface resolver detail
-            raise ProviderError(400, "The configured LLM endpoint is not allowed.") from exc
+            raise ProviderError(
+                400, "The configured LLM endpoint is not allowed.", llm_errors.ENDPOINT_BLOCKED
+            ) from exc
         turn = _stream_openai_compatible(
             url=base_url,
             model=model,
@@ -842,6 +1100,11 @@ async def stream_chat(
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
+            top_p=top_p,
+            reasoning_effort_value=reasoning_effort_value,
+            custom_base_url=base_url,
+            provider_hint=provider,
+            max_response_bytes=max_response_bytes,
         )
     else:
         profile = get_provider(provider)
@@ -857,6 +1120,8 @@ async def stream_chat(
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
+                top_p=top_p,
+                max_response_bytes=max_response_bytes,
             )
         elif profile.api_style == "google":
             turn = _stream_google(
@@ -868,6 +1133,8 @@ async def stream_chat(
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
+                top_p=top_p,
+                max_response_bytes=max_response_bytes,
             )
         else:
             turn = _stream_openai_compatible(
@@ -887,6 +1154,9 @@ async def stream_chat(
                 reasoning_object=profile.reasoning_object,
                 echo_reasoning=profile.echo_reasoning,
                 thinking_disable_on_replay=profile.thinking_disable_on_replay,
+                top_p=top_p,
+                reasoning_effort_value=reasoning_effort_value,
+                max_response_bytes=max_response_bytes,
             )
 
     async for event in turn:
@@ -934,9 +1204,11 @@ async def run_agent(
     max_total_tokens: int = 200_000,
     max_tool_calls_per_turn: int = 8,
     deadline_seconds: float = 300,
-    temperature: float = 0,
+    temperature: float | None = 0,
     max_tokens: int = 4096,
     timeout: float = 120,
+    top_p: float | None = None,
+    reasoning_effort_value: str | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run the agent loop: stream turns and execute requested tools until it stops.
 
@@ -978,6 +1250,8 @@ async def run_agent(
                 temperature=temperature,
                 max_tokens=max_tokens,
                 timeout=timeout,
+                top_p=top_p,
+                reasoning_effort_value=reasoning_effort_value,
             ),
             deadline,
         ):

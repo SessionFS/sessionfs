@@ -38,7 +38,15 @@ from sessionfs.server.db.models import (
 from sessionfs.server.llm_keys import decrypt_llm_key, encrypt_llm_key
 from sessionfs.server.roles import has_minimum_role
 from sessionfs.server.routes.llm_providers import validate_provider_or_422
-from sessionfs.server.routes.settings import _check_llm_base_url_or_400
+from sessionfs.server.routes.settings import (
+    LlmConnectionTestRequest,
+    LlmConnectionTestResponse,
+    SaveWarning,
+    _check_llm_base_url_or_400,
+    release_transaction,
+    resolve_test_target,
+)
+from sessionfs.server.services import llm_connection
 from sessionfs.server.tier_gate import resolve_org_plan_tier
 from sessionfs.server.tiers import get_features_for_tier, get_minimum_tier_for_feature
 
@@ -66,6 +74,34 @@ class OrgLlmSettingsResponse(BaseModel):
     base_url: str | None
     enabled: bool
     plan_includes_helper: bool
+
+
+class OrgLlmSettingsSaveResponse(OrgLlmSettingsResponse):
+    # Transient connection-check failures (the settings were saved anyway).
+    warnings: list[SaveWarning] = Field(default_factory=list)
+
+
+def _require_key_for_endpoint_change(
+    row: OrgLlmSettings | None, body: OrgLlmSettingsRequest, key_provided: bool
+) -> None:
+    """A stored key may only ever be sent to the endpoint it was saved for.
+
+    Changing the provider OR the base_url without re-entering the key would
+    let an admin who cannot read the key point it at a host they control.
+    """
+    if (
+        row is not None
+        and row.encrypted_api_key
+        and (row.provider != body.provider or (row.base_url or None) != (body.base_url or None))
+        and not key_provided
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "api_key_required",
+                "message": "Changing the provider or endpoint URL requires a new API key.",
+            },
+        )
 
 
 def _insufficient_role(current_role: str) -> dict:
@@ -241,13 +277,69 @@ async def get_org_llm_settings(
     )
 
 
-@router.put("/{org_id}/llm-settings", response_model=OrgLlmSettingsResponse)
+@router.post("/{org_id}/llm-settings/test", response_model=LlmConnectionTestResponse)
+async def test_org_llm_connection(
+    org_id: str,
+    body: LlmConnectionTestRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """One minimal chat request with the given (or stored) org helper key.
+
+    Owner/admin only, Enterprise only. Without ``api_key`` the stored org
+    key is used, and only for exactly the provider/endpoint it was saved
+    with (400 ``key_required`` otherwise). 429 ``test_rate_limited``.
+    """
+    await _authorize_role(db, user, org_id)
+    plan = await resolve_org_plan_tier(org_id, db)
+    if _FEATURE not in get_features_for_tier(plan):
+        _require_enterprise(plan)
+
+    row = (
+        await db.execute(
+            select(OrgLlmSettings).where(OrgLlmSettings.org_id == org_id)
+        )
+    ).scalar_one_or_none()
+    provider, model, base_url = resolve_test_target(
+        body,
+        saved_provider=row.provider if row else None,
+        saved_model=row.model if row else None,
+        saved_base_url=row.base_url if row else None,
+    )
+
+    api_key = (body.api_key or "").strip()
+    if not api_key:
+        stored = ""
+        if row is not None and row.encrypted_api_key:
+            try:
+                stored = decrypt_llm_key(row.encrypted_api_key)
+            except Exception:
+                stored = ""
+        if row is not None and stored:
+            if not llm_connection.saved_key_bound_to(
+                row.provider, row.base_url, provider=provider, base_url=base_url
+            ):
+                raise HTTPException(status_code=400, detail=llm_connection.KEY_REQUIRED)
+            api_key = stored
+        elif not base_url:
+            raise HTTPException(status_code=400, detail=llm_connection.KEY_REQUIRED)
+
+    if not llm_connection.take_test_slot(user.id):
+        raise HTTPException(status_code=429, detail=llm_connection.RATE_LIMITED)
+    await release_transaction(db)
+    result = await llm_connection.run_test(
+        provider=provider, model=model, api_key=api_key, base_url=base_url
+    )
+    return result.to_dict()
+
+
+@router.put("/{org_id}/llm-settings", response_model=OrgLlmSettingsSaveResponse)
 async def put_org_llm_settings(
     org_id: str,
     body: OrgLlmSettingsRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> OrgLlmSettingsResponse:
+) -> OrgLlmSettingsSaveResponse:
     """Create or replace the org helper key. Admin only.
 
     An omitted/empty ``api_key`` keeps the stored key (or stores no key on
@@ -293,22 +385,46 @@ async def put_org_llm_settings(
 
     stripped_key, key_provided = _validated_api_key(body.api_key)
 
-    # A stored key may only ever be sent to the endpoint it was saved for.
-    # Changing the provider OR the base_url without re-entering the key would
-    # let an admin who cannot read the key point it at a host they control.
-    if (
-        row is not None
-        and row.encrypted_api_key
-        and (row.provider != body.provider or (row.base_url or None) != (body.base_url or None))
-        and not key_provided
-    ):
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "code": "api_key_required",
-                "message": "Changing the provider or endpoint URL requires a new API key.",
-            },
-        )
+    _require_key_for_endpoint_change(row, body, key_provided)
+
+    # A custom endpoint that is new, or saved with a new key, gets one test
+    # request before it is stored (422 for a config that can never work,
+    # warnings for transient failures).
+    warnings: list[dict] = []
+    if body.base_url and not disable_only:
+        base_changed = row is None or llm_connection.normalise_base_url(
+            row.base_url
+        ) != llm_connection.normalise_base_url(body.base_url)
+        if base_changed or key_provided:
+            test_key = stripped_key
+            if not key_provided and row is not None and row.encrypted_api_key:
+                # Same endpoint and provider (enforced above): the stored key.
+                try:
+                    test_key = decrypt_llm_key(row.encrypted_api_key)
+                except Exception:
+                    test_key = ""
+            user_id = user.id
+            await release_transaction(db)
+            warnings = await llm_connection.save_time_check(
+                user_id=user_id,
+                provider=body.provider,
+                model=body.model,
+                api_key=test_key,
+                base_url=body.base_url,
+                base_changed=base_changed,
+            )
+            # Re-read after the outbound call: membership and the stored row
+            # may have changed meanwhile, so re-authorize and re-apply the
+            # key/endpoint binding against the current row.
+            org, role = await _authorize_role(db, user, org_id)
+            row = (
+                await db.execute(
+                    select(OrgLlmSettings)
+                    .where(OrgLlmSettings.org_id == org_id)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+            _require_key_for_endpoint_change(row, body, key_provided)
 
     before = _snapshot(row)
     if row is None:
@@ -338,7 +454,7 @@ async def put_org_llm_settings(
     )
     await db.commit()
 
-    return OrgLlmSettingsResponse(
+    return OrgLlmSettingsSaveResponse(
         provider=row.provider,
         model=row.model,
         has_api_key=bool(row.encrypted_api_key),
@@ -346,6 +462,7 @@ async def put_org_llm_settings(
         base_url=row.base_url,
         enabled=row.enabled,
         plan_includes_helper=plan_includes_helper,
+        warnings=[SaveWarning(**w) for w in warnings],
     )
 
 

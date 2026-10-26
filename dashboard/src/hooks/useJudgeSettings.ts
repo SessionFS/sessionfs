@@ -1,6 +1,7 @@
+import { useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
-import type { JudgeSettings } from '../api/client';
+import type { JudgeSettings, LlmConnectionTestBody } from '../api/client';
 
 export function useJudgeSettings() {
   const { auth } = useAuth();
@@ -44,4 +45,13 @@ export function useClearJudgeSettings() {
       });
     },
   });
+}
+
+/** "Test connection" for the personal judge key form (POST /settings/judge/test). */
+export function useJudgeConnectionTester() {
+  const { auth } = useAuth();
+  return useCallback(
+    (body: LlmConnectionTestBody) => auth!.client.testJudgeConnection(body),
+    [auth],
+  );
 }

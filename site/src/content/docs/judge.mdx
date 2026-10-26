@@ -35,6 +35,21 @@ sfs audit ses_abc --base-url http://localhost:11434/v1 --model llama3
 sfs audit ses_abc --base-url http://gpu-server:8000/v1 --model my-model
 ```
 
+## Test connection and Base URL
+
+**Settings → Data protection → Security review model** has a **Test connection** button. It sends one tiny chat request ("ping", a few output tokens) with the values in the form, through the same code path audits and the session helper use, and shows the endpoint, model and latency, or a readable reason it failed. If the key field is empty, the saved key is used, but only for the exact provider and Base URL it was saved with; testing a different provider or address asks you to enter the key.
+
+Leave **Base URL** empty for a listed provider: requests then go to that provider's own API (the field's placeholder shows it). Set it only for LiteLLM, vLLM, Ollama, or another OpenAI-compatible gateway. A Base URL must be the API address, not the provider's website or console:
+
+| Wrong (console / website) | Right |
+|---------------------------|-------|
+| `https://platform.deepseek.com` | `https://api.deepseek.com` (or leave empty) |
+| `https://platform.openai.com` | `https://api.openai.com/v1` (or leave empty) |
+| `https://openrouter.ai/settings/keys` | `https://openrouter.ai/api/v1` (or leave empty) |
+| `https://console.anthropic.com`, `https://aistudio.google.com` | leave empty |
+
+Saving a new Base URL (or a new key with one) runs the same test first. A rejected key (401) or a blocked address is refused with a message on the field, and so is a new Base URL that clearly isn't a chat API (it answers 405, returns a web page, or is a provider's console). Anything else still saves and shows a warning: a timeout, rate limit, provider outage (including a proxy's 502/503 page), or a plain 404. Changing only the key on an unchanged Base URL is never blocked by an endpoint failure. Failure reasons: `endpoint_not_api`, `invalid_key`, `access_denied` (a 403 about region or model permissions; it never blocks a save), `model_not_found`, `rate_limited`, `insufficient_balance`, `endpoint_blocked`, `timeout`, `unreachable`, `provider_error`.
+
 ## Auto-audit
 
 Configure automatic auditing in the dashboard Settings or via CLI:

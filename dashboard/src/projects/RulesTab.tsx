@@ -36,7 +36,15 @@ export type { DebouncedTokenInputHandle };
  * Deferred (per brief): rich diff viewer, suggestion moderation, tool-override editor.
  */
 
-export default function RulesTab({ projectId }: { projectId: string }) {
+/** `canEdit` is the project's `can_edit` flag: view-only readers see the
+ *  rules and their compiled history but get no edit or compile controls. */
+export default function RulesTab({
+  projectId,
+  canEdit = true,
+}: {
+  projectId: string;
+  canEdit?: boolean;
+}) {
   const { data: rulesResp, isLoading, error } = useProjectRules(projectId);
   const { data: versionsResp } = useRulesVersions(projectId);
   const updateRules = useUpdateProjectRules(projectId);
@@ -188,6 +196,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
     );
   }
 
+  const controlsLocked = updateRules.isPending || !canEdit;
   const versions = versionsResp?.versions ?? [];
   const latestVersion = versions[0];
   // Latest compiled outputs come from fetching the latest version detail.
@@ -213,13 +222,15 @@ export default function RulesTab({ projectId }: { projectId: string }) {
             <RelativeDate iso={rules.updated_at} />.
           </p>
         </div>
-        <Button
-          onClick={handleCompile}
-          disabled={compileRules.isPending || updateRules.isPending}
-          loading={compileRules.isPending}
-        >
-          Compile
-        </Button>
+        {canEdit && (
+          <Button
+            onClick={handleCompile}
+            disabled={compileRules.isPending || updateRules.isPending}
+            loading={compileRules.isPending}
+          >
+            Compile
+          </Button>
+        )}
       </div>
 
       {/* Static preferences */}
@@ -228,13 +239,13 @@ export default function RulesTab({ projectId }: { projectId: string }) {
           <h3 id="static-prefs-heading" className="text-sm font-semibold text-text-primary">
             Static preferences
           </h3>
-          {!editing && (
+          {!editing && canEdit && (
             <Button variant="ghost" size="sm" onClick={() => setDraft(rules.static_rules ?? '')}>
               Edit
             </Button>
           )}
         </div>
-        {editing ? (
+        {editing && canEdit ? (
           <div>
             <Textarea
               value={draft ?? ''}
@@ -277,7 +288,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
                 key={tool.value}
                 checked={checked}
                 onChange={(e) => toggleTool(tool.value, e.target.checked)}
-                disabled={updateRules.isPending}
+                disabled={controlsLocked}
                 aria-label={`Enable ${tool.label}`}
                 className="!items-center px-3 py-2 border border-border rounded-lg bg-bg-primary hover:bg-surface-hover transition-colors"
                 label={
@@ -302,7 +313,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
         <Checkbox
           checked={rules.include_knowledge}
           onChange={(e) => patchRules({ include_knowledge: e.target.checked })}
-          disabled={updateRules.isPending}
+          disabled={controlsLocked}
           label="Include knowledge claims in compiled rules"
           className="!items-center mb-3"
         />
@@ -319,7 +330,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
                     key={kt.value}
                     checked={checked}
                     onChange={(e) => toggleKnowledgeType(kt.value, e.target.checked)}
-                    disabled={updateRules.isPending}
+                    disabled={controlsLocked}
                     aria-label={`Knowledge type ${kt.label}`}
                     className="!items-center px-2.5 py-1 border border-border rounded-full bg-bg-primary hover:bg-surface-hover transition-colors"
                     label={kt.label}
@@ -332,7 +343,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
               <DebouncedTokenInput
                 ref={knowledgeTokensRef}
                 value={rules.knowledge_max_tokens}
-                disabled={updateRules.isPending}
+                disabled={controlsLocked}
                 ariaLabel="Knowledge injection max tokens"
                 onCommit={(n) => patchRules({ knowledge_max_tokens: n })}
               />
@@ -349,7 +360,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
         <Checkbox
           checked={rules.include_context}
           onChange={(e) => patchRules({ include_context: e.target.checked })}
-          disabled={updateRules.isPending}
+          disabled={controlsLocked}
           label="Include project context sections in compiled rules"
           className="!items-center mb-3"
         />
@@ -366,7 +377,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
                     key={s.value}
                     checked={checked}
                     onChange={(e) => toggleContextSection(s.value, e.target.checked)}
-                    disabled={updateRules.isPending}
+                    disabled={controlsLocked}
                     aria-label={`Context section ${s.label}`}
                     className="!items-center px-2.5 py-1 border border-border rounded-full bg-bg-primary hover:bg-surface-hover transition-colors"
                     label={s.label}
@@ -379,7 +390,7 @@ export default function RulesTab({ projectId }: { projectId: string }) {
               <DebouncedTokenInput
                 ref={contextTokensRef}
                 value={rules.context_max_tokens}
-                disabled={updateRules.isPending}
+                disabled={controlsLocked}
                 ariaLabel="Context injection max tokens"
                 onCommit={(n) => patchRules({ context_max_tokens: n })}
               />

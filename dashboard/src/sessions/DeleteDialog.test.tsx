@@ -29,6 +29,7 @@ const { hooks, mockAuth, mockToast } = vi.hoisted(() => ({
     useUpdateFolder: vi.fn(),
     useDeleteFolder: vi.fn(),
     useSessions: vi.fn(),
+    useSessionModels: vi.fn(),
     useDeletedSessions: vi.fn(),
     useRestoreSession: vi.fn(),
     useDeleteSession: vi.fn(),
@@ -50,6 +51,7 @@ vi.mock('../hooks/useBookmarks', () => ({
 }));
 vi.mock('../hooks/useSessions', () => ({
   useSessions: hooks.useSessions,
+  useSessionModels: hooks.useSessionModels,
   useDeletedSessions: hooks.useDeletedSessions,
   useRestoreSession: hooks.useRestoreSession,
   useDeleteSession: hooks.useDeleteSession,
@@ -270,6 +272,7 @@ describe('Trash view', () => {
 
     mockRestoreMutate = vi.fn();
 
+    hooks.useSessionModels.mockReturnValue({ data: { models: [] }, isLoading: false, error: null });
     hooks.useSessions.mockReturnValue({
       data: { sessions: [baseSession()], total: 1, page: 1, page_size: 20, has_more: false },
       isLoading: false,
@@ -432,6 +435,7 @@ describe('Bulk delete scope dialog', () => {
       baseSession({ id: 'ses_2', title: 'Session 2' }),
     ];
 
+    hooks.useSessionModels.mockReturnValue({ data: { models: [] }, isLoading: false, error: null });
     hooks.useSessions.mockReturnValue({
       data: { sessions, total: 2, page: 1, page_size: 20, has_more: false },
       isLoading: false,

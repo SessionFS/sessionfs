@@ -370,6 +370,31 @@ async def _get_project_for_auth(
     return await _get_project_or_404(project_id, db, auth.user.id)
 
 
+async def _get_editable_project_or_404(
+    project_id: str, db: AsyncSession, user_id: str
+) -> Project:
+    """Like ``_get_project_or_404`` but for changes: captured-session
+    readers get 403 ``project_edit_forbidden`` (owner or org member
+    required). Missing / unreadable projects keep the read responses."""
+    from sessionfs.server.auth.project_access import load_project_for_editor
+
+    return await load_project_for_editor(project_id, db, user_id)
+
+
+async def _get_project_for_editor(
+    project_id: str, db: AsyncSession, auth: "AuthContext"
+) -> Project:
+    """Edit-tier variant of ``_get_project_for_auth``.
+
+    Service keys are unchanged: their boundary is the key's org and
+    project allowlist (``assert_service_key_can_access_project``), which
+    the caller must still invoke. User keys need editor standing.
+    """
+    if auth.key_kind == "service":
+        return await _get_project_for_auth(project_id, db, auth)
+    return await _get_editable_project_or_404(project_id, db, auth.user.id)
+
+
 _VALID_CLAIM_CLASSES = {"evidence", "claim", "note"}
 _VALID_FRESHNESS_CLASSES = {"current", "aging", "stale", "superseded"}
 _VALID_SORTS = {
@@ -762,6 +787,20 @@ async def add_entry(
             422,
             "upsert=true requires entity_ref (no slot to roll forward)",
         )
+    # Adding an entry is append-only and open to anyone who can read the
+    # project, but an upsert dismisses every active entry in the slot —
+    # including other people's — so it is a curation change: owner or
+    # org member only (captured-session readers get 403).
+    from sessionfs.server.auth.project_access import (
+        project_edit_forbidden,
+        user_can_edit_project,
+    )
+
+    is_reader = auth.key_kind != "service" and not await user_can_edit_project(
+        db, user.id, project
+    )
+    if body.upsert and is_reader:
+        raise project_edit_forbidden()
     prior_active_ids: list[int] = []
     if body.upsert and body.entity_ref:
         prior_rows = await db.execute(
@@ -823,6 +862,11 @@ async def add_entry(
         confidence = 0.7
     else:
         confidence = 1.0
+    # tk_25872885e3274a7d — a captured-session reader's entry is a
+    # contribution, not curated knowledge: it stays a note below every
+    # promotion gate (force_claim is ignored) until an editor promotes it.
+    if is_reader:
+        confidence = min(confidence, 0.7)
 
     # Claim classification: default to 'note', promote to 'claim' if quality gates pass
     claim_class = "note"
@@ -832,6 +876,12 @@ async def add_entry(
     # Check claim promotion gates
     passes_quality = True
     quality_failures: list[str] = []
+
+    if is_reader:
+        passes_quality = False
+        quality_failures.append(
+            "added by a project reader — an owner or org member must promote it"
+        )
 
     if confidence < 0.8:
         passes_quality = False
@@ -878,7 +928,12 @@ async def add_entry(
         classification_reason = "Auto-promoted: high confidence, sufficient content, unique"
     else:
         classification_reason = f"Classified as note: {'; '.join(quality_failures)}"
-        if body.force_claim:
+        if is_reader:
+            tip = (
+                "Entries from people who can view but not edit this project "
+                "stay notes until an owner or org member promotes them"
+            )
+        elif body.force_claim:
             tip = f"force_claim requested but quality gates not met: {'; '.join(quality_failures)}"
         elif confidence >= 0.8 and len(body.content) < 50:
             tip = "Expand content to 50+ characters to qualify as a claim"
@@ -987,7 +1042,7 @@ async def dismiss_entry(
     dismissed entry is a no-op (returns 200 with the existing audit row).
     """
     user = auth.user
-    project = await _get_project_for_auth(project_id, db, auth)
+    project = await _get_project_for_editor(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -998,7 +1053,7 @@ async def dismiss_entry(
     )
 
     # GH #70 — lock, then re-authorize against the re-read project.
-    await lock_project_scope_authorized(db, project, auth=auth)
+    await lock_project_scope_authorized(db, project, edit=True, auth=auth)
 
     if body.reason is not None and len(body.reason) > _DISMISS_REASON_MAX:
         raise HTTPException(
@@ -1064,7 +1119,7 @@ async def refresh_entry(
     and recompute freshness_class to 'current'. Used by the stale review
     queue's "Still Valid" action.
     """
-    project = await _get_project_for_auth(project_id, db, auth)
+    project = await _get_project_for_editor(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -1077,7 +1132,7 @@ async def refresh_entry(
     )
 
     # GH #70 — lock, then re-authorize against the re-read project.
-    await lock_project_scope_authorized(db, project, auth=auth)
+    await lock_project_scope_authorized(db, project, edit=True, auth=auth)
 
     result = await db.execute(
         select(KnowledgeEntry).where(
@@ -1116,7 +1171,7 @@ async def dismiss_stale_entries(
     Returns the count of entries dismissed so the dashboard can update its
     health banner without a full page refresh.
     """
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_editable_project_or_404(project_id, db, user.id)
     # GH #70 — project scope lock before any row lock or mutation:
     # serializes with project merge (which relocates knowledge rows) and
     # refuses writes to a merged-away project.
@@ -1125,7 +1180,7 @@ async def dismiss_stale_entries(
     )
 
     # GH #70 — lock, then re-authorize against the re-read project.
-    await lock_project_scope_authorized(db, project, user_id=user.id)
+    await lock_project_scope_authorized(db, project, edit=True, user_id=user.id)
 
     from sqlalchemy import or_
     ninety_days_ago = datetime.now(timezone.utc) - timedelta(days=90)
@@ -1163,7 +1218,7 @@ async def compile_context(
     db: AsyncSession = Depends(get_db),
 ) -> CompilationResponse:
     """Compile pending knowledge entries into project context."""
-    await _get_project_or_404(project_id, db, user.id)
+    await _get_editable_project_or_404(project_id, db, user.id)
 
     from sessionfs.server.services.compiler import (
         auto_generate_concepts,
@@ -1179,6 +1234,7 @@ async def compile_context(
         model=body.model or "claude-sonnet-4",
         provider=body.provider,
         base_url=body.base_url,
+        edit=True,
     )
 
     # Run concept page refresh exactly once per /compile request. This
@@ -1203,6 +1259,7 @@ async def compile_context(
             model=body.model or "claude-sonnet-4",
             provider=body.provider,
             base_url=body.base_url,
+            edit=True,
         )
     except Exception:
         logger.warning("Concept auto-generation/cleanup failed (non-fatal)", exc_info=True)
@@ -1819,7 +1876,7 @@ async def supersede_entry(
     """Mark an entry as superseded by another entry."""
     from sessionfs.server.db.models import KnowledgeLink
 
-    project = await _get_project_for_auth(project_id, db, auth)
+    project = await _get_project_for_editor(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -1832,7 +1889,7 @@ async def supersede_entry(
     )
 
     # GH #70 — lock, then re-authorize against the re-read project.
-    await lock_project_scope_authorized(db, project, auth=auth)
+    await lock_project_scope_authorized(db, project, edit=True, auth=auth)
 
     # Validate old entry
     old_result = await db.execute(
@@ -1901,7 +1958,7 @@ async def promote_entry(
 ) -> KnowledgeEntryResponse:
     """Promote a note to claim if quality gates pass."""
     user = auth.user
-    project = await _get_project_for_auth(project_id, db, auth)
+    project = await _get_project_for_editor(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
@@ -1914,7 +1971,7 @@ async def promote_entry(
     )
 
     # GH #70 — lock, then re-authorize against the re-read project.
-    await lock_project_scope_authorized(db, project, auth=auth)
+    await lock_project_scope_authorized(db, project, edit=True, auth=auth)
 
     result = await db.execute(
         select(KnowledgeEntry).where(
@@ -1981,6 +2038,9 @@ class BulkPromoteRequest(BaseModel):
     set_confidence: float | None = Field(None, ge=0.0, le=1.0)
     entry_type: str | None = Field(None, max_length=64)
     dry_run: bool = True
+    # Notes written by people who can view but not edit the project are
+    # left out (and counted in reader_notes_excluded) unless this is set.
+    include_reader_notes: bool = False
 
 
 @router.post(
@@ -1998,9 +2058,11 @@ async def bulk_promote_entries(
     this is the practical repair path.
 
     `dry_run=true` (default) computes the decision but writes nothing.
-    Returns `{promoted, skipped, reasons, promoted_ids, dry_run}`.
+    Notes by non-editors are excluded unless `include_reader_notes=true`.
+    Returns `{promoted, skipped, reasons, promoted_ids, dry_run,
+    reader_notes_excluded}`.
     """
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_editable_project_or_404(project_id, db, user.id)
     # GH #70 — project scope lock before any row lock or mutation:
     # serializes with project merge (which relocates knowledge rows) and
     # refuses writes to a merged-away project.
@@ -2009,7 +2071,7 @@ async def bulk_promote_entries(
     )
 
     # GH #70 — lock, then re-authorize against the re-read project.
-    await lock_project_scope_authorized(db, project, user_id=user.id)
+    await lock_project_scope_authorized(db, project, edit=True, user_id=user.id)
 
     from sessionfs.server.services.bulk_promote import promote_eligible_notes
 
@@ -2022,6 +2084,8 @@ async def bulk_promote_entries(
         set_confidence=body.set_confidence,
         entry_type=body.entry_type,
         dry_run=body.dry_run,
+        project=project,
+        include_reader_notes=body.include_reader_notes,
     )
     return result.to_dict()
 
@@ -2050,7 +2114,7 @@ async def update_entry_confidence(
     Does NOT auto-promote — keeps confidence orthogonal to claim_class
     transitions. Use /promote explicitly after updating confidence.
     """
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_editable_project_or_404(project_id, db, user.id)
     # GH #70 — project scope lock before any row lock or mutation:
     # serializes with project merge (which relocates knowledge rows) and
     # refuses writes to a merged-away project.
@@ -2059,7 +2123,7 @@ async def update_entry_confidence(
     )
 
     # GH #70 — lock, then re-authorize against the re-read project.
-    await lock_project_scope_authorized(db, project, user_id=user.id)
+    await lock_project_scope_authorized(db, project, edit=True, user_id=user.id)
     entry = (
         await db.execute(
             select(KnowledgeEntry).where(
@@ -2113,7 +2177,7 @@ async def rebuild_project(
     empty AND every claim's compiled_at NULL. That was the
     2026-05-20 data-loss vector on proj_c0242b0fccbd48b4.
     """
-    await _get_project_or_404(project_id, db, user.id)
+    await _get_editable_project_or_404(project_id, db, user.id)
 
     from sessionfs.server.services.compiler import (
         auto_generate_concepts,
@@ -2138,6 +2202,7 @@ async def rebuild_project(
         base_url=body.base_url,
         force_rebuild=True,
         stats=compile_stats,
+        edit=True,
     )
     freshness_updated = int(compile_stats.get("freshness_updated", 0))
 
@@ -2159,6 +2224,7 @@ async def rebuild_project(
             model=body.model or "claude-sonnet-4",
             provider=body.provider,
             base_url=body.base_url,
+            edit=True,
         )
         concept_count = len(concepts)
     except Exception:

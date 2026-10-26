@@ -16,9 +16,30 @@ sfs project show
 ## How It Works
 
 1. **One document per repository** — matched by git remote URL (SSH and HTTPS both work)
-2. **Shared across the team** — anyone with sessions in the repo can read and edit
+2. **Shared across the team** — anyone with sessions in the repo can read it and add to it; the owner and the project's org members can change it (see [Who can change a project](#who-can-change-a-project))
 3. **Accessible via MCP** — AI agents call `get_project_context` to read the document
 4. **Free-form markdown** — write whatever your team needs
+
+## Who can change a project
+
+Anyone who can see a project can read it and add to it. Changing it is limited to its owner and its organization.
+
+| Who | Read | Add (knowledge entries, tickets, comments, agent runs, feedback) | Change (settings, rules, wiki pages, context document, knowledge curation, personas, work queues) |
+|---|---|---|---|
+| Project owner | Yes | Yes | Yes |
+| Member of the project's organization (any role) | Yes | Yes | Yes |
+| Anyone else who synced a session from the same repository | Yes | Yes | No |
+
+What people in the last row add waits for the owner or an org member:
+
+- Their knowledge entries stay notes (confidence at most 0.7), are never promoted or allowed to supersede other entries automatically at compile time, and so don't reach the context document or compiled rules files until an owner or org member promotes them. Bulk promote leaves their notes out unless `include_reader_notes` is set. An `add_knowledge` call with `upsert=true` (which retires the other entries in its slot) needs change rights.
+- Their tickets start as *suggested*. The assignee isn't notified and autonomous work queues don't pick the ticket up until an owner or org member approves it.
+- They can keep editing tickets they created. Editing one after it was approved sends it back to *suggested* for approval again. Once work has started, or a work queue has picked the ticket up, they can only change its reference lists (context refs, file refs, related sessions). A work queue doesn't hand out a ticket that is back in *suggested* (or cancelled) until an owner or org member approves it again.
+- Their comments are visible to people in the dashboard, API and MCP tools, but aren't passed to automated agents: work queues leave them out of the comments they send to agents, and they don't start a reviewer's turn.
+- On tickets they can dismiss, reopen or accept tickets they created (but not accept work they resolved themselves), and start, complete, block or unblock tickets they created or resolved. Approving a suggested ticket needs change rights.
+- They can cancel or complete agent runs they triggered, but not anyone else's.
+- A rules compile they run returns the compiled files without adding a version to the rules history.
+- Project-scope skill install requests need change rights; personal (user or device) requests don't. A change they try gets `403 project_edit_forbidden`, and the dashboard hides the controls they can't use (the project response carries `can_edit`). Renaming, linking repositories, merging, transferring and deleting still need project-admin standing (the owner, or an org owner or admin). Service keys keep their own boundary: the key's organization and project allowlist.
 
 ## CLI Commands
 

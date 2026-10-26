@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable
 
 import httpx
 
+from sessionfs.judge import llm_errors
 from sessionfs.judge.provider_registry import detect_provider_id, get_provider
 
 logger = logging.getLogger("sessionfs.judge.providers")
@@ -130,29 +131,40 @@ def _apply_sampling(
     body: dict,
     *,
     model: str,
-    temperature: float,
+    temperature: float | None,
     omit_temperature: bool,
     reasoning_effort: bool,
     reasoning_object: bool,
     drop: frozenset[str],
+    top_p: float | None = None,
+    reasoning_effort_value: str | None = None,
 ) -> None:
-    """Set reasoning effort or temperature on a chat-completions body.
+    """Set reasoning effort / temperature / top_p on a chat-completions body.
 
     Reasoning models never get ``temperature`` (only their default is
     accepted); dropping the reasoning parameter must not add it back. OpenAI's
     Chat Completions and OpenAI-compatible gateways take a top-level
     ``reasoning_effort`` string; OpenRouter takes a ``reasoning`` object.
+
+    ``reasoning_effort_value`` overrides the historical "medium" default
+    (``None`` keeps "medium"; ``"off"`` leaves the provider's default). ``top_p``
+    and a ``None`` ``temperature`` are only sent when set, so callers can opt
+    into sampling without the provider's default being overridden.
     """
     base_model = model.split("/")[-1] if "/" in model else model
     is_reasoning = reasoning_effort and _is_reasoning_model(base_model)
     if is_reasoning:
-        if "reasoning" not in drop:
+        if "reasoning" not in drop and reasoning_effort_value != "off":
+            effort = reasoning_effort_value or "medium"
             if reasoning_object:
-                body["reasoning"] = {"effort": "medium"}
+                body["reasoning"] = {"effort": effort}
             else:
-                body["reasoning_effort"] = "medium"
-    elif not omit_temperature and "temperature" not in drop:
-        body["temperature"] = temperature
+                body["reasoning_effort"] = effort
+    else:
+        if not omit_temperature and "temperature" not in drop and temperature is not None:
+            body["temperature"] = temperature
+        if not omit_temperature and top_p is not None and "top_p" not in drop:
+            body["top_p"] = top_p
 
 
 def _response_error_text(resp: httpx.Response) -> str:
@@ -221,6 +233,8 @@ async def _call_openai_compatible(
     extra_headers: tuple[tuple[str, str], ...] = (),
     reasoning_effort: bool = True,
     reasoning_object: bool = False,
+    custom_base_url: str | None = None,
+    provider_hint: str | None = None,
 ) -> str:
     """Call any OpenAI-compatible endpoint (OpenAI, OpenRouter, LiteLLM, vLLM, Ollama, etc.).
 
@@ -262,9 +276,27 @@ async def _call_openai_compatible(
                 _remember_omission(url, model, drop)
                 body = build(drop)
                 resp = await client.post(url, json=body, headers=headers)
+        # A caller-supplied endpoint that isn't an API (a provider's web
+        # console answers 404/405/HTML) gets a readable error naming the
+        # right address instead of the upstream body.
+        endpoint_error = llm_errors.endpoint_error_from_response(
+            resp, base_url=custom_base_url, provider=provider_hint
+        )
+        if endpoint_error is not None:
+            raise endpoint_error
         resp.raise_for_status()
-    data = resp.json()
-    return data["choices"][0]["message"]["content"]
+    try:
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        if not custom_base_url:
+            raise
+        raise llm_errors.LlmEndpointError(
+            llm_errors.ENDPOINT_NOT_API,
+            llm_errors.endpoint_not_api_message(custom_base_url, provider_hint),
+            request=resp.request,
+            response=resp,
+        ) from None
 
 
 async def _call_anthropic(model: str, system: str, prompt: str, api_key: str, temperature: float = 0) -> str:
@@ -346,7 +378,16 @@ async def call_llm(
     # Custom base URL — always use OpenAI-compatible format
     if base_url:
         await _check_base_url(base_url)
-        return await _call_openai_compatible(base_url, model, system, prompt, api_key, temperature)
+        return await _call_openai_compatible(
+            base_url,
+            model,
+            system,
+            prompt,
+            api_key,
+            temperature,
+            custom_base_url=base_url,
+            provider_hint=provider,
+        )
 
     profile = get_provider(provider)
     if profile is None:
@@ -422,6 +463,7 @@ async def validate_base_url(base_url: str, api_key: str, model: str) -> bool:
             prompt="Say 'ok'",
             api_key=api_key,
             temperature=0,
+            custom_base_url=base_url,
         )
         return bool(result)
     except Exception as e:

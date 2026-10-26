@@ -30,6 +30,8 @@ import { errorMessage } from '../utils/errorMessage';
 
 interface PersonasTabProps {
   projectId: string;
+  /** The project's `can_edit` flag; view-only readers get no create/edit/delete. */
+  canEdit?: boolean;
 }
 
 function isOrgPersona(p: Persona): boolean {
@@ -41,7 +43,7 @@ export interface EditState {
   persona?: Persona;
 }
 
-export default function PersonasTab({ projectId }: PersonasTabProps) {
+export default function PersonasTab({ projectId, canEdit = true }: PersonasTabProps) {
   const { data, isLoading, error } = usePersonas(projectId);
   const create = useCreatePersona(projectId);
   const update = useUpdatePersona(projectId);
@@ -64,13 +66,15 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
             {data.length} {data.length === 1 ? 'persona' : 'personas'}
           </span>
         </h2>
-        <Button
-          variant="primary"
-          size="sm"
-          onClick={() => setEdit({ mode: 'create' })}
-        >
-          New persona
-        </Button>
+        {canEdit && (
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => setEdit({ mode: 'create' })}
+          >
+            New persona
+          </Button>
+        )}
       </div>
 
       {data.length === 0 ? (
@@ -130,7 +134,7 @@ export default function PersonasTab({ projectId }: PersonasTabProps) {
               header: '',
               width: 'w-0',
               render: (p) =>
-                isOrgPersona(p) ? (
+                !canEdit ? null : isOrgPersona(p) ? (
                   <span
                     className="block text-right text-xs text-text-tertiary whitespace-nowrap"
                     title="Org admins manage org personas on the Organization page. Create a project persona with the same name to override it here."

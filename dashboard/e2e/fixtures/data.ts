@@ -53,7 +53,8 @@ export const sessions = titles.map((title, i) => ({
   alias: i === 1 ? 'flaky-sync' : null,
   tags: i % 3 === 0 ? ['backend', 'billing'] : [],
   source_tool: tools[i % tools.length],
-  model_id: i % 2 ? 'claude-sonnet-4' : 'gpt-5',
+  // A mix of plain, date-stamped and unknown (null) model ids for the filter.
+  model_id: i === 4 ? 'claude-sonnet-4-6-20250929' : i === 5 ? null : i % 2 ? 'claude-sonnet-4' : 'gpt-5',
   message_count: 20 + i * 13,
   turn_count: 8 + i * 4,
   tool_use_count: 12 + i * 5,
@@ -72,6 +73,20 @@ export const sessionList = {
   page: 1,
   page_size: 20,
   has_more: false,
+};
+
+/** GET /api/v1/sessions/models: distinct model ids with counts (count desc,
+ *  then id), null = the "Unknown model" bucket. */
+export const sessionModels = {
+  models: Object.entries(
+    sessions.reduce<Record<string, number>>((acc, s) => {
+      const key = s.model_id ?? '';
+      acc[key] = (acc[key] ?? 0) + 1;
+      return acc;
+    }, {}),
+  )
+    .map(([id, count]) => ({ model_id: id === '' ? null : id, count }))
+    .sort((a, b) => b.count - a.count || (a.model_id ?? '').localeCompare(b.model_id ?? '')),
 };
 
 export const projects = [
@@ -491,6 +506,27 @@ export const syncStatus = {
 
 export const judgeSettings = { provider: 'anthropic', model: 'claude-sonnet-4', key_set: true, base_url: null };
 
+export const llmProviders = {
+  providers: [
+    {
+      id: 'anthropic',
+      label: 'Anthropic',
+      api_style: 'anthropic',
+      suggested_models: ['claude-sonnet-5-5', 'claude-haiku-5-5'],
+      discovery: false,
+      default_base_url: null,
+    },
+    {
+      id: 'deepseek',
+      label: 'DeepSeek',
+      api_style: 'openai',
+      suggested_models: ['deepseek-flash', 'deepseek-v4-pro'],
+      discovery: true,
+      default_base_url: 'https://api.deepseek.com',
+    },
+  ],
+};
+
 export const githubInstallation = {
   installation_id: 123, account_login: 'acme-fixtures', account_type: 'Organization',
   auto_comment: true, include_trust_score: true, include_session_links: false,
@@ -501,3 +537,80 @@ export const githubInstallation = {
 export const gitlabSettings = { instance_url: 'https://gitlab.acme-fixtures.example', has_token: true };
 
 export const dlpPolicy = { enabled: true, mode: 'warn', categories: ['secrets'], patterns: [] };
+
+// ── Session helper settings (Assistant) ──
+
+const helperDefaults = {
+  max_output_tokens: 4096,
+  temperature: 0,
+  top_p: null,
+  max_tool_steps: 8,
+  reasoning_effort: null,
+  answer_style: 'concise',
+};
+
+export const userHelperSettings = {
+  settings: { ...helperDefaults, max_output_tokens: 6000, reasoning_effort: 'medium', answer_style: 'detailed' },
+  instructions: 'Answer in British English. Show file paths relative to the repo root.',
+  effective_settings: { ...helperDefaults, max_output_tokens: 6000, reasoning_effort: 'medium', answer_style: 'detailed' },
+  usage: { input_tokens: 182_400, output_tokens: 23_950, total_tokens: 206_350 },
+};
+
+export const orgHelperSettingsAdmin = {
+  role: 'admin',
+  plan_includes_helper: true,
+  effective_settings: { ...helperDefaults, max_output_tokens: 3000, temperature: 0.3, max_tool_steps: 6 },
+  has_instructions: true,
+  settings: {
+    ...helperDefaults,
+    max_output_tokens: 8000,
+    temperature: 0.3,
+    max_tool_steps: 6,
+    ceiling_max_output_tokens: 3000,
+    ceiling_max_tool_steps: null,
+  },
+  instructions:
+    'Cite the newest session first. Use our ticket ids (tk_…) when you mention work items, and never paste secrets back even if a session contains them.',
+  monthly_token_budget: 2_000_000,
+  usage: {
+    input_tokens: 1_310_000,
+    output_tokens: 214_500,
+    total_tokens: 1_524_500,
+    per_member: [
+      { user_id: me.user_id, input_tokens: 820_000, output_tokens: 131_000, total_tokens: 951_000 },
+      { user_id: 'user_fixture02', input_tokens: 402_000, output_tokens: 70_500, total_tokens: 472_500 },
+      { user_id: 'user_fixture03', input_tokens: 61_000, output_tokens: 9_800, total_tokens: 70_800 },
+      { user_id: 'user_gone0001', input_tokens: 27_000, output_tokens: 3_200, total_tokens: 30_200 },
+    ],
+  },
+};
+
+export const orgHelperSettingsMember = {
+  role: 'member',
+  plan_includes_helper: true,
+  effective_settings: orgHelperSettingsAdmin.effective_settings,
+  has_instructions: true,
+  usage: { input_tokens: 402_000, output_tokens: 70_500, total_tokens: 472_500 },
+  budget_reached: false,
+  budget_used_pct: 76,
+};
+
+export const orgLlmSettings = {
+  provider: 'anthropic',
+  model: 'claude-sonnet-5-5',
+  has_api_key: true,
+  key_hint: '7f3a',
+  base_url: null,
+  enabled: true,
+  plan_includes_helper: true,
+};
+
+export const helperStatus = {
+  enabled: true,
+  key_source: 'user',
+  provider: 'anthropic',
+  model: 'claude-sonnet-5-5',
+  effective_settings: userHelperSettings.effective_settings,
+  has_org_instructions: true,
+  has_personal_instructions: true,
+};

@@ -36,6 +36,30 @@ describe('sortSessions', () => {
   it('breaks title ties by date', () => {
     expect(sortSessions([a, c, b], 'title').map(s => s.id)).toEqual(['a', 'b', 'c']);
   });
+  it('sorts by model name descending, then asc, with date tie-break', () => {
+    const gpt = mk('gpt', { model_id: 'gpt-5-20250127', updated_at: '2026-01-01T00:00:00Z' });
+    const claudeOld = mk('claudeOld', { model_id: 'claude-sonnet-4-6', updated_at: '2026-01-02T00:00:00Z' });
+    const claudeNew = mk('claudeNew', { model_id: 'claude-sonnet-4-6', updated_at: '2026-01-03T00:00:00Z' });
+    // desc: z → a (gpt before claude); ties break newest first
+    expect(sortSessions([claudeOld, gpt, claudeNew], 'model').map(s => s.id))
+      .toEqual(['gpt', 'claudeNew', 'claudeOld']);
+    // asc: a → z; ties still break newest first (matches the server)
+    expect(sortSessions([claudeOld, gpt, claudeNew], 'model', 'asc').map(s => s.id))
+      .toEqual(['claudeNew', 'claudeOld', 'gpt']);
+  });
+  it('puts unknown models (null, "", "unknown", <synthetic>) last in both directions', () => {
+    const gpt = mk('gpt', { model_id: 'gpt-5', updated_at: '2026-01-01T00:00:00Z' });
+    const claude = mk('claude', { model_id: 'claude-sonnet-4-6', updated_at: '2026-01-01T00:00:00Z' });
+    const nul = mk('nul', { model_id: null, updated_at: '2026-01-04T00:00:00Z' });
+    const empty = mk('empty', { model_id: '', updated_at: '2026-01-03T00:00:00Z' });
+    const literal = mk('literal', { model_id: 'unknown', updated_at: '2026-01-02T00:00:00Z' });
+    const synth = mk('synth', { model_id: '<synthetic>', updated_at: '2026-01-01T12:00:00Z' });
+    const input = [synth, nul, gpt, literal, claude, empty];
+    expect(sortSessions(input, 'model', 'desc').map(s => s.id))
+      .toEqual(['gpt', 'claude', 'nul', 'empty', 'literal', 'synth']);
+    expect(sortSessions(input, 'model', 'asc').map(s => s.id))
+      .toEqual(['claude', 'gpt', 'nul', 'empty', 'literal', 'synth']);
+  });
   it('does not mutate the input', () => {
     const input = [a, b, c];
     sortSessions(input, 'messages');
@@ -104,6 +128,19 @@ describe('findMostRecent / groupSessions / computeInsights', () => {
     expect(g.mode).toBe('tool');
     expect(g.toolGroups.map(t => t.sessions.length)).toEqual([2, 1]);
   });
+  it('groups a model sort by model in list order, unknown models together', () => {
+    const g = groupSessions(
+      [mk('a', { model_id: 'gpt-5' }), mk('b', { model_id: 'gpt-5' }), mk('c', { model_id: 'claude-sonnet-4' }), mk('d', { model_id: null }), mk('e', { model_id: '<synthetic>' })],
+      'model',
+    );
+    expect(g.mode).toBe('tool');
+    expect(g.toolGroups.map((x) => [x.label, x.sessions.map((s) => s.id)])).toEqual([
+      ['gpt-5', ['a', 'b']],
+      ['claude-sonnet-4', ['c']],
+      ['Unknown model', ['d', 'e']],
+    ]);
+  });
+
   it('buckets by date otherwise', () => {
     const now = new Date().toISOString();
     const g = groupSessions([mk('a', { updated_at: now }), mk('b', { updated_at: '2020-01-01T00:00:00Z' })], 'date');

@@ -74,7 +74,7 @@ export default function ProjectHeader({
       {/* Pending entries don't compile themselves; the user (or an agent
           acting on their behalf) has to trigger a compile pass. This is the
           page's one compile action, so it works from any section. */}
-      {!workflowHintDismissed && pendingCount > 0 && (
+      {!workflowHintDismissed && pendingCount > 0 && project.can_edit !== false && (
         <Alert
           variant="info"
           className="mx-5 mt-3 items-center py-2 flex-wrap"

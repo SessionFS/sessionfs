@@ -27,8 +27,9 @@ Forked and resumed sessions are grouped under their root session. Expanding a li
 ### Filters and Sorting
 
 - **Tool filter** — narrow to a single tool: Claude Code, Codex, Gemini CLI, Copilot, Cursor, Amp, Cline, Roo Code, Kilo Code, or Antigravity.
+- **Model filter** — narrow to one or more models, populated from your sessions with counts. Model ids that carry a trailing date stamp (like `gpt-5-20250127`) show a friendlier name (the date is stripped for display only; filtering uses the raw id, and screen readers hear the raw id). Sessions with no recorded model appear as **Unknown model**. The selection lives in the page URL, so it survives a refresh or a shared link; a selected model that isn't in the current list (another tool filter, or a shared link) still shows with a 0 count so you can untick it, and **Clear models** resets the filter. Sorting by model is done on the server, across every page.
 - **Date range** — Last 24 hours, 7 days, 30 days, or all time.
-- **Sort** — by date, message count, token count, or title.
+- **Sort** — by date, tool, model, message count, token count, or title.
 
 ### Bulk Select and Find Duplicates
 

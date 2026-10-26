@@ -54,7 +54,7 @@ from sessionfs.server.auth.dependencies import (
     require_scope,
 )
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import AgentPersona, AgentRun, Ticket, User
+from sessionfs.server.db.models import AgentPersona, AgentRun, Project, Ticket, User
 from sessionfs.server.services.personas import (
     resolve_persona,
     visible_persona_org_id,
@@ -635,6 +635,29 @@ async def _get_run_or_404(
     return row
 
 
+async def _require_run_actor(
+    db: AsyncSession,
+    project: Project,
+    run: AgentRun,
+    user_id: str,
+    *,
+    key_kind: str = "user",
+) -> None:
+    """Gate run transitions on top of project access.
+
+    Recording a run is an append-only audit action open to anyone who can
+    read the project, but a reader whose only access is a captured session
+    may move only the runs they triggered; other runs need editor standing
+    (project owner or org member) — 403 ``project_edit_forbidden``. Service
+    keys keep their own org / allowlist boundary.
+    """
+    if key_kind == "service" or run.triggered_by_user_id == user_id:
+        return
+    from sessionfs.server.auth.project_access import require_project_editor
+
+    await require_project_editor(db, user_id, project)
+
+
 async def _validate_same_project_ticket(
     project_id: str, ticket_id: str, db: AsyncSession
 ) -> Ticket:
@@ -892,6 +915,7 @@ async def start_agent_run(
     # GH #70 — lock, then re-authorize against the re-read project.
     await lock_project_scope_authorized(db, project, user_id=user.id, ctx=ctx, feature="agent_runs")
     pre = await _get_run_or_404(project_id, run_id, db)
+    await _require_run_actor(db, project, pre, user.id)
     if pre.status != "queued":
         raise HTTPException(
             409,
@@ -987,6 +1011,7 @@ async def complete_agent_run(
     now = datetime.now(timezone.utc)
     # Read the row first so we can compute duration_seconds and evaluate policy.
     existing = await _get_run_or_404(project_id, run_id, db)
+    await _require_run_actor(db, project, existing, user.id, key_kind=auth.key_kind)
     if existing.status in _TERMINAL_STATUSES:
         raise HTTPException(
             409,
@@ -1077,6 +1102,15 @@ async def cancel_agent_run(
     """Atomic queued/running → cancelled."""
     project = await _get_project_or_404(project_id, db, user.id)
     await check_project_feature(ctx, "agent_runs", project, db)
+    target = (
+        await db.execute(
+            select(AgentRun).where(
+                AgentRun.id == run_id, AgentRun.project_id == project_id
+            )
+        )
+    ).scalar_one_or_none()
+    if target is not None:
+        await _require_run_actor(db, project, target, user.id)
 
     now = datetime.now(timezone.utc)
     result = await db.execute(

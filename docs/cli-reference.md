@@ -1080,6 +1080,7 @@ sfs project promote-eligible [OPTIONS]
 | `--confidence` | float | — | Set each candidate's confidence to this value before the duplicate check |
 | `--entry-type` | string | — | Only promote this entry type (`decision`, `pattern`, …) |
 | `--confirm` | flag | off | Apply the promotions |
+| `--include-reader-notes` | flag | off | Also consider notes written by people who can view but not edit the project (left out and counted by default) |
 
 ### `sfs project compile-schedule`
 
@@ -2985,7 +2986,7 @@ Ask the **session helper** a question over the sessions you can read, with a bri
 | `sfs helper conversations list` | List your helper conversations, newest first. |
 | `sfs helper conversations show <id>` | Show one conversation with its user/assistant messages and citations. |
 | `sfs helper conversations delete <id> [--yes]` | Permanently delete a conversation (prompts for confirmation; `--yes` skips). |
-| `sfs helper status` | Show whether the helper is enabled, and which key source / provider / model it would use. |
+| `sfs helper status` | Show whether the helper is enabled, which key source / provider / model it would use, the effective model settings, and whether org or personal custom instructions are set (the text is never shown). |
 
 The helper is an Enterprise feature and requires a BYOK model key (your own key under **Settings → Data protection → Security review model**, or an org-wide key an org admin sets on the Organization page's Policies tab). `sfs helper status` tells you which of these is missing.
 

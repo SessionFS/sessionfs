@@ -127,7 +127,7 @@ class TestListProviders:
             "fireworks",
         } <= ids
         for p in providers:
-            assert set(p) == {"id", "label", "api_style", "suggested_models", "discovery"}
+            assert set(p) == {"id", "label", "api_style", "suggested_models", "discovery", "default_base_url"}
             assert isinstance(p["suggested_models"], list)
 
     async def test_requires_auth(self, client: AsyncClient):

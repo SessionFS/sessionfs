@@ -4,6 +4,7 @@ import { type Ticket } from '../../api/client';
 import { Dropdown } from '../../components/ui';
 import { Badge } from '../../components/Badge';
 import { STATUS_DOT, STATUS_VARIANT, formatStatusLabel } from './constants';
+import { ticketActionAllowed, useTicketViewer } from './viewer';
 import { errorMessage } from '../../utils/errorMessage';
 
 /**
@@ -18,10 +19,13 @@ export function StatusCell({ ticket, projectId }: { ticket: Ticket; projectId: s
   const dismiss = useDismissTicket(projectId);
   const close = useCloseTicket(projectId);
   const { addToast } = useToast();
+  const viewer = useTicketViewer();
 
-  const canApprove = ticket.status === 'suggested';
-  const canDismiss = ticket.status === 'suggested' || ticket.status === 'open';
-  const canClose = ticket.kind === 'issue' && ticket.status === 'in_progress';
+  const canApprove = ticket.status === 'suggested' && ticketActionAllowed('approve', ticket, viewer);
+  const canDismiss =
+    (ticket.status === 'suggested' || ticket.status === 'open') && ticketActionAllowed('dismiss', ticket, viewer);
+  const canClose =
+    ticket.kind === 'issue' && ticket.status === 'in_progress' && ticketActionAllowed('close', ticket, viewer);
   const hasActions = canApprove || canDismiss || canClose;
 
   const variant = STATUS_VARIANT[ticket.status] || 'default';

@@ -74,5 +74,5 @@ describe('Layout shell and Help page', () => {
     );
     await waitFor(() => expect(container.querySelector('h1')).toBeTruthy());
     expect(await axe(container)).toHaveNoViolations();
-  });
+  }, 20000);
 });

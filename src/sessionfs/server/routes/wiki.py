@@ -27,6 +27,10 @@ from sessionfs.server.services.personas import (
     resolve_persona,
     visible_persona_org_id,
 )
+from sessionfs.server.services.project_settings import (
+    load_project_for_settings,
+    set_project_auto_narrative,
+)
 from sessionfs.server.tier_gate import UserContext, check_project_feature, get_user_context
 
 logger = logging.getLogger("sessionfs.api")
@@ -140,6 +144,17 @@ async def _get_project_or_404(project_id: str, db: AsyncSession, user_id: str | 
     from sessionfs.server.auth.project_access import load_project_for_user
 
     return await load_project_for_user(project_id, db, user_id)
+
+
+async def _get_editable_project_or_404(
+    project_id: str, db: AsyncSession, user_id: str
+) -> Project:
+    """Edit-tier loader: owner or org member (403 ``project_edit_forbidden``
+    for a captured-session reader). Missing / unreadable projects keep the
+    read responses."""
+    from sessionfs.server.auth.project_access import load_project_for_editor
+
+    return await load_project_for_editor(project_id, db, user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -423,7 +438,7 @@ async def create_or_update_page(
     db: AsyncSession = Depends(get_db),
 ) -> PageDetail:
     """Create or update a wiki page."""
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_editable_project_or_404(project_id, db, user.id)
     await check_project_feature(ctx, "project_context", project, db)
     # GH #70 — merge relocates pages under the project scope lock; take it
     # before the (project_id, slug) lookup so a page can't be created in a
@@ -433,7 +448,7 @@ async def create_or_update_page(
     )
 
     # GH #70 — lock, then re-authorize against the re-read project.
-    await lock_project_scope_authorized(db, project, user_id=user.id, ctx=ctx, feature="project_context")
+    await lock_project_scope_authorized(db, project, edit=True, user_id=user.id, ctx=ctx, feature="project_context")
     canonical_persona = await _validate_revision_provenance(
         project_id,
         user.id,
@@ -551,7 +566,7 @@ async def delete_page(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Delete a wiki page."""
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_editable_project_or_404(project_id, db, user.id)
     await check_project_feature(ctx, "project_context", project, db)
     # GH #70 — project scope lock before reading/mutating the page
     # (serializes with merge, refuses a merged-away project).
@@ -560,7 +575,7 @@ async def delete_page(
     )
 
     # GH #70 — lock, then re-authorize against the re-read project.
-    await lock_project_scope_authorized(db, project, user_id=user.id, ctx=ctx, feature="project_context")
+    await lock_project_scope_authorized(db, project, edit=True, user_id=user.id, ctx=ctx, feature="project_context")
 
     result = await db.execute(
         select(KnowledgePage).where(
@@ -595,7 +610,7 @@ async def regenerate_page(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Regenerate an auto-generated concept page from latest entries."""
-    project = await _get_project_or_404(project_id, db, user.id)
+    project = await _get_editable_project_or_404(project_id, db, user.id)
     await check_project_feature(ctx, "project_context", project, db)
     # GH #70 — project scope lock before reading/mutating the page
     # (serializes with merge, refuses a merged-away project).
@@ -604,7 +619,7 @@ async def regenerate_page(
     )
 
     # GH #70 — lock, then re-authorize against the re-read project.
-    await lock_project_scope_authorized(db, project, user_id=user.id, ctx=ctx, feature="project_context")
+    await lock_project_scope_authorized(db, project, edit=True, user_id=user.id, ctx=ctx, feature="project_context")
 
     result = await db.execute(
         select(KnowledgePage).where(
@@ -752,7 +767,9 @@ async def update_project_settings(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Update project settings (auto_narrative, lifecycle settings)."""
-    project = await _get_project_or_404(project_id, db, user.id)
+    # Same edit rule the session helper's auto-narrative action uses
+    # (services.project_settings): the owner or an org member only.
+    project = await load_project_for_settings(project_id, db, user.id)
 
     # The project_context feature pays for compiling the project's context.
     # Turning the schedule OFF is always allowed for a settings editor (it is
@@ -774,10 +791,17 @@ async def update_project_settings(
         and body.kb_max_context_words is None
         and body.kb_section_page_limit is None
     )
-    if not turning_off_only:
+    if body.auto_narrative != project.auto_narrative:
+        # Auto-narrative flips share the feature gate + mutation with the
+        # session helper's confirm path (services.project_settings), so the two
+        # can never drift.  When auto_narrative is unchanged the gate still
+        # applies to any other edited setting below.
+        await set_project_auto_narrative(
+            project, enabled=body.auto_narrative, ctx=ctx, db=db
+        )
+    elif not turning_off_only:
         await check_project_feature(ctx, "project_context", project, db)
 
-    project.auto_narrative = body.auto_narrative
     if body.kb_retention_days is not None:
         project.kb_retention_days = body.kb_retention_days
     if body.kb_max_context_words is not None:

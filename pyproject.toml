@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sessionfs"
-version = "0.24.0"
+version = "0.25.0"
 description = "Capture, sync, and resume AI coding sessions across 10 tools — Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, Roo Code, Kilo Code, and Antigravity."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -121,6 +121,7 @@ include = [
     "src/sessionfs/spec/schemas/*.json",
     "src/sessionfs/spec/examples/**/*",
     "src/sessionfs/skills/data/*.txt",
+    "src/sessionfs/server/helper/docs_index.json",
     "ee/sessionfs_ee/**/*.py",
 ]
 
@@ -133,6 +134,7 @@ asyncio_mode = "auto"
 addopts = "-m 'not perf'"
 markers = [
     "perf: strict absolute timing budgets (excluded by default; run with -m perf)",
+    "real_llm_save_check: run the real save-time LLM connection check (the test mocks the upstream)",
 ]
 
 [tool.ruff]

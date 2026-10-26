@@ -1901,8 +1901,11 @@ _TOOLS = [
             "confidence ≥ `min_confidence` (unless `set_confidence` "
             "is provided to override), no near-duplicate (>85% word "
             "overlap) of an existing active claim."
+            "\n\nNotes written by people who can view but not edit the "
+            "project are left out and counted in `reader_notes_excluded` "
+            "unless `include_reader_notes` is true."
             "\n\nReturns `{promoted, skipped, reasons, promoted_ids, "
-            "dry_run}`. Call `compile_knowledge_base` afterwards to "
+            "dry_run, reader_notes_excluded}`. Call `compile_knowledge_base` afterwards to "
             "fold the newly promoted claims into the project context."
             "\n\nIMPORTANT: Always use this MCP tool instead of "
             "running `sfs project promote-eligible` or scripting the "
@@ -1939,6 +1942,11 @@ _TOOLS = [
                     "type": "boolean",
                     "description": "Default true: compute decision without writing. Pass false to actually promote.",
                     "default": True,
+                },
+                "include_reader_notes": {
+                    "type": "boolean",
+                    "description": "Also consider notes written by people who can view but not edit the project (default false — they are only counted).",
+                    "default": False,
                 },
                 "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
@@ -6260,6 +6268,12 @@ async def _handle_promote_eligible_entries(args: dict) -> dict:
     if not isinstance(dry_run, bool):
         return {"error": "dry_run must be a boolean"}
     body["dry_run"] = dry_run
+
+    include_reader_notes = args.get("include_reader_notes", False)
+    if not isinstance(include_reader_notes, bool):
+        return {"error": "include_reader_notes must be a boolean"}
+    if include_reader_notes:
+        body["include_reader_notes"] = True
 
     git_remote = args.get("git_remote", "")
     try:

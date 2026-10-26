@@ -273,3 +273,168 @@ async def test_existing_turn_releases_request_session_before_stream(
     finally:
         engine_mod._session_factory = None
         await engine.dispose()
+
+
+# ---------------------------------------------------------------------------
+# Write-action decisions race on real PostgreSQL row locks
+# ---------------------------------------------------------------------------
+
+
+async def _seed_action(factory):
+    import json as _json
+    from datetime import timedelta
+
+    from sessionfs.server.db.models import HelperAction, Project
+
+    user, conv = await _seed_user_and_conversation(factory)
+    project = Project(
+        id=f"prj_{uuid.uuid4().hex[:12]}", name="Race", owner_id=user.id, org_id=None
+    )
+    now = datetime.now(timezone.utc)
+    action = HelperAction(
+        id=f"ha_{uuid.uuid4().hex[:24]}",
+        user_id=user.id,
+        conversation_id=conv.id,
+        kind="set_auto_narrative",
+        params=_json.dumps({"project_ids": [project.id], "enabled": True}),
+        preview=_json.dumps({"summary": "s", "targets": []}),
+        status="pending",
+        created_at=now,
+        expires_at=now + timedelta(minutes=15),
+    )
+    async with factory() as db:
+        db.add(project)
+        await db.flush()
+        db.add(action)
+        await db.commit()
+    return user.id, project.id, conv.id, action.id
+
+
+async def _race_engine():
+    engine = create_async_engine(os.environ["SFS_TEST_PG_URL"])
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    return engine, async_sessionmaker(engine, expire_on_commit=False)
+
+
+async def _final_state(factory, project_id, conv_id, action_id):
+    from sessionfs.server.db.models import HelperAction, Project
+
+    async with factory() as db:
+        status = (
+            await db.execute(select(HelperAction.status).where(HelperAction.id == action_id))
+        ).scalar_one()
+        narrative = (
+            await db.execute(select(Project.auto_narrative).where(Project.id == project_id))
+        ).scalar_one()
+        notes = (
+            await db.execute(
+                select(HelperMessage).where(HelperMessage.conversation_id == conv_id)
+            )
+        ).scalars().all()
+    return status, narrative, [n for n in notes if n.role == "note"]
+
+
+async def test_cancel_blocked_behind_confirm_returns_confirmed(monkeypatch: pytest.MonkeyPatch):
+    """Confirm claims the row and holds its lock; a concurrent cancel blocks on
+    it, then loses the conditional UPDATE and answers with the stored state."""
+    import asyncio
+
+    from sessionfs.server.tier_gate import build_user_context
+    from tests.pg_helpers import wait_for_lock_waiters
+
+    engine, factory = await _race_engine()
+    try:
+        user_id, project_id, conv_id, action_id = await _seed_action(factory)
+        claimed = asyncio.Event()
+        release = asyncio.Event()
+        real_apply = helper_mod._apply_action
+
+        async def held_apply(*args, **kwargs):
+            claimed.set()
+            await release.wait()
+            return await real_apply(*args, **kwargs)
+
+        monkeypatch.setattr(helper_mod, "_apply_action", held_apply)
+
+        async def confirm():
+            async with factory() as db:
+                user = await db.get(User, user_id)
+                ctx = await build_user_context(user, db)
+                return await helper_mod.confirm_helper_action(action_id, user, ctx, db)
+
+        async def cancel():
+            async with factory() as db:
+                user = await db.get(User, user_id)
+                return await helper_mod.cancel_helper_action(action_id, user, db)
+
+        confirm_task = asyncio.create_task(confirm())
+        # Confirm now holds the claimed row's lock (paused in _apply_action).
+        await asyncio.wait_for(claimed.wait(), timeout=20)
+        cancel_task = asyncio.create_task(cancel())
+        await wait_for_lock_waiters(engine, 1, task=cancel_task)
+        release.set()
+        confirmed, cancelled = await asyncio.gather(confirm_task, cancel_task)
+
+        assert confirmed["status"] == "confirmed"
+        assert cancelled["status"] == "confirmed"
+        assert cancelled["result"] == confirmed["result"]
+        status, narrative, notes = await _final_state(factory, project_id, conv_id, action_id)
+        assert status == "confirmed" and narrative is True and len(notes) == 1
+    finally:
+        await engine.dispose()
+
+
+async def test_confirm_blocked_behind_cancel_is_409_cancelled(monkeypatch: pytest.MonkeyPatch):
+    """Cancel decides the row and holds its lock; a concurrent confirm blocks,
+    loses the claim and answers 409 action_cancelled without applying."""
+    import asyncio
+
+    from fastapi import HTTPException
+
+    from sessionfs.server.tier_gate import build_user_context
+    from tests.pg_helpers import wait_for_lock_waiters
+
+    engine, factory = await _race_engine()
+    try:
+        user_id, project_id, conv_id, action_id = await _seed_action(factory)
+        held = asyncio.Event()
+        release = asyncio.Event()
+        real_audit = helper_mod._record_action_audit
+
+        async def held_audit(db, uid, action):
+            if action.status == "cancelled" and not held.is_set():
+                held.set()
+                await release.wait()
+            return await real_audit(db, uid, action)
+
+        monkeypatch.setattr(helper_mod, "_record_action_audit", held_audit)
+
+        async def confirm():
+            async with factory() as db:
+                user = await db.get(User, user_id)
+                ctx = await build_user_context(user, db)
+                try:
+                    return await helper_mod.confirm_helper_action(action_id, user, ctx, db)
+                except HTTPException as exc:
+                    return exc
+
+        async def cancel():
+            async with factory() as db:
+                user = await db.get(User, user_id)
+                return await helper_mod.cancel_helper_action(action_id, user, db)
+
+        cancel_task = asyncio.create_task(cancel())
+        await asyncio.wait_for(held.wait(), timeout=20)
+        confirm_task = asyncio.create_task(confirm())
+        await wait_for_lock_waiters(engine, 1, task=confirm_task)
+        release.set()
+        cancelled, confirmed = await asyncio.gather(cancel_task, confirm_task)
+
+        assert cancelled["status"] == "cancelled"
+        assert isinstance(confirmed, HTTPException) and confirmed.status_code == 409
+        assert confirmed.detail["code"] == "action_cancelled"
+        status, narrative, notes = await _final_state(factory, project_id, conv_id, action_id)
+        assert status == "cancelled" and narrative is False and len(notes) == 1
+    finally:
+        await engine.dispose()

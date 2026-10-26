@@ -107,7 +107,9 @@ def _build_compile_prompt(context: str, grouped_entries: dict[str, list[str]]) -
     return "\n".join(parts)
 
 
-async def _auto_supersede(project_id: str, db: AsyncSession) -> int:
+async def _auto_supersede(
+    project_id: str, db: AsyncSession, editor_ids: set[str] | None = None
+) -> int:
     """Conservative auto-supersession during compile.
 
     Only supersedes when:
@@ -127,6 +129,20 @@ async def _auto_supersede(project_id: str, db: AsyncSession) -> int:
     21-byte 500.
     """
     from sessionfs.server.services.knowledge import word_overlap as _wo
+
+    # tk_25872885e3274a7d — only an entry written by an editor of the project
+    # (owner / org member) or a service key may auto-supersede another; a
+    # captured-session reader's entry can't retire anyone's knowledge.
+    if editor_ids is None:
+        from sessionfs.server.auth.project_access import project_editor_user_ids
+
+        owning = (
+            await db.execute(select(Project).where(Project.id == project_id))
+        ).scalar_one_or_none()
+        editor_ids = await project_editor_user_ids(db, owning) if owning else set()
+
+    def _may_supersede(entry: KnowledgeEntry) -> bool:
+        return entry.user_id in editor_ids or entry.actor_type == "service_key"
 
     # Find entries with entity_ref set, grouped by (entity_ref, entry_type)
     result = await db.execute(
@@ -184,7 +200,7 @@ async def _auto_supersede(project_id: str, db: AsyncSession) -> int:
                     continue
 
                 overlap = _wo(older.content, newer.content)
-                if overlap > 0.9:
+                if overlap > 0.9 and _may_supersede(newer):
                     # Supersede
                     older.superseded_by = newer.id
                     older.supersession_reason = "Auto-superseded: same entity, high overlap"
@@ -204,7 +220,7 @@ async def _auto_supersede(project_id: str, db: AsyncSession) -> int:
                         existing_link_pairs.add(link_pair)
                     superseded_count += 1
                     break  # This older entry is done
-                elif overlap > 0.5:
+                elif overlap > 0.5 and _may_supersede(newer):
                     # Create contradicts link (don't supersede). Dedup is
                     # pair-only — if a supersedes (or any other) link already
                     # exists for this pair, skip; the DB constraint covers
@@ -340,7 +356,14 @@ async def _run_compile_housekeeping(
     freshness_updated = await refresh_freshness_classes(project_id, db)
 
     # Auto-supersession: same entity_ref + same entry_type + newer + high confidence + high overlap
-    await _auto_supersede(project_id, db)
+    from sessionfs.server.auth.project_access import (
+        editor_authored_clause,
+        project_editor_user_ids,
+    )
+
+    await _auto_supersede(
+        project_id, db, editor_ids=await project_editor_user_ids(db, project)
+    )
 
     # Decay: reduce confidence of entries not referenced recently, once per
     # 30-day period since the project last decayed (time-based, not
@@ -410,6 +433,12 @@ async def _run_compile_housekeeping(
             KnowledgeEntry.dismissed == False,  # noqa: E712
             KnowledgeEntry.confidence >= 0.5,
             func.length(KnowledgeEntry.content) >= 30,
+            # tk_25872885e3274a7d — evidence from a captured-session reader
+            # (anyone who synced a session on the repo) is never promoted
+            # automatically; an editor must promote it explicitly.
+            editor_authored_clause(
+                KnowledgeEntry.user_id, project, KnowledgeEntry.actor_type
+            ),
         )
         .values(claim_class="claim")
         .execution_options(synchronize_session=False)
@@ -531,6 +560,7 @@ async def compile_project_context(
     stats: dict | None = None,
     trigger: str = "manual",
     skip_access_check: bool = False,
+    edit: bool = False,
 ) -> ContextCompilation | None:
     """Compile pending knowledge entries into project context via LLM.
 
@@ -599,8 +629,10 @@ async def compile_project_context(
         # may have landed while we waited) and refuses (409 project_merged)
         # a merged-away project. On SQLite its UPDATE also opens the real
         # transaction, so the SAVEPOINT below is never the outermost one.
+        # ``edit=True`` (the /compile and /rebuild routes): the caller must
+        # still be an editor of the project under the lock, not just a reader.
         await lock_project_scope_authorized(
-            db, project, user_id=None if skip_access_check else user_id
+            db, project, user_id=None if skip_access_check else user_id, edit=edit
         )
         # Row lock so concurrent compile callers serialize (SQLite ignores
         # FOR UPDATE; its writer lock already serializes). Taken outside the
@@ -1429,6 +1461,7 @@ async def auto_generate_concepts(
     model: str = "claude-sonnet-4",
     provider: str | None = None,
     base_url: str | None = None,
+    edit: bool = False,
 ) -> list[dict]:
     """Check for concept candidates and create pages for new ones.
 
@@ -1581,7 +1614,7 @@ async def auto_generate_concepts(
         lock_project_scope_authorized,
     )
 
-    await lock_project_scope_authorized(db, current, user_id=user_id)
+    await lock_project_scope_authorized(db, current, user_id=user_id, edit=edit)
 
     # Re-check the project still exists under the lock (row lock on PG; the
     # scope lock already serialises SQLite).

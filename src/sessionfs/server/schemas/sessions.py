@@ -59,6 +59,21 @@ class SessionListResponse(BaseModel):
     has_more: bool
 
 
+class SessionModelCount(BaseModel):
+    """One distinct model among the caller's visible sessions.
+
+    ``model_id`` is ``None`` for the aggregated "unknown" bucket (sessions
+    with a NULL or empty model id).
+    """
+
+    model_id: str | None
+    count: int
+
+
+class SessionModelsResponse(BaseModel):
+    models: list[SessionModelCount]
+
+
 class SessionUploadResponse(BaseModel):
     session_id: str
     etag: str

@@ -17,14 +17,42 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.24.0 -->
+      <!-- v0.25.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.25.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 26, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Helper Actions &middot; Helper Docs Answers &middot; Configurable Helper &middot; Sessions by Model &middot; Project Edit Access</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Helper actions with Confirm.</strong> The session helper can propose two changes: moving sessions to Trash (&ldquo;clean up my scratch sessions from last month&rdquo;) and turning Auto Narrative on or off for projects. Each proposal shows a card listing every target and what will happen to it; nothing changes until you press <strong>Confirm</strong>, and access is checked again for each target at that moment. Sessions go to Trash, never deleted, so cleanup can be undone for 30 days. Proposals expire after 15 minutes, and every decision is recorded in the retrieval audit log.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Clickable references in helper answers.</strong> Ticket ids open a preview over the conversation (status, priority, assignee, description, latest comments, <strong>Open ticket</strong>) without leaving the page; project and session ids open their pages, and PR numbers and commit SHAs link to GitHub when the project has one verified repository.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>The helper answers from the SessionFS docs.</strong> Questions about how SessionFS works, setup, commands, settings and plans are answered from the official documentation, with links to the exact page and section.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Configure the assistant.</strong> Org owners and admins, and each user for their own key, can set the maximum answer length, temperature, top-p, tool steps, reasoning effort and answer style; orgs can cap output tokens and tool steps. Custom instructions (up to 4000 characters for the org, 2000 personal) can&rsquo;t override the helper&rsquo;s access and safety rules. <span class="font-mono text-accent text-sm">sfs helper status</span> shows the effective settings.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Token usage and a monthly budget.</strong> Every helper turn records its token usage. Org admins see usage per member for the current month and can set a monthly token budget for turns that use the org&rsquo;s key; once it is reached, helper turns return <span class="font-mono text-accent text-sm">429 helper_budget_exceeded</span> until the next month. Deleting a conversation doesn&rsquo;t reset usage.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Filter and sort sessions by model.</strong> The Sessions page can filter by the LLM model a session used and group sessions by model (<span class="font-mono text-accent text-sm">?model=</span> on the session list, <span class="font-mono text-accent text-sm">GET /api/v1/sessions/models</span>).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Test connection for LLM keys.</strong> Personal and org key settings have a <strong>Test connection</strong> button that sends a tiny request and shows the endpoint, model and latency, or a readable reason it failed (wrong address, invalid key, model not found, rate limited, out of balance).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Help page refresh.</strong> The dashboard Help page covers the session helper, ticket notifications, model settings and the current MCP tools.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Changed: saving a Base URL checks it first.</strong> A base URL that points at a provider&rsquo;s website or console instead of its API, or a key the provider rejects, is refused with a clear message. Outages and rate limits never block a save; they are shown as warnings. When the helper hits a wrong address at runtime, its error names the API address to use.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Changed: only a project&rsquo;s owner and its organization&rsquo;s members can change it.</strong> Anyone else who synced a session from the same repository can still read the project and add knowledge entries, tickets, comments and agent runs, but changing settings, rules, wiki pages, the context document, personas or work queues, or curating the knowledge base, now returns <span class="font-mono text-accent text-sm">403 project_edit_forbidden</span>. Project responses carry <span class="font-mono text-accent text-sm">can_edit</span>, and the dashboard hides the controls such a collaborator can&rsquo;t use.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Changed: collaborators&rsquo; contributions wait for a member.</strong> Their knowledge entries stay notes and never reach the context document or compiled rules until an owner or org member promotes them (bulk promote leaves them out unless you pass <span class="font-mono text-accent text-sm">--include-reader-notes</span>). Their tickets start as <em>suggested</em> and go back to <em>suggested</em> when edited after approval, and work queues don&rsquo;t pick them up until approved. Their comments don&rsquo;t reach automated agents.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security: people who only synced a session can no longer change a project.</strong> Before this release, anyone with a captured session from a project&rsquo;s repository could edit its settings, rules and context, which could change the instructions compiled into other members&rsquo; tool rules files.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;095 (094 adds helper actions, 095 helper settings and the usage ledger; both additive). Self-hosted: run migrations 094 and 095, then review tickets and knowledge notes from people outside your org, which now wait for an owner or org member (see <a href="/self-hosted/#upgrading" class="text-brand hover:underline">Self-Hosted</a>). 8967 backend tests + 1189 dashboard UI tests passing. 85 MCP tools (unchanged).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.24.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.24.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 25, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Ticket Following &middot; 14 LLM Providers &middot; Helper Redesign &middot; Crash-Safe Local Store</h2>
         <ul class="space-y-2 text-base text-muted">

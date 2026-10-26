@@ -7,12 +7,14 @@ import PreferencesSection from './PreferencesSection';
 import IntegrationsSection from './IntegrationsSection';
 import DataProtectionSection from './DataProtectionSection';
 import SyncSection from './SyncSection';
+import AssistantSection from './AssistantSection';
 
 type SettingsSectionKey =
   | 'account'
   | 'preferences'
   | 'integrations'
   | 'data-protection'
+  | 'assistant'
   | 'sync';
 
 const SETTINGS_SECTIONS: { key: SettingsSectionKey; label: string }[] = [
@@ -20,6 +22,7 @@ const SETTINGS_SECTIONS: { key: SettingsSectionKey; label: string }[] = [
   { key: 'preferences', label: 'Preferences' },
   { key: 'integrations', label: 'Integrations' },
   { key: 'data-protection', label: 'Data protection' },
+  { key: 'assistant', label: 'Assistant' },
   { key: 'sync', label: 'Sync' },
 ];
 
@@ -98,6 +101,7 @@ export default function SettingsPage() {
           {section === 'preferences' && <PreferencesSection />}
           {section === 'integrations' && <IntegrationsSection />}
           {section === 'data-protection' && <DataProtectionSection />}
+          {section === 'assistant' && <AssistantSection />}
           {section === 'sync' && <SyncSection />}
         </div>
       </div>

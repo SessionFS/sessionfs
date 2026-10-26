@@ -3814,6 +3814,13 @@ async def create_install_request(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     project = await _project_access(db, auth, project_id)
+    # tk_25872885e3274a7d — a project-scope install shapes what every member's
+    # tools load, so only an editor (owner / org member) may ask for one; a
+    # captured-session reader can still request personal (user/device) scope.
+    if body.target_scope == "project" and auth.key_kind != "service":
+        from sessionfs.server.auth.project_access import require_project_editor
+
+        await require_project_editor(db, auth.user.id, project)
     await _require_project_org_feature(db, project, "team_skill_library")
     # Lock order step 1 + content-hash lock BEFORE the deliverability check, so
     # a concurrent block / delete cannot slip between the check and the insert.

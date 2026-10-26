@@ -128,3 +128,24 @@ describe('ProjectSettings scheduled compile', () => {
     });
   });
 });
+
+describe('ProjectSettings for a view-only reader', () => {
+  beforeEach(() => {
+    for (const h of Object.values(hooks)) h.mockReset();
+    hooks.useUpdateProjectSettings.mockReturnValue(makeMutation());
+    hooks.useUpdateProjectName.mockReturnValue(makeMutation());
+  });
+
+  it('explains why instead of showing controls when can_edit is false', () => {
+    render(<ProjectSettings project={{ ...PROJECT, can_edit: false }} onRequestDelete={() => {}} />);
+    expect(screen.getByText('You can view this project but not change it')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Rename' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Compile schedule' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete project' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the controls when can_edit is absent (older server)', () => {
+    renderSettings();
+    expect(screen.getByRole('button', { name: 'Rename' })).toBeInTheDocument();
+  });
+});

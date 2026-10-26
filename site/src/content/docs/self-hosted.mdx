@@ -363,6 +363,11 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 - **Set `SFS_VERIFICATION_SECRET` to a real secret.** Stored LLM keys and integration tokens are encrypted with a key derived from it (existing values still decrypt). With an unset or placeholder value, routes that store or read encrypted secrets return `503 encryption_unavailable` outside development.
 - **Schedule the ticket digest** if you want ticket emails; see [Scheduled sweeps](#scheduled-sweeps).
 
+**Upgrading to v0.25.0** runs migrations 094 (helper actions) and 095 (helper settings and the token-usage ledger); both are additive. Also:
+
+- **Project editing is limited to the owner and org members.** People who only synced a session from a project's repository can still read it and add knowledge entries, tickets, comments and agent runs, but changing the project returns `403 project_edit_forbidden`. See [Project Context](/project-context/).
+- **Review collaborator contributions.** Tickets and knowledge notes created by people outside your org now wait for an owner or org member to approve or promote them, and work queues with auto-adopt skip open tickets from non-members until they are approved.
+
 ## Troubleshooting
 
 ### Check pod status

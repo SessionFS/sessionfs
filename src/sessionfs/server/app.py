@@ -13,7 +13,7 @@ from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
 from sessionfs.server.middleware import MetricsMiddleware, RequestLoggingMiddleware
-from sessionfs.server.routes import activation, admin, admin_licenses, agent_feedback, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, dlp, handoffs, health, helm, helper, jira, knowledge, llm_providers, marketplace, marketplace_disclosure, marketplace_discovery, marketplace_moderation, marketplace_publishers, marketplace_scanning, me, metrics, native_catalogs, org, org_llm_settings, org_members, personas, project_transfers, projects, residents, retrieval_audit, rules, sessions, settings, skill_policy, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, uploads, webhooks, wiki, work_queues
+from sessionfs.server.routes import activation, admin, admin_licenses, agent_feedback, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, dlp, handoffs, health, helm, helper, helper_settings, jira, knowledge, llm_providers, marketplace, marketplace_disclosure, marketplace_discovery, marketplace_moderation, marketplace_publishers, marketplace_scanning, me, metrics, native_catalogs, org, org_llm_settings, org_members, personas, project_transfers, projects, residents, retrieval_audit, rules, sessions, settings, skill_policy, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, uploads, webhooks, wiki, work_queues
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -113,6 +113,12 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
         # request.app.state.config rather than re-importing ServerConfig.
         app.state.config = config
 
+        # Parse the session helper's bundled docs index off the event loop so
+        # the first docs search doesn't pay for it (non-blocking).
+        from sessionfs.server.helper.docs import warm_docs_index_in_background
+
+        warm_docs_index_in_background()
+
         yield
 
         # Shutdown
@@ -195,6 +201,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     # Tickets same precedence (v0.10.1 Phase 3): `/tickets` subpath
     # under projects must beat the catch-all.
     app.include_router(tickets.router)
+    app.include_router(tickets.by_id_router)
     app.include_router(me.router)
     # Jira promotion routes register before projects.router's catch-all
     # `/{git_remote_normalized:path}` (same precedence trick as
@@ -229,6 +236,8 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(org.router)
     app.include_router(org_members.router)
     app.include_router(org_llm_settings.router)
+    app.include_router(helper_settings.user_router)
+    app.include_router(helper_settings.org_router)
     app.include_router(helper.router)
     app.include_router(sso_admin.router)
     app.include_router(activation.router)

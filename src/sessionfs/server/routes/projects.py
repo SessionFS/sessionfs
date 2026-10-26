@@ -144,6 +144,12 @@ class ProjectResponse(BaseModel):
     # Absent (None) only when the server predates this field — the dashboard
     # falls back to the caller's own tier in that case.
     effective_tier: str | None = None
+    # Whether the CALLER may change this project (owner or a member of its
+    # org — user_can_edit_project). A reader whose only access is a captured
+    # session on the project's repo sees False: they can read and add
+    # knowledge/tickets/comments but not change settings, rules, wiki pages
+    # or curate the knowledge base. None only from servers that predate it.
+    can_edit: bool | None = None
 
 
 class LinkRepoRequest(BaseModel):
@@ -251,6 +257,7 @@ def _project_response(
     session_count: int = 0,
     repos: list[ProjectRepoResponse] | None = None,
     effective_tier: str | None = None,
+    can_edit: bool | None = None,
 ) -> ProjectResponse:
     """Build a ProjectResponse, mapping the structural reclaimed state
     (NULL git_remote_normalized + repo_reclaimed_at) onto the wire
@@ -274,6 +281,7 @@ def _project_response(
         repos=repos,
         repo_reclaimed=project.repo_reclaimed_at is not None,
         effective_tier=effective_tier,
+        can_edit=can_edit,
     )
 
 
@@ -295,40 +303,16 @@ async def list_projects(
         fallback so personal projects still surface for teammates who
         synced on the same repo)
     """
-    from sqlalchemy import distinct, func, or_
+    from sqlalchemy import func
 
-    from sessionfs.server.db.models import OrgMember, ProjectRepo
+    from sessionfs.server.auth.project_access import list_accessible_projects
+    from sessionfs.server.db.models import ProjectRepo
 
-    # Get git remotes from user's sessions
-    session_remotes_stmt = select(distinct(Session.git_remote_normalized)).where(
-        Session.user_id == user.id,
-        Session.git_remote_normalized.isnot(None),
-        Session.git_remote_normalized != "",
-    )
-    result = await db.execute(session_remotes_stmt)
-    user_remotes = {r[0] for r in result.all()}
-
-    # Get projects: owned by user OR scoped to an org the user is a
-    # member of OR matching user's session remotes.
-    # P2 (§3.3 B4): match through project_repos (any of the project's
-    # repos matches a remote the user has sessions on) with legacy
-    # primary-remote fallback.
-    user_org_ids_stmt = select(OrgMember.org_id).where(OrgMember.user_id == user.id)
-    conditions = [
-        Project.owner_id == user.id,
-        Project.org_id.in_(user_org_ids_stmt),
-    ]
-    if user_remotes:
-        multi_repo_match = select(ProjectRepo.project_id).where(
-            ProjectRepo.git_remote_normalized.in_(user_remotes)
-        )
-        conditions.append(or_(
-            Project.git_remote_normalized.in_(user_remotes),  # legacy fallback
-            Project.id.in_(multi_repo_match),                  # multi-repo path
-        ))
-    stmt = select(Project).where(or_(*conditions)).order_by(Project.updated_at.desc())
-    result = await db.execute(stmt)
-    projects: list[Project] = list(result.scalars().all())
+    # Access predicate now lives in auth.project_access.list_accessible_projects
+    # (shared with the session helper's list_projects tool so the two listings
+    # can never drift): owner OR org member OR a session on the project's
+    # primary/linked git remote.
+    projects: list[Project] = await list_accessible_projects(db, user.id)
 
     # P2 (§3.3 B5): count sessions by project_id, primary remote,
     # AND through project_repos for legacy sessions with NULL
@@ -396,11 +380,25 @@ async def list_projects(
     # Batch-resolve so a long list stays O(1) round-trips.
     plan_tiers = await resolve_project_plan_tiers(projects, db) if projects else {}
 
+    # Editor standing per project (owner or org member) from one membership
+    # query — same rule as user_can_edit_project.
+    member_org_ids = set(
+        (
+            await db.execute(
+                select(OrgMember.org_id).where(OrgMember.user_id == user.id)
+            )
+        ).scalars().all()
+    )
+
     return [
         _project_response(
             p,
             session_count=session_counts.get(p.id, 0),
             effective_tier=plan_tiers[p.id].value if p.id in plan_tiers else None,
+            can_edit=(
+                p.owner_id == user.id
+                or (p.org_id is not None and p.org_id in member_org_ids)
+            ),
         )
         for p in projects
     ]
@@ -667,7 +665,7 @@ async def create_project(
         )
 
     effective_tier = (await resolve_project_plan_tier(project, db)).value
-    return _project_response(project, effective_tier=effective_tier)
+    return _project_response(project, effective_tier=effective_tier, can_edit=True)
 
 
 # ── P3: Multi-Repo Link / Unlink / List ──────────────────────────────────
@@ -1573,11 +1571,14 @@ async def get_project(
     if not await user_can_access_project(db, user.id, project):
         raise HTTPException(403, "No access to this project")
 
+    from sessionfs.server.auth.project_access import user_can_edit_project
+
     effective_tier = (await resolve_project_plan_tier(project, db)).value
     return _project_response(
         project,
         repos=await _repos_for_project(db, project.id),
         effective_tier=effective_tier,
+        can_edit=await user_can_edit_project(db, user.id, project),
     )
 
 
@@ -1594,7 +1595,10 @@ async def update_project_context(
     F5: access check runs against the resolved project (resolver
     resolves, we authorize).
     """
-    from sessionfs.server.auth.project_access import user_can_access_project
+    from sessionfs.server.auth.project_access import (
+        require_project_editor,
+        user_can_access_project,
+    )
     from sessionfs.server.services.project_resolver import (
         ProjectResolutionLoopError,
         resolve_project_by_remote,
@@ -1612,6 +1616,9 @@ async def update_project_context(
 
     if not await user_can_access_project(db, user.id, project):
         raise HTTPException(403, "No access to this project")
+    # Overwriting the shared context document is an edit: owner or org
+    # member only (a captured-session reader gets 403).
+    await require_project_editor(db, user.id, project)
 
     project.context_document = body.context_document
     project.updated_at = datetime.now(timezone.utc)
@@ -1783,6 +1790,7 @@ async def update_project(
         project,
         repos=await _repos_for_project(db, project.id),
         effective_tier=effective_tier,
+        can_edit=True,
     )
 
 

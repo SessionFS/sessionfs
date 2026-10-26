@@ -159,6 +159,7 @@ async def lock_project_scope_authorized(
     ctx=None,
     feature: str | None = None,
     extra_org_ids: Iterable[str | None] = (),
+    edit: bool = False,
 ) -> None:
     """`lock_project_scope`, then RE-AUTHORIZE against the refreshed project.
 
@@ -170,7 +171,9 @@ async def lock_project_scope_authorized(
     * the project access check — for a service key the org/allowlist
       boundary (`assert_service_key_can_access_project`), otherwise the
       user-key predicate (`load_project_for_user`: owner, org member or
-      captured session; 404 when no longer accessible);
+      captured session; 404 when no longer accessible) — or, with
+      ``edit=True``, the editor predicate (`load_project_for_editor`:
+      owner or org member; 403 ``project_edit_forbidden`` for a reader);
     * the feature/tier gate (`check_project_feature`) when `feature` is
       given (requires `ctx`).
 
@@ -179,13 +182,19 @@ async def lock_project_scope_authorized(
     await lock_project_scope(db, project, extra_org_ids=extra_org_ids)
 
     from sessionfs.server.auth.dependencies import assert_service_key_can_access_project
-    from sessionfs.server.auth.project_access import load_project_for_user
+    from sessionfs.server.auth.project_access import (
+        load_project_for_editor,
+        load_project_for_user,
+    )
 
     if auth is not None and auth.key_kind == "service":
         await assert_service_key_can_access_project(db, auth, project)
     else:
         uid = auth.user.id if auth is not None else user_id
-        await load_project_for_user(project.id, db, uid)
+        if edit and uid is not None:
+            await load_project_for_editor(project.id, db, uid)
+        else:
+            await load_project_for_user(project.id, db, uid)
     if feature is not None:
         from sessionfs.server.tier_gate import check_project_feature
 

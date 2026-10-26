@@ -3,7 +3,7 @@ import { appendFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { mockApi } from './fixtures/mock-api';
-import { PROJECT_ID, me, sessions } from './fixtures/data';
+import { PROJECT_ID, me, projects, sessions } from './fixtures/data';
 
 /**
  * Visual scenarios for the session-helper drawer. The helper API is mocked on
@@ -76,6 +76,102 @@ const ANSWER_FRAMES: Array<[string, unknown]> = [
   ['done', { stop_reason: 'stop', input_tokens: 1200, output_tokens: 260, key_source: 'user' }],
 ];
 
+// Ids the helper mentions as plain text / inline code; the drawer links them.
+const TICKET_ID = 'tk_008676e806e94bc5';
+const LINK_ANSWER = [
+  `The retry fix is tracked in ${TICKET_ID} (still in progress) and was reviewed in \`${S1.id}\`.`,
+  '',
+  `- Merged in PR #394, commit 839c3a7 [session:${S1.id} msg:57]`,
+  `- Follow-up ticket \`tk_5c124c496ea14ecc\` covers the email side-effect`,
+  `- Project: \`${PROJECT_ID}\``,
+  '',
+  '```bash',
+  `sfs ticket show ${TICKET_ID}`,
+  '```',
+].join('\n');
+
+function framesFor(answer: string): Array<[string, unknown]> {
+  return [
+    ['conversation', { conversation_id: 'hc_new' }],
+    ...TOOL_FRAMES,
+    ...answer.match(/[\s\S]{1,40}/g)!.map((delta) => ['text', { delta }] as [string, unknown]),
+    ['citation', { session_id: S1.id, message_index: 57, title: S1.title }],
+    ['done', { stop_reason: 'stop', input_tokens: 900, output_tokens: 140, key_source: 'user' }],
+  ];
+}
+
+const TICKET_PREVIEW = {
+  id: TICKET_ID,
+  project_id: PROJECT_ID,
+  project_name: projects[0].name,
+  title: 'Retry Stripe webhooks idempotently and stop the duplicate receipt email',
+  description:
+    'Stripe re-sends `invoice.paid` when the handler acknowledges after **30 s**. Record the event id before doing work and move the email behind the commit.\n\n- Persist `stripe_events.id` first\n- Skip ids already seen\n- Replay test with two concurrent deliveries',
+  priority: 'high',
+  assigned_to: 'atlas',
+  created_by_user_id: me.user_id,
+  created_by_session_id: null,
+  created_by_persona: 'compass',
+  status: 'in_progress',
+  kind: 'task',
+  parent_ticket_id: null,
+  child_ticket_ids: [],
+  context_refs: [],
+  file_refs: [],
+  related_sessions: [],
+  acceptance_criteria: ['No duplicate email on a replayed event', 'Replay test passes 50 runs', 'Docs updated'],
+  resolver_session_id: null,
+  resolver_user_id: null,
+  completion_notes: null,
+  changed_files: [],
+  knowledge_entry_ids: [],
+  depends_on: [],
+  created_at: ago(60 * 24 * 3),
+  updated_at: ago(20),
+  resolved_at: null,
+  comment_count: 7,
+  recent_comments: [
+    { id: 'tc_7', ticket_id: TICKET_ID, author_user_id: me.user_id, author_persona: 'codex-reviewer', content: 'R2: VERIFIED-CLEAN. The replay test now covers the concurrent path and the email moved behind the commit.', session_id: null, created_at: ago(18) },
+    { id: 'tc_6', ticket_id: TICKET_ID, author_user_id: me.user_id, author_persona: 'atlas', content: 'Pushed 839c3a7: records the event id inside the same transaction as the invoice update.', session_id: null, created_at: ago(95) },
+    { id: 'tc_5', ticket_id: TICKET_ID, author_user_id: me.user_id, author_persona: null, content: 'Can we also make sure the receipt email uses the idempotency key so the provider dedupes on its side?', session_id: null, created_at: ago(60 * 26) },
+  ],
+};
+
+// Two confirm-first write actions proposed in one answer: a pending trash
+// cleanup and an Auto Narrative change the scenario then confirms.
+const TRASH_ACTION_ID = 'ha_00000000000000000000aaaa';
+const NARRATIVE_ACTION_ID = 'ha_00000000000000000000bbbb';
+const inMins = (mins: number) => new Date(NOW + mins * 60_000).toISOString();
+const TRASH_TARGETS = [
+  ...sessions.slice(0, 6).map((s) => ({
+    id: s.id,
+    name: s.title,
+    change: 'will_change',
+    before: 'active',
+    after: 'trashed',
+    tool: s.source_tool,
+    created_at: s.created_at,
+  })),
+  { id: 'ses_fixtureXX', name: 'Spike: try Redis for the import queue', change: 'skipped', reason: 'already_trashed' },
+];
+const NARRATIVE_TARGETS = [
+  { id: PROJECT_ID, name: 'Acme Widgets', change: 'will_change', before: false, after: true },
+  { id: 'proj_fixture02', name: 'Internal tools and a long project name that has to truncate', change: 'will_change', before: false, after: true },
+  { id: 'proj_fixture03', name: 'Docs site', change: 'unchanged', before: true, after: true },
+  { id: 'proj_fixture04', name: 'Billing service', change: 'skipped', reason: 'upgrade_required' },
+];
+const ACTION_FRAMES: Array<[string, unknown]> = [
+  ['conversation', { conversation_id: 'hc_new' }],
+  ['tool_call', { id: 'tc_a', name: 'trash_sessions', args: { session_ids: TRASH_TARGETS.map((t) => t.id) } }],
+  ['tool_result', { id: 'tc_a', name: 'trash_sessions', ok: true, item_count: TRASH_TARGETS.length }],
+  ['action_proposed', { action: { id: TRASH_ACTION_ID, kind: 'trash_sessions', summary: 'Move 6 session(s) to Trash', targets: TRASH_TARGETS, expires_at: inMins(14) } }],
+  ['tool_call', { id: 'tc_b', name: 'set_project_auto_narrative', args: { enabled: true } }],
+  ['tool_result', { id: 'tc_b', name: 'set_project_auto_narrative', ok: true, item_count: NARRATIVE_TARGETS.length }],
+  ['action_proposed', { action: { id: NARRATIVE_ACTION_ID, kind: 'set_auto_narrative', summary: 'Set auto-narrative on for 2 project(s)', targets: NARRATIVE_TARGETS, expires_at: inMins(14) } }],
+  ['text', { delta: 'I prepared both changes. Nothing happens until you confirm each card below.' }],
+  ['done', { stop_reason: 'stop', input_tokens: 800, output_tokens: 60, key_source: 'user' }],
+];
+
 const STREAM_FRAMES: Array<[string, unknown]> = [
   ['conversation', { conversation_id: 'hc_new' }],
   ...TOOL_FRAMES.slice(0, 3),
@@ -87,9 +183,17 @@ type Scenario = {
   meRole?: string;
   turn?: 'answer' | 'busy' | 'stream';
   ask?: string;
+  /** Answer with proposed write actions; the Auto Narrative one is confirmed. */
+  actions?: boolean;
   openHistory?: boolean;
   openScope?: boolean;
   scrollUp?: boolean;
+  /** Answer with ticket / project / session / PR references. */
+  links?: boolean;
+  /** Open the preview of the first ticket reference. */
+  preview?: boolean;
+  /** Answer the first question, then refuse the follow-up with 429 helper_budget_exceeded. */
+  budget?: boolean;
 };
 
 const OK_STATUS = { enabled: true, key_source: 'user', provider: 'anthropic', model: 'claude-sonnet-4' };
@@ -97,6 +201,7 @@ const OK_STATUS = { enabled: true, key_source: 'user', provider: 'anthropic', mo
 const SCENARIOS: Scenario[] = [
   { name: 'helper-empty' },
   { name: 'helper-answer', turn: 'answer', ask: 'Why did the billing webhook retry twice?' },
+  { name: 'helper-action', turn: 'answer', ask: 'Clean up my old sessions and turn on narratives', actions: true },
   { name: 'helper-streaming', turn: 'stream', ask: 'Why did the billing webhook retry twice?' },
   { name: 'helper-history', openHistory: true },
   { name: 'helper-no-key', status: { enabled: true, key_source: null, provider: null, model: null }, meRole: 'member' },
@@ -104,10 +209,14 @@ const SCENARIOS: Scenario[] = [
   { name: 'helper-busy', turn: 'busy', ask: 'Summarize this project' },
   { name: 'helper-scrolled-up', turn: 'answer', ask: 'Why did the billing webhook retry twice?', scrollUp: true },
   { name: 'helper-scope-menu', turn: 'answer', ask: 'Why did the billing webhook retry twice?', openScope: true },
+  { name: 'helper-links', turn: 'answer', ask: 'Where is the webhook retry fix tracked?', links: true },
+  { name: 'helper-usage-budget', turn: 'answer', ask: 'Why did the billing webhook retry twice?', budget: true, meRole: 'member', status: { ...OK_STATUS, key_source: 'org' } },
+  { name: 'helper-ticket-preview', turn: 'answer', ask: 'Where is the webhook retry fix tracked?', links: true, preview: true },
 ];
 
 async function installHelperMocks(page: Page, sc: Scenario) {
   const status = sc.status ?? OK_STATUS;
+  let turnsSeen = 0;
   await page.route(
     (u) => u.pathname.startsWith('/api/v1/helper/') || u.pathname === '/api/v1/auth/me',
     async (route) => {
@@ -128,7 +237,38 @@ async function installHelperMocks(page: Page, sc: Scenario) {
           ],
         });
       }
+      if (sc.actions && p === '/api/v1/helper/turns') {
+        return route.fulfill({
+          status: 200,
+          headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store' },
+          body: sse(ACTION_FRAMES),
+        });
+      }
+      if (p === `/api/v1/helper/actions/${NARRATIVE_ACTION_ID}/confirm`) {
+        return json(200, {
+          id: NARRATIVE_ACTION_ID,
+          kind: 'set_auto_narrative',
+          status: 'confirmed',
+          summary: 'Set auto-narrative on for 2 project(s)',
+          targets: NARRATIVE_TARGETS,
+          params: { project_ids: [PROJECT_ID, 'proj_fixture02'], enabled: true },
+          result: { targets: [{ id: PROJECT_ID, ok: true, error: null }, { id: 'proj_fixture02', ok: false, error: 'not_admin' }] },
+          created_at: ago(1),
+          expires_at: inMins(14),
+          decided_at: ago(0),
+        });
+      }
       if (p === '/api/v1/helper/turns') {
+        turnsSeen += 1;
+        if (sc.budget && turnsSeen > 1) {
+          return json(429, {
+            error: {
+              code: 'helper_budget_exceeded',
+              message: "This org's monthly session-helper token budget has been reached.",
+              details: { error: 'helper_budget_exceeded' },
+            },
+          });
+        }
         if (sc.turn === 'busy') {
           return json(409, {
             detail: {
@@ -141,12 +281,33 @@ async function installHelperMocks(page: Page, sc: Scenario) {
         return route.fulfill({
           status: 200,
           headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store' },
-          body: sse(ANSWER_FRAMES),
+          body: sse(sc.links ? framesFor(LINK_ANSWER) : ANSWER_FRAMES),
         });
       }
       return json(404, { detail: 'not found' });
     },
   );
+
+  if (sc.links) {
+    // One GitHub-verified repo, so PR and commit references link out too.
+    await page.route(
+      (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}` || u.pathname.startsWith('/api/v1/tickets/'),
+      (route) => {
+        const p = new URL(route.request().url()).pathname;
+        const body =
+          p === `/api/v1/projects/${PROJECT_ID}`
+            ? { ...projects[0], repos: projects[0].repos!.slice(0, 1) }
+            : p === `/api/v1/tickets/${TICKET_ID}`
+              ? TICKET_PREVIEW
+              : null;
+        return route.fulfill({
+          status: body ? 200 : 404,
+          contentType: 'application/json',
+          body: JSON.stringify(body ?? { detail: 'Ticket not found' }),
+        });
+      },
+    );
+  }
 
   if (sc.turn === 'stream') {
     // Keep the body open after the queued frames so the drawer stays mid-answer.
@@ -243,6 +404,28 @@ for (const theme of THEMES) {
           if (sc.ask) {
             await ask(page, sc.ask);
             await page.waitForTimeout(sc.turn === 'stream' ? 700 : 900);
+          }
+          if (sc.budget) {
+            await ask(page, 'And the receipt email?');
+            await page.getByText('Monthly budget reached').waitFor();
+            await page.waitForTimeout(250);
+          }
+          if (sc.preview) {
+            await page.getByRole('button', { name: `Preview ticket ${TICKET_ID}` }).first().click();
+            await page.getByRole('heading', { name: TICKET_PREVIEW.title }).waitFor();
+            await page.waitForTimeout(250);
+          }
+          if (sc.actions) {
+            await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+            await page.getByText('Partly applied').waitFor();
+            // Show the pending trash card at the top of the transcript.
+            await page.getByRole('heading', { name: 'Move 6 sessions to Trash' }).evaluate((el) => {
+              const card = el.closest('section')!;
+              const scroller = document.querySelector('[aria-label="Conversation"]')!.parentElement!;
+              scroller.scrollTop += card.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 16;
+              scroller.dispatchEvent(new Event('scroll'));
+            });
+            await page.waitForTimeout(250);
           }
           if (sc.scrollUp) {
             await page.locator('[aria-label="Conversation"]').evaluate((el) => {

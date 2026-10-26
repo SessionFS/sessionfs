@@ -275,3 +275,23 @@ def _no_opportunistic_webhook_retries(monkeypatch):
     from sessionfs.server.routes import webhooks
 
     monkeypatch.setattr(webhooks, "_OPPORTUNISTIC_RETRY_LIMIT", 0)
+
+
+@pytest.fixture(autouse=True)
+def _no_llm_save_time_check(request, monkeypatch):
+    """Saving judge / org helper settings with a custom Base URL makes one
+    real test request to that URL. Tests run without network, so the check
+    is stubbed (no warnings) unless a test is marked
+    ``real_llm_save_check`` and mocks the upstream itself."""
+    from sessionfs.server.services import llm_connection
+
+    llm_connection.reset_rate_limiter()
+    # Failures against private targets are padded to ~15 s in production.
+    monkeypatch.setattr(llm_connection, "PRIVATE_FAILURE_MIN_SECONDS", 0.0)
+    if request.node.get_closest_marker("real_llm_save_check"):
+        return
+
+    async def _skip(**_kwargs):
+        return []
+
+    monkeypatch.setattr(llm_connection, "save_time_check", _skip)

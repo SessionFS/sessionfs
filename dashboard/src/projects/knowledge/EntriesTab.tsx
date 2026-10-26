@@ -8,7 +8,18 @@ import { EntryTypeBadge, ClaimClassBadge, FreshnessDot } from './badges';
 import { SupersedeDialog } from './SupersedeDialog';
 import { errorMessage } from '../../utils/errorMessage';
 
-export default function KnowledgeEntriesTab({ projectId }: { projectId: string }) {
+/**
+ * `canEdit` is the project's `can_edit` flag: readers who can only view the
+ * project (a captured session on its repo) don't get curation controls —
+ * the server refuses those changes with 403 `project_edit_forbidden`.
+ */
+export default function KnowledgeEntriesTab({
+  projectId,
+  canEdit = true,
+}: {
+  projectId: string;
+  canEdit?: boolean;
+}) {
   const [pendingOnly, setPendingOnly] = useState(false);
   const [typeFilter, setTypeFilter] = useState<string>('');
   const [claimFilter, setClaimFilter] = useState<string>('');
@@ -192,7 +203,7 @@ export default function KnowledgeEntriesTab({ projectId }: { projectId: string }
               ))}
             </ul>
           )}
-          {health.stale_entry_count > 0 && (
+          {canEdit && health.stale_entry_count > 0 && (
             <Button
               variant="secondary"
               size="sm"
@@ -235,6 +246,7 @@ export default function KnowledgeEntriesTab({ projectId }: { projectId: string }
                       #{entry.id} &middot; {entry.entry_type}
                     </p>
                   </div>
+                  {canEdit && (
                   <div className="flex items-center gap-1 shrink-0">
                     <Button
                       variant="ghost"
@@ -263,6 +275,7 @@ export default function KnowledgeEntriesTab({ projectId }: { projectId: string }
                       Dismiss
                     </Button>
                   </div>
+                  )}
                   {supersedeTarget === entry.id && (
                     <SupersedeDialog
                       entryId={entry.id}
@@ -325,6 +338,7 @@ export default function KnowledgeEntriesTab({ projectId }: { projectId: string }
             className="!w-auto !px-2 !py-1 bg-bg-primary text-sm"
           />
         </div>
+        {canEdit && (
         <div className="flex items-center gap-2">
           <Button
             variant="secondary"
@@ -342,6 +356,7 @@ export default function KnowledgeEntriesTab({ projectId }: { projectId: string }
             Compile now
           </Button>
         </div>
+        )}
       </div>
 
       {/* Entries list */}
@@ -431,7 +446,8 @@ export default function KnowledgeEntriesTab({ projectId }: { projectId: string }
                     )}
                   </div>
                 </div>
-                {/* Actions */}
+                {/* Actions (curation is editor-only) */}
+                {canEdit && (
                 <div className="flex items-center gap-1 shrink-0">
                   {!entry.dismissed && entry.claim_class === 'note' && entry.freshness_class !== 'superseded' && (
                     <Button
@@ -469,6 +485,7 @@ export default function KnowledgeEntriesTab({ projectId }: { projectId: string }
                     </Button>
                   )}
                 </div>
+                )}
               </div>
               {/* Supersede dialog inline */}
               {supersedeTarget === entry.id && (

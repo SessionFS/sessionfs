@@ -74,7 +74,8 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/api/v1/sessions` | Bearer | List sessions (paginated) |
+| GET | `/api/v1/sessions` | Bearer | List sessions (paginated). Query params: `page`, `page_size`, `source_tool`, `model` (repeatable, exact match, OR'd, deduplicated; at most 50 values of at most 200 characters each, else 422; `model=unknown` matches the unknown bucket: a NULL, empty, literal `unknown` or `<synthetic>` model id), `tag`, `sort` (`updated_at` default, or `model`; other values are a 422), `order` (`asc`/`desc`, default `desc`). `sort=model` puts unknown models last in both directions |
+| GET | `/api/v1/sessions/models` | Bearer | Distinct model ids among your visible sessions with counts (`model_id: null` is the aggregated "unknown" bucket: NULL, empty, literal `unknown` and `<synthetic>` ids), sorted by count desc; honors `source_tool` and `deleted` |
 | GET | `/api/v1/sessions/{id}` | Bearer | Get session detail |
 | PUT | `/api/v1/sessions/{id}/sync` | Bearer | Push session (upload archive). `If-Match` makes it conditional (`409 etag_mismatch` when stale, checked before the archive is processed); every response carries a `Server-Timing` header with the push's phase breakdown |
 | GET | `/api/v1/sessions/{id}/sync` | Bearer | Pull session (download archive) |
@@ -101,7 +102,11 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | GET | `/api/v1/helper/conversations` | Bearer (user key) | List your helper threads |
 | GET | `/api/v1/helper/conversations/{id}` | Bearer (user key) | One thread with its messages |
 | DELETE | `/api/v1/helper/conversations/{id}` | Bearer (user key) | Delete a thread |
-| GET | `/api/v1/helper/status` | Bearer (user key) | Whether the helper is enabled and which key it would use |
+| GET | `/api/v1/helper/status` | Bearer (user key) | Whether the helper is enabled, which key it would use, and its effective settings |
+| GET | `/api/v1/helper/actions/{id}` | Bearer (user key) | A change the helper proposed (move sessions to Trash, turn Auto Narrative on or off), with its targets and state (v0.25.0) |
+| POST | `/api/v1/helper/actions/{id}/confirm` | Bearer (user key) | Apply a proposed change; access is re-checked for every target and per-target results are returned. Proposals expire after 15 minutes (v0.25.0) |
+| POST | `/api/v1/helper/actions/{id}/cancel` | Bearer (user key) | Drop a proposed change (v0.25.0) |
+| GET / PUT | `/api/v1/settings/helper` | Bearer (user key) | Your helper settings, custom instructions and this month's usage. PUT merges (omitted keeps, `null` clears) |
 
 ### Audit
 
@@ -140,10 +145,11 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | GET | `/api/v1/settings/judge` | Bearer | Get judge settings |
-| PUT | `/api/v1/settings/judge` | Bearer | Save judge settings |
+| PUT | `/api/v1/settings/judge` | Bearer | Save judge settings. A new custom `base_url` (or a new key with one) is tested first: `422 {code, message}` for `endpoint_not_api` / `invalid_key` / `endpoint_blocked`; transient failures save and return `warnings` |
 | DELETE | `/api/v1/settings/judge` | Bearer | Clear judge settings |
 | GET | `/api/v1/settings/judge/models?base_url=` | Bearer | Discover models from custom endpoint using the saved judge key (an `api_key` query parameter is refused) |
 | POST | `/api/v1/settings/judge/models` | Bearer | Discover models; body `{base_url, api_key?}` |
+| POST | `/api/v1/settings/judge/test` | Bearer | Test connection: one minimal chat request. Body `{provider?, model?, base_url?, api_key?}`; without `api_key` the saved key is used only for the provider/Base URL it was saved with (`400 key_required` otherwise). Returns `{ok, code, message, provider, model, endpoint_host, latency_ms}`. 10 per minute (`429 test_rate_limited`) |
 | GET | `/api/v1/settings/audit-trigger` | Bearer | Get auto-audit trigger |
 | PUT | `/api/v1/settings/audit-trigger` | Bearer | Set auto-audit trigger |
 | GET | `/api/v1/settings/github` | Bearer | GitHub installation settings |
@@ -195,6 +201,7 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 |--------|------|------|-------------|
 | GET | `/api/v1/projects/{id}/tickets` | Bearer (`tickets:read`) | List tickets. Query params: `status`, `assigned_to`, `kind` |
 | POST | `/api/v1/projects/{id}/tickets` | Bearer (`tickets:write`) | Create a ticket (body: `title`, `description`, `acceptance_criteria`, `priority`, `kind`, `parent_ticket_id`, `depends_on`) |
+| GET | `/api/v1/tickets/{tid}` | Bearer (`tickets:read`) | Look a ticket up by id alone (for links): the ticket detail plus its project name, comment count and latest comments. Not found and no access both return 404 (v0.25.0) |
 | GET | `/api/v1/projects/{id}/tickets/{tid}` | Bearer (`tickets:read`) | Get a ticket with dependencies, dependents, and recent comments |
 | PUT | `/api/v1/projects/{id}/tickets/{tid}` | Bearer (`tickets:write`) | Partial mutation for `title` / `description` / `priority` / `acceptance_criteria` / `context_refs` / `file_refs` / `depends_on`. Status transitions remain FSM-only. Authz: creator OR project admin. Optional `lease_epoch` for optimistic concurrency (409 + structured envelope on stale; last-write-wins when omitted; `lease_epoch` alone rejected with 400 — it's a fence, not a mutation). Side effect: every successful update auto-posts ONE `author_persona='system'` diff comment + writes per-field rows to the `ticket_edits` audit table (no-op writes don't pollute the audit). `depends_on` updates run same-project + cycle + dedup validation before wipe-and-reinsert. (v0.10.28) |
 | POST | `/api/v1/projects/{id}/tickets/{tid}/start` | Bearer (`tickets:write`) | Atomic claim. Increments and returns `lease_epoch`, creates a server-side `retrieval_audit_id`, returns compiled persona + ticket context |
@@ -231,6 +238,8 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | POST | `/api/v1/orgs/{org_id}/projects/{project_id}/propose-transfer` | Bearer | Propose moving a member's personal project into the org (owner or admin; the project owner must accept) — v0.23.0 |
 | PUT | `/api/v1/orgs/{org_id}/members/me/digest` | Bearer | Turn your weekly activity digest off or on (`{"opt_out": true}`) — v0.23.0 |
 | GET / PUT / DELETE | `/api/v1/orgs/{org_id}/llm-settings` | Bearer | Org AI key for the session helper (owner or admin, Enterprise) — v0.23.0 |
+| POST | `/api/v1/orgs/{org_id}/llm-settings/test` | Bearer | Test the org AI key connection (owner or admin, Enterprise); same body and response as `/settings/judge/test` |
+| GET / PUT | `/api/v1/orgs/{org_id}/helper-settings` | Bearer | Org helper settings, ceilings, instructions and monthly token budget (PUT: owner or admin, Enterprise; GET: members see effective values and their own usage) |
 | GET / PUT / DELETE | `/api/v1/orgs/{org_id}/integrations/jira` | Bearer | Jira Cloud connection (admin, Enterprise); also `/projects`, `/mappings[/{project_id}]`, `/health` — v0.23.0 |
 | GET | `/api/v1/orgs/{org_id}/personas/{name}/rollup` | Bearer | Org persona activity across the projects you can see — v0.23.0 |
 | GET | `/api/v1/orgs/{org_id}/personas/{name}/represent-history` | Bearer | Who has represented an org persona over time (admin) — v0.23.0 |
@@ -294,7 +303,7 @@ All package versions are immutable and addressed by `content_hash`. Visibility f
 | GET | `/api/v1/admin/metrics` | Bearer (admin or `admin_metrics:read`) | Prometheus metrics: request latency by route, push outcomes and sizes, pulls, handoffs, DLP findings, auth failures, active users, sessions, DB pool (v0.23.0) |
 | POST | `/api/v1/admin/sweeps/kb-compile` | Bearer (admin or `platform_sweeps:run`) | Compile projects whose schedule or claims threshold is due (v0.23.0) |
 | POST | `/api/v1/admin/sweeps/org-digest` | Bearer (admin or `platform_sweeps:run`) | Send the weekly org activity digest, once per org per week (v0.23.0) |
-| POST | `/api/v1/admin/sweeps/helper-retention` | Bearer (admin or `platform_sweeps:run`) | Delete expired session helper messages (v0.23.0) |
+| POST | `/api/v1/admin/sweeps/helper-retention` | Bearer (admin or `platform_sweeps:run`) | Delete expired session helper messages (v0.23.0) and token-usage ledger rows older than 400 days |
 | POST | `/api/v1/admin/sweeps/ticket-notifications` | Bearer (admin or `platform_sweeps:run`) | Send the ticket notification email digest (v0.24.0) |
 | POST | `/api/v1/admin/projects/{project_id}/restore-from-compilation` | Bearer (admin) | Restore `project.context_document` from a prior `ContextCompilation.context_after`; restore `compiled_at` on participating entries. Body: `{compilation_id: int, dry_run: bool = true}`. Single atomic transaction. Audit-logged. (v0.10.13) |
 

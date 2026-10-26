@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SseParser } from './sse';
+import { SseParser, parseActionProposed } from './sse';
 
 describe('SseParser', () => {
   it('parses a single complete frame', () => {
@@ -93,5 +93,44 @@ describe('SseParser', () => {
     const p = new SseParser();
     p.push('event: done\ndata: {}\n\n');
     expect(p.flush()).toEqual([]);
+  });
+});
+
+describe('parseActionProposed', () => {
+  const frame = (action: unknown) => {
+    const [ev] = new SseParser().push(`event: action_proposed\ndata: ${JSON.stringify({ action })}\n\n`);
+    return ev;
+  };
+
+  it('parses an action_proposed event into a proposal', () => {
+    const ev = frame({
+      id: 'ha_1',
+      kind: 'trash_sessions',
+      summary: 'Move 1 session(s) to Trash',
+      targets: [
+        { id: 'ses_a', name: 'A', change: 'will_change', before: 'active', after: 'trashed' },
+        { id: 'ses_b', name: 'B', change: 'skipped', reason: 'not_owned' },
+      ],
+      expires_at: '2026-10-25T12:00:00+00:00',
+    });
+    expect(ev.event).toBe('action_proposed');
+    expect(parseActionProposed(ev.data)).toEqual({
+      id: 'ha_1',
+      kind: 'trash_sessions',
+      summary: 'Move 1 session(s) to Trash',
+      targets: [
+        { id: 'ses_a', name: 'A', change: 'will_change', before: 'active', after: 'trashed' },
+        { id: 'ses_b', name: 'B', change: 'skipped', reason: 'not_owned' },
+      ],
+      expires_at: '2026-10-25T12:00:00+00:00',
+    });
+  });
+
+  it('drops malformed targets and rejects payloads without an id', () => {
+    const ev = frame({ id: 'ha_2', kind: 'set_auto_narrative', targets: [{ id: 'p', change: 'bogus' }, null, { id: 'q', change: 'unchanged' }] });
+    expect(parseActionProposed(ev.data)?.targets).toEqual([{ id: 'q', name: 'q', change: 'unchanged' }]);
+    expect(parseActionProposed(ev.data)?.expires_at).toBeNull();
+    expect(parseActionProposed(JSON.stringify({ action: { kind: 'x' } }))).toBeNull();
+    expect(parseActionProposed('not json')).toBeNull();
   });
 });

@@ -469,6 +469,26 @@ api:
       secretKey: helper-retention-api-key
 ```
 
+## LLM connection tests against private hosts
+
+The judge / helper key forms have a **Test connection** button
+(`POST /api/v1/settings/judge/test`, `POST /api/v1/orgs/{org_id}/llm-settings/test`).
+With `SFS_LLM_ALLOW_PRIVATE_HOSTS` on (the Helm default, `api.llm.allowPrivateHosts`)
+a user can point it at an in-cluster address, so results for targets that
+resolve to a non-public address are deliberately coarse, to keep the test from
+being used to map the internal network:
+
+- `ok` and `invalid_key` are reported as usual (you need them to set up a
+  self-hosted model).
+- Timeouts, connect failures and "not an API" replies (an HTML page or a 404
+  from some other internal service) all read `unreachable`.
+- No snippet of the upstream error is returned, and `latency_ms` is null.
+- Every failure takes at least 15 seconds, so timing can't tell a refused port
+  from a filtered one.
+
+Public targets get the detailed result. Metadata, link-local and unspecified
+addresses stay blocked in every mode (`endpoint_blocked`).
+
 ## Upgrading
 
 ```bash

@@ -55,9 +55,21 @@ def _prior_revision() -> str:
 
 def _prior_metadata() -> sa.MetaData:
     """Everything in its 090 shape — i.e. before the two helper tables exist."""
+    # Later migrations add tables that reference the helper tables (e.g.
+    # helper_actions); leave those out too, transitively.
+    excluded = {_CONVERSATION_TABLE, _MESSAGE_TABLE}
+    changed = True
+    while changed:
+        changed = False
+        for name, table in Base.metadata.tables.items():
+            if name not in excluded and any(
+                fk.column.table.name in excluded for fk in table.foreign_keys
+            ):
+                excluded.add(name)
+                changed = True
     metadata = sa.MetaData()
     for name, table in Base.metadata.tables.items():
-        if name not in {_CONVERSATION_TABLE, _MESSAGE_TABLE}:
+        if name not in excluded:
             table.to_metadata(metadata)
     return metadata
 

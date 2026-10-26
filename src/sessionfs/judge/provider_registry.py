@@ -62,6 +62,20 @@ class Provider:
     # Environment variables the CLI reads this provider's key from, in order.
     # A key is only ever taken from its own provider's variables.
     env_vars: tuple[str, ...] = ()
+    # Hosts of the provider's web console / chat app. They answer a chat
+    # request with 404/405/HTML, so a Base URL pointing at one gets a message
+    # naming the real API address. Only hosts we know serve the console.
+    console_hosts: tuple[str, ...] = ()
+
+    @property
+    def default_base_url(self) -> str | None:
+        """The API address to show as the Base URL placeholder.
+
+        Only OpenAI-compatible providers: a custom Base URL is always called
+        with the OpenAI chat-completions format, so Anthropic/Google are used
+        by leaving it empty.
+        """
+        return self.base_url if self.api_style == "openai" else None
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +89,7 @@ class Provider:
 PROVIDERS: tuple[Provider, ...] = (
     Provider(
         id="anthropic",
+        console_hosts=("console.anthropic.com", "platform.claude.com", "claude.ai"),
         env_vars=("ANTHROPIC_API_KEY",),
         label="Anthropic",
         api_style="anthropic",
@@ -89,6 +104,7 @@ PROVIDERS: tuple[Provider, ...] = (
     Provider(
         # developers.openai.com/api/docs/models
         id="openai",
+        console_hosts=("platform.openai.com", "chatgpt.com", "chat.openai.com"),
         env_vars=("OPENAI_API_KEY",),
         label="OpenAI",
         api_style="openai",
@@ -107,6 +123,7 @@ PROVIDERS: tuple[Provider, ...] = (
     Provider(
         # ai.google.dev/gemini-api/docs/models
         id="google",
+        console_hosts=("aistudio.google.com", "gemini.google.com"),
         env_vars=("GEMINI_API_KEY", "GOOGLE_API_KEY"),
         label="Google Gemini",
         api_style="google",
@@ -138,6 +155,7 @@ PROVIDERS: tuple[Provider, ...] = (
         # api-docs.deepseek.com/quick_start/pricing — deepseek-chat and
         # deepseek-reasoner were retired 2026-07-24. Thinking is on by default.
         id="deepseek",
+        console_hosts=("platform.deepseek.com", "chat.deepseek.com"),
         env_vars=("DEEPSEEK_API_KEY",),
         label="DeepSeek",
         api_style="openai",
@@ -157,6 +175,7 @@ PROVIDERS: tuple[Provider, ...] = (
         # platform.kimi.ai/docs — temperature/top_p are fixed per mode and any
         # other value is rejected, so they are never sent.
         id="kimi",
+        console_hosts=("platform.moonshot.ai", "kimi.com", "www.kimi.com"),
         env_vars=("MOONSHOT_API_KEY", "KIMI_API_KEY"),
         label="Kimi (Moonshot)",
         api_style="openai",
@@ -176,6 +195,7 @@ PROVIDERS: tuple[Provider, ...] = (
     Provider(
         # docs.x.ai/developers/grok-4-7
         id="xai",
+        console_hosts=("console.x.ai", "grok.com"),
         env_vars=("XAI_API_KEY",),
         label="xAI (Grok)",
         api_style="openai",
@@ -189,6 +209,7 @@ PROVIDERS: tuple[Provider, ...] = (
     Provider(
         # docs.mistral.ai — the -latest aliases follow each family's newest model.
         id="mistral",
+        console_hosts=("console.mistral.ai", "chat.mistral.ai"),
         env_vars=("MISTRAL_API_KEY",),
         label="Mistral",
         api_style="openai",
@@ -236,6 +257,7 @@ PROVIDERS: tuple[Provider, ...] = (
         # platform.minimax.io/docs — international endpoint. Temperature must
         # be in (0, 1], so the judge's 0 is never sent.
         id="minimax",
+        console_hosts=("platform.minimax.io",),
         env_vars=("MINIMAX_API_KEY",),
         label="MiniMax",
         api_style="openai",
@@ -248,6 +270,7 @@ PROVIDERS: tuple[Provider, ...] = (
     Provider(
         # console.groq.com/docs/openai
         id="groq",
+        console_hosts=("console.groq.com",),
         env_vars=("GROQ_API_KEY",),
         label="Groq",
         api_style="openai",
@@ -270,6 +293,7 @@ PROVIDERS: tuple[Provider, ...] = (
     Provider(
         # docs.fireworks.ai — OpenAI-compatible inference endpoint
         id="fireworks",
+        console_hosts=("fireworks.ai",),
         env_vars=("FIREWORKS_API_KEY",),
         label="Fireworks AI",
         api_style="openai",
@@ -323,6 +347,7 @@ def provider_specs() -> list[dict]:
             "api_style": p.api_style,
             "suggested_models": list(p.suggested_models),
             "discovery": p.discovery,
+            "default_base_url": p.default_base_url,
         }
         for p in PROVIDERS
     ]

@@ -7,7 +7,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { useAuth } from '../auth/AuthContext';
-import type { HelperConversation, HelperConversationSummary, HelperStatus } from '../api/client';
+import type { HelperAction, HelperConversation, HelperConversationSummary, HelperStatus } from '../api/client';
 import type { HelperScope } from './HelperProvider';
 import { scopeKey } from './scope';
 
@@ -60,6 +60,46 @@ export function useDeleteHelperConversation() {
     mutationFn: (conversationId: string) => auth!.client.deleteHelperConversation(conversationId),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['helperConversations'] });
+    },
+  });
+}
+
+// ── Confirm-first write actions ──
+
+export const helperActionKey = (id: string) => ['helperAction', id] as const;
+
+/**
+ * One proposed action. A card streamed in this turn starts from the proposal
+ * (`seed`) without a request; a card restored from history reads the current
+ * status (pending / confirmed / cancelled / expired) from the server.
+ */
+export function useHelperAction(id: string, seed: HelperAction, fromHistory: boolean) {
+  const { auth } = useAuth();
+  return useQuery<HelperAction>({
+    queryKey: helperActionKey(id),
+    queryFn: () => auth!.client.getHelperAction(id),
+    enabled: !!auth && fromHistory,
+    initialData: fromHistory ? undefined : seed,
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
+/** Confirm or cancel an action; the result replaces the cached record. */
+export function useDecideHelperAction(id: string) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (decision: 'confirm' | 'cancel') =>
+      decision === 'confirm' ? auth!.client.confirmHelperAction(id) : auth!.client.cancelHelperAction(id),
+    onSuccess: (action, decision) => {
+      queryClient.setQueryData(helperActionKey(id), action);
+      if (decision === 'confirm') {
+        // Whatever the action touched is now stale wherever it is shown.
+        for (const key of ['projects', 'project', 'compileStatus', 'sessions', 'session']) {
+          void queryClient.invalidateQueries({ queryKey: [key] });
+        }
+      }
     },
   });
 }

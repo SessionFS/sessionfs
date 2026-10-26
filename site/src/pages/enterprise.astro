@@ -119,7 +119,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Organizational Memory</h2>
         <p class="text-muted text-lg mb-4 leading-relaxed">Memory is not a loose summary. It is derived from captured sessions with transcripts, file changes, commands, git state, and provenance. Every session distils into knowledge claims your agents read &mdash; and write back to. Architecture decisions, debugging patterns, API contracts, environment quirks. Your codebase documents itself.</p>
         <p class="text-muted text-lg mb-4 leading-relaxed">LLM Judge cross-references every AI claim against actual tool output and feeds verified findings into the same knowledge base. Trust scores surface in GitHub PR and GitLab MR threads.</p>
-        <p class="text-muted text-lg leading-relaxed">Ask that memory directly. The <a href="/session-helper/" class="text-brand hover:underline">session helper</a> answers questions like &ldquo;what did we decide about Redis and why?&rdquo; from the sessions and project knowledge each person can already read, cites the sessions it used, and runs on your own model key, never one SessionFS supplies.</p>
+        <p class="text-muted text-lg leading-relaxed">Ask that memory directly. The <a href="/session-helper/" class="text-brand hover:underline">session helper</a> answers questions like &ldquo;what did we decide about Redis and why?&rdquo; from the sessions and project knowledge each person can already read, cites the sessions it used, and runs on your own model key, never one SessionFS supplies. It can also propose cleanup &mdash; moving stale sessions to Trash, switching Auto Narrative &mdash; that only happens when you press Confirm.</p>
       </div>
       <div class="lg:w-1/2 w-full fade-up">
         <div class="relative">
@@ -352,7 +352,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
               <span class="text-accent text-lg mt-0.5">&#10003;</span>
               <div>
                 <div class="font-semibold text-sm mb-1">Session helper, scoped to each user</div>
-                <div class="text-muted text-base">Answers only from what the asking user can read, re-checks access on every tool call, redacts everything sent to the model with your DLP policy, and writes each lookup to the retrieval audit log. Conversation retention is set per organization.</div>
+                <div class="text-muted text-base">Answers only from what the asking user can read, re-checks access on every tool call, redacts everything sent to the model with your DLP policy, and writes each lookup to the retrieval audit log. Changes it proposes run only after the user confirms, with that user&rsquo;s own permissions. Admins set model settings, custom instructions and a monthly token budget, see usage per member, and set conversation retention per organization.</div>
               </div>
             </div>
             <div class="border-t border-border pt-4 flex items-start gap-3">

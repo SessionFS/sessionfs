@@ -3,7 +3,7 @@ import { useUpdateProjectSettings, useUpdateProjectName } from '../hooks/useProj
 import { useToast } from '../hooks/useToast';
 import { useMyOrgs } from '../transfers/useTransfers';
 import type { ProjectContext } from '../api/client';
-import { Card, Button, Select, Input } from '../components/ui';
+import { Alert, Card, Button, Select, Input } from '../components/ui';
 import ReposTab from './ReposTab';
 import MergeSurface from './MergeSurface';
 import TransferPanel from './TransferPanel';
@@ -92,6 +92,19 @@ export default function ProjectSettings({ project, onRequestDelete }: ProjectSet
         onSuccess: () => addToast('success', `Compile threshold set to ${parsed} pending claims.`),
         onError: (err) => addToast('error', `Update failed: ${errorMessage(err)}`),
       },
+    );
+  }
+
+  // Readers whose only access is a captured session on the project's repo
+  // can view the project but not change it; every control on this page is
+  // a change, so show why instead of controls the server would refuse.
+  if (project.can_edit === false) {
+    return (
+      <Alert variant="info" title="You can view this project but not change it">
+        Only the project owner or a member of the project's organization can change
+        its settings. You can still read it and add knowledge entries, tickets and
+        comments.
+      </Alert>
     );
   }
 

@@ -1,0 +1,143 @@
+{
+  "groups": [
+    {
+      "id": "sessions",
+      "label": "Sessions",
+      "tools": [
+        { "name": "search_sessions", "desc": "Search past sessions by text, files and errors" },
+        { "name": "get_session_context", "desc": "Load the full conversation of one session" },
+        { "name": "list_recent_sessions", "desc": "Recent sessions, optionally for one repo" },
+        { "name": "find_related_sessions", "desc": "Sessions that touched the same files or errors" },
+        { "name": "get_session_summary", "desc": "Files changed, commands, tests and errors for a session" },
+        { "name": "get_audit_report", "desc": "Trust audit findings and verdicts for a session" },
+        { "name": "get_session_provenance", "desc": "Which rules version governed a session" },
+        { "name": "get_session_retrieval_log", "desc": "What context a session retrieved, and when" },
+        { "name": "rename_session", "desc": "Change a session's title or alias" },
+        { "name": "checkpoint_session", "desc": "Save a named checkpoint of a local session" },
+        { "name": "list_checkpoints", "desc": "List the checkpoints saved for a session" },
+        { "name": "fork_session", "desc": "Fork a session or checkpoint into a new session" },
+        { "name": "ask_session_helper", "desc": "Ask the session helper; answers cite their sources (Enterprise)" }
+      ]
+    },
+    {
+      "id": "knowledge",
+      "label": "Project knowledge & wiki",
+      "tools": [
+        { "name": "get_project_context", "desc": "The project's shared context document" },
+        { "name": "get_context_section", "desc": "One section of the context document" },
+        { "name": "search_project_knowledge", "desc": "Search knowledge entries by query and type" },
+        { "name": "ask_project", "desc": "Research a question across knowledge and sessions" },
+        { "name": "add_knowledge", "desc": "Record a decision, pattern, bug or discovery" },
+        { "name": "list_knowledge_entries", "desc": "Filter entries by type, class and freshness" },
+        { "name": "get_knowledge_entry", "desc": "One knowledge entry in full" },
+        { "name": "get_knowledge_health", "desc": "Pending and compiled counts with recommendations" },
+        { "name": "dismiss_knowledge_entry", "desc": "Retire a wrong or stale entry, with a reason" },
+        { "name": "update_entry_confidence", "desc": "Set an entry's confidence score" },
+        { "name": "promote_entry", "desc": "Promote a note to a claim when it passes the quality gates" },
+        { "name": "promote_eligible_entries", "desc": "Promote every eligible note in one pass" },
+        { "name": "compile_knowledge_base", "desc": "Compile pending claims into the context document" },
+        { "name": "list_wiki_pages", "desc": "Browse the project wiki" },
+        { "name": "get_wiki_page", "desc": "One wiki page with its backlinks" },
+        { "name": "get_wiki_page_history", "desc": "Revision history of a wiki page" },
+        { "name": "update_wiki_page", "desc": "Create or update a wiki page" }
+      ]
+    },
+    {
+      "id": "tickets",
+      "label": "Tickets",
+      "tools": [
+        { "name": "list_tickets", "desc": "Tickets filtered by assignee, status, priority or kind" },
+        { "name": "get_ticket", "desc": "Full ticket with dependencies and comments" },
+        { "name": "create_ticket", "desc": "Create a ticket" },
+        { "name": "approve_ticket", "desc": "Approve an agent-suggested ticket so it can start" },
+        { "name": "start_ticket", "desc": "Start a ticket and load its persona and context" },
+        { "name": "complete_ticket", "desc": "Send finished work to review with notes" },
+        { "name": "resolve_ticket", "desc": "Close a reviewed ticket and unblock dependents" },
+        { "name": "update_ticket", "desc": "Edit a ticket's title, description, criteria or priority" },
+        { "name": "assign_persona", "desc": "Assign a ticket to a persona" },
+        { "name": "escalate_ticket", "desc": "Raise a ticket's priority one level" },
+        { "name": "add_ticket_comment", "desc": "Comment on a ticket" },
+        { "name": "list_ticket_comments", "desc": "Read a ticket's comment thread" },
+        { "name": "get_ticket_review_state", "desc": "Open and closed review findings and the last verdict" },
+        { "name": "watch_ticket", "desc": "Follow, mute or unfollow a ticket" },
+        { "name": "get_ticket_updates", "desc": "Changes on the tickets you follow since you last checked" }
+      ]
+    },
+    {
+      "id": "personas",
+      "label": "Personas",
+      "tools": [
+        { "name": "list_personas", "desc": "Active agent personas for the project" },
+        { "name": "get_persona", "desc": "A persona's role, specializations and instructions" },
+        { "name": "create_persona", "desc": "Create a persona" },
+        { "name": "update_persona", "desc": "Edit a persona's role, specializations or content" },
+        { "name": "delete_persona", "desc": "Deactivate a persona" },
+        { "name": "assume_persona", "desc": "Work as a persona without a ticket" },
+        { "name": "forget_persona", "desc": "Stop working as the assumed persona" }
+      ]
+    },
+    {
+      "id": "handoffs",
+      "label": "Handoffs",
+      "tools": [
+        { "name": "create_handoff", "desc": "Hand a session to a person or team" },
+        { "name": "claim_handoff", "desc": "Claim a handoff sent to you" },
+        { "name": "get_handoff", "desc": "A handoff with its events, comments and attachments" },
+        { "name": "list_inbox_handoffs", "desc": "Handoffs sent to you" },
+        { "name": "list_sent_handoffs", "desc": "Handoffs you sent" },
+        { "name": "revoke_handoff", "desc": "Withdraw a pending handoff you sent" },
+        { "name": "decline_handoff", "desc": "Decline a handoff sent to you" },
+        { "name": "add_handoff_comment", "desc": "Comment on a handoff thread" }
+      ]
+    },
+    {
+      "id": "agent-runs",
+      "label": "Agent runs & feedback",
+      "tools": [
+        { "name": "create_agent_run", "desc": "Start tracking an agent run (manual or CI)" },
+        { "name": "complete_agent_run", "desc": "Record a run's findings and pass or fail it" },
+        { "name": "replay_agent_run", "desc": "Queue a copy of a run with edited inputs" },
+        { "name": "list_agent_runs", "desc": "Recent agent runs in the project" },
+        { "name": "record_agent_feedback", "desc": "Record feedback on a run, ticket or comment" },
+        { "name": "list_agent_feedback", "desc": "List feedback records" },
+        { "name": "get_agent_feedback_summary", "desc": "Feedback counts by type, verdict and label" }
+      ]
+    },
+    {
+      "id": "work-queues",
+      "label": "Work queues",
+      "tools": [
+        { "name": "create_work_queue", "desc": "Create a queue of tickets for an agent to work through" },
+        { "name": "get_work_queue", "desc": "A queue's settings and progress" },
+        { "name": "list_work_queues", "desc": "Work queues in the project" },
+        { "name": "set_work_queue_status", "desc": "Pause, resume, complete or cancel a queue" },
+        { "name": "run_work_queue_step", "desc": "Take the next step and get directives to act on" },
+        { "name": "complete_work_queue_step", "desc": "Report the result of a directive" }
+      ]
+    },
+    {
+      "id": "rules",
+      "label": "Rules",
+      "tools": [
+        { "name": "get_rules", "desc": "Canonical project rules and compile settings" },
+        { "name": "get_compiled_rules", "desc": "Compiled rules file for a tool (CLAUDE.md, codex.md…)" }
+      ]
+    },
+    {
+      "id": "marketplace",
+      "label": "Skills marketplace",
+      "tools": [
+        { "name": "search_skill_marketplace", "desc": "Search the skill and plugin marketplaces you can see" },
+        { "name": "get_marketplace_package", "desc": "Package details and what installing it would change" },
+        { "name": "diff_marketplace_versions", "desc": "Compare two versions of a package" },
+        { "name": "get_skill_policy", "desc": "Your org's skills policy, per tool" },
+        { "name": "preview_marketplace_skill", "desc": "Preview a skill's instructions without installing" },
+        { "name": "load_marketplace_skill", "desc": "Load an approved instruction-only skill" },
+        { "name": "request_skill_install", "desc": "Request a skill install for this project" },
+        { "name": "get_skill_install_request", "desc": "One install request" },
+        { "name": "list_skill_install_requests", "desc": "Install requests for this project" },
+        { "name": "cancel_skill_install_request", "desc": "Cancel a pending install request" }
+      ]
+    }
+  ]
+}

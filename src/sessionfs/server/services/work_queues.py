@@ -27,18 +27,23 @@ incremented). See `_review_until_clean_step`.
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import and_, false, func, not_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from sessionfs.server.db.models import (
+    ApiKey,
+    Project,
     Resident,
     Ticket,
     TicketComment,
+    TicketEdit,
     WorkQueue,
     WorkQueueItem,
     WorkQueueRun,
@@ -247,6 +252,67 @@ async def claim_work_queue_item(
 # ─────────────────────────────────────────────────────────────────────────
 
 
+async def _queue_project(db: AsyncSession, queue: WorkQueue) -> Project:
+    project = await db.get(Project, queue.project_id)
+    if project is None:  # FK CASCADE removes the queue with its project
+        raise LookupError(f"work queue {queue.id} has no project")
+    return project
+
+
+# Holds (tk_25872885e3274a7d): the engine dispatches no work for a ticket
+# that is cancelled (its item settles once as terminal, outcome
+# ticket_cancelled) or suggested (parked out of the candidate window until an
+# editor approves it, outcome ticket_unapproved) — except that a triage queue
+# may take a suggested ticket an editor stands behind. See _not_held_clause /
+# _ticket_hold_reason.
+
+
+def _held_item_status(ticket_status: str, current: str) -> str:
+    """Item status for a held ticket: terminal for cancelled, else claimable."""
+    if ticket_status == "cancelled":
+        return _FAILED_STATUS
+    return current if current in ("pending", _WAITING_STATUS) else "pending"
+
+
+async def _settle_cancelled_items(
+    db: AsyncSession, queue: WorkQueue, *, now: datetime
+) -> None:
+    """Settle idle items whose ticket was cancelled as terminal, once.
+
+    Writes one run row per item at the transition (the item is 'failed'
+    afterwards, so it is never considered — or recorded — again).
+    """
+    rows = (
+        await db.execute(
+            select(WorkQueueItem)
+            .join(Ticket, Ticket.id == WorkQueueItem.ticket_id)
+            .where(
+                WorkQueueItem.work_queue_id == queue.id,
+                WorkQueueItem.item_status.in_(("pending", _WAITING_STATUS)),
+                WorkQueueItem.open_directive_id.is_(None),
+                WorkQueueItem.open_directive_run_id.is_(None),
+                Ticket.status == "cancelled",
+            )
+        )
+    ).scalars().all()
+    for item in rows:
+        item.item_status = _FAILED_STATUS
+        item.next_eligible_at = None
+        item.updated_at = now
+        db.add(
+            WorkQueueRun(
+                id=_new_run_id(),
+                work_queue_id=queue.id,
+                work_queue_item_id=item.id,
+                directive_id=None,
+                outcome="ticket_cancelled",
+                created_at=now,
+            )
+        )
+    if rows:
+        await db.flush()
+
+
 def _comment_to_delta(c: TicketComment) -> dict:
     return {
         "id": c.id,
@@ -257,12 +323,32 @@ def _comment_to_delta(c: TicketComment) -> dict:
     }
 
 
+def _agent_visible_comment_clause(project: Project):
+    """Comments an autonomous agent may be fed (tk_25872885e3274a7d).
+
+    Written by an editor of the project (owner / org member), by a service
+    key (org-bound by its own boundary), or a server-trusted reviewer
+    verdict. Comments from captured-session readers stay visible to people
+    (UI, API, get_ticket / list_ticket_comments) but never reach agents
+    through work-queue directives or trigger a reviewer turn.
+    """
+    from sessionfs.server.auth.project_access import editor_authored_clause
+
+    return or_(
+        editor_authored_clause(
+            TicketComment.author_user_id, project, TicketComment.actor_type
+        ),
+        TicketComment.verdict_trusted.is_(True),
+    )
+
+
 async def _comment_delta(
     db: AsyncSession,
     *,
     ticket_id: str,
     since: datetime | None,
     since_id: str | None,
+    project: Project,
 ) -> list[TicketComment]:
     """Bounded comment delta since the ACKED cursor.
 
@@ -274,7 +360,10 @@ async def _comment_delta(
     """
     query = (
         select(TicketComment)
-        .where(TicketComment.ticket_id == ticket_id)
+        .where(
+            TicketComment.ticket_id == ticket_id,
+            _agent_visible_comment_clause(project),
+        )
         .order_by(TicketComment.created_at, TicketComment.id)
         .limit(_COMMENT_DELTA_LIMIT)
     )
@@ -382,6 +471,7 @@ async def _implementer_comment_since(
     ticket_id: str,
     since: datetime | None,
     since_id: str | None,
+    project: Project,
 ) -> TicketComment | None:
     """The newest comment past the ACKED cursor that is NOT a trusted verdict.
 
@@ -398,6 +488,8 @@ async def _implementer_comment_since(
         .where(
             TicketComment.ticket_id == ticket_id,
             TicketComment.verdict_trusted.is_(False),
+            # A reader's comment never makes it the reviewer's turn.
+            _agent_visible_comment_clause(project),
         )
         .order_by(TicketComment.created_at.desc(), TicketComment.id.desc())
         .limit(1)
@@ -420,6 +512,93 @@ async def _implementer_comment_since(
     return (await db.execute(query)).scalars().first()
 
 
+def editor_backed_ticket_clause(project: Project):
+    """SQL predicate over ``Ticket``: an editor stands behind this ticket.
+
+    True when the ticket was filed by an editor of the project (owner / org
+    member) acting as themselves, by a service key of the project's org, or
+    approved by an editor (the approve route writes a status TicketEdit) after
+    the last change any non-editor made to it. The one rule shared by
+    auto-adoption, the candidate filter and the step engine's holds
+    (tk_25872885e3274a7d).
+    """
+    from sessionfs.server.auth.project_access import editor_authored_clause
+
+    service_key_ok = (
+        Ticket.service_key_id.in_(
+            select(ApiKey.id).where(ApiKey.org_id == project.org_id)
+        )
+        if project.org_id is not None
+        else false()
+    )
+    non_editor_edit = aliased(TicketEdit)
+    latest_non_editor_edit = (
+        select(func.max(non_editor_edit.edited_at))
+        .where(
+            non_editor_edit.ticket_id == Ticket.id,
+            not_(editor_authored_clause(non_editor_edit.edited_by_user_id, project)),
+        )
+        .scalar_subquery()
+    )
+    editor_approved = select(TicketEdit.id).where(
+        TicketEdit.ticket_id == Ticket.id,
+        TicketEdit.field_name == "status",
+        TicketEdit.new_value == json.dumps("open"),
+        editor_authored_clause(TicketEdit.edited_by_user_id, project),
+        or_(
+            latest_non_editor_edit.is_(None),
+            TicketEdit.edited_at > latest_non_editor_edit,
+        ),
+    )
+    return or_(
+        and_(
+            Ticket.actor_type.is_distinct_from("service_key"),
+            editor_authored_clause(Ticket.created_by_user_id, project),
+        ),
+        and_(Ticket.actor_type == "service_key", service_key_ok),
+        editor_approved.exists(),
+    )
+
+
+def _not_held_clause(queue: WorkQueue, project: Project):
+    """SQL predicate over ``Ticket``: the engine may dispatch work for it.
+
+    Cancelled tickets are held in every mode. Suggested tickets are held,
+    except that a triage queue (design §6.1 triages suggested/open tickets)
+    may take a suggested ticket an editor stands behind.
+    """
+    if queue.mode == "triage":
+        suggested_ok = editor_backed_ticket_clause(project)
+    else:
+        suggested_ok = false()
+    return and_(
+        Ticket.status != "cancelled",
+        or_(Ticket.status != "suggested", suggested_ok),
+    )
+
+
+async def _ticket_hold_reason(
+    db: AsyncSession, queue: WorkQueue, ticket: Ticket
+) -> str | None:
+    """The hold reason for one ticket, or None when work may be dispatched."""
+    if ticket.status == "cancelled":
+        return "ticket_cancelled"
+    if ticket.status != "suggested":
+        return None
+    if queue.mode == "triage":
+        project = await _queue_project(db, queue)
+        backed = (
+            await db.execute(
+                select(Ticket.id).where(
+                    Ticket.id == ticket.id, editor_backed_ticket_clause(project)
+                )
+            )
+        ).first()
+        if backed is not None:
+            return None
+    return "ticket_unapproved"
+
+
 async def _materialize_auto_adopt(
     db: AsyncSession,
     queue: WorkQueue,
@@ -440,6 +619,17 @@ async def _materialize_auto_adopt(
         return 0
 
     stmt = select(Ticket.id).where(Ticket.project_id == queue.project_id)
+    # tk_25872885e3274a7d — only adopt work an editor stands behind: tickets
+    # filed by an editor of the project (owner / org member), by a service
+    # key of the project's org, or approved by an editor (the approve route
+    # writes a status TicketEdit). A ticket a captured-session reader filed
+    # is never picked up by an autonomous queue on its own.
+    project = (
+        await db.execute(select(Project).where(Project.id == queue.project_id))
+    ).scalar_one_or_none()
+    if project is None:
+        return 0
+    stmt = stmt.where(editor_backed_ticket_clause(project))
     status = selector.get("status")
     if isinstance(status, str) and status:
         stmt = stmt.where(Ticket.status == status)
@@ -510,11 +700,13 @@ async def _build_directive(
     (since the ACKED cursor), expand_hints, directive_id, work_queue_run_id.
     The comment_delta is the small delta, NOT the whole thread (token control).
     """
+    project = await _queue_project(db, queue)
     delta_rows = await _comment_delta(
         db,
         ticket_id=item.ticket_id,
         since=item.last_acked_comment_at,
         since_id=item.last_acked_comment_id,
+        project=project,
     )
     review_round: int | None = None
     review_state: dict | None = None
@@ -719,6 +911,7 @@ async def _review_turn(
         ticket_id=item.ticket_id,
         since=item.last_acked_comment_at,
         since_id=item.last_acked_comment_id,
+        project=await _queue_project(db, queue),
     )
     if implementer is not None:
         # Fall through to the generic emission path (post_review directive).
@@ -811,6 +1004,7 @@ async def run_work_queue_step(
     )
     if open_items:
         directives: list[dict] = []
+        held_reasons: list[str] = []
         for item in open_items:
             ticket = (
                 await db.execute(
@@ -828,6 +1022,29 @@ async def run_work_queue_step(
                 item.open_directive_run_id = None
                 item.updated_at = now
                 continue
+            held_reason = await _ticket_hold_reason(db, queue, ticket)
+            if held_reason is not None:
+                # tk_25872885e3274a7d — the ticket is no longer approved (or
+                # was cancelled) under an open lease: re-emitting would hand
+                # the agent text no editor stands behind. Settle the run that
+                # emitted the directive with the hold reason (a late complete
+                # from the agent is then an idempotent replay that applies
+                # nothing), refund the attempt the emit counted, and drop the
+                # lease. A suggested ticket's item stays claimable for when an
+                # editor re-approves; a cancelled one's is terminal.
+                emit_run = await db.get(WorkQueueRun, item.open_directive_run_id) if (
+                    item.open_directive_run_id
+                ) else None
+                if emit_run is not None and emit_run.outcome is None:
+                    emit_run.outcome = held_reason
+                item.attempts = max(int(item.attempts or 0) - 1, 0)
+                item.item_status = _held_item_status(ticket.status, "pending")
+                item.open_directive_id = None
+                item.open_directive_run_id = None
+                item.next_eligible_at = None
+                item.updated_at = now
+                held_reasons.append(held_reason)
+                continue
             directives.append(
                 await _build_directive(
                     db,
@@ -840,10 +1057,15 @@ async def run_work_queue_step(
                     or work_queue_run_id,
                 )
             )
+        if held_reasons and not directives:
+            return StepResult(status="idle", reason=held_reasons[0])
         # A pure re-emit does NOT mint a new work_queue_runs row (the original
         # one already records the directive). Return the FIRST open run id as
         # the handle so the agent can settle.
-        handle = open_items[0].open_directive_run_id or work_queue_run_id
+        handle = next(
+            (i.open_directive_run_id for i in open_items if i.open_directive_run_id),
+            work_queue_run_id,
+        )
         return StepResult(
             status="ok",
             work_queue_run_id=handle,
@@ -891,11 +1113,21 @@ async def run_work_queue_step(
 
     # Candidate eligible items (the atomic claim is the real guard — this
     # SELECT only narrows the set the claim races over).
+    await _settle_cancelled_items(db, queue, now=now)
     candidates = list(
         (
             await db.execute(
                 select(WorkQueueItem)
+                # Held tickets (suggested / cancelled) never occupy the
+                # candidate window, so approved items behind them are reached.
+                # Outer join: a missing ticket still reaches the claim below,
+                # which settles it as failed.
+                .outerjoin(Ticket, Ticket.id == WorkQueueItem.ticket_id)
                 .where(
+                    or_(
+                        Ticket.id.is_(None),
+                        _not_held_clause(queue, await _queue_project(db, queue)),
+                    ),
                     WorkQueueItem.work_queue_id == queue.id,
                     WorkQueueItem.item_status.in_(("pending", _WAITING_STATUS)),
                     WorkQueueItem.open_directive_id.is_(None),
@@ -915,10 +1147,12 @@ async def run_work_queue_step(
     # WQ-P4 — track review STOP/WAITING settles so the no-op tail below does
     # not double-record a noop run row (the verb already wrote stopped/waited).
     review_settled: list[str] = []
+    held_settled: list[str] = []
     for item in candidates:
         if claimed >= budget:
             break
         run_id_for_claim = _new_run_id()
+        prior_status = item.item_status
         won = await claim_work_queue_item(
             db, item_id=item.id, run_id=run_id_for_claim
         )
@@ -943,6 +1177,36 @@ async def run_work_queue_step(
                     updated_at=now,
                 )
             )
+            continue
+
+        held_reason = await _ticket_hold_reason(db, queue, ticket)
+        if held_reason is not None:
+            # tk_25872885e3274a7d — unapproved / cancelled ticket: no
+            # directive. Release the claim (item claimable again later) and
+            # record the noop with its reason.
+            # Only reachable when the ticket changed between the candidate
+            # query and the claim; recorded once (afterwards the item is
+            # outside the candidate window or terminal).
+            await db.execute(
+                update(WorkQueueItem)
+                .where(WorkQueueItem.id == item.id)
+                .values(
+                    item_status=_held_item_status(ticket.status, prior_status),
+                    open_directive_run_id=None,
+                    updated_at=now,
+                )
+            )
+            db.add(
+                WorkQueueRun(
+                    id=run_id_for_claim,
+                    work_queue_id=queue.id,
+                    work_queue_item_id=item.id,
+                    directive_id=None,
+                    outcome=held_reason,
+                    created_at=now,
+                )
+            )
+            held_settled.append(held_reason)
             continue
 
         # ── WQ-P4 review_until_clean STOP ORACLE (design §5.0 + §5) ──
@@ -970,6 +1234,7 @@ async def run_work_queue_step(
             ticket_id=item.ticket_id,
             since=item.last_acked_comment_at,
             since_id=item.last_acked_comment_id,
+            project=await _queue_project(db, queue),
         )
         newest = delta_rows[-1] if delta_rows else None
         await db.execute(
@@ -1037,6 +1302,9 @@ async def run_work_queue_step(
                 status="idle",
                 reason="waiting_implementation",
             )
+        if held_settled:
+            # Each held item already recorded its own noop run (with reason).
+            return StepResult(status="idle", reason=held_settled[0])
 
         # Nothing eligible. Record a no-op wake so cadence advances + the loop
         # is observable; report stop when the queue is genuinely empty.

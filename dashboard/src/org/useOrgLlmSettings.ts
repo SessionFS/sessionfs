@@ -6,10 +6,11 @@
  * last-4 `key_hint`, so a PUT that omits `apiKey` keeps the stored key.
  */
 
+import { useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { useAuth } from '../auth/AuthContext';
-import type { OrgLlmSettings } from '../api/client';
+import type { LlmConnectionTestBody, OrgLlmSettings } from '../api/client';
 
 export function useOrgLlmSettings(orgId: string | undefined) {
   const { auth } = useAuth();
@@ -57,4 +58,13 @@ export function useDeleteOrgLlmSettings(orgId: string | undefined) {
       }));
     },
   });
+}
+
+/** "Test connection" for the org helper key form (POST .../llm-settings/test). */
+export function useOrgLlmConnectionTester(orgId: string | undefined) {
+  const { auth } = useAuth();
+  return useCallback(
+    (body: LlmConnectionTestBody) => auth!.client.testOrgLlmConnection(orgId!, body),
+    [auth, orgId],
+  );
 }

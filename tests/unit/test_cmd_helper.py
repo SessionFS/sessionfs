@@ -344,6 +344,63 @@ async def test_stream_ask_renders_text_and_citations(monkeypatch, capsys):
     assert "Auth" in out
 
 
+def test_ask_no_stream_renders_doc_citations(monkeypatch):
+    fake = _FakeApiRequest(
+        [
+            (
+                200,
+                {
+                    "conversation_id": "hc_1",
+                    "answer": "Connect Jira first [doc:integrations/jira#setup].",
+                    "citations": [
+                        {"session_id": "ses_1", "message_index": None, "title": "Auth"},
+                        {
+                            "slug": "integrations/jira",
+                            "anchor": "setup",
+                            "title": "Jira Cloud",
+                            "url": "https://sessionfs.dev/integrations/jira/#setup",
+                        },
+                    ],
+                    "tool_calls": [],
+                    "usage": {"input_tokens": 3, "output_tokens": 2},
+                    "stop_reason": "stop",
+                    "key_source": "user",
+                },
+            )
+        ]
+    )
+    with (
+        patch.object(cmd_helper, "_get_api_config", return_value=("https://api.test", "key")),
+        patch.object(cmd_helper, "_api_request", new=fake),
+    ):
+        result = _invoke("ask", "how do I set up jira?", "--no-stream")
+    assert result.exit_code == 0, result.output
+    assert "Jira Cloud — https://sessionfs.dev/integrations/jira/#setup" in result.output
+    assert "Auth — ses_1" in result.output
+
+
+@pytest.mark.asyncio
+async def test_stream_ask_renders_doc_citation_events(monkeypatch, capsys):
+    async def fake_events(client, url, headers, payload):
+        yield ("conversation", '{"conversation_id": "hc_1"}')
+        yield ("text", '{"delta": "See [doc:quickstart]."}')
+        yield (
+            "doc_citation",
+            '{"slug": "quickstart", "anchor": null, "title": "Quickstart",'
+            ' "url": "https://sessionfs.dev/quickstart/"}',
+        )
+        yield (
+            "done",
+            '{"stop_reason": "stop", "input_tokens": 3, "output_tokens": 2, "key_source": "user"}',
+        )
+
+    monkeypatch.setattr(cmd_helper, "_iter_sse_events", fake_events)
+    await cmd_helper._stream_ask("https://api.test", "key", {"message": "hi"})
+    out = capsys.readouterr().out
+    assert "Citations:" in out
+    assert "Quickstart — https://sessionfs.dev/quickstart/" in out
+
+
 @pytest.mark.asyncio
 async def test_stream_ask_surfaces_error_event(monkeypatch, capsys):
     async def fake_events(client, url, headers, payload):

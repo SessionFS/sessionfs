@@ -1,6 +1,6 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
-import type { Ticket, TicketComment, TicketCreate, TicketWatcher } from '../api/client';
+import { ApiError, type Ticket, type TicketComment, type TicketCreate, type TicketPreview, type TicketWatcher } from '../api/client';
 
 /**
  * React-Query hooks for v0.10.1 Tickets (Team+).
@@ -179,5 +179,21 @@ export function useUnwatchTicket(projectId: string | undefined) {
     onSuccess: (_data, ticketId) => {
       void qc.invalidateQueries({ queryKey: ['ticketWatchers', projectId, ticketId] });
     },
+  });
+}
+
+/**
+ * A ticket by id alone (for link previews). A 404 means "missing or not
+ * readable" and won't change on a retry.
+ */
+export function useTicketPreview(ticketId: string | null | undefined) {
+  const { auth } = useAuth();
+  return useQuery<TicketPreview>({
+    queryKey: ['ticketPreview', ticketId],
+    queryFn: () => auth!.client.getTicketById(ticketId!),
+    enabled: !!auth && !!ticketId,
+    staleTime: 30_000,
+    gcTime: 5 * 60_000,
+    retry: (count, err) => !(err instanceof ApiError && err.status < 500) && count < 1,
   });
 }

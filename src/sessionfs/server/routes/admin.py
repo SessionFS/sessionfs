@@ -29,8 +29,10 @@ from sessionfs.server.db.models import (
     ApiKey,
     Handoff,
     HelmLicense,
+    HelperAction,
     HelperConversation,
     HelperMessage,
+    HelperUsage,
     OidcLoginAttempt,
     Organization,
     OrgAuditEvent,
@@ -46,6 +48,7 @@ from sessionfs.server.db.models import (
     User,
     UserNotificationSettings,
 )
+from sessionfs.server.helper.usage import USAGE_RETENTION_DAYS
 from sessionfs.server.services.auto_join import maybe_auto_join
 from sessionfs.server.roles import OrgRole
 from sessionfs.server.services.entitlements import apply_entitlement, lock_billing_owner
@@ -2435,7 +2438,7 @@ async def sweep_helper_retention(
     auth: AuthContext = Depends(require_platform_sweeper()),
     db: AsyncSession = Depends(get_db),
 ):
-    """Hard-delete helper messages past their retention window.
+    """Hard-delete helper messages and write actions past their retention window.
 
     Retention is per message (not per conversation): each message expires once
     its ``created_at`` is older than its conversation org's
@@ -2447,6 +2450,9 @@ async def sweep_helper_retention(
     (a keyset pages through candidates one batch at a time). Runs as the
     scheduled retention sweep — platform-admin user key or the
     ``platform_sweeps:run`` service key.
+
+    The token-usage ledger (``helper_usage``) is kept 13 months: rows older
+    than 400 days are deleted here, whatever the org's message window.
     """
     now = datetime.now(timezone.utc)
     batch = batch_size
@@ -2500,6 +2506,50 @@ async def sweep_helper_retention(
         if len(page) < batch:
             break
 
+    # Write-action proposals follow the same per-org window: a decided action
+    # (confirmed/failed/cancelled/expired) goes once its decision is older
+    # than the window; a still-pending one only once it has expired AND its
+    # expiry is older than the window.  Same keyset batching as messages.
+    actions_deleted = 0
+    cursor = None
+    while True:
+        action_stmt = (
+            select(
+                HelperAction.id,
+                HelperAction.status,
+                HelperAction.created_at,
+                HelperAction.decided_at,
+                HelperAction.expires_at,
+                HelperConversation.org_id,
+            )
+            .join(
+                HelperConversation,
+                HelperAction.conversation_id == HelperConversation.id,
+            )
+            .order_by(HelperAction.id.asc())
+            .limit(batch)
+        )
+        if cursor is not None:
+            action_stmt = action_stmt.where(HelperAction.id > cursor)
+        action_page = (await db.execute(action_stmt)).all()
+        if not action_page:
+            break
+        expired_action_ids = []
+        for action_id, status, created_at, decided_at, expires_at, org_id in action_page:
+            cutoff = now - timedelta(days=org_days.get(org_id, _HELPER_RETENTION_DAYS))
+            reference = expires_at if status == "pending" else (decided_at or created_at)
+            if reference is not None and _as_utc(reference) < cutoff:
+                expired_action_ids.append(action_id)
+        if expired_action_ids:
+            result = await db.execute(
+                delete(HelperAction).where(HelperAction.id.in_(expired_action_ids))
+            )
+            actions_deleted += result.rowcount or 0
+            await db.commit()
+        cursor = action_page[-1][0]
+        if len(action_page) < batch:
+            break
+
     # Purge conversations the per-message sweep emptied (explicit delete: the
     # FK cascade only fires when a conversation row is removed, not its
     # children), but leave any conversation touched within the last hour.
@@ -2522,6 +2572,11 @@ async def sweep_helper_retention(
         page = (await db.execute(stmt)).scalars().all()
         if not page:
             break
+        # Their remaining actions go with them (explicit for SQLite, where
+        # the FK cascade isn't enforced).
+        await db.execute(
+            delete(HelperAction).where(HelperAction.conversation_id.in_(page))
+        )
         result = await db.execute(
             delete(HelperConversation).where(HelperConversation.id.in_(page))
         )
@@ -2529,6 +2584,29 @@ async def sweep_helper_retention(
         await db.commit()
         cursor = page[-1]
         if len(page) < batch:
+            break
+
+    # The token-usage ledger has its own fixed retention (13 months — rows
+    # older than USAGE_RETENTION_DAYS go), independent of the per-org message
+    # window: deleting messages or conversations never deletes ledger rows,
+    # so monthly budgets and usage summaries stay correct.
+    usage_cutoff = now - timedelta(days=USAGE_RETENTION_DAYS)
+    usage_rows_deleted = 0
+    while True:
+        usage_ids = (
+            await db.execute(
+                select(HelperUsage.id)
+                .where(HelperUsage.created_at < usage_cutoff)
+                .order_by(HelperUsage.id.asc())
+                .limit(batch)
+            )
+        ).scalars().all()
+        if not usage_ids:
+            break
+        result = await db.execute(delete(HelperUsage).where(HelperUsage.id.in_(usage_ids)))
+        usage_rows_deleted += result.rowcount or 0
+        await db.commit()
+        if len(usage_ids) < batch:
             break
 
     await _log_action(
@@ -2541,10 +2619,17 @@ async def sweep_helper_retention(
             **sweep_actor_details(auth),
             "purged": conversations_purged,
             "messages_deleted": messages_deleted,
+            "actions_deleted": actions_deleted,
+            "usage_rows_deleted": usage_rows_deleted,
         },
     )
     await db.commit()
-    return {"purged": conversations_purged, "messages_deleted": messages_deleted}
+    return {
+        "purged": conversations_purged,
+        "messages_deleted": messages_deleted,
+        "actions_deleted": actions_deleted,
+        "usage_rows_deleted": usage_rows_deleted,
+    }
 
 
 @router.post("/github-webhook-deliveries/{fingerprint}/retry")

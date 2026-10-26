@@ -9,6 +9,9 @@ interface AlertProps {
   /** Trailing control, e.g. a dismiss or retry button */
   action?: ReactNode;
   className?: string;
+  /** Set false inside an existing aria-live region so the message is
+   *  announced once (the region announces it; the Alert adds no role). */
+  announce?: boolean;
 }
 
 const TOKENS: Record<AlertVariant, string> = {
@@ -49,11 +52,11 @@ const ICONS: Record<AlertVariant, ReactNode> = {
 };
 
 /** Inline banner. Tints derive from the semantic token so they follow the theme. */
-export function Alert({ variant = 'info', title, children, action, className = '' }: AlertProps) {
+export function Alert({ variant = 'info', title, children, action, className = '', announce = true }: AlertProps) {
   const token = TOKENS[variant];
   return (
     <div
-      role={variant === 'danger' ? 'alert' : 'status'}
+      role={announce ? (variant === 'danger' ? 'alert' : 'status') : undefined}
       className={`flex items-start gap-3 rounded-lg border p-3 ${className}`}
       style={{
         backgroundColor: `color-mix(in oklch, var(${token}) 10%, transparent)`,

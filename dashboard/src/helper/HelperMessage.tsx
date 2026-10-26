@@ -2,16 +2,20 @@ import { createContext, useContext, useMemo, useState, type ReactNode } from 're
 import { Link } from 'react-router-dom';
 
 import { Alert, Button, Markdown } from '../components/ui';
+import HelperActionCard from './HelperActionCard';
 import {
   parseCiteHref,
   sourceHref,
   ERROR_TITLES,
   answerAsPlainText,
+  compactTokens,
   countLabel,
   describeToolStep,
+  remarkRefs,
   processCitations,
   type HelperError,
   type Source,
+  type TokenUsage,
   type ToolStep,
   type Turn,
 } from './format';
@@ -25,6 +29,8 @@ import {
   XCircleIcon,
 } from './icons';
 import { linkButtonSmall } from './styles';
+import { renderRefLink, useHelperRefs } from './refs';
+import AnswerBoundary from './AnswerBoundary';
 
 // ── User ──
 
@@ -114,6 +120,7 @@ export function ToolSteps({ steps, live }: { steps: ToolStep[]; live: boolean })
 // ── Citations ──
 
 function sourceLabel(s: Source, messageIndex?: number): string {
+  if (s.kind === 'doc') return s.title;
   const indexes = messageIndex !== undefined ? [messageIndex] : s.messageIndexes;
   const msgs = indexes.length
     ? `, message${indexes.length > 1 ? 's' : ''} ${indexes.join(', ')}`
@@ -121,9 +128,15 @@ function sourceLabel(s: Source, messageIndex?: number): string {
   return `${s.title || `Session ${s.sessionId}`}${msgs}`;
 }
 
+const NEW_TAB = ' (opens in new tab)';
+
 /**
- * Inline footnote chip for a `[session:…]` marker. Opens the session at the
- * marker's own message when it named one (`messageIndex`).
+ * Inline footnote chip for a `[session:…]` or `[doc:…]` marker. Opens the
+ * session at the marker's own message when it named one (`messageIndex`), or
+ * the docs page in a new tab for a doc source. A doc chip is a link only once
+ * the server confirmed the page (its `doc_citation` carries the URL); before
+ * that it is inert, and after the turn settles without confirmation it stays
+ * an inert "not found" chip.
  */
 export function CitationChip({
   source,
@@ -136,11 +149,35 @@ export function CitationChip({
 }) {
   const base =
     'mx-0.5 inline-flex h-[1.15rem] min-w-[1.15rem] items-center justify-center rounded-[5px] px-1 align-[0.12em] text-2xs font-semibold leading-none tabular-nums no-underline';
-  if (!source.verified) {
+  if (source.kind === 'session' && !source.verified) {
     return (
       <span className={`${base} bg-bg-sunken text-text-tertiary`} title="Source not available to you">
         {source.n}
       </span>
+    );
+  }
+  if (source.kind === 'doc' && !source.url) {
+    return (
+      <span
+        className={`${base} bg-bg-sunken text-text-tertiary`}
+        title={source.verified ? 'Checking source…' : 'Not found in the SessionFS docs'}
+      >
+        {source.n}
+      </span>
+    );
+  }
+  if (source.kind === 'doc') {
+    return (
+      <a
+        href={source.url ?? undefined}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={`Source ${source.n}: ${sourceLabel(source)}${NEW_TAB}`}
+        title={sourceLabel(source)}
+        className={`${base} bg-[color-mix(in_oklch,var(--brand)_16%,transparent)] text-brand transition-colors hover:bg-brand hover:text-text-on-brand outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]`}
+      >
+        {source.n}
+      </a>
     );
   }
   return (
@@ -157,34 +194,53 @@ export function CitationChip({
 }
 
 function Sources({ sources, onNavigate }: { sources: Source[]; onNavigate: () => void }) {
-  const shown = sources.filter((s) => s.verified);
+  // Only confirmed sources: readable sessions and docs the server resolved.
+  const shown = sources.filter((s) => s.verified && (s.kind !== 'doc' || s.url));
   if (shown.length === 0) return null;
   return (
     <div className="mt-3">
       <p className="mb-1.5 text-2xs font-semibold uppercase tracking-wide text-text-tertiary">Sources</p>
       <ul className="flex flex-wrap gap-1.5" aria-label="Sources">
-        {shown.map((s) => (
-          <li key={s.sessionId} className="min-w-0 max-w-full">
-            <Link
-              to={sourceHref(s.sessionId, s.messageIndexes[0])}
-              onClick={onNavigate}
-              aria-label={`${s.n}. ${sourceLabel(s)}`}
-              title={sourceLabel(s)}
-              className="group flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-bg-primary py-1 pl-1 pr-2 text-xs text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
-            >
-              <span className="grid h-4 min-w-4 shrink-0 place-items-center rounded bg-[color-mix(in_oklch,var(--brand)_16%,transparent)] px-1 text-2xs font-semibold tabular-nums text-brand">
-                {s.n}
-              </span>
-              <span className="min-w-0 truncate">{s.title || s.sessionId}</span>
-              {s.messageIndexes.length > 0 && (
-                <span className="shrink-0 font-mono text-2xs text-text-tertiary">
-                  msg {s.messageIndexes.slice(0, 3).join(', ')}
-                  {s.messageIndexes.length > 3 ? '…' : ''}
+        {shown.map((s) =>
+          s.kind === 'doc' ? (
+            <li key={`doc:${s.slug}#${s.anchor ?? ''}`} className="min-w-0 max-w-full">
+              <a
+                href={s.url ?? undefined}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={`${s.n}. ${sourceLabel(s)}${NEW_TAB}`}
+                title={sourceLabel(s)}
+                className="group flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-bg-primary py-1 pl-1 pr-2 text-xs text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+              >
+                <span className="grid h-4 min-w-4 shrink-0 place-items-center rounded bg-[color-mix(in_oklch,var(--brand)_16%,transparent)] px-1 text-2xs font-semibold tabular-nums text-brand">
+                  {s.n}
                 </span>
-              )}
-            </Link>
-          </li>
-        ))}
+                <span className="min-w-0 truncate">{s.title}</span>
+              </a>
+            </li>
+          ) : (
+            <li key={s.sessionId} className="min-w-0 max-w-full">
+              <Link
+                to={sourceHref(s.sessionId, s.messageIndexes[0])}
+                onClick={onNavigate}
+                aria-label={`${s.n}. ${sourceLabel(s)}`}
+                title={sourceLabel(s)}
+                className="group flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-bg-primary py-1 pl-1 pr-2 text-xs text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+              >
+                <span className="grid h-4 min-w-4 shrink-0 place-items-center rounded bg-[color-mix(in_oklch,var(--brand)_16%,transparent)] px-1 text-2xs font-semibold tabular-nums text-brand">
+                  {s.n}
+                </span>
+                <span className="min-w-0 truncate">{s.title || s.sessionId}</span>
+                {s.messageIndexes.length > 0 && (
+                  <span className="shrink-0 font-mono text-2xs text-text-tertiary">
+                    msg {s.messageIndexes.slice(0, 3).join(', ')}
+                    {s.messageIndexes.length > 3 ? '…' : ''}
+                  </span>
+                )}
+              </Link>
+            </li>
+          ),
+        )}
       </ul>
     </div>
   );
@@ -197,10 +253,13 @@ export interface ErrorActions {
   onNewConversation: () => void;
   onNavigate: () => void;
   keyHint?: ReactNode;
+  /** Org owners/admins get a link to raise the monthly budget. */
+  isOrgAdmin?: boolean;
 }
 
 export function ErrorCard({ error, actions }: { error: HelperError; actions: ErrorActions }) {
-  const quiet = error.kind === 'busy' || error.kind === 'disconnected' || error.kind === 'network';
+  const quiet =
+    error.kind === 'busy' || error.kind === 'disconnected' || error.kind === 'network' || error.kind === 'budget';
   let body: ReactNode = error.message;
   let action: ReactNode = null;
   switch (error.kind) {
@@ -231,6 +290,26 @@ export function ErrorCard({ error, actions }: { error: HelperError; actions: Err
         </Button>
       );
       break;
+    case 'budget':
+      body = (
+        <>
+          Your organization has used this month&rsquo;s token budget for the session helper, so answers on the org
+          key are paused until the budget resets on the 1st (UTC).{' '}
+          {actions.isOrgAdmin
+            ? 'You can raise the budget in your organization settings.'
+            : 'Ask an org admin to raise the budget, or add your own model key to keep going.'}
+        </>
+      );
+      action = actions.isOrgAdmin ? (
+        <Link to="/settings/organization?tab=policies" onClick={actions.onNavigate} className={linkButtonSmall}>
+          Open org settings
+        </Link>
+      ) : (
+        <Link to="/settings/data-protection" onClick={actions.onNavigate} className={linkButtonSmall}>
+          Add your own key
+        </Link>
+      );
+      break;
     case 'upgrade_required':
       action = (
         <Link to="/settings/billing" onClick={actions.onNavigate} className={linkButtonSmall}>
@@ -239,7 +318,7 @@ export function ErrorCard({ error, actions }: { error: HelperError; actions: Err
       );
       break;
   }
-  if (!action && actions.onRetry && error.kind !== 'upgrade_required') {
+  if (!action && actions.onRetry && error.kind !== 'upgrade_required' && error.kind !== 'budget') {
     action = (
       <Button size="sm" variant="secondary" onClick={actions.onRetry}>
         <RetryIcon size={13} />
@@ -275,6 +354,11 @@ function renderCitationLink(href: string): ReactNode | undefined {
   return <CitationRef n={cite.n} messageIndex={cite.messageIndex} />;
 }
 
+/** Citation chips first, then ticket / project / session references. */
+function renderAnswerLink(href: string, children: ReactNode): ReactNode | undefined {
+  return renderCitationLink(href) ?? renderRefLink(href, children);
+}
+
 function ThinkingDots() {
   return (
     <span className="inline-flex items-center gap-2 py-1 text-sm text-text-tertiary">
@@ -308,6 +392,19 @@ function CopyAnswer({ text }: { text: string }) {
   );
 }
 
+/** Tokens one answer used, e.g. "1.2k in · 260 out". */
+export function UsageLine({ usage }: { usage: TokenUsage }) {
+  const full = `${usage.input.toLocaleString()} input tokens, ${usage.output.toLocaleString()} output tokens`;
+  return (
+    <span className="ml-auto px-1.5 text-2xs tabular-nums text-text-tertiary" title={full}>
+      <span aria-hidden="true">
+        {compactTokens(usage.input)} in · {compactTokens(usage.output)} out
+      </span>
+      <span className="sr-only">{full}</span>
+    </span>
+  );
+}
+
 export function AssistantMessage({
   turn,
   actions,
@@ -322,6 +419,8 @@ export function AssistantMessage({
     [turn.content, turn.citations, streaming, settled],
   );
   const { onNavigate } = actions;
+  const { repo } = useHelperRefs();
+  const refPlugins = useMemo(() => [remarkRefs({ repo, streaming })], [repo, streaming]);
 
   // The link renderer keeps one identity for the whole stream (a new one per
   // token would rebuild Markdown's component map and remount every block);
@@ -340,9 +439,15 @@ export function AssistantMessage({
       {hasText && (
         <div className="helper-answer">
           <CitationContext.Provider value={citeContext}>
-            <Markdown className={streaming ? 'helper-caret' : ''} renderLink={renderCitationLink}>
-              {markdown}
-            </Markdown>
+            <AnswerBoundary resetKey={markdown}>
+              <Markdown
+                className={streaming ? 'helper-caret' : ''}
+                renderLink={renderAnswerLink}
+                remarkPlugins={refPlugins}
+              >
+                {markdown}
+              </Markdown>
+            </AnswerBoundary>
           </CitationContext.Provider>
         </div>
       )}
@@ -354,11 +459,14 @@ export function AssistantMessage({
 
       {turn.error && <ErrorCard error={turn.error} actions={actions} />}
 
+      {turn.actions?.map((a) => <HelperActionCard key={a.id} action={a} onNavigate={onNavigate} />)}
+
       {settled && <Sources sources={sources} onNavigate={onNavigate} />}
 
       {settled && hasText && !turn.error && (
         <div className="mt-2 flex items-center gap-1 text-text-tertiary">
           <CopyAnswer text={answerAsPlainText(turn.content, turn.citations)} />
+          {turn.status === 'done' && turn.usage && <UsageLine usage={turn.usage} />}
         </div>
       )}
     </div>

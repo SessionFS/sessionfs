@@ -1,5 +1,5 @@
 import { isValidElement, useMemo, type ReactNode } from 'react';
-import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform, type Components, type Options } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkBreaks from 'remark-breaks';
 import CopyButton from '../CopyButton';
@@ -233,6 +233,9 @@ interface MarkdownProps {
    *  an href (e.g. in-app citation chips), or undefined to keep the default.
    *  Hrefs still pass the safe-link filter first. */
   renderLink?: (href: string, children: ReactNode) => ReactNode | undefined;
+  /** Extra remark plugins, run after GFM and line breaks (keep the array
+   *  identity stable across renders). */
+  remarkPlugins?: Options['remarkPlugins'];
 }
 
 /**
@@ -241,7 +244,7 @@ interface MarkdownProps {
  * breaks kept as breaks (agents write one fact per line), raw HTML never
  * rendered, and links limited to safe targets.
  */
-export function Markdown({ children, headingIdPrefix, className = '', renderLink }: MarkdownProps) {
+export function Markdown({ children, headingIdPrefix, className = '', renderLink, remarkPlugins }: MarkdownProps) {
   const resolved = useMemo<Components>(() => {
     if (!renderLink) return components;
     const DefaultLink = components.a as (props: { node?: unknown; href?: string; children?: ReactNode }) => ReactNode;
@@ -259,7 +262,7 @@ export function Markdown({ children, headingIdPrefix, className = '', renderLink
       <ReactMarkdown
         skipHtml
         urlTransform={urlTransform}
-        remarkPlugins={[remarkGfm, remarkBreaks]}
+        remarkPlugins={remarkPlugins ? [remarkGfm, remarkBreaks, ...remarkPlugins] : [remarkGfm, remarkBreaks]}
         rehypePlugins={headingIdPrefix ? [rehypeHeadingIds(headingIdPrefix)] : []}
         components={resolved}
       >

@@ -42,6 +42,7 @@ import logging
 import secrets
 import uuid
 from datetime import datetime, timezone
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, field_validator
@@ -66,6 +67,7 @@ from sessionfs.server.db.models import (
     TicketWatcher,
     TrustedReviewer,
     User,
+    WorkQueueItem,
 )
 from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.routes.wiki import _get_project_or_404
@@ -827,6 +829,155 @@ async def _get_ticket_or_404(
     return ticket
 
 
+TicketAction = Literal["approve", "dismiss", "execute", "accept", "reopen"]
+
+_TICKET_ACTION_MESSAGES: dict[str, str] = {
+    "approve": (
+        "Only the project owner or a member of the project's organization "
+        "can approve a suggested ticket."
+    ),
+    "dismiss": (
+        "Only the ticket's creator, the project owner or a member of the "
+        "project's organization can dismiss this ticket."
+    ),
+    "execute": (
+        "Only the ticket's creator or resolver, the project owner or a member "
+        "of the project's organization can start, complete, block or unblock "
+        "this ticket."
+    ),
+    "accept": (
+        "Only the ticket's creator, the project owner or a member of the "
+        "project's organization can accept this ticket, and a creator who is "
+        "not an owner or org member cannot accept work they resolved "
+        "themselves."
+    ),
+    "reopen": (
+        "Only the ticket's creator, the project owner or a member of the "
+        "project's organization can reopen this ticket."
+    ),
+}
+
+
+async def _require_ticket_actor(
+    db: AsyncSession,
+    project: Project,
+    ticket: Ticket,
+    user_id: str,
+    *,
+    action: TicketAction,
+    key_kind: str = "user",
+) -> None:
+    """Lifecycle gate on top of project access.
+
+    Editors (project owner, org member) may move any ticket through its
+    lifecycle, as before. A reader whose only access is a captured session
+    on the project's repository is limited to:
+
+    * ``approve`` — never (suggested → open is an editor's triage call);
+    * ``dismiss`` — tickets they created;
+    * ``execute`` (start / complete / block / unblock) — tickets they
+      created or resolved;
+    * ``accept`` / ``reopen`` — tickets they created, and never ``accept``
+      on a ticket they also resolved (no self-review closure).
+
+    Anything else is 403 ``project_edit_forbidden``. Service keys keep their
+    own org / allowlist boundary and are not affected.
+    """
+    if key_kind == "service":
+        return
+    from sessionfs.server.auth.project_access import user_can_edit_project
+
+    if await user_can_edit_project(db, user_id, project):
+        return
+    is_creator = ticket.created_by_user_id == user_id
+    is_resolver = ticket.resolver_user_id == user_id
+    if action == "execute":
+        allowed = is_creator or is_resolver
+    elif action == "accept":
+        allowed = is_creator and not is_resolver
+    elif action in ("dismiss", "reopen"):
+        allowed = is_creator
+    else:  # approve
+        allowed = False
+    if not allowed:
+        raise HTTPException(
+            403,
+            {"code": "project_edit_forbidden", "message": _TICKET_ACTION_MESSAGES[action]},
+        )
+
+
+async def _require_ticket_actor_by_id(
+    db: AsyncSession,
+    project: Project,
+    project_id: str,
+    ticket_id: str,
+    user_id: str,
+    *,
+    action: TicketAction,
+    key_kind: str = "user",
+) -> None:
+    """``_require_ticket_actor`` for routes that transition the ticket with
+    an atomic UPDATE before loading it. A missing ticket is left to the
+    route's own 404 path."""
+    if key_kind == "service":
+        return
+    ticket = (
+        await db.execute(
+            select(Ticket).where(
+                Ticket.id == ticket_id, Ticket.project_id == project_id
+            )
+        )
+    ).scalar_one_or_none()
+    if ticket is not None:
+        await _require_ticket_actor(
+            db, project, ticket, user_id, action=action, key_kind=key_kind
+        )
+
+
+async def _ticket_detail_response(ticket: Ticket, db: AsyncSession) -> TicketResponse:
+    """Full detail payload for one ticket the caller is already allowed to read
+    (dependencies, Issue rollup, Jira link state)."""
+    deps = await _ticket_dependencies(db, ticket.id)
+    child_ticket_ids: list[str] = []
+    if ticket.kind == "issue":
+        # v0.10.24 — rollup query. Single SELECT, indexed by
+        # (project_id, parent_ticket_id). Tasks return empty list
+        # (Tasks cannot have children in v1).
+        child_rows = (
+            await db.execute(
+                select(Ticket.id).where(
+                    Ticket.project_id == ticket.project_id,
+                    Ticket.parent_ticket_id == ticket.id,
+                )
+            )
+        ).scalars().all()
+        child_ticket_ids = list(child_rows)
+    response = _to_response(ticket, deps, child_ticket_ids)
+    from sessionfs.server.db.models import TicketTrackerLink
+
+    link = (
+        await db.execute(
+            select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+        )
+    ).scalar_one_or_none()
+    if link is not None:
+        if link.status == "linked":
+            response.jira = TicketJiraLink(
+                issue_key=link.issue_key,
+                issue_url=link.issue_url,
+                last_known_status=link.last_known_status,
+            )
+        elif link.status == "pending":
+            # A pending claim is a publish in flight, not a link: reads must
+            # never surface a half-written issue.
+            response.jira_publish_in_progress = True
+        elif link.status == "unknown":
+            # A timed-out publish left no confirmed issue; surface it so the
+            # caller knows a re-publish will adopt-or-create.
+            response.jira_publish_unknown = True
+    return response
+
+
 async def _validate_dependencies_same_project(
     db: AsyncSession, project_id: str, depends_on: list[str]
 ) -> None:
@@ -1008,45 +1159,7 @@ async def get_ticket(
     await assert_service_key_can_access_project(db, auth, project)
     await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
-    deps = await _ticket_dependencies(db, ticket.id)
-    child_ticket_ids: list[str] = []
-    if ticket.kind == "issue":
-        # v0.10.24 — rollup query. Single SELECT, indexed by
-        # (project_id, parent_ticket_id). Tasks return empty list
-        # (Tasks cannot have children in v1).
-        child_rows = (
-            await db.execute(
-                select(Ticket.id).where(
-                    Ticket.project_id == project_id,
-                    Ticket.parent_ticket_id == ticket.id,
-                )
-            )
-        ).scalars().all()
-        child_ticket_ids = list(child_rows)
-    response = _to_response(ticket, deps, child_ticket_ids)
-    from sessionfs.server.db.models import TicketTrackerLink
-
-    link = (
-        await db.execute(
-            select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
-        )
-    ).scalar_one_or_none()
-    if link is not None:
-        if link.status == "linked":
-            response.jira = TicketJiraLink(
-                issue_key=link.issue_key,
-                issue_url=link.issue_url,
-                last_known_status=link.last_known_status,
-            )
-        elif link.status == "pending":
-            # A pending claim is a publish in flight, not a link: reads must
-            # never surface a half-written issue.
-            response.jira_publish_in_progress = True
-        elif link.status == "unknown":
-            # A timed-out publish left no confirmed issue; surface it so the
-            # caller knows a re-publish will adopt-or-create.
-            response.jira_publish_unknown = True
-    return response
+    return await _ticket_detail_response(ticket, db)
 
 
 @router.get(
@@ -1250,6 +1363,16 @@ async def create_ticket(
         initial_status = "open"
     else:
         initial_status = "suggested" if body.source == "agent" else "open"
+    # tk_25872885e3274a7d — a ticket from a captured-session reader (someone
+    # who synced a session on the repo but is neither the owner nor an org
+    # member) always starts 'suggested', whatever its source: an editor
+    # approves it before it is actionable, adoptable by work queues or
+    # notifies an assignee.
+    if auth.key_kind != "service":
+        from sessionfs.server.auth.project_access import user_can_edit_project
+
+        if not await user_can_edit_project(db, user.id, project):
+            initial_status = "suggested"
 
     # v0.10.23 tk_884b2321fdb74170 — best-effort normalize assigned_to
     # to the canonical persona name. If the value matches an active
@@ -1309,7 +1432,9 @@ async def create_ticket(
         await ticket_watchers.subscribe_guarded(
             db, ticket_id=ticket.id, user_id=user.id, source="creator"
         )
-    if normalized_assigned_to is not None:
+    # A suggested ticket isn't actionable yet: the assignee is subscribed and
+    # handed "your turn" only when an editor approves it (approve_ticket).
+    if normalized_assigned_to is not None and initial_status != "suggested":
         from sessionfs.server.services.personas import (
             visible_persona_org_id_for_auth,
         )
@@ -1463,6 +1588,71 @@ async def update_ticket(
     if ticket.project_id != project_id:
         raise HTTPException(404, "Ticket not found")
     await _authorize_ticket_edit()
+
+    # tk_25872885e3274a7d — a creator who is not an editor (a captured-session
+    # reader) may keep editing their ticket, but an editor's approval must
+    # cover what is actually adopted and worked on:
+    # * suggested — edit freely (nothing is actionable yet);
+    # * open (approved, not started) — edits apply and send the ticket back
+    #   to suggested for approval again;
+    # * in progress or later, or adopted by a work queue that hasn't
+    #   finished with it — only the reference lists (context_refs,
+    #   file_refs, related_sessions) may change; anything that redefines the
+    #   work (title, description, priority, assignee, acceptance criteria,
+    #   dependencies) is 403 while someone may be working on it.
+    from sessionfs.server.auth.project_access import user_can_edit_project
+
+    editor = await user_can_edit_project(db, user.id, project)
+    # A ticket a work queue has adopted and not finished counts as in
+    # progress: an agent may already be working from its text.
+    queued = False
+    if not editor:
+        queued = (
+            await db.execute(
+                select(WorkQueueItem.id)
+                .where(
+                    WorkQueueItem.ticket_id == ticket.id,
+                    WorkQueueItem.item_status.notin_(("done", "failed")),
+                )
+                .limit(1)
+            )
+        ).first() is not None
+    if not editor and (queued or ticket.status not in ("suggested", "open")):
+        locked_fields = [
+            name
+            for name in (
+                "title",
+                "description",
+                "priority",
+                "assigned_to",
+                "acceptance_criteria",
+                "depends_on",
+            )
+            if getattr(body, name) is not None
+        ]
+        if locked_fields:
+            raise HTTPException(
+                403,
+                {
+                    "code": "project_edit_forbidden",
+                    "message": (
+                        (
+                            "A work queue is already working on this ticket. "
+                            if queued
+                            else ""
+                        )
+                        + "Only the project owner or a member of the project's "
+                        "organization can change "
+                        + ", ".join(locked_fields)
+                        + (
+                            " on it now."
+                            if queued
+                            else f" on a ticket that is {ticket.status}."
+                        )
+                    ),
+                    "fields": locked_fields,
+                },
+            )
 
     # Optimistic concurrency: fence on lease_epoch when caller passes
     # it. Atomic UPDATE WHERE lease_epoch=... so a concurrent writer
@@ -1621,6 +1811,37 @@ async def update_ticket(
             )
         )
 
+    # A non-editor's change to an approved ticket withdraws the approval.
+    if not editor and ticket.status == "open":
+        ticket.status = "suggested"
+        ticket.updated_at = now
+        db.add(
+            TicketEdit(
+                id=f"te_{uuid.uuid4().hex[:16]}",
+                ticket_id=ticket.id,
+                edited_by_user_id=user.id,
+                edited_by_persona=editing_persona,
+                field_name="status",
+                old_value=json.dumps("open"),
+                new_value=json.dumps("suggested"),
+                edited_at=now,
+                lease_epoch=ticket.lease_epoch,
+            )
+        )
+        db.add(
+            TicketComment(
+                id=f"tc_{uuid.uuid4().hex[:16]}",
+                ticket_id=ticket.id,
+                author_user_id=user.id,
+                author_persona="system",
+                content=(
+                    "Changed by a non-member after approval; needs approval "
+                    "again before it can be worked on."
+                ),
+                created_at=now,
+            )
+        )
+
     # Auto-posted diff comment so the change shows up in the human-
     # readable comment thread. `system` author identity per design doc.
     diff_summary = _format_edit_diff_summary(edits, fence_applied=fence_applied)
@@ -1649,18 +1870,20 @@ async def update_ticket(
             name=new_assigned or "",
             org_id=await visible_persona_org_id(db, project, user_id=user.id),
         )
+        # A suggested ticket isn't actionable: watchers hear about the
+        # reassignment, but the assignee is subscribed and handed "your turn"
+        # only when an editor approves it.
+        hand_off = new_assignee_human is not None and ticket.status != "suggested"
         await ticket_watchers.emit_notifications(
             db,
             ticket=ticket,
             kind="assignment",
             summary=f"Assigned to {new_assigned}" if new_assigned else "Unassigned",
             actor_user_id=user.id,
-            your_turn_user_id=(
-                new_assignee_human[0] if new_assignee_human is not None else None
-            ),
+            your_turn_user_id=new_assignee_human[0] if hand_off else None,
             subscribe_users=(
                 [(new_assignee_human[0], "assignee", new_assignee_human[1])]
-                if new_assignee_human is not None
+                if hand_off
                 else None
             ),
         )
@@ -1756,6 +1979,7 @@ async def start_ticket(
     # GH #70 — lock, then re-authorize against the re-read project.
     await lock_project_scope_authorized(db, project, auth=auth, ctx=ctx, feature="agent_tickets")
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
+    await _require_ticket_actor(db, project, ticket, user.id, action="execute", key_kind=auth.key_kind)
 
     # Validate that the assigned persona exists at start time
     # (suggested→open conversion attribution check is handled in approve).
@@ -1880,6 +2104,9 @@ async def complete_ticket(
     await assert_service_key_can_access_project(db, auth, project)
     await check_project_feature(ctx, "agent_tickets", project, db)
     await _assert_lease_required_mode(project_id, db, body.lease_epoch, auth=auth)
+    await _require_ticket_actor_by_id(
+        db, project, project_id, ticket_id, user.id, action="execute", key_kind=auth.key_kind
+    )
     now = datetime.now(timezone.utc)
     result = await db.execute(
         update(Ticket)
@@ -2093,6 +2320,7 @@ async def accept_ticket(
     project = await _get_project_or_404(project_id, db, user.id)
     await check_project_feature(ctx, "agent_tickets", project, db)
     await _assert_lease_required_mode(project_id, db, lease_epoch)
+    await _require_ticket_actor_by_id(db, project, project_id, ticket_id, user.id, action="accept")
 
     now = datetime.now(timezone.utc)
     result = await db.execute(
@@ -2174,6 +2402,7 @@ async def reopen_ticket(
     project = await _get_project_or_404(project_id, db, user.id)
     await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
+    await _require_ticket_actor(db, project, ticket, user.id, action="reopen")
     _assert_transition(ticket.status, "open", ticket.kind)
 
     ticket.status = "open"
@@ -2207,6 +2436,7 @@ async def block_ticket(
     project = await _get_project_or_404(project_id, db, user.id)
     await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
+    await _require_ticket_actor(db, project, ticket, user.id, action="execute")
     _assert_transition(ticket.status, "blocked", ticket.kind)
 
     ticket.status = "blocked"
@@ -2239,6 +2469,7 @@ async def unblock_ticket(
     project = await _get_project_or_404(project_id, db, user.id)
     await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
+    await _require_ticket_actor(db, project, ticket, user.id, action="execute")
     _assert_transition(ticket.status, "in_progress", ticket.kind)
 
     ticket.status = "in_progress"
@@ -2271,10 +2502,27 @@ async def approve_ticket(
     project = await _get_project_or_404(project_id, db, user.id)
     await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
+    await _require_ticket_actor(db, project, ticket, user.id, action="approve")
     _assert_transition(ticket.status, "open", ticket.kind)
 
+    now = datetime.now(timezone.utc)
     ticket.status = "open"
-    ticket.updated_at = datetime.now(timezone.utc)
+    ticket.updated_at = now
+    # Record who approved it: work-queue auto-adoption takes a ticket filed
+    # by a reader only once an editor has approved it
+    # (services.work_queues._materialize_auto_adopt).
+    db.add(
+        TicketEdit(
+            id=f"te_{uuid.uuid4().hex[:16]}",
+            ticket_id=ticket.id,
+            edited_by_user_id=user.id,
+            field_name="status",
+            old_value=json.dumps("suggested"),
+            new_value=json.dumps("open"),
+            edited_at=now,
+            lease_epoch=ticket.lease_epoch,
+        )
+    )
     await _emit_status_notification(
         db,
         ticket=ticket,
@@ -2306,6 +2554,7 @@ async def dismiss_ticket(
     project = await _get_project_or_404(project_id, db, user.id)
     await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
+    await _require_ticket_actor(db, project, ticket, user.id, action="dismiss")
     _assert_transition(ticket.status, "cancelled", ticket.kind)
 
     ticket.status = "cancelled"
@@ -2813,3 +3062,89 @@ async def list_ticket_watchers(
         )
         for r in rows
     ]
+
+
+# ── Ticket by id (no project in the URL) ──
+
+
+by_id_router = APIRouter(prefix="/api/v1/tickets", tags=["tickets"])
+
+_RECENT_COMMENTS = 3
+
+
+class TicketPreviewResponse(TicketResponse):
+    """The project-scoped detail payload plus what a link preview needs:
+    the project's name and the latest comments (newest first)."""
+
+    project_name: str
+    comment_count: int
+    recent_comments: list[CommentResponse]
+
+
+@by_id_router.get("/{ticket_id}", response_model=TicketPreviewResponse)
+async def get_ticket_by_id(
+    ticket_id: str,
+    auth: AuthContext = Depends(require_scope("tickets:read")),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> TicketPreviewResponse:
+    """Look a ticket up by its id alone, for links that only carry the id
+    (e.g. ``tk_…`` mentioned in a session-helper answer).
+
+    Authorization is the project-scoped GET's, run against the ticket's own
+    project. A ticket that doesn't exist and one in a project the caller can't
+    read get the same 404, so the id space can't be probed. The plan gate runs
+    only once the caller is known to have access, as on the project route.
+    """
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+
+    not_found = HTTPException(404, "Ticket not found")
+    ticket = (
+        await db.execute(select(Ticket).where(Ticket.id == ticket_id))
+    ).scalar_one_or_none()
+    if ticket is None:
+        raise not_found
+    try:
+        project = await _get_project_for_auth(ticket.project_id, db, auth)
+        await assert_service_key_can_access_project(db, auth, project)
+    except HTTPException as exc:
+        if exc.status_code in (403, 404):
+            raise not_found from None
+        raise
+    await check_project_feature(ctx, "agent_tickets", project, db)
+
+    detail = await _ticket_detail_response(ticket, db)
+    comment_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(TicketComment)
+            .where(TicketComment.ticket_id == ticket.id)
+        )
+    ).scalar_one()
+    recent = (
+        await db.execute(
+            select(TicketComment)
+            .where(TicketComment.ticket_id == ticket.id)
+            .order_by(TicketComment.created_at.desc(), TicketComment.id.desc())
+            .limit(_RECENT_COMMENTS)
+        )
+    ).scalars().all()
+    return TicketPreviewResponse(
+        **detail.model_dump(),
+        project_name=project.name,
+        comment_count=int(comment_count or 0),
+        recent_comments=[
+            CommentResponse(
+                id=c.id,
+                ticket_id=c.ticket_id,
+                author_user_id=c.author_user_id,
+                author_persona=c.author_persona,
+                content=c.content,
+                session_id=c.session_id,
+                created_at=c.created_at,
+            )
+            for c in recent
+        ],
+    )

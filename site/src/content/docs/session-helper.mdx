@@ -7,6 +7,8 @@ The session helper answers questions over the sessions and project knowledge you
 
 It sees exactly what you can see: your own sessions, the projects you can access, and your org memberships. An org admin doesn't get a wider view through it.
 
+For questions about SessionFS itself — how to set up Jira, what Auto Narrative does, which commands and settings exist — it searches the official docs instead of guessing. Those answers cite the docs pages and sections they drew from alongside the session citations, and each link opens the page in a new tab.
+
 Available on the **Enterprise** plan. Added in v0.23.0.
 
 ## Requirements
@@ -28,8 +30,24 @@ Gateways that reject `temperature`, `top_p` or reasoning settings for a reasonin
 ## Where to use it
 
 - **Dashboard.** **Ask the helper** in the sidebar or the Cmd+K palette opens a drawer. The same button on a project or session page scopes the question to it. Answers stream in with citations; a citation opens the session at the exact message and highlights it (`/sessions/<id>?msg=<n>`). The composer stays pinned at the bottom, and earlier threads and **New** are always at hand. Retrying a failed answer doesn't save your question twice.
+
+  Ids in an answer are clickable. A ticket id (`tk_…`) opens a preview right over the conversation, with its status, priority, assignee, project, description and latest comments, plus **Open ticket** for the full view. Project (`proj_…`) and session (`ses_…`) ids open their pages, and when the scoped project has a single GitHub-verified repo, `PR #123` and commit SHAs link to GitHub. Ids inside code blocks stay as text.
+
 - **CLI.** `sfs helper ask "Where did we fix the SSO redirect?"` streams the answer to the terminal. `sfs helper conversations list|show|delete` manages threads, and `sfs helper status` shows whether the helper is available and which key it would use. See the [CLI reference](/cli/#sfs-helper-enterprise).
 - **MCP.** The `ask_session_helper` tool returns the whole answer with its citations, so an agent can ask without shelling out. See [MCP Server](/mcp/#ask_session_helper).
+
+## Actions
+
+Besides answering, the helper can propose two changes for you:
+
+- **Turn Auto Narrative on or off** for one or more projects.
+- **Move sessions to Trash**, for example to clean up old scratch sessions.
+
+The helper never makes a change itself. Each proposal appears in the answer as a card listing every target and what will happen to it: *will change*, *unchanged*, or *skipped* with the reason. Nothing changes until you press **Confirm** (or **Move to Trash**); **Cancel** drops it. Proposals expire after 15 minutes.
+
+Confirming applies exactly the targets on the card, with **your own permissions**. Access is checked again for each target when you confirm, and the card shows which targets applied and which failed. Turning Auto Narrative on or off needs change rights on the project (its owner or a member of its organization); a project you can only view is skipped as *You can view but not edit this project*.
+
+Cleanup is reversible: sessions go to **Trash**. Restore them from **Sessions → Trash** within 30 days; after that they can be purged for good.
 
 ## Org AI key
 
@@ -38,6 +56,45 @@ Enterprise org owners and admins can set one provider, model, API key and option
 - The key is encrypted at rest and never shown again after saving; only its last four characters are displayed.
 - It can be switched off without deleting it.
 - A custom base URL goes through the same address checks as other user-supplied LLM endpoints.
+- **Test connection** sends one tiny chat request with the form's values (the stored key only when the provider and base URL are unchanged) and shows the endpoint, model and latency, or why it failed. `POST /api/v1/orgs/{org_id}/llm-settings/test` does the same.
+- Leave the base URL empty to use the provider's own API. It must be an API address, not a console: `https://platform.deepseek.com` is refused with "use https://api.deepseek.com". Saving a new base URL runs the test first; a timeout or rate limit still saves, with a warning.
+
+## Configure the assistant
+
+Model settings live at two scopes — your own (`GET/PUT /api/v1/settings/helper`) and the org's (`GET/PUT /api/v1/orgs/{org_id}/helper-settings`; owners/admins write, members read the effective values) — and every turn resolves an effective set from them. Each field is optional; anything unset falls back to the default.
+
+| Setting | Range | Default |
+|---------|-------|---------|
+| `max_output_tokens` | 256–32000 (integer) | 4096 |
+| `temperature` | 0–2, or `null` for the provider default | 0 |
+| `top_p` | 0–1 | unset (not sent) |
+| `max_tool_steps` | 1–20 (integer) | 8 |
+| `reasoning_effort` | `off` · `low` · `medium` · `high` | unset |
+| `answer_style` | `concise` · `detailed` | `concise` |
+
+`max_tool_steps` counts tool rounds: after its last allowed round the model always gets one more step to answer. On Anthropic, setting `top_p` drops `temperature`, since the API refuses both together.
+
+Settings are stored apart from the LLM keys: saving them never creates a key, and deleting or rotating a key never touches the settings, instructions or budget.
+
+**Plan.** The personal routes need the helper on your plan (`403 upgrade_required` otherwise); the org `PUT` needs the org's Enterprise plan. The org `GET` works on any plan and reports `plan_includes_helper`.
+
+**Updating.** `PUT` merges: a field you leave out keeps its value and an explicit `null` clears it, and inside `settings` each key merges the same way. `{"monthly_token_budget": 2000}` changes only the budget; `{"instructions": "…"}` leaves the budget and settings alone. For `temperature`, `top_p`, `reasoning_effort` and the ceilings, `null` is itself the value (provider default, not sent, no ceiling).
+
+**Precedence.** A turn using **your own key** uses your personal settings, with defaults for anything unset. A turn using the **org key** uses the org's settings, which the org can additionally cap with two ceilings (`ceiling_max_output_tokens`, `ceiling_max_tool_steps`). Ceilings only apply on the org-key path; a personal-key turn is governed solely by your own settings. The range bounds above are absolute caps on every path, and `GET /api/v1/helper/status` reports the effective settings for the key a turn would use.
+
+**Custom instructions.** Org instructions allow up to 4000 characters, personal instructions up to 2000.
+
+- Org instructions apply when the turn uses that org's key, and when the conversation is scoped to that org's project (or its projects' sessions), whichever key is used.
+- Instructions from an org you are not an active member of never apply.
+- Your personal instructions always apply, after the org block.
+
+Instructions are not secret: any member can ask the helper to repeat them, and when a member uses their own key the org's instructions go to that member's provider. Never put credentials or confidential information in them.
+
+The prompt always starts with the helper's fixed rules; each instruction block follows between `<org-instructions>` / `<personal-instructions>` tags, under a header stating it cannot override those rules (access, scope, citations, treating tool output as data, confirming before acting). Saving text that contains those tags fails with `422 instructions_invalid`. The text is control-stripped and DLP-redacted before it is stored, the length limit applies after redaction (`422 instructions_too_long`), and a failed DLP scan is refused with `422 instructions_redaction_failed`. Each turn redacts the stored text again under that turn's DLP policy.
+
+**Usage and budget.** Usage is recorded in an append-only ledger, one row per turn that used any tokens — including turns that end in a disconnect, a provider error, the deadline or the step limit. Budgets and usage figures read only this ledger, so deleting a conversation or the retention sweep never changes them; ledger rows are kept 13 months. An org admin can set `monthly_token_budget` and read a per-member summary for the current UTC calendar month; members see only their own usage. Only turns using the org's key count against its budget, and once it is reached the next turn fails with `429 helper_budget_exceeded`. The budget is checked before each turn, so turns running at the same time can each overshoot it by up to about one turn's maximum tokens. `GET /api/v1/settings/helper` reports your own month's usage.
+
+Every settings change writes an audit row carrying the instruction text's **length and sha256 only**, never the text.
 
 ## API
 
@@ -49,7 +106,10 @@ User API keys only; service keys get `service_key_not_allowed`. Each user can ru
 | GET | `/api/v1/helper/conversations` | Your threads, newest first |
 | GET | `/api/v1/helper/conversations/{id}` | One thread with its messages |
 | DELETE | `/api/v1/helper/conversations/{id}` | Delete a thread and its messages |
-| GET | `/api/v1/helper/status` | Whether the helper is enabled for you, and which key source, provider and model it would use |
+| GET | `/api/v1/helper/actions/{id}` | A proposed change with its targets and state |
+| POST | `/api/v1/helper/actions/{id}/confirm` | Apply a proposed change (access re-checked per target) |
+| POST | `/api/v1/helper/actions/{id}/cancel` | Drop a proposed change |
+| GET | `/api/v1/helper/status` | Whether the helper is enabled for you, which key source, provider and model it would use, the effective settings, and whether org/personal instructions are set (never their text) |
 
 Request body for `POST /api/v1/helper/turns`:
 
@@ -78,11 +138,13 @@ With `"stream": false` the response is:
 }
 ```
 
-Provider failures return `502 provider_error` with a sanitized message.
+Provider failures return `502 provider_error` with a sanitized message. When the failure has a known cause, `reason` names it (for example `endpoint_not_api` when the base URL is a provider's console, not its API, and the message names the right address).
 
 ## Retention
 
 Threads are private to the user who started them. Helper messages are deleted 90 days after they were written by default. An org can set 1–3650 days with `helper_retention_days` on `PUT /api/v1/orgs/{org_id}/settings`; an explicit `null` returns it to the default. Threads without an org use the 90-day default.
+
+The token-usage ledger is kept 13 months: the same sweep deletes ledger rows older than 400 days, whatever the org's message window.
 
 Deletion runs from the sweep `POST /api/v1/admin/sweeps/helper-retention` (a platform admin or a `platform_sweeps:run` service key). On self-hosted servers the Helm chart can schedule it; see [Self-Hosted](/self-hosted/#scheduled-sweeps).
 

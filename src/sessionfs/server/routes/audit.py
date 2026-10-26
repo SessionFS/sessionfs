@@ -316,6 +316,19 @@ async def run_audit(
             },
         )
     except httpx.HTTPStatusError as exc:
+        from sessionfs.judge.llm_errors import LlmEndpointError
+
+        if isinstance(exc, LlmEndpointError):
+            # A Base URL that isn't an API: say which address to use instead
+            # of echoing the upstream body.
+            return JSONResponse(
+                status_code=502,
+                content={
+                    "error": "llm_request_failed",
+                    "code": exc.code,
+                    "message": exc.friendly_message,
+                },
+            )
         return JSONResponse(
             status_code=502,
             content={

@@ -180,6 +180,16 @@ async def get_user_context(
     user.tier when no active entitlement exists.
     """
     user = await _resolve_user_for_context(request, db)
+    return await build_user_context(user, db)
+
+
+async def build_user_context(user: User, db: AsyncSession) -> UserContext:
+    """The tier + role + org context for an already-authenticated user.
+
+    The body of :func:`get_user_context` without the request plumbing, so
+    code that runs outside a route dependency (the session helper's tools)
+    resolves exactly the same context a route would.
+    """
     membership = await get_user_org_membership(user.id, db)
 
     if membership:

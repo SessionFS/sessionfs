@@ -53,13 +53,171 @@ class JudgeSettingsResponse(BaseModel):
     base_url: str | None = None
 
 
-@router.put("/judge", response_model=JudgeSettingsResponse)
+class SaveWarning(BaseModel):
+    code: str
+    message: str
+
+
+class JudgeSettingsSaveResponse(JudgeSettingsResponse):
+    # Transient connection-check failures (the settings were saved anyway).
+    warnings: list[SaveWarning] = Field(default_factory=list)
+
+
+class LlmConnectionTestRequest(BaseModel):
+    """Body of ``POST .../test``. Every field is optional.
+
+    An omitted field falls back to the saved value; an explicit empty or
+    null ``base_url`` means "no custom endpoint" (the provider's own API).
+    Without ``api_key`` the saved key is used, and only for exactly the
+    provider/endpoint it was saved with.
+    """
+
+    provider: str | None = Field(None, max_length=32)
+    model: str | None = Field(None, max_length=128)
+    base_url: str | None = Field(None, max_length=500)
+    api_key: str | None = Field(None, max_length=4096)
+
+
+class LlmConnectionTestResponse(BaseModel):
+    ok: bool
+    code: str
+    message: str
+    provider: str
+    model: str
+    endpoint_host: str
+    # Omitted (null) on failures against private addresses.
+    latency_ms: int | None = None
+
+
+def resolve_test_target(
+    body: LlmConnectionTestRequest,
+    *,
+    saved_provider: str | None,
+    saved_model: str | None,
+    saved_base_url: str | None,
+) -> tuple[str, str, str | None]:
+    """The (provider, model, base_url) a connection test runs against.
+
+    Omitted fields fall back to the saved row; 422 when there is nothing to
+    test. The provider id must be in the registry unless a custom endpoint
+    routes the request.
+    """
+    from sessionfs.judge.provider_registry import get_provider
+
+    fields = body.model_fields_set
+    provider = (body.provider or "").strip().lower() if body.provider else (saved_provider or "")
+    if "base_url" in fields:
+        base_url = (body.base_url or "").strip() or None
+    else:
+        base_url = saved_base_url or None
+    if not provider and not base_url:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "provider_required", "message": "Choose a provider to test."},
+        )
+    validate_provider_or_422(provider, base_url)
+    model = (body.model or "").strip() or (saved_model or "")
+    if not model:
+        profile = get_provider(provider)
+        if profile is not None and profile.suggested_models:
+            model = profile.suggested_models[0]
+    if not model:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "model_required", "message": "Enter a model to test."},
+        )
+    return provider, model, base_url
+
+
+async def release_transaction(db: AsyncSession) -> None:
+    """End the request's read transaction before a slow outbound call.
+
+    A connection test can take up to 20 s; holding a pooled DB connection
+    (and any row snapshot) open for that long would starve the pool. The
+    session factory uses ``expire_on_commit=False``, so loaded objects stay
+    readable; anything written afterwards is re-read first.
+    """
+    await db.commit()
+
+
+def _rate_limited_or_continue(user: User) -> None:
+    from sessionfs.server.services import llm_connection
+
+    if not llm_connection.take_test_slot(user.id):
+        raise HTTPException(status_code=429, detail=llm_connection.RATE_LIMITED)
+
+
+@router.post("/judge/test", response_model=LlmConnectionTestResponse)
+async def test_judge_connection(
+    body: LlmConnectionTestRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Make one minimal chat request with the given (or saved) settings.
+
+    Returns ``{ok, code, message, provider, model, endpoint_host,
+    latency_ms}``; a failed test is a 200 with ``ok: false`` and a readable
+    ``code``. 400 ``key_required`` when no key was supplied and the saved key
+    belongs to a different provider/endpoint; 429 ``test_rate_limited``.
+    """
+    from sessionfs.server.services import llm_connection
+
+    settings = (
+        await db.execute(select(UserJudgeSettings).where(UserJudgeSettings.user_id == user.id))
+    ).scalar_one_or_none()
+    provider, model, base_url = resolve_test_target(
+        body,
+        saved_provider=settings.provider if settings else None,
+        saved_model=settings.model if settings else None,
+        saved_base_url=settings.base_url if settings else None,
+    )
+
+    api_key = (body.api_key or "").strip()
+    if not api_key:
+        saved_key = ""
+        if settings is not None and settings.encrypted_api_key:
+            try:
+                saved_key = decrypt_llm_key(settings.encrypted_api_key)
+            except Exception:
+                saved_key = ""
+        if settings is not None and saved_key:
+            bound = llm_connection.saved_key_bound_to(
+                settings.provider,
+                settings.base_url,
+                provider=provider,
+                base_url=base_url,
+            ) and saved_judge_key_matches(settings, provider=provider, base_url=base_url)
+            if not bound:
+                raise HTTPException(status_code=400, detail=llm_connection.KEY_REQUIRED)
+            api_key = saved_key
+        elif not base_url:
+            # A registry provider always needs a key; a custom endpoint may
+            # be keyless (a self-hosted Ollama), so it is tested without one.
+            raise HTTPException(status_code=400, detail=llm_connection.KEY_REQUIRED)
+
+    _rate_limited_or_continue(user)
+    await release_transaction(db)
+    result = await llm_connection.run_test(
+        provider=provider, model=model, api_key=api_key, base_url=base_url
+    )
+    return result.to_dict()
+
+
+@router.put("/judge", response_model=JudgeSettingsSaveResponse)
 async def put_judge_settings(
     body: JudgeSettingsRequest,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> JudgeSettingsResponse:
-    """Store judge LLM settings with encrypted API key."""
+) -> JudgeSettingsSaveResponse:
+    """Store judge LLM settings with encrypted API key.
+
+    With a custom ``base_url`` that is new or saved with a new key, one test
+    request runs first: an address that isn't a chat API, a rejected key or
+    a blocked endpoint is refused (422 ``{code, message}``); a transient
+    failure saves anyway and is reported in ``warnings``.
+    """
+    from sessionfs.server.services import llm_connection
+
     validate_provider_or_422(body.provider, body.base_url)
     body.base_url = await _check_llm_base_url_or_400(body.base_url)
     encrypted_key = encrypt_llm_key(body.api_key)
@@ -67,6 +225,27 @@ async def put_judge_settings(
     stmt = select(UserJudgeSettings).where(UserJudgeSettings.user_id == user.id)
     result = await db.execute(stmt)
     existing = result.scalar_one_or_none()
+
+    warnings: list[dict] = []
+    if body.base_url:
+        base_changed = existing is None or llm_connection.normalise_base_url(
+            existing.base_url
+        ) != llm_connection.normalise_base_url(body.base_url)
+        if base_changed or body.api_key:
+            user_id = user.id
+            await release_transaction(db)
+            warnings = await llm_connection.save_time_check(
+                user_id=user_id,
+                provider=body.provider,
+                model=body.model,
+                api_key=body.api_key,
+                base_url=body.base_url,
+                base_changed=base_changed,
+            )
+            # Re-read: the row may have changed during the outbound call.
+            existing = (
+                await db.execute(stmt.execution_options(populate_existing=True))
+            ).scalar_one_or_none()
 
     if existing:
         existing.provider = body.provider
@@ -85,7 +264,13 @@ async def put_judge_settings(
 
     await db.commit()
 
-    return JudgeSettingsResponse(provider=body.provider, model=body.model, key_set=True, base_url=body.base_url)
+    return JudgeSettingsSaveResponse(
+        provider=body.provider,
+        model=body.model,
+        key_set=True,
+        base_url=body.base_url,
+        warnings=[SaveWarning(**w) for w in warnings],
+    )
 
 
 @router.get("/judge", response_model=JudgeSettingsResponse)
@@ -214,6 +399,14 @@ def saved_judge_key_matches(
     base_url: str | None,
 ) -> bool:
     """Whether a request may use the saved judge key it did not supply.
+
+    NOTE: an empty/None ``base_url`` here means "fall back to the saved
+    endpoint" and always matches. That suits routes where omitting the
+    override keeps the saved endpoint (audit, narrative), but a route where
+    an empty base_url means "use the provider's own API" (the connection
+    tests) must ALSO require ``services.llm_connection.saved_key_bound_to``,
+    the strict binding, or a saved custom-endpoint key would be sent to the
+    registry provider.
 
     The saved key is write-only and bound to the provider/endpoint it was
     saved with. A request that overrides the endpoint (``base_url``, already

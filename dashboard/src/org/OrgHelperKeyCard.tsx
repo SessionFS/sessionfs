@@ -17,9 +17,18 @@ import {
   useOrgLlmSettings,
   useSaveOrgLlmSettings,
   useDeleteOrgLlmSettings,
+  useOrgLlmConnectionTester,
 } from './useOrgLlmSettings';
 import { Button, Input, Select, Switch } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
+import type { SaveWarning } from '../api/client';
+import { ConnectionTestStatus, SaveWarnings } from '../settings/LlmConnectionTest';
+import {
+  baseUrlHint,
+  baseUrlPlaceholder,
+  saveFieldError,
+  useLlmConnectionTest,
+} from '../settings/llmConnection';
 
 interface OrgHelperKeyCardProps {
   orgId: string;
@@ -32,7 +41,8 @@ export default function OrgHelperKeyCard({ orgId }: OrgHelperKeyCardProps) {
   const save = useSaveOrgLlmSettings(orgId);
   const remove = useDeleteOrgLlmSettings(orgId);
 
-  const providerOptions = (providerData?.providers ?? []).map((p) => ({
+  const providers = providerData?.providers ?? [];
+  const providerOptions = providers.map((p) => ({
     value: p.id,
     label: p.label,
   }));
@@ -42,6 +52,16 @@ export default function OrgHelperKeyCard({ orgId }: OrgHelperKeyCardProps) {
   const [apiKey, setApiKey] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [enabled, setEnabled] = useState(true);
+  const [fieldErrors, setFieldErrors] = useState<{ apiKey?: string; baseUrl?: string }>({});
+  const [saveWarnings, setSaveWarnings] = useState<SaveWarning[]>([]);
+
+  const connection = useLlmConnectionTest(useOrgLlmConnectionTester(orgId));
+  const resetConnection = connection.reset;
+
+  // A result describes the values it was run with; editing them clears it.
+  useEffect(() => {
+    resetConnection();
+  }, [provider, model, apiKey, baseUrl, resetConnection]);
 
   useEffect(() => {
     if (!data) return;
@@ -55,8 +75,20 @@ export default function OrgHelperKeyCard({ orgId }: OrgHelperKeyCardProps) {
   const planIncludesHelper = data?.plan_includes_helper !== false;
   const keyHint = data?.key_hint;
   const keyPlaceholder = hasKey && keyHint ? `key ending in ••••${keyHint}` : 'sk-…';
+  const currentProvider = providers.find((p) => p.id === provider);
+
+  function handleTest() {
+    void connection.test({
+      provider,
+      model: model || undefined,
+      base_url: baseUrl.trim() || '',
+      api_key: apiKey || undefined,
+    });
+  }
 
   function handleSave() {
+    setFieldErrors({});
+    setSaveWarnings([]);
     save.mutate(
       {
         provider,
@@ -66,11 +98,21 @@ export default function OrgHelperKeyCard({ orgId }: OrgHelperKeyCardProps) {
         enabled,
       },
       {
-        onSuccess: () => {
+        onSuccess: (data) => {
           setApiKey('');
+          setSaveWarnings(data?.warnings ?? []);
           addToast('success', 'Helper key saved');
         },
-        onError: (err) => addToast('error', `Save failed: ${errorMessage(err)}`),
+        onError: (err) => {
+          // A refused save (the address isn't a chat API, the key was
+          // rejected) is shown on the field that caused it.
+          const fieldError = saveFieldError(err);
+          if (fieldError?.field) {
+            setFieldErrors({ [fieldError.field]: fieldError.message });
+            return;
+          }
+          addToast('error', `Save failed: ${errorMessage(err)}`);
+        },
       },
     );
   }
@@ -199,10 +241,14 @@ export default function OrgHelperKeyCard({ orgId }: OrgHelperKeyCardProps) {
         <Input
           type="password"
           value={apiKey}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setApiKey(e.target.value)}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+            setApiKey(e.target.value);
+            setFieldErrors((prev) => ({ ...prev, apiKey: undefined }));
+          }}
           placeholder={keyPlaceholder}
           title="API Key"
           className="font-mono"
+          error={fieldErrors.apiKey}
         />
         {hasKey && (
           <span className="text-xs text-text-tertiary -mt-2">
@@ -213,10 +259,15 @@ export default function OrgHelperKeyCard({ orgId }: OrgHelperKeyCardProps) {
         <Input
           type="text"
           value={baseUrl}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setBaseUrl(e.target.value)}
-          placeholder="https://litellm.company.internal/v1"
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+            setBaseUrl(e.target.value);
+            setFieldErrors((prev) => ({ ...prev, baseUrl: undefined }));
+          }}
+          placeholder={baseUrlPlaceholder(currentProvider)}
           title="Base URL (optional)"
           className="font-mono"
+          error={fieldErrors.baseUrl}
+          hint={baseUrlHint(currentProvider)}
         />
 
         <div className="flex items-center gap-3">
@@ -228,6 +279,15 @@ export default function OrgHelperKeyCard({ orgId }: OrgHelperKeyCardProps) {
             loading={save.isPending}
           >
             Save
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={handleTest}
+            disabled={connection.testing || (!apiKey && !hasKey && !baseUrl)}
+            loading={connection.testing}
+          >
+            Test connection
           </Button>
           {hasKey && (
             <Button
@@ -241,6 +301,9 @@ export default function OrgHelperKeyCard({ orgId }: OrgHelperKeyCardProps) {
             </Button>
           )}
         </div>
+
+        <ConnectionTestStatus state={connection.state} />
+        <SaveWarnings warnings={saveWarnings} />
       </div>
     </section>
   );

@@ -25,7 +25,11 @@ import RelativeDate from '../components/RelativeDate';
 import { Button, Input } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
 
-interface MarketplaceTabProps { projectId: string }
+interface MarketplaceTabProps {
+  projectId: string;
+  /** The project's `can_edit` flag; view-only readers cannot approve. */
+  canEdit?: boolean;
+}
 
 function requestVariant(status: string): 'default' | 'success' | 'warning' | 'danger' {
   if (status === 'approved' || status === 'applied') return 'success';
@@ -252,7 +256,7 @@ function ApprovalRow({
   );
 }
 
-export default function MarketplaceTab({ projectId }: MarketplaceTabProps) {
+export default function MarketplaceTab({ projectId, canEdit = true }: MarketplaceTabProps) {
   const requests = useSkillInstallRequests(projectId);
   const approve = useApproveSkillInstallRequest(projectId);
   const challenge = useChallengeSkillInstallRequest(projectId);
@@ -260,7 +264,9 @@ export default function MarketplaceTab({ projectId }: MarketplaceTabProps) {
   const cancel = useCancelSkillInstallRequest(projectId);
   const me = useMe();
   const { addToast } = useToast();
-  const canApprove = requests.data?.can_approve === true;
+  // Approving a project install is an editor's call; `can_approve` already
+  // reflects admin standing, `canEdit` keeps view-only readers out too.
+  const canApprove = canEdit && requests.data?.can_approve === true;
   const revocations = useRevocationIndex();
   const [reapprovals, setReapprovals] = useState<Record<string, Reapproval>>({});
   const [resetTokens, setResetTokens] = useState<Record<string, number>>({});

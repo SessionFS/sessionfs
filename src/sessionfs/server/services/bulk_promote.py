@@ -20,6 +20,12 @@ Eligibility, in this order:
   8. Otherwise: promote — set claim_class='claim', promoted_at,
      promoted_by. If set_confidence was used, also update confidence.
 
+Notes written by someone who can view but not edit the project (a
+captured-session reader) are left out by default — an editor promoting
+in bulk should not sweep up collaborators' contributions unseen. They are
+counted in ``reader_notes_excluded``; pass ``include_reader_notes=True``
+to consider them like any other note (tk_25872885e3274a7d).
+
 dry_run=True is the default. The service does ALL filtering work but
 makes zero writes — useful for `--dry-run` to see what WOULD happen.
 """
@@ -33,7 +39,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sessionfs.server.db.models import KnowledgeEntry
+from sessionfs.server.db.models import KnowledgeEntry, Project
 from sessionfs.server.services.knowledge import word_overlap
 
 
@@ -75,6 +81,8 @@ class BulkPromoteResult:
     reasons: dict[str, int] = field(default_factory=lambda: {r: 0 for r in SKIP_REASONS})
     promoted_ids: list[int] = field(default_factory=list)
     dry_run: bool = True
+    # Notes by non-editors left out because include_reader_notes was False.
+    reader_notes_excluded: int = 0
 
     def _bump_skip(self, reason: str) -> None:
         if reason not in self.reasons:
@@ -89,6 +97,7 @@ class BulkPromoteResult:
             "reasons": dict(self.reasons),
             "promoted_ids": list(self.promoted_ids),
             "dry_run": self.dry_run,
+            "reader_notes_excluded": self.reader_notes_excluded,
         }
 
 
@@ -102,6 +111,8 @@ async def promote_eligible_notes(
     set_confidence: Optional[float] = None,
     entry_type: Optional[str] = None,
     dry_run: bool = True,
+    project: Optional[Project] = None,
+    include_reader_notes: bool = False,
 ) -> BulkPromoteResult:
     """Promote eligible note entries to claim in one operation.
 
@@ -118,6 +129,9 @@ async def promote_eligible_notes(
         `--confidence` flag — the caller is asserting "these notes are
         claim-worthy at this confidence."
       entry_type: optional filter — only consider this entry_type.
+      project: the project row; needed to tell editors' notes from readers'.
+        Without it every note is considered (legacy callers).
+      include_reader_notes: consider notes written by non-editors too.
       dry_run: when True (default), compute the eligibility decision but
         make zero writes. The returned result still shows what WOULD
         happen (promoted_ids includes the entries that would have
@@ -162,7 +176,20 @@ async def promote_eligible_notes(
 
     now = datetime.now(timezone.utc)
 
+    editor_ids: set[str] | None = None
+    if project is not None and not include_reader_notes:
+        from sessionfs.server.auth.project_access import project_editor_user_ids
+
+        editor_ids = await project_editor_user_ids(db, project)
+
     for entry in notes:
+        # 0. Reader-authored notes (same rule as editor_authored_clause:
+        #    owner, org member or service key) stay out unless asked for.
+        if editor_ids is not None and not (
+            entry.user_id in editor_ids or entry.actor_type == "service_key"
+        ):
+            result.reader_notes_excluded += 1
+            continue
         # 1. Defensive: claim_class filter already excludes claims, but
         #    a row with claim_class=None or another value should skip.
         if getattr(entry, "claim_class", "note") != "note":

@@ -38,7 +38,7 @@ The capability scopes defined for service keys (including `devices:report`). The
 |---|---|---|
 | `handoffs:write` | ✅ live | `POST /api/v1/handoffs`, `POST /api/v1/handoffs/{id}/claim`, `POST /api/v1/handoffs/{id}/revoke`, `POST /api/v1/handoffs/{id}/decline`, `POST /api/v1/handoffs/{id}/comments` |
 | `agent_runs:write` | ✅ live | `POST /api/v1/projects/{project_id}/agent-runs`, `POST /api/v1/projects/{project_id}/agent-runs/{run_id}/complete` |
-| `tickets:read` | ✅ live | `GET /api/v1/projects/{project_id}/tickets`, `GET /api/v1/projects/{project_id}/tickets/{ticket_id}`, `GET /api/v1/projects/{project_id}/tickets/{ticket_id}/comments`, `GET /api/v1/projects/{project_id}/tickets/{ticket_id}/review-state` |
+| `tickets:read` | ✅ live | `GET /api/v1/tickets/{ticket_id}`, `GET /api/v1/projects/{project_id}/tickets`, `GET /api/v1/projects/{project_id}/tickets/{ticket_id}`, `GET /api/v1/projects/{project_id}/tickets/{ticket_id}/comments`, `GET /api/v1/projects/{project_id}/tickets/{ticket_id}/review-state` |
 | `tickets:write` | ✅ live | `POST /api/v1/projects/{project_id}/tickets`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/comments`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/start`, `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/complete` |
 | `knowledge:read` | ✅ live | `GET /api/v1/projects/{project_id}/entries`, `GET /api/v1/projects/{project_id}/entries/{entry_id}` |
 | `knowledge:write` | ✅ live | `POST /api/v1/projects/{project_id}/entries/add`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}/refresh`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}/promote`, `PUT /api/v1/projects/{project_id}/entries/{entry_id}/supersede` |

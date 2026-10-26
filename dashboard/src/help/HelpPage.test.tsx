@@ -2,9 +2,23 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import HelpPage from './HelpPage';
+import mcpToolData from './mcpTools.json';
+import { axe } from '../test/axe';
+
+const { openHelperMock, helperState } = vi.hoisted(() => ({
+  openHelperMock: vi.fn(),
+  helperState: { available: true },
+}));
+vi.mock('../helper/HelperProvider', () => ({
+  useHelper: () => ({ openHelper: helperState.available ? openHelperMock : undefined }),
+}));
+
+const TOOL_COUNT = mcpToolData.groups.reduce((n, g) => n + g.tools.length, 0);
 
 describe('HelpPage', () => {
   beforeEach(() => {
+    openHelperMock.mockReset();
+    helperState.available = true;
     // localStorage and data-theme are reset by the shared setup.ts.
     // jsdom doesn't ship navigator.clipboard — stub it here per-test so each
     // test can override it (e.g. to test the unavailable-API path).
@@ -48,7 +62,9 @@ describe('HelpPage', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Codex' }));
     // Terminal should now show the Codex command and output
     expect(screen.getByText(/sfs mcp install --for codex/)).toBeInTheDocument();
-    expect(screen.getByText(/Codex will now have access to 36 tools/)).toBeInTheDocument();
+    expect(
+      screen.getByText(new RegExp(`Codex will now have access to ${TOOL_COUNT} tools`)),
+    ).toBeInTheDocument();
     // Codex pill should be marked selected, Claude should not
     expect(screen.getByRole('tab', { name: 'Codex' })).toHaveAttribute(
       'aria-selected',
@@ -60,7 +76,7 @@ describe('HelpPage', () => {
     );
   });
 
-  it('exposes all 9 supported AI tool pills', () => {
+  it('exposes all 10 supported AI tool pills', () => {
     renderPage();
     const expected = [
       'Claude Code',
@@ -71,6 +87,7 @@ describe('HelpPage', () => {
       'Amp',
       'Cline',
       'Roo Code',
+      'Kilo Code',
       'Antigravity',
     ];
     for (const label of expected) {
@@ -126,14 +143,17 @@ describe('HelpPage', () => {
     });
   });
 
-  it('renders all 5 "what you can tell your agent" use-case cards', () => {
+  it('renders the "what you can tell your agent" use-case cards', () => {
     renderPage();
     for (const title of [
       'Find & Resume',
       'Team Handoff',
       'Audit & Verify',
       'Project Knowledge',
-      'Sync & Manage',
+      'Tickets & Agents',
+      'Sessions & Checkpoints',
+      'Project Rules',
+      'Skills Marketplace',
     ]) {
       expect(screen.getByRole('heading', { name: title })).toBeInTheDocument();
     }
@@ -146,64 +166,112 @@ describe('HelpPage', () => {
     expect(screen.getAllByText('sfs list').length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText('sfs push <id>').length).toBeGreaterThanOrEqual(1);
     // These only appear in the CLI table, so single-match is safe
-    expect(screen.getByText('sfs handoff <id> <email>')).toBeInTheDocument();
+    expect(screen.getByText('sfs handoff <id> --to <email>')).toBeInTheDocument();
     expect(screen.getByText('sfs dlp scan <id>')).toBeInTheDocument();
     expect(screen.getByText('sfs audit <id>')).toBeInTheDocument();
     expect(screen.getByText('sfs project edit')).toBeInTheDocument();
   });
 
-  it('lists all 36 MCP tools', () => {
+  it('shows the MCP tool count from the data file', () => {
     renderPage();
-    const expected = [
-      // Session tools (7)
-      'search_sessions',
-      'get_session_context',
-      'list_recent_sessions',
-      'find_related_sessions',
-      'get_session_summary',
-      'get_audit_report',
-      'get_session_provenance',
-      // Knowledge read (8)
-      'get_project_context',
-      'get_context_section',
-      'get_wiki_page',
-      'search_project_knowledge',
-      'list_knowledge_entries',
-      'get_knowledge_entry',
-      'get_knowledge_health',
-      'ask_project',
-      // Knowledge write (7)
-      'add_knowledge',
-      'update_wiki_page',
-      'list_wiki_pages',
-      'compile_knowledge_base',
-      'dismiss_knowledge_entry',
-      'update_entry_confidence',
-      'promote_entry',
-      // Rules (2)
-      'get_rules',
-      'get_compiled_rules',
-      // Personas (5) — v0.10.1
-      'list_personas',
-      'get_persona',
-      'create_persona',
-      'assume_persona',
-      'forget_persona',
-      // Tickets (9) — v0.10.1
-      'list_tickets',
-      'get_ticket',
-      'create_ticket',
-      'start_ticket',
-      'complete_ticket',
-      'resolve_ticket',
-      'assign_persona',
-      'escalate_ticket',
-      'add_ticket_comment',
-    ];
-    for (const name of expected) {
-      expect(screen.getByText(name)).toBeInTheDocument();
-    }
+    expect(TOOL_COUNT).toBeGreaterThan(80);
+    expect(
+      screen.getByRole('heading', { level: 2, name: `MCP Tools (${TOOL_COUNT})` }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(`${TOOL_COUNT} tools in ${mcpToolData.groups.length} groups`),
+    ).toBeInTheDocument();
   });
+
+  it('lists every MCP tool once all groups are expanded', () => {
+    renderPage();
+    // Collapsed by default: tool names are not rendered yet.
+    expect(screen.queryByText('watch_ticket')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand all' }));
+    // One DOM pass instead of 85 getByText scans keeps this fast under load.
+    const rendered = new Set(
+      Array.from(document.querySelectorAll('li > code')).map((el) => el.textContent),
+    );
+    const expected = mcpToolData.groups.flatMap((g) => g.tools.map((t) => t.name));
+    expect(expected.filter((name) => !rendered.has(name))).toEqual([]);
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse all' }));
+    expect(screen.queryByText('watch_ticket')).not.toBeInTheDocument();
+  });
+
+  it('expands and collapses a single tool group', () => {
+    renderPage();
+    const toggle = screen.getByRole('button', { name: /^Handoffs/ });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('list', { name: 'Handoffs tools' })).toBeInTheDocument();
+    expect(screen.getByText('claim_handoff')).toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('claim_handoff')).not.toBeInTheDocument();
+  });
+
+  it('filters the tool list and opens the matching groups', () => {
+    renderPage();
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter MCP tools' }), {
+      target: { value: 'handoff' },
+    });
+    expect(screen.getByText('claim_handoff')).toBeInTheDocument();
+    expect(screen.queryByText('watch_ticket')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Work queues/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/of \d+ tools match/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Filter MCP tools' }), {
+      target: { value: 'zzz-no-such-tool' },
+    });
+    expect(screen.getByText(/No tools match/)).toBeInTheDocument();
+  });
+
+  it('renders the session helper section with a docs link and the settings route', () => {
+    renderPage();
+    expect(screen.getByRole('heading', { level: 2, name: 'Session helper' })).toBeInTheDocument();
+    for (const title of [
+      'Clickable references',
+      'Actions you confirm',
+      'Answers from the docs',
+      'Trash and history',
+    ]) {
+      expect(screen.getByRole('heading', { name: title })).toBeInTheDocument();
+    }
+    expect(screen.getByRole('link', { name: /session helper docs/i })).toHaveAttribute(
+      'href',
+      expect.stringContaining('https://sessionfs.dev/session-helper/'),
+    );
+    expect(screen.getByRole('link', { name: 'Settings → Assistant' })).toHaveAttribute(
+      'href',
+      '/settings/assistant',
+    );
+  });
+
+  it('opens the helper drawer from the "Ask the helper" button', () => {
+    renderPage();
+    fireEvent.click(screen.getByRole('button', { name: 'Ask the helper' }));
+    expect(openHelperMock).toHaveBeenCalledTimes(1);
+    expect(openHelperMock).toHaveBeenCalledWith();
+  });
+
+  it('hides the "Ask the helper" button when the drawer is unavailable', () => {
+    helperState.available = false;
+    renderPage();
+    expect(screen.queryByRole('button', { name: 'Ask the helper' })).not.toBeInTheDocument();
+  });
+
+  it('has no axe violations with the tool groups expanded', async () => {
+    const { container } = render(
+      <MemoryRouter>
+        <main>
+          <HelpPage />
+        </main>
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Expand all' }));
+    expect(await axe(container)).toHaveNoViolations();
+  }, 20000);
 
   it('passes the theme query parameter on sessionfs.dev resource links', () => {
     // Prime localStorage so the initial theme read is deterministic

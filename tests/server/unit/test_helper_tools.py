@@ -288,7 +288,7 @@ async def _run(ctx: HelperContext, name: str, args: dict, *, invalid: bool = Fal
 # ── registry shape ──
 
 
-def test_tool_specs_exposes_nine_tools():
+def test_tool_specs_exposes_read_and_proposal_tools():
     specs = tool_specs()
     assert {s.name for s in specs} == {
         "search_sessions",
@@ -300,6 +300,12 @@ def test_tool_specs_exposes_nine_tools():
         "get_project_context",
         "summarize_sessions",
         "sessions_touching_path",
+        "list_projects",
+        "get_project_settings",
+        "set_project_auto_narrative",
+        "search_sessionfs_docs",
+        "get_sessionfs_doc",
+        "trash_sessions",
     }
     for s in specs:
         assert isinstance(s.input_schema, dict)
@@ -690,6 +696,62 @@ async def test_sessions_touching_path_workspace_files(db_session, test_user, blo
     ctx = _ctx(db_session, test_user, blob_store=blob_store, audit=RecordingSink())
     result = await _run(ctx, "sessions_touching_path", {"path": "src/auth"})
     assert "repo work" in result.content
+
+
+# ── docs search ──
+
+
+@pytest.mark.asyncio
+async def test_search_sessionfs_docs_returns_markers_and_records_refs(db_session, test_user):
+    sink = RecordingSink()
+    ctx = _ctx(db_session, test_user, audit=sink)
+    result = await _run(ctx, "search_sessionfs_docs", {"query": "jira", "limit": 2})
+    assert not result.is_error
+    assert "[doc:integrations/jira" in result.content
+    assert len(sink.records) == 1
+    _, args, refs = sink.records[0]
+    assert args["query"] == "jira"
+    assert "integrations/jira" in refs["doc_slugs"]
+
+
+@pytest.mark.asyncio
+async def test_search_sessionfs_docs_caps_a_huge_query(db_session, test_user, monkeypatch):
+    """The tool passes at most 500 characters / 32 distinct words to search."""
+    from sessionfs.server.helper import docs as docs_mod
+    from sessionfs.server.helper import tools as tools_mod
+
+    seen: list[str] = []
+    real = docs_mod.get_docs_index()
+
+    class _Spy:
+        def search(self, query, limit):
+            seen.append(query)
+            return real.search(query, limit)
+
+    monkeypatch.setattr(tools_mod, "get_docs_index", lambda: _Spy())
+    ctx = _ctx(db_session, test_user)
+    query = "jira " + " ".join(f"word{i}" for i in range(20_000))
+    result = await _run(ctx, "search_sessionfs_docs", {"query": query})
+    assert not result.is_error
+    assert "[doc:integrations/jira" in result.content
+    assert len(seen[0]) <= 500
+    assert len(set(seen[0].split())) <= 32
+
+
+@pytest.mark.asyncio
+async def test_get_sessionfs_doc_returns_page_and_suggests_unknown(db_session, test_user):
+    sink = RecordingSink()
+    ctx = _ctx(db_session, test_user, audit=sink)
+    result = await _run(ctx, "get_sessionfs_doc", {"slug": "quickstart"})
+    assert not result.is_error
+    assert "[doc:quickstart]" in result.content
+    assert "https://sessionfs.dev/quickstart/" in result.content
+    assert sink.records[-1][2]["doc_slugs"] == ["quickstart"]
+
+    not_found = await _run(ctx, "get_sessionfs_doc", {"slug": "jirra"})
+    assert not not_found.is_error
+    assert "not found" in not_found.content.lower()
+    assert "integrations/jira" in not_found.content
 
 
 # ── budget / audit / malformed args ──

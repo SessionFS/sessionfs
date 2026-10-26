@@ -117,7 +117,7 @@ class TestProviderSpecs:
         assert isinstance(specs, list)
         assert len(specs) == len(PROVIDERS)
         for spec in specs:
-            assert set(spec) == {"id", "label", "api_style", "suggested_models", "discovery"}
+            assert set(spec) == {"id", "label", "api_style", "suggested_models", "discovery", "default_base_url"}
             assert isinstance(spec["suggested_models"], list)
 
     def test_specs_cover_every_registry_id(self):

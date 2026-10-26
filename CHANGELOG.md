@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0] - 2026-10-26
+
+**The session helper can clean up for you, answers from the SessionFS docs, and is configurable per org; filter sessions by model; test an LLM key before saving it.** Server migrations 094–095. MCP tools unchanged (85).
+
+### Added
+- **Helper actions with confirmation.** The session helper can propose two changes: moving sessions to Trash ("clean up my scratch sessions from last month") and turning Auto Narrative on or off for projects. Each proposal shows a card listing every target and what will happen to it; nothing changes until you press **Confirm**, and access is checked again for each target at that moment. Sessions go to Trash, never deleted, so cleanup can be undone for 30 days. Proposals expire after 15 minutes, and every decision is recorded in the retrieval audit log. API: `POST /api/v1/helper/actions/{id}/confirm|cancel`, `GET /api/v1/helper/actions/{id}`.
+- **Clickable references in helper answers.** Ticket ids open a preview over the conversation (status, priority, assignee, description, latest comments, **Open ticket**) without leaving the page; project and session ids open their pages, and PR numbers and commit SHAs link to GitHub when the project has one verified repository. API: `GET /api/v1/tickets/{ticket_id}`.
+- **The helper answers from the SessionFS docs.** Questions about how SessionFS works, setup, commands, settings and plans are answered from the official documentation, with links to the exact page and section.
+- **Configure the assistant.** Org owners and admins, and each user for their own key, can set the maximum answer length, temperature, top-p, tool steps, reasoning effort and answer style; orgs can cap output tokens and tool steps. Add custom instructions (up to 4000 characters for the org, 2000 personal) that cannot override the helper's access and safety rules. API: `GET/PUT /api/v1/settings/helper`, `GET/PUT /api/v1/orgs/{org_id}/helper-settings`. `sfs helper status` shows the effective settings.
+- **Token usage and a monthly budget.** Every helper turn records its token usage. Org admins see usage per member for the current month and can set a monthly token budget for turns that use the org's key; once it is reached, helper turns return `429 helper_budget_exceeded` until the next month. Deleting a conversation doesn't reset usage.
+- **Filter and sort sessions by model.** The Sessions page can filter by the LLM model a session used and group sessions by model. API: `?model=` on the session list and `GET /api/v1/sessions/models`.
+- **Test connection for LLM keys.** Personal and org key settings have a **Test connection** button that sends a tiny request and shows the endpoint, model and latency, or a readable reason it failed (wrong address, invalid key, model not found, rate limited, out of balance). API: `POST /api/v1/settings/judge/test`, `POST /api/v1/orgs/{org_id}/llm-settings/test`.
+- **Help page refresh.** The dashboard Help page covers the session helper, ticket notifications, model settings and the current MCP tools.
+
+### Changed
+- **Saving a Base URL checks it first.** A base URL that points at a provider's website or console instead of its API (for example `https://platform.deepseek.com`, which answers `405 Method Not Allowed`) or a key the provider rejects is refused with a clear message. Outages and rate limits never block a save; they are shown as warnings. When the helper hits a wrong address at runtime, its error names the API address to use.
+- **Only a project's owner and its organization's members can change it.** Anyone else who synced a session from the same repository can still read the project and add knowledge entries, tickets, comments and agent runs, but changing settings, rules, wiki pages, the context document, personas or work queues, or curating the knowledge base, now returns `403 project_edit_forbidden`. Project responses carry `can_edit`, and the dashboard hides the controls such a collaborator can't use.
+- **Collaborators' knowledge entries stay notes.** Entries from people who can view but not edit a project are never promoted or allowed to supersede other entries automatically, so they don't reach the context document or compiled rules until an owner or org member promotes them. Bulk promote leaves them out unless you pass `include_reader_notes` (`--include-reader-notes`).
+- **Collaborators' tickets need approval.** Tickets they create start as *suggested*, and editing one after approval sends it back to *suggested*. Open tickets created by non-members before this change are no longer picked up by work queues with auto-adopt until an owner or org member approves them. Once a work queue has adopted a ticket, they can't change what it asks for, and a queue stops handing out a ticket that goes back to *suggested* or is cancelled.
+- **Collaborators' comments don't reach automated agents.** People still see them everywhere, but work-queue directives leave them out and they don't start a reviewer's turn.
+
+### Security
+- **People who only synced a session can no longer change a project.** Before this release, anyone with a captured session from a project's repository could edit its settings, rules and context, which could change the instructions compiled into other members' tool rules files. Editing is now limited to the project's owner and its organization's members (see Changed above).
+
+### Upgrade notes
+- **Self-hosted servers: run migrations 094 and 095** (helper actions; helper settings and usage ledger; both additive).
+- **Review collaborator contributions.** Tickets and knowledge notes created by people outside your org now wait for an owner or org member to approve or promote them.
+
 ## [0.24.0] - 2026-10-25
 
 **Follow tickets and get told when it's your turn, bring a key from 14 LLM providers, and a local session store that survives crashes.** Server migration 093. Adds 2 MCP tools (83 → 85).

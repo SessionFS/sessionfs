@@ -88,11 +88,24 @@ def _render_citations(citations: list[dict], *, markdown: bool) -> None:
     console.print()
     console.print("[bold]Citations:[/bold]")
     for c in citations:
+        prefix = "  • " if markdown else "  - "
+        if "slug" in c:
+            # A docs citation: the page/section title and its public URL.
+            title = c.get("title") or c.get("slug") or "SessionFS docs"
+            url = c.get("url") or ""
+            if markdown:
+                console.print(
+                    f"{prefix}[cyan]{markup_escape(title)}[/cyan] — {markup_escape(url)}"
+                )
+            else:
+                console.print(
+                    f"{prefix}{title} — {url}", markup=False, highlight=False, soft_wrap=True
+                )
+            continue
         sid = c.get("session_id", "")
         idx = c.get("message_index")
         title = c.get("title") or "Untitled"
         loc = sid + (f"#msg-{idx}" if idx is not None else "")
-        prefix = "  • " if markdown else "  - "
         if markdown:
             console.print(f"{prefix}[cyan]{markup_escape(title)}[/cyan] — {markup_escape(loc)}")
         else:
@@ -224,7 +237,7 @@ async def _stream_ask(api_url: str, api_key: str, payload: dict) -> None:
                             delta = _parse_event_data(event_type, data).get("delta", "")
                             answer_parts.append(delta)
                             live.update(Markdown("".join(answer_parts)))
-                        elif event_type == "citation":
+                        elif event_type in ("citation", "doc_citation"):
                             citations.append(_parse_event_data(event_type, data))
                         elif event_type == "error":
                             error_message = _parse_event_data(event_type, data).get(
@@ -251,7 +264,7 @@ async def _stream_ask(api_url: str, api_key: str, payload: dict) -> None:
                         sys.stdout.write(delta)
                         sys.stdout.flush()
                         answer_parts.append(delta)
-                    elif event_type == "citation":
+                    elif event_type in ("citation", "doc_citation"):
                         citations.append(_parse_event_data(event_type, data))
                     elif event_type == "error":
                         error_message = _parse_event_data(event_type, data).get(
@@ -392,6 +405,19 @@ def helper_status() -> None:
         console.print(f"  Provider: {markup_escape(body['provider'])}")
     if body.get("model"):
         console.print(f"  Model:    {markup_escape(body['model'])}")
+    effective = body.get("effective_settings")
+    if isinstance(effective, dict):
+        console.print("  Settings:")
+        console.print(f"    max_output_tokens: {effective.get('max_output_tokens')}")
+        console.print(f"    temperature:       {effective.get('temperature')}")
+        console.print(f"    top_p:             {effective.get('top_p')}")
+        console.print(f"    max_tool_steps:    {effective.get('max_tool_steps')}")
+        console.print(f"    reasoning_effort:  {effective.get('reasoning_effort')}")
+        console.print(f"    answer_style:      {effective.get('answer_style')}")
+    if body.get("has_org_instructions"):
+        console.print("  Org instructions: set")
+    if body.get("has_personal_instructions"):
+        console.print("  Personal instructions: set")
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +492,9 @@ def conversations_show(
             citations = m.get("citations")
             if citations:
                 _render_citations(citations, markdown=console.is_terminal)
+        elif role == "note":
+            # A write action's outcome (confirmed / cancelled / expired).
+            console.print(f"\n[dim]  {markup_escape(content)}[/dim]")
         else:
             tool_name = m.get("tool_name") or m.get("role", "tool")
             console.print(f"\n[dim]  · {markup_escape(tool_name)}[/dim]")

@@ -43,6 +43,9 @@ class ResolvedLLM:
     api_key: str = field(repr=False)
     base_url: str | None
     key_source: Literal["user", "org"]
+    # The org whose key this turn uses (``None`` for a user key). Needed to
+    # record the org on messages for the monthly token budget.
+    key_org_id: str | None = None
 
 
 async def _base_url_ok(base_url: str | None) -> bool:
@@ -131,4 +134,5 @@ async def resolve_helper_llm(
         api_key=api_key,
         base_url=org_settings.base_url,
         key_source="org",
+        key_org_id=org_id,
     )

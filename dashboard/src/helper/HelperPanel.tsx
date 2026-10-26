@@ -13,19 +13,21 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Link } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
-import { ApiError, type HelperCitation, type HelperConversationSummary } from '../api/client';
+import { ApiError, type HelperCitation, type HelperConversationSummary, type HelperDocCitation } from '../api/client';
 import { useMe } from '../hooks/useMe';
 import { useToast } from '../hooks/useToast';
 import { errorMessage } from '../utils/errorMessage';
 import { Button, Dialog, DialogFooter, DialogHeader, Drawer } from '../components/ui';
 import type { HelperScope } from './HelperProvider';
 import { useDeleteHelperConversation, useHelperConversations, useHelperStatus } from './useHelper';
-import { SseParser, type SseEvent } from './sse';
+import { SseParser, parseActionProposed, type SseEvent } from './sse';
+import { proposedActionId, type TurnAction } from './actions';
 import {
   MAX_MESSAGE_CHARS,
   TITLE_ID,
   classifyError,
   streamError,
+  usageFrom,
   type HelperError,
   type ToolStep,
   type Turn,
@@ -37,6 +39,7 @@ import HelperEmptyState from './HelperEmptyState';
 import HelperHistory from './HelperHistory';
 import HelperNotice from './HelperNotice';
 import { AssistantMessage, UserMessage } from './HelperMessage';
+import { HelperRefsProvider } from './refs';
 import { AlertIcon, ArrowDownIcon, KeyIcon, LockIcon } from './icons';
 import { linkButtonPrimary, linkButtonSecondary } from './styles';
 
@@ -206,11 +209,17 @@ export default function HelperPanel({
       // Tool rows are stored next to the answer they fed (their order within a
       // turn isn't guaranteed), so fold them into that turn's assistant.
       let pendingSteps: ToolStep[] = [];
+      // Proposals are recovered from their stored tool rows (the server's
+      // `action_id` link, else the result text); each card then reads the
+      // action's current status from the server. `note` rows (an action's
+      // outcome, written for the model) are not shown.
+      let pendingActions: TurnAction[] = [];
       let lastAssistant: Turn | null = null;
       for (const m of conv.messages) {
         if (m.role === 'user') {
           loaded.push({ id: nextId(), role: 'user', content: m.content, toolSteps: [], citations: [] });
           pendingSteps = [];
+          pendingActions = [];
           lastAssistant = null;
         } else if (m.role === 'assistant') {
           lastAssistant = {
@@ -220,10 +229,20 @@ export default function HelperPanel({
             toolSteps: pendingSteps,
             citations: m.citations ?? [],
             status: 'done',
+            actions: pendingActions.length ? pendingActions : undefined,
+            usage: usageFrom(m),
           };
           pendingSteps = [];
+          pendingActions = [];
           loaded.push(lastAssistant);
         } else if (m.role === 'tool') {
+          const actionId = proposedActionId(m);
+          if (actionId) {
+            const kind = m.tool_name === 'trash_sessions' ? 'trash_sessions' : 'set_auto_narrative';
+            const action: TurnAction = { id: actionId, kind, summary: '', targets: [], expires_at: null, fromHistory: true };
+            if (lastAssistant) lastAssistant.actions = [...(lastAssistant.actions ?? []), action];
+            else pendingActions.push(action);
+          }
           const step: ToolStep = {
             id: m.tool_call_id ?? m.id,
             name: m.tool_name ?? 'tool',
@@ -337,6 +356,9 @@ export default function HelperPanel({
                 : [...t.toolSteps, { id: r.id ?? '', name: r.name ?? 'tool', args: {}, ...finished }];
             return { ...t, toolSteps };
           });
+        } else if (ev.event === 'action_proposed') {
+          const action = parseActionProposed(ev.data);
+          if (action) patchAssistant((t) => ({ ...t, actions: [...(t.actions ?? []), action] }));
         } else if (ev.event === 'citation') {
           const c = JSON.parse(ev.data) as HelperCitation;
           citationCount += 1;
@@ -344,12 +366,24 @@ export default function HelperPanel({
             ...t,
             citations: [...t.citations, { session_id: c.session_id, message_index: c.message_index ?? null, title: c.title }],
           }));
+        } else if (ev.event === 'doc_citation') {
+          const c = JSON.parse(ev.data) as HelperDocCitation;
+          citationCount += 1;
+          patchAssistant((t) => ({
+            ...t,
+            citations: [
+              ...t.citations,
+              { slug: c.slug, anchor: c.anchor ?? null, title: c.title, url: c.url },
+            ],
+          }));
         } else if (ev.event === 'error') {
           const e = JSON.parse(ev.data) as { code?: string; message?: string };
           streamFailed = true;
           patchAssistant((t) => ({ ...t, error: streamError(e.code, e.message) }));
         } else if (ev.event === 'done') {
           gotDone = true;
+          const usage = usageFrom(JSON.parse(ev.data) as Parameters<typeof usageFrom>[0]);
+          if (usage) patchAssistant((t) => ({ ...t, usage }));
         }
       } catch {
         // A malformed frame should never surface — ignore it and keep the rest.
@@ -613,6 +647,7 @@ export default function HelperPanel({
                       onNewConversation: () => newConversation(),
                       onNavigate: onClose,
                       keyHint,
+                      isOrgAdmin,
                     }}
                   />
                 ),
@@ -638,6 +673,7 @@ export default function HelperPanel({
   return (
     <Drawer open={open} onClose={onClose} titleId={TITLE_ID} bare widthClassName="w-full sm:w-[480px] lg:w-[520px]">
       <div className="flex h-full min-h-0 flex-col bg-surface">
+        <HelperRefsProvider projectId={activeScope?.project_id} onNavigate={onClose}>
         <HelperHeader
           options={options}
           active={current}
@@ -671,6 +707,7 @@ export default function HelperPanel({
         <div className="sr-only" role="status" aria-live="polite">
           {announcement}
         </div>
+        </HelperRefsProvider>
       </div>
 
       <Dialog open={deleteTarget !== null} onClose={() => setDeleteTarget(null)} titleId="helper-delete-dialog-title">

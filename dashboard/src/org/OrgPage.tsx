@@ -7,6 +7,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Dropdown, Button, Dialog, DialogHeader, DialogFooter, PageContainer, PageHeader, Tabs } from '../components/ui';
 import OrgSettingsTab from './OrgSettingsTab';
 import OrgHelperKeyCard from './OrgHelperKeyCard';
+import OrgAssistantSection from './OrgAssistantSection';
 import SsoTab from './SsoTab';
 import OrgPersonasSection, { type OrgPersonaMember } from './OrgPersonasSection';
 import SecondaryOrgPage from './SecondaryOrgPage';
@@ -397,6 +398,15 @@ export default function OrgPage() {
       {org?.id && isAdmin && (
         <div className="bg-bg-elevated border border-border rounded-xl p-5 mt-6">
           <OrgHelperKeyCard orgId={org.id} />
+        </div>
+      )}
+
+      {/* Assistant (session helper) model settings, ceilings, budget,
+          instructions and usage. Admins edit; members see effective values
+          and their own usage. */}
+      {org?.id && (
+        <div className="bg-bg-elevated border border-border rounded-xl p-5 mt-6">
+          <OrgAssistantSection key={org.id} orgId={org.id} />
         </div>
       )}
 

@@ -19,6 +19,7 @@ import { Button, Textarea } from '../../components/ui';
 import { Badge } from '../../components/Badge';
 import { STATUS_VARIANT, formatStatusLabel } from './constants';
 import { JiraTicketSection } from './JiraPromote';
+import { ticketActionAllowed, useTicketViewer } from './viewer';
 import { errorMessage } from '../../utils/errorMessage';
 
 /* ── Detail panel (unchanged logic, restyled onto primitives) ── */
@@ -53,6 +54,7 @@ export function TicketDetail({
   const dismiss = useDismissTicket(projectId);
   const close = useCloseTicket(projectId);
   const addComment = useAddTicketComment(projectId);
+  const viewer = useTicketViewer();
   const { addToast } = useToast();
   const [draft, setDraft] = useState('');
   const [submitting, setSubmitting] = useState<Action | null>(null);
@@ -126,9 +128,11 @@ export function TicketDetail({
     }
   }
 
-  const canApprove = t.status === 'suggested';
-  const canDismiss = t.status === 'suggested' || t.status === 'open';
-  const canClose = t.kind === 'issue' && t.status === 'in_progress';
+  const canApprove = t.status === 'suggested' && ticketActionAllowed('approve', t, viewer);
+  const canDismiss =
+    (t.status === 'suggested' || t.status === 'open') && ticketActionAllowed('dismiss', t, viewer);
+  const canClose =
+    t.kind === 'issue' && t.status === 'in_progress' && ticketActionAllowed('close', t, viewer);
 
   return (
     <div className="px-3 py-3 bg-surface/50 text-sm space-y-3 border-t border-border">

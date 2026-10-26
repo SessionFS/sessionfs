@@ -29,6 +29,7 @@ export function resolve(method: string, pathname: string): MockResult | null {
 
   // ── sessions ──
   if (path === '/api/v1/sessions') return ok(d.sessionList);
+  if (path === '/api/v1/sessions/models') return ok(d.sessionModels);
   if (path === '/api/v1/sessions/search') return ok({ results: [], total: 0, page: 1, page_size: 20, has_more: false });
   if (path === '/api/v1/bookmarks/folders') return ok({ folders: [] });
   if (path === '/api/v1/bookmarks') return ok({ bookmarks: [] });
@@ -86,7 +87,17 @@ export function resolve(method: string, pathname: string): MockResult | null {
     if (rest === '/sso/domains') return ok(d.ssoDomains);
     if (rest === '/sso/break-glass') return ok([]);
     if (rest === '/owner/transfer') return ok({ transfer: null });
-    if (rest === '/members') return ok(d.orgInfo.members);
+    if (rest === '/members') {
+      return ok({
+        org_id: d.ORG_ID,
+        members: d.orgInfo.members,
+        seats_used: d.orgInfo.org.seats_used,
+        seats_limit: d.orgInfo.org.seats_limit,
+        current_user_role: d.orgInfo.current_user_role,
+      });
+    }
+    if (rest === '/helper-settings') return ok(d.orgHelperSettingsAdmin);
+    if (rest === '/llm-settings') return ok(d.orgLlmSettings);
     if (rest.startsWith('/skills/')) return ok({ items: [], count: 0, has_more: false });
     return null;
   }
@@ -97,6 +108,9 @@ export function resolve(method: string, pathname: string): MockResult | null {
   if (path === '/api/v1/settings/github') return ok(d.githubInstallation);
   if (path === '/api/v1/settings/gitlab') return ok(d.gitlabSettings);
   if (path === '/api/v1/settings/judge') return ok(d.judgeSettings);
+  if (path === '/api/v1/llm/providers') return ok(d.llmProviders);
+  if (path === '/api/v1/settings/helper') return ok(d.userHelperSettings);
+  if (path === '/api/v1/helper/status') return ok(d.helperStatus);
   if (path === '/api/v1/sync/settings') return ok(d.syncSettings);
   if (path === '/api/v1/sync/status') return ok(d.syncStatus);
   if (path === '/api/v1/sync/watchlist') return ok({ sessions: [] });

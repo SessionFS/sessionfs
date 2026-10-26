@@ -6,7 +6,15 @@ import type { WikiPage } from '../../api/client';
 import { Button, Input, Markdown, Textarea } from '../../components/ui';
 import { errorMessage } from '../../utils/errorMessage';
 
-export default function PagesTab({ projectId }: { projectId: string }) {
+/** `canEdit` is the project's `can_edit` flag; view-only readers get no
+ *  create / edit / regenerate / delete controls. */
+export default function PagesTab({
+  projectId,
+  canEdit = true,
+}: {
+  projectId: string;
+  canEdit?: boolean;
+}) {
   const { data, isLoading } = useWikiPages(projectId);
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [editingSlug, setEditingSlug] = useState<string | null>(null);
@@ -88,11 +96,11 @@ export default function PagesTab({ projectId }: { projectId: string }) {
         <span className="text-sm text-text-tertiary">
           {pages.length} {pages.length === 1 ? 'page' : 'pages'}
         </span>
-        <Button onClick={() => setShowNewPage(true)}>+ New Page</Button>
+        {canEdit && <Button onClick={() => setShowNewPage(true)}>+ New Page</Button>}
       </div>
 
       {/* New page form */}
-      {showNewPage && (
+      {canEdit && showNewPage && (
         <div className="mb-4 px-4 py-3 rounded-lg border border-[var(--brand)] bg-bg-primary">
           <div className="flex gap-3 mb-2">
             <Input
@@ -220,6 +228,7 @@ export default function PagesTab({ projectId }: { projectId: string }) {
 
                         {/* Actions */}
                         <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border">
+                          {canEdit && (<>
                           <button
                             onClick={() => { setEditingSlug(page.slug); setEditDraft(pageDetail?.content ?? page.content ?? ''); }}
                             className="text-xs text-brand hover:underline"
@@ -242,6 +251,7 @@ export default function PagesTab({ projectId }: { projectId: string }) {
                           >
                             Delete
                           </button>
+                          </>)}
                           <span className="text-xs text-text-tertiary ml-auto">
                             Updated <RelativeDate iso={page.updated_at} />
                           </span>

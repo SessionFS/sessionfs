@@ -173,6 +173,25 @@ async def _load_project_or_404(
     return project
 
 
+async def _read_rules(
+    db: AsyncSession, project: Project, user_id: str
+) -> ProjectRules:
+    """The project's rules row for a read-tier caller.
+
+    The default row is created on first read, as before; when the caller is
+    a captured-session reader (not an editor) it is attributed to the project
+    owner, so a reader never leaves their own mark on canonical rules.
+    """
+    from sessionfs.server.auth.project_access import user_can_edit_project
+
+    actor = (
+        user_id
+        if await user_can_edit_project(db, user_id, project)
+        else project.owner_id
+    )
+    return await get_or_create_rules(db, project, actor)
+
+
 def _rules_to_response(rules: ProjectRules) -> RulesResponse:
     return RulesResponse(
         id=rules.id,
@@ -228,7 +247,7 @@ async def get_rules(
 ) -> RulesResponse:
     """Fetch canonical rules for a project. Creates a default row on first read."""
     project = await _load_project_or_404(project_id, db, user.id)
-    rules = await get_or_create_rules(db, project, user.id)
+    rules = await _read_rules(db, project, user.id)
     body = _rules_to_response(rules)
     response.headers["ETag"] = body.etag
     return body
@@ -248,6 +267,10 @@ async def update_rules(
     Requires `If-Match` header with the current ETag; returns 409 on mismatch.
     """
     project = await _load_project_or_404(project_id, db, user.id)
+    # Changing canonical rules is an edit: owner or org member only.
+    from sessionfs.server.auth.project_access import require_project_editor
+
+    await require_project_editor(db, user.id, project)
     # Ensure the row exists first (creates default on first read).
     await get_or_create_rules(db, project, user.id)
 
@@ -373,10 +396,22 @@ async def compile_rules_endpoint(
     only if at least one compiled output's hash differs from the previous.
     """
     project = await _load_project_or_404(project_id, db, user.id)
-    rules = await get_or_create_rules(db, project, user.id)
 
+    # Anyone who can read the project may compile (resume-time rules sync
+    # and previews need the output), but only an editor's compile advances
+    # the canonical version history. A captured-session reader gets the
+    # same output with no new rules_versions row, and a default rules row
+    # created on their compile is attributed to the project owner.
+    from sessionfs.server.auth.project_access import user_can_edit_project
+
+    can_edit = await user_can_edit_project(db, user.id, project)
+    rules = await get_or_create_rules(
+        db, project, user.id if can_edit else project.owner_id
+    )
     tools_override = body.tools if (body and body.tools is not None) else None
-    outcome = await compile_rules(db, project, rules, user.id, tools_override)
+    outcome = await compile_rules(
+        db, project, rules, user.id, tools_override, persist_version=can_edit
+    )
 
     return CompileResponse(
         version=rules.version,
@@ -403,7 +438,7 @@ async def list_rules_versions(
 ) -> list[RulesVersionSummary]:
     """List rules versions (immutable compile history) newest-first."""
     project = await _load_project_or_404(project_id, db, user.id)
-    rules = await get_or_create_rules(db, project, user.id)
+    rules = await _read_rules(db, project, user.id)
 
     result = await db.execute(
         select(RulesVersion)
@@ -438,7 +473,7 @@ async def get_rules_version(
     db: AsyncSession = Depends(get_db),
 ) -> RulesVersionDetail:
     project = await _load_project_or_404(project_id, db, user.id)
-    rules = await get_or_create_rules(db, project, user.id)
+    rules = await _read_rules(db, project, user.id)
 
     result = await db.execute(
         select(RulesVersion).where(

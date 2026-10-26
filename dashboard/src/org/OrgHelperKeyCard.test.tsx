@@ -8,6 +8,8 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ApiError } from '../api/client';
+import { axe } from '../test/axe';
 import OrgHelperKeyCard from './OrgHelperKeyCard';
 
 const { hooks, toastHook, toastApi, llmProvidersHook } = vi.hoisted(() => {
@@ -17,6 +19,7 @@ const { hooks, toastHook, toastApi, llmProvidersHook } = vi.hoisted(() => {
       useOrgLlmSettings: vi.fn(),
       useSaveOrgLlmSettings: vi.fn(),
       useDeleteOrgLlmSettings: vi.fn(),
+      useOrgLlmConnectionTester: vi.fn(),
     },
     toastHook: { useToast: vi.fn() },
     toastApi,
@@ -27,6 +30,8 @@ const { hooks, toastHook, toastApi, llmProvidersHook } = vi.hoisted(() => {
 vi.mock('./useOrgLlmSettings', () => hooks);
 vi.mock('../hooks/useToast', () => toastHook);
 vi.mock('../hooks/useLlmProviders', () => llmProvidersHook);
+
+const testConnection = vi.fn();
 
 function makeMutation(extra: Record<string, unknown> = {}) {
   return {
@@ -57,13 +62,14 @@ beforeEach(() => {
   hooks.useOrgLlmSettings.mockReturnValue({ data: DEFAULTS, isLoading: false });
   hooks.useSaveOrgLlmSettings.mockReturnValue(makeMutation());
   hooks.useDeleteOrgLlmSettings.mockReturnValue(makeMutation());
+  hooks.useOrgLlmConnectionTester.mockReturnValue(testConnection);
   toastHook.useToast.mockReturnValue(toastApi);
   llmProvidersHook.useLlmProviders.mockReturnValue({
     data: {
       providers: [
         { id: 'openrouter', label: 'OpenRouter', api_style: 'openai', suggested_models: [], discovery: true },
         { id: 'anthropic', label: 'Anthropic', api_style: 'anthropic', suggested_models: [], discovery: false },
-        { id: 'openai', label: 'OpenAI', api_style: 'openai', suggested_models: [], discovery: true },
+        { id: 'openai', label: 'OpenAI', api_style: 'openai', suggested_models: [], discovery: true, default_base_url: 'https://api.openai.com/v1' },
         { id: 'google', label: 'Google', api_style: 'google', suggested_models: [], discovery: false },
       ],
     },
@@ -229,5 +235,90 @@ describe('OrgHelperKeyCard', () => {
     expect(body.apiKey).toBeUndefined();
     expect(body.provider).toBe('anthropic');
     expect(body.model).toBe('claude-sonnet-5-5');
+  });
+
+  it("uses the provider's API address as the Base URL placeholder", async () => {
+    hooks.useOrgLlmSettings.mockReturnValue({ data: { ...DEFAULTS, provider: 'openai', model: 'gpt-6-luna' }, isLoading: false });
+    render(<OrgHelperKeyCard orgId="org_x" />);
+    expect(screen.getByLabelText(/^Base URL \(optional\)$/)).toHaveAttribute('placeholder', 'https://api.openai.com/v1');
+    expect(screen.getByText(/Leave empty to use OpenAI's API/)).toBeInTheDocument();
+  });
+
+  it('tests the stored key with the form values and shows success', async () => {
+    testConnection.mockReset();
+    testConnection.mockResolvedValue({
+      ok: true, code: 'ok', message: 'Connected', provider: 'anthropic', model: 'claude-sonnet-5-5',
+      endpoint_host: 'api.anthropic.com', latency_ms: 512,
+    });
+    hooks.useOrgLlmSettings.mockReturnValue({ data: { ...DEFAULTS, has_api_key: true, key_hint: '1234' }, isLoading: false });
+    const { container } = render(<OrgHelperKeyCard orgId="org_x" />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+    expect(testConnection).toHaveBeenCalledWith({
+      provider: 'anthropic', model: 'claude-sonnet-5-5', base_url: '', api_key: undefined,
+    });
+    expect(await screen.findByText('Connected to api.anthropic.com · claude-sonnet-5-5 · 512 ms')).toBeInTheDocument();
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('shows the friendly error from a failed test', async () => {
+    testConnection.mockReset();
+    testConnection.mockResolvedValue({
+      ok: false, code: 'invalid_key', message: 'The provider rejected the API key.', provider: 'anthropic',
+      model: 'claude-sonnet-5-5', endpoint_host: 'api.anthropic.com', latency_ms: 80,
+    });
+    const { container } = render(<OrgHelperKeyCard orgId="org_x" />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText(/^API Key$/), 'sk-wrong-key');
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+    expect(testConnection.mock.calls[0][0].api_key).toBe('sk-wrong-key');
+    expect(await screen.findByText('The key was rejected')).toBeInTheDocument();
+    expect(screen.getByText('The provider rejected the API key.')).toBeInTheDocument();
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('prompts for the key on key_required', async () => {
+    testConnection.mockReset();
+    testConnection.mockRejectedValue(
+      new ApiError(400, JSON.stringify({ error: { code: 'key_required', message: 'Enter the key' } })),
+    );
+    hooks.useOrgLlmSettings.mockReturnValue({ data: { ...DEFAULTS, has_api_key: true, key_hint: '1234' }, isLoading: false });
+    render(<OrgHelperKeyCard orgId="org_x" />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText(/^Base URL \(optional\)$/), 'https://other.example.com');
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+    expect(await screen.findByText('Enter the API key')).toBeInTheDocument();
+  });
+
+  it('puts a refused save on the Base URL field instead of a toast', async () => {
+    const error = new ApiError(
+      422,
+      JSON.stringify({ error: { code: 'endpoint_not_api', message: "This address doesn't accept chat requests." } }),
+    );
+    const save = makeMutation({ mutate: vi.fn((_body, opts) => opts.onError(error)) });
+    hooks.useSaveOrgLlmSettings.mockReturnValue(save);
+    render(<OrgHelperKeyCard orgId="org_x" />);
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText(/^Base URL \(optional\)$/), 'https://platform.deepseek.com');
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    expect(screen.getByLabelText(/^Base URL \(optional\)$/)).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText("This address doesn't accept chat requests.")).toBeInTheDocument();
+    expect(toastApi.addToast).not.toHaveBeenCalled();
+  });
+
+  it('shows save warnings as a notice', async () => {
+    const save = makeMutation({
+      mutate: vi.fn((_body, opts) => opts.onSuccess({ warnings: [{ code: 'rate_limited', message: 'The provider is rate limiting this key.' }] })),
+    });
+    hooks.useSaveOrgLlmSettings.mockReturnValue(save);
+    render(<OrgHelperKeyCard orgId="org_x" />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+    expect(await screen.findByText(/Saved, but the connection check didn't pass/)).toBeInTheDocument();
+    expect(screen.getByText('The provider is rate limiting this key.')).toBeInTheDocument();
   });
 });

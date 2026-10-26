@@ -53,6 +53,18 @@ export interface SessionListResponse {
   has_more: boolean;
 }
 
+export interface SessionModelCount {
+  model_id: string | null;
+  count: number;
+}
+
+/** `sort` values GET /api/v1/sessions accepts (anything else is a 422). */
+export type SessionListSort = 'updated_at' | 'model';
+
+export interface SessionModelsResponse {
+  models: SessionModelCount[];
+}
+
 /** Where `?around=<n>` landed (see MessageTarget in schemas/sessions.py). */
 export interface MessageTarget {
   /** The requested 0-based messages.jsonl line number. */
@@ -197,6 +209,35 @@ export interface LlmProvider {
   api_style: 'anthropic' | 'google' | 'openai';
   suggested_models: string[];
   discovery: boolean;
+  /** API address shown as the Base URL placeholder (OpenAI-compatible
+   *  providers only; Anthropic/Google are used with Base URL empty). */
+  default_base_url?: string | null;
+}
+
+/** A transient connection-check failure returned by a settings save. */
+export interface SaveWarning {
+  code: string;
+  message: string;
+}
+
+/** Body of POST .../test — every field optional; omitted ones fall back
+ *  to the saved settings, an empty base_url means the provider's own API. */
+export interface LlmConnectionTestBody {
+  provider?: string;
+  model?: string;
+  base_url?: string | null;
+  api_key?: string;
+}
+
+export interface LlmConnectionTestResult {
+  ok: boolean;
+  code: string;
+  message: string;
+  provider: string;
+  model: string;
+  endpoint_host: string;
+  /** Null on failures against private addresses (no timing is reported). */
+  latency_ms: number | null;
 }
 
 // ── Session helper (Enterprise) ──
@@ -205,6 +246,82 @@ export interface HelperStatus {
   key_source: string | null;
   provider: string | null;
   model: string | null;
+  /** Settings a turn would use with the resolved key; null without a key. */
+  effective_settings?: HelperModelSettings | null;
+  has_org_instructions?: boolean;
+  has_personal_instructions?: boolean;
+}
+
+export type HelperReasoningEffort = 'off' | 'low' | 'medium' | 'high';
+export type HelperAnswerStyle = 'concise' | 'detailed';
+
+/** Fully-resolved helper model settings (`helper/settings.py`). */
+export interface HelperModelSettings {
+  max_output_tokens: number;
+  /** null = let the provider pick. */
+  temperature: number | null;
+  /** null = not sent. */
+  top_p: number | null;
+  max_tool_steps: number;
+  /** null = not sent. */
+  reasoning_effort: HelperReasoningEffort | null;
+  answer_style: HelperAnswerStyle;
+}
+
+export interface OrgHelperModelSettings extends HelperModelSettings {
+  /** Caps on the org-key path; null = no ceiling. */
+  ceiling_max_output_tokens: number | null;
+  ceiling_max_tool_steps: number | null;
+}
+
+/** A partial settings update: omitted keys keep their value, null resets/clears. */
+export type HelperSettingsPatch = Partial<{ [K in keyof OrgHelperModelSettings]: OrgHelperModelSettings[K] | null }>;
+
+export interface HelperTokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
+}
+
+export interface HelperMemberUsage extends HelperTokenUsage {
+  user_id: string;
+}
+
+/** `GET/PUT /api/v1/settings/helper`. */
+export interface UserHelperSettings {
+  settings: HelperModelSettings;
+  instructions: string | null;
+  effective_settings: HelperModelSettings | null;
+  /** This UTC month, across the caller's turns on either key. */
+  usage: HelperTokenUsage;
+}
+
+export interface UserHelperSettingsUpdate {
+  settings?: HelperSettingsPatch | null;
+  instructions?: string | null;
+}
+
+/** `GET/PUT /api/v1/orgs/{org_id}/helper-settings`. Admin-only fields are absent for members. */
+export interface OrgHelperSettings {
+  role: string;
+  plan_includes_helper: boolean;
+  effective_settings: HelperModelSettings;
+  has_instructions: boolean;
+  settings?: OrgHelperModelSettings;
+  instructions?: string | null;
+  monthly_token_budget?: number | null;
+  /** Admins: org-key totals + per member. Members: their own org-key usage. */
+  usage: HelperTokenUsage & { per_member?: HelperMemberUsage[] };
+  /** Members only: org-key turns are refused until the month resets. */
+  budget_reached?: boolean;
+  /** Members only: whole percent of the budget used (capped at 100); null without a budget. */
+  budget_used_pct?: number | null;
+}
+
+export interface OrgHelperSettingsUpdate {
+  settings?: HelperSettingsPatch | null;
+  instructions?: string | null;
+  monthly_token_budget?: number | null;
 }
 
 export interface HelperConversationSummary {
@@ -221,17 +338,31 @@ export interface HelperCitation {
   title: string;
 }
 
+/** A docs source the helper cited with `[doc:<slug>#<anchor>]`. */
+export interface HelperDocCitation {
+  slug: string;
+  anchor: string | null;
+  title: string;
+  url: string;
+}
+
+export type HelperCitationRef = HelperCitation | HelperDocCitation;
+
 export interface HelperMessage {
   id: string;
-  role: 'user' | 'assistant' | 'tool';
+  /** `note` = a write action's outcome, written for the model; not shown. */
+  role: 'user' | 'assistant' | 'tool' | 'note';
   content: string;
   tool_name: string | null;
   tool_call_id: string | null;
   tool_args: Record<string, unknown> | null;
-  citations: HelperCitation[] | null;
+  /** Tool rows that carried a write-action proposal: that action's id. */
+  action_id?: string | null;
+  citations: HelperCitationRef[] | null;
   key_source: string | null;
   input_tokens: number;
   output_tokens: number;
+  usage?: { input_tokens: number; output_tokens: number };
   created_at: string;
 }
 
@@ -239,6 +370,46 @@ export interface HelperConversation extends HelperConversationSummary {
   /** The last scope the thread was used with (project_id/session_ids), or null for personal threads. */
   scope: { project_id: string | null; session_ids: string[] } | null;
   messages: HelperMessage[];
+}
+
+/** A target in a helper write-action preview (`helper/tools.py`). */
+export interface HelperActionTarget {
+  id: string;
+  name: string;
+  change: 'will_change' | 'unchanged' | 'skipped';
+  before?: unknown;
+  after?: unknown;
+  /** Why a target is skipped (not_admin, not_owned, already_trashed, …). */
+  reason?: string;
+  /** Session targets: the capture tool and the session date, when the server sends them. */
+  tool?: string | null;
+  created_at?: string | null;
+}
+
+/** The `action_proposed` SSE event payload. */
+export interface HelperActionProposal {
+  id: string;
+  kind: string;
+  summary: string;
+  targets: HelperActionTarget[];
+  expires_at: string | null;
+}
+
+export type HelperActionStatus = 'pending' | 'confirmed' | 'failed' | 'cancelled' | 'expired';
+
+export interface HelperActionTargetResult {
+  id: string;
+  ok: boolean;
+  error: string | null;
+}
+
+/** `GET/POST /api/v1/helper/actions/{id}[/confirm|/cancel]`. */
+export interface HelperAction extends HelperActionProposal {
+  status: HelperActionStatus;
+  params: Record<string, unknown>;
+  result: { targets?: HelperActionTargetResult[] };
+  created_at: string | null;
+  decided_at: string | null;
 }
 
 export interface AdminUser {
@@ -576,6 +747,10 @@ export interface ProjectContext {
    *  Absent on older servers — the dashboard falls back to the caller's own
    *  tier in that case. */
   effective_tier?: string | null;
+  /** Whether the caller may change this project (owner or a member of its
+   *  org). False for readers whose only access is a captured session on the
+   *  project's repo. Absent on older servers — treat as editable. */
+  can_edit?: boolean | null;
   /** Multi-repo: linked repos (populated on detail, omitted on list). */
   repos?: ProjectRepoResponse[];
   /** Multi-repo: set when all repos were reclaimed (orphaned project). */
@@ -981,6 +1156,14 @@ export interface TicketComment {
   content: string;
   session_id: string | null;
   created_at: string;
+}
+
+/** `GET /api/v1/tickets/{id}`: a ticket looked up by id alone, for previews. */
+export interface TicketPreview extends Ticket {
+  project_name: string;
+  comment_count: number;
+  /** Latest comments, newest first (at most 3). */
+  recent_comments: TicketComment[];
 }
 
 // ------------------------------------------------------------------
@@ -1929,14 +2112,30 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       page?: number;
       page_size?: number;
       source_tool?: string;
+      model?: string[];
       tag?: string;
+      /** Server-side ordering; omitted = updated_at desc (the server default). */
+      sort?: SessionListSort;
+      order?: 'asc' | 'desc';
     } = {}) => {
       const sp = new URLSearchParams();
       if (params.page) sp.set('page', String(params.page));
       if (params.page_size) sp.set('page_size', String(params.page_size));
       if (params.source_tool) sp.set('source_tool', params.source_tool);
+      if (params.model && params.model.length) {
+        for (const m of params.model) sp.append('model', m);
+      }
       if (params.tag) sp.set('tag', params.tag);
+      if (params.sort) sp.set('sort', params.sort);
+      if (params.order) sp.set('order', params.order);
       return request<SessionListResponse>(`/api/v1/sessions?${sp}`);
+    },
+
+    listSessionModels: (params: { source_tool?: string; deleted?: boolean } = {}) => {
+      const sp = new URLSearchParams();
+      if (params.source_tool) sp.set('source_tool', params.source_tool);
+      if (params.deleted) sp.set('deleted', 'true');
+      return request<SessionModelsResponse>(`/api/v1/sessions/models?${sp}`);
     },
 
     getSession: (id: string) =>
@@ -2048,7 +2247,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       request<JudgeSettings>('/api/v1/settings/judge'),
 
     saveJudgeSettings: (provider: string, model: string, apiKey: string, baseUrl?: string) =>
-      request<void>('/api/v1/settings/judge', {
+      request<JudgeSettings & { warnings?: SaveWarning[] }>('/api/v1/settings/judge', {
         method: 'PUT',
         body: JSON.stringify({ provider, model, api_key: apiKey, base_url: baseUrl || null }),
       }),
@@ -2056,6 +2255,20 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     clearJudgeSettings: () =>
       request<void>('/api/v1/settings/judge', {
         method: 'DELETE',
+      }),
+
+    // One minimal chat request with the form's values (or the saved key,
+    // only for the provider/endpoint it was saved with).
+    testJudgeConnection: (body: LlmConnectionTestBody) =>
+      request<LlmConnectionTestResult>('/api/v1/settings/judge/test', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+
+    testOrgLlmConnection: (orgId: string, body: LlmConnectionTestBody) =>
+      request<LlmConnectionTestResult>(`/api/v1/orgs/${orgId}/llm-settings/test`, {
+        method: 'POST',
+        body: JSON.stringify(body),
       }),
 
     // First-class LLM providers for the judge/helper pickers.
@@ -2070,7 +2283,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       orgId: string,
       body: { provider: string; model: string; apiKey?: string; baseUrl?: string | null; enabled: boolean },
     ) =>
-      request<OrgLlmSettings>(`/api/v1/orgs/${orgId}/llm-settings`, {
+      request<OrgLlmSettings & { warnings?: SaveWarning[] }>(`/api/v1/orgs/${orgId}/llm-settings`, {
         method: 'PUT',
         body: JSON.stringify({
           provider: body.provider,
@@ -2151,6 +2364,39 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         `/api/v1/helper/conversations/${encodeURIComponent(conversationId)}`,
         { method: 'DELETE' },
       ),
+
+    // Helper model settings, custom instructions and usage. PUT merges: omitted
+    // fields keep their value, an explicit null resets/clears.
+    getUserHelperSettings: () => request<UserHelperSettings>('/api/v1/settings/helper'),
+
+    saveUserHelperSettings: (body: UserHelperSettingsUpdate) =>
+      request<UserHelperSettings>('/api/v1/settings/helper', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+
+    getOrgHelperSettings: (orgId: string) =>
+      request<OrgHelperSettings>(`/api/v1/orgs/${encodeURIComponent(orgId)}/helper-settings`),
+
+    saveOrgHelperSettings: (orgId: string, body: OrgHelperSettingsUpdate) =>
+      request<OrgHelperSettings>(`/api/v1/orgs/${encodeURIComponent(orgId)}/helper-settings`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+
+    // Confirm-first write actions: the helper only proposes; these apply or drop.
+    getHelperAction: (actionId: string) =>
+      request<HelperAction>(`/api/v1/helper/actions/${encodeURIComponent(actionId)}`),
+
+    confirmHelperAction: (actionId: string) =>
+      request<HelperAction>(`/api/v1/helper/actions/${encodeURIComponent(actionId)}/confirm`, {
+        method: 'POST',
+      }),
+
+    cancelHelperAction: (actionId: string) =>
+      request<HelperAction>(`/api/v1/helper/actions/${encodeURIComponent(actionId)}/cancel`, {
+        method: 'POST',
+      }),
 
     // POST so a typed API key travels in the body, never in a URL/access log.
     // A registry provider id routes discovery to that provider's fixed
@@ -2771,6 +3017,9 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     getTicket: (projectId: string, ticketId: string) =>
       request<Ticket>(`/api/v1/projects/${projectId}/tickets/${ticketId}`),
+
+    getTicketById: (ticketId: string) =>
+      request<TicketPreview>(`/api/v1/tickets/${encodeURIComponent(ticketId)}`),
 
     createTicket: (projectId: string, body: TicketCreate) =>
       request<Ticket>(`/api/v1/projects/${projectId}/tickets`, {

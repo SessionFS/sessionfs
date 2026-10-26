@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useSessions } from '../hooks/useSessions';
+import { useSessions, useSessionModels } from '../hooks/useSessions';
 import { useFolders, useFolderSessions } from '../hooks/useBookmarks';
 import type { SessionSummary, HandoffListResponse } from '../api/client';
 import DeleteScopeDialog from './DeleteScopeDialog';
@@ -24,16 +24,24 @@ import { GridGroup } from './list/GridView';
 import { DateGroup } from './list/DateGroup';
 import { TrashView } from './list/TrashView';
 import { FolderDropdown } from './list/FolderDropdown';
+import { ModelFilter } from './list/ModelFilter';
 import { NoSessionsCard, SessionListSkeleton } from './list/EmptyState';
 import { errorMessage } from '../utils/errorMessage';
 
 export default function SessionList() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { auth } = useAuth();
   const { addToast } = useToast();
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [toolFilter, setToolFilter] = useState('all');
+  // The model filter is derived from the URL (`?model=a&model=b`) on every
+  // render — no local mirror — so refresh, shared links, back/forward and
+  // sidebar navigation all stay in sync. The JSON key keeps the array stable
+  // between renders for effects/queries.
+  const modelParamKey = JSON.stringify(searchParams.getAll('model'));
+  const modelFilter = useMemo<string[]>(() => JSON.parse(modelParamKey), [modelParamKey]);
   const [dateRange, setDateRange] = useState('');
   const [sortBy, setSortBy] = useState<SortKey>('date');
   const [sortDir, setSortDir] = useState<SortDir>('desc');
@@ -42,7 +50,14 @@ export default function SessionList() {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectMode, setSelectMode] = useState(false);
-  const [showTrash, setShowTrash] = useState(false);
+  // `/?view=trash` opens straight on Trash (linked from the session helper).
+  const wantTrash = searchParams.get('view') === 'trash';
+  const [showTrash, setShowTrash] = useState(wantTrash);
+  const [trashParam, setTrashParam] = useState(wantTrash);
+  if (wantTrash !== trashParam) {
+    setTrashParam(wantTrash);
+    if (wantTrash) setShowTrash(true);
+  }
   const [showBulkDeleteDialog, setShowBulkDeleteDialog] = useState(false);
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const [viewMode, setViewMode] = useState<'list' | 'grid'>(() => {
@@ -72,6 +87,31 @@ export default function SessionList() {
   function clearSelection() {
     setSelectedIds(new Set());
     setSelectMode(false);
+  }
+
+  // Filtering uses the raw id (or the `unknown` sentinel). Writing the URL is
+  // the only way the selection changes; the page resets with it.
+  function handleModelFilterChange(models: string[]) {
+    setPage(1);
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('model');
+      for (const m of models) next.append('model', m);
+      return next;
+    }, { replace: true });
+  }
+
+  // Model sort is server-side (it must span every page, not just the 20 rows
+  // on screen), so switching into or out of it — or flipping its direction —
+  // restarts at page 1. Other sorts stay client-side on the current page.
+  function handleSortByChange(next: SortKey) {
+    if (next === 'model' || sortBy === 'model') setPage(1);
+    setSortBy(next);
+  }
+
+  function handleSortDirToggle() {
+    if (sortBy === 'model') setPage(1);
+    setSortDir((d) => (d === 'desc' ? 'asc' : 'desc'));
   }
 
   function handleBulkDelete() {
@@ -114,11 +154,30 @@ export default function SessionList() {
 
   const PAGE_SIZE = 20;
 
+  const sourceToolParam = toolFilter === 'all' ? undefined : toolFilter;
+  const modelParam = modelFilter.length ? modelFilter : undefined;
+  const serverModelSort = sortBy === 'model' && !selectedFolderId;
+
+  // Under model sort page 1 is ordered by model, so the "Continue where you
+  // left off" bar needs its own newest-session lookup.
+  const { data: newestData } = useSessions(
+    { page: 1, page_size: 1, source_tool: sourceToolParam, model: modelParam },
+    { enabled: serverModelSort },
+  );
+
   const { data, isLoading, error } = useSessions({
     page,
     page_size: PAGE_SIZE,
-    source_tool: toolFilter === 'all' ? undefined : toolFilter,
+    source_tool: sourceToolParam,
+    model: modelParam,
+    ...(serverModelSort ? { sort: 'model' as const, order: sortDir } : {}),
   });
+
+  const {
+    data: modelsData,
+    isLoading: modelsLoading,
+    error: modelsError,
+  } = useSessionModels({ source_tool: sourceToolParam });
 
   const { data: folderSessionsData } = useFolderSessions(selectedFolderId);
   const { data: foldersData } = useFolders();
@@ -151,18 +210,23 @@ export default function SessionList() {
 
     if (!data?.sessions) return [];
 
-    // Date range filter (client-side on current page), then sort
-    // (client-side on current page -- server sorts by date by default)
-    return sortSessions(filterByDateRange(data.sessions, dateRange), sortBy);
-  }, [data, dateRange, sortBy, sortDir, selectedFolderId, folderSessionsData]);
+    // Date range filter (client-side on current page). Model sort already
+    // came back ordered from the server across all pages; other sorts are
+    // client-side on the current page (the server defaults to date desc).
+    const inRange = filterByDateRange(data.sessions, dateRange);
+    return serverModelSort ? inRange : sortSessions(inRange, sortBy, sortDir);
+  }, [data, dateRange, sortBy, sortDir, selectedFolderId, folderSessionsData, serverModelSort]);
 
   // Clear selection when filters change
   useEffect(() => {
     setSelectedIds(new Set());
-  }, [toolFilter, dateRange, sortBy, sortDir, selectedFolderId, navFilter, page]);
+  }, [toolFilter, modelParamKey, dateRange, sortBy, sortDir, selectedFolderId, navFilter, page]);
 
   // Most recent session (for hero + repo detection)
-  const mostRecent = useMemo(() => findMostRecent(data?.sessions ?? []), [data]);
+  const mostRecent = useMemo(
+    () => (serverModelSort ? newestData?.sessions?.[0] ?? null : findMostRecent(data?.sessions ?? [])),
+    [data, newestData, serverModelSort],
+  );
 
   // Clear folder selection when switching to "all"
   useEffect(() => {
@@ -363,6 +427,13 @@ export default function SessionList() {
             options={TOOLS.map((t) => ({ value: t, label: t === 'all' ? 'All Tools' : fullToolName(t) }))}
             className="!w-auto bg-surface text-base font-medium text-text-secondary transition-colors"
           />
+          <ModelFilter
+            models={modelsData?.models ?? []}
+            selected={modelFilter}
+            onChange={handleModelFilterChange}
+            loading={modelsLoading}
+            error={!!modelsError}
+          />
           <Select
             aria-label="Filter by date range"
             value={dateRange}
@@ -373,10 +444,11 @@ export default function SessionList() {
           <Select
             aria-label="Sort sessions"
             value={sortBy}
-            onValueChange={(v) => setSortBy(v as SortKey)}
+            onValueChange={(v) => handleSortByChange(v as SortKey)}
             options={[
               { value: 'date', label: 'Sort: Date' },
               { value: 'tool', label: 'Sort: Tool' },
+              { value: 'model', label: 'Sort: Model' },
               { value: 'messages', label: 'Sort: Messages' },
               { value: 'tokens', label: 'Sort: Tokens' },
               { value: 'title', label: 'Sort: Title' },
@@ -387,7 +459,7 @@ export default function SessionList() {
             label={`Sort direction: ${sortDir === 'desc' ? 'descending' : 'ascending'}`}
             variant="secondary"
             title={sortDir === 'desc' ? 'Showing most first — click for least first' : 'Showing least first — click for most first'}
-            onClick={() => setSortDir(d => d === 'desc' ? 'asc' : 'desc')}
+            onClick={handleSortDirToggle}
           >
             <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
               {sortDir === 'desc' ? (

@@ -20,6 +20,7 @@ vi.mock('../auth/AuthContext', () => ({
 }));
 vi.mock('../hooks/useMe', () => ({ useMe: useMeMock }));
 vi.mock('../hooks/useToast', () => ({ useToast: () => ({ addToast: vi.fn() }) }));
+vi.mock('../hooks/useProjects', () => ({ useProject: () => ({ data: undefined }) }));
 vi.mock('../helper/useHelper', () => ({
   useHelperStatus: useHelperStatusMock,
   useHelperConversations: useHelperConversationsMock,

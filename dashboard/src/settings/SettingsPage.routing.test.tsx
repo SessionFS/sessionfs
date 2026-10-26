@@ -38,6 +38,7 @@ vi.mock('../hooks/useTicketNotifications', () => ({
 vi.mock('./DataProtectionSection', () => ({ default: () => <div>data-protection-stub</div> }));
 vi.mock('./IntegrationsSection', () => ({ default: () => <div>integrations-stub</div> }));
 vi.mock('./SyncSection', () => ({ default: () => <div>sync-stub</div> }));
+vi.mock('./AssistantSection', () => ({ default: () => <div>assistant-stub</div> }));
 
 function LocationProbe() {
   const loc = useLocation();
@@ -112,7 +113,7 @@ describe('SettingsPage section routing', () => {
     expect(screen.getByTestId('loc')).toHaveTextContent('/settings/sync');
   });
 
-  it('lists the five user-facing sections', async () => {
+  it('lists the six user-facing sections', async () => {
     renderAt('/settings/account');
     await screen.findByText('a@example.com');
     const nav = screen.getByRole('navigation', { name: /settings sections/i });
@@ -121,6 +122,7 @@ describe('SettingsPage section routing', () => {
       'Preferences',
       'Integrations',
       'Data protection',
+      'Assistant',
       'Sync',
     ]);
   });

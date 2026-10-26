@@ -18,11 +18,12 @@ import time
 import uuid
 from collections import OrderedDict, defaultdict
 from datetime import datetime, timedelta, timezone
+from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel as _BaseModel
-from sqlalchemy import delete, func, select, text, update
+from sqlalchemy import case, delete, func, literal, or_, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -49,6 +50,8 @@ from sessionfs.server.schemas.sessions import (
     SessionDetail,
     SessionListResponse,
     SessionMetadataUpdate,
+    SessionModelCount,
+    SessionModelsResponse,
     SessionSummary,
     SessionUploadInitiateRequest,
     SessionUploadInitiateResponse,
@@ -64,6 +67,7 @@ from sessionfs.server.services.session_search import (
     search_sessions as _search_sessions_service,
     source_tool_filter_values as _source_tool_filter_values,
 )
+from sessionfs.server.services.session_trash import soft_delete_session
 from sessionfs.server.storage.base import BlobStore
 from sessionfs.server.timing import PhaseTimer
 from sessionfs.server.metrics import (
@@ -1240,31 +1244,108 @@ async def upload_session(
     )
 
 
+def _sessions_base_where(user_id: str, deleted: bool) -> list:
+    """Visibility + trash predicate shared by the list and model endpoints.
+
+    A caller only ever sees their own rows; ``deleted`` flips between the
+    active view and the trash view. Keep both filters in ONE place so the
+    models endpoint can't drift from the list route.
+    """
+    deleted_filter = Session.is_deleted == True if deleted else Session.is_deleted == False  # noqa: E712
+    return [Session.user_id == user_id, deleted_filter]
+
+
+# The ``?model=`` sentinel for the "unknown model" bucket.
+UNKNOWN_MODEL = "unknown"
+# model_id is client-supplied (manifest), so these stored values carry no real
+# model and fold into the unknown bucket alongside NULL: an empty id, a
+# literal "unknown" (which would otherwise collide with the sentinel) and
+# Claude Code's ``<synthetic>`` placeholder for locally generated turns.
+_UNKNOWN_MODEL_IDS = ("", UNKNOWN_MODEL, "<synthetic>")
+MAX_MODEL_FILTER_VALUES = 50
+MAX_MODEL_FILTER_LENGTH = 200
+
+
+def _model_is_unknown():
+    """SQL predicate: the row belongs to the unknown-model bucket."""
+    return or_(Session.model_id.is_(None), Session.model_id.in_(_UNKNOWN_MODEL_IDS))
+
+
+def _normalize_model_filter(values: list[str] | None) -> list[str]:
+    """Dedupe the repeatable ``model`` param and enforce its size limits.
+
+    Order is preserved. More than ``MAX_MODEL_FILTER_VALUES`` distinct values,
+    or any value longer than ``MAX_MODEL_FILTER_LENGTH`` characters, is a 422.
+    """
+    if not values:
+        return []
+    deduped = list(dict.fromkeys(values))
+    if len(deduped) > MAX_MODEL_FILTER_VALUES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"At most {MAX_MODEL_FILTER_VALUES} model values are allowed",
+        )
+    if any(len(v) > MAX_MODEL_FILTER_LENGTH for v in deduped):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Model values must be at most {MAX_MODEL_FILTER_LENGTH} characters",
+        )
+    return deduped
+
+
+def _model_filter(values: list[str]):
+    """Exact, repeatable model filter (OR across values).
+
+    Known ids become one ``IN`` clause; the ``unknown`` sentinel (or any value
+    that is itself an unknown-bucket id) adds a single unknown-bucket clause.
+    """
+    known = [v for v in values if v not in _UNKNOWN_MODEL_IDS]
+    wants_unknown = len(known) != len(values)
+    clauses = []
+    if known:
+        clauses.append(Session.model_id.in_(known))
+    if wants_unknown:
+        clauses.append(_model_is_unknown())
+    return clauses[0] if len(clauses) == 1 else or_(*clauses)
+
+
+def _apply_session_sort(query, sort: str, order: str):
+    """Deterministic ordering for the list route.
+
+    ``sort=model`` orders by the model id (asc/desc per ``order``) with the
+    unknown bucket (NULL, "", "unknown", "<synthetic>") LAST in both
+    directions. Unknown rows share one sort key so PG and SQLite agree (their
+    NULL placement differs). Ties break by updated time desc, then id, so
+    pages are stable. The default remains updated time desc.
+    """
+    if sort == "model":
+        unknown = _model_is_unknown()
+        unknown_last = case((unknown, 1), else_=0)
+        model_key = case((unknown, literal("")), else_=Session.model_id)
+        model_dir = model_key.asc() if order == "asc" else model_key.desc()
+        return query.order_by(unknown_last.asc(), model_dir, Session.updated_at.desc(), Session.id)
+    updated_dir = Session.updated_at.asc() if order == "asc" else Session.updated_at.desc()
+    return query.order_by(updated_dir, Session.id)
+
+
 @router.get("", response_model=SessionListResponse)
 async def list_sessions(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     source_tool: str | None = Query(None),
+    model: list[str] | None = Query(None),
     tag: str | None = Query(None),
+    sort: Literal["updated_at", "model"] = Query("updated_at"),
+    order: Literal["asc", "desc"] = Query("desc"),
     deleted: bool = Query(False),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List sessions with pagination and optional filters."""
-    if deleted:
-        # Trash view: show only soft-deleted sessions
-        deleted_filter = Session.is_deleted == True  # noqa: E712
-    else:
-        deleted_filter = Session.is_deleted == False  # noqa: E712
+    where = _sessions_base_where(user.id, deleted)
 
-    query = select(Session).where(
-        Session.user_id == user.id,
-        deleted_filter,
-    )
-    count_query = select(func.count()).select_from(Session).where(
-        Session.user_id == user.id,
-        deleted_filter,
-    )
+    query = select(Session).where(*where)
+    count_query = select(func.count()).select_from(Session).where(*where)
 
     if source_tool:
         tool_values = _source_tool_filter_values(source_tool)
@@ -1274,6 +1355,11 @@ async def list_sessions(
         else:
             query = query.where(Session.source_tool.in_(tool_values))
             count_query = count_query.where(Session.source_tool.in_(tool_values))
+    model_values = _normalize_model_filter(model)
+    if model_values:
+        model_filter = _model_filter(model_values)
+        query = query.where(model_filter)
+        count_query = count_query.where(model_filter)
     if tag:
         # JSON text search — works for SQLite and PostgreSQL
         query = query.where(Session.tags.contains(f'"{tag}"'))
@@ -1281,7 +1367,7 @@ async def list_sessions(
 
     total = (await db.execute(count_query)).scalar() or 0
 
-    query = query.order_by(Session.updated_at.desc())
+    query = _apply_session_sort(query, sort, order)
     query = query.offset((page - 1) * page_size).limit(page_size)
     result = await db.execute(query)
     sessions = result.scalars().all()
@@ -1342,6 +1428,44 @@ async def search_sessions(
         page_size=page_size,
         query=q,
     )
+
+
+@router.get("/models", response_model=SessionModelsResponse)
+async def list_session_models(
+    source_tool: str | None = Query(None),
+    deleted: bool = Query(False),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Distinct model ids among the caller's visible sessions, with counts.
+
+    Shares the list route's visibility, trash and source_tool predicates and
+    is sorted by count desc (then model id) for a stable, useful filter menu.
+    NULL, empty, literal "unknown" and ``<synthetic>`` model ids collapse
+    into one ``model_id: null`` "unknown" bucket — the same rows the
+    ``?model=unknown`` filter matches — so the menu never lists duplicates.
+    """
+    where = _sessions_base_where(user.id, deleted)
+    query = select(Session.model_id, func.count(Session.id)).where(*where)
+
+    if source_tool:
+        tool_values = _source_tool_filter_values(source_tool)
+        if len(tool_values) == 1:
+            query = query.where(Session.source_tool == source_tool)
+        else:
+            query = query.where(Session.source_tool.in_(tool_values))
+
+    query = query.group_by(Session.model_id)
+    rows = (await db.execute(query)).all()
+
+    counts: dict[str | None, int] = {}
+    for model_id, count in rows:
+        key = None if model_id is None or model_id in _UNKNOWN_MODEL_IDS else model_id
+        counts[key] = counts.get(key, 0) + count
+
+    models = [SessionModelCount(model_id=key, count=value) for key, value in counts.items()]
+    models.sort(key=lambda m: (-m.count, m.model_id or ""))
+    return SessionModelsResponse(models=models[:200])
 
 
 @router.get("/{session_id}", response_model=SessionDetail)
@@ -1586,12 +1710,11 @@ async def delete_session(
     if session.is_deleted:
         raise HTTPException(status_code=410, detail="Session already deleted")
 
-    now = datetime.now(timezone.utc)
-    session.is_deleted = True
-    session.deleted_at = now
-    session.deleted_by = user.id
-    session.delete_scope = "both" if scope == "everywhere" else "cloud"
-    session.purge_after = now + timedelta(days=30)
+    soft_delete_session(
+        session,
+        deleted_by=user.id,
+        scope="both" if scope == "everywhere" else "cloud",
+    )
     await db.commit()
     await db.refresh(session)
     return _session_to_detail(session)

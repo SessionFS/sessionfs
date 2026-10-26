@@ -272,6 +272,9 @@ export default function ProjectDetail() {
   }
 
   const subTabs = SUB_TABS[section];
+  // Server-provided: false for readers who can view but not change the
+  // project (a captured session on its repo). Older servers omit it.
+  const canEdit = project.can_edit !== false;
 
   // Jira surface for the tickets tab, resolved here (the page already has the
   // project + user + membership) and threaded down so the ticket detail stays
@@ -345,7 +348,7 @@ export default function ProjectDetail() {
               compile would fold pending claims in. Advisory — the operator
               sweep is what actually keeps projects fresh, but this is the
               one-click path for the owner. */}
-          {compileStatus?.compile_needed && (
+          {canEdit && compileStatus?.compile_needed && (
             <Alert
               variant="warning"
               className="mb-3 items-center py-2 flex-wrap"
@@ -392,9 +395,11 @@ export default function ProjectDetail() {
                     </div>
                   )}
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="secondary" onClick={handleEdit}>Edit</Button>
-                </div>
+                {canEdit && (
+                  <div className="flex items-center gap-2">
+                    <Button variant="secondary" onClick={handleEdit}>Edit</Button>
+                  </div>
+                )}
               </div>
             </Card>
           )}
@@ -432,7 +437,9 @@ export default function ProjectDetail() {
                   <p className="text-sm text-text-tertiary mb-4">
                     Add knowledge entries, then compile to generate a context document.
                   </p>
-                  <Button variant="ghost" onClick={handleEdit}>Write one manually</Button>
+                  {canEdit && (
+                    <Button variant="ghost" onClick={handleEdit}>Write one manually</Button>
+                  )}
                 </div>
               )}
             </div>
@@ -441,30 +448,30 @@ export default function ProjectDetail() {
       )}
 
       {section === 'knowledge' && sub === 'entries' && (
-        <Panel sub={sub}><KnowledgeEntriesTab projectId={project.id} /></Panel>
+        <Panel sub={sub}><KnowledgeEntriesTab projectId={project.id} canEdit={canEdit} /></Panel>
       )}
       {section === 'knowledge' && sub === 'pages' && (
-        <Panel sub={sub}><PagesTab projectId={project.id} /></Panel>
+        <Panel sub={sub}><PagesTab projectId={project.id} canEdit={canEdit} /></Panel>
       )}
       {section === 'knowledge' && sub === 'history' && (
         <Panel sub={sub}><HistoryTab projectId={project.id} /></Panel>
       )}
 
       {section === 'work' && sub === 'tickets' && (
-        <Panel padded sub={sub}><TicketsTab projectId={project.id} jira={jira} initialTicketId={searchParams.get('ticket')} /></Panel>
+        <Panel padded sub={sub}><TicketsTab projectId={project.id} jira={jira} initialTicketId={searchParams.get('ticket')} viewer={{ canEdit, userId: me?.user_id ?? null }} /></Panel>
       )}
       {section === 'work' && sub === 'agent-runs' && (
         <Panel padded sub={sub}><AgentRunsTab projectId={project.id} /></Panel>
       )}
       {section === 'work' && sub === 'personas' && (
-        <Panel padded sub={sub}><PersonasTab projectId={project.id} /></Panel>
+        <Panel padded sub={sub}><PersonasTab projectId={project.id} canEdit={canEdit} /></Panel>
       )}
 
       {section === 'config' && sub === 'rules' && (
-        <Panel sub={sub}><RulesTab projectId={project.id} /></Panel>
+        <Panel sub={sub}><RulesTab projectId={project.id} canEdit={canEdit} /></Panel>
       )}
       {section === 'config' && sub === 'marketplace' && (
-        <Panel padded sub={sub}><MarketplaceTab projectId={project.id} /></Panel>
+        <Panel padded sub={sub}><MarketplaceTab projectId={project.id} canEdit={canEdit} /></Panel>
       )}
 
       {section === 'settings' && (

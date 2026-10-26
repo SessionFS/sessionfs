@@ -472,6 +472,13 @@ def project_promote_eligible(
             "the command shows what WOULD be promoted but writes nothing."
         ),
     ),
+    include_reader_notes: bool = typer.Option(
+        False, "--include-reader-notes",
+        help=(
+            "Also consider notes written by people who can view but not "
+            "edit the project. By default they are left out and counted."
+        ),
+    ),
 ) -> None:
     """Bulk-promote eligible note entries to claim class.
 
@@ -507,6 +514,8 @@ def project_promote_eligible(
         body["set_confidence"] = set_confidence
     if entry_type is not None:
         body["entry_type"] = entry_type
+    if include_reader_notes:
+        body["include_reader_notes"] = True
 
     result = asyncio.run(_api_request(
         "POST", f"/api/v1/projects/{project_id}/entries/bulk-promote",
@@ -526,6 +535,13 @@ def project_promote_eligible(
         f"{header}  {verb} [bold cyan]{promoted}[/bold cyan] entries  "
         f"(skipped {skipped})"
     )
+    reader_excluded = int(result.get("reader_notes_excluded", 0) or 0)
+    if reader_excluded:
+        console.print(
+            f"[dim]{reader_excluded} note(s) from people who can view but not "
+            "edit this project were left out; add [bold]--include-reader-notes"
+            "[/bold] to consider them.[/dim]"
+        )
 
     if reasons:
         from rich.table import Table

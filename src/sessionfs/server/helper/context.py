@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from sqlalchemy import select
@@ -250,3 +250,13 @@ class HelperContext:
     blob_store: BlobStore | None = None
     # Resolved DLP policy for redaction; None means the default policy.
     dlp_policy: dict | None = None
+    # The turn's conversation id — write-action proposals need it to link the
+    # pending HelperAction row to its thread.
+    conversation_id: str | None = None
+    # Write-action proposals queued by tool handlers.  Handlers append the
+    # proposal dict (id/kind/params/preview/created_at/expires_at); the turn
+    # handler takes them off right after the tool call and, only when the call
+    # succeeded, commits them as pending HelperAction rows in their own short
+    # session before emitting ``action_proposed`` (the agent-loop session is
+    # read-only for writes).
+    pending_actions: list[Any] = field(default_factory=list)

@@ -4,8 +4,9 @@
  * React so they are cheap to unit-test.
  */
 
-import { ApiError, type HelperCitation } from '../api/client';
+import { ApiError, type HelperCitation, type HelperCitationRef, type HelperDocCitation } from '../api/client';
 import { errorMessage } from '../utils/errorMessage';
+import type { TurnAction } from './actions';
 
 /** aria-labelledby target for the drawer heading. */
 export const TITLE_ID = 'helper-panel-title';
@@ -57,6 +58,12 @@ export function describeToolStep(step: Pick<ToolStep, 'name' | 'args' | 'status'
       return `${verb('Searching', 'Searched')} project knowledge${query ? ` for ${quote(query)}` : ''}`;
     case 'get_project_context':
       return `${verb('Reading', 'Read')} the project context`;
+    case 'search_sessionfs_docs':
+      return `${verb('Searching', 'Searched')} the SessionFS docs${query ? ` for ${quote(query)}` : ''}`;
+    case 'get_sessionfs_doc': {
+      const slug = str(a, 'slug');
+      return `${verb('Reading', 'Read')} the SessionFS docs${slug ? ` (${quote(slug)})` : ''}`;
+    }
     case 'summarize_sessions': {
       const ids = Array.isArray(a.session_ids) ? a.session_ids.length : 0;
       return `${verb('Summarizing', 'Summarized')} ${ids > 0 ? `${ids} ${ids === 1 ? 'session' : 'sessions'}` : 'sessions'}`;
@@ -65,6 +72,10 @@ export function describeToolStep(step: Pick<ToolStep, 'name' | 'args' | 'status'
       const path = str(a, 'path');
       return `${verb('Finding', 'Found')} sessions that touched ${path ? quote(path) : 'a path'}`;
     }
+    case 'set_project_auto_narrative':
+      return `${verb('Preparing', 'Prepared')} an Auto Narrative change`;
+    case 'trash_sessions':
+      return `${verb('Preparing', 'Prepared')} a move to Trash`;
     default:
       return `${verb('Running', 'Ran')} ${step.name.replace(/_/g, ' ')}`;
   }
@@ -82,20 +93,63 @@ export interface Turn {
   role: 'user' | 'assistant';
   content: string;
   toolSteps: ToolStep[];
-  citations: HelperCitation[];
+  citations: HelperCitationRef[];
   /** Assistant only: the question this answer is for (used by Retry). */
   question?: string;
   /** Assistant only. `stopped` = the user pressed Stop. */
   status?: 'streaming' | 'done' | 'stopped' | 'error';
   error?: HelperError;
+  /** Assistant only: write actions proposed in this answer, awaiting confirm. */
+  actions?: TurnAction[];
+  /** Assistant only: tokens this answer used (the `done` event / stored row). */
+  usage?: TokenUsage;
+}
+
+// ── Token usage ──
+
+export interface TokenUsage {
+  input: number;
+  output: number;
+}
+
+/** 950 → "950", 1_234 → "1.2k", 12_345 → "12k", 2_400_000 → "2.4M". */
+export function compactTokens(n: number): string {
+  const v = Math.max(0, Math.round(n));
+  const fmt = (x: number, unit: string) => {
+    const s = x >= 10 ? String(Math.round(x)) : x.toFixed(1).replace(/\.0$/, '');
+    return `${s}${unit}`;
+  };
+  if (v < 1000) return String(v);
+  if (v < 999_500) return fmt(v / 1000, 'k');
+  if (v < 999_500_000) return fmt(v / 1_000_000, 'M');
+  return fmt(v / 1_000_000_000, 'B');
+}
+
+/** Token counts from a `done` event or a stored message (either field shape). */
+export function usageFrom(src: {
+  input_tokens?: unknown;
+  output_tokens?: unknown;
+  usage?: { input_tokens?: unknown; output_tokens?: unknown } | null;
+}): TokenUsage | undefined {
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0);
+  const input = num(src.input_tokens ?? src.usage?.input_tokens);
+  const output = num(src.output_tokens ?? src.usage?.output_tokens);
+  return input > 0 || output > 0 ? { input, output } : undefined;
 }
 
 // ── Citations ──
 
-/** Same shape the server parses (`_CITATION_RE` in routes/helper.py). */
-const CITATION_RE = /\[session:([A-Za-z0-9_-]+)(?:\s+msg:(\d+))?\]/g;
+/**
+ * Both marker kinds in one pass so footnote numbers stay shared and ordered.
+ * Same shapes the server parses (`_CITATION_RE` / `_DOC_CITATION_RE` in
+ * routes/helper.py). Doc slugs and anchors use the docs index's own charset,
+ * so an unclosed `[doc:` can't swallow the prose or citations after it.
+ */
+const MARKER_RE =
+  /\[session:([A-Za-z0-9_-]+)(?:\s+msg:(\d+))?\]|\[doc:([a-z0-9][a-z0-9/_-]*)(?:#([a-z0-9_-]+))?\]/g;
 
-export interface Source {
+export interface SessionSource {
+  kind: 'session';
   /** 1-based footnote number, by first appearance. */
   n: number;
   sessionId: string;
@@ -104,6 +158,28 @@ export interface Source {
   /** False when the server dropped the citation (session not readable). */
   verified: boolean;
 }
+
+export interface DocSource {
+  kind: 'doc';
+  /** 1-based footnote number, by first appearance (shared with sessions). */
+  n: number;
+  slug: string;
+  anchor: string | null;
+  title: string;
+  /**
+   * The docs URL, only ever from the server's `doc_citation` event (never
+   * built here), so an unverified marker has no link. Null until verified.
+   */
+  url: string | null;
+  /**
+   * False once the turn settled without a matching `doc_citation` event (the
+   * server found no such page/section). Like sessions, true while streaming
+   * — but with `url` still null the chip stays inert until verified.
+   */
+  verified: boolean;
+}
+
+export type Source = SessionSource | DocSource;
 
 export const CITE_HREF_PREFIX = '#sfs-cite-';
 
@@ -135,44 +211,83 @@ function stripPartialMarker(text: string): string {
   if (i < 0) return text;
   const tail = text.slice(i);
   if (tail.includes(']')) return text;
-  if ('[session:'.startsWith(tail) || /^\[session:[A-Za-z0-9_-]*(?:\s+(?:m(?:s(?:g(?::\d*)?)?)?)?)?$/.test(tail)) {
+  if (
+    '[session:'.startsWith(tail) ||
+    /^\[session:[A-Za-z0-9_-]*(?:\s+(?:m(?:s(?:g(?::\d*)?)?)?)?)?$/.test(tail) ||
+    '[doc:'.startsWith(tail) ||
+    /^\[doc:(?:[a-z0-9][a-z0-9/_-]*(?:#[a-z0-9_-]*)?)?$/.test(tail)
+  ) {
     return text.slice(0, i);
   }
   return text;
 }
 
 /**
- * Turn `[session:<id> msg:<n>]` markers into numbered markdown links
- * (`[1](#sfs-cite-1-m<n>)`, or `#sfs-cite-1` without a message) and collect the sources they point at. Sessions are
- * numbered once, in order of first appearance; the server's citation events
- * supply titles and say which ids are readable. Sessions cited by the server
- * but never marked in the text are appended so the sources row is complete.
+ * Turn `[session:<id> msg:<n>]` and `[doc:<slug>#<anchor>]` markers into
+ * numbered markdown links (`[1](#sfs-cite-1-m<n>)`, or `#sfs-cite-1` without
+ * a message/anchor) and collect the sources they point at. Sources are
+ * numbered once, in order of first appearance across both kinds; the server's
+ * citation events supply titles, and for sessions say which ids are readable.
+ * Sessions cited by the server but never marked in the text are appended so
+ * the sources row is complete.
  *
  * While streaming, a marker cut off at the end of the text is hidden so the
- * reader never sees `[session:ses_ab` flash before it resolves.
+ * reader never sees `[session:ses_ab` or `[doc:integ` flash before it resolves.
  */
 export function processCitations(
   text: string,
-  citations: HelperCitation[],
+  citations: HelperCitationRef[],
   opts: { streaming?: boolean; settled?: boolean } = {},
 ): { markdown: string; sources: Source[] } {
-  const byId = new Map<string, Source>();
-  const known = new Map<string, HelperCitation>();
-  for (const c of citations) if (!known.has(c.session_id)) known.set(c.session_id, c);
+  const sessionCitations: HelperCitation[] = [];
+  const docCitations: HelperDocCitation[] = [];
+  for (const c of citations) {
+    if ('slug' in c) docCitations.push(c);
+    else sessionCitations.push(c);
+  }
 
-  const sourceFor = (sid: string): Source => {
-    let s = byId.get(sid);
+  const knownSessions = new Map<string, HelperCitation>();
+  for (const c of sessionCitations) if (!knownSessions.has(c.session_id)) knownSessions.set(c.session_id, c);
+  const knownDocs = new Map<string, HelperDocCitation>();
+  for (const c of docCitations) {
+    const key = `${c.slug}#${c.anchor ?? ''}`;
+    if (!knownDocs.has(key)) knownDocs.set(key, c);
+  }
+
+  const sources: Source[] = [];
+
+  const sessionSourceFor = (sid: string): SessionSource => {
+    let s = sources.find((x): x is SessionSource => x.kind === 'session' && x.sessionId === sid);
     if (!s) {
-      const k = known.get(sid);
+      const k = knownSessions.get(sid);
       s = {
-        n: byId.size + 1,
+        kind: 'session',
+        n: sources.length + 1,
         sessionId: sid,
         title: k?.title ?? null,
         messageIndexes: [],
         // Until the turn settles the server hasn't said yet; assume readable.
         verified: k !== undefined || !opts.settled,
       };
-      byId.set(sid, s);
+      sources.push(s);
+    }
+    return s;
+  };
+
+  const docSourceFor = (slug: string, anchor: string | null): DocSource => {
+    let s = sources.find((x): x is DocSource => x.kind === 'doc' && x.slug === slug && x.anchor === anchor);
+    if (!s) {
+      const k = knownDocs.get(`${slug}#${anchor ?? ''}`);
+      s = {
+        kind: 'doc',
+        n: sources.length + 1,
+        slug,
+        anchor,
+        title: k?.title ?? slug,
+        url: k?.url ?? null,
+        verified: k !== undefined || !opts.settled,
+      };
+      sources.push(s);
     }
     return s;
   };
@@ -180,35 +295,50 @@ export function processCitations(
   let body = text;
   if (opts.streaming) body = stripPartialMarker(body);
 
-  const markdown = body.replace(CITATION_RE, (_m, sid: string, idx?: string) => {
-    const s = sourceFor(sid);
-    if (idx !== undefined) {
-      const i = Number(idx);
-      if (!s.messageIndexes.includes(i)) s.messageIndexes.push(i);
-      return `[${s.n}](${citeHref(s.n, i)})`;
+  const markdown = body.replace(MARKER_RE, (_m, sid?: string, idx?: string, slug?: string, anchor?: string) => {
+    if (sid !== undefined) {
+      const s = sessionSourceFor(sid);
+      if (idx !== undefined) {
+        const i = Number(idx);
+        if (!s.messageIndexes.includes(i)) s.messageIndexes.push(i);
+        return `[${s.n}](${citeHref(s.n, i)})`;
+      }
+      return `[${s.n}](${citeHref(s.n)})`;
     }
+    const s = docSourceFor(slug!, anchor ?? null);
     return `[${s.n}](${citeHref(s.n)})`;
   });
 
-  for (const c of citations) {
-    const s = sourceFor(c.session_id);
+  for (const c of sessionCitations) {
+    const s = sessionSourceFor(c.session_id);
     if (c.message_index != null && !s.messageIndexes.includes(c.message_index)) {
       s.messageIndexes.push(c.message_index);
     }
   }
-  for (const s of byId.values()) s.messageIndexes.sort((x, y) => x - y);
-  return { markdown, sources: [...byId.values()] };
+  for (const c of docCitations) {
+    docSourceFor(c.slug, c.anchor);
+  }
+  for (const s of sources) if (s.kind === 'session') s.messageIndexes.sort((x, y) => x - y);
+  return { markdown, sources };
 }
 
 /** Plain-text copy of an answer: markers become [n], sources listed below. */
-export function answerAsPlainText(text: string, citations: HelperCitation[]): string {
+export function answerAsPlainText(text: string, citations: HelperCitationRef[]): string {
   const { sources } = processCitations(text, citations, { settled: true });
-  const numbered = text.replace(CITATION_RE, (_m, sid: string) => {
-    const s = sources.find((x) => x.sessionId === sid);
-    return s ? `[${s.n}]` : '';
+  const numbered = text.replace(MARKER_RE, (_m, sid?: string, _idx?: string, slug?: string, anchor?: string) => {
+    if (sid !== undefined) {
+      const s = sources.find((x): x is SessionSource => x.kind === 'session' && x.sessionId === sid);
+      return s ? `[${s.n}]` : '';
+    }
+    const s = sources.find((x): x is DocSource => x.kind === 'doc' && x.slug === slug! && x.anchor === (anchor ?? null));
+    return s?.url ? `[${s.n}]` : '';
   });
-  if (sources.length === 0) return numbered;
-  const lines = sources.map((s) => `[${s.n}] ${s.title || s.sessionId} (session ${s.sessionId})`);
+  // A doc marker the server didn't confirm has no URL: drop it from the copy.
+  const listed = sources.filter((s) => s.kind !== 'doc' || s.url);
+  if (listed.length === 0) return numbered;
+  const lines = listed.map((s) =>
+    s.kind === 'doc' ? `[${s.n}] ${s.title} (${s.url})` : `[${s.n}] ${s.title || s.sessionId} (session ${s.sessionId})`,
+  );
   return `${numbered}\n\nSources:\n${lines.join('\n')}`;
 }
 
@@ -219,6 +349,7 @@ export type HelperErrorKind =
   | 'key_required'
   | 'scope_mismatch'
   | 'upgrade_required'
+  | 'budget'
   | 'network'
   | 'disconnected'
   | 'provider'
@@ -248,6 +379,7 @@ export function classifyError(err: unknown): HelperError {
     if (code === 'helper_busy') return { kind: 'busy', message };
     if (code === 'helper_key_required') return { kind: 'key_required', message };
     if (code === 'scope_mismatch') return { kind: 'scope_mismatch', message };
+    if (code === 'helper_budget_exceeded') return { kind: 'budget', message };
     if (code === 'upgrade_required' || err.status === 403) return { kind: 'upgrade_required', message };
     if (code === 'provider_error' || err.status === 502) return { kind: 'provider', message };
     return { kind: 'other', message };
@@ -263,6 +395,7 @@ export function streamError(code: string | undefined, message: string | undefine
   const msg = message || 'The helper failed to answer.';
   if (code === 'helper_key_required') return { kind: 'key_required', message: msg };
   if (code === 'provider_error') return { kind: 'provider', message: msg };
+  if (code === 'helper_budget_exceeded') return { kind: 'budget', message: msg };
   return { kind: 'other', message: msg };
 }
 
@@ -271,6 +404,7 @@ export const ERROR_TITLES: Record<HelperErrorKind, string> = {
   key_required: 'No model key available',
   scope_mismatch: 'This conversation has a different scope',
   upgrade_required: 'Not available on your plan',
+  budget: 'Monthly budget reached',
   network: 'Connection problem',
   disconnected: 'The answer was cut off',
   provider: 'The model returned an error',
@@ -306,4 +440,202 @@ export function historyGroup(iso: string, now = Date.now()): HistoryGroup {
   if (t >= today - 86_400_000) return 'Yesterday';
   if (t >= today - 7 * 86_400_000) return 'Previous 7 days';
   return 'Older';
+}
+
+// ── References: tickets, projects, sessions, PRs, commits ──
+
+export type RefKind = 'ticket' | 'project' | 'session';
+
+/** In-answer href for an id reference; the answer's link renderer maps it to
+ *  a preview button (tickets) or an in-app link (projects, sessions). A `#`
+ *  href keeps it inside Markdown's safe-link filter. */
+export const REF_HREF_PREFIX = '#sfs-ref-';
+
+// Same alphabet and length as the server's session-id check (case kept loose
+// for capture-tool ids such as Amp's).
+const TICKET_ID = /^tk_[0-9a-f]{16}$/;
+const PROJECT_ID = /^proj_[0-9a-f]{16}$/;
+const SESSION_ID = /^ses_[A-Za-z0-9]{8,40}$/;
+
+/** The id pattern for a kind. A switch, not an object lookup: the kind comes
+ *  from model-written text, and keys like `constructor` must not resolve. */
+function refIdPattern(kind: string): RegExp | null {
+  switch (kind) {
+    case 'ticket':
+      return TICKET_ID;
+    case 'project':
+      return PROJECT_ID;
+    case 'session':
+      return SESSION_ID;
+    default:
+      return null;
+  }
+}
+
+export function refHref(kind: RefKind, id: string): string {
+  return `${REF_HREF_PREFIX}${kind}-${id}`;
+}
+
+/** Inverse of {@link refHref}; null for any other href or a malformed id. */
+export function parseRefHref(href: string): { kind: RefKind; id: string } | null {
+  if (!href.startsWith(REF_HREF_PREFIX)) return null;
+  const rest = href.slice(REF_HREF_PREFIX.length);
+  const dash = rest.indexOf('-');
+  if (dash < 0) return null;
+  const kind = rest.slice(0, dash);
+  const id = rest.slice(dash + 1);
+  const pattern = refIdPattern(kind);
+  if (!pattern || !pattern.test(id)) return null;
+  return { kind: kind as RefKind, id };
+}
+
+/** Where PR and commit references can point: only a project with exactly one
+ *  repo that GitHub verified (the stored remote has no host, so another
+ *  provider can't be told apart from GitHub). */
+export interface RepoLinks {
+  provider: 'github';
+  /** `owner/repo`. */
+  path: string;
+}
+
+export function repoLinksFor(
+  repos: ReadonlyArray<{ git_remote_normalized: string; provider: string | null }> | undefined,
+): RepoLinks | null {
+  if (!repos || repos.length !== 1) return null;
+  const [repo] = repos;
+  if (repo.provider !== 'github') return null;
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo.git_remote_normalized)) return null;
+  return { provider: 'github', path: repo.git_remote_normalized };
+}
+
+const ID_BODY = String.raw`tk_[0-9a-f]{16}|proj_[0-9a-f]{16}|ses_[A-Za-z0-9]{8,40}`;
+// An id stands alone: not glued to a word, a path segment or a URL piece.
+const BEFORE = String.raw`(?<![A-Za-z0-9_/.@#-])`;
+const AFTER = String.raw`(?![A-Za-z0-9_-])`;
+const ID_RE = new RegExp(`${BEFORE}(${ID_BODY})${AFTER}`, 'g');
+const PR_RE = /(?<![A-Za-z0-9_])(PR|[Pp]ull request)\s?#(\d{1,7})(?![\d])/g;
+// 7–40 hex chars with at least one digit and one letter (so plain numbers
+// and words like "deadbeef" or "facade" stay text).
+const SHA_BODY = '(?=[0-9a-f]*\\d)(?=[0-9a-f]*[a-f])[0-9a-f]{7,40}';
+const SHA_RE = new RegExp(`${BEFORE}(${SHA_BODY})${AFTER}`, 'g');
+const SHA_ONLY = new RegExp(`^${SHA_BODY}$`);
+
+function idKind(id: string): RefKind {
+  if (id.startsWith('tk_')) return 'ticket';
+  if (id.startsWith('proj_')) return 'project';
+  return 'session';
+}
+
+/** A run of plain text split into text and reference links. */
+export type RefSegment = string | { text: string; url: string };
+
+/**
+ * Split plain text (one markdown text node) at the references it mentions.
+ * `holdTail` leaves a reference that ends the text alone — while an answer
+ * streams, `839c3a7` may still grow into a longer SHA.
+ */
+export function splitRefs(text: string, repo: RepoLinks | null, holdTail = false): RefSegment[] {
+  type Hit = { start: number; end: number; text: string; url: string };
+  const hits: Hit[] = [];
+  for (const m of text.matchAll(ID_RE)) {
+    hits.push({ start: m.index, end: m.index + m[0].length, text: m[1], url: refHref(idKind(m[1]), m[1]) });
+  }
+  if (repo) {
+    const base = `https://github.com/${repo.path}`;
+    for (const m of text.matchAll(PR_RE)) {
+      hits.push({ start: m.index, end: m.index + m[0].length, text: m[0], url: `${base}/pull/${m[2]}` });
+    }
+    for (const m of text.matchAll(SHA_RE)) {
+      hits.push({ start: m.index, end: m.index + m[0].length, text: m[1], url: `${base}/commit/${m[1]}` });
+    }
+  }
+  hits.sort((a, b) => a.start - b.start);
+  const out: RefSegment[] = [];
+  let pos = 0;
+  for (const h of hits) {
+    if (h.start < pos) continue; // overlapping match: the first one wins
+    if (holdTail && h.end === text.length) continue;
+    if (h.start > pos) out.push(text.slice(pos, h.start));
+    out.push({ text: h.text, url: h.url });
+    pos = h.end;
+  }
+  if (pos < text.length) out.push(text.slice(pos));
+  return out;
+}
+
+/** Link target for an inline code span holding exactly one reference. */
+export function codeRefTarget(code: string, repo: RepoLinks | null): string | null {
+  const t = code.trim();
+  for (const kind of ['ticket', 'project', 'session'] as const) {
+    if (refIdPattern(kind)!.test(t)) return refHref(kind, t);
+  }
+  if (repo && SHA_ONLY.test(t)) return `https://github.com/${repo.path}/commit/${t}`;
+  return null;
+}
+
+// Minimal mdast shapes, so the dashboard doesn't depend on @types/mdast.
+interface MdNode {
+  type: string;
+  value?: string;
+  url?: string;
+  children?: MdNode[];
+}
+
+// Never linkified inside: existing links (inline, reference, autolink
+// literals), definitions, images, code blocks and raw HTML.
+const SKIP = new Set(['link', 'linkReference', 'definition', 'image', 'imageReference', 'code', 'html']);
+
+/**
+ * Remark plugin that makes the references an answer mentions clickable:
+ * tickets (`tk_…`) open a preview, projects (`proj_…`) and sessions (`ses_…`)
+ * link into the dashboard, and — when the scope's project has one GitHub repo
+ * — `PR #123` and commit SHAs link to GitHub. It works on the parsed tree, so
+ * code blocks (also inside quotes and lists), existing links of every form and
+ * images are left alone by construction. An inline code span is linked only
+ * when it holds exactly one reference.
+ *
+ * `streaming` holds back a reference that ends the answer so far.
+ */
+export function remarkRefs(opts: { repo?: RepoLinks | null; streaming?: boolean } = {}) {
+  const repo = opts.repo ?? null;
+  return () => (tree: MdNode) => {
+    // The last text node in document order: the one a stream is still writing.
+    let last: MdNode | null = null;
+    if (opts.streaming) {
+      const find = (n: MdNode) => {
+        if (SKIP.has(n.type)) return;
+        if (n.type === 'text') last = n;
+        n.children?.forEach(find);
+      };
+      find(tree);
+    }
+    const walk = (node: MdNode) => {
+      if (!node.children) return;
+      const next: MdNode[] = [];
+      for (const child of node.children) {
+        if (child.type === 'text' && child.value) {
+          const parts = splitRefs(child.value, repo, child === last);
+          if (parts.length === 1 && typeof parts[0] === 'string') {
+            next.push(child);
+          } else {
+            for (const p of parts) {
+              next.push(
+                typeof p === 'string'
+                  ? { type: 'text', value: p }
+                  : { type: 'link', url: p.url, children: [{ type: 'text', value: p.text }] },
+              );
+            }
+          }
+        } else if (child.type === 'inlineCode') {
+          const url = codeRefTarget(child.value ?? '', repo);
+          next.push(url ? { type: 'link', url, children: [child] } : child);
+        } else {
+          if (!SKIP.has(child.type)) walk(child);
+          next.push(child);
+        }
+      }
+      node.children = next;
+    };
+    walk(tree);
+  };
 }

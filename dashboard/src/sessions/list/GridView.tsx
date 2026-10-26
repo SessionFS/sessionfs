@@ -1,10 +1,11 @@
 import type { SessionSummary } from '../../api/client';
-import { abbreviateModel, fullToolName } from '../../utils/models';
+import { fullToolName, isUnknownModelId } from '../../utils/models';
 import { formatTokens } from '../../utils/tokens';
 import RelativeDate from '../../components/RelativeDate';
 import { TOOL_COLORS } from '../../utils/tools';
 import { Button } from '../../components/ui';
 import { BookmarkDropdown } from './BookmarkDropdown';
+import { ModelChip } from './ModelChip';
 
 /* ── Grid-grouped session section ── */
 
@@ -89,10 +90,10 @@ function SessionGridCard({
               <span className="tabular-nums">{formatTokens(s.total_input_tokens + s.total_output_tokens)}</span>
             </>
           )}
-          {s.model_id && s.model_id !== '<synthetic>' && (
+          {!isUnknownModelId(s.model_id) && (
             <>
               <span className="opacity-40">&middot;</span>
-              <span>{abbreviateModel(s.model_id)}</span>
+              <ModelChip modelId={s.model_id as string} />
             </>
           )}
         </div>

@@ -11,6 +11,8 @@
  * The helper endpoint emits frames of the shape `event: <type>\ndata: <json>`.
  */
 
+import type { HelperActionProposal, HelperActionTarget } from '../api/client';
+
 export interface SseEvent {
   /** The `event:` field — the event type (e.g. `text`, `tool_result`, `done`). */
   event: string;
@@ -105,4 +107,37 @@ export class SseParser {
   get pending(): string {
     return this.buffer;
   }
+}
+
+const ACTION_CHANGES = new Set(['will_change', 'unchanged', 'skipped']);
+
+/**
+ * Parse the data of an `action_proposed` event (`{action: {...}}`) into a
+ * proposal the drawer can render as a confirm card. Returns null when the
+ * payload is malformed; targets that don't match the shape are dropped.
+ */
+export function parseActionProposed(data: string): HelperActionProposal | null {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(data);
+  } catch {
+    return null;
+  }
+  const a = (raw as { action?: unknown } | null)?.action as Record<string, unknown> | undefined;
+  if (!a || typeof a !== 'object' || typeof a.id !== 'string' || !a.id || typeof a.kind !== 'string') {
+    return null;
+  }
+  const targets: HelperActionTarget[] = [];
+  for (const t of Array.isArray(a.targets) ? a.targets : []) {
+    const r = t as Record<string, unknown> | null;
+    if (!r || typeof r.id !== 'string' || typeof r.change !== 'string' || !ACTION_CHANGES.has(r.change)) continue;
+    targets.push({ ...(r as object), id: r.id, name: typeof r.name === 'string' ? r.name : r.id } as HelperActionTarget);
+  }
+  return {
+    id: a.id,
+    kind: a.kind,
+    summary: typeof a.summary === 'string' ? a.summary : '',
+    targets,
+    expires_at: typeof a.expires_at === 'string' ? a.expires_at : null,
+  };
 }

@@ -191,6 +191,10 @@ def _narrative_error_snippet(exc: Exception, api_key: str) -> tuple[int | None, 
     """
     status: int | None = None
     text = ""
+    from sessionfs.judge.llm_errors import LlmEndpointError
+
+    if isinstance(exc, LlmEndpointError):
+        return exc.response.status_code, exc.friendly_message
     if isinstance(exc, httpx.HTTPStatusError):
         status = exc.response.status_code
         try:

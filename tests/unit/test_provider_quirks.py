@@ -227,6 +227,28 @@ class TestStreamingRequestQuirks:
         assert "temperature" not in body
         assert "max_tokens" in body
 
+    @pytest.mark.asyncio
+    async def test_kimi_stream_omits_top_p_too(self):
+        """omit_temperature providers reject top_p as well as temperature."""
+        handler, requests = capturing_handler([DEEPSEEK_REASONING_TEXT])
+        with mock_stream(handler):
+            await collect(
+                stream_chat(
+                    model="kimi-k2-0711-preview",
+                    system="sys",
+                    messages=[user_message("hi")],
+                    tools=[],
+                    api_key="k",
+                    provider="kimi",
+                    temperature=0.9,
+                    top_p=0.8,
+                )
+            )
+        body = requests[0]
+        assert "temperature" not in body
+        assert "top_p" not in body
+        assert "max_tokens" in body
+
 
 class TestDeepSeekReasoning:
     @pytest.mark.asyncio
@@ -327,3 +349,79 @@ class TestDeepSeekReasoning:
         assert tool_events[0].tool_call.arguments == {"location": "Paris"}
         assert len(result_events) == 1
         assert result_events[0].result.content == "22C"
+
+
+ANTHROPIC_TEXT = sse(
+    {"type": "message_start", "message": {"usage": {"input_tokens": 5}}},
+    {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+    {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "ok"}},
+    {"type": "content_block_stop", "index": 0},
+    {"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 1}},
+    {"type": "message_stop"},
+)
+
+
+class TestAnthropicSampling:
+    async def _body(self, **kwargs) -> dict:
+        handler, requests = capturing_handler([ANTHROPIC_TEXT])
+        with mock_stream(handler):
+            await collect(
+                stream_chat(
+                    model="claude-sonnet-5-5",
+                    system="sys",
+                    messages=[user_message("hi")],
+                    tools=[],
+                    api_key="k",
+                    provider="anthropic",
+                    **kwargs,
+                )
+            )
+        return requests[0]
+
+    @pytest.mark.asyncio
+    async def test_top_p_set_drops_temperature(self):
+        body = await self._body(temperature=0.7, top_p=0.9)
+        assert body["top_p"] == 0.9
+        assert "temperature" not in body
+
+    @pytest.mark.asyncio
+    async def test_temperature_alone_is_sent(self):
+        body = await self._body(temperature=0.3)
+        assert body["temperature"] == 0.3
+        assert "top_p" not in body
+
+    @pytest.mark.asyncio
+    async def test_neither_set_sends_neither(self):
+        body = await self._body(temperature=None)
+        assert "temperature" not in body
+        assert "top_p" not in body
+
+
+class TestToolRoundBudget:
+    @pytest.mark.asyncio
+    async def test_one_tool_round_still_answers(self):
+        """The helper passes max_steps = max_tool_steps + 1: with one allowed
+        tool round the model calls its tool and still answers."""
+        handler, requests = capturing_handler([DEEPSEEK_TOOL, DEEPSEEK_TEXT])
+
+        async def execute_tool(call: ToolCall) -> ToolResult:
+            return ToolResult(call.id, "22C")
+
+        max_tool_steps = 1
+        with mock_stream(handler):
+            events = await collect(
+                run_agent(
+                    model="deepseek-v4-pro",
+                    system="sys",
+                    messages=[user_message("Weather in Paris?")],
+                    tools=[WEATHER_TOOL],
+                    execute_tool=execute_tool,
+                    api_key="k",
+                    provider="deepseek",
+                    max_steps=max_tool_steps + 1,
+                )
+            )
+        assert len(requests) == 2
+        assert sum(isinstance(e, ToolResultEvent) for e in events) == 1
+        assert "".join(e.text for e in events if isinstance(e, TextDelta)) == "22C"
+        assert events[-1].stop_reason == "stop"

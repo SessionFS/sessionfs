@@ -1,12 +1,25 @@
 import { useState, useEffect } from 'react';
 import { useAuth } from '../auth/AuthContext';
-import { useJudgeSettings, useSaveJudgeSettings, useClearJudgeSettings } from '../hooks/useJudgeSettings';
+import {
+  useJudgeSettings,
+  useSaveJudgeSettings,
+  useClearJudgeSettings,
+  useJudgeConnectionTester,
+} from '../hooks/useJudgeSettings';
 import { useLlmProviders } from '../hooks/useLlmProviders';
 import { useToast } from '../hooks/useToast';
 import { judgeSettingsSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
 import FieldError from '../components/FieldError';
 import { Card, Button, Input, Select } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
+import type { SaveWarning } from '../api/client';
+import { ConnectionTestStatus, SaveWarnings } from './LlmConnectionTest';
+import {
+  baseUrlHint,
+  baseUrlPlaceholder,
+  saveFieldError,
+  useLlmConnectionTest,
+} from './llmConnection';
 
 export default function AuditJudgeSettings() {
   const { auth } = useAuth();
@@ -27,6 +40,15 @@ export default function AuditJudgeSettings() {
   const [discovering, setDiscovering] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [judgeErrors, setJudgeErrors] = useState<FieldErrors>({});
+  const [saveWarnings, setSaveWarnings] = useState<SaveWarning[]>([]);
+
+  const connection = useLlmConnectionTest(useJudgeConnectionTester());
+  const resetConnection = connection.reset;
+
+  // A result describes the values it was run with; editing them clears it.
+  useEffect(() => {
+    resetConnection();
+  }, [judgeProvider, judgeModel, judgeApiKey, judgeBaseUrl, resetConnection]);
 
   const currentProvider = providers.find((p) => p.id === judgeProvider);
   const isDiscovery = currentProvider?.discovery === true;
@@ -74,6 +96,15 @@ export default function AuditJudgeSettings() {
     setJudgeModel(next?.suggested_models[0] ?? '');
   }
 
+  function handleTest() {
+    void connection.test({
+      provider: judgeProvider,
+      model: judgeModel || undefined,
+      base_url: judgeBaseUrl.trim() || '',
+      api_key: judgeApiKey || undefined,
+    });
+  }
+
   async function handleFetchModels() {
     if (!auth || !isDiscovery) return;
     setFetchingModels(true);
@@ -99,13 +130,23 @@ export default function AuditJudgeSettings() {
       return;
     }
     setJudgeErrors({});
+    setSaveWarnings([]);
     saveJudge.mutate(
       { provider: judgeProvider, model: judgeModel, apiKey: judgeApiKey, baseUrl: judgeBaseUrl || undefined },
       {
-        onSuccess: () => {
+        onSuccess: (data) => {
           setJudgeSaved(true);
           setJudgeApiKey('');
+          setSaveWarnings(data?.warnings ?? []);
           addToast('success', 'Settings saved');
+        },
+        onError: (err) => {
+          // A refused save (the address isn't a chat API, the key was
+          // rejected) belongs on the field that caused it.
+          const fieldError = saveFieldError(err);
+          if (fieldError?.field) {
+            setJudgeErrors((prev) => ({ ...prev, [fieldError.field as string]: fieldError.message }));
+          }
         },
       },
     );
@@ -224,8 +265,8 @@ export default function AuditJudgeSettings() {
                 placeholder={keyPlaceholder}
                 title="API Key"
                 className="font-mono"
+                error={judgeErrors.apiKey}
               />
-              <FieldError message={judgeErrors.apiKey} />
             </div>
 
             <div className="mb-4">
@@ -233,14 +274,12 @@ export default function AuditJudgeSettings() {
                 type="text"
                 value={judgeBaseUrl}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => { setJudgeBaseUrl(e.target.value); setJudgeSaved(false); if (judgeErrors.baseUrl) setJudgeErrors((prev) => ({ ...prev, baseUrl: undefined })); }}
-                placeholder="https://litellm.company.internal/v1"
+                placeholder={baseUrlPlaceholder(currentProvider)}
                 title="Base URL (optional)"
                 className="font-mono"
+                error={judgeErrors.baseUrl}
+                hint={baseUrlHint(currentProvider)}
               />
-              <FieldError message={judgeErrors.baseUrl} />
-              <p className="text-xs text-text-tertiary opacity-60 mt-1">
-                Leave blank for provider default. Set for LiteLLM, vLLM, Ollama, or any OpenAI-compatible gateway.
-              </p>
             </div>
 
             <div className="flex items-center gap-3 mb-3">
@@ -251,6 +290,14 @@ export default function AuditJudgeSettings() {
                 loading={saveJudge.isPending}
               >
                 Save
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={handleTest}
+                disabled={connection.testing || (!judgeApiKey && !keySet && !judgeBaseUrl)}
+                loading={connection.testing}
+              >
+                Test connection
               </Button>
               {keySet && (
                 <Button
@@ -270,7 +317,12 @@ export default function AuditJudgeSettings() {
               {!judgeSaved && !keySet && <span className="text-text-tertiary">No key configured</span>}
             </div>
 
-            {saveJudge.isError && (
+            <div className="mt-3 space-y-2">
+              <ConnectionTestStatus state={connection.state} />
+              <SaveWarnings warnings={saveWarnings} />
+            </div>
+
+            {saveJudge.isError && !saveFieldError(saveJudge.error)?.field && (
               <div className="text-sm text-danger mt-2">
                 {errorMessage(saveJudge.error, 'Failed to save settings.')}
               </div>

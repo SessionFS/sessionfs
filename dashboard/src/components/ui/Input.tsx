@@ -14,10 +14,12 @@ interface FieldWrapperProps {
   label?: string;
   htmlFor?: string;
   error?: string;
+  /** Helper text under the control; tied to it with aria-describedby. */
+  hint?: ReactNode;
   children: ReactNode;
 }
 
-function FieldWrapper({ label, htmlFor, error, children }: FieldWrapperProps) {
+function FieldWrapper({ label, htmlFor, error, hint, children }: FieldWrapperProps) {
   return (
     <div className="flex flex-col gap-1">
       {label && (
@@ -26,8 +28,13 @@ function FieldWrapper({ label, htmlFor, error, children }: FieldWrapperProps) {
         </label>
       )}
       {children}
+      {hint && (
+        <p id={htmlFor ? `${htmlFor}-hint` : undefined} className="text-xs text-text-tertiary">
+          {hint}
+        </p>
+      )}
       {error && (
-        <p className="text-xs text-danger mt-0.5" role="alert">
+        <p id={htmlFor ? `${htmlFor}-error` : undefined} className="text-xs text-danger mt-0.5" role="alert">
           {error}
         </p>
       )}
@@ -35,21 +42,30 @@ function FieldWrapper({ label, htmlFor, error, children }: FieldWrapperProps) {
   );
 }
 
+/** Join the caller's aria-describedby with the hint/error ids the wrapper renders. */
+function describedBy(controlId: string, own: string | undefined, hint: unknown, error: unknown): string | undefined {
+  const ids = [own, hint ? `${controlId}-hint` : null, error ? `${controlId}-error` : null].filter(Boolean);
+  return ids.length ? ids.join(' ') : undefined;
+}
+
 /* ── Input ── */
 
 interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   error?: string;
+  hint?: ReactNode;
 }
 
-export function Input({ error, className = '', id, title, ...rest }: InputProps) {
+export function Input({ error, hint, className = '', id, title, 'aria-describedby': ariaDescribedBy, ...rest }: InputProps) {
   const generatedId = useId();
   const controlId = id || generatedId;
 
   return (
-    <FieldWrapper label={title} htmlFor={controlId} error={error}>
+    <FieldWrapper label={title} htmlFor={controlId} error={error} hint={hint}>
       <input
         id={controlId}
         title={title}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={describedBy(controlId, ariaDescribedBy, hint, error)}
         className={`${baseField} ${error ? errorField : ''} ${className}`}
         {...rest}
       />
@@ -61,17 +77,20 @@ export function Input({ error, className = '', id, title, ...rest }: InputProps)
 
 interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   error?: string;
+  hint?: ReactNode;
 }
 
-export function Textarea({ error, className = '', id, title, ...rest }: TextareaProps) {
+export function Textarea({ error, hint, className = '', id, title, 'aria-describedby': ariaDescribedBy, ...rest }: TextareaProps) {
   const generatedId = useId();
   const controlId = id || generatedId;
 
   return (
-    <FieldWrapper label={title} htmlFor={controlId} error={error}>
+    <FieldWrapper label={title} htmlFor={controlId} error={error} hint={hint}>
       <textarea
         id={controlId}
         title={title}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={describedBy(controlId, ariaDescribedBy, hint, error)}
         className={`${baseField} resize-y min-h-[80px] ${error ? errorField : ''} ${className}`}
         {...rest}
       />
@@ -104,6 +123,8 @@ interface SelectProps {
   className?: string;
   /** Accessible name when there is no visible title label. */
   'aria-label'?: string;
+  /** Helper text under the control; tied to it with aria-describedby. */
+  hint?: ReactNode;
 }
 
 export function Select({
@@ -117,6 +138,7 @@ export function Select({
   disabled,
   className = '',
   'aria-label': ariaLabel,
+  hint,
 }: SelectProps) {
   const generatedId = useId();
   const controlId = id || generatedId;
@@ -227,7 +249,7 @@ export function Select({
   const optionId = (i: number) => `${controlId}-opt-${i}`;
 
   return (
-    <FieldWrapper label={title} htmlFor={controlId} error={error}>
+    <FieldWrapper label={title} htmlFor={controlId} error={error} hint={hint}>
       <div ref={wrapperRef} className="relative">
         <button
           id={controlId}
@@ -238,6 +260,7 @@ export function Select({
           aria-expanded={open}
           aria-controls={open ? listId : undefined}
           aria-label={ariaLabel ?? (selectedLabel || placeholder ? undefined : title || 'Select option')}
+          aria-describedby={describedBy(controlId, undefined, hint, error)}
           className={`${baseField} flex items-center justify-between gap-2 text-left ${!selectedLabel ? 'text-text-tertiary' : ''} ${error ? errorField : ''} ${className}`}
           onClick={() => !disabled && setOpen((v) => !v)}
           onKeyDown={handleTriggerKeyDown}

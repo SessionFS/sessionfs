@@ -41,6 +41,7 @@ const {
 vi.mock('../auth/AuthContext', () => ({ useAuth: useAuthMock }));
 vi.mock('../hooks/useMe', () => ({ useMe: useMeMock }));
 vi.mock('../hooks/useToast', () => ({ useToast: () => ({ addToast: vi.fn() }) }));
+vi.mock('../hooks/useProjects', () => ({ useProject: () => ({ data: undefined }) }));
 vi.mock('./useHelper', () => ({
   useHelperStatus: useHelperStatusMock,
   useHelperConversations: useHelperConversationsMock,
@@ -526,6 +527,31 @@ describe('HelperPanel — errors', () => {
     await ask(user, 'And then?');
     await screen.findByText('Follow-up answer.');
     expect(sentBody(2).retry).toBeUndefined();
+  });
+
+  it('shows the token usage from the done event under the answer', async () => {
+    fetchMock.mockResolvedValue(
+      okResponse([
+        ['text', { delta: 'All good.' }],
+        ['done', { stop_reason: 'stop', input_tokens: 1234, output_tokens: 260, usage: { input_tokens: 1234, output_tokens: 260 }, key_source: 'user' }],
+      ]),
+    );
+    renderPanel();
+    await ask(userEvent.setup(), 'hi');
+    expect(await screen.findByText('1.2k in · 260 out')).toBeInTheDocument();
+  });
+
+  it('says the monthly budget is reached on 429 helper_budget_exceeded', async () => {
+    fetchMock.mockResolvedValue(
+      errorResponse(429, {
+        error: { code: 'helper_budget_exceeded', message: "This org's monthly session-helper token budget has been reached." },
+      }),
+    );
+    renderPanel();
+    await ask(userEvent.setup(), 'q');
+    expect(await screen.findByText('Monthly budget reached')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open org settings' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 
   it('surfaces a transport error message', async () => {
