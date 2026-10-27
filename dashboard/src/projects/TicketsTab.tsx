@@ -40,14 +40,32 @@ interface TicketsTabProps {
   initialTicketId?: string | null;
   /** Who is viewing: hides actions the server would refuse (see tickets/viewer). */
   viewer?: TicketViewer;
+  /** "Assigned to me" filter, owned by the page URL (?assignee=me) when
+   *  provided; local state otherwise. */
+  assignedToMe?: boolean;
+  onAssignedToMeChange?: (next: boolean) => void;
 }
 
-export default function TicketsTab({ projectId, jira, initialTicketId, viewer }: TicketsTabProps) {
+export default function TicketsTab({
+  projectId,
+  jira,
+  initialTicketId,
+  viewer,
+  assignedToMe: assignedToMeProp,
+  onAssignedToMeChange,
+}: TicketsTabProps) {
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [kindFilter, setKindFilter] = useState<string>('');
+  const [assignedToMeLocal, setAssignedToMeLocal] = useState(false);
+  const assignedToMe = assignedToMeProp ?? assignedToMeLocal;
+  const setAssignedToMe = (next: boolean) => {
+    if (onAssignedToMeChange) onAssignedToMeChange(next);
+    else setAssignedToMeLocal(next);
+  };
   const { data, isLoading, error } = useTickets(projectId, {
     status: statusFilter || undefined,
     kind: kindFilter || undefined,
+    assigned_user: assignedToMe ? 'me' : undefined,
   });
   const [creating, setCreating] = useState(false);
   const [selected, setSelected] = useState<string | null>(initialTicketId ?? null);
@@ -77,6 +95,7 @@ export default function TicketsTab({ projectId, jira, initialTicketId, viewer }:
   function navigateTo(targetId: string) {
     setStatusFilter('');
     setKindFilter('');
+    if (assignedToMe) setAssignedToMe(false);
     setSelected(targetId);
   }
 
@@ -98,6 +117,20 @@ export default function TicketsTab({ projectId, jira, initialTicketId, viewer }:
           </span>
         </h2>
         <div className="flex items-center gap-2 flex-wrap">
+          {/* A filter, so it matches the filter selects beside it. */}
+          <Button
+            variant="secondary"
+            size="md"
+            aria-pressed={assignedToMe}
+            onClick={() => setAssignedToMe(!assignedToMe)}
+            className={`!px-3 !font-normal ${assignedToMe ? '!border-[var(--brand)] !bg-bg-elevated !text-text-primary' : ''}`}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="8" r="4" />
+              <path d="M4 21a8 8 0 0 1 16 0" />
+            </svg>
+            Assigned to me
+          </Button>
           <Select
             aria-label="Filter by kind"
             value={kindFilter}
@@ -175,7 +208,7 @@ export default function TicketsTab({ projectId, jira, initialTicketId, viewer }:
 
       {/* ── Content ── */}
       {tickets.length === 0 ? (
-        <EmptyState kindFilter={kindFilter} statusFilter={statusFilter} />
+        <EmptyState kindFilter={kindFilter} statusFilter={statusFilter} assignedToMe={assignedToMe} />
       ) : viewMode === 'board' ? (
         <BoardView
           tickets={tickets}

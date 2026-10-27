@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sessionfs"
-version = "0.26.0"
+version = "0.27.0"
 description = "Capture, sync, and resume AI coding sessions across 10 tools — Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, Roo Code, Kilo Code, and Antigravity."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -80,7 +80,10 @@ server = [
     "stripe>=8.0,<16.0",
     # OIDC SSO domain verification resolves DNS TXT records (no stdlib TXT
     # resolver exists). dnspython is the established async-capable resolver.
-    "dnspython>=2.6,<3.0",
+    # Floor 2.9.0: GHSA-45c3-73f7-pv4m (name decompression CPU DoS). 2.9.0
+    # needs Python 3.11+, so 3.10 keeps the previous floor.
+    "dnspython>=2.9.0,<3.0; python_version >= '3.11'",
+    "dnspython>=2.6,<3.0; python_version < '3.11'",
 ]
 dev = [
     "sessionfs[server]",
@@ -105,7 +108,8 @@ dev = [
     # runtime dep and imported nowhere in src/). GHSA-6v7p-g79w-8964 is a
     # streaming-Unpacker reuse-after-error DoS fixed in 1.2.1. SessionFS
     # never uses msgpack, so impact is nil — pin keeps CI pip-audit green.
-    "msgpack>=1.2.1",
+    # 1.2.3 also fixes GHSA-j586-36cw-2gc2 (map-value leak on key rejection).
+    "msgpack>=1.2.3",
 ]
 
 [project.scripts]

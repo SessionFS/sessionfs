@@ -2,6 +2,7 @@ import type { Ticket } from '../../api/client';
 import { Drawer } from '../../components/ui';
 import { BOARD_STATUSES, PRIORITY_TONE, type ViewProps } from './constants';
 import { KindBadge } from './KindBadge';
+import { AssigneeLabel } from './AssigneeLabel';
 import { TicketDetail } from './TicketDetail';
 
 /* ── Board view ──
@@ -76,6 +77,7 @@ export function BoardView({ tickets, projectId, selected, onSelect, onNavigate, 
               orgId={jira?.orgId}
               isProjectAdmin={jira?.isProjectAdmin}
               isEnterprise={jira?.isEnterprise}
+              canEdit={jira?.canEdit}
               bare
             />
           </div>
@@ -122,8 +124,10 @@ function BoardCard({
         <span className={`uppercase tracking-wide font-semibold ${PRIORITY_TONE[t.priority] ?? ''}`}>
           {t.priority}
         </span>
-        {t.assigned_to && (
-          <span className="text-mono-chip text-2xs">{t.assigned_to}</span>
+        {(t.assigned_to || t.assigned_user_id) && (
+          <span className="inline-flex min-w-0 max-w-full">
+            <AssigneeLabel ticket={t} variant="chip" />
+          </span>
         )}
         {t.acceptance_criteria.length > 0 && (
           <>

@@ -284,3 +284,73 @@ export function jiraSyncEventLabel(event: {
       return `Jira ${humanStatus(event.kind).toLowerCase()}`;
   }
 }
+
+/** Jira issue key shape the link endpoint accepts (server: routes/jira.py). */
+export const JIRA_ISSUE_KEY_RE = /^[A-Z][A-Z0-9_]{0,49}-[1-9][0-9]{0,9}$/;
+
+/** A host-like first segment: "acme.atlassian.net", "jira.example.com:8443". */
+const BARE_HOST_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?\//i;
+
+function asKey(candidate: string | null | undefined): string | null {
+  if (!candidate) return null;
+  let text = candidate;
+  try {
+    text = decodeURIComponent(candidate);
+  } catch {
+    return null;
+  }
+  const key = text.trim().toUpperCase();
+  return JIRA_ISSUE_KEY_RE.test(key) ? key : null;
+}
+
+/**
+ * Read what someone typed or pasted into the "Link existing issue" field.
+ * Accepts a bare key in any case ("abc-123") or a Jira link, with or without
+ * a scheme: `/browse/ABC-123`, a board or search link carrying
+ * `?selectedIssue=ABC-123`, and newer paths whose last segment is the key
+ * (`/jira/software/projects/ABC/issues/ABC-123`, service-desk queues).
+ * `host` is the pasted link's host (null for a bare key), so the caller can
+ * say when the issue was looked up on a different (the connected) site.
+ */
+export function parseJiraIssueInput(input: string): { key: string; host: string | null } | null {
+  const raw = input.trim();
+  if (!raw) return null;
+  const hasScheme = /^https?:\/\//i.test(raw);
+  if (!hasScheme && !BARE_HOST_RE.test(raw)) {
+    const key = asKey(raw);
+    return key ? { key, host: null } : null;
+  }
+  let url: URL;
+  try {
+    url = new URL(hasScheme ? raw : `https://${raw}`);
+  } catch {
+    return null;
+  }
+  const host = url.host.toLowerCase();
+  const browse = url.pathname.match(/\/browse\/([^/]+)/);
+  if (browse) {
+    const key = asKey(browse[1]);
+    return key ? { key, host } : null;
+  }
+  const selected = asKey(url.searchParams.get('selectedIssue'));
+  if (selected) return { key: selected, host };
+  const segments = url.pathname.split('/').filter(Boolean);
+  const last = asKey(segments[segments.length - 1]);
+  return last ? { key: last, host } : null;
+}
+
+/** Just the issue key from {@link parseJiraIssueInput}, or null. */
+export function parseJiraIssueKey(input: string): string | null {
+  return parseJiraIssueInput(input)?.key ?? null;
+}
+
+/** Lower-cased host of an http(s) URL, or null. */
+export function urlHost(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    const u = new URL(url);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u.host.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}

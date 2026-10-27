@@ -204,6 +204,17 @@ export default function ProjectDetail() {
     }, { replace: true });
   }, [setSearchParams]);
 
+  // Tickets "Assigned to me" filter lives in the URL (?assignee=me) so a
+  // refresh or a shared link keeps it; toggling replaces the entry.
+  const setAssignedToMe = useCallback((on: boolean) => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      if (on) params.set('assignee', 'me');
+      else params.delete('assignee');
+      return params;
+    }, { replace: true });
+  }, [setSearchParams]);
+
   // Enter edit mode if ?edit=1
   useEffect(() => {
     if (searchParams.get('edit') === '1' && project) {
@@ -300,6 +311,7 @@ export default function ProjectDetail() {
         orgId: project.org_id,
         isProjectAdmin: canUnlinkTicket(project, me, myOrgs),
         isEnterprise: hasJiraEnterpriseTier(project, me),
+        canEdit,
       }
     : undefined;
 
@@ -492,7 +504,16 @@ export default function ProjectDetail() {
       )}
 
       {section === 'work' && sub === 'tickets' && (
-        <Panel padded sub={sub}><TicketsTab projectId={project.id} jira={jira} initialTicketId={searchParams.get('ticket')} viewer={{ canEdit, userId: me?.user_id ?? null }} /></Panel>
+        <Panel padded sub={sub}>
+          <TicketsTab
+            projectId={project.id}
+            jira={jira}
+            initialTicketId={searchParams.get('ticket')}
+            viewer={{ canEdit, userId: me?.user_id ?? null }}
+            assignedToMe={searchParams.get('assignee') === 'me'}
+            onAssignedToMeChange={setAssignedToMe}
+          />
+        </Panel>
       )}
       {section === 'work' && sub === 'agent-runs' && (
         <Panel padded sub={sub}><AgentRunsTab projectId={project.id} /></Panel>

@@ -66,6 +66,8 @@ export interface TicketJiraSurface {
   orgId: string;
   isProjectAdmin: boolean;
   isEnterprise: boolean;
+  /** The project's `can_edit` flag: only editors may link an existing issue. */
+  canEdit?: boolean;
 }
 
 export interface ViewProps {

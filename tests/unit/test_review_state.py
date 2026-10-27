@@ -422,3 +422,60 @@ Findings:
     # Closed list captures the audit trail for everything ever raised.
     # 6 CHANGES_REQUESTED rounds × 2 findings each = 12 closed.
     assert len(state.closed_findings) == 12
+
+
+# ── Tool-agnostic header: any reviewer name ─────────────────────────────────
+
+
+def test_verdict_from_header_accepts_any_reviewer_name():
+    """The header is tool-agnostic: any single-word reviewer name parses, and
+    the verdict is extracted regardless of the name."""
+    from sessionfs.server.services.review_state import verdict_from_header
+
+    assert verdict_from_header("Claude R1 review on tk_x: CHANGES REQUESTED") == VERDICT_CHANGES
+    assert verdict_from_header("Gemini R2 review on tk_x: VERIFIED-CLEAN") == VERDICT_CLEAN
+    assert verdict_from_header("reviewer R3 review on tk_x: CHANGES_REQUESTED") == VERDICT_CHANGES
+    assert verdict_from_header("my-reviewer.bot_1 R4 doc review on tk_x: APPROVED") == VERDICT_CLEAN
+
+
+def test_verdict_from_header_still_accepts_codex():
+    """Codex keeps working unchanged — the shared token subsumes the old
+    hard-coded name."""
+    from sessionfs.server.services.review_state import verdict_from_header
+
+    assert verdict_from_header("Codex R1 review on tk_x: VERIFIED-CLEAN") == VERDICT_CLEAN
+    assert verdict_from_header("CODEX R2 review on tk_x: CHANGES REQUESTED") == VERDICT_CHANGES
+
+
+def test_reviewer_name_must_be_a_single_word():
+    """The reviewer token is one word: 'Claude Code' (a space) is NOT a valid
+    reviewer name and must not parse as a header."""
+    from sessionfs.server.services.review_state import verdict_from_header
+
+    assert verdict_from_header("Claude Code R1 review on tk_x: VERIFIED-CLEAN") is None
+
+
+def test_prose_and_finding_bullets_are_not_headers():
+    """Ordinary prose, finding bullets, and bare verdict keywords must never
+    be mistaken for a review header."""
+    from sessionfs.server.services.review_state import verdict_from_header
+
+    assert verdict_from_header("Reviewed the diff, looks good.") is None
+    assert verdict_from_header(" • LOW — src/foo.py:1 typo") is None
+    assert verdict_from_header("VERIFIED-CLEAN") is None
+
+
+def test_trusted_prose_without_header_does_not_create_review_state():
+    """A trusted reviewer's free-form prose (even naming a verdict word)
+    without the structured header is NOT a review round."""
+    content = "Verified clean / no change needed:\n\n • everything is fine"
+    state = compute_review_state([
+        _comment(
+            "c1",
+            "reviewer-bot",
+            content,
+            datetime(2026, 5, 1, tzinfo=timezone.utc),
+            verdict_trusted=True,
+        ),
+    ])
+    assert state is None

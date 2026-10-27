@@ -1,18 +1,21 @@
-import { useMemo, useState } from 'react';
+import { useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import type { JiraPreview, JiraSection, Ticket } from '../../api/client';
-import { Alert, Badge, Button, Dialog, DialogFooter, DialogHeader, Input, Select, Textarea } from '../../components/ui';
+import { ApiError, type JiraPreview, type JiraSection, type Ticket } from '../../api/client';
+import { Alert, Badge, Button, Dialog, DialogFooter, DialogHeader, Dropdown, Input, Select, Textarea } from '../../components/ui';
 import {
   useJiraLink,
   useJiraPreview,
+  useLinkJiraIssue,
+  usePullJira,
   usePublishJira,
   useTicketJiraTemplates,
   useUnlinkJira,
 } from '../../hooks/useJiraTickets';
 import { useToast } from '../../hooks/useToast';
 import { errorMessage } from '../../utils/errorMessage';
-import { defaultJiraTemplateChoice, jiraErrorCode } from '../../utils/jira';
+import { defaultJiraTemplateChoice, jiraErrorCode, parseJiraIssueInput, urlHost } from '../../utils/jira';
 import { safeHttpUrl } from '../../utils/url';
+import { useTicketViewer } from './viewer';
 
 /* ── Ticket-detail Jira surface (Enterprise, org-scoped projects) ──
  *
@@ -91,17 +94,77 @@ function friendlyError(err: unknown): string {
   }
 }
 
+const INVALID_KEY_MESSAGE = 'Enter a Jira issue key like PROJ-123, or paste the issue’s link.';
+
+/**
+ * Where a link failure is shown: problems with the key itself sit under the
+ * field (tied to it with aria-describedby); everything else — Jira being
+ * down, permissions, connection state — is a form-level alert.
+ */
+function linkErrorMessage(err: unknown): { field: boolean; message: string } {
+  const code = jiraErrorCode(err);
+  switch (code) {
+    case 'invalid_issue_key':
+      return { field: true, message: INVALID_KEY_MESSAGE };
+    case 'jira_issue_not_found':
+      return { field: true, message: 'No issue with that key, or the Jira connection can’t see it.' };
+    case 'jira_issue_linked_elsewhere':
+      return { field: true, message: 'That issue is already linked to another ticket.' };
+    case 'jira_project_not_mapped':
+      // The server names the issue's project and the mapped one; say that.
+      return {
+        field: true,
+        message: errorMessage(err, 'That issue’s Jira project isn’t mapped to this project.'),
+      };
+    case 'jira_timeout':
+    case 'jira_upstream_error':
+      return { field: false, message: 'Jira is unreachable right now; try again shortly.' };
+  }
+  if (err instanceof ApiError) {
+    // A FastAPI body-validation 422 (the key failed the server's shape check).
+    if (err.status === 422 && err.details && 'errors' in err.details) {
+      return { field: true, message: INVALID_KEY_MESSAGE };
+    }
+    if (err.status === 403 && (!code || /^\d+$/.test(code) || code === 'project_edit_forbidden')) {
+      return { field: false, message: 'You don’t have permission to link this ticket.' };
+    }
+  }
+  const message = friendlyError(err);
+  return {
+    field: false,
+    message: message === 'Could not load the Jira draft' ? 'Could not link the Jira issue.' : message,
+  };
+}
+
 interface JiraTicketSectionProps {
   projectId: string;
   ticket: Ticket;
   orgId: string;
   isProjectAdmin: boolean;
   isEnterprise: boolean;
+  /** Project editor; only editors may link an existing issue. Defaults true. */
+  canEdit?: boolean;
 }
 
-export function JiraTicketSection({ projectId, ticket, orgId, isProjectAdmin, isEnterprise }: JiraTicketSectionProps) {
-  const [promoteOpen, setPromoteOpen] = useState(false);
+export function JiraTicketSection({
+  projectId,
+  ticket,
+  orgId,
+  isProjectAdmin,
+  isEnterprise,
+  canEdit = true,
+}: JiraTicketSectionProps) {
+  // 'overwrite' opens the publish dialog already committed to replacing an
+  // issue that was linked from Jira (it asks before sending either way).
+  const [promoteMode, setPromoteMode] = useState<'publish' | 'overwrite' | null>(null);
   const [confirmUnlink, setConfirmUnlink] = useState(false);
+  // 'replace' = chosen from the sync menu; 'update' = the plain button.
+  const [pullMode, setPullMode] = useState<'replace' | 'update' | null>(null);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const linkToggleRef = useRef<HTMLButtonElement>(null);
+  const syncTriggerRef = useRef<HTMLButtonElement>(null);
+  const groupRef = useRef<HTMLDivElement>(null);
+  const linkFormId = useId();
 
   const linked = ticket.jira ?? null;
   // Refresh the live status only when there is a confirmed link; in-progress
@@ -112,6 +175,44 @@ export function JiraTicketSection({ projectId, ticket, orgId, isProjectAdmin, is
   const showPromote = !!orgId && isEnterprise;
   const showUpgradeHint = !!orgId && !isEnterprise;
   const showUnlink = isProjectAdmin && !!linked;
+  // Linked from Jira and never published from here: neither side has
+  // overwritten the other yet, so an editor picks which one wins.
+  const attached = !!linked && link?.attached_not_published === true;
+  // Which controls a linked ticket gets depends on the live link, so hold
+  // them back until it has loaded (or failed) rather than swap them later.
+  const linkSettled = !linked || !!link || linkQuery.isError === true;
+  // Taking the Jira text into the ticket edits it, which the server allows
+  // only for the ticket's creator or a project admin (authorize_ticket_edit).
+  // Without a known viewer id, offer it and let the server's 403 decide.
+  const viewer = useTicketViewer();
+  const canPull =
+    canEdit &&
+    (isProjectAdmin || !viewer.userId || ticket.created_by_user_id === viewer.userId);
+  const canSync = showPromote && canEdit && attached;
+  // Both directions: a menu. Only the Jira side: a single control.
+  const showSyncChoice = canSync && canPull;
+  const showOverwriteOnly = canSync && !canPull;
+  // On a published link, taking the Jira text is a plain secondary action;
+  // on an attached one it lives in the sync menu instead.
+  const showUpdateFromJira = showPromote && canPull && !!linked && !!link && !attached;
+  // Linking an existing issue is the alternative to a first publish: only on
+  // an unlinked ticket with no publish in flight or awaiting reconciliation.
+  const showLink =
+    showPromote && canEdit && !linked && !ticket.jira_publish_in_progress && !ticket.jira_publish_unknown;
+  const linkFormOpen = showLink && linkOpen;
+
+  function closeLinkForm() {
+    setLinkOpen(false);
+    // Hand focus back to the control that opened the form.
+    requestAnimationFrame(() => linkToggleRef.current?.focus());
+  }
+
+  function handleLinked() {
+    setLinkOpen(false);
+    // The toggle disappears with the linked state; keep focus in this group
+    // (now showing the linked issue) instead of dropping it on the page.
+    requestAnimationFrame(() => groupRef.current?.focus());
+  }
 
   if (!showPromote && !showUpgradeHint && !linked && !ticket.jira_publish_in_progress && !ticket.jira_publish_unknown) {
     return null;
@@ -120,7 +221,13 @@ export function JiraTicketSection({ projectId, ticket, orgId, isProjectAdmin, is
   // Compact: sits in the ticket header next to the status and assignee.
   return (
     <div>
-      <div role="group" aria-label="Jira issue" className="flex flex-wrap items-center gap-2">
+      <div
+        ref={groupRef}
+        tabIndex={-1}
+        role="group"
+        aria-label="Jira issue"
+        className="flex flex-wrap items-center gap-2 outline-none"
+      >
         {linked && (
           <LinkedIssueBadge
             issueKey={linked.issue_key}
@@ -136,13 +243,71 @@ export function JiraTicketSection({ projectId, ticket, orgId, isProjectAdmin, is
           <Badge variant="warning" label="publish result unknown" />
         )}
 
-        {showPromote && (
+        {showPromote && linkSettled && !attached && (
           <Button
             size="sm"
             variant="secondary"
-            onClick={() => setPromoteOpen(true)}
+            onClick={() => setPromoteMode('publish')}
           >
             {linked ? 'Update Jira' : ticket.jira_publish_unknown ? 'Publish to reconcile' : 'Promote to Jira'}
+          </Button>
+        )}
+
+        {showSyncChoice && (
+          <Dropdown
+            align="left"
+            menuLabel="Sync with Jira"
+            minWidthClass="w-max"
+            trigger={(open) => (
+              <Button
+                ref={syncTriggerRef}
+                size="sm"
+                variant="secondary"
+                aria-haspopup="menu"
+                aria-expanded={open}
+              >
+                Sync with Jira…
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="text-text-tertiary">
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </Button>
+            )}
+            items={[
+              { key: 'to_jira', label: `Overwrite ${linked!.issue_key} in Jira…` },
+              { key: 'from_jira', label: `Overwrite this ticket from ${linked!.issue_key}…` },
+            ]}
+            onSelect={(key) => {
+              // The menu item unmounts with the menu: park focus on the
+              // trigger so the dialog hands it back there on close.
+              syncTriggerRef.current?.focus();
+              if (key === 'to_jira') setPromoteMode('overwrite');
+              else setPullMode('replace');
+            }}
+          />
+        )}
+
+        {showOverwriteOnly && (
+          <Button size="sm" variant="secondary" onClick={() => setPromoteMode('overwrite')}>
+            Overwrite {linked!.issue_key} in Jira…
+          </Button>
+        )}
+
+        {showUpdateFromJira && (
+          <Button size="sm" variant="ghost" onClick={() => setPullMode('update')}>
+            Update from Jira
+          </Button>
+        )}
+
+        {showLink && (
+          <Button
+            ref={linkToggleRef}
+            size="sm"
+            variant="ghost"
+            aria-expanded={linkFormOpen}
+            aria-controls={linkFormOpen ? linkFormId : undefined}
+            onClick={() => (linkFormOpen ? closeLinkForm() : setLinkOpen(true))}
+          >
+            Link existing issue
           </Button>
         )}
 
@@ -152,6 +317,16 @@ export function JiraTicketSection({ projectId, ticket, orgId, isProjectAdmin, is
           </Button>
         )}
       </div>
+
+      {linkFormOpen && (
+        <LinkExistingIssueForm
+          id={linkFormId}
+          projectId={projectId}
+          ticketId={ticket.id}
+          onCancel={closeLinkForm}
+          onLinked={handleLinked}
+        />
+      )}
 
       {showUpgradeHint && (
         <p className="text-xs text-text-tertiary mt-1">
@@ -165,11 +340,30 @@ export function JiraTicketSection({ projectId, ticket, orgId, isProjectAdmin, is
         </p>
       )}
 
-      {promoteOpen && (
+      {attached && (
+        <p className="text-xs text-text-tertiary mt-1">
+          {showSyncChoice
+            ? 'Linked from Jira — not published from SessionFS yet. Choose which side to keep when they differ.'
+            : 'Linked from Jira — not published from SessionFS yet.'}
+        </p>
+      )}
+
+      {promoteMode && (
         <PromoteToJiraDialog
           projectId={projectId}
           ticketId={ticket.id}
-          onClose={() => setPromoteOpen(false)}
+          overwrite={promoteMode === 'overwrite'}
+          onClose={() => setPromoteMode(null)}
+        />
+      )}
+
+      {pullMode && linked && (
+        <ConfirmPullDialog
+          projectId={projectId}
+          ticketId={ticket.id}
+          issueKey={linked.issue_key}
+          replacing={pullMode === 'replace'}
+          onClose={() => setPullMode(null)}
         />
       )}
 
@@ -182,6 +376,127 @@ export function JiraTicketSection({ projectId, ticket, orgId, isProjectAdmin, is
         />
       )}
     </div>
+  );
+}
+
+/**
+ * Inline "Link existing issue" form: one key field that also takes a pasted
+ * Jira link, checked client-side before anything is sent. Escape cancels.
+ */
+function LinkExistingIssueForm({
+  id,
+  projectId,
+  ticketId,
+  onCancel,
+  onLinked,
+}: {
+  id: string;
+  projectId: string;
+  ticketId: string;
+  onCancel: () => void;
+  onLinked: () => void;
+}) {
+  const link = useLinkJiraIssue(projectId);
+  const { addToast } = useToast();
+  const [value, setValue] = useState('');
+  const [fieldError, setFieldError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
+  const inputId = `${id}-key`;
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (link.isPending) return;
+    setFormError(null);
+    const parsed = parseJiraIssueInput(value);
+    const key = parsed?.key;
+    if (!key) {
+      setFieldError(value.trim() ? INVALID_KEY_MESSAGE : 'Enter a Jira issue key.');
+      document.getElementById(inputId)?.focus();
+      return;
+    }
+    // Show the normalised key (a pasted link becomes "ABC-123").
+    setValue(key);
+    setFieldError(null);
+    try {
+      const result = await link.mutateAsync({ ticketId, issueKey: key });
+      // Say which site the key was looked up on: a link pasted from another
+      // Jira site is resolved against this organization's connection.
+      const site = urlHost(result.issue_url);
+      if (parsed.host && site && parsed.host !== site) {
+        addToast(
+          'warning',
+          `Linked ${result.issue_key} on ${site}, this organization’s Jira site — not ${parsed.host}, where the pasted link points.`,
+        );
+      } else {
+        addToast('success', site ? `Linked ${result.issue_key} on ${site}` : `Linked ${result.issue_key}`);
+      }
+      onLinked();
+    } catch (err: unknown) {
+      if (jiraErrorCode(err) === 'jira_already_linked') {
+        // Linked meanwhile (another tab or person): the ticket refetch swaps
+        // this form for the linked badge, so report it and keep focus in the
+        // section rather than flash an error that is about to unmount.
+        addToast('info', 'This ticket is already linked to a Jira issue.');
+        onLinked();
+        return;
+      }
+      const { field, message } = linkErrorMessage(err);
+      if (field) setFieldError(message);
+      else setFormError(message);
+      // Keep the key editable and focused so the fix is one keystroke away.
+      document.getElementById(inputId)?.focus();
+    }
+  }
+
+  function handleKeyDown(e: KeyboardEvent) {
+    if (e.key !== 'Escape') return;
+    // Claim the key either way so a surrounding drawer doesn't close; while
+    // a link is in flight the form stays open until it settles.
+    e.preventDefault();
+    e.stopPropagation();
+    if (!link.isPending) onCancel();
+  }
+
+  return (
+    <form
+      id={id}
+      aria-label="Link an existing Jira issue"
+      noValidate
+      onSubmit={handleSubmit}
+      onKeyDown={handleKeyDown}
+      className="mt-2 max-w-sm space-y-2.5 rounded-lg border border-border bg-surface p-3"
+    >
+      <Input
+        id={inputId}
+        title="Jira issue key"
+        placeholder="PROJ-123"
+        autoFocus
+        autoComplete="off"
+        autoCapitalize="characters"
+        spellCheck={false}
+        value={value}
+        // Read-only (not disabled) while linking so focus stays in the field.
+        readOnly={link.isPending}
+        onChange={(e) => {
+          setValue(e.target.value);
+          if (fieldError) setFieldError(null);
+        }}
+        hint={fieldError ? undefined : 'Paste a key or the issue’s Jira link.'}
+        error={fieldError ?? undefined}
+        className="font-mono"
+      />
+      {formError && (
+        <Alert variant="danger">{formError}</Alert>
+      )}
+      <div className="flex items-center gap-2">
+        <Button type="submit" size="sm" variant="primary" loading={link.isPending}>
+          Link issue
+        </Button>
+        <Button type="button" size="sm" variant="ghost" disabled={link.isPending} onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </form>
   );
 }
 
@@ -280,11 +595,97 @@ function ConfirmUnlinkDialog({
   );
 }
 
+/** Messages for a failed pull (Jira → ticket). */
+function pullErrorMessage(err: unknown): string {
+  const code = jiraErrorCode(err);
+  if (code === 'jira_not_linked') return 'This ticket is no longer linked to a Jira issue.';
+  if (code === 'jira_issue_not_found') {
+    return 'The Jira issue no longer exists, or the Jira connection can’t see it.';
+  }
+  if (err instanceof ApiError && err.status === 403 && (!code || /^\d+$/.test(code) || code === 'project_edit_forbidden')) {
+    return 'You don’t have permission to update this ticket.';
+  }
+  const message = friendlyError(err);
+  return message === 'Could not load the Jira draft' ? 'Could not update the ticket from Jira.' : message;
+}
+
+function joinFields(fields: string[]): string {
+  return fields.length > 1 ? `${fields.slice(0, -1).join(', ')} and ${fields[fields.length - 1]}` : fields[0];
+}
+
+/**
+ * Confirm taking the Jira issue's text into the ticket. Says exactly what is
+ * overwritten (the ticket's title and description) and what is kept.
+ */
+function ConfirmPullDialog({
+  projectId,
+  ticketId,
+  issueKey,
+  replacing,
+  onClose,
+}: {
+  projectId: string;
+  ticketId: string;
+  issueKey: string;
+  /** Chosen from the sync menu: phrase it as overwriting this side. */
+  replacing: boolean;
+  onClose: () => void;
+}) {
+  const pull = usePullJira(projectId);
+  const { addToast } = useToast();
+  const [error, setError] = useState<string | null>(null);
+
+  async function handlePull() {
+    setError(null);
+    try {
+      const result = await pull.mutateAsync(ticketId);
+      const fields = result.updated_fields ?? [];
+      if (fields.length === 0) addToast('info', `No changes from Jira ${issueKey}`);
+      else addToast('success', `Updated the ${joinFields(fields)} from ${issueKey}`);
+      onClose();
+    } catch (err: unknown) {
+      setError(pullErrorMessage(err));
+    }
+  }
+
+  return (
+    <Dialog open onClose={onClose} titleId="jira-pull-heading">
+      <DialogHeader titleId="jira-pull-heading">
+        {replacing ? `Overwrite this ticket from ${issueKey}?` : `Update this ticket from ${issueKey}?`}
+      </DialogHeader>
+      <div className="space-y-2 text-sm text-text-secondary">
+        <p>
+          This ticket’s <span className="font-medium text-text-primary">title and description</span> are
+          overwritten with the summary and description of{' '}
+          <span className="font-mono font-medium text-text-primary">{issueKey}</span> in Jira; the replaced
+          text here is not kept. A field that’s empty in Jira is left as it is.
+        </p>
+        <p>Acceptance criteria, comments, status and everything else on the ticket stay as they are.</p>
+      </div>
+      {error && (
+        <Alert variant="danger" className="mt-3">
+          {error}
+        </Alert>
+      )}
+      <DialogFooter>
+        <Button variant="ghost" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button variant="danger" loading={pull.isPending} onClick={handlePull}>
+          Replace title and description
+        </Button>
+      </DialogFooter>
+    </Dialog>
+  );
+}
+
 /* ── Preview + publish dialog ── */
 
 interface PromoteToJiraDialogProps {
   projectId: string;
   ticketId: string;
+  /** Opened to replace an issue that was linked from Jira (explicit choice). */
+  overwrite?: boolean;
   onClose: () => void;
 }
 
@@ -292,7 +693,7 @@ function templateChoiceLabel(t: { name: string; version: number | null }): strin
   return t.version != null ? `${t.name} v${t.version}` : t.name;
 }
 
-export function PromoteToJiraDialog({ projectId, ticketId, onClose }: PromoteToJiraDialogProps) {
+export function PromoteToJiraDialog({ projectId, ticketId, overwrite = false, onClose }: PromoteToJiraDialogProps) {
   const choices = useTicketJiraTemplates(projectId, ticketId, true);
   const [picked, setPicked] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -338,7 +739,11 @@ export function PromoteToJiraDialog({ projectId, ticketId, onClose }: PromoteToJ
   return (
     <Dialog open onClose={handleClose} titleId="jira-promote-heading" className="max-w-3xl">
       <DialogHeader titleId="jira-promote-heading">
-        {preview.data?.existing ? 'Update Jira issue' : 'Promote to Jira'}
+        {overwrite || preview.data?.existing?.attached
+          ? `Replace ${preview.data?.existing?.issue_key ?? 'the Jira issue'} with this ticket`
+          : preview.data?.existing
+            ? 'Update Jira issue'
+            : 'Promote to Jira'}
       </DialogHeader>
 
       {choices.data && options.length > 0 && (
@@ -377,6 +782,7 @@ export function PromoteToJiraDialog({ projectId, ticketId, onClose }: PromoteToJ
           ticketId={ticketId}
           preview={preview.data}
           isFetching={preview.isFetching}
+          overwrite={overwrite}
           onClose={handleClose}
           onTemplateChanged={handleTemplateChanged}
         />
@@ -390,6 +796,7 @@ function JiraDraftForm({
   ticketId,
   preview,
   isFetching,
+  overwrite = false,
   onClose,
   onTemplateChanged,
 }: {
@@ -397,6 +804,7 @@ function JiraDraftForm({
   ticketId: string;
   preview: JiraPreview;
   isFetching?: boolean;
+  overwrite?: boolean;
   onClose: () => void;
   onTemplateChanged?: () => void;
 }) {
@@ -407,7 +815,13 @@ function JiraDraftForm({
   const [summary, setSummary] = useState(preview.summary);
   const [sections, setSections] = useState<JiraSection[]>(preview.sections);
   const [publishError, setPublishError] = useState<string | null>(null);
+  // Publishing over an issue that was linked from Jira replaces its text, so
+  // the draft says so and the publish carries overwrite_existing. A stale
+  // view learns it from the server's 409 and asks here instead of sending.
+  const [overwriteNeeded, setOverwriteNeeded] = useState(overwrite || !!preview.existing?.attached);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const note = templateNote(preview);
+  const existingKey = preview.existing?.issue_key ?? 'the Jira issue';
 
   function updateParagraph(sectionKey: string, index: number, text: string) {
     setSections((prev) =>
@@ -441,13 +855,21 @@ function JiraDraftForm({
           // (409 template_changed) rather than publish a different version.
           template: preview.template.slug,
           template_version: preview.template.version,
+          ...(overwriteNeeded ? { overwrite_existing: true } : {}),
         },
       });
-      addToast('success', 'Published to Jira');
+      addToast('success', overwriteNeeded ? `Replaced ${existingKey} in Jira` : 'Published to Jira');
       onClose();
     } catch (err: unknown) {
       if (jiraErrorCode(err) === 'template_changed' && onTemplateChanged) {
         onTemplateChanged();
+        return;
+      }
+      if (jiraErrorCode(err) === 'jira_overwrite_required') {
+        // Nothing was sent to Jira. Show the overwrite warning and let the
+        // user confirm it with the (now explicit) replace button.
+        setOverwriteNeeded(true);
+        scrollRef.current?.scrollTo?.({ top: 0 });
         return;
       }
       setPublishError(friendlyError(err));
@@ -456,12 +878,22 @@ function JiraDraftForm({
 
   return (
     <>
-      <div className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
-        {preview.existing && (
-          <Alert variant="info" title={`Republishing ${preview.existing.issue_key}`}>
-            This ticket is already linked; publishing updates the existing issue. Changes are shown
-            below as a diff against what was last published.
+      <div ref={scrollRef} className="space-y-4 max-h-[70vh] overflow-y-auto pr-1">
+        {overwriteNeeded ? (
+          <Alert variant="warning" title={`This replaces ${existingKey} in Jira`}>
+            {existingKey} was linked from Jira and hasn’t been published from SessionFS. Publishing
+            overwrites its <strong>summary and description</strong> in Jira with the draft below; the
+            current Jira text is not kept.
           </Alert>
+        ) : (
+          preview.existing && (
+            <Alert variant="info" title={`Republishing ${preview.existing.issue_key}`}>
+              This ticket is already linked; publishing updates the existing issue.
+              {preview.diff && preview.diff.length > 0
+                ? ' Changes are shown below as a diff against what was last published.'
+                : ''}
+            </Alert>
+          )
         )}
 
         {note && <p className="text-xs text-text-tertiary">{note}</p>}
@@ -546,12 +978,12 @@ function JiraDraftForm({
           Cancel
         </Button>
         <Button
-          variant="primary"
+          variant={overwriteNeeded ? 'danger' : 'primary'}
           disabled={publish.isPending || summary.trim() === '' || isFetching}
           loading={publish.isPending}
           onClick={handlePublish}
         >
-          {preview.existing ? 'Publish update' : 'Publish'}
+          {overwriteNeeded ? `Replace ${existingKey}` : preview.existing ? 'Publish update' : 'Publish'}
         </Button>
       </DialogFooter>
     </>

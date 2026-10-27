@@ -42,18 +42,23 @@ from sessionfs.server.auth.project_access import (
     project_session_clause,
     user_can_access_project,
     user_can_edit_project,
+    user_has_read_standing,
 )
 from sessionfs.server.db.models import (
     AgentPersona,
     AgentRun,
     KnowledgeEntry,
     KnowledgePage,
+    OrgMember,
     Organization,
+    OrgTrackerConnection,
     Project,
     Session,
     Ticket,
     TicketComment,
     TicketDependency,
+    TicketTrackerLink,
+    TrackerProjectMapping,
     User,
     WikiPageRevision,
 )
@@ -88,6 +93,9 @@ from sessionfs.server.helper.excerpts import (
     workspace_paths,
 )
 from sessionfs.server.helper.redaction import RedactionError, redact
+from sessionfs.server.integrations.trackers.base import TrackerError
+from sessionfs.server.services import jira_sync
+from sessionfs.server.services.jira_links import JiraLinkError, normalize_link_issue_key
 from sessionfs.server.services.session_archive import extract_archive
 from sessionfs.server.services.session_models import (
     escape_like,
@@ -188,6 +196,11 @@ _SOURCE_WIKI_RE = re.compile(r"\[wiki:(?P<project_id>proj_[0-9a-f]{16})/(?P<slug
 FEATURE_TICKETS = "agent_tickets"
 FEATURE_AGENT_RUNS = "agent_runs"
 FEATURE_PERSONAS = "agent_personas"
+FEATURE_JIRA = "jira_integration"
+
+# A get_jira_issue read is bounded to this wall-clock (the Jira client itself
+# times out per request at 20 s), so one tool call can't stall a whole turn.
+JIRA_ISSUE_TIMEOUT_SECONDS = 30.0
 
 
 class ToolArgumentError(ValueError):
@@ -232,6 +245,15 @@ def _optional_str(args: dict[str, Any], key: str) -> str | None:
     if not isinstance(value, str):
         raise ToolArgumentError(f"'{key}' must be a string")
     return value.strip() or None
+
+
+def _optional_bool(args: dict[str, Any], key: str) -> bool:
+    value = args.get(key, False)
+    if value is None:
+        return False
+    if not isinstance(value, bool):
+        raise ToolArgumentError(f"'{key}' must be a boolean")
+    return value
 
 
 def _capped_int(
@@ -326,6 +348,7 @@ def _refs(
     project_ids: list[str] | None = None,
     doc_slugs: list[str] | None = None,
     ticket_ids: list[str] | None = None,
+    jira_issue_keys: list[str] | None = None,
     wiki_refs: list[tuple[str, str]] | None = None,
     message_refs: list[tuple[str, int]] | None = None,
 ) -> dict[str, list[Any]]:
@@ -342,6 +365,8 @@ def _refs(
         out["doc_slugs"] = sorted(set(doc_slugs))
     if ticket_ids:
         out["ticket_ids"] = sorted(set(ticket_ids))
+    if jira_issue_keys:
+        out["jira_issue_keys"] = sorted(set(jira_issue_keys))
     if wiki_refs:
         out["wiki_refs"] = sorted({(pid, slug) for pid, slug in wiki_refs})
     if message_refs:
@@ -450,7 +475,12 @@ async def _accessible_projects(ctx: HelperContext) -> list[Project]:
     widens it (same rules as ``_list_projects`` / ``_accessible_project``)."""
     if ctx.scope.project_id is not None:
         project = await _accessible_project(ctx, ctx.scope.project_id)
-        return [project] if project is not None else []
+        # A scope project merged since the thread started is a tombstone:
+        # its tickets, personas and sessions now live on the target, so it
+        # lists nothing (GitHub #111) — same as the projects route.
+        if project is None or project.merged_into_project_id is not None:
+            return []
+        return [project]
     if ctx.scope.session_ids:
         allowed = await _scoped_session_project_ids(ctx)
         return [
@@ -2037,6 +2067,7 @@ async def _propose_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
     if not isinstance(title, str):
         raise ToolArgumentError("'title' is required")
     assignee = _optional_str(args, "assignee_persona")
+    publish_to_jira = _optional_bool(args, "publish_to_jira")
     # Same shape rules as the tickets route (``TicketCreate``) plus the
     # helper's write limits; an over-length draft is refused, not truncated.
     try:
@@ -2064,16 +2095,75 @@ async def _propose_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
             "Tickets are not available on this project's plan.", refs=_refs()
         )
 
+    # Publishing to Jira is an optional extension of the create: only when the
+    # caller asks for it do we gate on the same preconditions the confirm will
+    # re-check.  Any refusal here returns no proposal row.
+    jira_project_key: str | None = None
+    if publish_to_jira:
+        if not await user_can_edit_project(ctx.db, ctx.user.id, project):
+            return ToolOutput(
+                "Cannot publish to Jira: publishing requires editor access to "
+                "the project.",
+                refs=_refs(project_ids=[project_id]),
+            )
+        if not await _feature_allowed(ctx, FEATURE_JIRA, project):
+            return ToolOutput(
+                "Cannot publish to Jira: the organization's plan does not "
+                "include Jira integration.",
+                refs=_refs(project_ids=[project_id]),
+            )
+        if project.org_id is None:
+            return ToolOutput(
+                "Cannot publish to Jira: this project is not org-scoped.",
+                refs=_refs(project_ids=[project_id]),
+            )
+        conn = (
+            await ctx.db.execute(
+                select(OrgTrackerConnection).where(
+                    OrgTrackerConnection.org_id == project.org_id
+                )
+            )
+        ).scalar_one_or_none()
+        if conn is None or not conn.enabled:
+            return ToolOutput(
+                "Cannot publish to Jira: this organization has not connected "
+                "Jira.",
+                refs=_refs(project_ids=[project_id]),
+            )
+        mapping = (
+            await ctx.db.execute(
+                select(TrackerProjectMapping).where(
+                    TrackerProjectMapping.project_id == project.id,
+                    TrackerProjectMapping.org_id == project.org_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if mapping is None:
+            return ToolOutput(
+                "Cannot publish to Jira: this project has no Jira mapping. Ask "
+                "an admin to add a mapping.",
+                refs=_refs(project_ids=[project_id]),
+            )
+        jira_project_key = mapping.jira_project_key
+
     # A drafted assignee resolves exactly like propose_assignment: a persona
-    # name, or a human org member to the persona representing them.
+    # name, or a human org member to the persona representing them, or a
+    # teammate email/id to a direct-to-person assignment (GitHub #96).
     assigned_to: str | None = None
+    assigned_user_id: str | None = None
+    assignee_name: str | None = None
     if assignee:
         try:
-            assigned_to = await resolve_assignee(
+            resolved = await resolve_assignee(
                 ctx.db, project=project, user_id=ctx.user.id, name=assignee
             )
         except HelperDraftError as exc:
             raise ToolArgumentError(str(exc)) from None
+        if resolved.kind == "persona":
+            assigned_to = resolved.persona_name
+        else:
+            assigned_user_id = resolved.user_id
+            assignee_name = resolved.display_name
 
     # The model draft is stored redacted — it is user-authored free text drawn
     # from the caller's own data.
@@ -2085,9 +2175,23 @@ async def _propose_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
         "priority": draft.priority,
         "kind": draft.kind,
         "assigned_to": assigned_to,
+        "assigned_user_id": assigned_user_id,
+        "assignee_name": assignee_name,
         "sources": sources,
     }
-    summary = redact(f"Create {_article(draft.kind)} {draft.kind} ticket in {project.name}", ctx.dlp_policy)
+    if publish_to_jira:
+        params["publish_to_jira"] = True
+        params["jira_project_key"] = jira_project_key
+    summary = redact(
+        f"Create {_article(draft.kind)} {draft.kind} ticket in {project.name}",
+        ctx.dlp_policy,
+    )
+    if publish_to_jira:
+        summary = redact(
+            f"Create {_article(draft.kind)} {draft.kind} ticket in {project.name} "
+            f"and publish it to Jira {jira_project_key}",
+            ctx.dlp_policy,
+        )
     return _propose_action(
         ctx,
         kind="create_ticket",
@@ -2128,40 +2232,63 @@ async def _propose_assignment(ctx: HelperContext, args: dict[str, Any]) -> ToolO
         )
 
     try:
-        canonical = await resolve_assignee(
+        resolved = await resolve_assignee(
             ctx.db, project=project, user_id=ctx.user.id, name=persona_name
         )
     except HelperDraftError as exc:
         raise ToolArgumentError(str(exc)) from None
+
+    # A readable "before" label for either a persona or a person assignment.
     before = ticket.assigned_to
-    if before == canonical:
+    if ticket.assigned_user_id:
+        before_user = await ctx.db.get(User, ticket.assigned_user_id)
+        if before_user is not None:
+            before = before_user.display_name or before_user.email
+
+    if resolved.kind == "persona":
+        after = resolved.persona_name or ""
+        unchanged = (
+            ticket.assigned_user_id is None and ticket.assigned_to == resolved.persona_name
+        )
+        params: dict[str, Any] = {
+            "ticket_id": ticket.id,
+            "project_id": ticket.project_id,
+            "assigned_to": resolved.persona_name,
+        }
+    else:
+        after = resolved.display_name or resolved.user_id or ""
+        unchanged = ticket.assigned_user_id == resolved.user_id
+        params = {
+            "ticket_id": ticket.id,
+            "project_id": ticket.project_id,
+            "assigned_user_id": resolved.user_id,
+            "assignee_name": resolved.display_name,
+        }
+
+    if unchanged:
         return ToolOutput(
             "Nothing to change: the ticket is already assigned to "
-            f"{canonical}.\n"
+            f"{after}.\n"
             + _format_action_targets(
-                [{"id": ticket.id, "name": ticket.title, "change": "unchanged", "before": before, "after": canonical}]
+                [{"id": ticket.id, "name": ticket.title, "change": "unchanged", "before": before, "after": after}]
             ),
             refs=_refs(project_ids=[ticket.project_id], ticket_ids=[ticket.id]),
         )
 
-    summary = redact(f"Assign {ticket.title} to {canonical}", ctx.dlp_policy)
+    summary = redact(f"Assign {ticket.title} to {after}", ctx.dlp_policy)
     return _propose_action(
         ctx,
         kind="assign_ticket",
         # ``project_id`` pins the ticket's project: confirm refuses if the
         # ticket has moved since.
-        params={
-            "ticket_id": ticket.id,
-            "project_id": ticket.project_id,
-            "assigned_to": canonical,
-        },
+        params=params,
         targets=[
             {
                 "id": ticket.id,
                 "name": ticket.title,
                 "change": "will_change",
                 "before": before,
-                "after": canonical,
+                "after": after,
             }
         ],
         summary=summary,
@@ -2180,6 +2307,7 @@ async def _propose_comment(ctx: HelperContext, args: dict[str, Any]) -> ToolOutp
     sources = _validate_sources(
         ctx, args.get("sources"), required_fields=("body",)
     )
+    send_to_jira = _optional_bool(args, "send_to_jira")
 
     ticket = (
         await ctx.db.execute(select(Ticket).where(Ticket.id == ticket_id))
@@ -2197,14 +2325,255 @@ async def _propose_comment(ctx: HelperContext, args: dict[str, Any]) -> ToolOutp
         "body": redact(body, ctx.dlp_policy),
         "sources": sources,
     }
-    summary = redact(f"Comment on {ticket.title}", ctx.dlp_policy)
+    refs = _refs(project_ids=[ticket.project_id], ticket_ids=[ticket.id])
+    issue_key: str | None = None
+    if send_to_jira:
+        # Refuse (no proposal row) when the Jira path can't be honoured, so the
+        # helper can propose without send_to_jira instead of silently dropping
+        # the flag.  Confirm re-checks every one of these before writing.
+        target = await jira_sync._sync_target(ctx.db, ticket.id)
+        if target is None:
+            return ToolOutput(
+                f"Cannot post to Jira: ticket {ticket.title} is not linked to a "
+                "Jira issue. Propose without send_to_jira, or link the ticket first.",
+                refs=refs,
+            )
+        link, _conn = target
+        if not await user_can_edit_project(ctx.db, ctx.user.id, project):
+            return ToolOutput(
+                "Cannot post to Jira: posting to Jira requires editor access to "
+                "the project. Propose without send_to_jira.",
+                refs=refs,
+            )
+        if not await _feature_allowed(ctx, FEATURE_JIRA, project):
+            return ToolOutput(
+                "Cannot post to Jira: the organization's plan does not include "
+                "Jira integration. Propose without send_to_jira.",
+                refs=refs,
+            )
+        if not await jira_sync.comment_forwarding_enabled(ctx.db, ticket.id):
+            return ToolOutput(
+                "Cannot post to Jira: the organization's Jira comment sync is not "
+                "set to outbound/both. Propose without send_to_jira, or ask an "
+                "org admin to enable outbound comment sync.",
+                refs=refs,
+            )
+        issue_key = link.issue_key
+        params["send_to_jira"] = True
+        params["issue_key"] = issue_key
+
+    if send_to_jira:
+        summary = redact(
+            f"Comment on {ticket.title} (will also be posted to Jira issue {issue_key})",
+            ctx.dlp_policy,
+        )
+    else:
+        summary = redact(f"Comment on {ticket.title}", ctx.dlp_policy)
     return _propose_action(
         ctx,
         kind="comment_ticket",
         params=params,
         targets=[{"id": ticket.id, "name": ticket.title, "change": "will_change"}],
         summary=summary,
-        refs=_refs(project_ids=[ticket.project_id], ticket_ids=[ticket.id]),
+        refs=refs,
+    )
+
+
+async def _propose_jira_link(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    ticket_id = _require_str(args, "ticket_id")
+    raw_key = _require_str(args, "issue_key")
+    try:
+        issue_key = normalize_link_issue_key(raw_key)
+    except JiraLinkError as exc:
+        return ToolOutput(f"Cannot link to Jira: {exc.message}", refs=_refs())
+
+    ticket = (
+        await ctx.db.execute(select(Ticket).where(Ticket.id == ticket_id))
+    ).scalar_one_or_none()
+    if ticket is None:
+        return ToolOutput("Ticket not found.", refs=_refs())
+    project = await _accessible_project(ctx, ticket.project_id)
+    if project is None or not await _feature_allowed(ctx, FEATURE_TICKETS, project):
+        return ToolOutput("Ticket not found.", refs=_refs())
+
+    refs = _refs(project_ids=[ticket.project_id], ticket_ids=[ticket.id])
+
+    # Refuse (no proposal row) when any precondition can't be honoured, so the
+    # helper never proposes a link the confirm would refuse.  Confirm re-checks
+    # every one of these before writing.
+    if not await user_can_edit_project(ctx.db, ctx.user.id, project):
+        return ToolOutput(
+            "Cannot link to Jira: linking requires editor access to the project.",
+            refs=refs,
+        )
+    if not await _feature_allowed(ctx, FEATURE_JIRA, project):
+        return ToolOutput(
+            "Cannot link to Jira: the organization's plan does not include "
+            "Jira integration.",
+            refs=refs,
+        )
+    if project.org_id is None:
+        return ToolOutput(
+            "Cannot link to Jira: this project is not org-scoped.",
+            refs=refs,
+        )
+    conn = (
+        await ctx.db.execute(
+            select(OrgTrackerConnection).where(
+                OrgTrackerConnection.org_id == project.org_id
+            )
+        )
+    ).scalar_one_or_none()
+    if conn is None or not conn.enabled:
+        return ToolOutput(
+            "Cannot link to Jira: this organization has not connected Jira.",
+            refs=refs,
+        )
+    mapping = (
+        await ctx.db.execute(
+            select(TrackerProjectMapping).where(
+                TrackerProjectMapping.project_id == project.id,
+                TrackerProjectMapping.org_id == project.org_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if mapping is None:
+        return ToolOutput(
+            "Cannot link to Jira: this project has no Jira mapping. Ask an "
+            "admin to add a mapping.",
+            refs=refs,
+        )
+
+    existing = (
+        await ctx.db.execute(
+            select(TicketTrackerLink.ticket_id).where(
+                TicketTrackerLink.ticket_id == ticket.id
+            )
+        )
+    ).first()
+    if existing is not None:
+        return ToolOutput(
+            f"Cannot link to Jira: ticket {ticket.title} already has a Jira link.",
+            refs=refs,
+        )
+
+    summary = redact(f"Link {ticket.title} to Jira {issue_key}", ctx.dlp_policy)
+    return _propose_action(
+        ctx,
+        kind="link_jira",
+        params={
+            "ticket_id": ticket.id,
+            # Pins the ticket's project: confirm refuses if the ticket has moved.
+            "project_id": ticket.project_id,
+            "issue_key": issue_key,
+        },
+        targets=[{"id": ticket.id, "name": ticket.title, "change": "will_change"}],
+        summary=summary,
+        refs=refs,
+    )
+
+
+async def _propose_jira_overwrite(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    ticket_id = _require_str(args, "ticket_id")
+    direction = _require_str(args, "direction")
+    if direction not in ("to_jira", "from_jira"):
+        raise ToolArgumentError("'direction' must be 'to_jira' or 'from_jira'")
+
+    ticket = (
+        await ctx.db.execute(select(Ticket).where(Ticket.id == ticket_id))
+    ).scalar_one_or_none()
+    if ticket is None:
+        return ToolOutput("Ticket not found.", refs=_refs())
+    project = await _accessible_project(ctx, ticket.project_id)
+    if project is None or not await _feature_allowed(ctx, FEATURE_TICKETS, project):
+        return ToolOutput("Ticket not found.", refs=_refs())
+
+    refs = _refs(project_ids=[ticket.project_id], ticket_ids=[ticket.id])
+
+    # Same preconditions as propose_jira_link, except the ticket must already
+    # carry a linked issue (whose key the proposal reuses) and no remote read
+    # is made.  Confirm re-checks every one of these before writing.
+    if not await user_can_edit_project(ctx.db, ctx.user.id, project):
+        return ToolOutput(
+            "Cannot overwrite Jira: overwriting requires editor access to the project.",
+            refs=refs,
+        )
+    if direction == "from_jira" and ticket.created_by_user_id != ctx.user.id:
+        from sessionfs.server.auth.project_access import user_is_project_admin
+
+        if not await user_is_project_admin(ctx.db, ctx.user.id, project):
+            return ToolOutput(
+                "Cannot update the ticket from Jira: only the ticket's creator or "
+                "a project admin may replace its title and description.",
+                refs=refs,
+            )
+    if not await _feature_allowed(ctx, FEATURE_JIRA, project):
+        return ToolOutput(
+            "Cannot overwrite Jira: the organization's plan does not include "
+            "Jira integration.",
+            refs=refs,
+        )
+    if project.org_id is None:
+        return ToolOutput(
+            "Cannot overwrite Jira: this project is not org-scoped.",
+            refs=refs,
+        )
+    conn = (
+        await ctx.db.execute(
+            select(OrgTrackerConnection).where(
+                OrgTrackerConnection.org_id == project.org_id
+            )
+        )
+    ).scalar_one_or_none()
+    if conn is None or not conn.enabled:
+        return ToolOutput(
+            "Cannot overwrite Jira: this organization has not connected Jira.",
+            refs=refs,
+        )
+    mapping = (
+        await ctx.db.execute(
+            select(TrackerProjectMapping).where(
+                TrackerProjectMapping.project_id == project.id,
+                TrackerProjectMapping.org_id == project.org_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if mapping is None:
+        return ToolOutput(
+            "Cannot overwrite Jira: this project has no Jira mapping. Ask an "
+            "admin to add a mapping.",
+            refs=refs,
+        )
+
+    link = (
+        await ctx.db.execute(
+            select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+        )
+    ).scalar_one_or_none()
+    if link is None or link.status != "linked" or not link.issue_key:
+        return ToolOutput(
+            f"Cannot overwrite Jira: ticket {ticket.title} has no linked Jira issue.",
+            refs=refs,
+        )
+
+    issue_key = link.issue_key
+    if direction == "to_jira":
+        summary = redact(f"Replace Jira {issue_key} with {ticket.title}", ctx.dlp_policy)
+    else:
+        summary = redact(f"Replace {ticket.title} with Jira {issue_key}", ctx.dlp_policy)
+    return _propose_action(
+        ctx,
+        kind="jira_overwrite",
+        params={
+            "ticket_id": ticket.id,
+            # Pins the ticket's project: confirm refuses if the ticket has moved.
+            "project_id": ticket.project_id,
+            "issue_key": issue_key,
+            "direction": direction,
+        },
+        targets=[{"id": ticket.id, "name": ticket.title, "change": "will_change"}],
+        summary=summary,
+        refs=refs,
     )
 
 
@@ -2273,8 +2642,33 @@ async def _get_sessionfs_doc(
 # ---------------------------------------------------------------------------
 
 
-def _format_ticket_line(t: Ticket, project_name: str) -> str:
-    assignee = t.assigned_to or "unassigned"
+def _assignee_label(
+    t: Ticket, users: dict[str, User], *, show_email: bool = False
+) -> str:
+    """Readable assignee: the direct person assignment when set, else persona.
+
+    ``users`` is a batch-loaded id → User map so lists don't hit the user
+    table once per ticket (GitHub #96). The email fallback is masked unless
+    the caller has read standing on the ticket's project — a captured-session
+    reader (possibly outside the org) must not learn teammates' addresses.
+    The display name is user-controlled, so brackets/control characters are
+    neutralised before it reaches the model.
+    """
+    if t.assigned_user_id:
+        user = users.get(t.assigned_user_id)
+        if user is not None:
+            if user.display_name:
+                return _clean_meta(user.display_name) or t.assigned_user_id
+            from sessionfs.server.email import mask_address
+
+            return _clean_meta(user.email if show_email else mask_address(user.email))
+        return t.assigned_user_id
+    return t.assigned_to or "unassigned"
+
+
+def _format_ticket_line(t: Ticket, project_name: str, assignee: str | None = None) -> str:
+    if assignee is None:
+        assignee = t.assigned_to or "unassigned"
     return (
         f"[ticket:{t.id}] {t.title} "
         f"(kind: {t.kind}, status: {t.status}, priority: {t.priority or '—'}, "
@@ -2378,7 +2772,10 @@ async def _list_tickets(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
         # Case-insensitive to match the list_tickets route (tk_884b2321fdb74170).
         stmt = stmt.where(func.lower(Ticket.assigned_to) == assignee.lower())
     if assigned_to_me:
-        conditions: list[ColumnElement[bool]] = [Ticket.created_by_user_id == ctx.user.id]
+        conditions: list[ColumnElement[bool]] = [
+            Ticket.created_by_user_id == ctx.user.id,
+            Ticket.assigned_user_id == ctx.user.id,
+        ]
         for pid, names in (await _my_persona_names(ctx, projects)).items():
             conditions.append(
                 and_(
@@ -2402,8 +2799,35 @@ async def _list_tickets(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
     if not shown:
         return ToolOutput("No tickets matched.", refs=_refs())
 
+    assigned_user_ids = {t.assigned_user_id for t in shown if t.assigned_user_id}
+    assigned_users = (
+        {
+            u.id: u
+            for u in (
+                await ctx.db.execute(
+                    select(User).where(User.id.in_(sorted(assigned_user_ids)))
+                )
+            ).scalars().all()
+        }
+        if assigned_user_ids
+        else {}
+    )
+    # Full teammate emails only on projects where the caller has read
+    # standing (not merely a captured session).
+    standing_by_project: dict[str, bool] = {}
+    project_by_id = {p.id: p for p in projects}
+    for pid in {t.project_id for t in shown if t.assigned_user_id}:
+        standing_by_project[pid] = await user_has_read_standing(
+            ctx.db, ctx.user.id, project_by_id[pid]
+        )
     text = "\n".join(
-        _format_ticket_line(t, project_names.get(t.project_id, t.project_id))
+        _format_ticket_line(
+            t,
+            project_names.get(t.project_id, t.project_id),
+            _assignee_label(
+                t, assigned_users, show_email=standing_by_project.get(t.project_id, False)
+            ),
+        )
         for t in shown
     )
     if truncated:
@@ -2417,6 +2841,22 @@ async def _list_tickets(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
             ticket_ids=[t.id for t in shown],
         ),
     )
+
+
+def _jira_comment_author(comment: TicketComment) -> str:
+    """The Jira author name for a mirrored comment, without the ``(Jira)`` tag.
+
+    Inbound Jira comments store ``author_persona`` as ``"<name> (Jira)"`` (the
+    label used across the ticket surface).  The helper already prefixes the
+    line with "Jira comment by", so the tag is stripped here to avoid
+    "Jira comment by Alice (Jira)".  Control characters and brackets in the
+    stored name are neutralised first so a mirrored display name can't forge a
+    citation marker or break the one-line rendering.
+    """
+    name = _clean_meta(comment.author_persona or "")
+    if name.endswith(jira_sync.JIRA_SUFFIX):
+        name = name[: -len(jira_sync.JIRA_SUFFIX)].strip()
+    return name or "a Jira user"
 
 
 async def _get_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
@@ -2463,7 +2903,24 @@ async def _get_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
         f"kind: {ticket.kind} | status: {ticket.status} | "
         f"priority: {ticket.priority or '—'}"
     )
-    lines.append(f"assignee: {ticket.assigned_to or 'unassigned'}")
+    assigned_user = (
+        await ctx.db.get(User, ticket.assigned_user_id)
+        if ticket.assigned_user_id
+        else None
+    )
+    users = {ticket.assigned_user_id: assigned_user} if assigned_user is not None else {}
+    show_email = bool(users) and await user_has_read_standing(
+        ctx.db, ctx.user.id, project
+    )
+    lines.append(f"assignee: {_assignee_label(ticket, users, show_email=show_email)}")
+    # A live Jira link is shown up top so the model knows the issue key/url
+    # (and can cite them); a stale/removed link is simply absent.
+    jira_target = await jira_sync._sync_target(ctx.db, ticket.id)
+    if jira_target is not None:
+        jira_link, _jira_conn = jira_target
+        lines.append(
+            f"jira: {jira_link.issue_key} ({jira_link.issue_url}) — linked"
+        )
     lines.append(f"created: {_fmt_dt_with_age(ticket.created_at)}")
     lines.append(f"updated: {_fmt_dt_with_age(ticket.updated_at)}")
     if ticket.resolved_at:
@@ -2492,9 +2949,15 @@ async def _get_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
     if comments:
         lines.append(f"comments (last {len(comments)}):")
         for c in reversed(comments):
-            author = c.author_persona or "user"
             body = _cap(c.content or "", MAX_TICKET_COMMENT_CHARS)
-            lines.append(f"- [{_fmt_dt_with_age(c.created_at)}] {author}: {body}")
+            if c.source == "jira":
+                lines.append(
+                    f"- [{_fmt_dt_with_age(c.created_at)}] Jira comment by "
+                    f"{_jira_comment_author(c)}: {body}"
+                )
+            else:
+                author = c.author_persona or "user"
+                lines.append(f"- [{_fmt_dt_with_age(c.created_at)}] {author}: {body}")
     else:
         lines.append("comments: none")
 
@@ -2506,6 +2969,109 @@ async def _get_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
             ticket_ids=sorted(
                 {ticket.id, *shown_deps, *([parent_id] if parent_id else [])}
             ),
+        ),
+    )
+
+
+async def _get_jira_issue(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    """Read the Jira issue linked to a sessionfs ticket (read-only).
+
+    Takes a ticket id, never a free-form Jira key: the key is resolved from the
+    ticket's live link, so this can only ever read an issue the ticket already
+    points at.  Re-checks project access (inside the conversation's scope), the
+    org-membership rule the Jira routes enforce (acting through the org's
+    credential), the ``jira_integration`` plan gate, and the live link.
+    """
+    ticket_id = _require_str(args, "ticket_id")
+    ticket = (
+        await ctx.db.execute(select(Ticket).where(Ticket.id == ticket_id))
+    ).scalar_one_or_none()
+    if ticket is None:
+        return ToolOutput("Ticket not found.", refs=_refs())
+    project = await _accessible_project(ctx, ticket.project_id)
+    if project is None or not await _feature_allowed(ctx, FEATURE_TICKETS, project):
+        return ToolOutput("Ticket not found.", refs=_refs())
+    if not await _feature_allowed(ctx, FEATURE_JIRA, project):
+        return ToolOutput(
+            "Jira integration is not available for this project's plan.",
+            refs=_refs(project_ids=[ticket.project_id], ticket_ids=[ticket.id]),
+        )
+
+    target = await jira_sync._sync_target(ctx.db, ticket.id)
+    if target is None:
+        return ToolOutput(
+            f"Ticket {ticket.id} has no linked Jira issue.",
+            refs=_refs(project_ids=[ticket.project_id], ticket_ids=[ticket.id]),
+        )
+    link, conn = target
+
+    # Reading through the org's Jira credential needs org membership, not just
+    # project read access (same rule as the Jira routes for a non-member who
+    # can still read the project through a captured session).
+    member = (
+        await ctx.db.execute(
+            select(OrgMember.id).where(
+                OrgMember.org_id == link.org_id, OrgMember.user_id == ctx.user.id
+            )
+        )
+    ).first()
+    if member is None:
+        return ToolOutput(
+            "Only members of this project's organization can read its Jira issues.",
+            refs=_refs(project_ids=[ticket.project_id], ticket_ids=[ticket.id]),
+        )
+
+    client = jira_sync._client(conn)
+    try:
+        detail = await asyncio.wait_for(
+            client.get_issue_detail(link.issue_key),
+            timeout=JIRA_ISSUE_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        return ToolOutput(
+            "Timed out reading the Jira issue.",
+            refs=_refs(project_ids=[ticket.project_id], ticket_ids=[ticket.id]),
+        )
+    except TrackerError as exc:
+        return ToolOutput(
+            f"Could not read the Jira issue: {exc}",
+            refs=_refs(project_ids=[ticket.project_id], ticket_ids=[ticket.id]),
+        )
+    finally:
+        await client.aclose()
+
+    # The summary and comment bodies are remote Jira content, so they are framed
+    # as data fields (not folded into the header) and attributed like the
+    # mirrored comments in get_ticket ("Jira comment by <author>").
+    lines = [f"Jira issue {detail.key}"]
+    lines.append(f"url: {detail.url}")
+    lines.append(f"summary: {detail.summary or '(no summary)'}")
+    if detail.issue_type:
+        lines.append(f"type: {detail.issue_type}")
+    lines.append(f"status: {detail.status or '—'}")
+    lines.append(f"assignee: {_clean_meta(detail.assignee) or 'unassigned'}")
+    lines.append(f"priority: {detail.priority or '—'}")
+    lines.append(f"labels: {', '.join(detail.labels) if detail.labels else 'none'}")
+    lines.append(
+        f"components: {', '.join(detail.components) if detail.components else 'none'}"
+    )
+    lines.append(f"updated: {_fmt_dt_with_age(detail.updated_at) or '—'}")
+    comments = detail.comments or []
+    if comments:
+        lines.append(f"comments (last {len(comments)}):")
+        for c in comments:
+            author = _clean_meta(c.author_name) or "a Jira user"
+            body = _cap(c.body_text, MAX_TICKET_COMMENT_CHARS)
+            lines.append(f"- [{_fmt_dt_with_age(c.created)}] Jira comment by {author}: {body}")
+    else:
+        lines.append("comments: none")
+
+    return ToolOutput(
+        "\n".join(lines),
+        refs=_refs(
+            project_ids=[ticket.project_id],
+            ticket_ids=[ticket.id],
+            jira_issue_keys=[detail.key],
         ),
     )
 
@@ -3163,6 +3729,23 @@ TOOLS: dict[str, HelperTool] = {
             handler=_get_ticket,
         ),
         HelperTool(
+            name="get_jira_issue",
+            description=(
+                "Read-only view of the Jira issue linked to one sessionfs ticket "
+                "(tk_…): summary, status, assignee, priority, labels, components, "
+                "updated time and the latest comments. Takes a ticket id, never a "
+                "free-form Jira key; the issue is resolved from the ticket's live "
+                "link, so this can only read what the ticket already points at."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"ticket_id": {"type": "string"}},
+                "required": ["ticket_id"],
+                "additionalProperties": False,
+            },
+            handler=_get_jira_issue,
+        ),
+        HelperTool(
             name="list_wiki_pages",
             description="List a project's wiki pages (title + updated date).",
             input_schema={
@@ -3269,7 +3852,9 @@ TOOLS: dict[str, HelperTool] = {
                 "PROPOSE creating a ticket. Nothing changes until the user "
                 "confirms in the dashboard. Never claim the ticket exists "
                 "until it is confirmed; do not invent requirements — every "
-                "field must be grounded in the conversation."
+                "field must be grounded in the conversation. Set "
+                "publish_to_jira=true only when the user asks for the new "
+                "ticket to go to Jira."
             ),
             input_schema={
                 "type": "object",
@@ -3284,7 +3869,8 @@ TOOLS: dict[str, HelperTool] = {
                     },
                     "priority": {"type": "string", "enum": sorted(_VALID_PRIORITIES)},
                     "kind": {"type": "string", "enum": sorted(_VALID_TICKET_KINDS)},
-                    "assignee_persona": {"type": "string"},
+                    "assignee_persona": {"type": "string", "description": "Persona name, or a teammate email/user id (direct assignment), or a display name (their represented persona when one exists, else the person)."},
+                    "publish_to_jira": {"type": "boolean"},
                     "sources": {
                         "type": "object",
                         "properties": {
@@ -3307,17 +3893,21 @@ TOOLS: dict[str, HelperTool] = {
         HelperTool(
             name="propose_assignment",
             description=(
-                "PROPOSE assigning a ticket to a persona (or to a person via "
-                "their represented persona). Nothing changes until the user "
+                "PROPOSE assigning a ticket to a persona, or directly to a "
+                "teammate. An assignee name resolves in order: an exact "
+                "persona name; a teammate's email or user id (direct person "
+                "assignment); a teammate's display name to the persona "
+                "representing them when exactly one does; otherwise a display "
+                "name to that teammate. Nothing changes until the user "
                 "confirms. Only the ticket creator or a project admin may "
-                "assign, and only a project editor may reassign a ticket "
-                "that is in progress or held by a work queue."
+                "assign, and only a project editor may reassign a ticket that "
+                "is in progress or held by a work queue."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "ticket_id": {"type": "string"},
-                    "persona_name": {"type": "string"},
+                    "persona_name": {"type": "string", "description": "Persona name, or a teammate email/user id (direct assignment), or a display name (their represented persona when one exists, else the person)."},
                 },
                 "required": ["ticket_id", "persona_name"],
                 "additionalProperties": False,
@@ -3329,13 +3919,17 @@ TOOLS: dict[str, HelperTool] = {
             description=(
                 "PROPOSE posting a comment on a ticket as the user. Nothing "
                 "changes until the user confirms. The comment is a plain user "
-                "comment — it never carries a review verdict."
+                "comment — it never carries a review verdict. If send_to_jira "
+                "is true and the ticket has a live Jira link plus comment "
+                "forwarding, the comment will also be posted to the linked Jira "
+                "issue once confirmed."
             ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "ticket_id": {"type": "string"},
                     "body": {"type": "string", "maxLength": MAX_COMMENT_CHARS},
+                    "send_to_jira": {"type": "boolean", "default": False},
                     "sources": {
                         "type": "object",
                         "properties": {
@@ -3349,6 +3943,49 @@ TOOLS: dict[str, HelperTool] = {
                 "additionalProperties": False,
             },
             handler=_propose_comment,
+        ),
+        HelperTool(
+            name="propose_jira_link",
+            description=(
+                "PROPOSE linking a ticket to an existing Jira issue by its key "
+                "(e.g. ABC-123). Nothing changes until the user confirms. "
+                "Linking reads the issue to verify it but never writes to Jira; "
+                "it is how a ticket gets attached to a Jira issue that already "
+                "exists instead of publishing a new one."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "ticket_id": {"type": "string"},
+                    "issue_key": {"type": "string"},
+                },
+                "required": ["ticket_id", "issue_key"],
+                "additionalProperties": False,
+            },
+            handler=_propose_jira_link,
+        ),
+        HelperTool(
+            name="propose_jira_overwrite",
+            description=(
+                "PROPOSE replacing one side of a linked ticket↔Jira pair with "
+                "the other. Nothing changes until the user confirms. Direction "
+                "'to_jira' overwrites the linked Jira issue's summary and "
+                "description from the ticket (re-publishing it); 'from_jira' "
+                "overwrites the ticket's title and description from the Jira "
+                "issue. An empty remote summary or description (from_jira) "
+                "leaves the corresponding ticket field unchanged rather than "
+                "blanking it."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "ticket_id": {"type": "string"},
+                    "direction": {"type": "string", "enum": ["to_jira", "from_jira"]},
+                },
+                "required": ["ticket_id", "direction"],
+                "additionalProperties": False,
+            },
+            handler=_propose_jira_overwrite,
         ),
     ]
 }

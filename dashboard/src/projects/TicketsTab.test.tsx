@@ -1,12 +1,13 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import TicketsTab from './TicketsTab';
 import { ApiError } from '../api/client';
 import { axe } from '../test/axe';
 
-const { hooks, mockAddToast, mockUseMe, mockUseJiraLink } = vi.hoisted(() => ({
+const { hooks, mockAddToast, mockUseMe, mockUseJiraLink, mockUsePersonas } = vi.hoisted(() => ({
   mockUseJiraLink: vi.fn(),
+  mockUsePersonas: vi.fn(),
   hooks: {
     useTickets: vi.fn(),
     useTicket: vi.fn(),
@@ -22,6 +23,8 @@ const { hooks, mockAddToast, mockUseMe, mockUseJiraLink } = vi.hoisted(() => ({
     useTicketWatchers: vi.fn(),
     useWatchTicket: vi.fn(),
     useUnwatchTicket: vi.fn(),
+    useUpdateTicket: vi.fn(),
+    useAssignableUsers: vi.fn(),
   },
   mockAddToast: vi.fn(),
   mockUseMe: vi.fn(),
@@ -34,6 +37,9 @@ vi.mock('../hooks/useJiraTickets', async (importOriginal) => ({
 }));
 vi.mock('../hooks/useMe', () => ({
   useMe: mockUseMe,
+}));
+vi.mock('../hooks/usePersonas', () => ({
+  usePersonas: mockUsePersonas,
 }));
 vi.mock('../hooks/useToast', () => ({
   useToast: () => ({ addToast: mockAddToast }),
@@ -85,6 +91,27 @@ function ticket(overrides: Record<string, unknown> = {}) {
   };
 }
 
+const ASSIGNABLE = [
+  { id: 'u1', display_name: 'Ola Dev', email: 'ola@example.test', can_edit: true },
+  { id: 'u2', display_name: 'Sam Rivera', email: 'sam@example.test', can_edit: true },
+  { id: 'u3', display_name: null, email: 'kim@example.test', can_edit: false },
+];
+
+function persona(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'pers_1', project_id: 'proj_1', org_id: null, scope: 'project', name: 'atlas', role: 'Backend engineer',
+    content: '', specializations: [], is_active: true, version: 1, created_by: 'u1', represented_user_id: null,
+    created_at: '2026-05-14T00:00:00Z', updated_at: '2026-05-14T00:00:00Z',
+    ...overrides,
+  };
+}
+
+const PERSONAS = [
+  persona(),
+  persona({ id: 'pers_2', project_id: null, org_id: 'org_1', scope: 'org', name: 'sentinel', role: 'Security reviewer', represented_user_id: 'u2' }),
+  persona({ id: 'pers_3', name: 'retired', is_active: false }),
+];
+
 function watcher(overrides: Record<string, unknown> = {}) {
   return {
     user_id: 'u1',
@@ -111,6 +138,9 @@ beforeEach(() => {
   hooks.useTicketWatchers.mockReturnValue({ data: [] });
   hooks.useWatchTicket.mockReturnValue(makeMutation());
   hooks.useUnwatchTicket.mockReturnValue(makeMutation());
+  hooks.useUpdateTicket.mockReturnValue(makeMutation());
+  hooks.useAssignableUsers.mockReturnValue({ data: ASSIGNABLE, isLoading: false });
+  mockUsePersonas.mockReturnValue({ data: PERSONAS, isLoading: false });
   mockUseMe.mockReturnValue({ data: { user_id: 'u1' }, isLoading: false });
   mockUseJiraLink.mockReturnValue({ data: undefined, refetch: vi.fn() });
 });
@@ -868,5 +898,221 @@ describe('TicketsTab', () => {
     const rows = within(screen.getByRole('region', { name: 'Activity' })).getAllByRole('listitem').map((li) => li.textContent ?? '');
     expect(rows[0]).toMatch(/Status pushed: In progress → Jira “Start”/);
     expect(rows[1]).toMatch(/Status pushed: Done → Jira “Done”/);
+  });
+
+  /* ── Assignees: people and personas ── */
+
+  describe('assignees', () => {
+    const PERSON_TICKET = {
+      assigned_to: null,
+      assigned_user_id: 'u2',
+      assigned_user: { id: 'u2', display_name: 'Sam Rivera', email: 'sam@example.test' },
+    };
+
+    it('shows a person assignee with an avatar in the list, a persona as before', () => {
+      hooks.useTickets.mockReturnValue({
+        data: [ticket(PERSON_TICKET), ticket({ id: 'tk_2', title: 'Second' })],
+        isLoading: false,
+        error: null,
+      });
+      const { container } = render(<TicketsTab projectId="proj_1" />);
+      const person = container.querySelector('[data-assignee="person"]')!;
+      expect(person).toHaveTextContent('SSam Rivera');
+      expect(person.querySelector('[aria-hidden="true"]')).toHaveTextContent('S');
+      expect(container.querySelector('[data-assignee="persona"]')).toHaveTextContent('atlas');
+    });
+
+    it('shows a person assignee on board cards', () => {
+      localStorage.setItem('sfs-tickets-view', 'board');
+      hooks.useTickets.mockReturnValue({ data: [ticket(PERSON_TICKET)], isLoading: false, error: null });
+      render(<TicketsTab projectId="proj_1" />);
+      const card = screen.getByRole('button', { name: /Add session export/ });
+      expect(within(card).getByText('Sam Rivera')).toBeInTheDocument();
+    });
+
+    it('shows a person assignee in the detail header', () => {
+      hooks.useTickets.mockReturnValue({ data: [ticket(PERSON_TICKET)], isLoading: false, error: null });
+      render(<TicketsTab projectId="proj_1" />);
+      fireEvent.click(screen.getByText('Add session export'));
+      const header = screen.getByRole('button', { name: 'Reassign' }).parentElement!;
+      expect(header).toHaveTextContent(/^Assigned to SSam Rivera/);
+      expect(header.querySelector('[data-assignee="person"]')).toBeInTheDocument();
+    });
+
+    it('filters to tickets assigned to me and says so when there are none', async () => {
+      const user = userEvent.setup();
+      render(<TicketsTab projectId="proj_1" />);
+      const toggle = screen.getByRole('button', { name: 'Assigned to me' });
+      expect(toggle).toHaveAttribute('aria-pressed', 'false');
+      hooks.useTickets.mockReturnValue({ data: [], isLoading: false, error: null });
+      await user.click(toggle);
+      expect(hooks.useTickets).toHaveBeenLastCalledWith('proj_1', expect.objectContaining({ assigned_user: 'me' }));
+      expect(screen.getByRole('button', { name: 'Assigned to me' })).toHaveAttribute('aria-pressed', 'true');
+      expect(screen.getByText('No tickets assigned to you.')).toBeInTheDocument();
+    });
+
+    it('follows a controlled filter value', async () => {
+      const user = userEvent.setup();
+      const onChange = vi.fn();
+      render(<TicketsTab projectId="proj_1" assignedToMe onAssignedToMeChange={onChange} />);
+      expect(hooks.useTickets).toHaveBeenLastCalledWith('proj_1', expect.objectContaining({ assigned_user: 'me' }));
+      await user.click(screen.getByRole('button', { name: 'Assigned to me' }));
+      expect(onChange).toHaveBeenCalledWith(false);
+    });
+
+    it('creates a ticket assigned to a person, with the persona field cleared', async () => {
+      const user = userEvent.setup();
+      const create = makeMutation();
+      hooks.useCreateTicket.mockReturnValue(create);
+      render(<TicketsTab projectId="proj_1" />);
+      await user.click(screen.getByRole('button', { name: /New ticket/i }));
+      await user.type(screen.getByLabelText('Title'), 'Export');
+      await user.type(screen.getByLabelText('Description (markdown)'), 'Body');
+      await user.click(screen.getByRole('button', { name: 'Assignee' }));
+      await user.click(screen.getByRole('option', { name: /Sam Rivera/ }));
+      expect(screen.getByTestId('assignee-note')).toHaveTextContent('Notifies Sam Rivera');
+      await user.click(screen.getByRole('button', { name: 'Create' }));
+      expect(create.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ assigned_user_id: 'u2', assigned_to: null }),
+      );
+    });
+
+    it('creates a ticket assigned to a persona and warns that no one is notified', async () => {
+      const user = userEvent.setup();
+      const create = makeMutation();
+      hooks.useCreateTicket.mockReturnValue(create);
+      render(<TicketsTab projectId="proj_1" />);
+      await user.click(screen.getByRole('button', { name: /New ticket/i }));
+      await user.type(screen.getByLabelText('Title'), 'Export');
+      await user.type(screen.getByLabelText('Description (markdown)'), 'Body');
+      await user.click(screen.getByRole('button', { name: 'Assignee' }));
+      await user.click(screen.getByRole('option', { name: /atlas/ }));
+      expect(screen.getByTestId('assignee-note')).toHaveTextContent(/No one is notified: atlas/);
+      await user.click(screen.getByRole('button', { name: 'Create' }));
+      expect(create.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ assigned_to: 'atlas', assigned_user_id: null }),
+      );
+    });
+
+    it('creates an unassigned ticket by default', async () => {
+      const user = userEvent.setup();
+      const create = makeMutation();
+      hooks.useCreateTicket.mockReturnValue(create);
+      render(<TicketsTab projectId="proj_1" />);
+      await user.click(screen.getByRole('button', { name: /New ticket/i }));
+      await user.type(screen.getByLabelText('Title'), 'Export');
+      await user.type(screen.getByLabelText('Description (markdown)'), 'Body');
+      await user.click(screen.getByRole('button', { name: 'Create' }));
+      expect(create.mutateAsync).toHaveBeenCalledWith(
+        expect.objectContaining({ assigned_to: null, assigned_user_id: null }),
+      );
+    });
+
+    it('shows an ineligible person as a field error on create', async () => {
+      const user = userEvent.setup();
+      const create = makeMutation({
+        mutateAsync: vi.fn().mockRejectedValue(
+          new ApiError(422, JSON.stringify({ error: { code: 'assignee_not_eligible', message: 'not a member' } })),
+        ),
+      });
+      hooks.useCreateTicket.mockReturnValue(create);
+      render(<TicketsTab projectId="proj_1" />);
+      await user.click(screen.getByRole('button', { name: /New ticket/i }));
+      await user.type(screen.getByLabelText('Title'), 'Export');
+      await user.type(screen.getByLabelText('Description (markdown)'), 'Body');
+      await user.click(screen.getByRole('button', { name: 'Assignee' }));
+      await user.click(screen.getByRole('option', { name: /kim@example\.test/ }));
+      await user.click(screen.getByRole('button', { name: 'Create' }));
+      expect(await screen.findByRole('alert')).toHaveTextContent("That person can't be assigned tickets in this project.");
+      expect(mockAddToast).toHaveBeenCalledWith('error', expect.stringMatching(/can't be assigned/));
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+
+    it('reassigns from persona to person, sending the persona as null', async () => {
+      const user = userEvent.setup();
+      const update = makeMutation();
+      hooks.useUpdateTicket.mockReturnValue(update);
+      render(<TicketsTab projectId="proj_1" />);
+      fireEvent.click(screen.getByText('Add session export'));
+      await user.click(screen.getByRole('button', { name: 'Reassign' }));
+      const picker = screen.getByRole('button', { name: 'Assignee' });
+      expect(picker).toHaveFocus();
+      expect(picker).toHaveTextContent('atlas');
+      expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+      await user.click(picker);
+      await user.click(screen.getByRole('option', { name: /Ola Dev/ }));
+      expect(screen.getByTestId('assignee-note')).toHaveTextContent('Notifies you');
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+      expect(update.mutateAsync).toHaveBeenCalledWith({
+        ticketId: 'tk_1',
+        body: { assigned_user_id: 'u1', assigned_to: null },
+      });
+      expect(mockAddToast).toHaveBeenCalledWith('success', 'Assignee updated');
+      expect(screen.queryByRole('group', { name: 'Reassign ticket' })).toBeNull();
+      expect(screen.getByRole('button', { name: 'Reassign' })).toHaveFocus();
+    });
+
+    it('reassigns from person to persona and maps a conflict error', async () => {
+      const user = userEvent.setup();
+      const update = makeMutation({
+        mutateAsync: vi.fn().mockRejectedValue(
+          new ApiError(422, JSON.stringify({ error: { code: '422', message: 'conflict', details: { error: 'assignee_conflict' } } })),
+        ),
+      });
+      hooks.useUpdateTicket.mockReturnValue(update);
+      hooks.useTickets.mockReturnValue({ data: [ticket(PERSON_TICKET)], isLoading: false, error: null });
+      render(<TicketsTab projectId="proj_1" />);
+      fireEvent.click(screen.getByText('Add session export'));
+      await user.click(screen.getByRole('button', { name: 'Reassign' }));
+      await user.click(screen.getByRole('button', { name: 'Assignee' }));
+      await user.click(screen.getByRole('option', { name: /sentinel/ }));
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+      expect(update.mutateAsync).toHaveBeenCalledWith({
+        ticketId: 'tk_1',
+        body: { assigned_to: 'sentinel', assigned_user_id: null },
+      });
+      expect(await screen.findByRole('alert')).toHaveTextContent('A ticket can be assigned to a person or a persona, not both.');
+      // The editor stays open so the choice can be fixed.
+      expect(screen.getByRole('group', { name: 'Reassign ticket' })).toBeInTheDocument();
+    });
+
+    it('unassigns and offers Assign on an unassigned ticket', async () => {
+      const user = userEvent.setup();
+      const update = makeMutation();
+      hooks.useUpdateTicket.mockReturnValue(update);
+      render(<TicketsTab projectId="proj_1" />);
+      fireEvent.click(screen.getByText('Add session export'));
+      await user.click(screen.getByRole('button', { name: 'Reassign' }));
+      await user.click(screen.getByRole('button', { name: 'Assignee' }));
+      await user.click(screen.getByRole('option', { name: /Unassigned/ }));
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+      expect(update.mutateAsync).toHaveBeenCalledWith({
+        ticketId: 'tk_1',
+        body: { assigned_to: null, assigned_user_id: null },
+      });
+      cleanup();
+      hooks.useTickets.mockReturnValue({ data: [ticket({ assigned_to: null })], isLoading: false, error: null });
+      render(<TicketsTab projectId="proj_1" />);
+      fireEvent.click(screen.getByText('Add session export'));
+      expect(screen.getByRole('button', { name: 'Assign' })).toBeInTheDocument();
+    });
+
+    it('hides Reassign from an editor who is neither the creator nor a project admin', () => {
+      render(
+        <TicketsTab
+          projectId="proj_1"
+          viewer={{ canEdit: true, userId: 'u9' }}
+          jira={{ orgId: 'org_1', isProjectAdmin: false, isEnterprise: false }}
+        />,
+      );
+      fireEvent.click(screen.getByText('Add session export'));
+      expect(screen.queryByRole('button', { name: 'Reassign' })).toBeNull();
+    });
+
+    it('offers Reassign to the ticket creator even without edit rights', () => {
+      render(<TicketsTab projectId="proj_1" viewer={{ canEdit: false, userId: 'u1' }} />);
+      fireEvent.click(screen.getByText('Add session export'));
+      expect(screen.getByRole('button', { name: 'Reassign' })).toBeInTheDocument();
+    });
   });
 });

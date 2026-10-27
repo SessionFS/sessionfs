@@ -11,6 +11,8 @@ import {
   Select,
   Textarea,
 } from '../../components/ui';
+import { AssigneePicker } from './AssigneePicker';
+import { UNASSIGNED, assigneeErrorFrom, assigneePayload, type Assignee } from './assignee';
 
 /* ── New ticket modal ── */
 
@@ -29,7 +31,8 @@ export function NewTicketModal({ projectId, onClose }: NewModalProps) {
   const [priority, setPriority] = useState<
     'low' | 'medium' | 'high' | 'critical'
   >('medium');
-  const [assignedTo, setAssignedTo] = useState('');
+  const [assignee, setAssignee] = useState<Assignee>(UNASSIGNED);
+  const [assigneeError, setAssigneeError] = useState<string | undefined>();
   const [kind, setKind] = useState<'task' | 'issue'>('task');
   const [parentTicketId, setParentTicketId] = useState<string>('');
   const [submitting, setSubmitting] = useState(false);
@@ -52,6 +55,7 @@ export function NewTicketModal({ projectId, onClose }: NewModalProps) {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSubmitting(true);
+    setAssigneeError(undefined);
     try {
       const acceptanceCriteria = criteria
         .split('\n')
@@ -61,7 +65,7 @@ export function NewTicketModal({ projectId, onClose }: NewModalProps) {
         title: title.trim(),
         description: description.trim(),
         priority,
-        assigned_to: assignedTo.trim() || null,
+        ...assigneePayload(assignee),
         acceptance_criteria: acceptanceCriteria,
         kind,
         parent_ticket_id:
@@ -70,7 +74,9 @@ export function NewTicketModal({ projectId, onClose }: NewModalProps) {
       addToast('success', `Created ${kind} "${title.trim()}"`);
       onClose();
     } catch (exc) {
-      addToast('error', `Create failed: ${errorMessage(exc)}`);
+      const assigneeProblem = assigneeErrorFrom(exc);
+      if (assigneeProblem) setAssigneeError(assigneeProblem);
+      addToast('error', `Create failed: ${assigneeProblem ?? errorMessage(exc)}`);
     } finally {
       setSubmitting(false);
     }
@@ -152,7 +158,7 @@ export function NewTicketModal({ projectId, onClose }: NewModalProps) {
           placeholder="Migration adds ... table\nTier gate enforces ...\nTests cover ..."
         />
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-2 gap-3 items-start">
           <Select
             id="field-priority"
             value={priority}
@@ -168,14 +174,15 @@ export function NewTicketModal({ projectId, onClose }: NewModalProps) {
             ]}
           />
 
-          <Input
-            id="field-assign-to"
-            type="text"
-            value={assignedTo}
-            onChange={(e) => setAssignedTo(e.target.value)}
-            title="Assign to persona"
-            placeholder="atlas, sentinel, ..."
-            className="font-mono"
+          <AssigneePicker
+            id="field-assignee"
+            projectId={projectId}
+            value={assignee}
+            onChange={(next) => {
+              setAssignee(next);
+              setAssigneeError(undefined);
+            }}
+            error={assigneeError}
           />
         </div>
 

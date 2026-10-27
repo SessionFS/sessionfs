@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useToast } from '../../hooks/useToast';
 import {
   useAddTicketComment,
@@ -23,6 +23,8 @@ import { Badge } from '../../components/Badge';
 import { PRIORITY_TONE, STATUS_DOT, STATUS_VARIANT, formatStatusLabel } from './constants';
 import { KindBadge } from './KindBadge';
 import { JiraTicketSection } from './JiraPromote';
+import { AssigneeLabel } from './AssigneeLabel';
+import { ReassignPanel } from './ReassignPanel';
 import { ticketActionAllowed, useTicketViewer } from './viewer';
 import { errorMessage } from '../../utils/errorMessage';
 import { jiraErrorCode, jiraSyncEventLabel, jiraSyncStateLabel } from '../../utils/jira';
@@ -45,6 +47,8 @@ interface DetailProps {
   orgId?: string | null;
   isProjectAdmin?: boolean;
   isEnterprise?: boolean;
+  /** Project editor (`can_edit`); older servers omit it, so default true. */
+  canEdit?: boolean;
   /** Rendered inside a drawer that already frames it: drop the panel chrome. */
   bare?: boolean;
 }
@@ -59,6 +63,7 @@ export function TicketDetail({
   orgId,
   isProjectAdmin,
   isEnterprise,
+  canEdit = true,
   bare = false,
 }: DetailProps) {
   const { data: detail } = useTicket(projectId, ticketId);
@@ -83,6 +88,14 @@ export function TicketDetail({
   const [draft, setDraft] = useState('');
   const [sendToJira, setSendToJira] = useState(false);
   const [submitting, setSubmitting] = useState<Action | null>(null);
+  const [reassigning, setReassigning] = useState(false);
+  // Closing the reassign editor hands focus back to the button that opened it.
+  const reassignButtonRef = useRef<HTMLButtonElement>(null);
+  const wasReassigning = useRef(false);
+  useEffect(() => {
+    if (wasReassigning.current && !reassigning) reassignButtonRef.current?.focus();
+    wasReassigning.current = reassigning;
+  }, [reassigning]);
 
   // Ticket watching (follow / unfollow / mute). The current user's row is
   // derived from the watchers list + the me profile, so no extra "am I
@@ -177,6 +190,11 @@ export function TicketDetail({
     (t.status === 'suggested' || t.status === 'open') && ticketActionAllowed('dismiss', t, viewer);
   const canClose =
     t.kind === 'issue' && t.status === 'in_progress' && ticketActionAllowed('close', t, viewer);
+  // PUT /tickets/{id} admits the ticket's creator or a project admin. The
+  // admin flag only arrives with the Jira surface; without it, editors see
+  // the control and the server has the final say.
+  const isCreator = !!viewer.userId && t.created_by_user_id === viewer.userId;
+  const canReassign = isCreator || (viewer.canEdit && (isProjectAdmin ?? true));
 
   const timeline = useMemo(
     () => buildTimeline(t, comments ?? [], syncEvents?.events ?? [], reviewState?.review_state?.rounds ?? []),
@@ -276,8 +294,10 @@ export function TicketDetail({
                         size="sm"
                       />
                       <span className="truncate text-text-primary">{child.title}</span>
-                      {child.assigned_to && (
-                        <span className="text-xs text-text-tertiary">→ {child.assigned_to}</span>
+                      {(child.assigned_to || child.assigned_user_id) && (
+                        <span className="inline-flex min-w-0 items-center gap-1 text-xs text-text-tertiary">
+                          → <AssigneeLabel ticket={child} />
+                        </span>
                       )}
                     </>
                   ) : q?.isError ? (
@@ -308,13 +328,24 @@ export function TicketDetail({
             <span className={`text-xs uppercase tracking-wide ${PRIORITY_TONE[t.priority] ?? 'text-text-secondary'}`}>
               {t.priority}
             </span>
-            <span className="text-xs text-text-secondary">
-              {t.assigned_to ? (
+            <span className="inline-flex min-w-0 items-center gap-1 text-xs text-text-secondary">
+              {t.assigned_to || t.assigned_user_id ? (
                 <>
-                  Assigned to <span className="font-medium text-text-primary">{t.assigned_to}</span>
+                  Assigned to <AssigneeLabel ticket={t} emphasis />
                 </>
               ) : (
                 <span className="text-text-tertiary">Unassigned</span>
+              )}
+              {canReassign && !reassigning && (
+                <Button
+                  ref={reassignButtonRef}
+                  variant="ghost"
+                  size="sm"
+                  className="!px-1.5 !py-0.5 !text-xs !font-normal !text-brand"
+                  onClick={() => setReassigning(true)}
+                >
+                  {t.assigned_to || t.assigned_user_id ? 'Reassign' : 'Assign'}
+                </Button>
               )}
             </span>
           </div>
@@ -324,6 +355,10 @@ export function TicketDetail({
           </div>
         </div>
 
+        {reassigning && (
+          <ReassignPanel projectId={projectId} ticket={t} onDone={() => setReassigning(false)} />
+        )}
+
         {orgId && (
           <JiraTicketSection
             projectId={projectId}
@@ -331,6 +366,7 @@ export function TicketDetail({
             orgId={orgId}
             isProjectAdmin={isProjectAdmin ?? false}
             isEnterprise={isEnterprise ?? false}
+            canEdit={canEdit}
           />
         )}
 

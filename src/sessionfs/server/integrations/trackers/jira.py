@@ -12,6 +12,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+from dataclasses import dataclass
 from urllib.parse import quote
 
 import httpx
@@ -32,6 +33,11 @@ _SITE_URL_RE = re.compile(r"^https://[a-z0-9-]+\.atlassian\.net$")
 # part is the issue sequence. Keys are validated before being interpolated into
 # any URL path so a malformed remote key can never escape the browse link.
 _ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$")
+
+# Control characters (including newlines and tabs) plus DEL in remote display
+# names are collapsed to spaces so a hostile Jira user object can't break the
+# helper's one-line rendering or forge a citation marker.
+_DISPLAY_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 # Only safe URL schemes may become ADF link marks; ``javascript:``/``data:``/
 # anything else is emitted as plain text instead of a clickable link.
@@ -369,6 +375,57 @@ def adf_to_text(adf: dict) -> str:
 # Comments read when looking for a SessionFS outbox reference before posting.
 _MARKER_LOOKUP_PAGE = 20
 
+# Caps applied when the session helper reads a Jira issue: only the newest few
+# comments and only the first N characters of each body are surfaced, so an
+# issue full of long evidence comments can never blow the helper's response.
+_ISSUE_DETAIL_MAX_COMMENTS = 5
+_ISSUE_DETAIL_MAX_COMMENT_CHARS = 1_500
+
+
+@dataclass
+class JiraIssueComment:
+    """One comment on a Jira issue, flattened for the session helper."""
+
+    id: str
+    author_name: str
+    created: str | None = None
+    body_text: str = ""
+
+
+@dataclass
+class JiraIssueDetail:
+    """A read-only snapshot of a Jira issue for the session helper."""
+
+    key: str
+    url: str
+    summary: str | None = None
+    issue_type: str | None = None
+    status: str | None = None
+    assignee: str | None = None
+    labels: list[str] | None = None
+    components: list[str] | None = None
+    priority: str | None = None
+    updated_at: str | None = None
+    comments: list[JiraIssueComment] | None = None
+
+
+def _display_name(user: object) -> str:
+    """Best available display name for a Jira user object.
+
+    Jira user objects (``assignee``, comment ``author``) carry ``displayName``.
+    An author with only an ``emailAddress`` is "unknown" — callers fall back to
+    "a Jira user" — so a PII'd email address is never echoed into helper
+    output.  Control characters (including newlines) are collapsed to spaces so
+    a remote name can't break the one-line helper rendering.  Never returns an
+    account id or a raw object; empty string means "unknown".
+    """
+    if not isinstance(user, dict):
+        return ""
+    name = user.get("displayName")
+    if isinstance(name, str) and name.strip():
+        return _DISPLAY_CONTROL_RE.sub(" ", name).strip()
+    return ""
+
 
 class JiraClient:
     """Async Jira Cloud REST v3 client using Atlassian API-token Basic auth.
@@ -501,10 +558,14 @@ class JiraClient:
                 self._sanitize(
                     "Jira authentication failed — check the account email "
                     "and API token"
-                )
+                ),
+                status_code=resp.status_code,
             )
         if resp.status_code >= 400:
-            raise TrackerError(self._sanitize(_response_detail(resp, body)))
+            raise TrackerError(
+                self._sanitize(_response_detail(resp, body)),
+                status_code=resp.status_code,
+            )
         return self._parse_json(resp, body)
 
     async def validate_connection(self) -> dict:
@@ -709,17 +770,22 @@ class JiraClient:
         data = await self._request(
             "GET",
             f"/rest/api/3/issue/{quote(key)}",
-            params={"fields": "status,updated"},
+            params={"fields": "status,updated,project"},
         )
         fields = data.get("fields") if isinstance(data, dict) else {}
         status: str | None = None
         updated: str | None = None
+        project_key: str | None = None
         if isinstance(fields, dict):
             raw_status = fields.get("status")
             # A non-dict/missing status (a malformed or partially-filled issue)
             # yields None rather than crashing on ``.get``.
             status = raw_status.get("name", "") if isinstance(raw_status, dict) else None
             updated = fields.get("updated")
+            raw_project = fields.get("project")
+            project_key = (
+                raw_project.get("key") if isinstance(raw_project, dict) else None
+            )
         raw_key = data.get("key", key) if isinstance(data, dict) else key
         if _ISSUE_KEY_RE.match(raw_key or ""):
             key = raw_key
@@ -729,7 +795,142 @@ class JiraClient:
             status=status,
             updated_at=updated,
             id=str(data.get("id")) if data.get("id") is not None else None,
+            project_key=project_key,
         )
+
+    async def get_issue_summary_and_description(
+        self, issue_key: str
+    ) -> tuple[str | None, dict | None]:
+        """Read a linked issue's summary + description ADF for the pull path.
+
+        ``get_issue`` only fetches status/updated/project, and the description
+        is a full ADF document, so this is its own narrow projection.
+        """
+        key = validate_issue_key(issue_key)
+        data = await self._request(
+            "GET",
+            f"/rest/api/3/issue/{quote(key)}",
+            params={"fields": "summary,description"},
+        )
+        fields = data.get("fields") if isinstance(data, dict) else {}
+        if not isinstance(fields, dict):
+            fields = {}
+        summary = fields.get("summary")
+        description = fields.get("description")
+        return (
+            summary if isinstance(summary, str) else None,
+            description if isinstance(description, dict) else None,
+        )
+
+    async def get_issue_detail(
+        self,
+        issue_key: str,
+        *,
+        max_comments: int = _ISSUE_DETAIL_MAX_COMMENTS,
+        max_comment_chars: int = _ISSUE_DETAIL_MAX_COMMENT_CHARS,
+    ) -> JiraIssueDetail:
+        """Read a Jira issue for the session helper: summary, status, assignee,
+        labels, components, priority, updated time, and the newest few comments.
+
+        Unlike ``get_issue`` this is a read-only projection intended for a
+        helper to summarise an issue, so it fetches a few extra fields and one
+        small page of comments. Comment count and body length are capped so the
+        result stays bounded regardless of how large the issue is.
+        """
+        key = validate_issue_key(issue_key)
+        data = await self._request(
+            "GET",
+            f"/rest/api/3/issue/{quote(key)}",
+            params={
+                "fields": "summary,issuetype,status,priority,assignee,labels,"
+                "components,updated"
+            },
+        )
+        fields = data.get("fields") if isinstance(data, dict) else {}
+        if not isinstance(fields, dict):
+            fields = {}
+
+        def name_of(raw: object) -> str:
+            if isinstance(raw, dict):
+                n = raw.get("name")
+                return n if isinstance(n, str) else ""
+            return ""
+
+        def names_of(raw: object) -> list[str]:
+            out: list[str] = []
+            if isinstance(raw, list):
+                for item in raw:
+                    if isinstance(item, dict):
+                        n = item.get("name")
+                        if isinstance(n, str) and n.strip():
+                            out.append(n.strip())
+            return out
+
+        labels_raw = fields.get("labels")
+        labels = (
+            [str(label) for label in labels_raw if label is not None]
+            if isinstance(labels_raw, list)
+            else None
+        )
+
+        raw_key = data.get("key", key) if isinstance(data, dict) else key
+        if _ISSUE_KEY_RE.match(raw_key or ""):
+            key = raw_key
+
+        comments = await self._list_recent_comments(
+            key, max_comments=max_comments, max_comment_chars=max_comment_chars
+        )
+
+        return JiraIssueDetail(
+            key=key,
+            url=self._browse_url(key),
+            summary=fields.get("summary") if isinstance(fields.get("summary"), str) else None,
+            issue_type=name_of(fields.get("issuetype")) or None,
+            status=name_of(fields.get("status")) or None,
+            assignee=_display_name(fields.get("assignee")) or None,
+            labels=labels,
+            components=names_of(fields.get("components")) or None,
+            priority=name_of(fields.get("priority")) or None,
+            updated_at=fields.get("updated") if isinstance(fields.get("updated"), str) else None,
+            comments=comments,
+        )
+
+    async def _list_recent_comments(
+        self, key: str, *, max_comments: int, max_comment_chars: int
+    ) -> list[JiraIssueComment]:
+        """Newest ``max_comments`` comments on ``key``, oldest-first.
+
+        Each body is truncated to ``max_comment_chars`` characters. Comment
+        authors are resolved to a display name via :func:`_display_name`.
+        """
+        if max_comments <= 0:
+            return []
+        data = await self._request(
+            "GET",
+            f"/rest/api/3/issue/{quote(key)}/comment",
+            params={"orderBy": "-created", "maxResults": str(max_comments)},
+        )
+        comments = data.get("comments") if isinstance(data, dict) else None
+        if not isinstance(comments, list):
+            return []
+        newest_first: list[JiraIssueComment] = []
+        for comment in comments[:max_comments]:
+            if not isinstance(comment, dict):
+                continue
+            cid = comment.get("id")
+            if cid is None:
+                continue
+            body = comment.get("body")
+            text = adf_to_text(body) if isinstance(body, dict) else str(body or "")
+            newest_first.append(
+                JiraIssueComment(
+                    id=str(cid),
+                    author_name=_display_name(comment.get("author")),
+                    created=comment.get("created") if isinstance(comment.get("created"), str) else None,
+                    body_text=text[:max_comment_chars],
+                )
+            )
+        return list(reversed(newest_first))
 
     async def find_transition(self, issue_key: str, transition_name: str) -> dict | None:
         """The transition named ``transition_name`` (exact, then

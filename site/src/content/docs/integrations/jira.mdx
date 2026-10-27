@@ -18,6 +18,11 @@ Anyone who can write to a ticket can:
 - **Check status**: the linked issue key, URL and current Jira status (cached for 60 seconds).
 - **Unlink** it (project admins). The Jira issue itself is left alone.
 
+Anyone who can edit a ticket can also:
+
+- **Link an existing issue** instead of creating one (v0.27.0). See [Link an existing issue](#link-an-existing-issue).
+- **Update from Jira**: replace a linked ticket's title and description with the issue's.
+
 A ticket links to at most one Jira issue, so publishing again updates the same issue instead of creating a duplicate. Publishing is safe to retry: each issue carries a `sessionfs-<ticket_id>` label, and if Jira doesn't answer in time the next publish finds and adopts the issue before creating a new one. Two publishes of the same ticket at once can't both create an issue, and a description over Jira's 32,000-character limit is refused before anything is sent.
 
 ## Setup
@@ -45,6 +50,22 @@ A ticket links to at most one Jira issue, so publishing again updates the same i
    ```
 
 The Integrations tab also shows health (`sfs org jira health`); see [In the dashboard](#in-the-dashboard).
+
+## Link an existing issue
+
+When the work is already tracked in Jira, link the ticket to that issue instead of publishing a new one. On a ticket, **Link existing issue** takes an issue key such as `PAY-142`, or call `POST /api/v1/projects/{pid}/tickets/{tid}/jira/link` with `{"issue_key": "PAY-142"}`. Linking needs edit rights on the ticket. SessionFS reads the issue to check that it exists, belongs to the Jira project mapped to this project and isn't already linked to another ticket, then records the link. Nothing is sent to Jira.
+
+A linked issue that has never been published from SessionFS can differ from the ticket, so you choose which side wins:
+
+- **Overwrite KEY in Jira** publishes the ticket over the issue, replacing its summary and description. Publishing such an issue is refused with `409 jira_overwrite_required` until you confirm the overwrite: the dashboard asks first, the CLI takes `--overwrite-existing`, and the API takes `"overwrite_existing": true` on publish. After that first publish, later publishes update the issue as usual.
+- **Update from Jira** replaces the ticket's title and description with the issue's summary and description (`sfs ticket jira pull`, or `POST /api/v1/projects/{pid}/tickets/{tid}/jira/pull` with `{"confirm": true}`). An empty Jira summary or description leaves that ticket field unchanged, the pulled text goes through your org's DLP policy, and nothing is pushed back to Jira. Pulling needs a user key and edit rights on the ticket; the change is recorded in the ticket's edit history like any other edit.
+
+```bash
+sfs ticket jira publish tk_abc123 --from preview.json --overwrite-existing
+sfs ticket jira pull    tk_abc123
+```
+
+The [session helper](/session-helper/#actions) can propose the same link and either overwrite for you to confirm.
 
 ## In the dashboard
 
@@ -294,6 +315,8 @@ Every reworded paragraph has to cite a real part of the ticket (a description li
 | POST | `/api/v1/projects/{pid}/tickets/{tid}/jira/publish` | Create or update the issue |
 | GET | `/api/v1/projects/{pid}/tickets/{tid}/jira` | Linked issue and cached status |
 | DELETE | `/api/v1/projects/{pid}/tickets/{tid}/jira` | Unlink (project admin) |
+| POST | `/api/v1/projects/{pid}/tickets/{tid}/jira/link` | Link the ticket to an existing Jira issue (`issue_key`; v0.27.0) |
+| POST | `/api/v1/projects/{pid}/tickets/{tid}/jira/pull` | Overwrite the ticket's title and description from the linked issue (`confirm: true`; user keys only; v0.27.0) |
 | POST | `/api/v1/webhooks/jira/{org_id}` | Jira Cloud inbound webhook (HMAC-signed) for two-way sync |
 | POST | `/api/v1/admin/sweeps/jira-sync` | Deliver due outbound sync events and expire old ones (`platform_sweeps:run`) |
 | GET | `/api/v1/projects/{pid}/tickets/{tid}/jira-sync-events` | Sync events for a linked ticket |

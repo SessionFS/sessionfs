@@ -93,6 +93,10 @@ from sessionfs.server.services.project_settings import (
     set_project_auto_narrative,
 )
 from sessionfs.server.services.session_trash import soft_delete_session
+from sessionfs.server.services import jira_sync
+from sessionfs.server.config import dashboard_link_base
+from sessionfs.server.integrations.trackers.promote import ContentTooLarge
+from sessionfs.server.services.jira_links import JiraLinkError
 from sessionfs.server.services.helper_ticket_actions import (
     HelperDraftError,
     check_comment_body,
@@ -102,6 +106,10 @@ from sessionfs.server.services.helper_ticket_actions import (
     assign_ticket_action,
     create_comment_action,
     create_ticket_action,
+    jira_overwrite_action,
+    jira_publish_preflight,
+    link_jira_action,
+    publish_ticket_to_jira,
 )
 from sessionfs.server.tier_gate import (
     UserContext,
@@ -140,7 +148,7 @@ _PG_STATEMENT_TIMEOUT_MS = 10_000
 # into the single ``{scope}`` / ``{date}`` slots; user text and tool output are
 # never part of the system text.  Bump the version when the wording changes so
 # stored behaviour is attributable.
-_HELPER_SYSTEM_PROMPT_VERSION = "v7"
+_HELPER_SYSTEM_PROMPT_VERSION = "v11"
 
 # The prompt's tool routing table.  Every name here must be a real tool in
 # ``TOOLS`` and every tool in ``TOOLS`` must be routed somewhere (a test
@@ -152,6 +160,7 @@ _TOOL_ROUTING: tuple[tuple[str, tuple[str, ...]], ...] = (
         "owns what) — sessionfs tickets",
         ("list_tickets", "get_ticket"),
     ),
+    ("the linked Jira issue for a ticket", ("get_jira_issue",)),
     ("current state — curated project knowledge", ("search_project_knowledge",)),
     ("current state — the compiled project context", ("get_project_context",)),
     ("current state — wiki pages", ("list_wiki_pages", "get_wiki_page")),
@@ -185,6 +194,8 @@ _TOOL_ROUTING: tuple[tuple[str, tuple[str, ...]], ...] = (
             "propose_ticket",
             "propose_assignment",
             "propose_comment",
+            "propose_jira_link",
+            "propose_jira_overwrite",
         ),
     ),
 )
@@ -219,10 +230,13 @@ _HELPER_SYSTEM_PROMPT = (
     "- a wiki page: [wiki:<project_id>/<slug>].\n"
     "- a SessionFS docs page: [doc:<slug>#<anchor>].\n"
     "Only cite a ticket or wiki page that one of your tools returned this "
-    "turn. \"tickets\" always means sessionfs tickets (ids like tk_…); Jira "
-    "issues (ids like KEY-123) are a different system and you have no tool to "
-    "read them, so say that if the caller asks about Jira. If you cannot "
-    "find the answer, say so rather than guessing.\n"
+    "turn. \"tickets\" always means sessionfs tickets (ids like tk_…). Jira "
+    "issues are a different system; you can only read the Jira issue linked to "
+    "a ticket with get_jira_issue (never a free-form Jira key), so say that if "
+    "the caller asks about a Jira issue you cannot resolve. Comments shown by "
+    "get_ticket marked \"Jira comment by\" came from Jira, never from "
+    "SessionFS: attribute them as Jira comments, not SessionFS comments. If "
+    "you cannot find the answer, say so rather than guessing.\n"
     "\n"
     "For how-to, setup, commands, settings, plans and troubleshooting "
     "questions about SessionFS itself, search the official docs with "
@@ -253,9 +267,11 @@ _HELPER_SYSTEM_PROMPT = (
     "\n"
     "You can propose write actions, but you can never perform them. To change "
     "a project's auto-narrative, move sessions to Trash, create a ticket, "
-    "assign a ticket, or post a ticket comment, call the matching tool "
+    "assign a ticket, post a ticket comment, or link a ticket to an existing "
+    "Jira issue (by its full key, e.g. ABC-123), call the matching tool "
     "(set_project_auto_narrative, trash_sessions, propose_ticket, "
-    "propose_assignment, propose_comment): it only creates a proposal the "
+    "propose_assignment, propose_comment, propose_jira_link): it only creates a "
+    "proposal the "
     "caller must confirm in the dashboard. Never claim an action took effect — "
     "say it is proposed and waiting for confirmation. Never claim a ticket "
     "exists before it is confirmed. Do not invent requirements: a proposed "
@@ -269,7 +285,21 @@ _HELPER_SYSTEM_PROMPT = (
     "most 100 sessions: when more match, say how many remain and that the "
     "caller can confirm and ask again. Sessions moved to Trash "
     "are restorable for 30 days. A helper comment is a plain user comment and "
-    "never a review verdict.\n"
+    "never a review verdict. propose_jira_link attaches a ticket to a Jira "
+    "issue that already exists (it only reads Jira to verify the issue and "
+    "never writes to it); use it when the caller already has a Jira key to "
+    "attach, not to create a new issue. propose_ticket can also create the "
+    "ticket and publish it to Jira: pass publish_to_jira=true only when the "
+    "caller asks for the new ticket to go to Jira. propose_jira_overwrite "
+    "replaces one side of a linked ticket↔Jira pair with the other "
+    "(direction to_jira overwrites the Jira issue from the ticket, direction "
+    "from_jira overwrites the ticket from the issue). "
+    "A ticket has one assignee at a time: a persona "
+    "(an agent) or a person (a teammate) — never both. An assignee name "
+    "resolves in order: an exact persona name; a teammate's email or user id "
+    "(direct person assignment); a teammate's display name to the persona "
+    "representing them when exactly one does; otherwise a display name to "
+    "that teammate; otherwise refused as ambiguous or unknown.\n"
     "\n"
     "{scope}\n"
     "Today's date is {date}."
@@ -2331,6 +2361,8 @@ _ACTION_TOOL_NAMES = {
     "create_ticket": "propose_ticket",
     "assign_ticket": "propose_assignment",
     "comment_ticket": "propose_comment",
+    "link_jira": "propose_jira_link",
+    "jira_overwrite": "propose_jira_overwrite",
 }
 
 class HelperActionConfirmBody(BaseModel):
@@ -2340,6 +2372,8 @@ class HelperActionConfirmBody(BaseModel):
     ``acceptance_criteria``/``priority``/``assigned_to`` for ``create_ticket``
     and ``body`` for ``comment_ticket``.  Omitted fields keep the model draft;
     an explicit blank or null ``assigned_to`` leaves the ticket unassigned.
+    ``assigned_to`` may be a persona name or a teammate email/user id, which
+    resolves to a direct-to-person assignment (GitHub #96).
     """
 
     title: str | None = None
@@ -2378,10 +2412,14 @@ async def _apply_confirm_edits(
             for key in ("title", "description", "acceptance_criteria", "priority")
         }
         assigned_to = draft.get("assigned_to")
+        assigned_user_id = draft.get("assigned_user_id")
+        assignee_name = draft.get("assignee_name")
         if "assigned_to" in fields:
             edited = (body.assigned_to or "").strip()
             if not edited:
                 assigned_to = None
+                assigned_user_id = None
+                assignee_name = None
             elif edited != assigned_to:
                 project = (
                     await db.execute(select(Project).where(Project.id == draft.get("project_id")))
@@ -2390,13 +2428,23 @@ async def _apply_confirm_edits(
                 # don't resolve names against a project the caller can't read.
                 if project is not None and await user_can_access_project(db, user_id, project):
                     try:
-                        assigned_to = await resolve_assignee(
+                        resolved = await resolve_assignee(
                             db, project=project, user_id=user_id, name=edited
                         )
                     except HelperDraftError as exc:
                         raise HTTPException(422, f"assigned_to: {exc}") from None
+                    if resolved.kind == "persona":
+                        assigned_to = resolved.persona_name
+                        assigned_user_id = None
+                        assignee_name = None
+                    else:
+                        assigned_to = None
+                        assigned_user_id = resolved.user_id
+                        assignee_name = resolved.display_name
                 else:
                     assigned_to = edited
+                    assigned_user_id = None
+                    assignee_name = None
         try:
             ticket_draft = check_ticket_draft(
                 title=merged["title"],
@@ -2414,6 +2462,8 @@ async def _apply_confirm_edits(
             acceptance_criteria=ticket_draft.acceptance_criteria,
             priority=ticket_draft.priority,
             assigned_to=ticket_draft.assigned_to,
+            assigned_user_id=assigned_user_id,
+            assignee_name=assignee_name,
         )
     elif action.kind == "comment_ticket":
         if body.body is not None:
@@ -2422,7 +2472,8 @@ async def _apply_confirm_edits(
             except HelperDraftError as exc:
                 raise HTTPException(422, str(exc)) from None
     else:
-        # assign_ticket (and the non-ticket kinds) have no editable fields.
+        # assign_ticket, link_jira and the non-ticket kinds have no editable
+        # fields; their params are the model draft, not user-editable.
         return
     draft["edited"] = final
     action.params = json.dumps(draft, sort_keys=True, default=str)
@@ -2630,14 +2681,41 @@ def _action_outcome_text(action: HelperAction) -> str:
             None,
         )
         if created:
-            return f"{head} confirmed: created ticket [ticket:{created}]"
+            publish_target = next(
+                (
+                    t
+                    for t in targets
+                    if isinstance(t, dict) and t.get("ticket_id") == created
+                ),
+                None,
+            )
+            if publish_target and "jira_published" in publish_target:
+                if publish_target.get("jira_published"):
+                    issue_key = (publish_target.get("jira") or {}).get("issue_key")
+                    return (
+                        f"{head} confirmed: created ticket [ticket:{created}] and "
+                        f"published it to Jira {issue_key}]"
+                    )
+                return (
+                    f"{head} confirmed: created ticket [ticket:{created}] but "
+                    f"publishing to Jira failed ({publish_target.get('jira_error')}) — "
+                    "publish it from the ticket page]"
+                )
+            return f"{head} confirmed: created ticket [ticket:{created}]]"
+        if action.kind == "link_jira":
+            issue_key = next(
+                (t.get("issue_key") for t in targets if isinstance(t, dict) and t.get("ok")),
+                None,
+            )
+            if issue_key:
+                return f"{head} confirmed: linked Jira issue {issue_key}]"
         if action.kind in ("assign_ticket", "comment_ticket"):
             tid = next(
                 (t.get("id") for t in targets if isinstance(t, dict) and t.get("ok")),
                 None,
             )
             if tid:
-                return f"{head} confirmed: ticket [ticket:{tid}]"
+                return f"{head} confirmed: ticket [ticket:{tid}]]"
         return f"{head} confirmed: {ok} changed, {failed} failed]"
     if action.status == "failed":
         return f"{head} confirmed but failed: nothing changed]"
@@ -2839,7 +2917,8 @@ async def _apply_action(
     action: HelperAction,
     *,
     display_name: str,
-) -> list[dict[str, Any]]:
+    dashboard_url: str = "",
+) -> tuple[list[dict[str, Any]], list[str]]:
     """Apply a confirmed action's stored targets, re-checking access per target.
 
     Uses the same service logic the normal routes use
@@ -2848,10 +2927,16 @@ async def _apply_action(
     confirm can never drift from a route's authorization or mutation.  The
     ticket mutations re-run the same rules as the ticket routes via
     ``services/helper_ticket_actions``.  Returns per-target ``{id, ok, error}``
-    results; a single target's failure is recorded, never raised.
+    results plus any Jira outbox event ids queued by a forwarded comment (empty
+    for every other kind); a single target's failure is recorded, never raised.
     """
+    # A publish below may rollback (link_changed / superseded), which expires
+    # every ORM object in this session — including ``action``. Pin the id so the
+    # caller can re-load it afterwards.
+    action_id = action.id
     params = _loads_dict(action.params)
     results: list[dict[str, Any]] = []
+    jira_ids: list[str] = []
     if action.kind == "set_auto_narrative":
         enabled = bool(params.get("enabled"))
         for pid in params.get("project_ids") or []:
@@ -2881,7 +2966,19 @@ async def _apply_action(
         refusal = await _ticket_target_refusal(db, user_id, action, final, ticket_id=None)
         if refusal is not None:
             results.append({"id": project_id, "ok": False, "error": refusal})
-            return results
+            return results, jira_ids
+        publish_to_jira = bool(final.get("publish_to_jira"))
+        if publish_to_jira:
+            # Re-check every publish gate BEFORE creating anything so a lost
+            # permission/connection/mapping between propose and confirm leaves
+            # no ticket behind.
+            try:
+                await jira_publish_preflight(
+                    db, user_id=user_id, ctx=ctx, project_id=project_id
+                )
+            except HTTPException as exc:
+                results.append({"id": project_id, "ok": False, "error": _http_error(exc)})
+                return results, jira_ids
         try:
             ticket_id = await create_ticket_action(
                 db,
@@ -2893,6 +2990,7 @@ async def _apply_action(
                 priority=final.get("priority", "medium"),
                 kind=final.get("kind", "task"),
                 assigned_to=final.get("assigned_to"),
+                assigned_user_id=final.get("assigned_user_id"),
                 acceptance_criteria=final.get("acceptance_criteria") or [],
                 conversation_id=action.conversation_id,
                 display_name=display_name,
@@ -2900,9 +2998,54 @@ async def _apply_action(
         except HTTPException as exc:
             results.append({"id": project_id, "ok": False, "error": _http_error(exc)})
         else:
-            results.append(
-                {"id": project_id, "ok": True, "error": None, "ticket_id": ticket_id}
-            )
+            entry: dict[str, Any] = {
+                "id": project_id,
+                "ok": True,
+                "error": None,
+                "ticket_id": ticket_id,
+            }
+            if publish_to_jira:
+                # Commit the ticket before the outbound publish so a publish
+                # failure still leaves a durable, publishable ticket.
+                await db.commit()
+                try:
+                    published = await publish_ticket_to_jira(
+                        db,
+                        project_id=project_id,
+                        ticket_id=ticket_id,
+                        actor_user_id=user_id,
+                        dashboard_url=dashboard_url,
+                    )
+                except HTTPException as exc:
+                    entry["jira_published"] = False
+                    entry["jira_error"] = _http_error(exc)
+                except ContentTooLarge:
+                    # The deterministic render refused a section; surface the
+                    # same stable code the publish route uses.
+                    entry["jira_published"] = False
+                    entry["jira_error"] = "content_too_large"
+                except Exception:  # noqa: BLE001
+                    # A bug in publish must never 500 the confirm; the ticket is
+                    # already durable and re-publishable from its page.
+                    logger.exception(
+                        "publish failed for ticket %s (action %s)",
+                        ticket_id,
+                        action_id,
+                    )
+                    entry["jira_published"] = False
+                    entry["jira_error"] = "error"
+                else:
+                    entry["jira_published"] = True
+                    entry["jira"] = {
+                        "issue_key": published["issue_key"],
+                        "issue_url": published["issue_url"],
+                    }
+                finally:
+                    # publish_ticket_draft may have rolled back (link_changed /
+                    # superseded), expiring this session's ORM objects. Re-load
+                    # the action so the confirm handler can still write it.
+                    await db.refresh(action)
+            results.append(entry)
     elif action.kind == "assign_ticket":
         final = _final_params(params)
         ticket_id = final.get("ticket_id")
@@ -2911,7 +3054,7 @@ async def _apply_action(
         )
         if refusal is not None:
             results.append({"id": ticket_id, "ok": False, "error": refusal})
-            return results
+            return results, jira_ids
         try:
             await assign_ticket_action(
                 db,
@@ -2919,6 +3062,7 @@ async def _apply_action(
                 ctx=ctx,
                 ticket_id=ticket_id,
                 assigned_to=final.get("assigned_to", ""),
+                assigned_user_id=final.get("assigned_user_id"),
             )
         except HTTPException as exc:
             results.append({"id": ticket_id, "ok": False, "error": _http_error(exc)})
@@ -2932,9 +3076,9 @@ async def _apply_action(
         )
         if refusal is not None:
             results.append({"id": ticket_id, "ok": False, "error": refusal})
-            return results
+            return results, jira_ids
         try:
-            comment_id = await create_comment_action(
+            comment_id, jira_ids = await create_comment_action(
                 db,
                 user_id=user_id,
                 ctx=ctx,
@@ -2942,14 +3086,136 @@ async def _apply_action(
                 body=final.get("body", ""),
                 conversation_id=action.conversation_id,
                 display_name=display_name,
+                send_to_jira=bool(final.get("send_to_jira")),
+                issue_key=final.get("issue_key"),
             )
         except HTTPException as exc:
             results.append({"id": ticket_id, "ok": False, "error": _http_error(exc)})
         else:
             results.append(
-                {"id": ticket_id, "ok": True, "error": None, "comment_id": comment_id}
+                {
+                    "id": ticket_id,
+                    "ok": True,
+                    "error": None,
+                    "comment_id": comment_id,
+                    "jira_queued": bool(jira_ids),
+                }
             )
-    return results
+    elif action.kind == "link_jira":
+        final = _final_params(params)
+        ticket_id = final.get("ticket_id")
+        refusal = await _ticket_target_refusal(
+            db, user_id, action, final, ticket_id=ticket_id if isinstance(ticket_id, str) else ""
+        )
+        if refusal is not None:
+            results.append({"id": ticket_id, "ok": False, "error": refusal})
+            return results, jira_ids
+        try:
+            link = await link_jira_action(
+                db,
+                user_id=user_id,
+                ctx=ctx,
+                ticket_id=ticket_id,
+                issue_key=final.get("issue_key", ""),
+            )
+        except JiraLinkError as exc:
+            results.append({"id": ticket_id, "ok": False, "error": exc.code})
+        except HTTPException as exc:
+            results.append({"id": ticket_id, "ok": False, "error": _http_error(exc)})
+        else:
+            results.append(
+                {
+                    "id": ticket_id,
+                    "ok": True,
+                    "error": None,
+                    "issue_key": link.issue_key,
+                    "issue_url": link.issue_url,
+                }
+            )
+    elif action.kind == "jira_overwrite":
+        final = _final_params(params)
+        ticket_id = final.get("ticket_id")
+        direction = final.get("direction", "to_jira")
+        refusal = await _ticket_target_refusal(
+            db, user_id, action, final, ticket_id=ticket_id if isinstance(ticket_id, str) else ""
+        )
+        if refusal is not None:
+            results.append({"id": ticket_id, "ok": False, "error": refusal})
+            return results, jira_ids
+        try:
+            outcome = await jira_overwrite_action(
+                db,
+                user_id=user_id,
+                ctx=ctx,
+                ticket_id=ticket_id,
+                direction=direction,
+                dashboard_url=dashboard_url,
+                proposed_issue_key=final.get("issue_key"),
+            )
+        except JiraLinkError as exc:
+            entry = {"id": ticket_id, "ok": False, "error": exc.code}
+            if direction == "to_jira":
+                entry["jira_published"] = False
+                entry["jira_error"] = exc.code
+            results.append(entry)
+        except HTTPException as exc:
+            entry = {"id": ticket_id, "ok": False, "error": _http_error(exc)}
+            if direction == "to_jira":
+                entry["jira_published"] = False
+                entry["jira_error"] = _http_error(exc)
+            results.append(entry)
+        except ContentTooLarge:
+            entry = {
+                "id": ticket_id,
+                "ok": False,
+                "error": "content_too_large",
+            }
+            if direction == "to_jira":
+                entry["jira_published"] = False
+                entry["jira_error"] = "content_too_large"
+            results.append(entry)
+        except Exception:  # noqa: BLE001
+            # A bug in the publish/pull path must never 500 the confirm; the
+            # target reports a stable generic failure the caller can retry.
+            logger.exception(
+                "jira overwrite failed for ticket %s (action %s, direction %s)",
+                ticket_id,
+                action_id,
+                direction,
+            )
+            entry = {"id": ticket_id, "ok": False, "error": "error"}
+            if direction == "to_jira":
+                entry["jira_published"] = False
+                entry["jira_error"] = "error"
+            results.append(entry)
+        else:
+            if direction == "to_jira":
+                results.append(
+                    {
+                        "id": ticket_id,
+                        "ok": True,
+                        "error": None,
+                        "jira_published": True,
+                        "issue_key": outcome["issue_key"],
+                        "issue_url": outcome["issue_url"],
+                    }
+                )
+            else:
+                results.append(
+                    {
+                        "id": ticket_id,
+                        "ok": True,
+                        "error": None,
+                        "issue_key": outcome["issue_key"],
+                        "updated_fields": outcome["updated_fields"],
+                    }
+                )
+        finally:
+            # publish_ticket_draft may have rolled back (link_changed /
+            # superseded), expiring this session's ORM objects. Re-load the
+            # action so the confirm handler can still write it.
+            await db.refresh(action)
+    return results, jira_ids
 
 
 def _is_due(action: HelperAction, now: datetime) -> bool:
@@ -2986,6 +3252,7 @@ async def confirm_helper_action(
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
     body: HelperActionConfirmBody | None = Body(default=None),
+    request: Request = None,
 ):
     """Apply a proposed action after an atomic pending→confirmed claim.
 
@@ -3006,6 +3273,13 @@ async def confirm_helper_action(
     user_id = user.id
     # Shown on the created ticket/comment: never the email.
     display_name = display_name_for(user)
+    # Dashboard base for Jira provenance footers; empty when the request was
+    # invoked directly in tests with no app/request context.
+    dashboard_url = (
+        dashboard_link_base(getattr(request.app.state, "config", None))
+        if request is not None
+        else ""
+    )
     for _ in range(_DECIDE_ATTEMPTS):
         action = await _load_owned_action(db, user_id, action_id)
         if action.status in ("confirmed", "failed"):
@@ -3036,13 +3310,19 @@ async def confirm_helper_action(
     # pending for the caller to retry with corrected values.
     await _apply_confirm_edits(db, user_id, action, body)
 
-    results = await _apply_action(db, user_id, ctx, action, display_name=display_name)
+    results, jira_ids = await _apply_action(
+        db, user_id, ctx, action, display_name=display_name, dashboard_url=dashboard_url
+    )
     if results and all(not r["ok"] for r in results):
         action.status = "failed"
     action.result = json.dumps({"targets": results}, sort_keys=True, default=str)
     await _record_action_audit(db, user_id, action)
     _append_action_note(db, action)
     await db.commit()
+    # Deliver any outbound Jira comment now that the comment rows are committed.
+    # A failed apply wrote no event ids (the forwarded comment re-checks run
+    # before the insert), so nothing is drained for a refused target.
+    jira_sync.schedule_drain(jira_ids)
     return _action_response(action)
 
 

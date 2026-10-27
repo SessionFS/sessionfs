@@ -437,6 +437,22 @@ export interface HelperActionTargetResult {
   ticket_id?: string;
   /** comment_ticket: the new comment's id when applied. */
   comment_id?: string;
+  /** create_ticket with publish_to_jira: the issue it was published as. */
+  jira?: HelperActionJiraIssue | null;
+  /** create_ticket with publish_to_jira: false when the ticket was created
+   *  but the Jira publish failed, with the reason code in `jira_error`. */
+  jira_published?: boolean;
+  jira_error?: string | null;
+  /** link_jira / jira_overwrite: the issue the ticket is linked to. */
+  issue_key?: string;
+  issue_url?: string;
+  /** jira_overwrite from_jira: the ticket fields that changed (may be empty). */
+  updated_fields?: string[];
+}
+
+export interface HelperActionJiraIssue {
+  issue_key: string;
+  issue_url: string;
 }
 
 /** User-edited values for an editable ticket-action confirm. Omitted fields
@@ -822,6 +838,9 @@ export interface JiraPreview {
     last_known_status: string | null;
     template_slug: string | null;
     template_version: number | null;
+    /** Linked from Jira and never published from SessionFS: publishing
+     *  overwrites the issue's summary and description. */
+    attached?: boolean;
   };
   /** Unified diff against the last published text, when re-publishing. */
   diff?: string[];
@@ -835,6 +854,9 @@ export interface JiraPublishRequest {
   template?: string;
   /** The previewed template version, echoed back (409 template_changed on mismatch). */
   template_version?: number | null;
+  /** Required (true) to publish over an issue that was linked from Jira and
+   *  never published from SessionFS; else 409 jira_overwrite_required. */
+  overwrite_existing?: boolean;
 }
 
 export interface JiraLink {
@@ -852,6 +874,16 @@ export interface JiraLink {
   comment_sync_outbound?: boolean;
   /** Caller may send a comment to Jira: an editor, with outbound comment sync on. */
   can_send_to_jira?: boolean;
+  /** The issue was linked from Jira and never published from SessionFS. */
+  attached_not_published?: boolean;
+}
+
+/** `POST .../tickets/{tid}/jira/pull`: the ticket after taking the Jira text. */
+export interface JiraPullResult {
+  ticket: Ticket;
+  jira: JiraLink;
+  /** Only the fields that changed ("title", "description"); may be empty. */
+  updated_fields: string[];
 }
 
 /** Single-ticket link summary embedded on the ticket response. */
@@ -1581,7 +1613,11 @@ export interface Ticket {
   title: string;
   description: string;
   priority: TicketPriority | string;
+  /** Persona assignee (agent role). Never set together with `assigned_user_id`. */
   assigned_to: string | null;
+  /** Person assignee. Absent on older servers. */
+  assigned_user_id?: string | null;
+  assigned_user?: TicketAssignedUser | null;
   created_by_user_id: string;
   created_by_session_id: string | null;
   created_by_persona: string | null;
@@ -1608,11 +1644,42 @@ export interface Ticket {
   jira_publish_unknown?: boolean;
 }
 
+/** The person a ticket is assigned to (resolved by the server). */
+export interface TicketAssignedUser {
+  id: string;
+  display_name: string | null;
+  email: string;
+}
+
+/** `GET /api/v1/projects/{id}/assignable-users` row. */
+export interface AssignableUser {
+  id: string;
+  display_name: string | null;
+  email: string;
+  can_edit: boolean;
+}
+
+/** A ticket's assignee: a persona (`assigned_to`) OR a person
+ *  (`assigned_user_id`), never both non-null (422 `assignee_conflict`). */
+export interface TicketAssigneeFields {
+  assigned_to?: string | null;
+  assigned_user_id?: string | null;
+}
+
+/** `PUT /api/v1/projects/{id}/tickets/{tid}` — partial update. */
+export interface TicketUpdate extends TicketAssigneeFields {
+  title?: string;
+  description?: string;
+  priority?: TicketPriority | string;
+  lease_epoch?: number;
+}
+
 export interface TicketCreate {
   title: string;
   description: string;
   priority?: TicketPriority | string;
   assigned_to?: string | null;
+  assigned_user_id?: string | null;
   acceptance_criteria?: string[];
   context_refs?: string[];
   file_refs?: string[];
@@ -3727,6 +3794,8 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       params: {
         status?: string;
         assigned_to?: string;
+        /** `me` = tickets assigned to the caller as a person. */
+        assigned_user?: string;
         priority?: string;
         kind?: string;
         limit?: number;
@@ -3735,6 +3804,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       const sp = new URLSearchParams();
       if (params.status) sp.set('status', params.status);
       if (params.assigned_to) sp.set('assigned_to', params.assigned_to);
+      if (params.assigned_user) sp.set('assigned_user', params.assigned_user);
       if (params.priority) sp.set('priority', params.priority);
       if (params.kind) sp.set('kind', params.kind);
       if (params.limit) sp.set('limit', String(params.limit));
@@ -3755,6 +3825,15 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'POST',
         body: JSON.stringify(body),
       }),
+
+    updateTicket: (projectId: string, ticketId: string, body: TicketUpdate) =>
+      request<Ticket>(`/api/v1/projects/${projectId}/tickets/${ticketId}`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+
+    listAssignableUsers: (projectId: string) =>
+      request<{ users: AssignableUser[] }>(`/api/v1/projects/${projectId}/assignable-users`),
 
     approveTicket: (projectId: string, ticketId: string) =>
       request<Ticket>(`/api/v1/projects/${projectId}/tickets/${ticketId}/approve`, {
@@ -3813,6 +3892,21 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     getJiraLink: (projectId: string, ticketId: string) =>
       request<JiraLink>(`/api/v1/projects/${projectId}/tickets/${ticketId}/jira`),
+
+    // Replace the ticket's title and description with the linked issue's.
+    pullJira: (projectId: string, ticketId: string) =>
+      request<JiraPullResult>(`/api/v1/projects/${projectId}/tickets/${ticketId}/jira/pull`, {
+        method: 'POST',
+        body: JSON.stringify({ confirm: true }),
+      }),
+
+    // Link an issue that already exists in Jira instead of publishing a new
+    // one. Editors only; the server trims and uppercases the key.
+    linkJiraIssue: (projectId: string, ticketId: string, issueKey: string) =>
+      request<JiraLink>(`/api/v1/projects/${projectId}/tickets/${ticketId}/jira/link`, {
+        method: 'POST',
+        body: JSON.stringify({ issue_key: issueKey }),
+      }),
 
     getTicketReviewState: (projectId: string, ticketId: string) =>
       request<TicketReviewState>(

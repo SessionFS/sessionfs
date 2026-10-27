@@ -51,6 +51,7 @@ from sessionfs.server.db.models import (
 from sessionfs.server.services.review_state import (
     ReviewState,
     compute_review_state,
+    verdict_from_header,
 )
 
 # ── Step-engine constants (design §9.1 safety envelope) ──
@@ -750,7 +751,7 @@ async def _build_directive(
         intent = "triage"
     elif queue.mode == "review_until_clean":
         # WQ-P4 — the reviewer's turn: inspect the implementer's fix and post
-        # `Codex R{N} review on tk_X: <verdict>`. The server stamps the
+        # `<Reviewer> R{N} review on tk_X: <verdict>`. The server stamps the
         # author identity from queue config (§5.0) — the agent NEVER sends
         # author_persona — and only a STRICT VERIFIED-CLEAN ends the loop.
         intent = "post_review"
@@ -791,8 +792,8 @@ async def _build_directive(
         "ticket_id": item.ticket_id,
         "ticket_lease_epoch": ticket.lease_epoch,
         # Next review round (review_until_clean only) — the client stamps this
-        # into the `Codex R{N} review on tk_X:` verdict header so its verdict
-        # sorts as the latest round in the server oracle.
+        # into the `<Reviewer> R{N} review on tk_X:` verdict header so its
+        # verdict sorts as the latest round in the server oracle.
         "review_round": review_round,
         # Current review state (review_until_clean only) — the reviewer sees the
         # open findings it must verify, not just the bounded comment_delta.
@@ -844,7 +845,7 @@ def _writeback_contract_for(
             "settle_via": (
                 "complete_work_queue_step("
                 f"directive_id={directive_id}, "
-                "verdict_content='Codex R<N> review on "
+                "verdict_content='<Reviewer> R<N> review on "
                 f"{ticket.id}: <VERDICT>')"
             ),
             "note": (
@@ -994,7 +995,9 @@ async def run_work_queue_step(
       a. CADENCE GATE — if now < last-wake + max(cadence_seconds, floor 120),
          return {status:"idle", reason:"cadence"} and do NO work.
       b. PAUSED/TERMINAL — a non-active queue does no work.
-      c. review_until_clean → not_available (WQ-P4 stop oracle).
+      c. review_until_clean STOP ORACLE — a claimed item whose verdict is
+         STOP/WAITING is settled here without emitting a directive; a
+         reviewer's-turn falls through to the generic emission below.
       d. OPEN-LEASE RE-EMIT — any item with open_directive_id set re-emits the
          SAME directive (same directive_id + work_queue_run_id); NO new claim,
          NO cursor advance. The crash-replay path.
@@ -1552,6 +1555,21 @@ async def complete_work_queue_step(
         and verdict_content is not None
         and verdict_content.strip()
     ):
+        # Fail LOUD and BEFORE any write: a review outcome's verdict_content
+        # must carry a header the review-state oracle parses, or the trusted
+        # comment we create would be silently ignored by compute_review_state
+        # and the review_until_clean loop could never stop. Reject an
+        # unparseable header instead of persisting a dead verdict.
+        if verdict_from_header(verdict_content) is None:
+            raise StepEngineError(
+                "verdict_header_unparseable",
+                "verdict_content must carry a review verdict header of the "
+                "form '<Reviewer> R<N> review on <ticket_id>: "
+                "VERIFIED-CLEAN|CHANGES REQUESTED|NO CHANGES NEEDED|APPROVED'. "
+                "The header is what the review-state oracle parses to close "
+                "the loop.",
+                http_status=422,
+            )
         # The verdict's author identity is server-derived from queue config.
         reviewer_persona = queue.assigned_persona or "codex-reviewer"
         # Trust is derived from the AUTHENTICATED actor — never the body.

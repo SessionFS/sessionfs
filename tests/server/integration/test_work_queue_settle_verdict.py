@@ -28,6 +28,8 @@ import json
 import uuid
 from datetime import datetime, timezone
 
+import pytest
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -318,6 +320,44 @@ async def test_settle_verdict_registered_reviewer_strict_clean_stops(
 
     final = await _refetch_item(db_session, item.id)
     assert final.item_status == "done"
+
+
+async def test_settle_verdict_unparseable_header_rejected_before_write(
+    db_session: AsyncSession,
+):
+    """A verdict_content with no parseable header is rejected with
+    `verdict_header_unparseable` (422) BEFORE any comment is written, so the
+    loop can never be blocked by a dead, unparseable verdict."""
+    org, user, project, ticket, queue, item = await _setup(
+        db_session, registered=True
+    )
+    d = await _emit_directive(db_session, queue)
+    await db_session.commit()
+
+    with pytest.raises(wq_engine.StepEngineError) as exc_info:
+        await wq_engine.complete_work_queue_step(
+            db_session, queue=queue, item_id=d["item_id"],
+            directive_id=d["directive_id"], ticket_id=ticket.id,
+            outcome="posted_review", comment_id=None,
+            agent_run_id=None, failed=False,
+            verdict_content="This all looks good to me, ship it.",
+            actor_user_id=user.id, actor_org_id=org.id,
+            actor_service_key_id=None, actor_type="user",
+            service_key_name=None,
+        )
+    assert exc_info.value.code == "verdict_header_unparseable"
+    assert exc_info.value.http_status == 422
+
+    # Nothing was written: no server-created verdict comment exists.
+    verdicts = (
+        await db_session.execute(
+            select(TicketComment).where(
+                TicketComment.ticket_id == ticket.id,
+                TicketComment.author_persona == "codex-reviewer",
+            )
+        )
+    ).scalars().all()
+    assert len(verdicts) == 0
 
 
 # ── (2) untrusted actor: same verdict by unregistered actor → not trusted ──

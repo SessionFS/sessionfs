@@ -627,11 +627,17 @@ async def list_accessible_projects(
     This is the single source of truth for both ``GET /api/v1/projects``
     and the session helper's ``list_projects`` tool, so the two listings
     can never drift. It is ``accessible_project_ids_subquery`` — the set
-    form of ``user_can_access_project``.
+    form of ``user_can_access_project`` — minus merge tombstones
+    (GitHub #111). A merged source stays readable (direct GETs answer 410
+    with ``merged_into``, and its audit history stays reachable), but it is
+    no longer a project anyone can pick, so listings leave it out.
     """
     stmt = (
         select(Project)
-        .where(Project.id.in_(await accessible_project_ids_subquery(db, user_id)))
+        .where(
+            Project.id.in_(await accessible_project_ids_subquery(db, user_id)),
+            Project.merged_into_project_id.is_(None),
+        )
         .order_by(Project.updated_at.desc())
     )
     result = await db.execute(stmt)

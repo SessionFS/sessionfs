@@ -1,6 +1,6 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
-import { ApiError, type JiraSyncEventsPage, type Ticket, type TicketComment, type TicketCreate, type TicketPreview, type TicketReviewState, type TicketWatcher } from '../api/client';
+import { ApiError, type AssignableUser, type JiraSyncEventsPage, type Ticket, type TicketComment, type TicketCreate, type TicketPreview, type TicketReviewState, type TicketUpdate, type TicketWatcher } from '../api/client';
 
 /**
  * React-Query hooks for v0.10.1 Tickets (Team+).
@@ -20,6 +20,8 @@ export function useTickets(
   filters: {
     status?: string;
     assigned_to?: string;
+    /** `me`: tickets assigned to the caller as a person. */
+    assigned_user?: string;
     priority?: string;
     kind?: string;
   } = {},
@@ -117,6 +119,35 @@ export function useCreateTicket(projectId: string | undefined) {
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ['tickets', projectId] });
     },
+  });
+}
+
+/** Partial update (PUT). Used for reassignment from the ticket detail. */
+export function useUpdateTicket(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ticketId, body }: { ticketId: string; body: TicketUpdate }) =>
+      auth!.client.updateTicket(projectId!, ticketId, body),
+    onSuccess: (_data, { ticketId }) => {
+      void qc.invalidateQueries({ queryKey: ['tickets', projectId] });
+      void qc.invalidateQueries({ queryKey: ['ticket', projectId, ticketId] });
+      // The server posts a system diff comment for every edit.
+      void qc.invalidateQueries({ queryKey: ['ticketComments', projectId, ticketId] });
+    },
+  });
+}
+
+/** People a ticket in this project may be assigned to. */
+export function useAssignableUsers(projectId: string | undefined, enabled = true) {
+  const { auth } = useAuth();
+  return useQuery<AssignableUser[]>({
+    queryKey: ['assignableUsers', projectId],
+    queryFn: async () => (await auth!.client.listAssignableUsers(projectId!)).users,
+    enabled: !!auth && !!projectId && enabled,
+    staleTime: 60_000,
+    // A 403 (a reader who may not assign people) won't change on a retry.
+    retry: (count, err) => !(err instanceof ApiError && err.status < 500) && count < 2,
   });
 }
 

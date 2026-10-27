@@ -51,6 +51,7 @@ from sessionfs.resident.memory import (
     compact_memory,
     summarize_for_digest,
 )
+from sessionfs.server.services.review_state import REVIEWER_NAME_PATTERN
 
 logger = logging.getLogger("sessionfs.resident.runner")
 
@@ -60,6 +61,29 @@ _SENSITIVE_KEYS = {"api_key", "authorization", "bearer", "token", "secret", "pas
 # The settle endpoint's verdict_content field is capped at 20000 chars; the
 # runner truncates below that so a long review can't 422 and loop the item.
 _MAX_VERDICT_CONTENT = 20000
+
+# The bare reviewer-name token the review-state parser accepts in a verdict
+# header: a leading letter, then up to 31 letters/digits/`.`/`_`/`-`. Persona
+# names are looser (routes/personas.py allows `^[A-Za-z0-9_-]{1,50}$` — digit
+# first and up to 50 chars), so a persona like `1st-reviewer` or a 40-char name
+# would produce a header the parser ignores and the loop would never stop. Use
+# the persona only when it matches this rule; otherwise fall back to a neutral
+# token.
+_REVIEWER_NAME_BARE_RE = re.compile(REVIEWER_NAME_PATTERN, re.ASCII)
+_REVIEWER_NAME_FALLBACK = "Reviewer"
+
+
+def _reviewer_name_for(persona: str | None) -> str:
+    """Return a verdict-header reviewer name for ``persona``.
+
+    Uses the persona verbatim when it is a valid single reviewer-name token
+    (so the verdict carries the resident's own name), else the fixed neutral
+    fallback — the header must always parse for the loop to close.
+    """
+    name = (persona or "").strip()
+    if _REVIEWER_NAME_BARE_RE.fullmatch(name):
+        return name
+    return _REVIEWER_NAME_FALLBACK
 
 
 def _sanitize_for_log(data: dict | None) -> dict:
@@ -767,7 +791,9 @@ class ResidentRunner:
         # Assemble verdict_content — the full review text the server
         # will post as a verdict comment (stamping author_persona +
         # verdict_trusted server-side).
-        verdict_content = _format_verdict_content(result, directive)
+        verdict_content = _format_verdict_content(
+            result, directive, reviewer_name=_reviewer_name_for(self._config.persona)
+        )
 
         # Settle via the settle-path. The client NEVER sets
         # author_persona or verdict_trusted — the server derives both.
@@ -911,16 +937,17 @@ def _build_review_context(directive: dict) -> ReviewContext:
 # The server writes verdict_content VERBATIM into the trusted verdict comment,
 # and the review-state oracle (services/review_state.py `_HEADER_RE`) only
 # counts a comment as a verdict when its first line matches
-# `Codex R{N} review on tk_X: <verdict>`. The runner MUST emit exactly that
-# header or a clean resident verdict is silently ignored and never closes the
-# review_until_clean loop.
+# `<Reviewer> R{N} review on tk_X: <verdict>`. The runner MUST emit exactly
+# that header or a clean resident verdict is silently ignored and never closes
+# the review_until_clean loop.
 _PRIOR_ROUND_RE = re.compile(
-    r"Codex\s+R(\d+)\s+(?:doc\s+)?review\s+on\s+tk_", re.IGNORECASE
+    rf"{REVIEWER_NAME_PATTERN}\s+R(?P<round>\d+)\s+(?:doc\s+)?review\s+on\s+tk_",
+    re.IGNORECASE,
 )
 
 
 def _next_review_round(comment_delta: list) -> int:
-    """The next review round number = 1 + the highest prior Codex round seen in
+    """The next review round number = 1 + the highest prior review round seen in
     the visible comment delta (so the resident's verdict sorts as the latest
     round in the server oracle). Defaults to 1 when no prior round is visible."""
     highest = 0
@@ -929,15 +956,17 @@ def _next_review_round(comment_delta: list) -> int:
             continue
         m = _PRIOR_ROUND_RE.search(str(c.get("content", "")))
         if m:
-            highest = max(highest, int(m.group(1)))
+            highest = max(highest, int(m.group("round")))
     return highest + 1
 
 
-def _format_verdict_content(result: ReviewResult, directive: dict) -> str:
+def _format_verdict_content(
+    result: ReviewResult, directive: dict, reviewer_name: str = _REVIEWER_NAME_FALLBACK
+) -> str:
     """Format the verdict comment body the server posts verbatim.
 
     The FIRST line must match the review-state parser's header
-    (`Codex R{N} review on tk_X: <verdict>`) or the verdict is ignored.
+    (`<Reviewer> R{N} review on tk_X: <verdict>`) or the verdict is ignored.
     """
     ticket_meta = directive.get("ticket") or {}
     ticket_id = directive.get("ticket_id", "") or ticket_meta.get("id", "")
@@ -955,7 +984,9 @@ def _format_verdict_content(result: ReviewResult, directive: dict) -> str:
     )
 
     # Parseable header line (round + ticket + verdict).
-    parts: list[str] = [f"Codex R{round_n} review on {ticket_id}: {verdict_first}"]
+    parts: list[str] = [
+        f"{reviewer_name} R{round_n} review on {ticket_id}: {verdict_first}"
+    ]
 
     if is_clean:
         # Isolate free-form reasoning behind a findings-end marker

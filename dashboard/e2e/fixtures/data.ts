@@ -257,15 +257,24 @@ export const personas = [
     id: 'pers_1', project_id: PROJECT_ID, org_id: null, scope: 'project', name: 'atlas',
     role: 'Backend engineer', content: 'Owns the API, worker and migrations.',
     specializations: ['fastapi', 'postgres'], is_active: true, version: 3,
-    created_by: me.user_id, created_at: OLD, updated_at: NOW,
+    created_by: me.user_id, represented_user_id: null, created_at: OLD, updated_at: NOW,
   },
   {
     id: 'pers_2', project_id: PROJECT_ID, org_id: null, scope: 'project', name: 'prism',
     role: 'Frontend engineer', content: 'Owns the dashboard and its tests.',
     specializations: ['react', 'tailwind'], is_active: true, version: 1,
-    created_by: me.user_id, created_at: OLD, updated_at: EARLIER,
+    created_by: me.user_id, represented_user_id: null, created_at: OLD, updated_at: EARLIER,
   },
 ];
+
+// GET /api/v1/projects/{id}/assignable-users
+export const assignableUsers = {
+  users: [
+    { id: me.user_id, display_name: me.display_name, email: me.email, can_edit: true },
+    { id: 'user_fixture02', display_name: 'Peer Fixture', email: 'peer@example.test', can_edit: true },
+    { id: 'user_fixture03', display_name: null, email: 'lead@example.test', can_edit: true },
+  ],
+};
 
 export const orgPersonas = [
   {
@@ -290,7 +299,10 @@ export const tickets = statuses.map((status, i) => ({
   ][i],
   description: 'Short description of the work, with enough text to wrap onto a second line in narrow viewports.',
   priority: ['low', 'medium', 'high', 'critical', 'medium', 'low'][i],
-  assigned_to: i % 2 ? 'atlas' : 'prism',
+  // One ticket is assigned to a person (Peer Fixture); the rest to personas.
+  assigned_to: i === 4 ? null : i % 2 ? 'atlas' : 'prism',
+  assigned_user_id: i === 4 ? 'user_fixture02' : null,
+  assigned_user: i === 4 ? { id: 'user_fixture02', display_name: 'Peer Fixture', email: 'peer@example.test' } : null,
   created_by_user_id: me.user_id,
   created_by_session_id: null,
   created_by_persona: null,
@@ -1611,6 +1623,7 @@ export const linkedTicketJiraLink = {
   payload_hash: null,
   comment_sync_outbound: true,
   can_send_to_jira: true,
+  attached_not_published: false,
 };
 export const linkedTicketComments = [
   {

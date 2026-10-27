@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -108,9 +108,21 @@ vi.mock('../hooks/useMe', () => ({
 // auth-bound hooks; here only which one is mounted matters. Capture the Jira
 // surface prop so we can assert the enterprise gate resolves from the project.
 vi.mock('./TicketsTab', () => ({
-  default: (props: { projectId: string; jira?: { isEnterprise?: boolean } }) => {
+  default: (props: {
+    projectId: string;
+    jira?: { isEnterprise?: boolean };
+    assignedToMe?: boolean;
+    onAssignedToMeChange?: (next: boolean) => void;
+  }) => {
     jiraSurface.value = props.jira ?? null;
-    return <div>tickets body</div>;
+    return (
+      <div>
+        tickets body
+        <button onClick={() => props.onAssignedToMeChange?.(!props.assignedToMe)}>
+          mine: {String(props.assignedToMe)}
+        </button>
+      </div>
+    );
   },
 }));
 vi.mock('./AgentRunsTab', () => ({ default: () => <div>agent runs body</div> }));
@@ -511,6 +523,18 @@ describe('ProjectDetail', () => {
     renderPage();
     expect(screen.getAllByRole('button', { name: /compile now/i })).toHaveLength(1);
     expect(screen.getByText(/3 pending entries/i)).toBeInTheDocument();
+  });
+
+  it('keeps the tickets "Assigned to me" filter in the URL', async () => {
+    setProjectData();
+    renderPage('/projects/proj_abc?tab=work&sub=tickets&assignee=me');
+    await screen.findByText('tickets body');
+    const toggle = screen.getByRole('button', { name: 'mine: true' });
+    fireEvent.click(toggle);
+    expect(screen.getByTestId('loc').textContent).not.toMatch(/assignee=/);
+    fireEvent.click(screen.getByRole('button', { name: 'mine: false' }));
+    expect(screen.getByTestId('loc').textContent).toMatch(/assignee=me/);
+    expect(screen.getByTestId('loc').textContent).toMatch(/sub=tickets/);
   });
 
   describe('Jira enterprise gate (tk_792504a140604e62)', () => {

@@ -972,12 +972,12 @@ _TOOLS = [
             "Compact summary of a review ticket's open findings, closed "
             "findings, last verdict, and severity counts — derived from "
             "the comment thread without re-reading every comment.\n\n"
-            "Use this on Codex review tickets when picking up an "
+            "Use this on review tickets when picking up an "
             "in-progress review loop, or polling for the latest verdict. "
             "Far cheaper context than `list_ticket_comments` on a long "
             "thread.\n\n"
             "Returns `review_state: null` for non-review tickets (no "
-            "codex-reviewer comments). When present, the shape is:\n"
+            "trusted verdict comments). When present, the shape is:\n"
             "  - open_findings: [{severity, text, round, raised_comment_id}]\n"
             "  - closed_findings: [{severity, text, round, closed_round, ...}]\n"
             "  - last_verdict: 'VERIFIED-CLEAN' or 'CHANGES_REQUESTED'\n"
@@ -1115,6 +1115,10 @@ _TOOLS = [
             "(Issues are PM-triaged containers, not executor work).\n\n"
             "Human-created tickets (source='human', default) land as "
             "'open' immediately.\n\n"
+            "Assignment: pass `assigned_to` (persona name) OR "
+            "`assigned_user` (a teammate's email or user id) — never both. "
+            "`assigned_user` assigns the ticket directly to that person "
+            "so they get a 'Your turn' notification.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs ticket create` or any other sfs CLI command."
         ),
@@ -1124,6 +1128,7 @@ _TOOLS = [
                 "title": {"type": "string"},
                 "description": {"type": "string", "default": ""},
                 "assigned_to": {"type": "string", "description": "Persona name"},
+                "assigned_user": {"type": "string", "description": "Teammate email or user id for direct-to-person assignment (mutually exclusive with assigned_to)"},
                 "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"], "default": "medium"},
                 "context_refs": {"type": "array", "items": {"type": "string"}, "default": []},
                 "file_refs": {"type": "array", "items": {"type": "string"}, "default": []},
@@ -1440,7 +1445,7 @@ _TOOLS = [
         description=(
             "Patch mutable ticket fields (title, description, "
             "acceptance_criteria, context_refs, file_refs, depends_on, "
-            "priority). Only fields the caller passes are mutated — "
+            "priority, assigned_user). Only fields the caller passes are mutated — "
             "omitted fields are left untouched.\n\n"
             "SIDE EFFECT: every successful update auto-posts a "
             "`system`-authored diff comment on the ticket AND writes one "
@@ -1451,10 +1456,10 @@ _TOOLS = [
             "lifecycle tools (start_ticket / complete_ticket / "
             "resolve_ticket / approve_ticket / escalate_ticket) for "
             "status moves. Persona reassignment is NOT exposed here "
-            "either — use `assign_persona` for that. This verb is "
-            "specifically for corrections + refinements to the spec "
-            "(description, acceptance criteria, file/context refs, "
-            "dependency edges, priority).\n\n"
+            "either — use `assign_persona` for that. `assigned_user` is "
+            "the one assignment field this verb mutates: pass a "
+            "teammate's email or user id to assign the ticket directly "
+            "to that person (null to unassign).\n\n"
             "Optional `lease_epoch` for optimistic concurrency: when "
             "passed, the update is rejected with 409 if the ticket's "
             "epoch has advanced since the caller read it. When omitted, "
@@ -1476,6 +1481,7 @@ _TOOLS = [
                     "type": "string",
                     "enum": ["low", "medium", "high", "critical"],
                 },
+                "assigned_user": {"type": ["string", "null"], "description": "Teammate email or user id for direct-to-person assignment (null to unassign; mutually exclusive with assign_persona)"},
                 "acceptance_criteria": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -2318,9 +2324,7 @@ _TOOLS = [
             "Responses: {status:'ok', directives:[...]} (work to do); "
             "{status:'idle', reason:'cadence'} (woke too soon — respect "
             "cadence_seconds); {status:'stopped', reason:'queue_empty'|"
-            "'paused'} (done / paused). review_until_clean queues return "
-            "an error (the trusted-verdict stop oracle ships in a later "
-            "phase) — use implement_until_done or triage for now.\n\n"
+            "'paused'} (done / paused).\n\n"
             "Crash-safe: if you crash before complete, the SAME directive "
             "re-emits next wake (same directive_id) — no review lost, none "
             "double-counted.\n\n"
@@ -2349,8 +2353,8 @@ _TOOLS = [
             "advances. Pass the directive_id + item_id + ticket_id from the "
             "directive, the comment_id you posted, and the outcome.\n\n"
             "review_until_clean (post_review) directives: deliver the "
-            "reviewer's VERDICT HERE via verdict_content (e.g. 'Codex R3 "
-            "review on tk_X: VERIFIED-CLEAN'). Do NOT post the verdict via "
+            "reviewer's VERDICT HERE via verdict_content (e.g. '<Reviewer> "
+            "R3 review on tk_X: VERIFIED-CLEAN'). Do NOT post the verdict via "
             "add_ticket_comment — a bare comment lands verdict_trusted=false "
             "and can NEVER stop the loop. The server creates the verdict "
             "comment itself with server-derived provenance (author_persona "
@@ -2383,7 +2387,7 @@ _TOOLS = [
                 "ticket_id": {"type": "string", "description": "Ticket id from the directive (tk_...)"},
                 "outcome": {"type": "string", "description": "posted_review|posted_progress|completed_ticket|resolved|waited"},
                 "comment_id": {"type": "string", "description": "The comment you just posted, for implementer/progress notes (validated server-side). For review verdicts use verdict_content instead — the server creates that comment."},
-                "verdict_content": {"type": "string", "description": "review_until_clean ONLY: the reviewer verdict text (e.g. 'Codex R3 review on tk_X: VERIFIED-CLEAN'). The server creates this comment with server-derived trusted provenance — do NOT post it via add_ticket_comment."},
+                "verdict_content": {"type": "string", "description": "review_until_clean ONLY: the reviewer verdict text, whose first line must be a review verdict header ('<Reviewer> R3 review on tk_X: VERIFIED-CLEAN'). A verdict_content without a parseable header is rejected 422 (verdict_header_unparseable) before any write. The server creates this comment with server-derived trusted provenance — do NOT post it via add_ticket_comment."},
                 "verdict": {"type": "string", "description": "Optional raw verdict phrase for bookkeeping (clean|changes); the server re-derives closure from verdict_content regardless."},
                 "agent_run_id": {"type": "string", "description": "AgentRun you opened, if any (optional)"},
                 "ticket_lease_epoch": {"type": "integer", "description": "Ticket lease epoch from the directive (fencing)"},
@@ -5768,7 +5772,7 @@ async def _handle_create_ticket(args: dict) -> dict:
 
     body: dict[str, Any] = {"title": title}
     for key in (
-        "description", "assigned_to", "priority", "source",
+        "description", "assigned_to", "assigned_user", "priority", "source",
         "created_by_session_id", "created_by_persona",
         "kind", "parent_ticket_id",
     ):
@@ -6544,12 +6548,13 @@ async def _handle_escalate_ticket(args: dict) -> dict:
     return payload
 
 
-# Codex R1 LOW — assignment + related_sessions are NOT exposed via
+# Codex R1 LOW — persona assignment + related_sessions are NOT exposed via
 # update_ticket. `assigned_to` belongs to `assign_persona` (the
 # routing-only verb); `related_sessions` is an internal write-path
 # field. Keeping them in the wrapped surface here would undercut
 # the FSM/verb boundary even though the underlying PUT route still
-# accepts them for `assign_persona` back-compat.
+# accepts them for `assign_persona` back-compat. Direct-to-person
+# assignment (GitHub #96) IS exposed here as `assigned_user`.
 _UPDATE_TICKET_MUTABLE_FIELDS = (
     "title",
     "description",
@@ -6558,6 +6563,7 @@ _UPDATE_TICKET_MUTABLE_FIELDS = (
     "context_refs",
     "file_refs",
     "depends_on",
+    "assigned_user",
 )
 _UPDATE_TICKET_FIELDS = _UPDATE_TICKET_MUTABLE_FIELDS + ("lease_epoch",)
 
@@ -6580,6 +6586,12 @@ async def _handle_update_ticket(args: dict) -> dict:
             continue
         val = args[key]
         if val is None:
+            # An explicit null on `assigned_user` unassigns the person
+            # (GitHub #96). Every other field keeps omitted-as-no-op
+            # semantics, so its null is dropped rather than sent as a
+            # clearing value.
+            if key == "assigned_user":
+                body[key] = None
             continue
         body[key] = val
 
@@ -6592,9 +6604,9 @@ async def _handle_update_ticket(args: dict) -> dict:
             "error": (
                 "At least one mutable field is required for update_ticket "
                 "(title, description, priority, acceptance_criteria, "
-                "context_refs, file_refs, depends_on). "
+                "context_refs, file_refs, depends_on, assigned_user). "
                 "lease_epoch alone is a fence, not a mutation; use "
-                "assign_persona to change assignment."
+                "assign_persona to change persona assignment."
             )
         }
 

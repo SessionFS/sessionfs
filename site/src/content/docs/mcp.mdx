@@ -434,11 +434,12 @@ Open a new ticket. Agent-created tickets require ≥1 acceptance criterion + ≥
 | `acceptance_criteria` | array | no | List of strings (required for agent source) |
 | `depends_on` | array | no | List of ticket IDs |
 | `persona` | string | no | Assign a persona |
+| `assigned_user` | string | no | Assign directly to a teammate by email or user id; they get a "Your turn" notification. Can't be combined with a persona (v0.27.0) |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 
 #### `update_ticket`
 
-Change a ticket's title, description, acceptance criteria, context or file references, dependencies or priority. Only the fields you pass change. Each update posts a diff comment on the ticket and records one audit row per changed field. Status changes go through the lifecycle tools and reassignment through `assign_persona`. Only the ticket's creator or a project admin can edit it.
+Change a ticket's title, description, acceptance criteria, context or file references, dependencies or priority. Only the fields you pass change. Each update posts a diff comment on the ticket and records one audit row per changed field. Status changes go through the lifecycle tools and persona assignment through `assign_persona`; `assigned_user` assigns the ticket directly to a teammate. Only the ticket's creator or a project admin can edit it.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -449,6 +450,7 @@ Change a ticket's title, description, acceptance criteria, context or file refer
 | `acceptance_criteria` | array | no | Replacement list of criteria |
 | `context_refs` / `file_refs` | array | no | Replacement reference lists |
 | `depends_on` | array | no | Replacement list of ticket IDs |
+| `assigned_user` | string or null | no | Teammate email or user id for direct-to-person assignment; `null` unassigns the person (v0.27.0) |
 | `lease_epoch` | number | no | Optional fence from `get_ticket`; returns 409 if the ticket has moved on |
 
 #### `approve_ticket`
@@ -670,7 +672,7 @@ Paginated read of the existing `GET /api/v1/projects/{id}/tickets/{id}/comments`
 
 #### `get_ticket_review_state`
 
-A compact summary of a review ticket: open and closed findings, the last verdict, and open-finding counts by severity, derived from the comment thread. Cheaper than reading a long thread with `list_ticket_comments`. Returns `review_state: null` for tickets with no review comments.
+A compact summary of a review ticket: open and closed findings, the last verdict, and open-finding counts by severity, derived from the comment thread. Cheaper than reading a long thread with `list_ticket_comments`. Returns `review_state: null` for tickets with no review comments. `last_verdict_is_strict_verified_clean` is `true` only when the last trusted verdict is a literal `VERIFIED-CLEAN`. Verdict headers take any reviewer name, in the form `<Reviewer> R<n> review on <ticket>: <VERDICT>`; see [Worker Review Loop](/review-loop/).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -703,6 +705,8 @@ Heartbeat: return one bounded directive (a single intent plus a small comment de
 #### `complete_work_queue_step`
 
 Report the result of the directive returned by `run_work_queue_step`. This is the only call that durably advances the queue.
+
+In `review_until_clean` mode the reviewer passes its verdict as `verdict_content`, and the server writes the trusted verdict comment itself. The first line must be a verdict header such as `Claude R2 review on <ticket_id>: VERIFIED-CLEAN`, with any reviewer name; a header that can't be parsed is refused with `422 verdict_header_unparseable` before anything is written (v0.27.0).
 
 ### AgentRun (Team+)
 

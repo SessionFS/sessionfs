@@ -2067,6 +2067,7 @@ class Ticket(Base):
     __table_args__ = (
         Index("idx_ticket_project_status", "project_id", "status"),
         Index("idx_ticket_assigned", "project_id", "assigned_to", "status"),
+        Index("idx_ticket_assigned_user", "project_id", "assigned_user_id", "status"),
         Index("idx_ticket_project_parent", "project_id", "parent_ticket_id"),
     )
 
@@ -2106,6 +2107,12 @@ class Ticket(Base):
     # same project when start_ticket() runs. Nullable for unassigned
     # tickets that humans triage.
     assigned_to: Mapped[str | None] = mapped_column(String(50), nullable=True)
+
+    # Direct-to-person assignment (mutually exclusive with `assigned_to`):
+    # the teammate notified and handed "your turn". A user reference, not an
+    # FK in metadata (mirrors created_by_user_id/resolver_user_id); the PG-only
+    # FK lives in migration 101. Nullable for persona/unassigned tickets.
+    assigned_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Reporter provenance (structured, not free string).
     created_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)

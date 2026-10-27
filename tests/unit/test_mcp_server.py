@@ -1670,6 +1670,64 @@ class TestNewToolDispatch:
         ):
             assert key in props, f"update_ticket tool missing {key}"
 
+    # ── GitHub #96 — direct-to-person assignment MCP plumbing ──
+
+    def test_ticket_tool_schemas_expose_assigned_user(self):
+        from sessionfs.mcp.server import _TOOLS
+
+        for name in ("create_ticket", "update_ticket"):
+            tool = next(t for t in _TOOLS if t.name == name)
+            props = tool.inputSchema["properties"]
+            assert "assigned_user" in props, f"{name} tool missing assigned_user"
+        create = next(t for t in _TOOLS if t.name == "create_ticket")
+        assert create.inputSchema["properties"]["assigned_user"]["type"] == "string"
+        # update_ticket advertises null so a caller can unassign (GitHub #96).
+        update = next(t for t in _TOOLS if t.name == "update_ticket")
+        assert update.inputSchema["properties"]["assigned_user"]["type"] == [
+            "string",
+            "null",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_create_ticket_forwards_assigned_user(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_create_ticket({
+            "title": "Needs a person",
+            "assigned_user": "jane@example.com",
+        })
+        assert captured["method"] == "POST"
+        assert captured["url"] == "https://api.test/api/v1/projects/proj_test/tickets"
+        assert captured["json"]["assigned_user"] == "jane@example.com"
+
+    @pytest.mark.asyncio
+    async def test_update_ticket_forwards_assigned_user(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        await mcp_server._handle_update_ticket({
+            "ticket_id": "tk_abc",
+            "assigned_user": "jane@example.com",
+        })
+        assert captured["method"] == "PUT"
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_test/tickets/tk_abc"
+        )
+        assert captured["json"] == {"assigned_user": "jane@example.com"}
+
+    @pytest.mark.asyncio
+    async def test_update_ticket_forwards_explicit_null_assigned_user(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        """GitHub #96 — an explicit null on `assigned_user` is a mutation
+        (unassign), so the handler must forward it rather than dropping it
+        like other omitted fields."""
+        await mcp_server._handle_update_ticket({
+            "ticket_id": "tk_abc",
+            "assigned_user": None,
+        })
+        assert captured["method"] == "PUT"
+        assert captured["json"] == {"assigned_user": None}
+
     # ── v0.10.24 tk_32abb6d0d4744c5d / GH #50 — persona MCP parity ──
 
     @pytest.mark.asyncio

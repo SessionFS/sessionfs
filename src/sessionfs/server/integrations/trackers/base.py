@@ -18,7 +18,15 @@ class TrackerError(Exception):
     ``message`` must never contain the API token, request headers, or any
     other credential. The Jira client raises this after scrubbing the
     underlying transport error.
+
+    ``status_code`` carries the remote HTTP status (or ``None`` for a transport
+    error) so a caller can distinguish a missing issue (404) or a permission
+    refusal (403) from a generic upstream failure without parsing the message.
     """
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 @dataclass

@@ -30,6 +30,17 @@ import { baseField, describedBy, errorField } from './fieldStyles';
 export interface ComboboxOption {
   value: string;
   label: string;
+  /** Secondary text under the label (e.g. an email). */
+  description?: string;
+  /** Small right-aligned tag (e.g. "You"). */
+  meta?: string;
+  /** Leading visual (decorative), shown in the list and on the trigger. */
+  icon?: ReactNode;
+  /** Consecutive options sharing a group render under one labelled
+   *  role="group" heading. Options without a group render ungrouped. */
+  group?: string;
+  /** Text the built-in filter matches instead of label + value. */
+  searchText?: string;
 }
 
 interface ComboboxProps {
@@ -114,13 +125,16 @@ export function Combobox({
   const visible = useMemo(() => {
     if (serverFiltered || trimmed === '') return options;
     const needle = trimmed.toLowerCase();
-    return options.filter(
-      (o) => o.label.toLowerCase().includes(needle) || o.value.toLowerCase().includes(needle),
+    return options.filter((o) =>
+      o.searchText != null
+        ? o.searchText.toLowerCase().includes(needle)
+        : o.label.toLowerCase().includes(needle) || o.value.toLowerCase().includes(needle),
     );
   }, [options, serverFiltered, trimmed]);
 
+  const selectedOption = options.find((o) => o.value === value);
   const selectedLabel =
-    options.find((o) => o.value === value)?.label ?? (value ? (selectedLabelProp ?? value) : undefined);
+    selectedOption?.label ?? (value ? (selectedLabelProp ?? value) : undefined);
 
   const close = useCallback((restoreFocus = false) => {
     setOpen(false);
@@ -290,7 +304,14 @@ export function Combobox({
           onClick={() => (open ? close() : openPopup())}
           onKeyDown={handleTriggerKeyDown}
         >
-          <span className="truncate">{selectedLabel || placeholder}</span>
+          <span className="flex min-w-0 items-center gap-2">
+            {selectedOption?.icon && (
+              <span className="shrink-0 inline-flex" aria-hidden="true">
+                {selectedOption.icon}
+              </span>
+            )}
+            <span className="truncate">{selectedLabel || placeholder}</span>
+          </span>
           <svg
             className={`w-3.5 h-3.5 text-text-tertiary shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
             viewBox="0 0 24 24"
@@ -347,36 +368,74 @@ export function Combobox({
                 className={`flex-1 min-h-0 overflow-y-auto overscroll-contain py-1 transition-opacity duration-150 ${pending ? 'opacity-60' : ''}`}
                 style={{ maxHeight: MAX_POPUP_HEIGHT }}
               >
-                {visible.map((opt, i) => {
-                  const isSelected = opt.value === value;
-                  const isActive = !pending && i === activeIndex;
-                  return (
-                    <li
-                      key={opt.value}
-                      id={optionId(i)}
-                      role="option"
-                      aria-selected={isSelected}
-                      data-option-index={i}
-                      onMouseEnter={() => setActiveIndex(i)}
-                      onMouseDown={(e) => e.preventDefault() /* keep focus in the search box */}
-                      aria-disabled={pending || undefined}
-                      onClick={() => {
-                        if (!pending) choose(opt);
-                      }}
-                      className={`${pending ? 'cursor-default' : 'cursor-pointer'} mx-1 px-2 py-1.5 text-sm flex items-center gap-2 transition-colors duration-150 rounded-sm ${
-                        isActive ? 'bg-surface-active text-text-primary' : 'text-text-secondary'
-                      }`}
-                    >
-                      <span className="w-4 shrink-0" aria-hidden="true">
-                        {isSelected && (
-                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="20 6 9 17 4 12" />
-                          </svg>
+                {groupRuns(visible).map((run) => {
+                  const items = run.options.map(({ option: opt, index: i }) => {
+                    const isSelected = opt.value === value;
+                    const isActive = !pending && i === activeIndex;
+                    return (
+                      <li
+                        key={opt.value}
+                        id={optionId(i)}
+                        role="option"
+                        aria-selected={isSelected}
+                        data-option-index={i}
+                        onMouseEnter={() => setActiveIndex(i)}
+                        onMouseDown={(e) => e.preventDefault() /* keep focus in the search box */}
+                        aria-disabled={pending || undefined}
+                        onClick={() => {
+                          if (!pending) choose(opt);
+                        }}
+                        className={`${pending ? 'cursor-default' : 'cursor-pointer'} mx-1 px-2 py-1.5 text-sm flex items-center gap-2 transition-colors duration-150 rounded-sm ${
+                          isActive ? 'bg-surface-active text-text-primary' : 'text-text-secondary'
+                        }`}
+                      >
+                        <span className="w-4 shrink-0" aria-hidden="true">
+                          {isSelected && (
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                              <polyline points="20 6 9 17 4 12" />
+                            </svg>
+                          )}
+                        </span>
+                        {opt.icon && (
+                          <span className="shrink-0 inline-flex" aria-hidden="true">
+                            {opt.icon}
+                          </span>
                         )}
-                      </span>
-                      <span className="flex-1 truncate" title={opt.label}>
-                        {opt.label}
-                      </span>
+                        {opt.description ? (
+                          <span className="flex-1 min-w-0">
+                            <span className="block truncate" title={opt.label}>
+                              {opt.label}
+                            </span>
+                            <span className="block truncate text-xs text-text-tertiary" title={opt.description}>
+                              {opt.description}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="flex-1 truncate" title={opt.label}>
+                            {opt.label}
+                          </span>
+                        )}
+                        {opt.meta && (
+                          <span className="shrink-0 rounded px-1.5 py-0.5 text-2xs font-medium bg-surface-hover text-text-tertiary">
+                            {opt.meta}
+                          </span>
+                        )}
+                      </li>
+                    );
+                  });
+                  if (!run.group) return items;
+                  const headingId = `${controlId}-group-${run.key}`;
+                  return (
+                    <li key={`group-${run.key}`} role="none">
+                      <div
+                        id={headingId}
+                        className="px-3 pt-2 pb-1 text-micro uppercase font-semibold tracking-wide text-text-tertiary"
+                      >
+                        {run.group}
+                      </div>
+                      <ul role="group" aria-labelledby={headingId}>
+                        {items}
+                      </ul>
                     </li>
                   );
                 })}
@@ -400,4 +459,15 @@ export function Combobox({
       </div>
     </FieldWrapper>
   );
+}
+
+/** Split options into consecutive runs that share a group (flat indices kept). */
+function groupRuns(options: ComboboxOption[]) {
+  const runs: { key: number; group?: string; options: { option: ComboboxOption; index: number }[] }[] = [];
+  options.forEach((option, index) => {
+    const last = runs[runs.length - 1];
+    if (last && last.group === option.group) last.options.push({ option, index });
+    else runs.push({ key: runs.length, group: option.group, options: [{ option, index }] });
+  });
+  return runs;
 }

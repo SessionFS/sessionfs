@@ -1,0 +1,146 @@
+---
+title: "Worker Review Loop"
+description: "Build a change with brief-driven coding agents in isolated worktrees, gated by an independent trusted reviewer, a fix pass and a re-review before merge."
+---
+
+The worker review loop is a way to build a change with several coding agents without letting any of them grade their own work. Workers write code from a written brief, one branch each, in their own git worktree. A separate reviewer reads the code, not the worker's summary, and posts a verdict. The worker's fix pass goes back to the same reviewer, and nothing merges until that reviewer says it is clean.
+
+SessionFS holds the state of the loop, so it works with any coding agent (Claude Code, Codex, Cursor, Gemini CLI and others) and anyone on the project can see where each piece of work stands. The `worker-review-loop` skill in the [launch catalog](/skills-marketplace/#launch-catalog) teaches an agent to run it. For wrapping agents you launch yourself in agent runs, see also [External Agent Orchestration](/integrations/external-agents/).
+
+| Piece of the loop | SessionFS primitive |
+| --- | --- |
+| Brief | A ticket with acceptance criteria |
+| Each worker or reviewer launch | An agent run |
+| Review loop | A work queue in `review_until_clean` mode |
+| Reviewer | A registered trusted reviewer posting verdicts |
+| Worker that runs out of turns | A continuation run or a handoff |
+| Discoveries | Knowledge base entries (`add_knowledge`) |
+
+Tickets and agent runs are available on **Team** and **Enterprise**. Registering a trusted reviewer needs an org owner or admin on Team or Enterprise.
+
+## 1. Write the brief as a ticket
+
+The brief is the worker's only context: anything not in the ticket, the worker does not know. Create one ticket per branch with the `create_ticket` MCP tool or `sfs ticket create`, and put each testable outcome in its acceptance criteria. A good brief names:
+
+- the goal, in one sentence;
+- the spec, with the parts that matter quoted;
+- the files to read first, in order;
+- the scope: which paths may change, which may not, and whether new dependencies are allowed;
+- the vendor documentation for every external API the change calls;
+- the required tests and the command that must pass, plus a migration run on a real database if the change has migrations;
+- what "done" means, including a status line the worker prints at the end (for example `WORKER-STATUS: DONE`).
+
+```bash
+sfs ticket create --title "Add retry to the export client" \
+  --description "$(cat brief.md)" \
+  --criteria "Retries 429 and 503 responses with backoff, up to 3 attempts" \
+  --criteria "tests/test_export_client.py covers both status codes" \
+  --file src/export/client.py --output-id
+```
+
+Tickets an agent files start as `suggested`. Approve them (`sfs ticket approve` or `approve_ticket`) before a work queue will pick them up.
+
+## 2. One worker per branch, one worktree per worker
+
+```bash
+git worktree add ../wt-export-retry -b export-retry main
+```
+
+Workers never share a worktree or a branch, so they cannot see or overwrite each other's files.
+
+## 3. Launch workers as agent runs
+
+Record each launch as an agent run, then start your coding agent inside the worktree with the brief:
+
+```bash
+sfs persona create implementer --role "Implements ticket briefs" \
+  --content "Work the ticket's brief in this worktree, commit, and report."
+RUN_ID=$(sfs agent run implementer --ticket <ticket_id> --output-id)
+```
+
+The worker calls `start_ticket` first, which loads the ticket, the persona and related knowledge, and records what it learns with `add_knowledge` as it goes. Keep the full output in a log file. A fast, inexpensive model often works well as a worker when a stronger model reviews, but that split is optional.
+
+## 4. Detect how the worker exited
+
+A worker's own summary is not evidence that it finished. Check the log and the branch:
+
+- **Search the whole log for the status line.** Do not anchor the check to the start of a line. Tools wrap, indent or prefix their final message, and an anchored check has missed real out-of-turns exits.
+- **Confirm with git** that the worktree is clean and the branch has the commits.
+- **Look for your tool's turn-limit message or exit status** to tell running out of turns apart from a crash.
+
+| Exit | Signs | Next step |
+| --- | --- | --- |
+| Finished | Status line present, tree clean, commits on the branch | `sfs agent complete $RUN_ID --summary "..."`, then, on the first pass only, `sfs ticket complete <ticket_id> --notes "..." --file <path>` so the ticket moves to review (fix-pass workers skip this: the ticket is already in review), then one ticket comment with the branch, commit and test command. |
+| Out of turns | Turn-limit message, no status line | Commit what exists as work in progress, complete the run with `--status errored`, and start a continuation. |
+| Crashed | Non-zero exit, no turn-limit message | Complete the run with `--status errored`, fix the cause, relaunch the same brief in the same worktree. |
+
+A **continuation** is a short new brief: continue this ticket, the spec is the ticket, the previous worker stopped at commit `<sha>` (read its diff first), and these criteria are still open. Create it with `sfs agent replay <run_id> --prompt-file continuation.md --context-ref <sha>` (MCP: `replay_agent_run`) so the new run links to the one that stopped, and start it with `sfs agent run --run-id <new_run_id>`. The ticket is already in progress, so a continuation worker skips `start_ticket`. If a person should take over instead, push the session and send a [handoff](/handoff/) that carries the ticket.
+
+## 5. Register the reviewer and create the queue
+
+Give the reviewer an identity nothing else uses, usually an org [service key](/integrations/cloud-agents#authentication), and register it as a trusted reviewer:
+
+```bash
+sfs admin service-keys create --org <org_id> --name reviewer \
+  --scope tickets:read --scope tickets:write \
+  --scope work_queues:read --scope work_queues:write \
+  --scope agent_runs:write --project <project_id> --output-key
+
+sfs persona create reviewer --role "Reviews branches read-only" \
+  --content "Review the code, not the worker's report. Post one verdict per round."
+
+sfs admin trusted-reviewers add --org <org_id> \
+  --service-key-id <key_id> --persona reviewer
+```
+
+Then create a work queue with the `create_work_queue` MCP tool:
+
+```json
+{
+  "name": "export-retry review",
+  "mode": "review_until_clean",
+  "selector": {"ticket_ids": ["<ticket_id>"]},
+  "assigned_persona": "reviewer"
+}
+```
+
+Run the reviewer under that key only, for example as its own auth profile (`sfs auth login --profile reviewer --key <key>`, then `SESSIONFS_PROFILE=reviewer` in the reviewer's shell), never under a worker's identity.
+
+`assigned_persona` must match the persona the reviewer is registered for. The server counts a verdict only when the caller's identity is registered for exactly that persona, and it ignores any persona name a client sends.
+
+## 6. Independent, read-only review
+
+The reviewer runs in its own checkout, may not edit files, and never commits. On each wake it calls `run_work_queue_step` (no more often than the queue's cadence, which is at least 120 seconds). A `post_review` directive means a worker posted new work; it carries the `review_round` number and the findings still open from earlier rounds.
+
+Brief the reviewer with the branch, the commit, the base and the ticket, not with the worker's conclusion. Ask it to read the diff against the acceptance criteria, run the tests, check every external request against the vendor's documentation rather than the test mocks, confirm migrations ran on a real database, and re-check every open finding.
+
+The reviewer delivers its verdict through `complete_work_queue_step`, passing the directive's ids, `outcome: "posted_review"` and the verdict as `verdict_content`. The server writes the verdict comment itself, with the queue's persona and its server-stamped trusted provenance. Post the verdict through the queue rather than `add_ticket_comment`, so the round and directive stay linked and the loop can close. The server reads this format, with the reviewer's own name in place of `<Reviewer>` whichever tool reviews and `<review_round>` taken from the directive:
+
+```text
+<Reviewer> R<review_round> review on <ticket_id>: CHANGES_REQUESTED
+Findings:
+- HIGH — src/export/client.py:88 retries POST without an idempotency key
+- LOW — tests/test_export_client.py does not cover the 503 path
+```
+
+`<Reviewer>` must start with a letter and contain only letters, digits, `.`, `_` or `-` (at most 32 characters). A `verdict_content` whose header does not parse is rejected with `verdict_header_unparseable` before anything is written.
+
+The reviewer also records its own agent run, with the severity and findings, so the review shows up next to the worker runs.
+
+## 7. Fix pass and re-review
+
+1. Read the open findings with `get_ticket_review_state` or `sfs ticket review-state <ticket_id>`.
+2. Launch a fix worker in the same worktree with a brief listing those findings. Handle its exit as in step 4, except that the ticket is already in review: the fix worker calls neither `start_ticket` nor `sfs ticket complete`.
+3. The fix worker commits and posts one ticket comment with the new commit. Any comment that is not a trusted verdict hands the turn back to the reviewer, so post one comment per pass.
+4. The same reviewer re-reviews. The loop for that ticket ends only on a trusted `<Reviewer> R<N> review on <ticket_id>: VERIFIED-CLEAN` with no open findings. `APPROVED` and similar wording is displayed as clean but never ends the loop.
+
+## 8. Merge
+
+Merge when `get_ticket_review_state` shows `last_verdict_is_strict_verified_clean: true` and no open findings (`sfs ticket review-state` prints this as `Strict VERIFIED-CLEAN: yes`). Run the full test suite on the merged result, then resolve the ticket (`resolve_ticket` or `sfs ticket resolve`) and remove the worktree. The work queue never changes a ticket's status on its own.
+
+## Lessons
+
+- **The brief is the only context.** Name the spec, the files to read first, the scope limits and the required tests.
+- **A self-report is not a gate.** The trusted verdict is.
+- **Mocked tests can encode the wrong API.** A branch can pass its tests while asserting the wrong request shapes for a vendor API. Check against the vendor's documentation, and prove migrations on a real database.
+- **Write down what you learn.** Vendor quirks, dead ends and conventions go into the [knowledge base](/knowledge-base/) as they are found, so the next worker starts with them.

@@ -33,6 +33,7 @@ from sessionfs.server.db.models import (
 from sessionfs.server.helper import tools as tools_mod
 from sessionfs.server.helper.context import HelperAuditSink, HelperScope
 from sessionfs.server.helper.tools import TOOLS, scope_project_ids
+from sessionfs.server.services import jira_sync
 from tests.server.unit.test_helper_coverage import (
     RecordingSink,
     _add_member,
@@ -55,6 +56,20 @@ async def _enterprise_test_user(db_session, test_user):
     test_user.tier = "enterprise"
     await db_session.commit()
     return test_user
+
+
+@pytest.fixture(autouse=True)
+def _no_real_jira(monkeypatch):
+    """get_jira_issue resolves a ticket's live link; the scope matrix must
+    refuse an out-of-scope ticket before ever constructing a Jira client."""
+
+    class _UnreachableJira:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError(
+                "get_jira_issue reached the Jira client for an out-of-scope ticket"
+            )
+
+    monkeypatch.setattr(jira_sync, "JiraClient", _UnreachableJira)
 
 
 async def _seed_project(
@@ -144,6 +159,7 @@ def _tool_calls(a: dict, b: dict) -> dict[str, list[dict]]:
         "get_sessionfs_doc": [{"slug": "quickstart"}],
         "list_tickets": [{}, {"project_id": bp}, {"assigned_to_me": True}],
         "get_ticket": [{"ticket_id": b["ticket"].id}],
+        "get_jira_issue": [{"ticket_id": b["ticket"].id}],
         "list_wiki_pages": [{"project_id": bp}],
         "get_wiki_page": [{"project_id": bp, "slug": b["page"].slug}],
         "list_agent_runs": [{"project_id": bp}],
@@ -174,6 +190,13 @@ def _tool_calls(a: dict, b: dict) -> dict[str, list[dict]]:
                 "body": "Looks good",
                 "sources": {"body": ["user"]},
             }
+        ],
+        "propose_jira_link": [
+            {"ticket_id": b["ticket"].id, "issue_key": "ACME-7"}
+        ],
+        "propose_jira_overwrite": [
+            {"ticket_id": b["ticket"].id, "direction": "to_jira"},
+            {"ticket_id": b["ticket"].id, "direction": "from_jira"},
         ],
     }
 

@@ -3,7 +3,7 @@
 Commands:
 - sfs ticket list [--assigned-to ...] [--status ...] [--priority ...]
 - sfs ticket show <id>
-- sfs ticket create --title T [--assigned-to ...] [--criteria ...]
+- sfs ticket create --title T [--assigned-to ... | --user EMAIL|ID] [--criteria ...]
 - sfs ticket start <id> [--force] [--tool ...]
 - sfs ticket complete <id> --notes N [--files ...]
 - sfs ticket comment <id> --content C [--as PERSONA]
@@ -222,6 +222,11 @@ def create_ticket(
     title: str = typer.Option(..., "--title", "-t", help="Short ticket title"),
     description: str = typer.Option("", "--description", "-d"),
     assigned_to: str | None = typer.Option(None, "--assigned-to", "-a"),
+    user: str | None = typer.Option(
+        None, "--user", "-u",
+        help="Teammate email or user id for direct-to-person assignment "
+             "(mutually exclusive with --assigned-to)",
+    ),
     priority: str = typer.Option("medium", "--priority", "-p"),
     criteria: list[str] = typer.Option([], "--criteria", help="Acceptance criterion (repeatable)"),
     file_ref: list[str] = typer.Option([], "--file", "-f", help="File reference (repeatable)"),
@@ -253,6 +258,8 @@ def create_ticket(
     }
     if assigned_to:
         payload["assigned_to"] = assigned_to
+    if user:
+        payload["assigned_user"] = user
     if parent:
         payload["parent_ticket_id"] = parent
     s, body, _ = asyncio.run(
@@ -429,6 +436,11 @@ def update_ticket_cmd(
         None, "--acceptance-criteria-file",
         help="Path to a file with one acceptance-criterion per line; replaces the full list",
     ),
+    user: str | None = typer.Option(
+        None, "--user", "-u",
+        help="Teammate email or user id for direct-to-person assignment "
+             "(mutually exclusive with `sfs ticket assign`)",
+    ),
     lease_epoch: int | None = typer.Option(
         None, "--lease-epoch",
         help="Fence stale ticket workers (read from `sfs ticket show`); 409 if stale",
@@ -440,7 +452,8 @@ def update_ticket_cmd(
     diff comment on the ticket and writes audit rows to `ticket_edits`.
     Status transitions go through the lifecycle commands (`start` /
     `complete` / `resolve` / etc.) — NOT this verb. Persona reassignment
-    goes through `sfs ticket assign` — NOT this verb either.
+    goes through `sfs ticket assign` — NOT this verb either. Use
+    `--user` to assign the ticket directly to a teammate by email or id.
     """
     if description is not None and description_file is not None:
         err_console.print(
@@ -463,6 +476,8 @@ def update_ticket_cmd(
             raise typer.Exit(2) from exc
     if priority is not None:
         payload["priority"] = priority
+    if user is not None:
+        payload["assigned_user"] = user
     if acceptance_criteria_file is not None:
         try:
             with open(acceptance_criteria_file, encoding="utf-8") as f:
@@ -497,7 +512,7 @@ def update_ticket_cmd(
         err_console.print(
             "[red]At least one mutable field is required "
             "(--title / --description[-file] / --priority / "
-            "--acceptance-criteria-file). lease_epoch alone is a fence, "
+            "--acceptance-criteria-file / --user). lease_epoch alone is a fence, "
             "not a mutation. Use `sfs ticket assign` for persona "
             "reassignment.[/red]"
         )
@@ -798,7 +813,7 @@ def ticket_review_state(
     """Show a compact summary of a review ticket's open + closed findings.
 
     Derived from the comment thread server-side — no LLM, no scraping.
-    Returns "no review state" for tickets without any codex-reviewer
+    Returns "no review state" for tickets without any trusted verdict
     comments.
     """
     api_url, api_key, project_id = _resolve_project()
@@ -826,7 +841,7 @@ def ticket_review_state(
     if not state:
         console.print(
             f"[dim]No review state for {ticket_id} — ticket has no "
-            f"codex-reviewer comments yet.[/dim]"
+            f"trusted verdict comments yet.[/dim]"
         )
         return
 
@@ -847,7 +862,9 @@ def ticket_review_state(
         f"[bold {verdict_style}]{verdict}[/bold {verdict_style}]   "
         f"{sev_line}   "
         f"[dim]open={open_total}, closed={len(state.get('closed_findings') or [])}, "
-        f"rounds={len(state.get('rounds') or [])}[/dim]",
+        f"rounds={len(state.get('rounds') or [])}[/dim]\n"
+        f"Strict VERIFIED-CLEAN: "
+        f"{'[green]yes[/green]' if state.get('last_verdict_is_strict_verified_clean') else '[yellow]no[/yellow]'}",
         title=f"Review state — {ticket_id}",
         title_align="left",
     ))
@@ -1445,12 +1462,25 @@ def jira_publish_cmd(
         ..., "--from", help="Preview JSON file (from `sfs ticket jira preview --out`)."
     ),
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+    overwrite_existing: bool = typer.Option(
+        False,
+        "--overwrite-existing",
+        help=(
+            "Replace an attached Jira issue's summary/description that was not "
+            "published from SessionFS."
+        ),
+    ),
 ) -> None:
     """Push a previewed draft to Jira (creates or updates the linked issue).
 
     Publish always operates on a preview file: generate it first with
     ``sfs ticket jira preview <ticket> --out preview.json``, then publish with
     ``--from preview.json``.
+
+    When the ticket was linked to an existing Jira issue (never published from
+    SessionFS), publishing would replace that issue's summary and description;
+    the server refuses with ``jira_overwrite_required`` until you pass
+    ``--overwrite-existing``.
     """
     api_url, api_key, project_id = _resolve_project()
     payload = _load_publish_payload(from_file, ticket_id)
@@ -1463,6 +1493,7 @@ def jira_publish_cmd(
         "summary": payload["summary"],
         "sections": payload["sections"],
         "confirm": True,
+        "overwrite_existing": overwrite_existing,
     }
     # Echo the template the preview resolved to, so the server refuses
     # (409 template_changed) instead of publishing with a template version
@@ -1480,6 +1511,15 @@ def jira_publish_cmd(
             json_data=publish_body,
         )
     )
+    if s == 409 and isinstance(body, dict) and body.get("error") == "jira_overwrite_required":
+        err_console.print(
+            f"[yellow]{body.get('message') or format_api_error(body, s)}[/yellow]"
+        )
+        err_console.print(
+            "[dim]Re-run with --overwrite-existing to replace the Jira issue's "
+            "summary and description.[/dim]"
+        )
+        raise typer.Exit(1)
     if s >= 400 or not isinstance(body, dict):
         err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
@@ -1546,6 +1586,48 @@ def jira_unlink_cmd(
         err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     console.print(f"[green]Unlinked Jira issue from {ticket_id}.[/green]")
+
+
+@jira_app.command("pull")
+@handle_errors
+def jira_pull_cmd(
+    ticket_id: str = typer.Argument(..., help="Ticket id (e.g. tk_...)"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+) -> None:
+    """Overwrite a ticket's title/description from its linked Jira issue.
+
+    The reverse of ``jira publish``: pull the linked issue's summary and
+    description back into the ticket. Field edits never push back to Jira, and
+    an empty remote summary or description leaves the corresponding ticket
+    field unchanged.
+    """
+    api_url, api_key, project_id = _resolve_project()
+    confirm_or_exit(
+        f"Pull the title/description from Jira into ticket '{ticket_id}'?",
+        yes=yes,
+        yes_hint="Pass --yes to pull without prompting.",
+    )
+    s, body, _ = asyncio.run(
+        _api_request(
+            "POST",
+            f"/api/v1/projects/{project_id}/tickets/{ticket_id}/jira/pull",
+            api_url, api_key,
+            json_data={"confirm": True},
+        )
+    )
+    if s >= 400 or not isinstance(body, dict):
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
+        raise typer.Exit(1)
+    jira = body.get("jira") or {}
+    console.print(
+        f"[green]Pulled from Jira:[/green] [bold]{jira.get('issue_key', '')}[/bold]\n"
+        f"  {jira.get('issue_url', '')}"
+    )
+    updated = body.get("updated_fields") or []
+    if updated:
+        console.print(f"[dim]Updated fields: {', '.join(updated)}[/dim]")
+    else:
+        console.print("[dim]No changes (ticket already matches Jira).[/dim]")
 
 
 ticket_app.add_typer(jira_app, name="jira")

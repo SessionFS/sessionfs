@@ -199,11 +199,12 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/api/v1/projects/{id}/tickets` | Bearer (`tickets:read`) | List tickets. Query params: `status`, `assigned_to`, `kind` |
-| POST | `/api/v1/projects/{id}/tickets` | Bearer (`tickets:write`) | Create a ticket (body: `title`, `description`, `acceptance_criteria`, `priority`, `kind`, `parent_ticket_id`, `depends_on`) |
+| GET | `/api/v1/projects/{id}/tickets` | Bearer (`tickets:read`) | List tickets. Query params: `status`, `assigned_to`, `assigned_user` (a user id, or `me` with a user key; v0.27.0), `priority`, `kind` |
+| GET | `/api/v1/projects/{id}/assignable-users` | Bearer (`tickets:read`, user key) | Teammates who can read the project and can be assigned a ticket directly, with whether each can edit it (v0.27.0) |
+| POST | `/api/v1/projects/{id}/tickets` | Bearer (`tickets:write`) | Create a ticket (body: `title`, `description`, `acceptance_criteria`, `priority`, `kind`, `parent_ticket_id`, `depends_on`, and either `assigned_to` (persona) or `assigned_user` (teammate email or user id; v0.27.0)) |
 | GET | `/api/v1/tickets/{tid}` | Bearer (`tickets:read`) | Look a ticket up by id alone (for links): the ticket detail plus its project name, comment count and latest comments. Not found and no access both return 404 (v0.25.0) |
 | GET | `/api/v1/projects/{id}/tickets/{tid}` | Bearer (`tickets:read`) | Get a ticket with dependencies, dependents, and recent comments |
-| PUT | `/api/v1/projects/{id}/tickets/{tid}` | Bearer (`tickets:write`) | Partial mutation for `title` / `description` / `priority` / `acceptance_criteria` / `context_refs` / `file_refs` / `depends_on`. Status transitions remain FSM-only. Authz: creator OR project admin. Optional `lease_epoch` for optimistic concurrency (409 + structured envelope on stale; last-write-wins when omitted; `lease_epoch` alone rejected with 400 — it's a fence, not a mutation). Side effect: every successful update auto-posts ONE `author_persona='system'` diff comment + writes per-field rows to the `ticket_edits` audit table (no-op writes don't pollute the audit). `depends_on` updates run same-project + cycle + dedup validation before wipe-and-reinsert. (v0.10.28) |
+| PUT | `/api/v1/projects/{id}/tickets/{tid}` | Bearer (`tickets:write`) | Partial mutation for `title` / `description` / `priority` / `acceptance_criteria` / `context_refs` / `file_refs` / `depends_on` / `assigned_user` (teammate email or user id, `null` to unassign; v0.27.0). Status transitions remain FSM-only. Authz: creator OR project admin. Optional `lease_epoch` for optimistic concurrency (409 + structured envelope on stale; last-write-wins when omitted; `lease_epoch` alone rejected with 400 — it's a fence, not a mutation). Side effect: every successful update auto-posts ONE `author_persona='system'` diff comment + writes per-field rows to the `ticket_edits` audit table (no-op writes don't pollute the audit). `depends_on` updates run same-project + cycle + dedup validation before wipe-and-reinsert. (v0.10.28) |
 | POST | `/api/v1/projects/{id}/tickets/{tid}/start` | Bearer (`tickets:write`) | Atomic claim. Increments and returns `lease_epoch`, creates a server-side `retrieval_audit_id`, returns compiled persona + ticket context |
 | POST | `/api/v1/projects/{id}/tickets/{tid}/complete` | Bearer (`tickets:write`) | `in_progress` → `review`. Pass `lease_epoch` to reject stale workers with 409 |
 | POST | `/api/v1/projects/{id}/tickets/{tid}/resolve` | Bearer (`tickets:write`) | `review` → `done`. Atomic with rowcount-1 guard |
@@ -214,9 +215,11 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | GET | `/api/v1/projects/{id}/tickets/{tid}/comments` | Bearer (`tickets:read`) | Paginated comment thread (query: `since`, `since_id`, `limit`) |
 | GET | `/api/v1/projects/{id}/tickets/{tid}/review-state` | Bearer (`tickets:read`) | Derived review state — open/closed findings, last verdict, severity counts |
 | POST | `/api/v1/projects/{id}/tickets/{tid}/jira/preview` | Bearer (`tickets:write`) | Draft a Jira story from the ticket (Enterprise, v0.23.0). See [Jira Cloud](/integrations/jira/) |
-| POST | `/api/v1/projects/{id}/tickets/{tid}/jira/publish` | Bearer (`tickets:write`) | Create or update the linked Jira issue |
+| POST | `/api/v1/projects/{id}/tickets/{tid}/jira/publish` | Bearer (`tickets:write`) | Create or update the linked Jira issue. Overwriting a linked issue that was never published from SessionFS needs `overwrite_existing: true` (else `409 jira_overwrite_required`) |
 | GET | `/api/v1/projects/{id}/tickets/{tid}/jira` | Bearer (`tickets:read`) | Linked Jira issue and cached status |
 | DELETE | `/api/v1/projects/{id}/tickets/{tid}/jira` | Bearer (`tickets:write`, project admin) | Unlink the Jira issue |
+| POST | `/api/v1/projects/{id}/tickets/{tid}/jira/link` | Bearer (`tickets:write`, ticket editor) | Link the ticket to an existing Jira issue (`issue_key`); nothing is sent to Jira (v0.27.0) |
+| POST | `/api/v1/projects/{id}/tickets/{tid}/jira/pull` | Bearer (`tickets:write`, user key, ticket editor) | Replace the ticket's title and description with the linked issue's (`confirm: true`); empty Jira fields leave the ticket unchanged (v0.27.0) |
 
 ### Organizations
 

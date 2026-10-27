@@ -72,8 +72,8 @@ def _is_recent(created_at: datetime, now: datetime) -> bool:
 
 def parse_verdict(content: str) -> str | None:
     """Return the canonical verdict when ``content`` carries a recognized
-    Codex review header (``Codex R{N} review on tk_...: VERDICT``), else
-    ``None``.
+    review verdict header (``<Reviewer> R{N} review on tk_...: VERDICT``),
+    else ``None``.
 
     This is the notification layer's "is this comment a trusted review
     verdict" seam. It delegates to the same header parser the review-state
@@ -194,6 +194,26 @@ async def map_persona_to_human(
     if persona is None or not persona.represented_user_id:
         return None
     return persona.represented_user_id, persona.name
+
+
+async def resolve_assigned_user(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    ticket: Ticket,
+    org_id: str | None,
+) -> tuple[str, str | None] | None:
+    """The human who owns the ticket's current assignment, if any.
+
+    Direct-to-person assignment (``ticket.assigned_user_id``) wins and returns
+    a None persona name; otherwise the persona name maps through
+    ``map_persona_to_human``. Returns ``None`` when unassigned or unmapped.
+    """
+    if ticket.assigned_user_id:
+        return ticket.assigned_user_id, None
+    return await map_persona_to_human(
+        db, project_id=project_id, name=ticket.assigned_to or "", org_id=org_id
+    )
 
 
 async def _coalesce(

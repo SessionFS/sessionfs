@@ -373,6 +373,8 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 - **Schedule the Jira sync and Confluence publish sweeps** if you use them, so outbound Jira changes are retried and opted-in Confluence pages stay current; see [Scheduled sweeps](#scheduled-sweeps).
 - **Restricted project visibility is off by default.** Turning it on for an org limits members to projects they own, created, or reach through a [project group](/project-groups/).
 
+**Upgrading to v0.27.0** runs migration 101 (direct-to-person ticket assignment; additive). Existing tickets keep their persona assignments. Work-queue completions whose verdict header can't be parsed are now refused with `422 verdict_header_unparseable`; verdict headers may name any reviewer.
+
 ## Troubleshooting
 
 ### Check pod status
@@ -640,8 +642,10 @@ SessionFS has no scheduler of its own. These features run only when a scheduled 
 | Org digest | `POST /api/v1/admin/sweeps/org-digest` | Sends the weekly activity digest to owners and admins of Team and Enterprise orgs. Sends once per org per week however often it runs, and always covers the last completed week, so run it daily |
 | Helper retention | `POST /api/v1/admin/sweeps/helper-retention` | Deletes session helper messages older than the org's `helper_retention_days` (default 90), then removes empty threads |
 | Ticket digest | `POST /api/v1/admin/sweeps/ticket-notifications` | Emails each user one digest of their pending ticket notifications, following their preference (`off`, `your_turn` by default, or `all`). Access is re-checked before anything is sent (v0.24.0) |
-| Jira sync | `POST /api/v1/admin/sweeps/jira-sync` | Delivers queued outbound Jira changes (status moves, comments, completion evidence) with retry and backoff, and expires old ones. Body `{"limit": N}` (default 100, max 1000) (v0.26.0). See [Jira Cloud](/integrations/jira/) |
+| Jira sync | `POST /api/v1/admin/sweeps/jira-sync` | Delivers queued outbound Jira changes (status moves, comments, completion evidence) with retry and backoff, and expires old ones. Body `{"limit": N, "budget_seconds": S}` (defaults 100 and 50 s) (v0.26.0). See [Jira Cloud](/integrations/jira/) |
 | Confluence publish | `POST /api/v1/admin/sweeps/confluence-publish` | Republishes opted-in wiki pages and, where the mapping allows it, the context document; unchanged pages are skipped and pages edited in Confluence are never overwritten (v0.26.0). See [Confluence Cloud](/integrations/confluence/) |
+
+Suggested schedules: KB compile every 15 minutes, org digest and helper retention daily, ticket digest every 10 minutes, **Jira sync every minute** (its first retry is due one minute after a failed delivery; without the job a failed change never reaches Jira) and Confluence publish every 15 minutes. Every sweep is safe to run repeatedly and returns immediately when there is nothing to do.
 
 Example CronJob for the KB compile sweep, every 15 minutes:
 

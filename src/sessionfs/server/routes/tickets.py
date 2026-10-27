@@ -54,7 +54,11 @@ from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
     AgentPersona,
     KnowledgeEntry,
+    OrgMember,
     Project,
+    ProjectGroup,
+    ProjectGroupAccess,
+    ProjectGroupMember,
     RetrievalAuditContext,
     Ticket,
     TicketComment,
@@ -66,14 +70,18 @@ from sessionfs.server.db.models import (
 )
 from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.routes.wiki import _get_project_or_404
+from sessionfs.server.roles import ADMIN_ROLES
 from sessionfs.server.services import jira_sync, ticket_transitions, ticket_watchers
 from sessionfs.server.services.ticket_transitions import TransitionRefused
 from sessionfs.server.services.ticket_writes import (
     apply_ticket_update,
     assert_lease_epoch as _assert_lease_epoch,
     assert_lease_required_mode as _assert_lease_required_mode,
+    assigned_user_label,
     authorize_ticket_edit,
+    check_assignee_conflict,
     insert_ticket_comment,
+    resolve_assigned_user_id,
     resolve_persona_name as _resolve_persona_name,
 )
 from sessionfs.server.tier_gate import UserContext, check_project_feature, get_user_context
@@ -163,6 +171,11 @@ class TicketCreate(BaseModel):
     description: str = ""
     priority: str = "medium"
     assigned_to: str | None = None
+    # Direct-to-person assignment (GitHub #96): a teammate's user id, or an
+    # email/id in ``assigned_user``. Mutually exclusive with ``assigned_to``;
+    # setting one clears the other.
+    assigned_user_id: str | None = None
+    assigned_user: str | None = None
     context_refs: list[str] = []
     file_refs: list[str] = []
     related_sessions: list[str] = []
@@ -245,6 +258,8 @@ class TicketUpdate(BaseModel):
     description: str | None = None
     priority: str | None = None
     assigned_to: str | None = None
+    assigned_user_id: str | None = None
+    assigned_user: str | None = None
     context_refs: list[str] | None = None
     file_refs: list[str] | None = None
     related_sessions: list[str] | None = None
@@ -284,6 +299,27 @@ class TicketJiraLink(BaseModel):
     last_known_status: str | None = None
 
 
+class AssignedUser(BaseModel):
+    """A teammate a ticket is assigned to (person assignment, GitHub #96)."""
+
+    id: str
+    display_name: str | None
+    email: str
+
+
+class AssignableUser(BaseModel):
+    """A teammate who may be assigned a ticket in this project."""
+
+    id: str
+    display_name: str | None
+    email: str
+    can_edit: bool
+
+
+class AssignableUsersResponse(BaseModel):
+    users: list[AssignableUser]
+
+
 class TicketResponse(BaseModel):
     id: str
     project_id: str
@@ -291,6 +327,8 @@ class TicketResponse(BaseModel):
     description: str
     priority: str
     assigned_to: str | None
+    assigned_user_id: str | None = None
+    assigned_user: AssignedUser | None = None
     created_by_user_id: str
     created_by_session_id: str | None
     created_by_persona: str | None
@@ -408,8 +446,88 @@ async def _ticket_dependencies(db: AsyncSession, ticket_id: str) -> list[str]:
     return list(rows)
 
 
+def _assigned_user_model(user: User, *, show_email: bool) -> AssignedUser:
+    """The response shape for a person assignment.
+
+    The full address is shown only to callers with real read standing on the
+    project (owner / org member / group grantee, or a service key inside its
+    org). A captured-session-only reader — possibly someone outside the org
+    who merely synced a session on the same remote — sees a masked address,
+    matching ``list_assignable_users``' refusal to list teammates to them.
+    """
+    from sessionfs.server.email import mask_address
+
+    return AssignedUser(
+        id=user.id,
+        display_name=user.display_name,
+        email=user.email if show_email else mask_address(user.email),
+    )
+
+
+async def _viewer_sees_emails(
+    db: AsyncSession, auth: AuthContext, project: Project
+) -> bool:
+    """Whether the caller may see teammates' full email addresses."""
+    if auth.key_kind == "service":
+        # Service keys are already confined to their org + project allowlist.
+        return True
+    return await _user_sees_emails(db, auth.user.id, project)
+
+
+async def _user_sees_emails(db: AsyncSession, user_id: str, project: Project) -> bool:
+    """User-key form of ``_viewer_sees_emails`` (routes that take ``User``)."""
+    from sessionfs.server.auth.project_access import user_has_read_standing
+
+    return await user_has_read_standing(db, user_id, project)
+
+
+async def _load_assigned_user(
+    db: AsyncSession, assigned_user_id: str | None, *, show_email: bool = False
+) -> AssignedUser | None:
+    """Load the person assigned to a ticket, if any (detail-read path)."""
+    if not assigned_user_id:
+        return None
+    user = await db.get(User, assigned_user_id)
+    return (
+        _assigned_user_model(user, show_email=show_email) if user is not None else None
+    )
+
+
+async def _batch_assigned_users(
+    db: AsyncSession, user_ids: set[str], *, show_email: bool = False
+) -> dict[str, AssignedUser]:
+    """Load many assigned users in one query (list path — no N+1)."""
+    if not user_ids:
+        return {}
+    rows = (
+        await db.execute(select(User).where(User.id.in_(list(user_ids))))
+    ).scalars().all()
+    return {u.id: _assigned_user_model(u, show_email=show_email) for u in rows}
+
+
+async def _ticket_response(
+    db: AsyncSession,
+    ticket: Ticket,
+    deps: list[str],
+    child_ticket_ids: list[str] | None = None,
+    *,
+    show_email: bool = False,
+) -> TicketResponse:
+    """Full response for one ticket, person assignment already resolved.
+
+    ``show_email`` defaults to masked; read/create/update routes pass the
+    caller's standing (``_viewer_sees_emails``)."""
+    assigned_user = await _load_assigned_user(
+        db, ticket.assigned_user_id, show_email=show_email
+    )
+    return _to_response(ticket, deps, child_ticket_ids, assigned_user)
+
+
 def _to_response(
-    t: Ticket, deps: list[str], child_ticket_ids: list[str] | None = None
+    t: Ticket,
+    deps: list[str],
+    child_ticket_ids: list[str] | None = None,
+    assigned_user: AssignedUser | None = None,
 ) -> TicketResponse:
     return TicketResponse(
         id=t.id,
@@ -418,6 +536,8 @@ def _to_response(
         description=t.description,
         priority=t.priority,
         assigned_to=t.assigned_to,
+        assigned_user_id=t.assigned_user_id,
+        assigned_user=assigned_user,
         created_by_user_id=t.created_by_user_id,
         created_by_session_id=t.created_by_session_id,
         created_by_persona=t.created_by_persona,
@@ -791,7 +911,9 @@ async def _require_ticket_actor_by_id(
         )
 
 
-async def _ticket_detail_response(ticket: Ticket, db: AsyncSession) -> TicketResponse:
+async def _ticket_detail_response(
+    ticket: Ticket, db: AsyncSession, *, show_email: bool = False
+) -> TicketResponse:
     """Full detail payload for one ticket the caller is already allowed to read
     (dependencies, Issue rollup, Jira link state)."""
     deps = await _ticket_dependencies(db, ticket.id)
@@ -809,7 +931,9 @@ async def _ticket_detail_response(ticket: Ticket, db: AsyncSession) -> TicketRes
             )
         ).scalars().all()
         child_ticket_ids = list(child_rows)
-    response = _to_response(ticket, deps, child_ticket_ids)
+    response = await _ticket_response(
+        db, ticket, deps, child_ticket_ids, show_email=show_email
+    )
     from sessionfs.server.db.models import TicketTrackerLink
 
     link = (
@@ -916,6 +1040,7 @@ async def _check_dependency_cycle(
 async def list_tickets(
     project_id: str,
     assigned_to: str | None = None,
+    assigned_user: str | None = None,
     status: str | None = None,
     priority: str | None = None,
     kind: str | None = None,
@@ -947,6 +1072,18 @@ async def list_tickets(
         stmt = stmt.where(
             func.lower(Ticket.assigned_to) == assigned_to.lower()
         )
+    if assigned_user is not None:
+        # GitHub #96 — filter by direct-to-person assignment. `me` means
+        # "the authenticated user"; otherwise the value is a user id.
+        if assigned_user == "me":
+            if auth.key_kind == "service":
+                raise HTTPException(
+                    400,
+                    "assigned_user=me is not available to service keys",
+                )
+            stmt = stmt.where(Ticket.assigned_user_id == auth.user.id)
+        else:
+            stmt = stmt.where(Ticket.assigned_user_id == assigned_user)
     if status is not None:
         stmt = stmt.where(Ticket.status == status)
     if priority is not None:
@@ -991,12 +1128,127 @@ async def list_tickets(
         ).all()
         for cid, pid in child_rows:
             children_by_parent.setdefault(pid, []).append(cid)
+    # GitHub #96 — batch-load every person assignment in one query so a
+    # long list never issues one SELECT per assigned ticket.
+    assigned_user_ids = {t.assigned_user_id for t in rows if t.assigned_user_id}
+    assigned_users = await _batch_assigned_users(
+        db,
+        assigned_user_ids,
+        show_email=await _viewer_sees_emails(db, auth, project),
+    )
     return [
         _to_response(
-            t, deps_by_ticket[t.id], children_by_parent.get(t.id, [])
+            t,
+            deps_by_ticket[t.id],
+            children_by_parent.get(t.id, []),
+            assigned_users.get(t.assigned_user_id) if t.assigned_user_id else None,
         )
         for t in rows
     ]
+
+
+@router.get(
+    "/{project_id}/assignable-users", response_model=AssignableUsersResponse
+)
+async def list_assignable_users(
+    project_id: str,
+    auth: AuthContext = Depends(require_scope("tickets:read")),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> AssignableUsersResponse:
+    """Active teammates this project's readers may assign a ticket to.
+
+    GitHub #96 — the eligibility predicate matches ``resolve_assigned_user_id``:
+    a teammate with read standing on the project (owner, org member of an
+    unrestricted org, org admin/owner, or a group grant under restricted
+    visibility). Captured-session-only readers are deliberately excluded — a
+    person who merely synced a session is not a teammate you can hand work to.
+    ``can_edit`` reflects editor standing so the dashboard can hint at the
+    stronger role. This is a user-key endpoint: a service key has no person to
+    speak for, so it gets 403.
+    """
+    if auth.key_kind == "service":
+        raise HTTPException(
+            403, "assignable-users requires a user key, not a service key"
+        )
+    project = await _get_project_for_auth(project_id, db, auth)
+    await check_project_feature(ctx, "agent_tickets", project, db)
+
+    from sessionfs.server.auth.project_access import (
+        project_editor_user_ids,
+        project_restricts_visibility,
+        user_has_read_standing,
+    )
+
+    # GitHub #96 — listing who you may hand work to requires real read
+    # standing, not just a captured session. A synced-session-only reader
+    # isn't a teammate, so admit only owner / org member / group grantee.
+    if not await user_has_read_standing(db, auth.user.id, project):
+        raise HTTPException(
+            403,
+            {
+                "error": "project_member_required",
+                "message": "Only project members can list assignable users.",
+            },
+        )
+
+    user_ids: set[str] = {project.owner_id}
+    if project.org_id is not None:
+        if await project_restricts_visibility(db, project):
+            # Restricted org: org admins/owners, plus any member holding a
+            # grant on a live group containing the project. Mirror
+            # ``user_has_read_standing`` (any group role confers read).
+            grant_users = (
+                select(ProjectGroupMember.user_id)
+                .join(
+                    ProjectGroupAccess,
+                    ProjectGroupAccess.group_id == ProjectGroupMember.group_id,
+                )
+                .join(ProjectGroup, ProjectGroup.id == ProjectGroupAccess.group_id)
+                .where(
+                    ProjectGroupAccess.project_id == project.id,
+                    ProjectGroup.deleted_at.is_(None),
+                    ProjectGroup.org_id == project.org_id,
+                )
+            )
+            rows = (
+                await db.execute(
+                    select(OrgMember.user_id).where(
+                        OrgMember.org_id == project.org_id,
+                        or_(
+                            OrgMember.role.in_(ADMIN_ROLES),
+                            OrgMember.user_id.in_(grant_users),
+                        ),
+                    )
+                )
+            ).scalars().all()
+        else:
+            rows = (
+                await db.execute(
+                    select(OrgMember.user_id).where(
+                        OrgMember.org_id == project.org_id
+                    )
+                )
+            ).scalars().all()
+        user_ids.update(rows)
+
+    users = (
+        await db.execute(
+            select(User).where(User.id.in_(list(user_ids)), User.is_active.is_(True))
+        )
+    ).scalars().all()
+    editor_ids = await project_editor_user_ids(db, project)
+    result = [
+        AssignableUser(
+            id=u.id,
+            display_name=u.display_name,
+            email=u.email,
+            can_edit=u.id in editor_ids,
+        )
+        for u in users
+    ]
+    result.sort(key=lambda u: (u.display_name or u.email).lower())
+    return AssignableUsersResponse(users=result)
 
 
 @router.get(
@@ -1016,7 +1268,9 @@ async def get_ticket(
     await assert_service_key_can_access_project(db, auth, project)
     await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
-    return await _ticket_detail_response(ticket, db)
+    return await _ticket_detail_response(
+        ticket, db, show_email=await _viewer_sees_emails(db, auth, project)
+    )
 
 
 @router.get(
@@ -1240,6 +1494,11 @@ async def create_ticket(
     # rejecting unknown names would break that contract. start_ticket
     # also case-insensitive-matches as a belt-and-suspenders read
     # path for legacy rows.
+    #
+    # GitHub #96 — a person assignment (id or email) is mutually exclusive
+    # with a persona assignment, and resolves to an active teammate with
+    # read standing on the project (else 422).
+    check_assignee_conflict(body.assigned_to, body.assigned_user_id, body.assigned_user)
     normalized_assigned_to = body.assigned_to
     if body.assigned_to is not None:
         from sessionfs.server.services.personas import (
@@ -1256,6 +1515,18 @@ async def create_ticket(
         if canonical is not None:
             normalized_assigned_to = canonical
 
+    resolved_assigned_user: User | None = None
+    if body.assigned_user_id is not None or body.assigned_user is not None:
+        token = (
+            body.assigned_user_id
+            if body.assigned_user_id is not None
+            else body.assigned_user
+        )
+        assert token is not None
+        resolved_assigned_user = await resolve_assigned_user_id(
+            db, project=project, value=token
+        )
+
     ticket = Ticket(
         id=f"tk_{uuid.uuid4().hex[:16]}",
         project_id=project_id,
@@ -1263,6 +1534,9 @@ async def create_ticket(
         description=body.description,
         priority=body.priority,
         assigned_to=normalized_assigned_to,
+        assigned_user_id=(
+            resolved_assigned_user.id if resolved_assigned_user is not None else None
+        ),
         created_by_user_id=user.id,
         created_by_session_id=body.created_by_session_id,
         created_by_persona=body.created_by_persona,
@@ -1291,25 +1565,36 @@ async def create_ticket(
         )
     # A suggested ticket isn't actionable yet: the assignee is subscribed and
     # handed "your turn" only when an editor approves it (approve_ticket).
-    if normalized_assigned_to is not None and initial_status != "suggested":
-        from sessionfs.server.services.personas import (
-            visible_persona_org_id_for_auth,
-        )
+    if initial_status != "suggested":
+        # Person assignment wins outright; a persona assignment maps to its
+        # human owner only when the mapping is unambiguous.
+        assignee_user_id: str | None = None
+        assignee_persona_name: str | None = None
+        assignee_summary: str | None = None
+        if resolved_assigned_user is not None:
+            assignee_user_id = resolved_assigned_user.id
+            assignee_summary = f"Assigned to {assigned_user_label(resolved_assigned_user)}"
+        elif normalized_assigned_to is not None:
+            from sessionfs.server.services.personas import (
+                visible_persona_org_id_for_auth,
+            )
 
-        assignee_human = await ticket_watchers.map_persona_to_human(
-            db,
-            project_id=project_id,
-            name=normalized_assigned_to,
-            org_id=await visible_persona_org_id_for_auth(db, project, auth),
-        )
-        if assignee_human is not None:
-            assignee_user_id, persona_name = assignee_human
+            assignee_human = await ticket_watchers.map_persona_to_human(
+                db,
+                project_id=project_id,
+                name=normalized_assigned_to,
+                org_id=await visible_persona_org_id_for_auth(db, project, auth),
+            )
+            if assignee_human is not None:
+                assignee_user_id, assignee_persona_name = assignee_human
+                assignee_summary = f"Assigned to {normalized_assigned_to}"
+        if assignee_user_id is not None and assignee_summary is not None:
             await ticket_watchers.subscribe_guarded(
                 db,
                 ticket_id=ticket.id,
                 user_id=assignee_user_id,
                 source="assignee",
-                persona_name=persona_name,
+                persona_name=assignee_persona_name,
             )
             # A ticket filed already assigned hands the assignee's human
             # owner a "your turn" right away.
@@ -1317,7 +1602,7 @@ async def create_ticket(
                 db,
                 ticket=ticket,
                 kind="assignment",
-                summary=f"Assigned to {normalized_assigned_to}",
+                summary=assignee_summary,
                 actor_user_id=None if auth.key_kind == "service" else user.id,
                 actor_type=auth.actor_type,
                 service_key_name=auth.service_key_name,
@@ -1344,7 +1629,9 @@ async def create_ticket(
     await db.commit()
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
-    return _to_response(ticket, deps)
+    return await _ticket_response(
+        db, ticket, deps, show_email=await _viewer_sees_emails(db, auth, project)
+    )
 
 
 @router.put(
@@ -1360,8 +1647,9 @@ async def update_ticket(
 ) -> TicketResponse:
     """Update mutable, non-lifecycle ticket fields.
 
-    Mutable: title, description, priority, assigned_to, context_refs,
-    file_refs, related_sessions, acceptance_criteria, depends_on.
+    Mutable: title, description, priority, assigned_to, assigned_user_id,
+    assigned_user, context_refs, file_refs, related_sessions,
+    acceptance_criteria, depends_on.
     Status transitions go through dedicated lifecycle routes (start /
     complete / accept / dismiss / etc.) — NOT through this PUT.
 
@@ -1390,6 +1678,15 @@ async def update_ticket(
         or body.description is not None
         or body.priority is not None
         or body.assigned_to is not None
+        or body.assigned_user_id is not None
+        or body.assigned_user is not None
+        # GitHub #96 — an explicit ``null`` assignment token is a mutation:
+        # it clears the assignment. The non-null branches above already
+        # count a value, so the model_fields_set checks only widen the gate
+        # to nulls.
+        or "assigned_to" in body.model_fields_set
+        or "assigned_user_id" in body.model_fields_set
+        or "assigned_user" in body.model_fields_set
         or body.context_refs is not None
         or body.file_refs is not None
         or body.related_sessions is not None
@@ -1400,9 +1697,10 @@ async def update_ticket(
         raise HTTPException(
             400,
             "update_ticket requires at least one mutable field "
-            "(title, description, priority, assigned_to, context_refs, "
-            "file_refs, related_sessions, acceptance_criteria, depends_on). "
-            "lease_epoch alone is not a mutation — it is the fence for one.",
+            "(title, description, priority, assigned_to, assigned_user_id, "
+            "assigned_user, context_refs, file_refs, related_sessions, "
+            "acceptance_criteria, depends_on). lease_epoch alone is not a "
+            "mutation — it is the fence for one.",
         )
 
     # Authorization. The "lease holder" in the design doc lives in the
@@ -1445,7 +1743,9 @@ async def update_ticket(
     await db.commit()
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
-    return _to_response(ticket, deps)
+    return await _ticket_response(
+        db, ticket, deps, show_email=await _user_sees_emails(db, user.id, project)
+    )
 
 
 # ── Lifecycle routes ──
@@ -1567,7 +1867,9 @@ async def start_ticket(
     await db.commit()
     jira_sync.schedule_drain(jira_ids)
     return StartTicketResponse(
-        ticket=_to_response(ticket, deps),
+        ticket=await _ticket_response(
+            db, ticket, deps, show_email=await _viewer_sees_emails(db, auth, project)
+        ),
         compiled_context=compiled,
         retrieval_audit_id=audit_context.id,
         persona_name=persona.name if persona is not None else None,
@@ -1647,7 +1949,9 @@ async def complete_ticket(
     jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
-    return _to_response(ticket, deps)
+    return await _ticket_response(
+        db, ticket, deps, show_email=await _viewer_sees_emails(db, auth, project)
+    )
 
 
 # Shared with the Jira webhook (services.ticket_transitions); the old names
@@ -1701,7 +2005,9 @@ async def accept_ticket(
     jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
-    return _to_response(ticket, deps)
+    return await _ticket_response(
+        db, ticket, deps, show_email=await _user_sees_emails(db, user.id, project)
+    )
 
 
 @router.post(
@@ -1731,7 +2037,9 @@ async def reopen_ticket(
     jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
-    return _to_response(ticket, deps)
+    return await _ticket_response(
+        db, ticket, deps, show_email=await _user_sees_emails(db, user.id, project)
+    )
 
 
 @router.post(
@@ -1766,7 +2074,9 @@ async def block_ticket(
     jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
-    return _to_response(ticket, deps)
+    return await _ticket_response(
+        db, ticket, deps, show_email=await _user_sees_emails(db, user.id, project)
+    )
 
 
 @router.post(
@@ -1801,7 +2111,9 @@ async def unblock_ticket(
     jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
-    return _to_response(ticket, deps)
+    return await _ticket_response(
+        db, ticket, deps, show_email=await _user_sees_emails(db, user.id, project)
+    )
 
 
 @router.post(
@@ -1853,7 +2165,9 @@ async def approve_ticket(
     jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
-    return _to_response(ticket, deps)
+    return await _ticket_response(
+        db, ticket, deps, show_email=await _user_sees_emails(db, user.id, project)
+    )
 
 
 @router.post(
@@ -1890,7 +2204,9 @@ async def dismiss_ticket(
     jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
-    return _to_response(ticket, deps)
+    return await _ticket_response(
+        db, ticket, deps, show_email=await _user_sees_emails(db, user.id, project)
+    )
 
 
 @router.post(
@@ -1947,7 +2263,9 @@ async def close_issue(
     jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
-    return _to_response(ticket, deps)
+    return await _ticket_response(
+        db, ticket, deps, show_email=await _user_sees_emails(db, user.id, project)
+    )
 
 
 # ── Comments ──
@@ -2389,7 +2707,9 @@ async def get_ticket_by_id(
         raise
     await check_project_feature(ctx, "agent_tickets", project, db)
 
-    detail = await _ticket_detail_response(ticket, db)
+    detail = await _ticket_detail_response(
+        ticket, db, show_email=await _viewer_sees_emails(db, auth, project)
+    )
     comment_count = (
         await db.execute(
             select(func.count())

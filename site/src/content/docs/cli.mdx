@@ -1866,7 +1866,7 @@ Both projects must be in the same org, or both personal (`400 cross_scope` other
 Register, list, or revoke an organization's trusted reviewers (org-admin only). A trusted reviewer is authorized to post review verdicts that the autonomous work queue's stop oracle will trust — typically a dedicated automated reviewer key. Tightly gated and fully audited. Available starting v0.12.1.
 
 ```
-sfs admin trusted-reviewers (list | register | revoke) [OPTIONS]
+sfs admin trusted-reviewers (list | add | revoke) [OPTIONS]
 ```
 
 ---
@@ -1903,7 +1903,8 @@ Manage tickets with a server-enforced FSM (`suggested → open → in_progress �
 |---------|-------------|
 | `sfs ticket list [--status STATE]` | List tickets, optionally filtered by FSM state |
 | `sfs ticket show <id>` | Show ticket detail + dependencies + recent comments |
-| `sfs ticket create --title T --description D [--accept "..." --depends-on tkt_…]` | Open a ticket (agent source requires ≥1 acceptance criterion + ≥20-char description) |
+| `sfs ticket create --title T --description D [--accept "..." --depends-on tkt_…] [--assigned-to PERSONA \| --user EMAIL]` | Open a ticket (agent source requires ≥1 acceptance criterion + ≥20-char description). `--user/-u` assigns it directly to a teammate (email or user id), who gets a "Your turn" notification; it can't be combined with `--assigned-to` (v0.27.0) |
+| `sfs ticket update <id> [--title T] [--description D] [--priority P] [--user EMAIL]` | Change a ticket's editable fields; `--user/-u` reassigns it directly to a teammate (v0.27.0) |
 | `sfs ticket start <id> [--tool T] [--force] [--no-print-context]` | Atomic claim; writes the active-ticket bundle and prints compiled persona + ticket context with tool-aware token budget |
 | `sfs ticket complete <id>` | Move from `in_progress` to `review`; clears owned bundle |
 | `sfs ticket comment <id> "body" [--as PERSONA]` | Slack-like comment (non-idempotent) |
@@ -1917,8 +1918,10 @@ Manage tickets with a server-enforced FSM (`suggested → open → in_progress �
 | `sfs ticket assign <id> --persona NAME` | Attach a persona to a ticket |
 | `sfs ticket resolve <id>` | Move from `review` to `done` (atomic with rowcount guard) |
 | `sfs ticket escalate <id> --reason "..."` | Raise priority + append audit comment |
+| `sfs ticket review-state <id>` | Open and closed review findings, the last verdict, severity counts, and `Strict VERIFIED-CLEAN: yes/no` for the last verdict |
 | `sfs ticket jira preview <id> [--out FILE]` | Draft a Jira story from the ticket without sending anything (Enterprise, v0.23.0) |
-| `sfs ticket jira publish <id> --from FILE [--yes]` | Create the Jira issue from a saved preview, or update its summary and description |
+| `sfs ticket jira publish <id> --from FILE [--yes] [--overwrite-existing]` | Create the Jira issue from a saved preview, or update its summary and description. A ticket linked to an existing issue it never published needs `--overwrite-existing` to replace that issue's summary and description (v0.27.0) |
+| `sfs ticket jira pull <id> [--yes]` | Replace the ticket's title and description with the linked Jira issue's; empty Jira fields leave the ticket unchanged (v0.27.0) |
 | `sfs ticket jira status <id>` | Linked issue key, URL and current Jira status |
 | `sfs ticket jira unlink <id> --confirm` | Remove the link (project admin); the Jira issue is left alone |
 

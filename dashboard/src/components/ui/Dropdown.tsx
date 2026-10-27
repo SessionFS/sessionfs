@@ -24,9 +24,12 @@ interface DropdownProps {
   menuLabel: string;
   /** Optional min-width override class (default min-w-[160px]). */
   minWidthClass?: string;
+  /** Which trigger edge the menu lines up with (default right). Use 'left'
+   *  for a trigger near the start of a row so the menu opens into the page. */
+  align?: 'left' | 'right';
 }
 
-export function Dropdown({ trigger, items, onSelect, menuLabel, minWidthClass }: DropdownProps) {
+export function Dropdown({ trigger, items, onSelect, menuLabel, minWidthClass, align = 'right' }: DropdownProps) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -101,7 +104,7 @@ export function Dropdown({ trigger, items, onSelect, menuLabel, minWidthClass }:
 
       {open && (
         <div
-          className={`absolute top-full right-0 mt-1 z-40 ${minWidthClass || 'min-w-[160px]'} rounded-lg py-1 border border-border bg-overlay`}
+          className={`absolute top-full ${align === 'left' ? 'left-0' : 'right-0'} mt-1 z-40 ${minWidthClass || 'min-w-[160px]'} rounded-lg py-1 border border-border bg-overlay`}
           style={{ boxShadow: 'var(--shadow-overlay)' }}
         >
           <ul ref={listRef} role="menu" aria-label={menuLabel}>

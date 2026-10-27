@@ -11,10 +11,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import type {
   JiraLink,
+  Ticket,
   JiraPreview,
   JiraPublishRequest,
   JiraTicketTemplates,
 } from '../api/client';
+import { jiraErrorCode } from '../utils/jira';
 
 /**
  * Draft for a ticket. `template` is the per-ticket choice from the promotion
@@ -75,6 +77,87 @@ export function useJiraLink(
     queryFn: () => auth!.client.getJiraLink(projectId!, ticketId!),
     enabled: !!auth && !!projectId && !!ticketId && enabled,
     staleTime: 30_000,
+  });
+}
+
+/**
+ * Link an existing Jira issue to an unlinked ticket. On success the returned
+ * link seeds the link query and the ticket's embedded summary right away, so
+ * the section switches to its linked state without flashing the unlinked
+ * controls while the ticket refetches.
+ */
+export function useLinkJiraIssue(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ ticketId, issueKey }: { ticketId: string; issueKey: string }) =>
+      auth!.client.linkJiraIssue(projectId!, ticketId, issueKey),
+    onSuccess: (link, { ticketId }) => {
+      queryClient.setQueryData<JiraLink>(['jiraLink', projectId, ticketId], link);
+      queryClient.setQueryData<Ticket>(['ticket', projectId, ticketId], (prev) =>
+        prev
+          ? {
+              ...prev,
+              jira: {
+                issue_key: link.issue_key,
+                issue_url: link.issue_url,
+                last_known_status: link.last_known_status,
+              },
+            }
+          : prev,
+      );
+      void queryClient.invalidateQueries({ queryKey: ['ticket', projectId, ticketId] });
+      void queryClient.invalidateQueries({ queryKey: ['tickets', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['jiraLink', projectId, ticketId] });
+      // The timeline may gain a sync note or event for the new link.
+      void queryClient.invalidateQueries({ queryKey: ['ticketComments', projectId, ticketId] });
+      void queryClient.invalidateQueries({ queryKey: ['ticketJiraSyncEvents', projectId, ticketId] });
+    },
+    onError: (err, { ticketId }) => {
+      // Someone else linked or published it meanwhile: show the real state.
+      if (jiraErrorCode(err) === 'jira_already_linked') {
+        void queryClient.invalidateQueries({ queryKey: ['ticket', projectId, ticketId] });
+        void queryClient.invalidateQueries({ queryKey: ['tickets', projectId] });
+      }
+    },
+  });
+}
+
+/**
+ * Replace the ticket's title and description with the linked Jira issue's.
+ * The response carries the updated ticket and link, seeded straight into the
+ * caches before the ticket views refresh.
+ */
+export function usePullJira(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (ticketId: string) => auth!.client.pullJira(projectId!, ticketId),
+    onSuccess: (result, ticketId) => {
+      // Merge rather than replace: a pull response may omit the fields a
+      // ticket read carries (the Jira link, children, publish flags), and
+      // dropping them would flash the ticket as unlinked until the refetch.
+      queryClient.setQueryData<Ticket>(['ticket', projectId, ticketId], (prev) =>
+        prev
+          ? {
+              ...prev,
+              ...result.ticket,
+              jira: result.ticket.jira ?? prev.jira,
+              child_ticket_ids: result.ticket.child_ticket_ids ?? prev.child_ticket_ids,
+              jira_publish_in_progress: result.ticket.jira_publish_in_progress ?? prev.jira_publish_in_progress,
+              jira_publish_unknown: result.ticket.jira_publish_unknown ?? prev.jira_publish_unknown,
+            }
+          : prev, // nothing cached yet: let the refetch below fill it
+      );
+      queryClient.setQueryData<JiraLink>(['jiraLink', projectId, ticketId], result.jira);
+      void queryClient.invalidateQueries({ queryKey: ['ticket', projectId, ticketId] });
+      void queryClient.invalidateQueries({ queryKey: ['tickets', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['jiraLink', projectId, ticketId] });
+      void queryClient.invalidateQueries({ queryKey: ['ticketComments', projectId, ticketId] });
+      void queryClient.invalidateQueries({ queryKey: ['ticketJiraSyncEvents', projectId, ticketId] });
+      // A draft built before the pull would carry the old text.
+      queryClient.removeQueries({ queryKey: ['jiraPreview', projectId, ticketId] });
+    },
   });
 }
 

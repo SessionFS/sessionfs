@@ -183,6 +183,58 @@ def test_ticket_start_warns_on_bundle_write_failure(monkeypatch):
     assert "Active ticket bundle written" not in result.output
 
 
+# ── GitHub #96 — direct-to-person assignment CLI plumbing ──
+
+
+def test_ticket_create_user_flag_sends_assigned_user(monkeypatch):
+    from sessionfs.cli import cmd_ticket
+
+    monkeypatch.setattr(
+        cmd_ticket, "_resolve_project",
+        lambda: ("https://api.test", "test-key", "proj_a"),
+    )
+    calls = []
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        calls.append((method, path, json_data))
+        return (201, {"id": "tk_x", "title": "t"}, {})
+
+    monkeypatch.setattr(cmd_ticket, "_api_request", _fake_api)
+
+    result = runner.invoke(
+        ticket_app, ["create", "--title", "t", "--user", "jane@example.com"]
+    )
+    assert result.exit_code == 0, result.output
+    method, path, payload = calls[0]
+    assert method == "POST"
+    assert payload["assigned_user"] == "jane@example.com"
+    assert "assigned_to" not in payload
+
+
+def test_ticket_update_user_flag_sends_assigned_user(monkeypatch):
+    from sessionfs.cli import cmd_ticket
+
+    monkeypatch.setattr(
+        cmd_ticket, "_resolve_project",
+        lambda: ("https://api.test", "test-key", "proj_a"),
+    )
+    calls = []
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        calls.append((method, path, json_data))
+        return (200, {"id": "tk_x"}, {})
+
+    monkeypatch.setattr(cmd_ticket, "_api_request", _fake_api)
+
+    result = runner.invoke(
+        ticket_app, ["update", "tk_x", "--user", "jane@example.com", "--lease-epoch", "0"]
+    )
+    assert result.exit_code == 0, result.output
+    method, path, payload = calls[0]
+    assert method == "PUT"
+    assert payload["assigned_user"] == "jane@example.com"
+
+
 # ── GH #70 — org-level personas ──
 
 

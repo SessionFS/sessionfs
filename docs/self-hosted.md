@@ -679,6 +679,40 @@ still marks rows emailed and logs the suppressed send, mirroring the org
 digest. Digest links resolve to `SFS_DASHBOARD_URL` when set, falling back to
 `SFS_APP_URL`, and are omitted when neither is set.
 
+### Jira sync and Confluence publish sweeps
+
+The Jira and Confluence integrations (v0.26.0) each need a scheduled job.
+Like the other sweeps, they are key-authenticated endpoints called by an
+external scheduler; authenticate with a platform-admin user key or a
+`platform_sweeps:run` service key.
+
+```text
+POST /api/v1/admin/sweeps/jira-sync            # every minute
+POST /api/v1/admin/sweeps/confluence-publish   # every 15 minutes
+```
+
+**Jira sync.** Status moves, comments and completion evidence for linked
+tickets are written to an outbox in the same transaction as the change and
+delivered right after it commits. The sweep delivers whatever that first
+attempt missed (a Jira outage, a restart mid-delivery) with backoff of 1, 4,
+16 and 64 minutes, giving up after 5 attempts, and expires finished rows
+after 90 days. Run it every minute so the first retry lands on time. Body
+`{"limit": N, "budget_seconds": S}` bounds a run (defaults 100 events and
+50 seconds; max 1000 and 120). Each event is claimed and committed on its
+own, so overlapping runs never deliver twice. Without this job, a change
+whose first delivery fails never reaches Jira.
+
+**Confluence publish.** Republishes the space mappings that opted in (the
+project context tree, and wiki pages marked for publishing) when their
+content changed and the connection's batch window has passed. It never calls
+an LLM, skips unchanged sources without contacting Confluence, and never
+overwrites a page edited in Confluence (it reports drift instead). Body
+`{"limit": N}` (default 100, max 1000). Every 15 minutes is enough; run it
+more often only if you lower the batch window.
+
+Both jobs are safe to run on installs that don't use the integration: with
+no connections configured they return immediately.
+
 ### SMTP with Kubernetes Secrets
 
 ```bash

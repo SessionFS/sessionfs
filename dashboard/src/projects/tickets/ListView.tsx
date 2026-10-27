@@ -1,6 +1,7 @@
 import RelativeDate from '../../components/RelativeDate';
 import { PRIORITY_TONE, type ViewProps } from './constants';
 import { KindBadge } from './KindBadge';
+import { AssigneeLabel } from './AssigneeLabel';
 import { StatusCell } from './StatusCell';
 import { TicketDetail } from './TicketDetail';
 
@@ -31,9 +32,9 @@ export function ListView({ tickets, projectId, selected, onSelect, onNavigate, j
                 >
                   {t.priority}
                 </span>
-                {t.assigned_to && (
-                  <span className="text-xs text-text-tertiary">
-                    → {t.assigned_to}
+                {(t.assigned_to || t.assigned_user_id) && (
+                  <span className="inline-flex min-w-0 items-center gap-1 text-xs text-text-tertiary">
+                    → <AssigneeLabel ticket={t} />
                   </span>
                 )}
               </div>
@@ -65,6 +66,7 @@ export function ListView({ tickets, projectId, selected, onSelect, onNavigate, j
               orgId={jira?.orgId}
               isProjectAdmin={jira?.isProjectAdmin}
               isEnterprise={jira?.isEnterprise}
+              canEdit={jira?.canEdit}
             />
           )}
         </li>

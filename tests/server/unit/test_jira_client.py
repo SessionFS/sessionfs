@@ -17,6 +17,7 @@ import pytest
 from sessionfs.server.integrations.trackers.base import TrackerError
 from sessionfs.server.integrations.trackers.jira import (
     JiraClient,
+    _display_name,
     _response_detail,
     markdown_to_adf,
     sessionfs_label,
@@ -408,7 +409,7 @@ async def test_update_issue_never_sends_status():
 @pytest.mark.asyncio
 async def test_get_issue_reads_status():
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.params["fields"] == "status,updated"
+        assert request.url.params["fields"] == "status,updated,project"
         return httpx.Response(200, json={
             "key": "ACME-1",
             "fields": {"status": {"name": "In Progress"}, "updated": "2026-01-01T00:00:00Z"},
@@ -437,6 +438,56 @@ async def test_get_issue_tolerates_non_dict_status():
     await client.aclose()
     assert issue.status is None
     assert issue.key == "ACME-1"
+
+
+# ── display name resolution ──
+
+
+def test_display_name_never_falls_back_to_email():
+    # An author with only an emailAddress is "unknown": the email is PII and
+    # must never be echoed into helper output.
+    assert _display_name({"emailAddress": "alice@acme.com"}) == ""
+    assert _display_name({"displayName": "Alice"}) == "Alice"
+    assert _display_name({"displayName": "  Bob  "}) == "Bob"
+    assert _display_name("not-a-dict") == ""
+
+
+def test_display_name_strips_control_chars_and_newlines():
+    assert _display_name({"displayName": "Bo\nb"}) == "Bo b"
+    assert _display_name({"displayName": "Bob\tSmith"}) == "Bob Smith"
+    assert _display_name({"displayName": "\x00Bob\x1f"}) == "Bob"
+
+
+@pytest.mark.asyncio
+async def test_get_issue_detail_drops_email_only_author():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/comment"):
+            return httpx.Response(200, json={"comments": [
+                {
+                    "id": "1",
+                    "author": {"emailAddress": "bob@acme.com"},
+                    "created": "2026-10-19T09:00:00Z",
+                    "body": "Looking into it",
+                }
+            ]})
+        return httpx.Response(200, json={
+            "key": "ACME-1",
+            "fields": {
+                "summary": "Ship it",
+                "issuetype": {"name": "Story"},
+                "status": {"name": "In Progress"},
+                "assignee": {"emailAddress": "alice@acme.com"},
+                "labels": [],
+                "components": [],
+                "updated": "2026-10-20T10:00:00Z",
+            },
+        })
+
+    client = _client(handler)
+    detail = await client.get_issue_detail("ACME-1")
+    await client.aclose()
+    assert detail.assignee is None
+    assert detail.comments[0].author_name == ""
 
 
 # ── link URL scheme + ``)`` handling ──

@@ -17,6 +17,7 @@ import { PRIORITY_TONE, STATUS_DOT, formatStatusLabel } from '../projects/ticket
 import { relativeTime } from './format';
 import { CloseIcon } from './icons';
 import { linkButtonSmall } from './styles';
+import { AssigneeLabel } from '../projects/tickets/AssigneeLabel';
 
 const NARROW_QUERY = '(max-width: 639px)';
 const GAP = 6;
@@ -293,7 +294,7 @@ function PreviewDetails({
 }) {
   const criteria = ticket.acceptance_criteria.length;
   const description = ticket.description.trim();
-  const assignee = ticket.assigned_to;
+  const assigned = !!(ticket.assigned_to || ticket.assigned_user_id);
   return (
     <div>
       <h2 id={titleId} className="text-md font-semibold leading-snug text-text-primary [overflow-wrap:anywhere]">
@@ -314,7 +315,9 @@ function PreviewDetails({
         </div>
         <div className="flex min-w-0 items-center gap-1">
           <dt className="text-text-tertiary">Assignee</dt>
-          <dd className="min-w-0 truncate font-medium text-text-primary">{assignee || 'Unassigned'}</dd>
+          <dd className="flex min-w-0 truncate font-medium text-text-primary">
+            {assigned ? <AssigneeLabel ticket={ticket} /> : 'Unassigned'}
+          </dd>
         </div>
         <div className="flex min-w-0 basis-full items-center gap-1">
           <dt className="text-text-tertiary">Project</dt>

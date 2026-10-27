@@ -1872,7 +1872,7 @@ def test_system_prompt_assembles_answer_style_and_instructions():
     fixed_end = full.index("Today's date is")
     assert fixed_end < full.index("<org-instructions>") < full.index("<personal-instructions>")
     # The sections are clearly delimited so the fixed prompt stays attributable.
-    assert helper_mod._HELPER_SYSTEM_PROMPT_VERSION == "v7"
+    assert helper_mod._HELPER_SYSTEM_PROMPT_VERSION == "v11"
 
 
 # ---------------------------------------------------------------------------

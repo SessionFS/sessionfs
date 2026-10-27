@@ -8,8 +8,8 @@ is expensive and burns LLM context.
 This module parses the structured comment shapes the review loop has
 been using consistently for many releases:
 
-  codex-reviewer:
-    Codex R{N} review on tk_X: VERDICT
+  reviewer (any tool — Codex, Claude, Gemini, …):
+    <Reviewer> R{N} review on tk_X: VERDICT
     Findings:
      • SEVERITY — descriptive text...
      • SEVERITY — descriptive text...
@@ -46,12 +46,20 @@ from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 
-# Codex's review header pattern. Matches:
+# One shared reviewer-name token — the review header is tool-agnostic, so a
+# reviewer in any tool writes its own single-word name (Codex, Claude, Gemini,
+# Reviewer, …). Trust is NOT derived from this name: verdict authority comes
+# from the server-stamped ``verdict_trusted`` flag and the trusted-reviewer
+# registry. The name is captured (group ``reviewer``) only so callers can see
+# which tool posted a verdict.
+REVIEWER_NAME_PATTERN = r"(?P<reviewer>[A-Za-z][A-Za-z0-9._-]{0,31})"
+
+# Review header pattern. Matches (any reviewer name, case-insensitive):
 #   "Codex R3 review on tk_abc: VERIFIED-CLEAN"
-#   "Codex R1 doc review on tk_xyz: CHANGES REQUESTED"
-#   "Codex R2 review on tk_q: CHANGES_REQUESTED"  (underscore variant)
+#   "Claude R1 doc review on tk_xyz: CHANGES REQUESTED"
+#   "Gemini R2 review on tk_q: CHANGES_REQUESTED"  (underscore variant)
 _HEADER_RE = re.compile(
-    r"^Codex\s+R(?P<round>\d+)\s+(?:doc\s+)?review\s+on\s+tk_\w+\s*:\s*"
+    rf"^{REVIEWER_NAME_PATTERN}\s+R(?P<round>\d+)\s+(?:doc\s+)?review\s+on\s+tk_\w+\s*:\s*"
     r"(?P<verdict>VERIFIED[-_]CLEAN|CHANGES[\s_-]+REQUESTED|"
     r"NO[\s-]+CHANGES[\s-]+NEEDED|APPROVED)",
     re.IGNORECASE | re.MULTILINE,
@@ -206,11 +214,12 @@ def _normalize_verdict(raw: str) -> str:
 
 def verdict_from_header(content: str) -> Optional[str]:
     """Return the canonical verdict when ``content`` carries a recognized
-    Codex review header, else ``None``.
+    review verdict header, else ``None``.
 
     Mirrors ``_parse_codex_comment``'s header gate so the notification layer
     can decide whether a trusted reviewer's comment is actually a verdict
-    (``Codex R{N} review on tk_...: VERDICT``) rather than free-form prose.
+    (``<Reviewer> R{N} review on tk_...: VERDICT``) rather than free-form
+    prose.
     """
     match = _HEADER_RE.search(content or "")
     if not match:

@@ -11,12 +11,18 @@ import { useQueryClient } from '@tanstack/react-query';
 
 import { ApiError, type HelperAction, type HelperActionConfirmBody, type HelperActionTarget } from '../api/client';
 import { errorMessage } from '../utils/errorMessage';
+import { safeHttpUrl } from '../utils/url';
 import { Alert, Badge, Button, Input, MonoText, Select, Textarea } from '../components/ui';
 import {
   actionTitle,
+  assignedPerson,
   expiryLabel,
   isCancelledError,
   isExpiredError,
+  failedSummary,
+  jiraOutcome,
+  overwriteDirection,
+  overwriteDescription,
   pendingRecord,
   targetState,
   type TurnAction,
@@ -25,6 +31,7 @@ import { refHref } from './format';
 import { renderRefLink } from './refs';
 import { helperActionKey, useDecideHelperAction, useHelperAction } from './useHelper';
 import { LayersIcon, RetryIcon, TrashIcon } from './icons';
+import { PersonAvatar } from '../projects/tickets/AssigneeLabel';
 
 /** Where Trash lives: the sessions list opened on its Trash view. */
 export const TRASH_HREF = '/?view=trash';
@@ -106,15 +113,36 @@ function seedForm(params: Record<string, unknown> | undefined): TicketForm {
   };
 }
 
+/** A Jira issue key, linked out to Jira when the stored URL is http(s). */
+function JiraIssueLink({ issueKey, issueUrl }: { issueKey: string; issueUrl: string | null }) {
+  const href = issueUrl ? safeHttpUrl(issueUrl) : null;
+  if (!href) return <span className="font-mono font-medium text-text-primary">{issueKey}</span>;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="font-mono font-medium text-brand underline-offset-2 hover:underline outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] rounded-sm"
+    >
+      {issueKey}
+      <span className="sr-only"> (opens Jira in a new tab)</span>
+    </a>
+  );
+}
+
 function TargetRow({
   kind,
   target,
   result,
+  params,
 }: {
   kind: string;
   target: HelperActionTarget;
   result: { ok: boolean; error: string | null } | undefined;
+  /** The proposal params (link_jira / jira_overwrite read the issue key). */
+  params: Record<string, unknown>;
 }) {
+  const issueKey = typeof params.issue_key === 'string' && params.issue_key ? params.issue_key : 'Jira';
   const state = targetState(kind, target, result);
   const isSession = kind === 'trash_sessions';
   const meta: string[] = [];
@@ -130,13 +158,21 @@ function TargetRow({
       meta.push(`Already ${onOff(target.after)}`);
     }
   } else if (kind === 'assign_ticket') {
-    // `before`/`after` are persona names (or null for unassigned), not flags.
-    const name = (v: unknown) => (typeof v === 'string' && v ? v : 'unassigned');
+    // `before`/`after` are assignee names (or null for unassigned), not
+    // flags. A person assignment names its person in params; prefer that over
+    // a raw user id.
+    const person = assignedPerson(params);
+    const name = (v: unknown) =>
+      person && v === person.id ? person.name : typeof v === 'string' && v ? v : 'unassigned';
     if (target.change === 'will_change') {
       meta.push(`${name(target.before)} → ${name(target.after)}`);
     } else if (target.change === 'unchanged') {
       meta.push(`Already ${name(target.after)}`);
     }
+  } else if (kind === 'link_jira' && target.change === 'will_change') {
+    meta.push(`→ ${issueKey}`);
+  } else if (kind === 'jira_overwrite' && target.change === 'will_change') {
+    meta.push(overwriteDirection(params) === 'from_jira' ? `${issueKey} → ticket` : `ticket → ${issueKey}`);
   }
   const reason = 'reason' in state ? state.reason : null;
   return (
@@ -189,6 +225,10 @@ export default function HelperActionCard({
   const isComment = action.kind === 'comment_ticket';
   const editable = pending && (isCreate || isComment);
   const params = useMemo(() => record?.params ?? action.params ?? {}, [record?.params, action.params]);
+  // A create_ticket draft assigned to a person. The confirm body can only
+  // name a persona, so the person is shown read-only and the draft keeps it.
+  const draftedPerson = isCreate ? assignedPerson(params) : null;
+  const assigneeLabelId = useId();
   // The editor shows the stored draft until the user types; a card restored
   // from history therefore picks up the draft once the server read lands,
   // and the user's edits are never clobbered by a later read.
@@ -210,9 +250,12 @@ export default function HelperActionCard({
       // Only send the assignee when the user changed it: an unchanged (or
       // still blank) field keeps the draft, and clearing a drafted assignee
       // sends null so the ticket is created unassigned.
-      const assignee = form.assigned_to.trim();
-      const drafted = asString(draftParam(params, 'assigned_to')).trim();
-      if (assignee !== drafted) body.assigned_to = assignee || null;
+      // A drafted person is never sent back, so the draft's person stands.
+      if (!draftedPerson) {
+        const assignee = form.assigned_to.trim();
+        const drafted = asString(draftParam(params, 'assigned_to')).trim();
+        if (assignee !== drafted) body.assigned_to = assignee || null;
+      }
       return body;
     }
     if (isComment) {
@@ -256,10 +299,21 @@ export default function HelperActionCard({
   const appliedCount = results.size > 0 ? applied : changing;
   const noun = (n: number) => {
     if (isTrash) return n === 1 ? 'session' : 'sessions';
-    if (action.kind === 'assign_ticket' || action.kind === 'comment_ticket') return n === 1 ? 'ticket' : 'tickets';
+    if (
+      action.kind === 'assign_ticket' ||
+      action.kind === 'comment_ticket' ||
+      action.kind === 'link_jira' ||
+      action.kind === 'jira_overwrite'
+    ) {
+      return n === 1 ? 'ticket' : 'tickets';
+    }
     return n === 1 ? 'project' : 'projects';
   };
   const createdTicketId = [...results.values()].find((r) => r.ticket_id)?.ticket_id;
+  const jira = status === 'confirmed' ? jiraOutcome(action.kind, record?.result, params) : null;
+  // Both overwrite directions throw away one side's text: confirm reads as such.
+  const destructive = isTrash || action.kind === 'jira_overwrite';
+  const overwriteTicketId = typeof params.ticket_id === 'string' ? params.ticket_id : undefined;
 
   const counts = [
     changing ? `${changing} will change` : null,
@@ -308,22 +362,44 @@ export default function HelperActionCard({
                   onValueChange={(v) => update({ priority: v })}
                   options={PRIORITIES.map((p) => ({ value: p, label: p }))}
                 />
-                <Input title="Assignee" placeholder="Persona name (optional)" value={form.assigned_to} onChange={(e) => update({ assigned_to: e.target.value })} />
+                {draftedPerson ? (
+                  <div className="flex flex-col gap-1" data-testid="drafted-assignee">
+                    <span id={assigneeLabelId} className="text-sm font-medium text-text-secondary">
+                      Assignee
+                    </span>
+                    <span
+                      role="note"
+                      aria-labelledby={assigneeLabelId}
+                      className="inline-flex min-w-0 items-center gap-1.5 text-sm text-text-primary"
+                    >
+                      <PersonAvatar name={draftedPerson.name} seed={draftedPerson.id} />
+                      <span className="truncate">{draftedPerson.name}</span>
+                    </span>
+                    <span className="text-xs text-text-tertiary">
+                      Assigned to a person. To change it, reassign the ticket after it’s created.
+                    </span>
+                  </div>
+                ) : (
+                  <Input title="Assignee" placeholder="Persona name (optional)" value={form.assigned_to} onChange={(e) => update({ assigned_to: e.target.value })} />
+                )}
               </>
             ) : (
               <Textarea title="Comment" value={form.body} onChange={(e) => update({ body: e.target.value })} />
             )}
           </div>
         )}
+        {action.kind === 'jira_overwrite' && (
+          <p className="text-xs text-text-secondary">{overwriteDescription(params)}</p>
+        )}
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
           <Button
             size="sm"
-            variant={isTrash ? 'danger' : 'primary'}
+            variant={destructive ? 'danger' : 'primary'}
             loading={decide.isPending && lastDecision === 'confirm'}
             disabled={decide.isPending}
             onClick={() => run('confirm')}
           >
-            {isTrash ? 'Move to Trash' : 'Confirm'}
+            {isTrash ? 'Move to Trash' : action.kind === 'jira_overwrite' ? 'Replace' : 'Confirm'}
           </Button>
           <Button
             size="sm"
@@ -342,6 +418,7 @@ export default function HelperActionCard({
     );
   } else if (status === 'confirmed') {
     announcement = failed > 0 ? `Applied ${applied} of ${results.size}. ${failed} failed.` : 'Action applied.';
+    if (jira?.kind === 'not_published') announcement += ' The ticket was not published to Jira.';
     footer = (
       <div className="space-y-1.5 text-xs text-text-secondary">
         <p>
@@ -362,14 +439,48 @@ export default function HelperActionCard({
             within {TRASH_RETENTION_DAYS} days.
           </p>
         )}
-        {isCreate && createdTicketId && (
+        {isCreate && createdTicketId && jira?.kind !== 'not_published' && (
           <p>Created {renderRefLink(refHref('ticket', createdTicketId), createdTicketId)}.</p>
         )}
+        {jira?.kind === 'issue' && (
+          <p>
+            {action.kind === 'link_jira' ? 'Linked to Jira ' : 'Published to Jira as '}
+            <JiraIssueLink issueKey={jira.issueKey} issueUrl={jira.issueUrl} />.
+          </p>
+        )}
+        {jira?.kind === 'replaced' && (
+          <p>
+            Replaced Jira <JiraIssueLink issueKey={jira.issueKey} issueUrl={jira.issueUrl} /> with this ticket.
+          </p>
+        )}
+        {jira?.kind === 'pulled' && (
+          <p>
+            {jira.fields.length > 0
+              ? `Updated the ${jira.fields.join(' and ')} from Jira ${jira.issueKey}.`
+              : `Already matched Jira ${jira.issueKey} — nothing changed.`}
+          </p>
+        )}
+        {jira?.kind === 'not_published' && (() => {
+          const ticketRef = isCreate ? createdTicketId : overwriteTicketId;
+          return (
+            <p>
+              <span className="text-warning">
+                {isCreate ? 'Created but not published to Jira' : 'Not published to Jira'}: {jira.reason}.
+              </span>{' '}
+              {ticketRef ? (
+                <>Publish it from the ticket page: {renderRefLink(refHref('ticket', ticketRef), ticketRef)}.</>
+              ) : (
+                'Publish it from the ticket page.'
+              )}
+            </p>
+          );
+        })()}
       </div>
     );
   } else if (status === 'failed') {
-    announcement = 'The action failed. Nothing was changed.';
-    footer = <p className="text-xs text-text-secondary">Nothing was changed — every target failed its access check.</p>;
+    const summary = failedSummary(action.kind, params, [...results.values()]);
+    announcement = summary.startsWith('Nothing was changed') ? 'The action failed. Nothing was changed.' : `The action failed. ${summary}`;
+    footer = <p className="text-xs text-text-secondary">{summary}</p>;
   } else if (status === 'cancelled') {
     announcement = lastDecision === 'cancel' ? 'Action cancelled.' : '';
     footer = <p className="text-xs text-text-secondary">Cancelled — nothing was changed.</p>;
@@ -416,7 +527,13 @@ export default function HelperActionCard({
           className="mx-3 mt-2.5 max-h-56 divide-y divide-border overflow-y-auto rounded-lg border border-border bg-surface outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
         >
           {targets.map((t) => (
-            <TargetRow key={t.id} kind={action.kind} target={t} result={results.get(t.id)} />
+            <TargetRow
+              key={t.id}
+              kind={action.kind}
+              target={t}
+              result={results.get(t.id)}
+              params={params}
+            />
           ))}
         </ul>
       )}

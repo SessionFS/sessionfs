@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
-from sqlalchemy import insert, literal, select, update
+from sqlalchemy import func, insert, literal, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -33,6 +33,7 @@ from sessionfs.server.db.models import (
     TicketComment,
     TicketDependency,
     TicketEdit,
+    User,
     WorkQueueItem,
 )
 from sessionfs.server.services import ticket_watchers
@@ -49,6 +50,7 @@ _WORK_DEFINING_FIELDS = (
     "description",
     "priority",
     "assigned_to",
+    "assigned_user_id",
     "acceptance_criteria",
     "depends_on",
 )
@@ -84,6 +86,69 @@ async def resolve_persona_name(
         db, project_id, name, org_id=org_id, active_only=True, case_insensitive=True
     )
     return row.name if row is not None else None
+
+
+_ASSIGNEE_CONFLICT = {
+    "error": "assignee_conflict",
+    "message": "A ticket has one assignee at a time: a persona or a person, not both.",
+}
+_ASSIGNEE_NOT_ELIGIBLE = {
+    "error": "assignee_not_eligible",
+    "message": "Assignee must be an active teammate with access to this project.",
+}
+
+
+def check_assignee_conflict(
+    assigned_to: str | None,
+    assigned_user_id: str | None,
+    assigned_user: str | None,
+) -> None:
+    """Refuse more than one assignment token in a single write.
+
+    ``assigned_to`` is a persona; ``assigned_user_id`` and ``assigned_user``
+    are the same person (id or email). Any two non-null tokens conflict.
+    """
+    person_tokens = (assigned_user_id is not None) + (assigned_user is not None)
+    if assigned_to is not None and person_tokens:
+        raise HTTPException(422, _ASSIGNEE_CONFLICT)
+    if person_tokens > 1:
+        raise HTTPException(422, _ASSIGNEE_CONFLICT)
+
+
+def assigned_user_label(user: User) -> str:
+    """Readable name for audits and summaries: display name, else email."""
+    return user.display_name or user.email
+
+
+async def _assigned_user_label(db: AsyncSession, user_id: str | None) -> str | None:
+    """The readable label for an already-stored ``assigned_user_id``."""
+    if not user_id:
+        return None
+    user = await db.get(User, user_id)
+    return assigned_user_label(user) if user is not None else None
+
+
+async def resolve_assigned_user_id(
+    db: AsyncSession, *, project: Project, value: str
+) -> User:
+    """Resolve an id or email to an active user with read standing on
+    ``project``. Every miss — unknown, inactive, or no read standing — raises
+    the same 422 so existence and org membership are never revealed."""
+    value = value.strip()
+    if "@" in value:
+        stmt = select(User).where(func.lower(User.email) == value.lower())
+    else:
+        stmt = select(User).where(User.id == value)
+    matches = (await db.execute(stmt.limit(2))).scalars().all()
+    user = matches[0] if len(matches) == 1 else None
+    eligible = False
+    if user is not None and user.is_active:
+        from sessionfs.server.auth.project_access import user_has_read_standing
+
+        eligible = await user_has_read_standing(db, user.id, project)
+    if not eligible:
+        raise HTTPException(422, _ASSIGNEE_NOT_ELIGIBLE)
+    return user
 
 
 async def maybe_capture_route_feedback(
@@ -167,14 +232,17 @@ def format_edit_diff_summary(
     edits: list[tuple[str, object, object]],
     *,
     fence_applied: bool,
+    assigned_user_labels: dict[str, str] | None = None,
 ) -> str:
     """Render the per-field diff for the auto-posted comment.
 
     Short scalar fields show 'field: "old" → "new"' inline. Long
     string fields (description) and list fields show shape changes
-    with truncated previews. The audit trail in `ticket_edits`
-    retains the full JSON-encoded values; this rendering is for
-    human consumption.
+    with truncated previews. ``assigned_user_id`` edits carry user ids
+    (not display labels), so they render as a readable "Assigned to" /
+    "Unassigned" line instead of raw ids. The audit trail in
+    `ticket_edits` retains the full JSON-encoded values; this rendering is
+    for human consumption.
     """
 
     def _truncate(s: str) -> str:
@@ -189,9 +257,28 @@ def format_edit_diff_summary(
             return f'"{_truncate(value)}"'
         return _truncate(str(value))
 
+    labels = assigned_user_labels or {}
+
+    def _person_label(user_id: object) -> str:
+        if isinstance(user_id, str) and user_id:
+            return labels.get(user_id, user_id)
+        return ""
+
+    def _assignment_line(field_name: str, old_v: object, new_v: object) -> str:
+        old_label = _person_label(old_v)
+        new_label = _person_label(new_v)
+        if new_v and not old_v:
+            return f"- `{field_name}`: Assigned to {new_label}"
+        if old_v and not new_v:
+            return f"- `{field_name}`: Unassigned (was {old_label})"
+        return f"- `{field_name}`: Assigned to {new_label} (was {old_label})"
+
     lines = ["**Ticket fields updated** via `update_ticket` (tk_835a876529de4551):"]
     for field_name, old_v, new_v in edits:
-        lines.append(f"- `{field_name}`: {_fmt(old_v)} → {_fmt(new_v)}")
+        if field_name == "assigned_user_id":
+            lines.append(_assignment_line(field_name, old_v, new_v))
+        else:
+            lines.append(f"- `{field_name}`: {_fmt(old_v)} → {_fmt(new_v)}")
     if not fence_applied:
         lines.append(
             "\n_Unfenced edit_ — no `lease_epoch` passed; last-write-wins."
@@ -384,13 +471,13 @@ async def apply_ticket_update(
     A no-op (nothing actually changed) writes no audit rows or comment.
     """
     project_id = project.id
+    body_fields_set = getattr(body, "model_fields_set", ())
     present = [
         name
         for name in (
             "title",
             "description",
             "priority",
-            "assigned_to",
             "context_refs",
             "file_refs",
             "related_sessions",
@@ -399,6 +486,13 @@ async def apply_ticket_update(
         )
         if getattr(body, name) is not None
     ]
+    # Assignment is work-defining. Surface it whenever the caller set the
+    # key: an explicit null is itself a change (unassign) and must pass the
+    # non-editor editability gate too, not just non-null values.
+    if "assigned_to" in body_fields_set:
+        present.append("assigned_to")
+    if "assigned_user_id" in body_fields_set or "assigned_user" in body_fields_set:
+        present.append("assigned_user_id")
     editor = await assert_ticket_fields_editable(
         db, ticket=ticket, project=project, user_id=user_id, fields=present
     )
@@ -462,6 +556,23 @@ async def apply_ticket_update(
     if body.priority is not None:
         _record("priority", ticket.priority, body.priority)
         ticket.priority = body.priority
+    # ── Assignment: one assignee at a time (persona XOR person) ──
+    # ``assigned_to`` is a persona; ``assigned_user_id``/``assigned_user``
+    # target a person (by id or email). Setting one clears the other; an
+    # explicit null unassigns that side. TicketEdit rows store user ids (not
+    # display labels) so two same-named users never compare equal, while the
+    # diff comment renders their readable labels.
+    user_labels: dict[str, str] = {}
+
+    async def _remember_label(user_id: str | None) -> None:
+        if user_id and user_id not in user_labels:
+            label = await _assigned_user_label(db, user_id)
+            user_labels[user_id] = label if label else user_id
+
+    check_assignee_conflict(
+        body.assigned_to, body.assigned_user_id, body.assigned_user
+    )
+
     if body.assigned_to is not None:
         # v0.10.23 tk_884b2321fdb74170 — same best-effort normalize as
         # create. Matches assign_persona MCP path that routes through
@@ -480,6 +591,10 @@ async def apply_ticket_update(
         old_assigned = ticket.assigned_to
         _record("assigned_to", old_assigned, new_assigned)
         ticket.assigned_to = new_assigned
+        if ticket.assigned_user_id is not None:
+            await _remember_label(ticket.assigned_user_id)
+            _record("assigned_user_id", ticket.assigned_user_id, None)
+            ticket.assigned_user_id = None
         # v0.17.0 — auto-capture route feedback when an agent-created
         # ticket is reassigned to a *different* persona. Best-effort:
         # feedback capture must never fail the reassignment.
@@ -491,6 +606,31 @@ async def apply_ticket_update(
             new_assigned=new_assigned,
             reassigned_by_user_id=user_id,
         )
+    elif body.assigned_user_id is not None or body.assigned_user is not None:
+        token = (
+            body.assigned_user_id
+            if body.assigned_user_id is not None
+            else body.assigned_user
+        )
+        assignee = await resolve_assigned_user_id(db, project=project, value=token)
+        user_labels[assignee.id] = assigned_user_label(assignee)
+        await _remember_label(ticket.assigned_user_id)
+        _record("assigned_user_id", ticket.assigned_user_id, assignee.id)
+        ticket.assigned_user_id = assignee.id
+        if ticket.assigned_to is not None:
+            _record("assigned_to", ticket.assigned_to, None)
+            ticket.assigned_to = None
+    else:
+        # No non-null assignment token: explicit null(s) unassign whichever
+        # side the caller named. The dashboard always sends both keys, so a
+        # both-null body clears both a persona and a person.
+        if "assigned_to" in body_fields_set:
+            _record("assigned_to", ticket.assigned_to, None)
+            ticket.assigned_to = None
+        if "assigned_user_id" in body_fields_set or "assigned_user" in body_fields_set:
+            await _remember_label(ticket.assigned_user_id)
+            _record("assigned_user_id", ticket.assigned_user_id, None)
+            ticket.assigned_user_id = None
     if body.context_refs is not None:
         old_refs = json.loads(ticket.context_refs or "[]")
         _record("context_refs", old_refs, body.context_refs)
@@ -593,7 +733,9 @@ async def apply_ticket_update(
 
     # Auto-posted diff comment so the change shows up in the human-
     # readable comment thread. `system` author identity per design doc.
-    diff_summary = format_edit_diff_summary(edits, fence_applied=fence_applied)
+    diff_summary = format_edit_diff_summary(
+        edits, fence_applied=fence_applied, assigned_user_labels=user_labels
+    )
     db.add(
         TicketComment(
             id=f"tc_{uuid.uuid4().hex[:16]}",
@@ -606,34 +748,52 @@ async def apply_ticket_update(
     )
 
     # Ticket watchers: a reassignment notifies watchers and hands the new
-    # assignee's human owner a "your turn", auto-subscribing them if the
-    # assignment maps to a persona they represent.
-    assignment_edit = next((edit for edit in edits if edit[0] == "assigned_to"), None)
+    # assignee — the persona's human owner or the assigned person — a
+    # "your turn", auto-subscribing them.
+    assignment_edit = next(
+        (edit for edit in edits if edit[0] in ("assigned_to", "assigned_user_id")),
+        None,
+    )
     if assignment_edit is not None:
-        from sessionfs.server.services.personas import visible_persona_org_id
+        field_name, _, new_value = assignment_edit
+        if field_name == "assigned_user_id":
+            # The edit records the user id; render the readable label for
+            # the hand-off summary. The recipient is the id now on the ticket.
+            new_assignee_user_id = ticket.assigned_user_id
+            new_assignee_persona = None
+            label = (
+                user_labels.get(new_assignee_user_id)
+                if new_assignee_user_id
+                else None
+            )
+            summary = f"Assigned to {label}" if label else "Unassigned"
+        else:
+            from sessionfs.server.services.personas import visible_persona_org_id
 
-        _, _, new_assigned_v = assignment_edit
-        new_assigned_name = new_assigned_v if isinstance(new_assigned_v, str) else ""
-        new_assignee_human = await ticket_watchers.map_persona_to_human(
-            db,
-            project_id=project_id,
-            name=new_assigned_name,
-            org_id=await visible_persona_org_id(db, project, user_id=user_id),
-        )
+            new_assigned_name = new_value if isinstance(new_value, str) else ""
+            new_assignee_human = await ticket_watchers.map_persona_to_human(
+                db,
+                project_id=project_id,
+                name=new_assigned_name,
+                org_id=await visible_persona_org_id(db, project, user_id=user_id),
+            )
+            new_assignee_user_id = new_assignee_human[0] if new_assignee_human else None
+            new_assignee_persona = new_assignee_human[1] if new_assignee_human else None
+            summary = f"Assigned to {new_assigned_name}" if new_assigned_name else "Unassigned"
         # A suggested ticket isn't actionable: watchers hear about the
         # reassignment, but the assignee is subscribed and handed "your turn"
         # only when an editor approves it.
-        hand_off = new_assignee_human is not None and ticket.status != "suggested"
+        hand_off = new_assignee_user_id is not None and ticket.status != "suggested"
         await ticket_watchers.emit_notifications(
             db,
             ticket=ticket,
             kind="assignment",
-            summary=f"Assigned to {new_assigned_name}" if new_assigned_name else "Unassigned",
+            summary=summary,
             actor_user_id=user_id,
-            your_turn_user_id=new_assignee_human[0] if hand_off and new_assignee_human else None,
+            your_turn_user_id=new_assignee_user_id if hand_off else None,
             subscribe_users=(
-                [(new_assignee_human[0], "assignee", new_assignee_human[1])]
-                if hand_off and new_assignee_human
+                [(new_assignee_user_id, "assignee", new_assignee_persona)]
+                if hand_off and new_assignee_user_id
                 else None
             ),
         )

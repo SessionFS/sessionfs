@@ -12,7 +12,7 @@ import type { HelperStatus } from '../api/client';
 const { useAuthMock } = vi.hoisted(() => ({ useAuthMock: vi.fn() }));
 vi.mock('../auth/AuthContext', () => ({ useAuth: useAuthMock }));
 
-import { useHelperConversations, useHelperStatus } from './useHelper';
+import { touchesJira, useDecideHelperAction, useHelperConversations, useHelperStatus } from './useHelper';
 
 function makeWrapper(qc: QueryClient) {
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -126,5 +126,43 @@ describe('helper query gating', () => {
       expect(result.current.isPlaceholderData).toBe(false);
       expect(result.current.data?.enabled).toBe(false);
     });
+  });
+});
+
+describe('useDecideHelperAction', () => {
+  const confirmHelperAction = vi.fn();
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useAuthMock.mockReturnValue({ auth: { client: { confirmHelperAction } } });
+  });
+
+  async function confirmKind(kind: string, params: Record<string, unknown> = {}) {
+    const qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const spy = vi.spyOn(qc, 'invalidateQueries');
+    confirmHelperAction.mockResolvedValue({ id: 'ha_1', kind, params, status: 'confirmed', targets: [], result: {} });
+    const { result } = renderHook(() => useDecideHelperAction('ha_1'), { wrapper: makeWrapper(qc) });
+    await result.current.mutateAsync({ decision: 'confirm' });
+    return spy.mock.calls.map(([arg]) => (arg as { queryKey: unknown[] }).queryKey[0]);
+  }
+
+  it.each([
+    ['link_jira', {}],
+    ['jira_overwrite', { direction: 'from_jira' }],
+    ['create_ticket', { publish_to_jira: true }],
+  ])('refreshes the Jira link, comments and sync events after %s', async (kind, params) => {
+    const keys = await confirmKind(kind, params);
+    expect(keys).toEqual(expect.arrayContaining(['ticket', 'tickets', 'jiraLink', 'ticketComments', 'ticketJiraSyncEvents']));
+  });
+
+  it('leaves Jira queries alone for a plain create', async () => {
+    const keys = await confirmKind('create_ticket', {});
+    expect(keys).toContain('tickets');
+    expect(keys).not.toContain('jiraLink');
+  });
+
+  it('touchesJira covers comments posted to Jira', () => {
+    expect(touchesJira({ kind: 'comment_ticket', params: { send_to_jira: true } })).toBe(true);
+    expect(touchesJira({ kind: 'comment_ticket', params: {} })).toBe(false);
+    expect(touchesJira({ kind: 'trash_sessions' })).toBe(false);
   });
 });

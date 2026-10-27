@@ -105,6 +105,10 @@ export function describeToolStep(step: Pick<ToolStep, 'name' | 'args' | 'status'
       return `${verb('Preparing', 'Prepared')} to assign a ticket`;
     case 'propose_comment':
       return `${verb('Preparing', 'Prepared')} to comment on a ticket`;
+    case 'propose_jira_link':
+      return `${verb('Preparing', 'Prepared')} to link a Jira issue`;
+    case 'propose_jira_overwrite':
+      return `${verb('Preparing', 'Prepared')} to sync a ticket with Jira`;
     default:
       return `${verb('Running', 'Ran')} ${step.name.replace(/_/g, ' ')}`;
   }

@@ -38,13 +38,17 @@ Gateways that reject `temperature`, `top_p` or reasoning settings for a reasonin
 
 ## Actions
 
-Besides answering, the helper can propose five changes for you:
+Besides answering, the helper can propose these changes for you:
 
 - **Turn Auto Narrative on or off** for one or more projects.
 - **Move sessions to Trash**, for example to clean up old scratch sessions or "every session that used DeepSeek".
-- **Create a ticket** with a title, description, acceptance criteria, priority and optional assignee.
-- **Assign a ticket** to a persona.
-- **Comment on a ticket** with a plain user comment.
+- **Create a ticket** with a title, description, acceptance criteria, priority and optional assignee. When you ask for it, the same confirmation also publishes the new ticket to Jira (Enterprise, with a Jira mapping for the project).
+- **Assign a ticket** to a persona or directly to a teammate. You can name a persona, a teammate's email, or a display name; a display name goes to the persona that represents that person when there is one, otherwise to the person.
+- **Comment on a ticket** with a plain user comment, optionally sent to the linked Jira issue too when the org forwards comments to Jira.
+- **Link a ticket to an existing Jira issue** by its key (v0.27.0).
+- **Overwrite one side of a linked ticket and Jira issue**: replace the Jira issue's summary and description with the ticket's, or the ticket's title and description with the issue's. See [Link an existing issue](/integrations/jira/#link-an-existing-issue).
+
+Jira proposals are refused up front when they can't work, for example when the ticket has no Jira link, you can't edit it, or the org doesn't forward comments to Jira. Every Jira condition is checked again when you confirm.
 
 The helper never makes a change itself. Each proposal appears in the answer as a card listing every target and what will happen to it: *will change*, *unchanged*, or *skipped* with the reason. Nothing changes until you press **Confirm** (or **Move to Trash**); **Cancel** drops it. Proposals expire after 15 minutes.
 
@@ -76,6 +80,7 @@ Beyond sessions and project knowledge, the helper reads the project's own work i
 - **Wiki pages** — `list_wiki_pages` / `get_wiki_page`. A project's knowledge pages, with the body capped at 20k characters.
 - **Agent runs** — `list_agent_runs` / `get_agent_run`. CI review runs, with persona, status, severity and findings.
 - **Personas** — `list_personas`. The project's own personas and the org personas visible from it, with role and active state.
+- **Jira issues** — `get_jira_issue`. The Jira issue linked to a ticket: summary, status, assignee, priority, labels, components, last update and the latest comments, read through the org's Jira connection. It takes a ticket id, never a free-form Jira key, so it can only read an issue a ticket you can see already points at. Comments that came from Jira are marked as such on `get_ticket`.
 
 These tools follow the same plan gates as the matching pages: tickets and agent runs need the project's plan to include them, and personas need it to include personas. On a project whose plan doesn't, the helper says they aren't available instead of reading them. Long fields are capped with a visible "…[truncated]" (ticket descriptions, each acceptance criterion, run summaries and finding messages), and one tool result is capped at 40,000 characters.
 

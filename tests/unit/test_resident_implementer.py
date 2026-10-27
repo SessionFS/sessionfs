@@ -2065,16 +2065,16 @@ def test_latest_review_verdict_derivation():
     (awaiting review) must NOT fail."""
     from sessionfs.resident.implementer import _latest_review_verdict
     assert _latest_review_verdict({"comment_delta": [
-        {"content": "Codex R1 review on tk: VERIFIED-CLEAN", "verdict_trusted": True}]}) == "clean"
+        {"content": "Codex R1 review on tk_x: VERIFIED-CLEAN", "verdict_trusted": True}]}) == "clean"
     assert _latest_review_verdict({"comment_delta": [
-        {"content": "Codex R1 review on tk: CHANGES_REQUESTED", "verdict_trusted": True}]}) == "changes"
-    # Latest trusted verdict wins.
+        {"content": "Claude R1 review on tk_x: CHANGES_REQUESTED", "verdict_trusted": True}]}) == "changes"
+    # Latest trusted verdict wins (across reviewer names too).
     assert _latest_review_verdict({"comment_delta": [
-        {"content": "Codex R1 review on tk: VERIFIED-CLEAN", "verdict_trusted": True},
-        {"content": "Codex R2 review on tk: CHANGES_REQUESTED", "verdict_trusted": True}]}) == "changes"
+        {"content": "Codex R1 review on tk_x: VERIFIED-CLEAN", "verdict_trusted": True},
+        {"content": "Gemini R2 review on tk_x: CHANGES_REQUESTED", "verdict_trusted": True}]}) == "changes"
     # Untrusted verdicts are ignored → None (awaiting a trusted verdict).
     assert _latest_review_verdict({"comment_delta": [
-        {"content": "Codex R1 review on tk: VERIFIED-CLEAN", "verdict_trusted": False}]}) is None
+        {"content": "Codex R1 review on tk_x: VERIFIED-CLEAN", "verdict_trusted": False}]}) is None
     # A verdict token only in PROSE (not the header) must NOT false-match.
     assert _latest_review_verdict({"comment_delta": [
         {"content": "This is not VERIFIED-CLEAN yet, keep going.", "verdict_trusted": True}]}) is None

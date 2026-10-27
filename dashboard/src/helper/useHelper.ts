@@ -106,7 +106,22 @@ export function useDecideHelperAction(id: string) {
         for (const key of ['projects', 'project', 'compileStatus', 'sessions', 'session', 'tickets', 'ticket']) {
           void queryClient.invalidateQueries({ queryKey: [key] });
         }
+        // Jira-touching actions also change the ticket's link, its timeline
+        // comments and its sync events.
+        if (touchesJira(action)) {
+          for (const key of ['jiraLink', 'ticketComments', 'ticketJiraSyncEvents']) {
+            void queryClient.invalidateQueries({ queryKey: [key] });
+          }
+        }
       }
     },
   });
+}
+
+/** Whether a confirmed action may have changed a ticket's Jira state. */
+export function touchesJira(action: { kind: string; params?: Record<string, unknown> }): boolean {
+  if (action.kind === 'link_jira' || action.kind === 'jira_overwrite') return true;
+  if (action.kind === 'create_ticket') return action.params?.publish_to_jira === true;
+  if (action.kind === 'comment_ticket') return action.params?.send_to_jira === true;
+  return false;
 }

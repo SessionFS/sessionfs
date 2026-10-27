@@ -21,6 +21,13 @@ export function resolve(method: string, pathname: string): MockResult | null {
   const get = method === 'GET';
 
   if (path === '/health' || path === '/api/health') return ok({ status: 'ok' });
+  // Linking an existing Jira issue answers with the same body as GET .../jira.
+  const jiraLinkPost = !get && path.match(/^\/api\/v1\/projects\/[^/]+\/tickets\/([^/]+)\/jira\/link$/);
+  if (jiraLinkPost) return ok({ ...d.linkedTicketJiraLink, ticket_id: decodeURIComponent(jiraLinkPost[1]) });
+  // Taking the Jira issue's text into the ticket: the ticket, the link and what changed.
+  if (!get && /^\/api\/v1\/projects\/[^/]+\/tickets\/[^/]+\/jira\/pull$/.test(path)) {
+    return ok({ ticket: d.linkedTicket, jira: d.linkedTicketJiraLink, updated_fields: [] });
+  }
   if (!get) return ok({ status: 'ok' });
 
   // ── account ──
@@ -57,6 +64,7 @@ export function resolve(method: string, pathname: string): MockResult | null {
     if (rest === '/pages') return ok({ pages: d.wikiPages });
     if (rest.startsWith('/pages/')) return ok({ ...d.wikiPages[0], backlinks: [] });
     if (rest === '/personas') return ok(d.personas);
+    if (rest === '/assignable-users') return ok(d.assignableUsers);
     if (rest === '/tickets') return ok(d.tickets.map((t) => (t.id === d.LINKED_TICKET_ID ? d.linkedTicket : t)));
     const tk = rest.match(/^\/tickets\/([^/]+)(\/.*)?$/);
     if (tk) {

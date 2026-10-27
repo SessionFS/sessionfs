@@ -81,6 +81,7 @@ REASSIGN_COLUMNS: tuple[tuple[str, str], ...] = (
     ("agent_personas", "created_by"),
     ("tickets", "created_by_user_id"),
     ("tickets", "resolver_user_id"),
+    ("tickets", "assigned_user_id"),
     ("ticket_comments", "author_user_id"),
     ("ticket_edits", "edited_by_user_id"),
     ("ticket_notifications", "user_id"),

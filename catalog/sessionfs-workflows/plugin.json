@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "sessionfs-workflows",
-  "version": "1.0.0",
-  "description": "Hand off sessions, work tickets, and keep the project knowledge base current with SessionFS.",
+  "version": "1.1.0",
+  "description": "Hand off sessions, work tickets, run review-gated worker loops, and keep the project knowledge base current with SessionFS.",
   "license": "MIT",
   "author": {"name": "SessionFS", "url": "https://sessionfs.dev"},
   "homepage": "https://sessionfs.dev/docs/skills-marketplace"

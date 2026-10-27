@@ -106,7 +106,7 @@ async def _populate(db: AsyncSession, src: User) -> dict:
         sessions.append(s)
     await db.flush()
     ticket = Ticket(id=f"tk_{uuid.uuid4().hex[:16]}", project_id=project.id, title="t",
-                    created_by_user_id=src.id)
+                    created_by_user_id=src.id, assigned_user_id=src.id)
     db.add(ticket)
     db.add(KnowledgeEntry(project_id=project.id, session_id=sessions[0].id, user_id=src.id,
                           entry_type="decision", content="x"))
@@ -138,6 +138,7 @@ async def test_dry_run_writes_nothing(client: AsyncClient, db_session: AsyncSess
     assert sorted(rows["sessions.user_id"]["ids"]) == sorted(s.id for s in data["sessions"])
     assert rows["projects.owner_id"]["ids"] == [data["project"].id]
     assert "tickets.created_by_user_id" in rows
+    assert rows["tickets.assigned_user_id"]["ids"] == [data["ticket"].id]
     assert body["plan"]["revoked"]["api_keys"]["count"] == 1
 
     assert await _count(db_session, Session, Session.user_id == src.id) == 2
@@ -166,7 +167,9 @@ async def test_apply_reassigns_revokes_and_audits(
     assert body["status"] == "merged"
 
     for model, col in ((Session, Session.user_id), (Project, Project.owner_id),
-                       (Ticket, Ticket.created_by_user_id), (KnowledgeEntry, KnowledgeEntry.user_id),
+                       (Ticket, Ticket.created_by_user_id),
+                       (Ticket, Ticket.assigned_user_id),
+                       (KnowledgeEntry, KnowledgeEntry.user_id),
                        (BookmarkFolder, BookmarkFolder.user_id)):
         assert await _count(db_session, model, col == src.id) == 0
         assert await _count(db_session, model, col == tgt.id) >= 1

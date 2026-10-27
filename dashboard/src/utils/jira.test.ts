@@ -8,6 +8,9 @@ import {
   JIRA_TEMPLATES,
   JIRA_VERBATIM_SOURCE_FIELDS,
   jiraErrorCode,
+  parseJiraIssueInput,
+  parseJiraIssueKey,
+  urlHost,
   jiraSourceFieldsForMode,
   jiraTemplateLabel,
   jiraTemplateOptions,
@@ -251,5 +254,61 @@ describe('JIRA_SOURCE_FIELDS', () => {
       'completion_notes',
       'linked_sessions',
     ]);
+  });
+});
+
+describe('parseJiraIssueKey', () => {
+  it.each([
+    ['ABC-123', 'ABC-123'],
+    ['  abc-123  ', 'ABC-123'],
+    ['EMMS_2-9', 'EMMS_2-9'],
+    ['https://acme.atlassian.net/browse/ABC-123', 'ABC-123'],
+    ['https://acme.atlassian.net/browse/abc-7?focusedCommentId=1#c', 'ABC-7'],
+    ['https://acme.atlassian.net/browse/ABC-123/', 'ABC-123'],
+    ['https://acme.atlassian.net/jira/software/projects/ABC/boards/1?selectedIssue=ABC-42', 'ABC-42'],
+    ['https://acme.atlassian.net/jira/software/projects/ABC/issues/ABC-123', 'ABC-123'],
+    ['https://acme.atlassian.net/jira/servicedesk/projects/SD/queues/custom/1/sd-12', 'SD-12'],
+    ['acme.atlassian.net/browse/ABC-9', 'ABC-9'],
+    ['jira.example.com:8443/browse/OPS-1', 'OPS-1'],
+  ])('reads %s as %s', (input, key) => {
+    expect(parseJiraIssueKey(input)).toBe(key);
+  });
+
+  it.each([
+    '',
+    '   ',
+    'ABC',
+    '123-ABC',
+    'ABC-0',
+    'ABC-01',
+    '1BC-1',
+    'AB C-1',
+    'ABC-12345678901',
+    `A${'B'.repeat(50)}-1`,
+    'https://acme.atlassian.net/jira/your-work',
+    'https://acme.atlassian.net/jira/software/projects/ABC/issues',
+    'acme.atlassian.net/jira/your-work',
+    'ftp://acme.atlassian.net/browse/ABC-1',
+    'https://acme.atlassian.net/browse/not a key',
+    'not a url/browse/ABC-1',
+  ])('rejects %j', (input) => {
+    expect(parseJiraIssueKey(input)).toBeNull();
+  });
+});
+
+describe('parseJiraIssueInput', () => {
+  it('reports the pasted host, or null for a bare key', () => {
+    expect(parseJiraIssueInput('abc-1')).toEqual({ key: 'ABC-1', host: null });
+    expect(parseJiraIssueInput('https://Other.atlassian.net/browse/ABC-1')).toEqual({ key: 'ABC-1', host: 'other.atlassian.net' });
+    expect(parseJiraIssueInput('acme.atlassian.net/browse/ABC-1')).toEqual({ key: 'ABC-1', host: 'acme.atlassian.net' });
+  });
+});
+
+describe('urlHost', () => {
+  it('returns the host of http(s) URLs only', () => {
+    expect(urlHost('https://Acme.atlassian.net/browse/A-1')).toBe('acme.atlassian.net');
+    expect(urlHost('javascript:alert(1)')).toBeNull();
+    expect(urlHost('not a url')).toBeNull();
+    expect(urlHost(null)).toBeNull();
   });
 });

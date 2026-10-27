@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0] - 2026-10-27
+
+**Assign tickets to people, link tickets to existing Jira issues and choose which side wins, a Jira-aware session helper, and a review loop that works with any reviewer.** Server migration 101.
+
+### Added
+- **Assign a ticket to a person.** A ticket can now go straight to a teammate instead of a persona. They get a "Your turn" notification and follow the ticket automatically.
+  - **Rules:** a ticket has a person or a persona, never both. Only people who can read the project can be assigned.
+  - **Finding people:** `GET /api/v1/projects/{id}/assignable-users` lists them. Ticket lists accept `?assigned_user=me` and the dashboard has an **Assigned to me** filter.
+  - **CLI, MCP and helper:** `sfs ticket create|update --user/-u <email|id>`, MCP `assigned_user`. The helper accepts a person by name or email.
+  - **Warning:** the dashboard assignee picker warns when the chosen persona represents nobody, because nobody would be notified.
+- **Link a ticket to an existing Jira issue.** Use **Link existing issue** on a ticket, `POST /api/v1/projects/{id}/tickets/{tid}/jira/link`, or ask the helper. An issue already linked to another ticket is refused.
+- **Choose which side wins on a linked issue.** Publishing never silently overwrites an issue that was linked from Jira. You pick one of two actions:
+  - **Overwrite the issue in Jira:** publish with confirmation (`overwrite_existing`, CLI `sfs ticket jira publish --overwrite-existing`).
+  - **Update the ticket from Jira:** `POST .../jira/pull`, CLI `sfs ticket jira pull`. Pulls are recorded as normal ticket edits. Empty Jira fields leave the ticket unchanged, and your DLP policy applies.
+- **The session helper understands Jira.** It can:
+  - read a linked Jira issue;
+  - send a comment to Jira as well;
+  - link a ticket to an issue;
+  - overwrite either side;
+  - create a ticket and publish it to Jira in one confirm.
+- **Review loop guide.** A new docs page and a `worker-review-loop` skill in the `sessionfs-workflows` catalog describe the implement → review → fix loop and its strict merge gate.
+
+### Changed
+- **Any reviewer name.** Review verdict headers accept any reviewer name, such as "Claude R1 review", not only Codex.
+- **Unreadable verdicts are refused.** A work-queue completion whose verdict header can't be parsed is rejected with 422 `verdict_header_unparseable`.
+- **Strict check in the CLI.** `sfs ticket review-state` prints whether the ticket is strictly VERIFIED-CLEAN.
+- **Merged projects stay out of lists.** They no longer appear in project lists, the helper or Jira health, and can't be added to a project group (410 `project_merged`). Direct links still answer 410 with the merge target.
+- **Sweep schedules documented.** The Jira sync and Confluence publish sweeps now have documented schedules.
+
 ## [0.26.0] - 2026-10-27
 
 **Project groups, two-way Jira sync, Confluence publishing, and a session helper that can draft tickets and find sessions by model.** Server migrations 096–100. Adds 15 MCP tools (85 → 100).

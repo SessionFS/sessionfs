@@ -309,6 +309,7 @@ def test_tool_specs_exposes_read_and_proposal_tools():
         "trash_sessions",
         "list_tickets",
         "get_ticket",
+        "get_jira_issue",
         "list_wiki_pages",
         "get_wiki_page",
         "list_agent_runs",
@@ -317,6 +318,8 @@ def test_tool_specs_exposes_read_and_proposal_tools():
         "propose_ticket",
         "propose_assignment",
         "propose_comment",
+        "propose_jira_link",
+        "propose_jira_overwrite",
     }
     for s in specs:
         assert isinstance(s.input_schema, dict)
@@ -1265,3 +1268,25 @@ async def test_kb_tools_exclude_deleted_scoped_sessions(db_session, test_user, b
     )
     denied = await _run(ctx, "get_project_context", {"project_id": project.id})
     assert denied.content == "Project not found."
+
+
+# ── merge tombstones (GitHub #111) ──
+
+
+@pytest.mark.asyncio
+async def test_list_projects_omits_merge_tombstones(db_session: AsyncSession):
+    owner = await _make_user(db_session, email=f"t-{uuid.uuid4().hex[:6]}@example.com")
+    target = await _make_project(db_session, owner=owner)
+    source = await _make_project(db_session, owner=owner)
+    source.merged_into_project_id = target.id
+    source.merged_at = _now()
+    await db_session.commit()
+
+    result = await _run(_ctx(db_session, owner), "list_projects", {})
+    assert f"[project:{target.id}]" in result.content
+    assert f"[project:{source.id}]" not in result.content
+
+    # A thread scoped to the project before it was merged lists nothing.
+    scoped = _ctx(db_session, owner, scope=HelperScope(project_id=source.id))
+    result = await _run(scoped, "list_projects", {})
+    assert f"[project:{source.id}]" not in result.content

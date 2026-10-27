@@ -2742,9 +2742,11 @@ sfs ticket create --title "Fix rate limiter" \
   --file src/sessionfs/server/routes/knowledge.py
 ```
 
-Options: `--title/-t` (required), `--description/-d`, `--assigned-to/-a`, `--priority/-p` (critical/high/medium/low), `--criteria` (repeatable), `--file/-f` (repeatable), `--depends-on` (repeatable), `--kind` (`task` (default) or `issue` — PM rollup container; v0.10.24), `--parent` (parent Issue id, only valid when `--kind task`; child task rolls up into the Issue's Children view).
+Options: `--title/-t` (required), `--description/-d`, `--assigned-to/-a`, `--user/-u` (teammate email or user id for direct-to-person assignment; mutually exclusive with `--assigned-to`), `--priority/-p` (critical/high/medium/low), `--criteria` (repeatable), `--file/-f` (repeatable), `--depends-on` (repeatable), `--kind` (`task` (default) or `issue` — PM rollup container; v0.10.24), `--parent` (parent Issue id, only valid when `--kind task`; child task rolls up into the Issue's Children view).
 
 Pass `--kind issue` for high-level PM rollups (no executor; closed manually with `sfs ticket close`). Tasks attached to an Issue via `--parent tk_...` appear under that Issue's Children rollup in CLI + MCP + dashboard.
+
+A ticket has one assignee at a time — `--assigned-to` assigns a persona, `--user` assigns a teammate directly (they get a "Your turn" notification). Pass one or the other, never both.
 
 ### `sfs ticket start`
 
@@ -2774,6 +2776,7 @@ Change a ticket's editable fields. Every change is recorded in the ticket's edit
 ```bash
 sfs ticket update tk_abc123 --title "Rate-limit the export endpoint" --priority high
 sfs ticket update tk_abc123 --description-file notes.md --acceptance-criteria-file ac.txt
+sfs ticket update tk_abc123 --user janedoe@example.com   # assign directly to a teammate
 ```
 
 | Option | Description |
@@ -2781,6 +2784,7 @@ sfs ticket update tk_abc123 --description-file notes.md --acceptance-criteria-fi
 | `--title` | New title |
 | `--description` / `--description-file` | New description, inline or read from a file |
 | `--priority` | `low`, `medium`, `high` or `critical` |
+| `--user/-u` | Teammate email or user id for direct-to-person assignment (mutually exclusive with `sfs ticket assign`) |
 | `--acceptance-criteria-file` | File with one acceptance criterion per line; replaces the whole list |
 | `--lease-epoch` | The lease epoch from `sfs ticket show`; the update is refused (409) if another worker has since started the ticket |
 
@@ -2898,23 +2902,27 @@ sfs ticket escalate tk_abc123 --reason "Customer-facing outage in prod"
 
 ### `sfs ticket jira` (v0.23)
 
-Promote a ticket to a Jira Cloud story. One-way: SessionFS creates or updates the Jira issue and reads its status on demand; Jira edits never write back. Requires the org to have connected Jira (`sfs org jira connect`) and mapped the project (`PUT /api/v1/orgs/{org_id}/integrations/jira/mappings/{project_id}`); the routes are gated on the Enterprise `jira_integration` feature.
+Promote a ticket to a Jira Cloud story. SessionFS creates or updates the Jira issue and reads its status on demand; `sfs ticket jira pull` overwrites the ticket's title/description from the linked issue on demand, and Jira edits never write back automatically. Requires the org to have connected Jira (`sfs org jira connect`) and mapped the project (`PUT /api/v1/orgs/{org_id}/integrations/jira/mappings/{project_id}`); the routes are gated on the Enterprise `jira_integration` feature.
 
 ```bash
 sfs ticket jira preview tk_abc123
 sfs ticket jira preview tk_abc123 --out preview.json
 sfs ticket jira publish tk_abc123 --from preview.json
 sfs ticket jira publish tk_abc123 --from preview.json --yes
+sfs ticket jira publish tk_abc123 --from preview.json --overwrite-existing
 sfs ticket jira status  tk_abc123
 sfs ticket jira unlink  tk_abc123 --confirm
+sfs ticket jira pull tk_abc123
+sfs ticket jira pull tk_abc123 --yes
 ```
 
 | Command | Description |
 |---------|-------------|
 | `preview` | Draft the Jira story (summary + sections) without publishing. Verbatim sections (acceptance criteria, completion notes, linked sessions) are copied from the ticket; rewrite sections are reshaped by the configured LLM key when one exists, else filled deterministically. Every model-written paragraph must carry a citation back to a real source span or it is dropped. `--out file.json` writes the raw preview JSON (for `publish --from`) instead of rendering it. |
-| `publish` | Pushes a previewed draft to Jira. `--from file.json` (the file produced by `preview --out`) is required — publish always operates on a saved preview, never a live re-draft. Creates the issue on first publish, updates summary/description on later publishes (status/assignee/sprint are never touched). Posts a system comment with the Jira link and writes an org audit row. Prompts for confirmation unless `--yes` is passed. |
+| `publish` | Pushes a previewed draft to Jira. `--from file.json` (the file produced by `preview --out`) is required — publish always operates on a saved preview, never a live re-draft. Creates the issue on first publish, updates summary/description on later publishes (status/assignee/sprint are never touched). Posts a system comment with the Jira link and writes an org audit row. Prompts for confirmation unless `--yes` is passed. When the ticket was linked to an existing Jira issue (never published from SessionFS), publishing refuses with `jira_overwrite_required` until `--overwrite-existing` is passed, because it would replace that issue's summary and description. |
 | `status` | Show the linked issue key, URL and current Jira status (cached 60s). |
 | `unlink` | Remove the link between the ticket and its Jira issue (the Jira issue itself is untouched). Project-admin only. `--confirm` is required. |
+| `pull` | Overwrite a ticket's title/description from its linked Jira issue (the reverse of `publish`). Field edits never push back to Jira, and an empty remote summary or description leaves the corresponding ticket field unchanged. Prompts for confirmation unless `--yes` is passed. |
 
 ---
 

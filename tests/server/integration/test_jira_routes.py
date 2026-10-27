@@ -12,6 +12,8 @@ call). Focus:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -33,6 +35,7 @@ from sessionfs.server.db.models import (
     TicketComment,
     TicketTrackerLink,
     TrackerProjectMapping,
+    TrackerSyncEvent,
     User,
 )
 from sessionfs.server.integrations.trackers.base import (
@@ -190,12 +193,49 @@ async def _insert_mapping(
     await db.commit()
 
 
+_WEBHOOK_SECRET = "whsec_test_secret_value_1234"
+
+
+def _sign(secret: str, body: bytes) -> str:
+    return "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+
+
+def _webhook_payload(event: str, **overrides: object) -> dict:
+    base: dict = {"webhookEvent": event, "timestamp": 1700000000000}
+    base.update(overrides)
+    return base
+
+
+async def _post_webhook(
+    client: AsyncClient,
+    org_id: str,
+    payload: dict,
+    *,
+    secret: str = _WEBHOOK_SECRET,
+) -> tuple[int, dict]:
+    body = json.dumps(payload).encode()
+    headers = {
+        "content-type": "application/json",
+        "x-hub-signature": _sign(secret, body),
+    }
+    resp = await client.post(
+        f"/api/v1/webhooks/jira/{org_id}", content=body, headers=headers
+    )
+    try:
+        return resp.status_code, resp.json()
+    except Exception:
+        return resp.status_code, {}
+
+
 # ── fake Jira client ──
 
 
 @pytest.fixture
 def fake_jira(monkeypatch):
-    captured: list = []
+    class Captured(list):
+        """The captured Fake list, with the shared mutable ``state`` attached."""
+
+    captured = Captured()
     state: dict = {"fail_update": False}
 
     class Fake:
@@ -203,7 +243,13 @@ def fake_jira(monkeypatch):
             self.site_url = validate_site_url(site_url)
             self.account_email = account_email
             self.api_token = api_token
-            self.calls = {"create_issue": 0, "update_issue": 0, "get_issue": 0}
+            self.calls = {
+                "create_issue": 0,
+                "update_issue": 0,
+                "get_issue": 0,
+                "add_comment": 0,
+                "transition_issue": 0,
+            }
             self.state = state
             captured.append(self)
 
@@ -248,13 +294,51 @@ def fake_jira(monkeypatch):
 
         async def get_issue(self, issue_key) -> TrackerIssue:
             self.calls["get_issue"] += 1
+            if self.state.get("get_issue_timeout"):
+                raise asyncio.TimeoutError()
+            err = self.state.get("get_issue_error")
+            if err is not None:
+                status_code, message = err
+                raise TrackerError(message, status_code=status_code)
             return TrackerIssue(
                 key=issue_key,
                 url=f"{self.site_url}/browse/{issue_key}",
                 status=self.state.get("status", "Done"),
+                id=self.state.get("issue_id", "10001"),
+                project_key=self.state.get("issue_project_key", "ACME"),
             )
 
+        async def get_issue_summary_and_description(self, issue_key):
+            self.calls.setdefault("get_issue_summary_and_description", 0)
+            self.calls["get_issue_summary_and_description"] += 1
+            if self.state.get("pull_timeout"):
+                raise asyncio.TimeoutError()
+            err = self.state.get("pull_error")
+            if err is not None:
+                status_code, message = err
+                raise TrackerError(message, status_code=status_code)
+            return (
+                self.state.get("pull_summary", "Pulled summary"),
+                self.state.get(
+                    "pull_description",
+                    {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Pulled body"}]}]},
+                ),
+            )
+
+        async def add_comment(self, issue_key, adf_body) -> str:
+            self.calls["add_comment"] += 1
+            return "20001"
+
+        async def transition_issue(self, issue_key, transition_name) -> dict:
+            self.calls["transition_issue"] += 1
+            return {"id": "31", "name": transition_name}
+
     monkeypatch.setattr("sessionfs.server.routes.jira.JiraClient", Fake)
+    # The link service imports the client from its own module namespace.
+    monkeypatch.setattr("sessionfs.server.services.jira_links.JiraClient", Fake)
+    # Expose the shared mutable state so a test can script the next call before
+    # any client is constructed.
+    captured.state = state
     return captured
 
 
@@ -509,7 +593,7 @@ async def test_projects_list_and_health(client: AsyncClient, db_session: AsyncSe
     user, key = await _member(db_session, org, "admin")
     await _insert_connection(db_session, org, user)
     mapped = await _project(db_session, user, org)
-    unmapped = await _project(db_session, user, org)
+    _unmapped = await _project(db_session, user, org)
     await _insert_mapping(db_session, org, mapped, user)
 
     projects = (await client.get(
@@ -2423,3 +2507,774 @@ async def test_restricted_org_jira_preview_and_publish_need_edit_standing(
     assert resp.status_code == 403, resp.text
     resp = await client.post(f"{url}/preview", headers=_hdrs(editor_key))
     assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_health_unmapped_count_skips_merge_tombstones(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """GitHub #111: a merged source can't be mapped, so it isn't "unmapped"."""
+    org = await _org(db_session)
+    user, key = await _member(db_session, org, "admin")
+    await _insert_connection(db_session, org, user)
+    live = await _project(db_session, user, org)
+    merged = await _project(db_session, user, org)
+    merged.merged_into_project_id = live.id
+    merged.merged_at = datetime.now(timezone.utc)
+    await db_session.commit()
+
+    health = (await client.get(
+        f"/api/v1/orgs/{org.id}/integrations/jira/health", headers=_hdrs(key)
+    )).json()
+    assert health["unmapped_project_count"] == 1
+
+
+# ── GitHub #112 phase 2: link an existing Jira issue ──
+
+
+@pytest.mark.asyncio
+async def test_link_existing_issue_links_without_pushing(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "  acme-123 "},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ticket_id"] == ticket.id
+    assert body["issue_key"] == "ACME-123"  # trimmed + uppercased
+    assert body["issue_url"] == "https://acme.atlassian.net/browse/ACME-123"
+    assert body["last_known_status"] == "Done"
+    assert body["last_pushed_at"] is None
+    assert body["payload_hash"] is None
+
+    # Linking never pushes anything to Jira.
+    assert fake_jira[0].calls["create_issue"] == 0
+    assert fake_jira[0].calls["update_issue"] == 0
+    assert fake_jira[0].calls["get_issue"] == 1
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+    )).scalar_one()
+    assert link.status == "linked"
+    assert link.issue_key == "ACME-123"
+    assert link.issue_id == "10001"
+    assert link.site_url == "https://acme.atlassian.net"
+    assert link.last_pushed_at is None
+    assert link.last_status_checked_at is not None
+
+    audits = (await db_session.execute(
+        select(OrgAuditEvent).where(OrgAuditEvent.org_id == org.id)
+    )).scalars().all()
+    assert [e.event_type for e in audits] == ["jira_linked"]
+    assert json.loads(audits[0].after) == {
+        "issue_key": "ACME-123",
+        "issue_url": "https://acme.atlassian.net/browse/ACME-123",
+    }
+    assert _TOKEN not in (audits[0].after or "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["linked", "pending", "unknown"])
+async def test_link_refuses_each_existing_link_status_with_409(
+    client: AsyncClient, db_session: AsyncSession, fake_jira, status: str
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    db_session.add(TicketTrackerLink(
+        ticket_id=ticket.id,
+        org_id=org.id,
+        provider="jira",
+        status=status,
+        site_url="https://acme.atlassian.net",
+        claim_token="tok" if status == "pending" else None,
+        last_pushed_at=datetime.now(timezone.utc) if status == "pending" else None,
+    ))
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"]["details"]["error"] == "jira_already_linked"
+    # Refused before any outbound read.
+    assert fake_jira == []
+
+
+@pytest.mark.asyncio
+async def test_link_rejects_bad_key_with_422(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "not a key"},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["details"]["error"] == "invalid_issue_key"
+    assert fake_jira == []
+
+
+@pytest.mark.asyncio
+async def test_link_missing_jira_issue_returns_404(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    fake_jira.state["get_issue_error"] = (404, "issue does not exist or is not accessible")
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-999"},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["error"]["details"]["error"] == "jira_issue_not_found"
+
+
+@pytest.mark.asyncio
+async def test_link_timeout_returns_504(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    fake_jira.state["get_issue_timeout"] = True
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 504
+    assert resp.json()["error"]["details"]["error"] == "jira_timeout"
+
+
+@pytest.mark.asyncio
+async def test_link_other_jira_project_returns_422(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    fake_jira.state["issue_project_key"] = "OTHER"
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["details"]["error"] == "jira_project_not_mapped"
+    # Message names both keys.
+    assert "OTHER" in resp.json()["error"]["message"]
+    assert "ACME" in resp.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
+async def test_link_issue_linked_elsewhere_409_without_leaking_other_ticket(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    other = await _ticket(db_session, project, user)
+    db_session.add(TicketTrackerLink(
+        ticket_id=other.id,
+        org_id=org.id,
+        provider="jira",
+        status="linked",
+        site_url="https://acme.atlassian.net",
+        issue_id="10001",
+        issue_key="ACME-1",
+        issue_url="https://acme.atlassian.net/browse/ACME-1",
+    ))
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error"]["details"]["error"] == "jira_issue_linked_elsewhere"
+    # Never reveal which other ticket owns the issue.
+    assert other.id not in resp.text
+    assert other.title not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_link_requires_editor_standing_in_restricted_org(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    from sessionfs.server.db.models import (
+        ProjectGroup,
+        ProjectGroupAccess,
+        ProjectGroupMember,
+    )
+
+    org, admin, _key, project, ticket = await _ready(db_session)
+    reader, reader_key = await _member(db_session, org, "member")
+    editor, editor_key = await _member(db_session, org, "member")
+    group = ProjectGroup(
+        id=f"pg_{uuid.uuid4().hex[:12]}", org_id=org.id, slug="g", name="G",
+        created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(group)
+    await db_session.flush()
+    db_session.add(ProjectGroupAccess(group_id=group.id, project_id=project.id))
+    db_session.add(ProjectGroupMember(group_id=group.id, user_id=reader.id, role="reader"))
+    db_session.add(ProjectGroupMember(group_id=group.id, user_id=editor.id, role="editor"))
+    await db_session.commit()
+
+    org.settings = json.dumps({"general": {"restrict_project_visibility": True}})
+    await db_session.commit()
+
+    url = f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link"
+    resp = await client.post(url, headers=_hdrs(reader_key), json={"issue_key": "ACME-1"})
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["error"]["code"] == "project_edit_forbidden"
+    assert (await db_session.execute(
+        select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+    )).scalar_one_or_none() is None
+
+    resp = await client.post(url, headers=_hdrs(editor_key), json={"issue_key": "ACME-1"})
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_link_gated_on_project_org_tier(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session, tier="free")
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["error"]["details"]["error"] == "upgrade_required"
+
+
+@pytest.mark.asyncio
+async def test_link_then_unlink_works(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.delete(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira", headers=_hdrs(key)
+    )
+    assert resp.status_code == 204
+    assert (await db_session.execute(
+        select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+    )).scalar_one_or_none() is None
+
+    types = [e.event_type for e in (await db_session.execute(
+        select(OrgAuditEvent).where(OrgAuditEvent.org_id == org.id)
+    )).scalars().all()]
+    assert types == ["jira_linked", "jira_unlinked"]
+
+
+@pytest.mark.asyncio
+async def test_linked_not_published_ticket_receives_inbound_webhook(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    from sessionfs.server.llm_keys import encrypt_secret
+
+    org, user, key, project, ticket = await _ready(db_session)
+    # The link must be a live sync target: status sync on, webhook secret set.
+    conn = (await db_session.execute(
+        select(OrgTrackerConnection).where(OrgTrackerConnection.org_id == org.id)
+    )).scalar_one()
+    conn.sync_status = True
+    conn.encrypted_webhook_secret = encrypt_secret(_WEBHOOK_SECRET)
+    conn.webhook_secret_hash = hashlib.sha256(_WEBHOOK_SECRET.encode()).hexdigest()
+    conn.webhook_secret_last4 = _WEBHOOK_SECRET[-4:]
+    await db_session.commit()
+
+    ticket.kind = "issue"
+    ticket.status = "in_progress"
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    payload = _webhook_payload(
+        "jira:issue_updated",
+        user={"displayName": "Bob", "accountId": "acc-bob"},
+        changelog={
+            "id": "20002",
+            "items": [
+                {"field": "status", "fieldId": "status",
+                 "fromString": "In Progress", "toString": "Done"},
+            ],
+        },
+        issue={
+            "key": "ACME-1",
+            "id": "10001",
+            "fields": {"status": {"name": "Done", "statusCategory": {"key": "done"}}},
+        },
+    )
+    status, _body = await _post_webhook(client, org.id, payload)
+    assert status == 200
+
+    ticket = await db_session.get(Ticket, ticket.id, populate_existing=True)
+    assert ticket.status == "closed"
+
+
+# ── attached-only overwrite guard + pull ──
+
+
+@pytest.mark.asyncio
+async def test_attached_only_link_flags_on_link_get_and_preview(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["attached_not_published"] is True
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira", headers=_hdrs(key)
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["attached_not_published"] is True
+
+    preview = (await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/preview", headers=_hdrs(key)
+    )).json()
+    assert preview["existing"]["attached"] is True
+
+
+@pytest.mark.asyncio
+async def test_publish_attached_only_requires_overwrite_then_succeeds(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Only the link request has constructed a client so far.
+    assert len(fake_jira) == 1
+
+    # Without the opt-in, publish refuses before any outbound call.
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"]["details"]["error"] == "jira_overwrite_required"
+    assert "ACME-1" in resp.json()["error"]["message"]
+    assert len(fake_jira) == 1  # the guard raised before a Jira client existed
+
+    # With the opt-in, publish proceeds as an update (no second create).
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json={**_PUBLISH_BODY, "overwrite_existing": True},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["issue_key"] == "ACME-1"
+    assert len(fake_jira) == 2
+    assert fake_jira[1].calls["update_issue"] == 1
+    assert fake_jira[1].calls["create_issue"] == 0
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+    )).scalar_one()
+    assert link.payload_hash is not None
+    assert link.template_slug is not None
+
+    # Now that it's published (payload + template pinned), the flag flips off.
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira", headers=_hdrs(key)
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["attached_not_published"] is False
+
+
+@pytest.mark.asyncio
+async def test_pull_requires_confirm(client: AsyncClient, db_session: AsyncSession, fake_jira):
+    org, user, key, project, ticket = await _ready(db_session)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/pull",
+        headers=_hdrs(key), json={},
+    )
+    assert resp.status_code == 400
+    assert fake_jira == []
+
+
+@pytest.mark.asyncio
+async def test_pull_not_linked_returns_409(client: AsyncClient, db_session: AsyncSession, fake_jira):
+    org, user, key, project, ticket = await _ready(db_session)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/pull",
+        headers=_hdrs(key), json={"confirm": True},
+    )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"]["details"]["error"] == "jira_not_linked"
+    assert fake_jira == []
+
+
+@pytest.mark.asyncio
+async def test_pull_updates_ticket_without_outbound_sync(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    fake_jira.state["pull_summary"] = "Shipped the auth migration"
+    fake_jira.state["pull_description"] = {
+        "type": "doc", "version": 1,
+        "content": [{"type": "paragraph", "content": [{"type": "text", "text": "all done"}]}],
+    }
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/pull",
+        headers=_hdrs(key), json={"confirm": True},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["updated_fields"] == ["title", "description"]
+    assert body["jira"]["issue_key"] == "ACME-1"
+    assert body["jira"]["attached_not_published"] is True
+
+    # The pulled ticket uses the same detail builder as the GET ticket route,
+    # so it carries the full enrichment (Jira link state, child rollup).
+    assert body["ticket"]["jira"]["issue_key"] == "ACME-1"
+    assert body["ticket"]["child_ticket_ids"] == []
+
+    ticket = await db_session.get(Ticket, ticket.id, populate_existing=True)
+    assert ticket.title == "Shipped the auth migration"
+    assert ticket.description == "all done"
+
+    # Field edits never enqueue an outbound Jira sync: the pull client only
+    # read the issue and made no write (create/update/comment/transition).
+    assert len(fake_jira) == 2
+    pull_client = fake_jira[1]
+    assert pull_client.calls["get_issue_summary_and_description"] == 1
+    assert pull_client.calls["create_issue"] == 0
+    assert pull_client.calls["update_issue"] == 0
+    assert pull_client.calls["add_comment"] == 0
+    assert pull_client.calls["transition_issue"] == 0
+    assert (await db_session.execute(
+        select(TrackerSyncEvent).where(TrackerSyncEvent.link_id == ticket.id)
+    )).scalars().all() == []
+
+    comments = (await db_session.execute(
+        select(TicketComment).where(
+            TicketComment.ticket_id == ticket.id, TicketComment.source == "jira"
+        )
+    )).scalars().all()
+    assert [c.content for c in comments] == ["Updated from Jira ACME-1"]
+
+    audits = (await db_session.execute(
+        select(OrgAuditEvent).where(OrgAuditEvent.org_id == org.id)
+    )).scalars().all()
+    pulled = [e for e in audits if e.event_type == "jira_pulled"]
+    assert len(pulled) == 1
+    assert json.loads(pulled[0].after)["updated_fields"] == ["title", "description"]
+
+
+@pytest.mark.asyncio
+async def test_pull_noop_when_remote_matches_ticket(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Make the remote text identical to the ticket (fake defaults).
+    ticket.title = "Pulled summary"
+    ticket.description = "Pulled body"
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/pull",
+        headers=_hdrs(key), json={"confirm": True},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["updated_fields"] == []
+
+    audits = (await db_session.execute(
+        select(OrgAuditEvent).where(OrgAuditEvent.org_id == org.id)
+    )).scalars().all()
+    assert [e.event_type for e in audits] == ["jira_linked"]
+
+
+@pytest.mark.asyncio
+async def test_pull_empty_summary_leaves_title_unchanged(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """An empty Jira summary never blanks the ticket title; the description
+    still pulls, and ``updated_fields`` only lists what actually changed."""
+    org, user, key, project, ticket = await _ready(db_session)
+    await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    fake_jira.state["pull_summary"] = ""
+    fake_jira.state["pull_description"] = {
+        "type": "doc", "version": 1,
+        "content": [{"type": "paragraph", "content": [{"type": "text", "text": "new body"}]}],
+    }
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/pull",
+        headers=_hdrs(key), json={"confirm": True},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["updated_fields"] == ["description"]
+
+    ticket = await db_session.get(Ticket, ticket.id, populate_existing=True)
+    assert ticket.title == "Ship the auth migration"  # unchanged
+    assert ticket.description == "new body"
+
+
+@pytest.mark.asyncio
+async def test_pull_empty_description_leaves_description_unchanged(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """An empty Jira description never blanks the ticket body; the title still
+    pulls, and ``updated_fields`` only lists what actually changed."""
+    org, user, key, project, ticket = await _ready(db_session)
+    await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    fake_jira.state["pull_summary"] = "New summary"
+    fake_jira.state["pull_description"] = {"type": "doc", "version": 1, "content": []}
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/pull",
+        headers=_hdrs(key), json={"confirm": True},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["updated_fields"] == ["title"]
+
+    ticket = await db_session.get(Ticket, ticket.id, populate_existing=True)
+    assert ticket.title == "New summary"
+    assert ticket.description == "line one\nline two"  # unchanged
+
+
+@pytest.mark.asyncio
+async def test_pull_redacts_known_secrets_before_storing(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """Pulled text is DLP-redacted before it lands on the ticket row: a known
+    secret in the remote summary never survives into the stored title."""
+    org, user, key, project, ticket = await _ready(db_session)
+    await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    fake_jira.state["pull_summary"] = (
+        "the key is sk-ant-abc123def456ghi789jkl012mno345 and it is secret"
+    )
+    fake_jira.state["pull_description"] = {
+        "type": "doc", "version": 1, "content": [],
+    }
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/pull",
+        headers=_hdrs(key), json={"confirm": True},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["updated_fields"] == ["title"]
+
+    ticket = await db_session.get(Ticket, ticket.id, populate_existing=True)
+    assert "sk-ant-" not in ticket.title
+    assert "secret" in ticket.title
+
+
+@pytest.mark.asyncio
+async def test_pull_missing_remote_issue_returns_404(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    fake_jira.state["pull_error"] = (404, "issue does not exist")
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/pull",
+        headers=_hdrs(key), json={"confirm": True},
+    )
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["error"]["details"]["error"] == "jira_issue_not_found"
+
+
+@pytest.mark.asyncio
+async def test_pull_timeout_returns_504(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    fake_jira.state["pull_timeout"] = True
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/pull",
+        headers=_hdrs(key), json={"confirm": True},
+    )
+    assert resp.status_code == 504, resp.text
+    assert resp.json()["error"]["details"]["error"] == "jira_timeout"
+
+
+@pytest.mark.asyncio
+async def test_pull_403_for_non_creator_non_admin(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """A member who is neither the ticket creator nor a project admin cannot
+    pull the issue back into the ticket.
+
+    The pull runs the same creator/project-admin edit sequence as the ticket
+    edit route (not just the broader editor standing the Jira gates use), so
+    a plain member cannot overwrite someone else's ticket text from Jira.
+    """
+    org = await _org(db_session)
+    admin, admin_key = await _member(db_session, org, "admin")
+    member, member_key = await _member(db_session, org, "member")
+    await _insert_connection(db_session, org, admin)
+    project = await _project(db_session, admin, org)
+    await _insert_mapping(db_session, org, project, admin)
+    ticket = await _ticket(db_session, project, admin)
+    await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(admin_key), json={"issue_key": "ACME-1"},
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/pull",
+        headers=_hdrs(member_key), json={"confirm": True},
+    )
+    assert resp.status_code == 403, resp.text
+
+    # Only the admin's link call created a Jira client; the refused pull never
+    # instantiated one, so the remote issue was never read.
+    assert len(fake_jira) == 1
+
+
+@pytest.mark.asyncio
+async def test_adopt_refuses_issue_linked_elsewhere_keeping_unknown(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """A timed-out create whose label search lands on an issue another ticket
+    already owns is refused and the link stays ``unknown``."""
+    monkeypatch.setattr("sessionfs.server.routes.jira._ADOPT_RETRY_DELAY_SECONDS", 0.0)
+    org, user, key, project, ticket = await _ready(db_session)
+    calls = {"create": 0, "search": 0, "update": 0, "myself": 0}
+
+    class TimeoutThenLinkedElsewhereFake:
+        def __init__(self, site_url, account_email, api_token, *, transport=None):
+            self.site_url = validate_site_url(site_url)
+
+        async def aclose(self):
+            pass
+
+        async def create_issue(self, *a, **k):
+            calls["create"] += 1
+            raise asyncio.TimeoutError
+
+        async def myself_account_id(self):
+            calls["myself"] += 1
+            return "a1"
+
+        async def search_issue_by_label(self, project_key, label):
+            calls["search"] += 1
+            return TrackerIssue(
+                key="ACME-9",
+                url=f"{self.site_url}/browse/ACME-9",
+                status="",
+                id="10009",
+                project_key="ACME",
+                creator_account_id="a1",
+                reporter_account_id="a1",
+                created_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
+            )
+
+        async def update_issue(self, issue_key, *a, **k):
+            calls["update"] += 1
+            return TrackerIssue(key=issue_key, url=f"{self.site_url}/browse/{issue_key}", status="")
+
+    monkeypatch.setattr("sessionfs.server.routes.jira.JiraClient", TimeoutThenLinkedElsewhereFake)
+
+    r1 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert r1.status_code == 504
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+    )).scalar_one()
+    assert link.status == "unknown"
+    await db_session.commit()  # release the read snapshot for the retry
+
+    # Another ticket already owns ACME-9 on this org/site.
+    other = await _ticket(db_session, project, user)
+    db_session.add(TicketTrackerLink(
+        ticket_id=other.id,
+        org_id=org.id,
+        provider="jira",
+        status="linked",
+        site_url="https://acme.atlassian.net",
+        issue_id="10009",
+        issue_key="ACME-9",
+        issue_url="https://acme.atlassian.net/browse/ACME-9",
+    ))
+    await db_session.commit()
+
+    r2 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert r2.status_code == 409, r2.text
+    assert r2.json()["error"]["details"]["error"] == "jira_issue_linked_elsewhere"
+    # Never reveal the other ticket.
+    assert other.id not in r2.text
+    assert other.title not in r2.text
+
+    # The label search found a candidate but adoption was refused before update.
+    assert calls["update"] == 0
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+    )).scalar_one()
+    assert link.status == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_service_key_cannot_pull(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+    title_before = ticket.title
+
+    svc_key = await _service_key(
+        db_session, org, user, ["tickets:read", "tickets:write"], project_ids=[project.id]
+    )
+    fake_jira.state["pull_summary"] = "Rewritten by a service key"
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/pull",
+        headers=_hdrs(svc_key), json={"confirm": True},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["error"]["details"]["error"] == "service_key_not_allowed"
+    await db_session.refresh(ticket)
+    assert ticket.title == title_before

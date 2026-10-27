@@ -421,6 +421,178 @@ async def test_propose_assignment_ambiguous_human_is_tool_error(
 
 
 @pytest.mark.asyncio
+async def test_propose_assignment_person_by_email(
+    db_session: AsyncSession,
+):
+    owner, _ = await _make_user(db_session, name="owner")
+    human, _ = await _make_user(db_session, name="human")
+    org = await _make_org_with(db_session, owner, human)
+    project = await _make_project(db_session, owner, org_id=org.id)
+    ticket = await _make_ticket(db_session, owner, project)
+    ctx = _ctx(db_session, owner)
+
+    output = await TOOLS["propose_assignment"].handler(
+        ctx, {"ticket_id": ticket.id, "persona_name": human.email}
+    )
+
+    assert ctx.pending_actions[0]["params"] == {
+        "ticket_id": ticket.id,
+        "project_id": project.id,
+        "assigned_user_id": human.id,
+        "assignee_name": human.display_name,
+    }
+    assert human.display_name in output.text
+
+    await db_session.refresh(ticket)
+    assert ticket.assigned_user_id is None
+    assert ticket.assigned_to is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_assignee_display_name_resolves_person(db_session: AsyncSession):
+    """F5 — a case-insensitive exact display-name match assigns to the person."""
+    from sessionfs.server.services.helper_ticket_actions import resolve_assignee
+
+    owner, _ = await _make_user(db_session, name="owner")
+    teammate, _ = await _make_user(db_session, name="jane")
+    org = await _make_org_with(db_session, owner, teammate)
+    project = await _make_project(db_session, owner, org_id=org.id)
+
+    resolved = await resolve_assignee(
+        db_session, project=project, user_id=owner.id, name="Jane"
+    )
+    assert resolved.kind == "person"
+    assert resolved.user_id == teammate.id
+    assert resolved.display_name == "Jane"
+
+
+@pytest.mark.asyncio
+async def test_resolve_assignee_ambiguous_display_name_refuses(db_session: AsyncSession):
+    """F5 — several same-name teammates refuse with their candidate names."""
+    from sessionfs.server.services.helper_ticket_actions import (
+        HelperDraftError,
+        resolve_assignee,
+    )
+
+    owner, _ = await _make_user(db_session, name="owner")
+    jane_a, _ = await _make_user(db_session, name="jane")
+    jane_b, _ = await _make_user(db_session, name="jane")
+    org = await _make_org_with(db_session, owner)
+    db_session.add(OrgMember(org_id=org.id, user_id=jane_a.id, role="member"))
+    db_session.add(OrgMember(org_id=org.id, user_id=jane_b.id, role="member"))
+    await db_session.commit()
+    project = await _make_project(db_session, owner, org_id=org.id)
+
+    with pytest.raises(HelperDraftError, match="Ambiguous.*Jane"):
+        await resolve_assignee(
+            db_session, project=project, user_id=owner.id, name="Jane"
+        )
+
+
+@pytest.mark.asyncio
+async def test_resolve_assignee_persona_name_beats_display_name(db_session: AsyncSession):
+    """F5 — when a name exactly equals a persona's name, the persona wins over
+    a teammate who happens to share that display name."""
+    from sessionfs.server.services.helper_ticket_actions import resolve_assignee
+
+    owner, _ = await _make_user(db_session, name="owner")
+    teammate, _ = await _make_user(db_session, name="atlas")
+    org = await _make_org_with(db_session, owner, teammate)
+    project = await _make_project(db_session, owner, org_id=org.id)
+    await _make_persona(db_session, project, owner, "atlas")
+
+    resolved = await resolve_assignee(
+        db_session, project=project, user_id=owner.id, name="atlas"
+    )
+    assert resolved.kind == "persona"
+    assert resolved.persona_name == "atlas"
+
+
+@pytest.mark.asyncio
+async def test_resolve_assignee_display_name_without_persona_resolves_person(
+    db_session: AsyncSession,
+):
+    """A display name with no representing persona assigns to the person."""
+    from sessionfs.server.services.helper_ticket_actions import resolve_assignee
+
+    owner, _ = await _make_user(db_session, name="owner")
+    human, _ = await _make_user(db_session, name="jane")
+    org = await _make_org_with(db_session, owner, human)
+    project = await _make_project(db_session, owner, org_id=org.id)
+
+    resolved = await resolve_assignee(
+        db_session, project=project, user_id=owner.id, name="Jane"
+    )
+    assert resolved.kind == "person"
+    assert resolved.user_id == human.id
+    assert resolved.display_name == "Jane"
+
+
+@pytest.mark.asyncio
+async def test_resolve_assignee_display_name_one_persona_resolves_persona(
+    db_session: AsyncSession,
+):
+    """A display name whose human has one represented persona resolves to it."""
+    from sessionfs.server.services.helper_ticket_actions import resolve_assignee
+
+    owner, _ = await _make_user(db_session, name="owner")
+    human, _ = await _make_user(db_session, name="human")
+    org = await _make_org_with(db_session, owner, human)
+    project = await _make_project(db_session, owner, org_id=org.id)
+    await _make_org_persona(db_session, org, owner, "scribe", represented_user_id=human.id)
+
+    resolved = await resolve_assignee(
+        db_session, project=project, user_id=owner.id, name="Human"
+    )
+    assert resolved.kind == "persona"
+    assert resolved.persona_name == "scribe"
+
+
+@pytest.mark.asyncio
+async def test_resolve_assignee_display_name_two_personas_refuses(
+    db_session: AsyncSession,
+):
+    """A display name whose human has several represented personas refuses."""
+    from sessionfs.server.services.helper_ticket_actions import (
+        HelperDraftError,
+        resolve_assignee,
+    )
+
+    owner, _ = await _make_user(db_session, name="owner")
+    human, _ = await _make_user(db_session, name="human")
+    org = await _make_org_with(db_session, owner, human)
+    project = await _make_project(db_session, owner, org_id=org.id)
+    await _make_org_persona(db_session, org, owner, "alpha", represented_user_id=human.id)
+    await _make_org_persona(db_session, org, owner, "beta", represented_user_id=human.id)
+
+    with pytest.raises(HelperDraftError, match="Ambiguous.*alpha.*beta"):
+        await resolve_assignee(
+            db_session, project=project, user_id=owner.id, name="Human"
+        )
+
+
+@pytest.mark.asyncio
+async def test_resolve_assignee_email_of_represented_human_resolves_person(
+    db_session: AsyncSession,
+):
+    """An email assigns to the person, even when a persona represents them."""
+    from sessionfs.server.services.helper_ticket_actions import resolve_assignee
+
+    owner, _ = await _make_user(db_session, name="owner")
+    human, _ = await _make_user(db_session, name="human")
+    org = await _make_org_with(db_session, owner, human)
+    project = await _make_project(db_session, owner, org_id=org.id)
+    await _make_org_persona(db_session, org, owner, "scribe", represented_user_id=human.id)
+
+    resolved = await resolve_assignee(
+        db_session, project=project, user_id=owner.id, name=human.email
+    )
+    assert resolved.kind == "person"
+    assert resolved.user_id == human.id
+    assert resolved.display_name == "Human"
+
+
+@pytest.mark.asyncio
 async def test_propose_assignment_denies_non_creator_non_admin(
     db_session: AsyncSession,
 ):
@@ -573,7 +745,7 @@ async def test_confirm_creates_exactly_user_edited_ticket(
             select(HelperMessage).where(HelperMessage.conversation_id == conv.id)
         )
     ).scalar_one()
-    assert note.content.endswith(f"confirmed: created ticket [ticket:{ticket_id}]")
+    assert note.content.endswith(f"confirmed: created ticket [ticket:{ticket_id}]]")
 
 
 @pytest.mark.asyncio
@@ -800,6 +972,48 @@ async def test_confirm_assignment_applies_to_ticket(
         )
     ).scalars().all()
     assert [e.field_name for e in edits] == ["assigned_to"]
+
+
+@pytest.mark.asyncio
+async def test_confirm_assignment_applies_person_to_ticket(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, key = await _make_user(db_session, name="owner")
+    human, _ = await _make_user(db_session, name="human")
+    org = await _make_org_with(db_session, owner, human)
+    project = await _make_project(db_session, owner, org_id=org.id)
+    ticket = await _make_ticket(db_session, owner, project)
+    conv = await _make_conversation(db_session, owner)
+    action = await _make_action(
+        db_session,
+        owner,
+        kind="assign_ticket",
+        params={
+            "ticket_id": ticket.id,
+            "project_id": project.id,
+            "assigned_user_id": human.id,
+            "assignee_name": human.display_name,
+        },
+        conversation=conv,
+    )
+
+    resp = await client.post(
+        f"/api/v1/helper/actions/{action.id}/confirm", headers=_hdrs(key)
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["result"]["targets"] == [
+        {"id": ticket.id, "ok": True, "error": None}
+    ]
+
+    await db_session.refresh(ticket)
+    assert ticket.assigned_user_id == human.id
+    assert ticket.assigned_to is None
+    edits = (
+        await db_session.execute(
+            select(TicketEdit).where(TicketEdit.ticket_id == ticket.id)
+        )
+    ).scalars().all()
+    assert [e.field_name for e in edits] == ["assigned_user_id"]
 
 
 @pytest.mark.asyncio
@@ -1563,7 +1777,10 @@ async def test_confirmed_new_ticket_is_citable_next_turn(
         "`NO CHANGES NEEDED`",
         "- verified clean",
         "Codex R2 review on tk_0123456789abcdef: findings",
+        "Claude R2 review on tk_0123456789abcdef: VERIFIED-CLEAN",
+        "Gemini R1 review on tk_0123456789abcdef: CHANGES REQUESTED",
         "ＶＥＲＩＦＩＥＤ-CLEAN",  # full-width, folded by NFKC
+        "Codex R1 review on tk_a¼: VERIFIED-CLEAN",  # NFKC fold breaks the tk_ run
     ],
 )
 def test_verdict_marker_bypasses_are_caught(body: str):
@@ -1865,9 +2082,9 @@ async def test_ticket_kinds_write_audit_events_and_outcome_notes(
         )
     ).scalars().all()
     assert notes == [
-        f"[Action {create.id} (propose_ticket) confirmed: created ticket [ticket:{new_id}]",
-        f"[Action {assign.id} (propose_assignment) confirmed: ticket [ticket:{ticket.id}]",
-        f"[Action {comment.id} (propose_comment) confirmed: ticket [ticket:{ticket.id}]",
+        f"[Action {create.id} (propose_ticket) confirmed: created ticket [ticket:{new_id}]]",
+        f"[Action {assign.id} (propose_assignment) confirmed: ticket [ticket:{ticket.id}]]",
+        f"[Action {comment.id} (propose_comment) confirmed: ticket [ticket:{ticket.id}]]",
     ]
 
 

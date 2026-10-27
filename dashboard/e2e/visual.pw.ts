@@ -6,6 +6,7 @@ import { mockApi } from './fixtures/mock-api';
 import {
   GROUP_ID,
   LINKED_TICKET_ID,
+  linkedTicketJiraLink,
   ORG_ID,
   PROJECT_ID,
   confluenceDriftError,
@@ -762,11 +763,80 @@ const CONFLUENCE_SCENARIOS: Scenario[] = [
 // Jira activity and a mixed comment thread (list view and board drawer).
 const TICKET_PATH = (id: string) => `/projects/${PROJECT_ID}?tab=work&sub=tickets&ticket=${id}`;
 const enterpriseProject = confluenceProject;
+const attachedLink = async (page: Page) => {
+  await enterpriseProject(page);
+  await page.route(
+    (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/tickets/${LINKED_TICKET_ID}/jira`,
+    (route) => route.fulfill(fulfillJson(200, { ...linkedTicketJiraLink, attached_not_published: true })),
+  );
+};
 const TICKET_SCENARIOS: Scenario[] = [
   { name: 'ticket-open', path: TICKET_PATH('tk_fixture2') },
   // Project → Settings grouped into sections, at the same three widths.
   { name: 'project-settings-sections', path: `/projects/${PROJECT_ID}?tab=settings` },
   { name: 'ticket-jira-linked', path: TICKET_PATH(LINKED_TICKET_ID), mock: enterpriseProject },
+  // Linked from Jira and never published: the "Sync with Jira…" choice, and
+  // the confirm for taking the Jira text into the ticket.
+  {
+    name: 'ticket-jira-attached-sync-menu',
+    path: TICKET_PATH(LINKED_TICKET_ID),
+    mock: attachedLink,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Sync with Jira…' }).click();
+      await page.getByRole('menu', { name: 'Sync with Jira' }).waitFor();
+    },
+  },
+  {
+    name: 'ticket-jira-attached-pull-confirm',
+    path: TICKET_PATH(LINKED_TICKET_ID),
+    mock: attachedLink,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Sync with Jira…' }).click();
+      await page.getByRole('menuitem', { name: 'Overwrite this ticket from WID-43…' }).click();
+      await page.getByRole('dialog', { name: /Overwrite this ticket from WID-43/ }).waitFor();
+    },
+  },
+  // "Link existing issue" open on an unlinked ticket, showing the key check.
+  {
+    name: 'ticket-jira-link-form',
+    path: TICKET_PATH('tk_fixture2'),
+    mock: enterpriseProject,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Link existing issue' }).click();
+      const field = page.getByRole('textbox', { name: 'Jira issue key' });
+      await field.fill('not-a-key');
+      await field.press('Enter');
+      await page.getByText(/like PROJ-123/).waitFor();
+    },
+  },
+  {
+    // New ticket: a persona that represents no one is picked, then the
+    // assignee picker is reopened over the warning.
+    name: 'ticket-assignee-picker-warning',
+    path: `/projects/${PROJECT_ID}?tab=work&sub=tickets`,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'New ticket' }).click();
+      const dialog = page.getByRole('dialog', { name: 'New ticket' });
+      await dialog.getByRole('button', { name: 'Assignee' }).click();
+      await dialog.getByRole('option', { name: /atlas/ }).click();
+      await dialog.getByText(/No one is notified/).waitFor();
+      await dialog.getByRole('button', { name: 'Assignee' }).click();
+      await dialog.getByRole('listbox', { name: 'Assignee' }).waitFor();
+    },
+  },
+  {
+    // Reassigning from the detail header: the inline editor with the
+    // "notifies" note for a person.
+    name: 'ticket-reassign',
+    path: TICKET_PATH('tk_fixture2'),
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Reassign' }).click();
+      const editor = page.getByRole('group', { name: 'Reassign ticket' });
+      await editor.getByRole('button', { name: 'Assignee' }).click();
+      await editor.getByRole('option', { name: /Peer Fixture/ }).click();
+      await editor.getByText('Notifies Peer Fixture').waitFor();
+    },
+  },
   {
     name: 'ticket-jira-linked-drawer',
     path: TICKET_PATH(LINKED_TICKET_ID),

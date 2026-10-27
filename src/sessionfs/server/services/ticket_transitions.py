@@ -231,22 +231,23 @@ async def emit_status_notification(
     assignee's human owner a "your turn" (and auto-subscribing them).
 
     ``your_turn_assignee`` is used for transitions that put the work back
-    in the assignee's court (reopen, approve); the mapping is resolved
-    from the persona's ``represented_user_id`` and is skipped when it is
-    missing or ambiguous.
+    in the assignee's court (reopen, approve); a direct-to-person assignment
+    is handed off directly, otherwise the mapping is resolved from the
+    persona's ``represented_user_id`` and skipped when it is missing or
+    ambiguous.
     """
     your_turn_user_id: str | None = None
     subscribe: list[tuple[str, str, str | None]] | None = None
     if your_turn_assignee:
-        assignee_human = await ticket_watchers.map_persona_to_human(
+        assignee = await ticket_watchers.resolve_assigned_user(
             db,
             project_id=project.id,
-            name=ticket.assigned_to or "",
+            ticket=ticket,
             org_id=project.org_id,
         )
-        if assignee_human is not None:
-            your_turn_user_id = assignee_human[0]
-            subscribe = [(assignee_human[0], "assignee", assignee_human[1])]
+        if assignee is not None:
+            your_turn_user_id, persona_name = assignee
+            subscribe = [(your_turn_user_id, "assignee", persona_name)]
     await ticket_watchers.emit_notifications(
         db,
         ticket=ticket,

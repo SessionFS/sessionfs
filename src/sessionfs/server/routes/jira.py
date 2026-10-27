@@ -79,6 +79,11 @@ from sessionfs.server.integrations.trackers.jira import (
     validate_site_url,
 )
 from sessionfs.server.services import jira_sync
+from sessionfs.server.services.jira_links import (
+    JiraLinkError,
+    _assert_issue_not_linked_elsewhere,
+    link_ticket_to_jira,
+)
 from sessionfs.server.integrations.trackers.promote import (
     ContentTooLarge,
     adf_text_length,
@@ -132,6 +137,21 @@ _LAST_STATUS_MAX = 50
 # over this conservative 32,000 before any outbound call so we never send a
 # body Jira will reject.
 _MAX_ADF_DESCRIPTION_CHARS = 32000
+
+# Pulling a Jira issue into a ticket caps its summary at the Ticket.title
+# column width (200) and its description at the helper's own draft bound, so a
+# hostile/oversized issue can't overflow the row.
+_PULL_TITLE_MAX_CHARS = 200
+_PULL_DESCRIPTION_MAX_CHARS = 20_000
+# A pull reads one issue, so this is as tight as the link read's 30 s bound
+# and far below the publish route's 60 s create/update ceiling.
+_PULL_FETCH_TIMEOUT_SECONDS = 30.0
+
+# C0 control characters (plus DEL) stripped from pulled Jira text. Tab,
+# newline and carriage-return are preserved so paragraph breaks survive the
+# ADF→text conversion; everything else in the C0 range must never reach a DB
+# column or a response.
+_PULL_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 # A timed-out create's issue can lag Jira's search index, so after a label
 # search comes up empty, wait this long and search once more before creating
@@ -238,10 +258,27 @@ class JiraPublishBody(BaseModel):
     # current resolution differs, publish refuses with 409 template_changed so
     # a story is never rendered with a version nobody previewed.
     template_version: int | None = None
+    # When the ticket's link was attached from an existing Jira issue (never
+    # published from SessionFS), publishing would replace that issue's summary
+    # and description. The caller must opt in explicitly; without it, publish
+    # refuses with 409 jira_overwrite_required before any outbound call.
+    overwrite_existing: bool = False
 
 
 class JiraPreviewBody(BaseModel):
     template: str | None = Field(None, max_length=50)
+
+
+class JiraLinkBody(BaseModel):
+    # Trimmed + uppercased + validated in ``services/jira_links``; a bare max
+    # length here only bounds the request before the stricter regex runs.
+    issue_key: str = Field(min_length=1, max_length=64)
+
+
+class JiraPullBody(BaseModel):
+    # Pulling overwrites the ticket's title/description from Jira, so the
+    # caller must opt in explicitly; a missing ``confirm: true`` is a 400.
+    confirm: bool = False
 
 
 # ── Custom template request bodies ──
@@ -1516,6 +1553,8 @@ async def jira_health(
         await db.execute(
             select(Project.id).where(
                 Project.org_id == org_id,
+                # Merge tombstones can't be mapped and aren't "unmapped".
+                Project.merged_into_project_id.is_(None),
                 Project.id.notin_(
                     select(TrackerProjectMapping.project_id).where(
                         TrackerProjectMapping.org_id == org_id
@@ -2517,6 +2556,18 @@ async def _get_link(ticket_id: str, db: AsyncSession) -> TicketTrackerLink | Non
     ).scalar_one_or_none()
 
 
+def link_is_attached_only(link: TicketTrackerLink) -> bool:
+    """True when the link was attached from an existing Jira issue, never
+    published from SessionFS: ``linked`` with no publish payload and no
+    template. Publishing such a ticket would replace the Jira summary and
+    description, so the overwrite guard keys on this."""
+    return (
+        link.status == "linked"
+        and link.payload_hash is None
+        and link.template_slug is None
+    )
+
+
 def _can_send_to_jira(
     link: TicketTrackerLink,
     conn: OrgTrackerConnection,
@@ -3016,6 +3067,7 @@ async def preview_jira(
             "last_known_status": link.last_known_status,
             "template_slug": link.template_slug,
             "template_version": link.template_version,
+            "attached": link_is_attached_only(link),
         }
         if link.last_published_text:
             response["diff"] = _unified_diff(
@@ -3025,77 +3077,51 @@ async def preview_jira(
     return response
 
 
-@router.post("/{project_id}/tickets/{ticket_id}/jira/publish")
-async def publish_jira(
-    project_id: str,
-    ticket_id: str,
-    body: JiraPublishBody,
-    request: Request,
-    auth: AuthContext = Depends(require_scope("tickets:write")),
-    ctx: UserContext = Depends(get_user_context),
-    db: AsyncSession = Depends(get_db),
+async def publish_ticket_draft(
+    db: AsyncSession,
+    *,
+    project: Project,
+    ticket: Ticket,
+    conn: OrgTrackerConnection,
+    mapping: TrackerProjectMapping,
+    resolved: ResolvedTemplate,
+    summary: str,
+    sections: list[dict],
+    actor: User,
+    actor_type: str,
+    service_key_id: str | None,
+    service_key_name: str | None,
+    dashboard_url: str,
+    overwrite_existing: bool = False,
 ) -> dict:
-    project, ticket, conn, mapping = await _authorize_ticket_jira(
-        db, auth, ctx, project_id, ticket_id, require_editor=True
-    )
-    if not body.confirm:
-        raise HTTPException(400, "Set confirm=true to publish to Jira")
+    """Publish an already-rendered draft to Jira (shared publish path).
 
-    # A linked row that points at another org/site blocks publish before we
-    # even look at the body — a stale link must never be re-targeted.
-    existing_link = await _get_link(ticket_id, db)
-    if existing_link is not None and existing_link.status == "linked":
-        _assert_link_current(existing_link, project.org_id, conn.site_url)
-
-    # Inheritance: per-ticket override (strict) → mapping override → connection
-    # default. The resolved slug/version is stored on the link at publish.
-    resolved = await _resolve_ticket_template(
-        db,
-        org_id=project.org_id,
-        mapping=mapping,
-        conn=conn,
-        link=existing_link,
-        override=body.template,
-    )
-    # The draft was previewed against a specific template version; if the
-    # resolution moved since (template edited, mapping/default changed), refuse
-    # rather than render or pin a version nobody previewed.
-    if body.template is not None or "template_version" in body.model_fields_set:
-        expected_slug = body.template if body.template is not None else resolved.slug
-        if expected_slug != resolved.slug or body.template_version != resolved.version:
-            raise HTTPException(
-                409,
-                {
-                    "error": "template_changed",
-                    "message": (
-                        "The story template changed since this draft was "
-                        f"previewed (now {_template_label(resolved)}); preview "
-                        "again before publishing."
-                    ),
-                    "template": {
-                        "slug": resolved.slug,
-                        "name": resolved.name,
-                        "version": resolved.version,
-                    },
-                },
-            )
-
+    Both the ``POST .../jira/publish`` route and the session helper's
+    create-ticket-and-publish confirm call this, so the render → footer → size
+    guard → claim → create/update path is never forked.  ``summary`` and
+    ``sections`` are the publish-shape text (``{key, heading, paragraphs}``);
+    the caller has already authorized the action and resolved ``resolved``.
+    Commits its own claim + link writes and returns the publish response, or
+    raises ``HTTPException`` with the route's error envelopes on failure.
+    """
+    # Pin the ticket id up front: a rollback on the superseded path expires the
+    # ORM object, so ``ticket.id`` must not be read again after one.
+    ticket_id = ticket.id
     # The client never chooses section rendering: mode is resolved from the
     # ticket's template by section key, and an unknown key is rejected before
     # any outbound call.
     mode_by_key = {s.key: s.mode for s in resolved.template.sections}
-    unknown = [s.key for s in body.sections if s.key not in mode_by_key]
+    unknown = [s["key"] for s in sections if s["key"] not in mode_by_key]
     if unknown:
         raise HTTPException(422, f"unknown section key(s): {', '.join(unknown)}")
 
-    # Pydantic already validated the summary/sections shape and caps; this is
-    # the publish-shape text used for storage and the re-publish diff.
-    sections = [s.model_dump() for s in body.sections]
     # Refuse an oversize body on its raw text BEFORE the Markdown conversion
     # (CPU work on the event loop).  Markdown syntax and link URLs are not
     # counted by Jira, so allow twice the cap of raw text; anything beyond
     # that can never fit.
-    raw_chars = sum(len(p.text or "") for s in body.sections for p in s.paragraphs)
+    raw_chars = sum(
+        len(p.get("text") or "") for s in sections for p in s.get("paragraphs", [])
+    )
     if raw_chars > 2 * _MAX_ADF_DESCRIPTION_CHARS:
         raise _content_too_large_for_jira()
     try:
@@ -3106,14 +3132,7 @@ async def publish_jira(
     # Append the provenance footer (the source-ticket link only when the
     # dashboard origin is configured) BEFORE the size guard so the footer
     # counts toward Jira's description cap.
-    footer = _footer_adf(
-        resolved,
-        _ticket_url(
-            dashboard_link_base(getattr(request.app.state, "config", None)),
-            project.id,
-            ticket.id,
-        ),
-    )
+    footer = _footer_adf(resolved, _ticket_url(dashboard_url, project.id, ticket_id))
     adf["content"] = list(adf["content"]) + footer
 
     # Pre-flight size guard before any outbound call: Jira Cloud caps a
@@ -3128,19 +3147,36 @@ async def publish_jira(
         db, ticket_id=ticket_id, org_id=project.org_id, site_url=conn.site_url
     )
 
+    # A ticket that was merely attached to an existing Jira issue (never
+    # published from SessionFS) has no publish payload of ours to update from;
+    # publishing would replace that issue's Jira summary and description. Refuse
+    # unless the caller opted in, and do so before any outbound call.
+    if link_is_attached_only(link) and not overwrite_existing:
+        raise HTTPException(
+            409,
+            {
+                "error": "jira_overwrite_required",
+                "message": (
+                    f"{link.issue_key} was linked from Jira, not published from "
+                    "SessionFS. Publishing replaces its Jira summary and "
+                    "description; confirm to overwrite."
+                ),
+            },
+        )
+
     client = JiraClient(
         conn.site_url, conn.account_email, decrypt_secret(conn.encrypted_api_token)
     )
     now = datetime.now(timezone.utc)
-    digest = payload_hash(body.summary, sections)
-    published_text = _published_text(body.summary, sections)
+    digest = payload_hash(summary, sections)
+    published_text = _published_text(summary, sections)
     try:
         # Bound each outbound call well below the 5-minute reclaim window so a
         # hung request can't hold the claim (and, on timeout, we mark the claim
         # unknown instead of deleting it).
         if action == "update":
             issue = await asyncio.wait_for(
-                client.update_issue(link.issue_key, body.summary, adf),
+                client.update_issue(link.issue_key, summary, adf),
                 timeout=60,
             )
             event_type = "jira_issue_updated"
@@ -3192,8 +3228,29 @@ async def publish_jira(
                                 "message": block,
                             },
                         )
+                    # Adopting must not silently take over an issue another
+                    # ticket already owns: keep the link 'unknown' and refuse
+                    # with the same code the link route uses.
+                    try:
+                        await _assert_issue_not_linked_elsewhere(
+                            db,
+                            org_id=project.org_id,
+                            site_url=conn.site_url,
+                            issue=adopted,
+                            issue_key=(adopted.key or "").upper(),
+                            ticket_id=ticket_id,
+                        )
+                    except JiraLinkError as exc:
+                        marked_unknown = await _fenced_mark_unknown(
+                            db, ticket_id=ticket_id, claim_token=claim_token
+                        )
+                        await db.commit()
+                        raise HTTPException(
+                            409,
+                            {"error": exc.code, "message": exc.message},
+                        ) from exc
                 issue = await asyncio.wait_for(
-                    client.update_issue(adopted.key, body.summary, adf),
+                    client.update_issue(adopted.key, summary, adf),
                     timeout=60,
                 )
                 event_type = "jira_issue_updated"
@@ -3202,7 +3259,7 @@ async def publish_jira(
                     client.create_issue(
                         mapping.jira_project_key,
                         mapping.issue_type,
-                        body.summary,
+                        summary,
                         adf,
                         labels=[sessionfs_label(ticket_id)],
                     ),
@@ -3270,7 +3327,7 @@ async def publish_jira(
             issue_key=link.issue_key,
             issue=issue,
             now=now,
-            user_id=auth.user.id,
+            user_id=actor.id,
             digest=digest,
             published_text=published_text,
             template_slug=resolved.slug,
@@ -3298,7 +3355,7 @@ async def publish_jira(
             claim_token=claim_token,
             issue=issue,
             now=now,
-            user_id=auth.user.id,
+            user_id=actor.id,
             digest=digest,
             published_text=published_text,
             template_slug=resolved.slug,
@@ -3328,7 +3385,7 @@ async def publish_jira(
         TicketComment(
             id=f"tc_{uuid.uuid4().hex[:16]}",
             ticket_id=ticket_id,
-            author_user_id=auth.user.id,
+            author_user_id=actor.id,
             author_persona=None,
             content=(
                 f"Promoted to Jira: {issue.url}"
@@ -3337,9 +3394,9 @@ async def publish_jira(
             ),
             session_id=None,
             created_at=now,
-            actor_type=auth.actor_type,
-            service_key_id=auth.service_key_id,
-            service_key_name=auth.service_key_name,
+            actor_type=actor_type,
+            service_key_id=service_key_id,
+            service_key_name=service_key_name,
             verdict_trusted=False,
         )
     )
@@ -3348,9 +3405,9 @@ async def publish_jira(
     _org_audit(
         db,
         org=org,
-        actor=auth.user,
+        actor=actor,
         actor_role=None,
-        actor_type=auth.actor_type,
+        actor_type=actor_type,
         event_type=event_type,
         target_type="ticket",
         target_id=ticket_id,
@@ -3373,6 +3430,227 @@ async def publish_jira(
             "version": resolved.version,
         },
     }
+
+
+async def pull_ticket_from_jira(
+    db: AsyncSession,
+    *,
+    project: Project,
+    ticket: Ticket,
+    conn: OrgTrackerConnection,
+    actor: User,
+    actor_type: str,
+    ctx: UserContext | None = None,
+) -> tuple[str, list[str]]:
+    """Pull a linked Jira issue's summary + description into the ticket.
+
+    Shared by the ``POST .../jira/pull`` route and the session helper's
+    ``propose_jira_overwrite`` confirm path (direction ``from_jira``). The
+    caller has already authorized the action (editor standing, feature gate,
+    connection + mapping), but a transfer or role change may have committed
+    while the caller waited on the scope lock — so the ticket edit auth
+    sequence (creator/project-admin check, project scope lock, re-read +
+    project re-check, re-authorize) runs here, exactly like the ticket edit
+    route. Reads one issue, converts its description ADF to text, then applies
+    title/description through ``apply_ticket_update`` — the same path as the
+    ticket edit route — so TicketEdit rows, the system diff comment and watcher
+    notifications all record the change. Field edits never enqueue an outbound
+    Jira sync, so a pull cannot echo back to Jira.
+
+    Returns ``(issue_key, updated_fields)``; ``updated_fields`` lists the
+    fields that actually changed (empty for a no-op). Raises ``JiraLinkError``
+    for link/remote failures and ``HTTPException`` for the access/gate checks.
+    The caller owns the transaction and commits.
+    """
+    from sessionfs.server.routes.tickets import TicketUpdate
+    from sessionfs.server.sanitize import sanitize_surrogates
+    from sessionfs.server.services.scope_locks import lock_project_scope_authorized
+    from sessionfs.server.services.ticket_writes import (
+        apply_ticket_update,
+        authorize_ticket_edit,
+    )
+
+    # Authorization, re-checked under the project scope lock (same sequence as
+    # the ticket edit route). The pre-lock check catches a stale role; the
+    # post-lock check catches a transfer/role change committed while we waited.
+    await authorize_ticket_edit(db, ticket=ticket, project=project, user_id=actor.id)
+    await lock_project_scope_authorized(
+        db, project, user_id=actor.id, ctx=ctx, feature="jira_integration"
+    )
+    await db.refresh(ticket)
+    if ticket.project_id != project.id:
+        raise HTTPException(404, "Ticket not found")
+    await authorize_ticket_edit(db, ticket=ticket, project=project, user_id=actor.id)
+
+    link = await _get_link(ticket.id, db)
+    if link is None or link.status != "linked":
+        raise JiraLinkError(
+            "jira_not_linked",
+            "This ticket is not linked to a Jira issue.",
+            status_code=409,
+        )
+    if link.org_id != project.org_id or link.site_url != conn.site_url:
+        raise JiraLinkError(
+            "jira_link_stale",
+            (
+                "This ticket's Jira link belongs to another organization or "
+                "site; pull is blocked to avoid reading an unrelated issue."
+            ),
+            status_code=409,
+        )
+
+    client = JiraClient(
+        conn.site_url, conn.account_email, decrypt_secret(conn.encrypted_api_token)
+    )
+    try:
+        try:
+            summary, description_adf = await asyncio.wait_for(
+                client.get_issue_summary_and_description(link.issue_key),
+                timeout=_PULL_FETCH_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError as exc:
+            raise JiraLinkError(
+                "jira_timeout",
+                f"Timed out reading Jira issue {link.issue_key}.",
+                status_code=504,
+            ) from exc
+        except TrackerError as exc:
+            if exc.status_code in (403, 404):
+                raise JiraLinkError(
+                    "jira_issue_not_found",
+                    f"Jira issue {link.issue_key} was not found.",
+                    status_code=404,
+                ) from exc
+            raise JiraLinkError(
+                "jira_upstream_error",
+                str(exc),
+                status_code=502,
+            ) from exc
+    finally:
+        await client.aclose()
+
+    # Convert + clean the remote text before binding it to the ticket row:
+    # lone surrogates and C0 control characters are stripped, then each field
+    # is DLP-redacted and capped (title at the column width, description at the
+    # helper's draft bound).
+    description_text = adf_to_text(description_adf or {})
+    org = await db.get(Organization, project.org_id)
+    title = jira_sync.redact_then_cap(
+        _PULL_CONTROL_RE.sub("", sanitize_surrogates(summary or "")).strip(),
+        org,
+        _PULL_TITLE_MAX_CHARS,
+    )
+    description = jira_sync.redact_then_cap(
+        _PULL_CONTROL_RE.sub("", sanitize_surrogates(description_text)),
+        org,
+        _PULL_DESCRIPTION_MAX_CHARS,
+    )
+
+    body = TicketUpdate(title=title or None, description=description or None)
+    outcome = await apply_ticket_update(
+        db,
+        project=project,
+        ticket=ticket,
+        user_id=actor.id,
+        ctx=None,
+        body=body,
+    )
+    updated_fields = [field_name for field_name, _old, _new in outcome.edits]
+
+    if updated_fields:
+        _system_comment(db, ticket, f"Updated from Jira {link.issue_key}")
+        if org is not None:
+            _org_audit(
+                db,
+                org=org,
+                actor=actor,
+                actor_role=None,
+                actor_type=actor_type,
+                event_type="jira_pulled",
+                target_type="ticket",
+                target_id=ticket.id,
+                after={
+                    "issue_key": link.issue_key,
+                    "issue_url": link.issue_url,
+                    "updated_fields": updated_fields,
+                },
+            )
+
+    return link.issue_key or "", updated_fields
+
+
+@router.post("/{project_id}/tickets/{ticket_id}/jira/publish")
+async def publish_jira(
+    project_id: str,
+    ticket_id: str,
+    body: JiraPublishBody,
+    request: Request,
+    auth: AuthContext = Depends(require_scope("tickets:write")),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    project, ticket, conn, mapping = await _authorize_ticket_jira(
+        db, auth, ctx, project_id, ticket_id, require_editor=True
+    )
+    if not body.confirm:
+        raise HTTPException(400, "Set confirm=true to publish to Jira")
+
+    # A linked row that points at another org/site blocks publish before we
+    # even look at the body — a stale link must never be re-targeted.
+    existing_link = await _get_link(ticket_id, db)
+    if existing_link is not None and existing_link.status == "linked":
+        _assert_link_current(existing_link, project.org_id, conn.site_url)
+
+    # Inheritance: per-ticket override (strict) → mapping override → connection
+    # default. The resolved slug/version is stored on the link at publish.
+    resolved = await _resolve_ticket_template(
+        db,
+        org_id=project.org_id,
+        mapping=mapping,
+        conn=conn,
+        link=existing_link,
+        override=body.template,
+    )
+    # The draft was previewed against a specific template version; if the
+    # resolution moved since (template edited, mapping/default changed), refuse
+    # rather than render or pin a version nobody previewed.
+    if body.template is not None or "template_version" in body.model_fields_set:
+        expected_slug = body.template if body.template is not None else resolved.slug
+        if expected_slug != resolved.slug or body.template_version != resolved.version:
+            raise HTTPException(
+                409,
+                {
+                    "error": "template_changed",
+                    "message": (
+                        "The story template changed since this draft was "
+                        f"previewed (now {_template_label(resolved)}); preview "
+                        "again before publishing."
+                    ),
+                    "template": {
+                        "slug": resolved.slug,
+                        "name": resolved.name,
+                        "version": resolved.version,
+                    },
+                },
+            )
+
+    sections = [s.model_dump() for s in body.sections]
+    return await publish_ticket_draft(
+        db,
+        project=project,
+        ticket=ticket,
+        conn=conn,
+        mapping=mapping,
+        resolved=resolved,
+        summary=body.summary,
+        sections=sections,
+        actor=auth.user,
+        actor_type=auth.actor_type,
+        service_key_id=auth.service_key_id,
+        service_key_name=auth.service_key_name,
+        dashboard_url=dashboard_link_base(getattr(request.app.state, "config", None)),
+        overwrite_existing=body.overwrite_existing,
+    )
 
 
 @router.get("/{project_id}/tickets/{ticket_id}/jira-sync-events")
@@ -3406,6 +3684,38 @@ async def get_ticket_jira_sync_events(
         "events": [
             _sync_event_response(event, link.issue_key) for event in rows
         ]
+    }
+
+
+def _link_response(
+    ticket: Ticket,
+    link: TicketTrackerLink,
+    conn: OrgTrackerConnection,
+    project: Project,
+    *,
+    can_edit: bool,
+) -> dict:
+    """The single link response body shared by GET and POST /jira/link.
+
+    ``last_pushed_at`` stays None for a freshly linked (not yet published) issue;
+    the other fields read straight off the row.
+    """
+    comment_sync_outbound = (conn.sync_comments or "off") in jira_sync.OUTBOUND_COMMENT_MODES
+    can_send = _can_send_to_jira(link, conn, project, can_edit=can_edit)
+    return {
+        "ticket_id": ticket.id,
+        "provider": link.provider,
+        "issue_key": link.issue_key,
+        "issue_url": link.issue_url,
+        "last_pushed_at": link.last_pushed_at.isoformat() if link.last_pushed_at else None,
+        "last_known_status": link.last_known_status,
+        "last_status_checked_at": (
+            link.last_status_checked_at.isoformat() if link.last_status_checked_at else None
+        ),
+        "payload_hash": link.payload_hash,
+        "comment_sync_outbound": comment_sync_outbound,
+        "can_send_to_jira": can_send,
+        "attached_not_published": link_is_attached_only(link),
     }
 
 
@@ -3466,25 +3776,10 @@ async def get_jira_link(
     # (editor standing or a service key, and outbound comment sync on).
     from sessionfs.server.auth.project_access import user_can_edit_project
 
-    comment_sync_outbound = (conn.sync_comments or "off") in jira_sync.OUTBOUND_COMMENT_MODES
     can_edit = auth.key_kind == "service" or await user_can_edit_project(
         db, auth.user.id, project
     )
-    can_send = _can_send_to_jira(link, conn, project, can_edit=can_edit)
-    return {
-        "ticket_id": ticket.id,
-        "provider": link.provider,
-        "issue_key": link.issue_key,
-        "issue_url": link.issue_url,
-        "last_pushed_at": link.last_pushed_at.isoformat() if link.last_pushed_at else None,
-        "last_known_status": link.last_known_status,
-        "last_status_checked_at": (
-            link.last_status_checked_at.isoformat() if link.last_status_checked_at else None
-        ),
-        "payload_hash": link.payload_hash,
-        "comment_sync_outbound": comment_sync_outbound,
-        "can_send_to_jira": can_send,
-    }
+    return _link_response(ticket, link, conn, project, can_edit=can_edit)
 
 
 @router.delete("/{project_id}/tickets/{ticket_id}/jira", status_code=204)
@@ -3517,3 +3812,123 @@ async def unlink_jira(
     )
     await db.delete(link)
     await db.commit()
+
+
+@router.post("/{project_id}/tickets/{ticket_id}/jira/link")
+async def link_jira(
+    project_id: str,
+    ticket_id: str,
+    body: JiraLinkBody,
+    auth: AuthContext = Depends(require_scope("tickets:write")),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Link a ticket to an existing Jira issue (GitHub #112 phase 2).
+
+    Never pushes to Jira: it reads the named issue to verify it exists, belongs
+    to the mapped project, and isn't already linked elsewhere, then records the
+    link locally. The response is byte-for-byte the same shape as GET /jira.
+    """
+    project, ticket, conn, mapping = await _authorize_ticket_jira(
+        db, auth, ctx, project_id, ticket_id, require_editor=True
+    )
+    try:
+        link = await link_ticket_to_jira(
+            db,
+            project=project,
+            ticket=ticket,
+            conn=conn,
+            mapping=mapping,
+            issue_key=body.issue_key,
+            actor_user_id=auth.user.id,
+            actor_type=auth.actor_type,
+        )
+    except JiraLinkError as exc:
+        raise HTTPException(
+            exc.status_code, {"error": exc.code, "message": exc.message}
+        ) from exc
+    await db.commit()
+
+    from sessionfs.server.auth.project_access import user_can_edit_project
+
+    can_edit = auth.key_kind == "service" or await user_can_edit_project(
+        db, auth.user.id, project
+    )
+    return _link_response(ticket, link, conn, project, can_edit=can_edit)
+
+
+@router.post("/{project_id}/tickets/{ticket_id}/jira/pull")
+async def pull_jira(
+    project_id: str,
+    ticket_id: str,
+    body: JiraPullBody,
+    auth: AuthContext = Depends(require_scope("tickets:write")),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Overwrite a ticket's title/description from its linked Jira issue.
+
+    The reverse of publish: for a ticket linked to an existing Jira issue, pull
+    the issue's summary + description back into the ticket. Never pushes to
+    Jira (field edits don't enqueue outbound sync), and it's a no-op when the
+    remote text already matches the ticket.
+
+    An empty remote summary or description leaves the corresponding ticket
+    field unchanged (it is never blanked), and ``updated_fields`` lists only
+    the fields that actually changed.
+    """
+    project, ticket, conn, _mapping = await _authorize_ticket_jira(
+        db, auth, ctx, project_id, ticket_id, require_editor=True
+    )
+    if auth.key_kind == "service":
+        # Pull rewrites a ticket's title/description, which the ticket edit
+        # route never allows a service key to do.
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "service_key_not_allowed",
+                "message": "Updating a ticket from Jira requires a user key.",
+            },
+        )
+    if not body.confirm:
+        raise HTTPException(400, "Set confirm=true to pull from Jira")
+
+    try:
+        _issue_key, updated_fields = await pull_ticket_from_jira(
+            db,
+            project=project,
+            ticket=ticket,
+            conn=conn,
+            actor=auth.user,
+            actor_type=auth.actor_type,
+            ctx=ctx,
+        )
+    except JiraLinkError as exc:
+        raise HTTPException(
+            exc.status_code, {"error": exc.code, "message": exc.message}
+        ) from exc
+    await db.commit()
+    await db.refresh(ticket)
+
+    from sessionfs.server.auth.project_access import user_can_edit_project
+    from sessionfs.server.routes.tickets import (
+        _ticket_detail_response,
+        _viewer_sees_emails,
+    )
+
+    can_edit = auth.key_kind == "service" or await user_can_edit_project(
+        db, auth.user.id, project
+    )
+    link = await _get_link(ticket.id, db)
+    if link is None:
+        raise HTTPException(404, "No Jira link for this ticket")
+    return {
+        # Same builder as the GET ticket route so the pulled ticket carries the
+        # full enrichment (dependencies, Jira link state, child rollup) rather
+        # than the bare response.
+        "ticket": await _ticket_detail_response(
+            ticket, db, show_email=await _viewer_sees_emails(db, auth, project)
+        ),
+        "jira": _link_response(ticket, link, conn, project, can_edit=can_edit),
+        "updated_fields": updated_fields,
+    }

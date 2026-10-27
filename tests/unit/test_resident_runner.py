@@ -943,12 +943,67 @@ def test_verdict_content_matches_server_parser_header():
 
     assert _HEADER_RE.search(first_line) is not None, first_line
     # No prior rounds in the delta → R1.
-    assert first_line.startswith("Codex R1 review on tk_test001:")
+    assert first_line.startswith("Reviewer R1 review on tk_test001:")
     assert "VERIFIED-CLEAN" in first_line
 
 
+def test_verdict_content_uses_reviewer_name():
+    """The reviewer's own name (not the neutral fallback) leads the header,
+    and the result still matches the server parser."""
+    from sessionfs.server.services.review_state import _HEADER_RE
+
+    from sessionfs.resident.runner import _format_verdict_content
+
+    result = ReviewResult(verdict_phrase="VERIFIED-CLEAN", reasoning="All good.")
+    directive = {"ticket_id": "tk_test001", "comment_delta": []}
+    content = _format_verdict_content(
+        result, directive, reviewer_name="reviewer-bot"
+    )
+    first_line = content.split("\n")[0]
+
+    assert _HEADER_RE.search(first_line) is not None, first_line
+    assert first_line.startswith("reviewer-bot R1 review on tk_test001:")
+
+
+def test_reviewer_name_uses_valid_persona_verbatim():
+    """A persona that is a valid reviewer-name token leads the header as-is."""
+    from sessionfs.resident.runner import _reviewer_name_for
+
+    assert _reviewer_name_for("reviewer-bot") == "reviewer-bot"
+
+
+def test_reviewer_name_falls_back_for_digit_first_persona():
+    """A persona name that does not lead with a letter would not parse as a
+    reviewer name, so the resident falls back to a neutral name."""
+    from sessionfs.resident.runner import _reviewer_name_for
+
+    assert _reviewer_name_for("9bot") == "Reviewer"
+
+
+def test_reviewer_name_falls_back_for_overlong_persona():
+    """A 40-character persona exceeds the 32-character reviewer-name cap and
+    falls back, keeping the header parseable."""
+    from sessionfs.resident.runner import _reviewer_name_for
+
+    assert _reviewer_name_for("a" * 40) == "Reviewer"
+
+
+def test_prior_round_matches_non_codex_reviewer_name():
+    """The prior-round detector recognizes any reviewer name, so a resident
+    reviewer correctly increments past rounds posted by another tool."""
+    from sessionfs.resident.runner import _next_review_round
+
+    assert (
+        _next_review_round([
+            {"content": "Claude R1 review on tk_x: CHANGES_REQUESTED"},
+            {"content": "Gemini R2 review on tk_x: CHANGES_REQUESTED"},
+        ])
+        == 3
+    )
+
+
 def test_verdict_content_round_increments_from_delta():
-    """The verdict round = 1 + the highest prior Codex round in the delta."""
+    """The verdict round = 1 + the highest prior review round in the delta."""
     from sessionfs.resident.runner import _format_verdict_content
 
     result = ReviewResult(verdict_phrase="VERIFIED-CLEAN", reasoning="ok")
@@ -960,7 +1015,7 @@ def test_verdict_content_round_increments_from_delta():
         ],
     }
     first_line = _format_verdict_content(result, directive).split("\n")[0]
-    assert first_line.startswith("Codex R3 review on tk_x:")
+    assert first_line.startswith("Reviewer R3 review on tk_x:")
 
 
 def test_verdict_round_prefers_server_review_round():
@@ -978,7 +1033,7 @@ def test_verdict_round_prefers_server_review_round():
         ],
     }
     first_line = _format_verdict_content(result, directive).split("\n")[0]
-    assert first_line.startswith("Codex R5 review on tk_x:")
+    assert first_line.startswith("Reviewer R5 review on tk_x:")
 
 
 def test_resolve_auth_rejects_wrong_profile():
@@ -1074,7 +1129,7 @@ def test_verdict_content_truncated_under_cap():
     content = _format_verdict_content(result, directive)
 
     assert len(content) <= _MAX_VERDICT_CONTENT
-    assert content.split("\n")[0].startswith("Codex R2 review on tk_x:")
+    assert content.split("\n")[0].startswith("Reviewer R2 review on tk_x:")
 
 
 def test_review_context_carries_prior_findings_to_prompt():

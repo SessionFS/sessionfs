@@ -41,12 +41,15 @@ _PREVIEW = {
 class _TicketApi:
     """Routes ticket jira calls by URL/method."""
 
-    def __init__(self, preview=_PREVIEW, publish=None, status=None, status_code=200):
+    def __init__(self, preview=_PREVIEW, publish=None, status=None, status_code=200,
+                 pull=None):
         self._preview = preview
         self._publish = publish
         self._status = status
         self._status_code = status_code
+        self._pull = pull
         self.publish_calls = []
+        self.pull_calls = []
 
     async def __call__(self, method, path, api_url, api_key, json_data=None):
         if path.endswith("/jira/preview"):
@@ -57,6 +60,14 @@ class _TicketApi:
                 return self._publish[0], self._publish[1], {}
             return self._status_code, {"issue_key": "ACME-1",
                                        "issue_url": "https://acme.atlassian.net/browse/ACME-1"}, {}
+        if path.endswith("/jira/pull"):
+            self.pull_calls.append(json_data)
+            if self._pull is not None:
+                return self._pull[0], self._pull[1], {}
+            return 200, {"ticket": {"id": "tk_abc", "title": "Ship the auth migration"},
+                         "jira": {"issue_key": "ACME-1",
+                                  "issue_url": "https://acme.atlassian.net/browse/ACME-1"},
+                         "updated_fields": ["title"]}, {}
         if path.endswith("/jira"):
             if self._status is not None:
                 return self._status[0], self._status[1], {}
@@ -190,6 +201,79 @@ def test_ticket_unlink_with_confirm():
     result = _run_ticket(["jira", "unlink", "tk_abc", "--confirm"], api)
     assert result.exit_code == 0, result.output
     assert "Unlinked Jira issue" in result.output
+
+
+def test_ticket_publish_defaults_overwrite_existing_to_false(tmp_path):
+    from_file = tmp_path / "preview.json"
+    from_file.write_text(json.dumps(_PREVIEW))
+    api = _TicketApi()
+    result = _run_ticket(["jira", "publish", "tk_abc", "--from", str(from_file), "--yes"], api)
+    assert result.exit_code == 0, result.output
+    assert api.publish_calls[0]["overwrite_existing"] is False
+
+
+def test_ticket_publish_sends_overwrite_existing_flag(tmp_path):
+    from_file = tmp_path / "preview.json"
+    from_file.write_text(json.dumps(_PREVIEW))
+    api = _TicketApi()
+    result = _run_ticket(
+        ["jira", "publish", "tk_abc", "--from", str(from_file), "--yes",
+         "--overwrite-existing"],
+        api,
+    )
+    assert result.exit_code == 0, result.output
+    assert api.publish_calls[0]["overwrite_existing"] is True
+
+
+def test_ticket_publish_surfaces_overwrite_required(tmp_path):
+    from_file = tmp_path / "preview.json"
+    from_file.write_text(json.dumps(_PREVIEW))
+    api = _TicketApi(publish=(409, {
+        "error": "jira_overwrite_required",
+        "message": "ACME-1 was linked from Jira, not published from SessionFS.",
+    }))
+    result = _run_ticket(["jira", "publish", "tk_abc", "--from", str(from_file), "--yes"], api)
+    assert result.exit_code == 1, result.output
+    assert "ACME-1 was linked from Jira" in result.output
+    assert "--overwrite-existing" in result.output
+
+
+def test_ticket_jira_pull_requires_yes_without_a_tty(tmp_path, monkeypatch):
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    api = _TicketApi()
+    result = _run_ticket(["jira", "pull", "tk_abc"], api)
+    assert result.exit_code == 2, result.output
+    assert_in_ansi("--yes", result.output)
+    assert not api.pull_calls
+
+
+def test_ticket_jira_pull_posts_confirm_and_renders():
+    api = _TicketApi()
+    result = _run_ticket(["jira", "pull", "tk_abc", "--yes"], api)
+    assert result.exit_code == 0, result.output
+    assert "Pulled from Jira" in result.output
+    assert "ACME-1" in result.output
+    assert api.pull_calls and api.pull_calls[0] == {"confirm": True}
+    assert "Updated fields: title" in result.output
+
+
+def test_ticket_jira_pull_not_linked_shows_server_message():
+    api = _TicketApi(pull=(409, {"detail": {"error": "jira_not_linked", "message": "This ticket has no linked Jira issue."}}))
+    result = _run_ticket(["jira", "pull", "tk_abc", "--yes"], api)
+    assert result.exit_code == 1, result.output
+    assert "409" in result.output
+
+
+def test_ticket_jira_pull_no_changes_prints_hint():
+    api = _TicketApi(pull=(200, {
+        "ticket": {"id": "tk_abc", "title": "Ship the auth migration"},
+        "jira": {"issue_key": "ACME-1",
+                 "issue_url": "https://acme.atlassian.net/browse/ACME-1"},
+        "updated_fields": [],
+    }))
+    result = _run_ticket(["jira", "pull", "tk_abc", "--yes"], api)
+    assert result.exit_code == 0, result.output
+    assert "No changes" in result.output
 
 
 # ── org commands ──

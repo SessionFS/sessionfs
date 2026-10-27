@@ -17,14 +17,37 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.26.0 -->
+      <!-- v0.27.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
-            <span class="text-brand font-semibold">v0.26.0</span>
+            <span class="text-brand font-semibold">v0.27.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 27, 2026</span>
           <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Link Existing Jira Issues &middot; Assign Tickets to People &middot; Helper Jira Actions &middot; Reviewer-Agnostic Verdicts</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Link a ticket to an existing Jira issue (Enterprise).</strong> On a ticket, <strong>Link existing issue</strong> attaches it to an issue that already exists in the mapped Jira project instead of creating a new one. SessionFS checks that the issue exists and isn&rsquo;t linked to another ticket, and sends nothing to Jira. API: <span class="font-mono text-accent text-sm">POST /api/v1/projects/&#123;id&#125;/tickets/&#123;tid&#125;/jira/link</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Choose which side wins on a linked issue.</strong> Until a linked issue has been published from SessionFS, you pick the direction: <strong>Overwrite KEY in Jira</strong> replaces the issue&rsquo;s summary and description with the ticket&rsquo;s (publishing asks you to confirm the overwrite; CLI <span class="font-mono text-accent text-sm">sfs ticket jira publish --overwrite-existing</span>), and <strong>Update from Jira</strong> replaces the ticket&rsquo;s title and description with the issue&rsquo;s (CLI <span class="font-mono text-accent text-sm">sfs ticket jira pull</span>, API <span class="font-mono text-accent text-sm">POST .../jira/pull</span>). An empty Jira field leaves the ticket field unchanged, and pulled text goes through your DLP policy.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>The session helper works with Jira.</strong> It can read a ticket&rsquo;s linked Jira issue, propose linking a ticket to an existing issue, propose overwriting either side of a linked pair, send a comment to Jira along with the ticket comment, and create a ticket and publish it to Jira in one confirmation. Every Jira condition is checked again when you press <strong>Confirm</strong>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Assign a ticket to a person.</strong> Tickets can now be assigned directly to a teammate, not only to a persona. The person gets a &ldquo;Your turn&rdquo; notification and follows the ticket automatically, and the Tickets list has an <strong>Assigned to me</strong> filter. The assignee picker lists teammates who can read the project and warns when the persona you chose represents nobody, so nobody would be notified. CLI: <span class="font-mono text-accent text-sm">sfs ticket create|update --user</span>; MCP: <span class="font-mono text-accent text-sm">assigned_user</span> on <span class="font-mono text-accent text-sm">create_ticket</span> and <span class="font-mono text-accent text-sm">update_ticket</span>; API: <span class="font-mono text-accent text-sm">GET /api/v1/projects/&#123;id&#125;/assignable-users</span>, <span class="font-mono text-accent text-sm">?assigned_user=me</span> on the ticket list. The helper can assign to a persona or a person by name.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Review verdicts from any reviewer.</strong> Verdict headers accept any reviewer name (for example &ldquo;Claude R1 review&rdquo;), not just one fixed reviewer. A work-queue completion whose verdict header can&rsquo;t be parsed is refused with <span class="font-mono text-accent text-sm">422 verdict_header_unparseable</span> before anything is written, and <span class="font-mono text-accent text-sm">sfs ticket review-state</span> prints whether the last verdict is a strict <span class="font-mono text-accent text-sm">VERIFIED-CLEAN</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Worker review loop guide.</strong> A new <a href="/review-loop/" class="text-brand hover:underline">Worker Review Loop</a> page shows how to build a change with brief-driven coding agents in isolated worktrees, gated by an independent trusted reviewer and a re-review before merge. The matching <span class="font-mono text-accent text-sm">worker-review-loop</span> skill is part of the <span class="font-mono text-accent text-sm">sessionfs-workflows</span> launch catalog.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Changed:</strong> projects merged into another project no longer appear in project lists, the helper or Jira health, and can&rsquo;t be added to a project group (<span class="font-mono text-accent text-sm">410 project_merged</span>); direct links still answer 410 with the merge target. The Jira sync and Confluence publish sweeps now have documented schedules (Jira sync every minute).</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;101 (101 adds direct-to-person ticket assignment; additive). Self-hosted: run migration 101 (see <a href="/self-hosted/#upgrading" class="text-brand hover:underline">Self-Hosted</a>). 9830 backend tests + 1659 dashboard UI tests passing. 100 MCP tools (unchanged).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.26.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.26.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 27, 2026</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Project Groups &middot; Two-Way Jira Sync &middot; Confluence Publishing &middot; Helper Ticket Actions &middot; Sessions by Model</h2>
         <ul class="space-y-2 text-base text-muted">

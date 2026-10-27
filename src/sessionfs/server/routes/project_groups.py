@@ -906,6 +906,19 @@ async def add_project_to_group(
     ).scalar_one_or_none()
     if project is None or not await user_can_access_project(db, user.id, project):
         raise HTTPException(404, "Project not found")
+    if project.merged_into_project_id is not None:
+        # A merge already moved the source's group memberships to its
+        # target (services/merge.py); a tombstone can't rejoin one.
+        raise HTTPException(
+            410,
+            {
+                "code": "project_merged",
+                "error": "project_merged",
+                # No merged_into: the caller may not be able to read the
+                # target (the project page discloses it only after that check).
+                "message": "This project was merged into another project.",
+            },
+        )
     if project.org_id != org_id:
         raise HTTPException(
             422,

@@ -68,6 +68,7 @@ export default defineConfig({
             { label: 'Project Context', slug: 'project-context' },
             { label: 'Project Groups', slug: 'project-groups' },
             { label: 'Skills Marketplace', slug: 'skills-marketplace' },
+            { label: 'Worker Review Loop', slug: 'review-loop' },
             { label: 'Session Helper', slug: 'session-helper' },
           ],
         },

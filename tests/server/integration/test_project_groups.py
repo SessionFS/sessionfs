@@ -233,6 +233,34 @@ async def test_restricted_org_group_grants_admit_read_and_edit(db_session: Async
 
 
 @pytest.mark.asyncio
+async def test_assignable_users_includes_restricted_org_group_grantee(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """F11 — in a restricted org, a group grant confers read standing, so the
+    grantee is assignable while a plain member without a grant is not."""
+    owner, owner_h = await _user(db_session, "owner")
+    grantee, _ = await _user(db_session, "grantee")
+    plain, _ = await _user(db_session, "plain")
+    org = await _org(db_session, restrict=True)
+    await _member(db_session, org, owner, role="owner")
+    await _member(db_session, org, grantee, role="member")
+    await _member(db_session, org, plain, role="member")
+    project = await _project(db_session, owner, org=org)
+    group = await _group(db_session, org, owner)
+    await _place(db_session, group, project)
+    await _grant(db_session, group, grantee, "reader")
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/assignable-users", headers=owner_h
+    )
+    assert resp.status_code == 200, resp.text
+    ids = [u["id"] for u in resp.json()["users"]]
+    assert owner.id in ids
+    assert grantee.id in ids          # group grant confers read standing
+    assert plain.id not in ids        # no grant in a restricted org
+
+
+@pytest.mark.asyncio
 async def test_restricted_org_org_admin_keeps_full_standing(db_session: AsyncSession):
     owner, _ = await _user(db_session, "owner")
     admin, _ = await _user(db_session, "admin")
@@ -1383,3 +1411,29 @@ async def test_auto_extract_unrestricted_unchanged(
     for u in (member, outsider):
         await _run_auto_extract(monkeypatch, project, u)
     assert await _entry_users(db_session, project) == {member.id, outsider.id}
+
+
+@pytest.mark.asyncio
+async def test_merged_project_cannot_join_a_group(client: AsyncClient, db_session: AsyncSession):
+    """GitHub #111: a merge moves the source's group placements to its
+    target; the tombstone itself is refused without naming the target."""
+    owner, owner_h = await _user(db_session, "owner")
+    org = await _org(db_session)
+    await _member(db_session, org, owner, role="owner")
+    group = await _group(db_session, org, owner)
+    live = await _project(db_session, owner, org=org)
+    merged = await _project(db_session, owner, org=org)
+    merged.merged_into_project_id = live.id
+    merged.merged_at = _now()
+    await db_session.commit()
+
+    resp = await client.put(
+        f"/api/v1/orgs/{org.id}/groups/{group.id}/projects/{merged.id}",
+        headers=owner_h,
+    )
+    assert resp.status_code == 410, resp.text
+    error = resp.json()["error"]
+    assert error["code"] == "project_merged"
+    details = error["details"]
+    assert "merged_into" not in details
+    assert await _access_rows(db_session, group_id=group.id) == []

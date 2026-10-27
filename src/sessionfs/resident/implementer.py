@@ -40,6 +40,7 @@ from sessionfs.resident.llm_adapter import (
     ImplementLLM,
     ImplementResult,
 )
+from sessionfs.server.services.review_state import REVIEWER_NAME_PATTERN
 
 logger = logging.getLogger("sessionfs.resident.implementer")
 
@@ -67,11 +68,13 @@ class GitState:
     is_resume: bool = False
 
 
-# Matches the reviewer's verdict HEADER ("… review on <ticket>: <VERDICT>"),
-# as emitted by the reviewer runner's _format_verdict_content.
+# Matches the reviewer's verdict HEADER as emitted by the reviewer runner's
+# _format_verdict_content and parsed by review_state._HEADER_RE:
+#   <Reviewer> R<N> [doc] review on tk_<id>: <VERDICT>
 _VERDICT_HEADER_RE = re.compile(
-    r"review on \S+:\s*(VERIFIED[-_]CLEAN|CHANGES[-_]REQUESTED)",
-    re.IGNORECASE,
+    rf"^{REVIEWER_NAME_PATTERN}\s+R\d+\s+(?:doc\s+)?review\s+on\s+tk_\w+\s*:\s*"
+    r"(?P<verdict>VERIFIED[-_]CLEAN|CHANGES[-_]REQUESTED)",
+    re.IGNORECASE | re.MULTILINE,
 )
 
 
@@ -92,12 +95,13 @@ def _latest_review_verdict(directive: dict) -> str | None:
         if not isinstance(c, dict) or not c.get("verdict_trusted"):
             continue
         # Parse the verdict from the reviewer's HEADER line
-        # ("… review on <ticket>: <VERDICT>") rather than substring-anywhere, so
-        # prose like "this is not VERIFIED-CLEAN yet" can't false-match.
+        # ("<Reviewer> R<N> review on tk_<id>: <VERDICT>") rather than
+        # substring-anywhere, so prose like "this is not VERIFIED-CLEAN yet"
+        # can't false-match.
         m = _VERDICT_HEADER_RE.search(str(c.get("content", "")))
         if not m:
             continue
-        token = m.group(1).upper().replace("_", "-")
+        token = m.group("verdict").upper().replace("_", "-")
         if token == "VERIFIED-CLEAN":
             verdict = "clean"
         elif token == "CHANGES-REQUESTED":
