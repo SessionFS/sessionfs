@@ -333,20 +333,47 @@ export interface HelperConversationSummary {
 }
 
 export interface HelperCitation {
+  /** Present on messages written after v0.25; omitted on older stored rows. */
+  kind?: 'session';
   session_id: string;
   message_index: number | null;
-  title: string;
+  title: string | null;
+  /** ISO timestamp the source data was last updated; null for old messages. */
+  at?: string | null;
 }
 
 /** A docs source the helper cited with `[doc:<slug>#<anchor>]`. */
 export interface HelperDocCitation {
+  kind?: 'doc';
   slug: string;
   anchor: string | null;
   title: string;
   url: string;
 }
 
-export type HelperCitationRef = HelperCitation | HelperDocCitation;
+/** A sessionfs ticket cited with `[ticket:tk_…]`. */
+export interface HelperTicketCitation {
+  kind?: 'ticket';
+  ticket_id: string;
+  project_id: string;
+  title: string;
+  at?: string | null;
+}
+
+/** A wiki page cited with `[wiki:<project_id>/<slug>]`. */
+export interface HelperWikiCitation {
+  kind?: 'wiki';
+  project_id: string;
+  slug: string;
+  title: string;
+  at?: string | null;
+}
+
+export type HelperCitationRef =
+  | HelperCitation
+  | HelperDocCitation
+  | HelperTicketCitation
+  | HelperWikiCitation;
 
 export interface HelperMessage {
   id: string;
@@ -383,6 +410,8 @@ export interface HelperActionTarget {
   reason?: string;
   /** Session targets: the capture tool and the session date, when the server sends them. */
   tool?: string | null;
+  /** Session targets: the session's model id ("unknown" when none was recorded). */
+  model?: string | null;
   created_at?: string | null;
 }
 
@@ -392,6 +421,9 @@ export interface HelperActionProposal {
   kind: string;
   summary: string;
   targets: HelperActionTarget[];
+  /** Stored proposal params (the model draft); present on the SSE event. Older
+   *  streams and locally-recovered cards may not carry it until the server read. */
+  params?: Record<string, unknown>;
   expires_at: string | null;
 }
 
@@ -401,6 +433,22 @@ export interface HelperActionTargetResult {
   id: string;
   ok: boolean;
   error: string | null;
+  /** create_ticket: the new ticket's id when applied. */
+  ticket_id?: string;
+  /** comment_ticket: the new comment's id when applied. */
+  comment_id?: string;
+}
+
+/** User-edited values for an editable ticket-action confirm. Omitted fields
+ *  keep the stored model draft (routes/helper.py `HelperActionConfirmBody`). */
+export interface HelperActionConfirmBody {
+  title?: string;
+  description?: string;
+  acceptance_criteria?: string[];
+  priority?: string;
+  /** Omit to keep the draft's assignee; `null` (or blank) leaves it unassigned. */
+  assigned_to?: string | null;
+  body?: string;
 }
 
 /** `GET/POST /api/v1/helper/actions/{id}[/confirm|/cancel]`. */
@@ -508,6 +556,37 @@ export interface JiraConnection {
   enabled?: boolean;
   last_verified_at?: string | null;
   connected_by_user_id?: string;
+  /** Two-way sync (GitHub #98 part B). */
+  sync_status?: boolean;
+  sync_comments?: JiraCommentSyncMode;
+  status_map?: JiraStatusMap;
+  has_webhook_secret?: boolean;
+  webhook_secret_last4?: string | null;
+  /** Canonical inbound webhook URL, `<public API origin>/api/v1/webhooks/jira/{org_id}`
+   *  (GitHub #98 part B). Always use this value; never build the path client-side. */
+  webhook_url?: string;
+}
+
+/**
+ * SessionFS status → Jira transition display name (outbound) and Jira status
+ * category → SessionFS action (inbound). The literal `"none"` means unmapped:
+ * no outbound push for that status / no inbound action for that category.
+ *
+ * transitions keys: open | in_progress | blocked | review | done | cancelled | closed
+ * categories keys: new | indeterminate | done → resolve | start | reopen | none
+ */
+export interface JiraStatusMap {
+  transitions: Record<string, string>;
+  categories: Record<string, string>;
+}
+
+export type JiraCommentSyncMode = 'off' | 'inbound' | 'outbound' | 'both';
+
+/** `PATCH .../integrations/jira/sync` — any subset; omitted fields are unchanged. */
+export interface JiraSyncSettingsRequest {
+  sync_status?: boolean;
+  sync_comments?: JiraCommentSyncMode;
+  status_map?: JiraStatusMap;
 }
 
 export interface JiraConnectionRequest {
@@ -522,6 +601,16 @@ export interface JiraProject {
   name: string;
   /** Empty on the list endpoint — issue types are fetched lazily per project. */
   issue_types: { name: string; id: string }[];
+}
+
+/** One page of `GET .../integrations/jira/projects?q=&limit=` (GitHub #103).
+ *  Jira filters on key and name server-side; `has_more` means more projects
+ *  match than were returned. */
+export interface JiraProjectPage {
+  projects: JiraProject[];
+  has_more: boolean;
+  query: string | null;
+  limit: number;
 }
 
 export interface JiraIssueType {
@@ -568,6 +657,137 @@ export interface JiraHealth {
   stale_links: JiraStaleLink[];
   publishes_in_progress: JiraPublishActivity[];
   publishes_unknown: JiraPublishActivity[];
+  /** Linked tickets whose pinned custom template has since been archived. */
+  archived_template_references?: {
+    ticket_id: string;
+    template_slug: string;
+    template_version: number | null;
+  }[];
+  /** Mappings whose template override is an archived custom template. */
+  mappings_on_archived_templates?: { project_id: string; template_slug: string }[];
+  /** The connection default is an archived custom template. */
+  connection_default_archived?: boolean;
+  /** Two-way sync health (GitHub #98 part B). */
+  last_inbound_at?: string | null;
+  last_synced_at?: string | null;
+  failed_sync_events_24h?: number;
+  webhook_auth_failures_24h?: number;
+}
+
+/** One row of the two-way sync ledger (GitHub #98 part B). */
+export interface JiraSyncEvent {
+  id: string;
+  ticket_id: string;
+  issue_key: string | null;
+  direction: 'inbound' | 'outbound';
+  kind: string;
+  payload: Record<string, unknown>;
+  jira_event_id: string | null;
+  applied: boolean;
+  error: string | null;
+  created_at: string | null;
+  /** Delivery state: pending (queued/retrying), done, exhausted (gave up), skipped. */
+  state: 'pending' | 'done' | 'exhausted' | 'skipped';
+  retry_count: number;
+  next_attempt_at: string | null;
+  updated_at: string | null;
+}
+
+export interface JiraSyncEventsPage {
+  events: JiraSyncEvent[];
+}
+
+export type JiraTemplateMode = 'verbatim' | 'rewrite';
+
+/** One section *definition* on a template (not a rendered preview section). */
+export interface JiraTemplateSection {
+  key: string;
+  heading: string;
+  mode: JiraTemplateMode;
+  /** Source-field vocabulary: title, description, acceptance_criteria, … */
+  source_fields: string[];
+  /** Rewrite-only; blank on verbatim sections. */
+  guidance: string | null;
+}
+
+export interface JiraTemplate {
+  slug: string;
+  name: string;
+  description: string | null;
+  sections: JiraTemplateSection[];
+  version: number | null;
+  builtin: boolean;
+  archived_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+  created_by_user_id: string | null;
+  updated_by_user_id: string | null;
+}
+
+export interface JiraTemplateSectionRequest {
+  key: string;
+  heading: string;
+  mode: JiraTemplateMode;
+  source_fields: string[];
+  guidance?: string | null;
+}
+
+export interface JiraTemplateRequest {
+  slug: string;
+  name: string;
+  description?: string | null;
+  sections: JiraTemplateSectionRequest[];
+  /** PUT only: the version being edited; a mismatch is 409 template_version_conflict. */
+  expected_version?: number;
+}
+
+/** Body for the deterministic template preview (admin). */
+export interface JiraTemplatePreviewRequest {
+  project_id: string;
+  ticket_id: string;
+  /** Unsaved draft sections; omitted renders the stored template. */
+  sections?: JiraTemplateSectionRequest[];
+  name?: string;
+}
+
+/** A template a member may pick in the promotion dialog (no section details). */
+export interface JiraTemplateChoice {
+  slug: string;
+  name: string;
+  version: number | null;
+  builtin: boolean;
+  /** True only for this ticket's own pinned template after it was archived. */
+  archived?: boolean;
+}
+
+/** `GET .../tickets/{tid}/jira/templates` — the per-ticket picker data. */
+export interface JiraTicketTemplates {
+  templates: JiraTemplateChoice[];
+  inherited_default: JiraResolvedTemplate;
+  pinned: { slug: string; version: number | null } | null;
+}
+
+export interface JiraTemplateVersion {
+  version: number;
+  sections: JiraTemplateSection[];
+  created_by_user_id: string | null;
+  created_at: string | null;
+}
+
+/** The template a draft/link resolved to (or is pinned at). */
+export interface JiraResolvedTemplate {
+  slug: string;
+  name: string;
+  version: number | null;
+}
+
+/** Deterministic draft from `POST .../templates/{slug}/preview` (no model call). */
+export interface JiraTemplatePreview {
+  ticket_id: string;
+  project_id: string;
+  template: JiraResolvedTemplate;
+  summary: string;
+  sections: JiraSection[];
 }
 
 export interface JiraParagraph {
@@ -593,11 +813,15 @@ export interface JiraPreview {
   key_source: string;
   ticket_id: string;
   project_id: string;
+  /** Template the draft resolved to (per-ticket override → mapping → default). */
+  template: JiraResolvedTemplate;
   /** Present when the ticket already links a Jira issue (re-publish). */
   existing?: {
     issue_key: string;
     issue_url: string;
     last_known_status: string | null;
+    template_slug: string | null;
+    template_version: number | null;
   };
   /** Unified diff against the last published text, when re-publishing. */
   diff?: string[];
@@ -607,6 +831,10 @@ export interface JiraPublishRequest {
   summary: string;
   sections: JiraSection[];
   confirm: boolean;
+  /** Per-ticket template override; omitted falls back to mapping then default. */
+  template?: string;
+  /** The previewed template version, echoed back (409 template_changed on mismatch). */
+  template_version?: number | null;
 }
 
 export interface JiraLink {
@@ -618,6 +846,12 @@ export interface JiraLink {
   last_known_status: string | null;
   last_status_checked_at: string | null;
   payload_hash: string | null;
+  /** Present on the publish response (the pinned template slug/version). */
+  template?: JiraResolvedTemplate;
+  /** The org's comment sync pushes SessionFS comments to Jira (outbound/both). */
+  comment_sync_outbound?: boolean;
+  /** Caller may send a comment to Jira: an editor, with outbound comment sync on. */
+  can_send_to_jira?: boolean;
 }
 
 /** Single-ticket link summary embedded on the ticket response. */
@@ -625,6 +859,229 @@ export interface TicketJiraLink {
   issue_key: string;
   issue_url: string;
   last_known_status: string | null;
+}
+
+/* ── Confluence integration (Enterprise, org owner/admin + project editors) ── */
+
+/**
+ * Org Confluence connection. The API token is write-only: the server reports
+ * a last-4 `token_hint` and never the credential itself. When no connection
+ * exists the GET collapses to `{ connected: false, has_token: false }`.
+ */
+export interface ConfluenceConnection {
+  connected: boolean;
+  provider?: string;
+  site_url?: string;
+  account_email?: string;
+  has_token: boolean;
+  token_hint?: string;
+  default_template?: string;
+  batch_window_minutes?: number;
+  enabled?: boolean;
+  last_verified_at?: string | null;
+  connected_by_user_id?: string;
+}
+
+export interface ConfluenceConnectionRequest {
+  site_url: string;
+  account_email: string;
+  api_token: string;
+  default_template: string;
+  batch_window_minutes?: number;
+}
+
+/** `GET .../integrations/confluence/spaces` search result. */
+export interface ConfluenceSpace {
+  key: string;
+  name: string;
+}
+
+/** `GET .../spaces/{key}/pages` returns a bare list of pages. */
+export interface ConfluenceSpacePage {
+  id: string;
+  title: string;
+}
+
+export interface ConfluenceSpaceSearch {
+  spaces: ConfluenceSpace[];
+  has_more: boolean;
+  query: string | null;
+  limit: number;
+}
+
+export interface ConfluenceTemplateSection {
+  key: string;
+  heading: string;
+  mode: 'verbatim' | 'rewrite';
+  source_fields: string[];
+  guidance: string | null;
+}
+
+export interface ConfluenceTemplate {
+  slug: string;
+  name: string;
+  version: number | null;
+  builtin: boolean;
+  sections: ConfluenceTemplateSection[];
+}
+
+export interface ConfluenceMapping {
+  project_id: string;
+  space_key: string;
+  parent_page_id: string;
+  template: string | null;
+  publish_context: boolean;
+  auto_publish_pages: boolean;
+}
+
+export interface ConfluenceMappingRequest {
+  space_key: string;
+  parent_page_id: string;
+  template?: string | null;
+  publish_context?: boolean;
+  auto_publish_pages?: boolean;
+}
+
+export interface ConfluencePushFailure {
+  project_id: string;
+  source_kind: string;
+  source_key: string;
+  failed_at: string | null;
+  reason: string | null;
+}
+
+export interface ConfluencePublishActivity {
+  project_id: string;
+  source_kind: string;
+  source_key: string;
+  started_at: string | null;
+}
+
+export interface ConfluenceDriftedLink {
+  project_id: string;
+  source_kind: string;
+  source_key: string;
+  page_id: string | null;
+  stored_version: number | null;
+}
+
+export interface ConfluenceHealth {
+  unmapped_project_count: number;
+  last_push_failures: ConfluencePushFailure[];
+  publishes_in_progress: ConfluencePublishActivity[];
+  publishes_unknown: { project_id: string; source_kind: string; source_key: string }[];
+  drifted_links: ConfluenceDriftedLink[];
+}
+
+export interface ConfluenceParagraph {
+  text: string;
+  citations: string[];
+}
+
+export interface ConfluenceSection {
+  key: string;
+  heading: string;
+  /** Present on previews ("verbatim" vs "rewrite"); dropped on publish. */
+  mode?: 'verbatim' | 'rewrite';
+  paragraphs: ConfluenceParagraph[];
+}
+
+export interface ConfluenceResolvedTemplate {
+  slug: string;
+  name: string;
+  version: number | null;
+}
+
+/** Deterministic/LLM-shaped draft from `POST .../confluence/preview`. */
+export interface ConfluencePreview {
+  title: string;
+  sections: ConfluenceSection[];
+  citations: string[];
+  llm_used: boolean;
+  key_source: string;
+  project_id: string;
+  source_kind: string;
+  source_key: string;
+  template: ConfluenceResolvedTemplate;
+  /** Model paragraphs dropped for a missing or invalid citation. */
+  dropped?: ConfluenceDroppedParagraph[];
+  /** Informational notes about how the draft was built. */
+  notes?: string[];
+  /** The source's Confluence link in any status; null when there is none. */
+  link?: ConfluenceLink | null;
+  /** Present only when the source links a live (linked, not stale) page. */
+  existing?: {
+    page_id: string;
+    page_url: string;
+    version: number | null;
+    template_slug: string | null;
+    template_version: number | null;
+  };
+}
+
+export interface ConfluenceDroppedParagraph {
+  section: string;
+  text: string;
+  reason: string;
+}
+
+export interface ConfluencePublishRequest {
+  kind: 'wiki_page' | 'context';
+  slug?: string;
+  title: string;
+  sections: ConfluenceSection[];
+  confirm: boolean;
+  /** Echo of the preview's template; a mismatch is a 409 template_changed. */
+  template?: string;
+  /** Echo of the preview's template version (null for built-ins). */
+  template_version?: number | null;
+  /** An explicit template choice (not an echo of the preview). */
+  template_override?: string;
+}
+
+export type ConfluenceLinkStatus = 'linked' | 'unknown' | 'unlinked' | 'drifted' | 'failed';
+
+export interface ConfluenceLink {
+  id: string;
+  source_kind: string;
+  source_key: string;
+  page_id: string | null;
+  page_url: string | null;
+  version: number | null;
+  status: ConfluenceLinkStatus;
+  /** A live publish claim holds the link. */
+  publishing: boolean;
+  /** Link belongs to another org/site: only unlink works. */
+  stale: boolean;
+  template_slug: string | null;
+  template_version: number | null;
+  last_pushed_at: string | null;
+  last_push_failed_at: string | null;
+  last_push_failure: string | null;
+}
+
+/** The project's mapping as seen by any project member. */
+export interface ConfluenceProjectMapping {
+  space_key: string;
+  template: string | null;
+  publish_context: boolean;
+  auto_publish_pages: boolean;
+}
+
+export interface ConfluenceLinksResponse {
+  links: ConfluenceLink[];
+  mapping: ConfluenceProjectMapping;
+}
+
+/** `details` of a 409 confluence_page_drifted error. */
+export interface ConfluenceDriftDetails {
+  error?: string;
+  link_id?: string;
+  page_id?: string | null;
+  stored_version?: number | null;
+  remote_version?: number | null;
+  diff?: string[];
+  diff_truncated?: boolean;
 }
 
 export type GitHubClaimFlow = 'install' | 'authorize';
@@ -705,6 +1162,8 @@ export interface WikiPage {
   entry_count: number;
   auto_generated: boolean;
   updated_at: string;
+  /** Opt-in for the Confluence publish sweep (knowledge_pages.publish). */
+  publish?: boolean;
 }
 
 export interface WikiPageDetail extends WikiPage {
@@ -751,8 +1210,23 @@ export interface ProjectContext {
    *  org). False for readers whose only access is a captured session on the
    *  project's repo. Absent on older servers — treat as editable. */
   can_edit?: boolean | null;
+  /** Whether the caller has project-admin standing (owner, or admin/owner of
+   *  its org): rename, link repos, merge, transfer. No group role grants it.
+   *  Absent on older servers — treat as allowed and let the server decide. */
+  can_admin?: boolean | null;
+  /** Whether the caller may delete this project: the owner or a platform
+   *  admin (org admins can't). Absent on older servers — show the control
+   *  and let the server decide. */
+  can_delete?: boolean | null;
+  /** Whether the caller may start a transfer: the owner of a personal
+   *  project, or an admin of the project's org (an org project's owner alone
+   *  can't). Absent on older servers — fall back to can_admin. */
+  can_transfer?: boolean | null;
   /** Multi-repo: linked repos (populated on detail, omitted on list). */
   repos?: ProjectRepoResponse[];
+  /** Project groups containing this project (GitHub #101). Detail only, and
+   *  only for members of the project's org; absent or null otherwise. */
+  groups?: ProjectGroupSummary[] | null;
   /** Multi-repo: set when all repos were reclaimed (orphaned project). */
   repo_reclaimed_at?: string | null;
   /** Multi-repo: set when this project was merged into another. */
@@ -1156,6 +1630,33 @@ export interface TicketComment {
   content: string;
   session_id: string | null;
   created_at: string;
+  /** 'sessionfs' (in-app/CLI) or 'jira' (mirrored inbound from Jira). */
+  source?: string;
+}
+
+/** One trusted review round, derived server-side from verdict comments. */
+export interface TicketReviewRound {
+  round: number;
+  /** Alias-folded: VERIFIED-CLEAN or CHANGES_REQUESTED. */
+  verdict: string;
+  raw_verdict: string;
+  is_strict_verified_clean: boolean;
+  /** The verdict comment this round came from. */
+  comment_id: string;
+  timestamp: string;
+  findings_raised: number;
+}
+
+/** `GET .../tickets/{id}/review-state`. Only comments the server stamped as a
+ *  trusted reviewer's verdict count as rounds; null without any. */
+export interface TicketReviewState {
+  ticket_id: string;
+  review_state: {
+    open_findings: { severity: string; text: string; round: number }[];
+    closed_findings: { severity: string; text: string; round: number }[];
+    last_verdict: string | null;
+    rounds: TicketReviewRound[];
+  } | null;
 }
 
 /** `GET /api/v1/tickets/{id}`: a ticket looked up by id alone, for previews. */
@@ -1966,6 +2467,57 @@ export interface RevocationFeed {
   has_more?: boolean;
 }
 
+// ── Project groups (GitHub #101) ──
+
+/** A member's role in a project group. Org admins/owners always act as `admin`. */
+export type ProjectGroupRole = 'reader' | 'editor' | 'admin';
+
+export interface ProjectGroupSummary {
+  id: string;
+  org_id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  /** Explicit grants on the group (org admins' implicit standing is not counted). */
+  member_count: number;
+  project_count: number;
+  /** The caller's effective role; null when they have no standing. */
+  my_role: ProjectGroupRole | null;
+}
+
+export interface ProjectGroupMember {
+  user_id: string;
+  email: string;
+  role: ProjectGroupRole;
+  granted_by_user_id: string | null;
+  created_at: string | null;
+}
+
+export interface ProjectGroupDetail {
+  id: string;
+  org_id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  my_role: ProjectGroupRole | null;
+  members: ProjectGroupMember[];
+  /** Ids of the member projects. */
+  projects: string[];
+}
+
+export interface ProjectGroupCreate {
+  name: string;
+  slug?: string;
+  description?: string | null;
+}
+
+/** Partial update: omitted keys stay; `description: null` clears it. */
+export interface ProjectGroupUpdate {
+  name?: string;
+  slug?: string;
+  description?: string | null;
+}
+
 export class ApiError extends Error {
   status: number;
   /** v0.10.x envelope code, when the response body parses cleanly. */
@@ -2314,8 +2866,15 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     deleteJiraConnection: (orgId: string) =>
       request<void>(`/api/v1/orgs/${orgId}/integrations/jira`, { method: 'DELETE' }),
 
-    listJiraProjects: (orgId: string) =>
-      request<JiraProject[]>(`/api/v1/orgs/${orgId}/integrations/jira/projects`),
+    searchJiraProjects: (orgId: string, params: { q?: string; limit?: number } = {}) => {
+      const qs = new URLSearchParams();
+      const q = params.q?.trim();
+      if (q) qs.set('q', q.slice(0, 100));
+      qs.set('limit', String(params.limit ?? 50));
+      return request<JiraProjectPage>(
+        `/api/v1/orgs/${orgId}/integrations/jira/projects?${qs.toString()}`,
+      );
+    },
 
     listJiraIssueTypes: (orgId: string, projectKey: string) =>
       request<JiraIssueType[]>(
@@ -2339,6 +2898,165 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     getJiraHealth: (orgId: string) =>
       request<JiraHealth>(`/api/v1/orgs/${orgId}/integrations/jira/health`),
+
+    getJiraSyncEvents: (
+      orgId: string,
+      params: { limit?: number; direction?: 'inbound' | 'outbound' } = {},
+    ) => {
+      const qs = new URLSearchParams();
+      qs.set('limit', String(params.limit ?? 50));
+      if (params.direction) qs.set('direction', params.direction);
+      return request<JiraSyncEventsPage>(
+        `/api/v1/orgs/${orgId}/integrations/jira/sync-events?${qs.toString()}`,
+      );
+    },
+
+    updateJiraSync: (orgId: string, body: JiraSyncSettingsRequest) =>
+      request<JiraConnection>(`/api/v1/orgs/${orgId}/integrations/jira/sync`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+
+    rotateJiraWebhookSecret: (orgId: string) =>
+      request<{ webhook_secret: string; webhook_secret_last4: string }>(
+        `/api/v1/orgs/${orgId}/integrations/jira/webhook-secret`,
+        { method: 'POST' },
+      ),
+
+    // Org-custom Jira templates (admin-only). Built-ins are returned first,
+    // read-only (`builtin: true`, `version: null`).
+    listJiraTemplates: (orgId: string) =>
+      request<JiraTemplate[]>(`/api/v1/orgs/${orgId}/integrations/jira/templates`),
+
+    createJiraTemplate: (orgId: string, body: JiraTemplateRequest) =>
+      request<JiraTemplate>(`/api/v1/orgs/${orgId}/integrations/jira/templates`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+
+    getJiraTemplate: (orgId: string, slug: string) =>
+      request<JiraTemplate>(
+        `/api/v1/orgs/${orgId}/integrations/jira/templates/${encodeURIComponent(slug)}`,
+      ),
+
+    updateJiraTemplate: (orgId: string, slug: string, body: JiraTemplateRequest) =>
+      request<JiraTemplate>(
+        `/api/v1/orgs/${orgId}/integrations/jira/templates/${encodeURIComponent(slug)}`,
+        { method: 'PUT', body: JSON.stringify(body) },
+      ),
+
+    deleteJiraTemplate: (orgId: string, slug: string) =>
+      request<void>(
+        `/api/v1/orgs/${orgId}/integrations/jira/templates/${encodeURIComponent(slug)}`,
+        { method: 'DELETE' },
+      ),
+
+    listJiraTemplateVersions: (orgId: string, slug: string) =>
+      request<JiraTemplateVersion[]>(
+        `/api/v1/orgs/${orgId}/integrations/jira/templates/${encodeURIComponent(slug)}/versions`,
+      ),
+
+    unarchiveJiraTemplate: (orgId: string, slug: string) =>
+      request<JiraTemplate>(
+        `/api/v1/orgs/${orgId}/integrations/jira/templates/${encodeURIComponent(slug)}/unarchive`,
+        { method: 'POST' },
+      ),
+
+    previewJiraTemplate: (orgId: string, slug: string, body: JiraTemplatePreviewRequest) =>
+      request<JiraTemplatePreview>(
+        `/api/v1/orgs/${orgId}/integrations/jira/templates/${encodeURIComponent(slug)}/preview`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+
+    // Confluence integration (Enterprise). Org routes are owner/admin only;
+    // the project routes reuse knowledge:read / knowledge:write.
+    getConfluenceConnection: (orgId: string) =>
+      request<ConfluenceConnection>(`/api/v1/orgs/${orgId}/integrations/confluence`),
+
+    saveConfluenceConnection: (orgId: string, body: ConfluenceConnectionRequest) =>
+      request<ConfluenceConnection>(`/api/v1/orgs/${orgId}/integrations/confluence`, {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      }),
+
+    deleteConfluenceConnection: (orgId: string) =>
+      request<void>(`/api/v1/orgs/${orgId}/integrations/confluence`, { method: 'DELETE' }),
+
+    searchConfluenceSpaces: (orgId: string, params: { q?: string; limit?: number } = {}) => {
+      const qs = new URLSearchParams();
+      if (params.q) qs.set('q', params.q);
+      if (params.limit) qs.set('limit', String(params.limit));
+      return request<ConfluenceSpaceSearch>(
+        `/api/v1/orgs/${orgId}/integrations/confluence/spaces?${qs.toString()}`,
+      );
+    },
+
+    listConfluenceSpacePages: (
+      orgId: string,
+      spaceKey: string,
+      params: { q?: string; limit?: number } = {},
+    ) => {
+      const qs = new URLSearchParams();
+      if (params.q) qs.set('q', params.q);
+      if (params.limit) qs.set('limit', String(params.limit));
+      return request<ConfluenceSpacePage[]>(
+        `/api/v1/orgs/${orgId}/integrations/confluence/spaces/${encodeURIComponent(spaceKey)}/pages?${qs.toString()}`,
+      );
+    },
+
+    listConfluenceTemplates: (orgId: string) =>
+      request<ConfluenceTemplate[]>(`/api/v1/orgs/${orgId}/integrations/confluence/templates`),
+
+    listConfluenceMappings: (orgId: string) =>
+      request<ConfluenceMapping[]>(`/api/v1/orgs/${orgId}/integrations/confluence/mappings`),
+
+    saveConfluenceMapping: (orgId: string, projectId: string, body: ConfluenceMappingRequest) =>
+      request<ConfluenceMapping>(
+        `/api/v1/orgs/${orgId}/integrations/confluence/mappings/${encodeURIComponent(projectId)}`,
+        { method: 'PUT', body: JSON.stringify(body) },
+      ),
+
+    deleteConfluenceMapping: (orgId: string, projectId: string) =>
+      request<void>(
+        `/api/v1/orgs/${orgId}/integrations/confluence/mappings/${encodeURIComponent(projectId)}`,
+        { method: 'DELETE' },
+      ),
+
+    getConfluenceHealth: (orgId: string) =>
+      request<ConfluenceHealth>(`/api/v1/orgs/${orgId}/integrations/confluence/health`),
+
+    previewConfluence: (
+      projectId: string,
+      body: { kind: 'wiki_page' | 'context'; slug?: string; template_override?: string },
+    ) =>
+      request<ConfluencePreview>(`/api/v1/projects/${projectId}/confluence/preview`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+
+    publishConfluence: (projectId: string, body: ConfluencePublishRequest) =>
+      request<{ page_id: string; page_url: string; version: number }>(
+        `/api/v1/projects/${projectId}/confluence/publish`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+
+    listConfluenceLinks: (projectId: string) =>
+      request<ConfluenceLinksResponse>(`/api/v1/projects/${projectId}/confluence/links`),
+
+    unlinkConfluence: (projectId: string, linkId: string) =>
+      request<void>(`/api/v1/projects/${projectId}/confluence/links/${encodeURIComponent(linkId)}`, {
+        method: 'DELETE',
+      }),
+
+    resolveConfluenceLink: (
+      projectId: string,
+      linkId: string,
+      body: { action: 'overwrite' | 'unlink' },
+    ) =>
+      request<{ id: string; status: string }>(
+        `/api/v1/projects/${projectId}/confluence/links/${encodeURIComponent(linkId)}/resolve`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
 
     // Session helper (Enterprise) — read-only conversation management + status.
     // Turn streaming bypasses request() (raw fetch + ReadableStream) because it
@@ -2388,9 +3106,10 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     getHelperAction: (actionId: string) =>
       request<HelperAction>(`/api/v1/helper/actions/${encodeURIComponent(actionId)}`),
 
-    confirmHelperAction: (actionId: string) =>
+    confirmHelperAction: (actionId: string, body?: HelperActionConfirmBody) =>
       request<HelperAction>(`/api/v1/helper/actions/${encodeURIComponent(actionId)}/confirm`, {
         method: 'POST',
+        ...(body ? { body: JSON.stringify(body) } : {}),
       }),
 
     cancelHelperAction: (actionId: string) =>
@@ -2848,8 +3567,18 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     updateWikiPage: (projectId: string, slug: string, content: string, title?: string) =>
       request<WikiPage>(`/api/v1/projects/${projectId}/pages/${encodeURIComponent(slug)}`, {
         method: 'PUT',
-        body: JSON.stringify({ content, ...(title ? { title } : {}) }),
+        body: JSON.stringify({
+          content,
+          ...(title ? { title } : {}),
+        }),
       }),
+
+    /** Flip only the Confluence publish opt-in (no content write, no revision). */
+    setWikiPagePublish: (projectId: string, slug: string, publish: boolean) =>
+      request<{ slug: string; publish: boolean }>(
+        `/api/v1/projects/${projectId}/pages/${encodeURIComponent(slug)}`,
+        { method: 'PATCH', body: JSON.stringify({ publish }) },
+      ),
 
     deleteWikiPage: (projectId: string, slug: string) =>
       request<void>(`/api/v1/projects/${projectId}/pages/${encodeURIComponent(slug)}`, {
@@ -3047,21 +3776,33 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         `/api/v1/projects/${projectId}/tickets/${ticketId}/comments`,
       ),
 
-    addTicketComment: (projectId: string, ticketId: string, content: string) =>
+    addTicketComment: (
+      projectId: string,
+      ticketId: string,
+      content: string,
+      sendToJira?: boolean,
+    ) =>
       request<TicketComment>(
         `/api/v1/projects/${projectId}/tickets/${ticketId}/comments`,
         {
           method: 'POST',
-          body: JSON.stringify({ content }),
+          body: JSON.stringify(
+            sendToJira === undefined ? { content } : { content, send_to_jira: sendToJira },
+          ),
         },
       ),
 
     // Jira promotion (any project member with ticket write access; unlink is
     // project-admin only).
-    previewJira: (projectId: string, ticketId: string) =>
+    listTicketJiraTemplates: (projectId: string, ticketId: string) =>
+      request<JiraTicketTemplates>(
+        `/api/v1/projects/${projectId}/tickets/${ticketId}/jira/templates`,
+      ),
+
+    previewJira: (projectId: string, ticketId: string, body?: { template?: string }) =>
       request<JiraPreview>(
         `/api/v1/projects/${projectId}/tickets/${ticketId}/jira/preview`,
-        { method: 'POST' },
+        { method: 'POST', body: body ? JSON.stringify(body) : undefined },
       ),
 
     publishJira: (projectId: string, ticketId: string, body: JiraPublishRequest) =>
@@ -3072,6 +3813,16 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     getJiraLink: (projectId: string, ticketId: string) =>
       request<JiraLink>(`/api/v1/projects/${projectId}/tickets/${ticketId}/jira`),
+
+    getTicketReviewState: (projectId: string, ticketId: string) =>
+      request<TicketReviewState>(
+        `/api/v1/projects/${projectId}/tickets/${ticketId}/review-state`,
+      ),
+
+    getTicketJiraSyncEvents: (projectId: string, ticketId: string) =>
+      request<JiraSyncEventsPage>(
+        `/api/v1/projects/${projectId}/tickets/${ticketId}/jira-sync-events`,
+      ),
 
     unlinkJira: (projectId: string, ticketId: string) =>
       request<void>(`/api/v1/projects/${projectId}/tickets/${ticketId}/jira`, {
@@ -3276,6 +4027,12 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         `/api/v1/orgs/${encodeURIComponent(orgId)}/skills/assignments/updates${qs ? `?${qs}` : ''}`,
       );
     },
+
+    /** How many held updates the org has, without building any diff. */
+    countHeldUpdates: (orgId: string) =>
+      request<{ count: number; has_more: boolean }>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/skills/assignments/updates/count`,
+      ),
 
     advanceAssignment: (orgId: string, assignmentId: string, input: AdvanceAssignmentInput) =>
       request<SkillAssignment & { update_class: string; previous_assignment_id: string }>(
@@ -3566,6 +4323,63 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       request<{ items: (MarketplacePackage & { moderation_reason?: string | null })[]; count: number }>(
         `/api/v1/publishers/${encodeURIComponent(publisherId)}/listings`,
       ),
+
+    // ── Project groups (GitHub #101) ──
+    listOrgGroups: (orgId: string) =>
+      request<ProjectGroupSummary[]>(`/api/v1/orgs/${encodeURIComponent(orgId)}/groups`),
+
+    createGroup: (orgId: string, body: ProjectGroupCreate) =>
+      request<ProjectGroupDetail>(`/api/v1/orgs/${encodeURIComponent(orgId)}/groups`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+
+    getGroup: (orgId: string, groupId: string) =>
+      request<ProjectGroupDetail>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/groups/${encodeURIComponent(groupId)}`,
+      ),
+
+    updateGroup: (orgId: string, groupId: string, body: ProjectGroupUpdate) =>
+      request<ProjectGroupDetail>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/groups/${encodeURIComponent(groupId)}`,
+        { method: 'PATCH', body: JSON.stringify(body) },
+      ),
+
+    deleteGroup: (orgId: string, groupId: string) =>
+      request<void>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/groups/${encodeURIComponent(groupId)}`,
+        { method: 'DELETE' },
+      ),
+
+    /** Grant a member, or change their role (PUT is idempotent). */
+    grantGroupMember: (orgId: string, groupId: string, userId: string, role: ProjectGroupRole) =>
+      request<ProjectGroupDetail>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
+        { method: 'PUT', body: JSON.stringify({ role }) },
+      ),
+
+    revokeGroupMember: (orgId: string, groupId: string, userId: string) =>
+      request<ProjectGroupDetail>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
+        { method: 'DELETE' },
+      ),
+
+    addGroupProject: (orgId: string, groupId: string, projectId: string) =>
+      request<ProjectGroupDetail>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/groups/${encodeURIComponent(groupId)}/projects/${encodeURIComponent(projectId)}`,
+        { method: 'PUT' },
+      ),
+
+    removeGroupProject: (orgId: string, groupId: string, projectId: string) =>
+      request<ProjectGroupDetail>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/groups/${encodeURIComponent(groupId)}/projects/${encodeURIComponent(projectId)}`,
+        { method: 'DELETE' },
+      ),
+
+    listProjectGroups: (projectId: string) =>
+      request<ProjectGroupSummary[]>(`/api/v1/projects/${encodeURIComponent(projectId)}/groups`),
+
+    listMyGroups: () => request<ProjectGroupSummary[]>('/api/v1/me/groups'),
 
     // ── Share Links (v0.14.0) ──
     createShareLink: (sessionId: string, body: { expires_in_hours?: number; password?: string }) =>

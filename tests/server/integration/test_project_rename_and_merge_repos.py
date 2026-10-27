@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 
@@ -26,7 +27,10 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.models import (
+    KnowledgeEntry,
+    KnowledgeLink,
     Organization,
+    Ticket,
     OrgMember,
     Project,
     ProjectRepo,
@@ -378,3 +382,119 @@ async def test_merge_auto_links_source_repos_into_target(
     )
     assert resolved is not None
     assert resolved.id == target.id
+
+
+# ── GitHub #105: merge with knowledge-entry collisions ─────────────────
+
+
+def _entry(project_id: str, user_id: str, content: str, **kw) -> KnowledgeEntry:
+    return KnowledgeEntry(
+        project_id=project_id,
+        session_id="manual",
+        user_id=user_id,
+        entry_type="decision",
+        content=content,
+        **kw,
+    )
+
+
+@pytest.mark.asyncio
+async def test_merge_with_duplicate_knowledge_entries_returns_200(
+    client: AsyncClient,
+    auth_headers: dict,
+    test_user: User,
+    db_session: AsyncSession,
+):
+    """A merge that skips duplicate KB entries used to commit and then 500
+    while building the response (integer ids vs a list[str] field). It must
+    return 200 with the integer ids, re-point links and supersession at the
+    target's equivalent entry, and leave the duplicate behind."""
+    source = await _make_project(
+        db_session, owner=test_user, remote="github.com/a/merge-kb-src",
+    )
+    target = await _make_project(
+        db_session, owner=test_user, remote="github.com/a/merge-kb-tgt",
+    )
+    tgt_dup = _entry(target.id, test_user.id, "We use Postgres for storage.")
+    src_dup = _entry(source.id, test_user.id, "We use  Postgres for storage.")
+    src_other = _entry(source.id, test_user.id, "Sessions are append-only.")
+    db_session.add_all([tgt_dup, src_dup, src_other])
+    await db_session.flush()
+    # A moved entry superseded by the duplicate, and a link touching it.
+    src_old = _entry(
+        source.id, test_user.id, "We used SQLite for storage.",
+        superseded_by=src_dup.id,
+    )
+    db_session.add(src_old)
+    await db_session.flush()
+    link = KnowledgeLink(
+        project_id=source.id,
+        source_type="entry",
+        source_id=str(src_dup.id),
+        target_type="entry",
+        target_id=str(src_other.id),
+        link_type="related",
+    )
+    page_link = KnowledgeLink(
+        project_id=source.id,
+        source_type="entry",
+        source_id=str(src_other.id),
+        target_type="page",
+        target_id=str(src_dup.id),
+        link_type="contributes",
+    )
+    # A source link that duplicates a target link once remapped.
+    tgt_link = KnowledgeLink(
+        project_id=target.id,
+        source_type="entry",
+        source_id=str(tgt_dup.id),
+        target_type="entry",
+        target_id="999999",
+        link_type="related",
+    )
+    dup_link = KnowledgeLink(
+        project_id=source.id,
+        source_type="entry",
+        source_id=str(src_dup.id),
+        target_type="entry",
+        target_id="999999",
+        link_type="related",
+    )
+    ticket = Ticket(
+        id="tk_merge105",
+        project_id=source.id,
+        title="Uses the storage decision",
+        created_by_user_id=test_user.id,
+        knowledge_entry_ids=f"[{src_dup.id}, {src_other.id}]",
+        context_refs=f'["{src_dup.id}", "session:x"]',
+    )
+    db_session.add_all([link, page_link, tgt_link, dup_link, ticket])
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{target.id}/merge",
+        json={"source_project_id": source.id, "dry_run": False},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["skipped_ke_ids"] == [src_dup.id]
+    assert body["skipped_link_ids"] == [dup_link.id]
+
+    await db_session.refresh(src_old)
+    await db_session.refresh(src_other)
+    await db_session.refresh(link)
+    await db_session.refresh(page_link)
+    assert src_old.project_id == target.id
+    assert src_old.superseded_by == tgt_dup.id
+    assert src_other.project_id == target.id
+    assert link.project_id == target.id
+    assert link.source_id == str(tgt_dup.id)
+    assert link.target_id == str(src_other.id)
+    # A page endpoint is never rewritten as if it were an entry id.
+    assert page_link.target_id == str(src_dup.id)
+
+    await db_session.refresh(ticket)
+    assert ticket.project_id == target.id
+    assert json.loads(ticket.knowledge_entry_ids) == [tgt_dup.id, src_other.id]
+    assert json.loads(ticket.context_refs) == [str(tgt_dup.id), "session:x"]

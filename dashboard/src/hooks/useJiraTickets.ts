@@ -9,17 +9,28 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { useAuth } from '../auth/AuthContext';
-import type { JiraLink, JiraPreview, JiraPublishRequest } from '../api/client';
+import type {
+  JiraLink,
+  JiraPreview,
+  JiraPublishRequest,
+  JiraTicketTemplates,
+} from '../api/client';
 
+/**
+ * Draft for a ticket. `template` is the per-ticket choice from the promotion
+ * dialog's picker; omitted, the server resolves mapping → connection default.
+ */
 export function useJiraPreview(
   projectId: string | undefined,
   ticketId: string | undefined,
   enabled: boolean,
+  template?: string,
 ) {
   const { auth } = useAuth();
   return useQuery<JiraPreview>({
-    queryKey: ['jiraPreview', projectId, ticketId],
-    queryFn: () => auth!.client.previewJira(projectId!, ticketId!),
+    queryKey: ['jiraPreview', projectId, ticketId, template ?? null],
+    queryFn: () =>
+      auth!.client.previewJira(projectId!, ticketId!, template ? { template } : undefined),
     enabled: !!auth && !!projectId && !!ticketId && enabled,
     // A draft is built from the live ticket each time and can carry a
     // re-publish diff, so never serve a stale preview. The dialog also
@@ -77,5 +88,21 @@ export function useUnlinkJira(projectId: string | undefined) {
       void queryClient.invalidateQueries({ queryKey: ['tickets', projectId] });
       void queryClient.invalidateQueries({ queryKey: ['jiraLink', projectId, ticketId] });
     },
+  });
+}
+
+/** Templates a member may pick for this ticket (minimal: slug/name/version). */
+export function useTicketJiraTemplates(
+  projectId: string | undefined,
+  ticketId: string | undefined,
+  enabled: boolean,
+) {
+  const { auth } = useAuth();
+  return useQuery<JiraTicketTemplates>({
+    queryKey: ['jiraTicketTemplates', projectId, ticketId],
+    queryFn: () => auth!.client.listTicketJiraTemplates(projectId!, ticketId!),
+    enabled: !!auth && !!projectId && !!ticketId && enabled,
+    staleTime: 0,
+    retry: false,
   });
 }

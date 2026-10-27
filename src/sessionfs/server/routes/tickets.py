@@ -39,25 +39,21 @@ from __future__ import annotations
 
 import json
 import logging
-import secrets
 import uuid
 from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, field_validator
-from sqlalchemy import and_, func, insert, literal, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy import false as sa_false
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import AuthContext, get_current_user, require_scope
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
-    AgentFeedback,
     AgentPersona,
     KnowledgeEntry,
-    Organization,
     Project,
     RetrievalAuditContext,
     Ticket,
@@ -67,11 +63,19 @@ from sessionfs.server.db.models import (
     TicketWatcher,
     TrustedReviewer,
     User,
-    WorkQueueItem,
 )
 from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.routes.wiki import _get_project_or_404
-from sessionfs.server.services import ticket_watchers
+from sessionfs.server.services import jira_sync, ticket_transitions, ticket_watchers
+from sessionfs.server.services.ticket_transitions import TransitionRefused
+from sessionfs.server.services.ticket_writes import (
+    apply_ticket_update,
+    assert_lease_epoch as _assert_lease_epoch,
+    assert_lease_required_mode as _assert_lease_required_mode,
+    authorize_ticket_edit,
+    insert_ticket_comment,
+    resolve_persona_name as _resolve_persona_name,
+)
 from sessionfs.server.tier_gate import UserContext, check_project_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/projects", tags=["tickets"])
@@ -91,21 +95,10 @@ logger = logging.getLogger("sessionfs.api")
 # FSM (open → in_progress → closed, cancelled as escape valve).
 # Issue status is manual-close by Compass — NOT auto-derived from
 # children, per CEO direction.
-_LEGAL_TRANSITIONS_TASK: dict[str, set[str]] = {
-    "suggested": {"open", "cancelled"},
-    "open": {"in_progress", "cancelled"},
-    "in_progress": {"blocked", "review"},
-    "blocked": {"in_progress"},
-    "review": {"done", "open"},
-    "done": set(),
-    "cancelled": set(),
-}
-_LEGAL_TRANSITIONS_ISSUE: dict[str, set[str]] = {
-    "open": {"in_progress", "cancelled"},
-    "in_progress": {"closed", "open", "cancelled"},
-    "closed": set(),
-    "cancelled": set(),
-}
+# The FSM tables live in services.ticket_transitions (shared with the Jira
+# webhook); these names are kept for existing importers.
+_LEGAL_TRANSITIONS_TASK = ticket_transitions.LEGAL_TRANSITIONS_TASK
+_LEGAL_TRANSITIONS_ISSUE = ticket_transitions.LEGAL_TRANSITIONS_ISSUE
 # Back-compat alias for any caller importing the old name. Tasks are
 # the existing behavior, so `_LEGAL_TRANSITIONS` keeps mapping to the
 # Task FSM.
@@ -118,128 +111,48 @@ _AGENT_TICKET_DESC_MIN = 20
 _AGENT_TICKET_PER_SESSION_CAP = 3
 
 
-async def _resolve_persona_name(
-    db: AsyncSession, project_id: str, name: str, *, org_id: str | None
-) -> str | None:
-    """Normalize a persona name to the canonical DB-side casing.
-
-    Codex v0.10.23 tk_884b2321fdb74170 — `.agents/*.md` filenames are
-    conventionally capitalized (`atlas-backend.md`) while
-    `agent_personas.name` rows are stored lowercase. Without
-    normalization, tickets land with `assigned_to='Atlas'` and the
-    start_ticket resolver's exact-match lookup against `'atlas'`
-    fails. Returns the canonical persona name (whatever case the
-    active row stores) if a case-insensitive match exists; else None.
-
-    Codex R1 LOW (same ticket) — uses `.first()` with deterministic
-    ordering rather than `.scalar_one_or_none()` so the resolver
-    never raises `MultipleResultsFound` even if a project somehow has
-    case-distinct duplicate active personas (e.g. `atlas` AND `Atlas`).
-    The persona-create endpoint also rejects case-insensitive
-    duplicates as a separate guard so this defensive `.first()` only
-    matters for legacy rows.
-    """
-    # GH #70 — project persona first, then the project's org persona.
-    from sessionfs.server.services.personas import resolve_persona
-
-    row = await resolve_persona(
-        db, project_id, name, org_id=org_id, active_only=True, case_insensitive=True
-    )
-    return row.name if row is not None else None
-
-
-async def _maybe_capture_route_feedback(
-    db: AsyncSession,
-    project_id: str,
-    ticket: Ticket,
-    old_assigned: str | None,
-    new_assigned: str,
-    reassigned_by: User,
-) -> None:
-    """v0.17.0 — best-effort auto-capture of route feedback on reassignment.
-
-    Fires when a ticket with agent provenance (a `created_by_persona` is set,
-    or it was created by a service key) is MOVED from one persona to a different
-    one. A first assignment (no previous owner) is not a routing mistake.
-    Records one canonical `route / negative / wrong_route` row per
-    (ticket, new owner), `source=auto`, attributed to the user who made the
-    reassignment (this route only admits user keys). A ticket with no agent
-    identity (e.g. created with source="agent" but no persona) is skipped:
-    there is no agent the record could judge.
-
-    Never raises — a feedback-write bug must not break ticket reassignment.
-    """
-    try:
-        if not old_assigned or old_assigned == new_assigned:
-            return
-        agent_created = (
-            ticket.created_by_persona is not None
-            or ticket.actor_type == "service_key"
-        )
-        if not agent_created:
-            return
-        # Write the reassignment's own pending changes OUTSIDE the savepoint
-        # first; otherwise the query below would autoflush them into it and a
-        # savepoint rollback would silently discard the reassignment.
-        await db.flush()
-        # Once per (ticket, new owner). Everything below runs inside a
-        # savepoint: on PostgreSQL any failed
-        # statement (or a racing insert hitting the partial unique index)
-        # would otherwise abort the outer transaction and turn a valid
-        # reassignment into a 500. The savepoint rolls back on its own.
-        async with db.begin_nested():
-            # Only an earlier AUTOMATIC record counts as a duplicate: a human
-            # recording the same judgement must not suppress the automatic one.
-            existing = (
-                await db.execute(
-                    select(AgentFeedback.id)
-                    .where(
-                        AgentFeedback.ticket_id == ticket.id,
-                        AgentFeedback.source == "auto",
-                        AgentFeedback.label == "wrong_route",
-                        AgentFeedback.final_owner == new_assigned,
-                    )
-                    .limit(1)
-                )
-            ).scalar_one_or_none()
-            if existing is not None:
-                return
-            db.add(
-                AgentFeedback(
-                    id=f"afb_{secrets.token_hex(12)}",
-                    project_id=project_id,
-                    ticket_id=ticket.id,
-                    feedback_type="route",
-                    verdict="negative",
-                    label="wrong_route",
-                    final_owner=new_assigned,
-                    source="auto",
-                    created_at=datetime.now(timezone.utc),
-                    created_by_user_id=reassigned_by.id,
-                    actor_type="user",
-                )
-            )
-    except IntegrityError:
-        pass  # a concurrent reassignment already recorded it
-    except Exception:  # noqa: BLE001 — best-effort; never fail reassignment
-        logger.exception("auto-capture route feedback failed (best-effort)")
-
-
 def _legal_next(current: str, kind: str = "task") -> set[str]:
-    table = (
-        _LEGAL_TRANSITIONS_ISSUE if kind == "issue" else _LEGAL_TRANSITIONS_TASK
-    )
-    return table.get(current, set())
+    return ticket_transitions.legal_next(current, kind)
 
 
 def _assert_transition(current: str, target: str, kind: str = "task") -> None:
     if target not in _legal_next(current, kind):
-        legal = sorted(_legal_next(current, kind)) or ["(none — terminal state)"]
         raise HTTPException(
-            400,
-            f"Cannot transition from {current!r} to {target!r}. "
-            f"Legal transitions from {current!r}: {', '.join(legal)}.",
+            400, ticket_transitions.illegal_transition_message(current, target, kind)
         )
+
+
+async def _jira_enqueue_status(
+    db: AsyncSession,
+    project: Project,
+    ticket: Ticket,
+    *,
+    user_id: str,
+    key_kind: str = "user",
+) -> list[str]:
+    """Queue the outbound Jira push for a ticket status change (two-way sync).
+
+    Only an actor with edit standing on the project (or a service key, which
+    already passed its org / project-allowlist boundary) drives Jira; a
+    reader's lifecycle moves on tickets they created stay inside SessionFS.
+    The outbox row is written in the request transaction (so a lost
+    background task is retried by the sweep) inside a SAVEPOINT: any failure
+    is logged and swallowed, never failing the ticket request.
+    """
+    try:
+        if key_kind != "service":
+            from sessionfs.server.auth.project_access import user_can_edit_project
+
+            if not await user_can_edit_project(db, user_id, project):
+                return []
+        return await jira_sync.enqueue_status_change(db, ticket)
+    except Exception as exc:  # noqa: BLE001 — best-effort side channel
+        logger.warning(
+            "jira outbound enqueue failed for ticket %s: %s",
+            ticket.id,
+            type(exc).__name__,
+        )
+        return []
 
 
 # ── Request / response models ──
@@ -442,6 +355,10 @@ class CommentCreate(BaseModel):
     author_persona: str | None = None
     session_id: str | None = None
     lease_epoch: int | None = None
+    # Best-effort push of this comment to the linked Jira issue. Honored only
+    # for editor-tier callers (two-way sync); a plain contributor's flag is
+    # ignored so a read-mostly role can't drive outbound Jira comments.
+    send_to_jira: bool = False
 
     @field_validator("content")
     @classmethod
@@ -462,6 +379,9 @@ class CommentResponse(BaseModel):
     content: str
     session_id: str | None
     created_at: datetime
+    # 'sessionfs' for comments written in-app/CLI; 'jira' for inbound Jira
+    # comments and "Edited in Jira" system notes (never a trusted verdict).
+    source: str = "sessionfs"
 
 
 # ── Helpers ──
@@ -520,69 +440,6 @@ def _to_response(
         updated_at=t.updated_at,
         resolved_at=t.resolved_at,
     )
-
-
-def _assert_lease_epoch(ticket: Ticket, lease_epoch: int | None) -> None:
-    """Reject stale ticket writers when callers opt into lease fencing."""
-    if lease_epoch is None:
-        return
-    if lease_epoch != ticket.lease_epoch:
-        raise HTTPException(
-            409,
-            (
-                f"Stale ticket lease: provided lease_epoch={lease_epoch}, "
-                f"current lease_epoch={ticket.lease_epoch}."
-            ),
-        )
-
-
-async def _assert_lease_required_mode(
-    project_id: str,
-    db: AsyncSession,
-    lease_epoch: int | None,
-    auth: AuthContext | None = None,
-) -> None:
-    """v0.10.7 — defense-in-depth: enforce org-level lease_epoch requirement.
-
-    When the project's org has settings.require_lease_epoch_on_ticket_writes
-    set to true, reject any complete/comment/accept that omits lease_epoch
-    with 422. Personal projects (no org_id) and orgs without the setting
-    continue to accept omitted lease (existing v0.10.4 opt-in semantics).
-    """
-    if lease_epoch is not None:
-        # Caller supplied it; _assert_lease_epoch handles staleness.
-        return
-    project = (
-        await db.execute(select(Project).where(Project.id == project_id))
-    ).scalar_one_or_none()
-    if project is None:
-        return
-    org_id = (
-        auth.org_id
-        if auth is not None and auth.key_kind == "service"
-        else project.org_id
-    )
-    if org_id is None:
-        return
-    org = (
-        await db.execute(select(Organization).where(Organization.id == org_id))
-    ).scalar_one_or_none()
-    if org is None:
-        return
-    try:
-        settings = json.loads(org.settings or "{}")
-    except (json.JSONDecodeError, TypeError):
-        settings = {}
-    if settings.get("require_lease_epoch_on_ticket_writes") is True:
-        raise HTTPException(
-            422,
-            (
-                "Organization requires lease_epoch on ticket writes "
-                "(setting: require_lease_epoch_on_ticket_writes). Pass "
-                "lease_epoch from your active ticket bundle, or ask an "
-                "admin to disable the requirement."
-            ),
-        )
 
 
 # v0.10.1 Phase 4 — persona context compilation.
@@ -1553,18 +1410,7 @@ async def update_ticket(
     # is not durably reflected on the Ticket row — so server-side we
     # admit ticket creator + project admin. Future work could persist
     # a current-lease-holder column and admit that too.
-    async def _authorize_ticket_edit() -> None:
-        if ticket.created_by_user_id != user.id:
-            from sessionfs.server.auth.project_access import user_is_project_admin
-
-            if not await user_is_project_admin(db, user.id, project):
-                raise HTTPException(
-                    403,
-                    "Only the ticket creator or a project admin may update "
-                    "this ticket. Persona name does not grant edit rights.",
-                )
-
-    await _authorize_ticket_edit()
+    await authorize_ticket_edit(db, ticket=ticket, project=project, user_id=user.id)
 
     # GH #70 — EVERY mutation needs the project scope lock (serializes with
     # transfers, merges and org-persona deletes), not just reassignment. A
@@ -1587,353 +1433,19 @@ async def update_ticket(
     await db.refresh(ticket)
     if ticket.project_id != project_id:
         raise HTTPException(404, "Ticket not found")
-    await _authorize_ticket_edit()
+    await authorize_ticket_edit(db, ticket=ticket, project=project, user_id=user.id)
 
-    # tk_25872885e3274a7d — a creator who is not an editor (a captured-session
-    # reader) may keep editing their ticket, but an editor's approval must
-    # cover what is actually adopted and worked on:
-    # * suggested — edit freely (nothing is actionable yet);
-    # * open (approved, not started) — edits apply and send the ticket back
-    #   to suggested for approval again;
-    # * in progress or later, or adopted by a work queue that hasn't
-    #   finished with it — only the reference lists (context_refs,
-    #   file_refs, related_sessions) may change; anything that redefines the
-    #   work (title, description, priority, assignee, acceptance criteria,
-    #   dependencies) is 403 while someone may be working on it.
-    from sessionfs.server.auth.project_access import user_can_edit_project
-
-    editor = await user_can_edit_project(db, user.id, project)
-    # A ticket a work queue has adopted and not finished counts as in
-    # progress: an agent may already be working from its text.
-    queued = False
-    if not editor:
-        queued = (
-            await db.execute(
-                select(WorkQueueItem.id)
-                .where(
-                    WorkQueueItem.ticket_id == ticket.id,
-                    WorkQueueItem.item_status.notin_(("done", "failed")),
-                )
-                .limit(1)
-            )
-        ).first() is not None
-    if not editor and (queued or ticket.status not in ("suggested", "open")):
-        locked_fields = [
-            name
-            for name in (
-                "title",
-                "description",
-                "priority",
-                "assigned_to",
-                "acceptance_criteria",
-                "depends_on",
-            )
-            if getattr(body, name) is not None
-        ]
-        if locked_fields:
-            raise HTTPException(
-                403,
-                {
-                    "code": "project_edit_forbidden",
-                    "message": (
-                        (
-                            "A work queue is already working on this ticket. "
-                            if queued
-                            else ""
-                        )
-                        + "Only the project owner or a member of the project's "
-                        "organization can change "
-                        + ", ".join(locked_fields)
-                        + (
-                            " on it now."
-                            if queued
-                            else f" on a ticket that is {ticket.status}."
-                        )
-                    ),
-                    "fields": locked_fields,
-                },
-            )
-
-    # Optimistic concurrency: fence on lease_epoch when caller passes
-    # it. Atomic UPDATE WHERE lease_epoch=... so a concurrent writer
-    # holding the same epoch can win exactly once.
-    fence_applied = False
-    if body.lease_epoch is not None:
-        # Atomic check-then-mark: bump the lease_epoch row-level via
-        # an UPDATE WHERE ... rowcount-1 guard. On hit we are the sole
-        # writer for this epoch; on miss we 409.
-        bumped = await db.execute(
-            update(Ticket)
-            .where(
-                Ticket.id == ticket.id,
-                Ticket.project_id == project_id,
-                Ticket.lease_epoch == body.lease_epoch,
-            )
-            .values(lease_epoch=body.lease_epoch + 1)
-            .execution_options(synchronize_session="fetch")
-        )
-        if bumped.rowcount != 1:
-            current_epoch = (
-                await db.execute(
-                    select(Ticket.lease_epoch).where(Ticket.id == ticket.id)
-                )
-            ).scalar_one_or_none()
-            raise HTTPException(
-                409,
-                {
-                    "error": "stale_lease_epoch",
-                    "message": (
-                        "Ticket lease_epoch has advanced since you read it. "
-                        "Re-fetch the ticket and retry."
-                    ),
-                    "passed_lease_epoch": body.lease_epoch,
-                    "current_lease_epoch": current_epoch,
-                },
-            )
-        # Re-fetch so subsequent reads + the response reflect the bump.
-        await db.refresh(ticket)
-        fence_applied = True
-
-    # Compute per-field diffs BEFORE mutating so the audit row captures
-    # the right old_value. Each entry: (field_name, old_value, new_value)
-    # where values are JSON-serializable; the audit-write encodes them.
-    edits: list[tuple[str, object, object]] = []
-
-    def _record(field: str, old_v: object, new_v: object) -> None:
-        if old_v != new_v:
-            edits.append((field, old_v, new_v))
-
-    if body.title is not None:
-        _record("title", ticket.title, body.title)
-        ticket.title = body.title
-    if body.description is not None:
-        _record("description", ticket.description, body.description)
-        ticket.description = body.description
-    if body.priority is not None:
-        _record("priority", ticket.priority, body.priority)
-        ticket.priority = body.priority
-    if body.assigned_to is not None:
-        # v0.10.23 tk_884b2321fdb74170 — same best-effort normalize as
-        # create. Matches assign_persona MCP path that routes through
-        # this PUT.
-        from sessionfs.server.services.personas import visible_persona_org_id
-
-        # GH #70 — the project scope lock was taken above, before the
-        # lease fence; it is held until commit.
-        canonical = await _resolve_persona_name(
-            db,
-            project_id,
-            body.assigned_to,
-            org_id=await visible_persona_org_id(db, project, user_id=user.id),
-        )
-        new_assigned = canonical if canonical is not None else body.assigned_to
-        old_assigned = ticket.assigned_to
-        _record("assigned_to", old_assigned, new_assigned)
-        ticket.assigned_to = new_assigned
-        # v0.17.0 — auto-capture route feedback when an agent-created
-        # ticket is reassigned to a *different* persona. Best-effort:
-        # feedback capture must never fail the reassignment.
-        await _maybe_capture_route_feedback(
-            db=db,
-            project_id=project_id,
-            ticket=ticket,
-            old_assigned=old_assigned,
-            new_assigned=new_assigned,
-            reassigned_by=user,
-        )
-    if body.context_refs is not None:
-        old_refs = json.loads(ticket.context_refs or "[]")
-        _record("context_refs", old_refs, body.context_refs)
-        ticket.context_refs = json.dumps(body.context_refs)
-    if body.file_refs is not None:
-        old_refs = json.loads(ticket.file_refs or "[]")
-        _record("file_refs", old_refs, body.file_refs)
-        ticket.file_refs = json.dumps(body.file_refs)
-    if body.related_sessions is not None:
-        old_refs = json.loads(ticket.related_sessions or "[]")
-        _record("related_sessions", old_refs, body.related_sessions)
-        ticket.related_sessions = json.dumps(body.related_sessions)
-    if body.acceptance_criteria is not None:
-        old_refs = json.loads(ticket.acceptance_criteria or "[]")
-        _record("acceptance_criteria", old_refs, body.acceptance_criteria)
-        ticket.acceptance_criteria = json.dumps(body.acceptance_criteria)
-    if body.depends_on is not None:
-        # depends_on lives in the TicketDependency join table, not on
-        # the Ticket row. v1 semantic: full replacement.
-        #
-        # Codex R1 MED #1 — apply the same guards as the create path
-        # (dedup → same-project validation → cycle check) BEFORE the
-        # wipe so a malformed input never reaches the join table. Raw
-        # replacement on its own can install cycles, accept cross-
-        # project dep ids, and surface DB-constraint failures as
-        # generic IntegrityErrors instead of the structured 400 the
-        # client expects.
-        deduped = list(dict.fromkeys(body.depends_on))
-        await _validate_dependencies_same_project(db, project_id, deduped)
-        await _check_dependency_cycle(db, ticket.id, deduped)
-
-        old_deps = await _ticket_dependencies(db, ticket.id)
-        _record("depends_on", old_deps, deduped)
-        # Wipe + re-insert the dependency rows for this ticket.
-        await db.execute(
-            TicketDependency.__table__.delete().where(
-                TicketDependency.ticket_id == ticket.id
-            )
-        )
-        for dep_id in deduped:
-            db.add(TicketDependency(ticket_id=ticket.id, depends_on_id=dep_id))
-
-    # No-op: nothing actually changed. Skip the audit-write + diff
-    # comment so empty PUTs don't pollute the audit trail.
-    if not edits:
-        await db.commit()
-        await db.refresh(ticket)
-        deps = await _ticket_dependencies(db, ticket.id)
-        return _to_response(ticket, deps)
-
-    # Per-field audit rows.
-    now = datetime.now(timezone.utc)
-    editing_persona = (
-        ctx.active_persona if hasattr(ctx, "active_persona") else None
+    # Edit-access rules for non-editors, the lease fence, per-field audit
+    # rows, the re-approval rule, the system diff comment and reassignment
+    # notifications — shared with helper confirm (services/ticket_writes.py).
+    await apply_ticket_update(
+        db, project=project, ticket=ticket, user_id=user.id, ctx=ctx, body=body
     )
-    for field_name, old_v, new_v in edits:
-        db.add(
-            TicketEdit(
-                id=f"te_{uuid.uuid4().hex[:16]}",
-                ticket_id=ticket.id,
-                edited_by_user_id=user.id,
-                edited_by_persona=editing_persona,
-                field_name=field_name,
-                old_value=json.dumps(old_v),
-                new_value=json.dumps(new_v),
-                edited_at=now,
-                lease_epoch=ticket.lease_epoch,
-            )
-        )
-
-    # A non-editor's change to an approved ticket withdraws the approval.
-    if not editor and ticket.status == "open":
-        ticket.status = "suggested"
-        ticket.updated_at = now
-        db.add(
-            TicketEdit(
-                id=f"te_{uuid.uuid4().hex[:16]}",
-                ticket_id=ticket.id,
-                edited_by_user_id=user.id,
-                edited_by_persona=editing_persona,
-                field_name="status",
-                old_value=json.dumps("open"),
-                new_value=json.dumps("suggested"),
-                edited_at=now,
-                lease_epoch=ticket.lease_epoch,
-            )
-        )
-        db.add(
-            TicketComment(
-                id=f"tc_{uuid.uuid4().hex[:16]}",
-                ticket_id=ticket.id,
-                author_user_id=user.id,
-                author_persona="system",
-                content=(
-                    "Changed by a non-member after approval; needs approval "
-                    "again before it can be worked on."
-                ),
-                created_at=now,
-            )
-        )
-
-    # Auto-posted diff comment so the change shows up in the human-
-    # readable comment thread. `system` author identity per design doc.
-    diff_summary = _format_edit_diff_summary(edits, fence_applied=fence_applied)
-    db.add(
-        TicketComment(
-            id=f"tc_{uuid.uuid4().hex[:16]}",
-            ticket_id=ticket.id,
-            author_user_id=user.id,
-            author_persona="system",
-            content=diff_summary,
-            created_at=now,
-        )
-    )
-
-    # Ticket watchers: a reassignment notifies watchers and hands the new
-    # assignee's human owner a "your turn", auto-subscribing them if the
-    # assignment maps to a persona they represent.
-    assignment_edit = next((edit for edit in edits if edit[0] == "assigned_to"), None)
-    if assignment_edit is not None:
-        from sessionfs.server.services.personas import visible_persona_org_id
-
-        _, _, new_assigned = assignment_edit
-        new_assignee_human = await ticket_watchers.map_persona_to_human(
-            db,
-            project_id=project_id,
-            name=new_assigned or "",
-            org_id=await visible_persona_org_id(db, project, user_id=user.id),
-        )
-        # A suggested ticket isn't actionable: watchers hear about the
-        # reassignment, but the assignee is subscribed and handed "your turn"
-        # only when an editor approves it.
-        hand_off = new_assignee_human is not None and ticket.status != "suggested"
-        await ticket_watchers.emit_notifications(
-            db,
-            ticket=ticket,
-            kind="assignment",
-            summary=f"Assigned to {new_assigned}" if new_assigned else "Unassigned",
-            actor_user_id=user.id,
-            your_turn_user_id=new_assignee_human[0] if hand_off else None,
-            subscribe_users=(
-                [(new_assignee_human[0], "assignee", new_assignee_human[1])]
-                if hand_off
-                else None
-            ),
-        )
 
     await db.commit()
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
     return _to_response(ticket, deps)
-
-
-_DIFF_INLINE_MAX = 200  # chars per field before truncation in the comment
-
-
-def _format_edit_diff_summary(
-    edits: list[tuple[str, object, object]],
-    *,
-    fence_applied: bool,
-) -> str:
-    """Render the per-field diff for the auto-posted comment.
-
-    Short scalar fields show 'field: "old" → "new"' inline. Long
-    string fields (description) and list fields show shape changes
-    with truncated previews. The audit trail in `ticket_edits`
-    retains the full JSON-encoded values; this rendering is for
-    human consumption.
-    """
-
-    def _truncate(s: str) -> str:
-        if len(s) <= _DIFF_INLINE_MAX:
-            return s
-        return s[:_DIFF_INLINE_MAX] + "…"
-
-    def _fmt(value: object) -> str:
-        if isinstance(value, list):
-            return f"[{len(value)} item(s)]"
-        if isinstance(value, str):
-            return f'"{_truncate(value)}"'
-        return _truncate(str(value))
-
-    lines = ["**Ticket fields updated** via `update_ticket` (tk_835a876529de4551):"]
-    for field_name, old_v, new_v in edits:
-        lines.append(f"- `{field_name}`: {_fmt(old_v)} → {_fmt(new_v)}")
-    if not fence_applied:
-        lines.append(
-            "\n_Unfenced edit_ — no `lease_epoch` passed; last-write-wins."
-        )
-    lines.append(
-        "\n_Full per-field old/new values preserved in `ticket_edits`._"
-    )
-    return "\n".join(lines)
 
 
 # ── Lifecycle routes ──
@@ -2016,39 +1528,26 @@ async def start_ticket(
                 ),
             )
 
-    # Atomic FSM transition.
+    # Atomic FSM transition (shared with the Jira webhook).
     allowed_from = {"open"}
     if force:
         allowed_from = {"open", "blocked"}
-    result = await db.execute(
-        update(Ticket)
-        .where(
-            Ticket.id == ticket_id,
-            Ticket.status.in_(list(allowed_from)),
+    try:
+        await ticket_transitions.start_ticket(
+            db,
+            ticket,
+            allowed_from=allowed_from,
+            actor_user_id=None if auth.key_kind == "service" else user.id,
+            actor_type=auth.actor_type,
+            service_key_name=auth.service_key_name,
         )
-        .values(
-            status="in_progress",
-            updated_at=datetime.now(timezone.utc),
-            lease_epoch=Ticket.lease_epoch + 1,
-        )
-    )
-    if result.rowcount != 1:
-        # Refresh and report the actual current state.
+    except TransitionRefused as exc:
         await db.rollback()
-        current = (
-            await db.execute(select(Ticket.status).where(Ticket.id == ticket_id))
-        ).scalar_one_or_none()
-        raise HTTPException(
-            409,
-            f"Cannot start ticket: current status is {current!r}, "
-            f"expected one of {sorted(allowed_from)}. "
-            f"Pass force=true to recover from 'blocked'.",
-        )
+        raise HTTPException(exc.status_code, exc.detail) from None
 
     # Same transaction as the transition (GH #70): the scope lock makes a
     # concurrent start wait and then trip the rowcount guard, so the
     # transition no longer needs its own early commit.
-    await db.refresh(ticket)
     audit_context = RetrievalAuditContext(
         id=f"ra_{uuid.uuid4().hex[:24]}",
         project_id=project_id,
@@ -2060,21 +1559,13 @@ async def start_ticket(
         created_by_user_id=user.id,
     )
     db.add(audit_context)
-    # Ticket watchers: moving into in_progress is a status event for
-    # followers (the assignee's human owner is already subscribed from
-    # create/update, so they hear about it too).
-    await ticket_watchers.emit_notifications(
-        db,
-        ticket=ticket,
-        kind="status",
-        summary="Started — in progress",
-        actor_user_id=None if auth.key_kind == "service" else user.id,
-        actor_type=auth.actor_type,
-        service_key_name=auth.service_key_name,
-    )
     deps = await _ticket_dependencies(db, ticket.id)
     compiled = await _compile_persona_context(db, persona, ticket, tool=tool)
+    jira_ids = await _jira_enqueue_status(
+        db, project, ticket, user_id=user.id, key_kind=auth.key_kind
+    )
     await db.commit()
+    jira_sync.schedule_drain(jira_ids)
     return StartTicketResponse(
         ticket=_to_response(ticket, deps),
         compiled_context=compiled,
@@ -2149,149 +1640,20 @@ async def complete_ticket(
         service_key_name=auth.service_key_name,
         your_turn_user_id=ticket.created_by_user_id,
     )
+    jira_ids = await _jira_enqueue_status(
+        db, project, ticket, user_id=user.id, key_kind=auth.key_kind
+    )
     await db.commit()
+    jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
     return _to_response(ticket, deps)
 
 
-async def _enrich_dependents(
-    db: AsyncSession, completed: Ticket, actor_user_id: str
-) -> None:
-    """When a ticket transitions to 'done', enrich every ticket that
-    depends on it: append a completion comment with the notes, merge
-    knowledge_entry_ids into the dependent's context_refs, and
-    auto-unblock if all upstream deps are now done.
-
-    ``actor_user_id`` is the user whose resolution of ``completed``
-    triggered the unblock; it is passed through to the watcher
-    notification so dependents' watchers can see who unblocked them.
-
-    v0.10.1 Phase 3 Round 2 (KB 326) — defensive same-project filter.
-    The pre-validation on create rejects cross-project depends_on
-    rows, but legacy data or a raw SQL insert could still produce a
-    cross-project edge. JOIN tickets here to enforce that we only
-    enrich same-project dependents — never reach across project
-    boundaries to write a comment or merge a KB ref.
-    """
-    # Find SAME-PROJECT dependents using the reverse-lookup index
-    # added in Phase 1 Round 2 (idx_ticket_deps_depends_on), then
-    # JOIN tickets to filter by project_id.
-    dependent_ids = (
-        await db.execute(
-            select(Ticket.id)
-            .join(TicketDependency, TicketDependency.ticket_id == Ticket.id)
-            .where(
-                TicketDependency.depends_on_id == completed.id,
-                Ticket.project_id == completed.project_id,
-            )
-        )
-    ).scalars().all()
-    if not dependent_ids:
-        return
-
-    completed_kb_ids = _loads(completed.knowledge_entry_ids)
-
-    for dep_id in dependent_ids:
-        dependent = (
-            await db.execute(select(Ticket).where(Ticket.id == dep_id))
-        ).scalar_one_or_none()
-        if dependent is None:
-            continue
-        if dependent.status not in {"open", "blocked", "suggested"}:
-            # Don't disturb tickets that have moved past dependency
-            # consumption (in_progress / review / done / cancelled).
-            continue
-
-        # 1. Add a completion-notes comment.
-        comment_body = (
-            f"Dependency #{completed.id} ({completed.title}) completed:\n\n"
-            f"{completed.completion_notes or 'No notes provided.'}"
-        )
-        db.add(
-            TicketComment(
-                id=f"tc_{uuid.uuid4().hex[:16]}",
-                ticket_id=dep_id,
-                author_user_id=completed.resolver_user_id
-                or completed.created_by_user_id,
-                author_persona=completed.assigned_to,
-                content=comment_body,
-            )
-        )
-
-        # 2. Merge KB entry ids into the dependent's context_refs.
-        if completed_kb_ids:
-            existing_refs = _loads(dependent.context_refs)
-            merged = list(dict.fromkeys(existing_refs + completed_kb_ids))
-            dependent.context_refs = json.dumps(merged)
-
-        # 3. Auto-unblock if every upstream dep is done.
-        upstream = (
-            await db.execute(
-                select(TicketDependency.depends_on_id).where(
-                    TicketDependency.ticket_id == dep_id
-                )
-            )
-        ).scalars().all()
-        if upstream:
-            done_count = (
-                await db.execute(
-                    select(Ticket.id).where(
-                        Ticket.id.in_(list(upstream)),
-                        Ticket.status == "done",
-                    )
-                )
-            ).scalars().all()
-            if len(done_count) == len(upstream) and dependent.status == "blocked":
-                dependent.status = "in_progress"
-                # Ticket watchers: the dependent became actionable again.
-                await ticket_watchers.emit_notifications(
-                    db,
-                    ticket=dependent,
-                    kind="dependency_unblocked",
-                    summary=f"Unblocked — dependency #{completed.id} completed",
-                    actor_user_id=actor_user_id,
-                )
-
-
-async def _emit_status_notification(
-    db: AsyncSession,
-    *,
-    ticket: Ticket,
-    project: Project,
-    summary: str,
-    actor_user_id: str,
-    your_turn_assignee: bool = False,
-) -> None:
-    """Emit a plain status notification, optionally handing the current
-    assignee's human owner a "your turn" (and auto-subscribing them).
-
-    ``your_turn_assignee`` is used for transitions that put the work back
-    in the assignee's court (reopen, approve); the mapping is resolved
-    from the persona's ``represented_user_id`` and is skipped when it is
-    missing or ambiguous.
-    """
-    your_turn_user_id: str | None = None
-    subscribe: list[tuple[str, str, str | None]] | None = None
-    if your_turn_assignee:
-        assignee_human = await ticket_watchers.map_persona_to_human(
-            db,
-            project_id=project.id,
-            name=ticket.assigned_to or "",
-            org_id=project.org_id,
-        )
-        if assignee_human is not None:
-            your_turn_user_id = assignee_human[0]
-            subscribe = [(assignee_human[0], "assignee", assignee_human[1])]
-    await ticket_watchers.emit_notifications(
-        db,
-        ticket=ticket,
-        kind="status",
-        summary=summary,
-        actor_user_id=actor_user_id,
-        your_turn_user_id=your_turn_user_id,
-        subscribe_users=subscribe,
-    )
+# Shared with the Jira webhook (services.ticket_transitions); the old names
+# stay for existing callers.
+_enrich_dependents = ticket_transitions.enrich_dependents
+_emit_status_notification = ticket_transitions.emit_status_notification
 
 
 @router.post(
@@ -2322,66 +1684,21 @@ async def accept_ticket(
     await _assert_lease_required_mode(project_id, db, lease_epoch)
     await _require_ticket_actor_by_id(db, project, project_id, ticket_id, user.id, action="accept")
 
-    now = datetime.now(timezone.utc)
-    result = await db.execute(
-        update(Ticket)
-        .where(
-            Ticket.id == ticket_id,
-            Ticket.project_id == project_id,
-            Ticket.status == "review",
-            *(
-                (Ticket.lease_epoch == lease_epoch,)
-                if lease_epoch is not None
-                else ()
-            ),
+    try:
+        ticket = await ticket_transitions.accept_ticket(
+            db,
+            project_id=project_id,
+            ticket_id=ticket_id,
+            lease_epoch=lease_epoch,
+            actor_user_id=user.id,
         )
-        .values(status="done", resolved_at=now, updated_at=now)
-    )
-    if result.rowcount != 1:
-        # Either ticket doesn't exist, isn't in this project, or
-        # wasn't in 'review'. Report the real situation.
+    except TransitionRefused as exc:
         await db.rollback()
-        existing = (
-            await db.execute(
-                select(Ticket).where(
-                    Ticket.id == ticket_id,
-                    Ticket.project_id == project_id,
-                )
-            )
-        ).scalar_one_or_none()
-        if existing is None:
-            raise HTTPException(404, "Ticket not found")
-        if lease_epoch is not None and existing.lease_epoch != lease_epoch:
-            raise HTTPException(
-                409,
-                (
-                    f"Stale ticket lease: provided lease_epoch={lease_epoch}, "
-                    f"current lease_epoch={existing.lease_epoch}."
-                ),
-            )
-        legal = sorted(_legal_next(existing.status, existing.kind))
-        legal_str = ", ".join(legal) if legal else "(none — terminal state)"
-        raise HTTPException(
-            409,
-            f"Cannot accept ticket: current status is {existing.status!r}, "
-            f"expected 'review'. Legal transitions from "
-            f"{existing.status!r}: {legal_str}.",
-        )
+        raise HTTPException(exc.status_code, exc.detail) from None
 
-    # Refresh the row after the atomic transition so enrichment sees
-    # status='done' and the new resolved_at/updated_at.
-    ticket = await _get_ticket_or_404(project_id, ticket_id, db)
-    await _enrich_dependents(db, ticket, actor_user_id=user.id)
-    # Ticket watchers: resolution is a plain status event for followers.
-    await ticket_watchers.emit_notifications(
-        db,
-        ticket=ticket,
-        kind="status",
-        summary="Resolved",
-        actor_user_id=user.id,
-    )
-
+    jira_ids = await _jira_enqueue_status(db, project, ticket, user_id=user.id)
     await db.commit()
+    jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
     return _to_response(ticket, deps)
@@ -2403,19 +1720,15 @@ async def reopen_ticket(
     await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
     await _require_ticket_actor(db, project, ticket, user.id, action="reopen")
-    _assert_transition(ticket.status, "open", ticket.kind)
-
-    ticket.status = "open"
-    ticket.updated_at = datetime.now(timezone.utc)
-    await _emit_status_notification(
-        db,
-        ticket=ticket,
-        project=project,
-        summary="Reopened — changes requested",
-        actor_user_id=user.id,
-        your_turn_assignee=True,
-    )
+    try:
+        await ticket_transitions.reopen_ticket(
+            db, project=project, ticket=ticket, actor_user_id=user.id
+        )
+    except TransitionRefused as exc:
+        raise HTTPException(exc.status_code, exc.detail) from None
+    jira_ids = await _jira_enqueue_status(db, project, ticket, user_id=user.id)
     await db.commit()
+    jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
     return _to_response(ticket, deps)
@@ -2448,7 +1761,9 @@ async def block_ticket(
         summary="Blocked",
         actor_user_id=user.id,
     )
+    jira_ids = await _jira_enqueue_status(db, project, ticket, user_id=user.id)
     await db.commit()
+    jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
     return _to_response(ticket, deps)
@@ -2481,7 +1796,9 @@ async def unblock_ticket(
         summary="Unblocked",
         actor_user_id=user.id,
     )
+    jira_ids = await _jira_enqueue_status(db, project, ticket, user_id=user.id)
     await db.commit()
+    jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
     return _to_response(ticket, deps)
@@ -2531,7 +1848,9 @@ async def approve_ticket(
         actor_user_id=user.id,
         your_turn_assignee=True,
     )
+    jira_ids = await _jira_enqueue_status(db, project, ticket, user_id=user.id)
     await db.commit()
+    jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
     return _to_response(ticket, deps)
@@ -2566,7 +1885,9 @@ async def dismiss_ticket(
         summary="Cancelled",
         actor_user_id=user.id,
     )
+    jira_ids = await _jira_enqueue_status(db, project, ticket, user_id=user.id)
     await db.commit()
+    jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
     return _to_response(ticket, deps)
@@ -2615,20 +1936,15 @@ async def close_issue(
             "Issue. Issue status is manually closed by the PM — "
             "executors cannot terminate the rollup.",
         )
-    _assert_transition(ticket.status, "closed", ticket.kind)
-
-    now = datetime.now(timezone.utc)
-    ticket.status = "closed"
-    ticket.resolved_at = now
-    ticket.updated_at = now
-    await _emit_status_notification(
-        db,
-        ticket=ticket,
-        project=project,
-        summary="Closed",
-        actor_user_id=user.id,
-    )
+    try:
+        await ticket_transitions.close_issue(
+            db, project=project, ticket=ticket, actor_user_id=user.id
+        )
+    except TransitionRefused as exc:
+        raise HTTPException(exc.status_code, exc.detail) from None
+    jira_ids = await _jira_enqueue_status(db, project, ticket, user_id=user.id)
     await db.commit()
+    jira_sync.schedule_drain(jira_ids)
     await db.refresh(ticket)
     deps = await _ticket_dependencies(db, ticket.id)
     return _to_response(ticket, deps)
@@ -2719,6 +2035,7 @@ async def list_ticket_comments(
             content=c.content,
             session_id=c.session_id,
             created_at=c.created_at,
+            source=c.source,
         )
         for c in rows
     ]
@@ -2803,7 +2120,6 @@ async def create_ticket_comment(
     )
     await assert_service_key_can_access_project(db, auth, project)
     await check_project_feature(ctx, "agent_tickets", project, db)
-    await _assert_lease_required_mode(project_id, db, body.lease_epoch, auth=auth)
 
     # tk_d42170b4670f4448 — server-stamp the verdict trust decision from
     # the authenticated identity against the trusted_reviewers registry.
@@ -2818,116 +2134,73 @@ async def create_ticket_comment(
         claimed_persona=body.author_persona,
     )
 
-    comment_id = f"tc_{uuid.uuid4().hex[:16]}"
-    now = datetime.now(timezone.utc)
-    source = select(
-        literal(comment_id),
-        literal(ticket_id),
-        literal(user.id),
-        literal(body.author_persona),
-        literal(body.content),
-        literal(body.session_id),
-        literal(now),
-        literal(auth.actor_type),
-        literal(auth.service_key_id),
-        literal(auth.service_key_name),
-        literal(verdict_trusted),
-    ).where(
-        Ticket.id == ticket_id,
-        Ticket.project_id == project_id,
-        *(
-            (Ticket.lease_epoch == body.lease_epoch,)
-            if body.lease_epoch is not None
-            else ()
-        ),
-    )
-    result = await db.execute(
-        insert(TicketComment)
-        .from_select(
-            [
-                "id",
-                "ticket_id",
-                "author_user_id",
-                "author_persona",
-                "content",
-                "session_id",
-                "created_at",
-                "actor_type",
-                "service_key_id",
-                "service_key_name",
-                "verdict_trusted",
-            ],
-            source,
-        )
-    )
-    if result.rowcount != 1:
-        await db.rollback()
-        ticket = await _get_ticket_or_404(project_id, ticket_id, db)
-        _assert_lease_epoch(ticket, body.lease_epoch)
-        raise HTTPException(409, "Cannot add comment due to concurrent update")
+    # Two-way sync: only an editor (or a service key, already inside its org
+    # / project allowlist) drives outbound Jira comments. A read/contribute
+    # caller's `send_to_jira` flag is ignored.
+    from sessionfs.server.auth.project_access import user_can_edit_project
 
-    ticket = await _get_ticket_or_404(project_id, ticket_id, db)
-    # Ticket watchers: the author follows (as a commenter, or as a trusted
-    # reviewer when the comment is an authoritative verdict) and every other
-    # watcher learns about the new comment. A service key acts on its
-    # minter's behalf, so the minter is NOT auto-subscribed and the action
-    # is attributed to the service key (actor_user_id=None) — the minter is
-    # then notified like any other watcher instead of silently suppressed.
-    if auth.key_kind != "service":
-        await ticket_watchers.subscribe_guarded(
+    can_drive_jira = auth.key_kind == "service" or await user_can_edit_project(
+        db, user.id, project
+    )
+    send_to_jira = body.send_to_jira and can_drive_jira
+
+    # The org's lease-epoch requirement, the fenced insert and watcher
+    # notifications — shared with helper confirm (services/ticket_writes.py).
+    jira_ids: list[str] = []
+    try:
+        comment_id = await insert_ticket_comment(
             db,
-            ticket_id=ticket.id,
+            project=project,
+            ticket_id=ticket_id,
             user_id=user.id,
-            source="reviewer" if verdict_trusted else "commenter",
-            persona_name=body.author_persona,
+            content=body.content,
+            author_persona=body.author_persona,
+            session_id=body.session_id,
+            lease_epoch=body.lease_epoch,
+            verdict_trusted=verdict_trusted,
+            auth=auth,
         )
-    actor_user_id = None if auth.key_kind == "service" else user.id
-
-    # A trusted reviewer's comment is only a *review verdict* when it carries
-    # the structured Codex header the review-state parser recognizes;
-    # otherwise it is a plain comment.
-    verdict = ticket_watchers.parse_verdict(body.content) if verdict_trusted else None
-    if verdict is not None:
-        from sessionfs.server.services.review_state import VERDICT_CHANGES
-
-        changes = verdict == VERDICT_CHANGES
-        verdict_label = "changes requested" if changes else "verified clean"
-        # A trusted "changes requested" verdict sends the implementer back
-        # to work; a clean verdict hands the reporter the accept decision.
-        your_turn_user_id: str | None
-        if changes:
-            assignee_human = await ticket_watchers.map_persona_to_human(
-                db,
-                project_id=project.id,
-                name=ticket.assigned_to or "",
-                org_id=project.org_id,
+        if send_to_jira and not await jira_sync.comment_forwarding_enabled(db, ticket_id):
+            # An explicit "send to Jira" the org's sync settings won't honour
+            # is refused rather than silently dropped, so the author knows the
+            # comment stayed in SessionFS. Nothing is written (rolled back).
+            raise HTTPException(
+                409,
+                {
+                    "error": "jira_comment_sync_off",
+                    "message": (
+                        "This ticket is not linked to a Jira issue, or the org's Jira "
+                        "comment sync is not set to outbound/both. Post without "
+                        "'send to Jira', or ask an org admin to enable outbound "
+                        "comment sync."
+                    ),
+                },
             )
-            your_turn_user_id = (
-                assignee_human[0] if assignee_human is not None else None
+        # Outbound Jira comment (two-way sync): an explicit editor "send to
+        # Jira", or a trusted reviewer's VERIFIED-CLEAN verdict when the org
+        # mirrors comments outbound. A trusted CHANGES-REQUESTED verdict or
+        # plain comment is never forwarded. The outbox row is written in this
+        # transaction and drained after commit (the sweep retries a lost or
+        # failed delivery).
+        if can_drive_jira:
+            from sessionfs.server.services.review_state import VERDICT_CLEAN
+
+            verdict = (
+                ticket_watchers.parse_verdict(body.content) if verdict_trusted else None
             )
-        else:
-            your_turn_user_id = ticket.created_by_user_id
-        await ticket_watchers.emit_notifications(
-            db,
-            ticket=ticket,
-            kind="review_verdict",
-            summary=f"Review verdict: {verdict_label}",
-            actor_user_id=actor_user_id,
-            actor_type=auth.actor_type,
-            service_key_name=auth.service_key_name,
-            your_turn_user_id=your_turn_user_id,
-        )
-    else:
-        await ticket_watchers.emit_notifications(
-            db,
-            ticket=ticket,
-            kind="comment",
-            summary="New comment",
-            actor_user_id=actor_user_id,
-            actor_type=auth.actor_type,
-            service_key_name=auth.service_key_name,
-        )
+            if send_to_jira or verdict == VERDICT_CLEAN:
+                ticket = await _get_ticket_or_404(project_id, ticket_id, db)
+                jira_ids = await jira_sync.enqueue_comment(
+                    db,
+                    ticket,
+                    comment_id,
+                    reason="send_to_jira" if send_to_jira else "verified_clean",
+                )
+    except HTTPException:
+        await db.rollback()
+        raise
     await db.commit()
+    jira_sync.schedule_drain(jira_ids)
     comment = (
         await db.execute(select(TicketComment).where(TicketComment.id == comment_id))
     ).scalar_one()
@@ -2940,6 +2213,7 @@ async def create_ticket_comment(
         content=comment.content,
         session_id=comment.session_id,
         created_at=comment.created_at,
+        source=comment.source,
     )
 
 
@@ -3144,6 +2418,7 @@ async def get_ticket_by_id(
                 content=c.content,
                 session_id=c.session_id,
                 created_at=c.created_at,
+                source=c.source,
             )
             for c in recent
         ],

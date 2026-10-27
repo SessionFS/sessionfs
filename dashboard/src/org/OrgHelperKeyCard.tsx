@@ -145,7 +145,7 @@ export default function OrgHelperKeyCard({ orgId }: OrgHelperKeyCardProps) {
   }
 
   const heading = (
-    <h3 id="org-helper-key-heading">AI key for the session helper</h3>
+    <h2 id="org-helper-key-heading">AI key for the session helper</h2>
   );
 
   if (isLoading) {

@@ -58,8 +58,9 @@ from sessionfs.server.db.models import (
 )
 from sessionfs.server.roles import ADMIN_ROLES
 from sessionfs.server.services.personas import personas_stranded_by_scope_change
+from sessionfs.server.services.project_groups import remove_project_from_all_groups
 from sessionfs.server.services.scope_locks import lock_project_scope
-from sessionfs.server.services.tracker_scope import drop_project_tracker_mapping
+from sessionfs.server.services.tracker_scope import drop_project_integration_mappings
 
 router = APIRouter(tags=["project-transfers"])
 
@@ -800,9 +801,20 @@ async def initiate_transfer(
         # Apply the project move synchronously.
         project.org_id = None if to_scope == "personal" else to_scope
         project.updated_at = now
-        # The moved project no longer maps to its old org's Jira project; any
-        # existing links go stale rather than writing to an unrelated issue.
-        await drop_project_tracker_mapping(db, project.id)
+        # The moved project no longer maps to its old org's Jira project or
+        # Confluence space; Jira links go stale rather than writing to an
+        # unrelated issue, Confluence page links are dropped.
+        await drop_project_integration_mappings(db, project.id)
+        # Project groups are org-scoped: a project leaving an org leaves all of
+        # its groups (audited per membership) so no grant follows it.
+        await remove_project_from_all_groups(
+            db,
+            project_id=project.id,
+            actor_user_id=user.id,
+            actor_email=user.email,
+            actor_role=None,
+            reason="project_transferred",
+        )
 
     # The earlier SELECT-then-INSERT precheck handles the friendly
     # 409 message for sequential duplicates. For concurrent initiate
@@ -1219,8 +1231,19 @@ async def accept_transfer(
                 None if transfer.to_scope == "personal" else transfer.to_scope
             )
             project.updated_at = now
-            # Drop the old org's tracker mapping; existing links go stale.
-            await drop_project_tracker_mapping(db, project.id)
+            # Drop the old org's Jira/Confluence mappings (Jira links go
+            # stale, Confluence page links are dropped).
+            await drop_project_integration_mappings(db, project.id)
+            # Project groups are org-scoped: a project leaving an org leaves
+            # all of its groups (audited per membership) so no grant follows it.
+            await remove_project_from_all_groups(
+                db,
+                project_id=project.id,
+                actor_user_id=user.id,
+                actor_email=user.email,
+                actor_role=None,
+                reason="project_transferred",
+            )
 
     await db.commit()
     await db.refresh(transfer)

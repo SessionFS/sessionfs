@@ -4,7 +4,14 @@
  * React so they are cheap to unit-test.
  */
 
-import { ApiError, type HelperCitation, type HelperCitationRef, type HelperDocCitation } from '../api/client';
+import {
+  ApiError,
+  type HelperCitation,
+  type HelperCitationRef,
+  type HelperDocCitation,
+  type HelperTicketCitation,
+  type HelperWikiCitation,
+} from '../api/client';
 import { errorMessage } from '../utils/errorMessage';
 import type { TurnAction } from './actions';
 
@@ -30,6 +37,20 @@ function str(args: Record<string, unknown>, key: string): string | null {
   return typeof v === 'string' && v.trim() ? v.trim() : null;
 }
 
+/** A string-or-list model/provider filter argument as display text. */
+function filterValues(args: Record<string, unknown>, key: string): string | null {
+  const v = args[key];
+  const list = Array.isArray(v) ? v : typeof v === 'string' ? [v] : [];
+  const values = list.filter((x): x is string => typeof x === 'string' && x.trim() !== '').map((x) => x.trim());
+  return values.length ? values.join(' or ') : null;
+}
+
+/** ` using “deepseek”` when a step filters by model or provider. */
+function modelSuffix(args: Record<string, unknown>): string {
+  const target = filterValues(args, 'model') ?? filterValues(args, 'provider');
+  return target ? ` using ${quote(target)}` : '';
+}
+
 function quote(text: string, max = 48): string {
   const clipped = text.length > max ? `${text.slice(0, max - 1)}…` : text;
   return `“${clipped}”`;
@@ -43,9 +64,11 @@ export function describeToolStep(step: Pick<ToolStep, 'name' | 'args' | 'status'
   const query = str(a, 'query');
   switch (step.name) {
     case 'search_sessions':
-      return `${verb('Searching', 'Searched')} sessions${query ? ` for ${quote(query)}` : ''}`;
+      return `${verb('Searching', 'Searched')} sessions${query ? ` for ${quote(query)}` : ''}${modelSuffix(a)}`;
     case 'list_recent_sessions':
-      return `${verb('Listing', 'Listed')} recent sessions`;
+      return `${verb('Listing', 'Listed')} ${modelSuffix(a) ? `sessions${modelSuffix(a)}` : 'recent sessions'}`;
+    case 'list_session_models':
+      return `${verb('Checking', 'Checked')} which models your sessions used`;
     case 'find_related_sessions': {
       const target = str(a, 'file_path') ?? str(a, 'error_text');
       return `${verb('Finding', 'Found')} related sessions${target ? ` for ${quote(target)}` : ''}`;
@@ -75,10 +98,31 @@ export function describeToolStep(step: Pick<ToolStep, 'name' | 'args' | 'status'
     case 'set_project_auto_narrative':
       return `${verb('Preparing', 'Prepared')} an Auto Narrative change`;
     case 'trash_sessions':
-      return `${verb('Preparing', 'Prepared')} a move to Trash`;
+      return `${verb('Preparing', 'Prepared')} a move to Trash${modelSuffix(a)}`;
+    case 'propose_ticket':
+      return `${verb('Preparing', 'Prepared')} to create a ticket`;
+    case 'propose_assignment':
+      return `${verb('Preparing', 'Prepared')} to assign a ticket`;
+    case 'propose_comment':
+      return `${verb('Preparing', 'Prepared')} to comment on a ticket`;
     default:
       return `${verb('Running', 'Ran')} ${step.name.replace(/_/g, ' ')}`;
   }
+}
+
+/**
+ * Append a streamed text delta to the answer so far. When the delta is the
+ * first text of a new model step (after a tool round), start a new paragraph —
+ * otherwise the steps run together ("…ran on DeepSeek.I can see…"). Mirrors
+ * `_step_separator` in routes/helper.py; the server already streams the break,
+ * so this only adds what is still missing.
+ */
+export function appendStepText(previous: string, delta: string, newStep: boolean): string {
+  if (!newStep || !previous.trim()) return previous + delta;
+  if (previous.endsWith('\n\n') || delta.startsWith('\n\n')) return previous + delta;
+  if (previous.endsWith('\n') && delta.startsWith('\n')) return previous + delta;
+  if (previous.endsWith('\n') || delta.startsWith('\n')) return `${previous}\n${delta}`;
+  return `${previous}\n\n${delta}`;
 }
 
 export function countLabel(n: number, one = 'result', many = 'results'): string {
@@ -140,13 +184,14 @@ export function usageFrom(src: {
 // ── Citations ──
 
 /**
- * Both marker kinds in one pass so footnote numbers stay shared and ordered.
- * Same shapes the server parses (`_CITATION_RE` / `_DOC_CITATION_RE` in
- * routes/helper.py). Doc slugs and anchors use the docs index's own charset,
- * so an unclosed `[doc:` can't swallow the prose or citations after it.
+ * All four marker kinds in one pass so footnote numbers stay shared and
+ * ordered. Same shapes the server parses (`_CITATION_RE` / `_DOC_CITATION_RE`
+ * / `_TICKET_CITATION_RE` / `_WIKI_CITATION_RE` in routes/helper.py). Doc
+ * slugs and anchors use the docs index's own charset, so an unclosed `[doc:`
+ * can't swallow the prose or citations after it.
  */
 const MARKER_RE =
-  /\[session:([A-Za-z0-9_-]+)(?:\s+msg:(\d+))?\]|\[doc:([a-z0-9][a-z0-9/_-]*)(?:#([a-z0-9_-]+))?\]/g;
+  /\[session:([A-Za-z0-9_-]+)(?:\s+msg:(\d+))?\]|\[doc:([a-z0-9][a-z0-9/_-]*)(?:#([a-z0-9_-]+))?\]|\[ticket:(tk_[0-9a-f]{16})\]|\[wiki:(proj_[0-9a-f]{16})\/([^\]\s]+)\]/g;
 
 export interface SessionSource {
   kind: 'session';
@@ -157,6 +202,8 @@ export interface SessionSource {
   messageIndexes: number[];
   /** False when the server dropped the citation (session not readable). */
   verified: boolean;
+  /** ISO timestamp the session was last updated; null for old messages. */
+  at: string | null;
 }
 
 export interface DocSource {
@@ -179,7 +226,31 @@ export interface DocSource {
   verified: boolean;
 }
 
-export type Source = SessionSource | DocSource;
+export interface TicketSource {
+  kind: 'ticket';
+  /** 1-based footnote number, by first appearance. */
+  n: number;
+  ticketId: string;
+  projectId: string | null;
+  title: string | null;
+  /** False when the server dropped the citation (not from a tool this turn). */
+  verified: boolean;
+  at: string | null;
+}
+
+export interface WikiSource {
+  kind: 'wiki';
+  /** 1-based footnote number, by first appearance. */
+  n: number;
+  projectId: string;
+  slug: string;
+  title: string | null;
+  /** False when the server dropped the citation (not from a tool this turn). */
+  verified: boolean;
+  at: string | null;
+}
+
+export type Source = SessionSource | DocSource | TicketSource | WikiSource;
 
 export const CITE_HREF_PREFIX = '#sfs-cite-';
 
@@ -205,6 +276,17 @@ export function sourceHref(sessionId: string, messageIndex?: number | null): str
   return messageIndex != null ? `${base}?msg=${messageIndex}` : base;
 }
 
+/** Dashboard link to a cited sessionfs ticket (Work → Tickets, expanded). */
+export function ticketHref(projectId: string, ticketId: string): string {
+  return `/projects/${encodeURIComponent(projectId)}?tab=work&sub=tickets&ticket=${encodeURIComponent(ticketId)}`;
+}
+
+/** Dashboard link to a cited wiki page (Knowledge → Pages, that page open). */
+export function wikiHref(projectId: string, slug?: string | null): string {
+  const base = `/projects/${encodeURIComponent(projectId)}?tab=knowledge&sub=pages`;
+  return slug ? `${base}&page=${encodeURIComponent(slug)}` : base;
+}
+
 /** Drop a citation marker that is still being streamed in at the end of the text. */
 function stripPartialMarker(text: string): string {
   const i = text.lastIndexOf('[');
@@ -215,7 +297,11 @@ function stripPartialMarker(text: string): string {
     '[session:'.startsWith(tail) ||
     /^\[session:[A-Za-z0-9_-]*(?:\s+(?:m(?:s(?:g(?::\d*)?)?)?)?)?$/.test(tail) ||
     '[doc:'.startsWith(tail) ||
-    /^\[doc:(?:[a-z0-9][a-z0-9/_-]*(?:#[a-z0-9_-]*)?)?$/.test(tail)
+    /^\[doc:(?:[a-z0-9][a-z0-9/_-]*(?:#[a-z0-9_-]*)?)?$/.test(tail) ||
+    '[ticket:'.startsWith(tail) ||
+    /^\[ticket:(?:tk_[0-9a-f]{0,16})?$/.test(tail) ||
+    '[wiki:'.startsWith(tail) ||
+    /^\[wiki:(?:proj_[0-9a-f]{0,16}\/[^\]\s]*)?$/.test(tail)
   ) {
     return text.slice(0, i);
   }
@@ -241,9 +327,13 @@ export function processCitations(
 ): { markdown: string; sources: Source[] } {
   const sessionCitations: HelperCitation[] = [];
   const docCitations: HelperDocCitation[] = [];
+  const ticketCitations: HelperTicketCitation[] = [];
+  const wikiCitations: HelperWikiCitation[] = [];
   for (const c of citations) {
-    if ('slug' in c) docCitations.push(c);
-    else sessionCitations.push(c);
+    if ('session_id' in c) sessionCitations.push(c);
+    else if ('ticket_id' in c) ticketCitations.push(c);
+    else if ('project_id' in c && 'slug' in c) wikiCitations.push(c);
+    else docCitations.push(c);
   }
 
   const knownSessions = new Map<string, HelperCitation>();
@@ -252,6 +342,13 @@ export function processCitations(
   for (const c of docCitations) {
     const key = `${c.slug}#${c.anchor ?? ''}`;
     if (!knownDocs.has(key)) knownDocs.set(key, c);
+  }
+  const knownTickets = new Map<string, HelperTicketCitation>();
+  for (const c of ticketCitations) if (!knownTickets.has(c.ticket_id)) knownTickets.set(c.ticket_id, c);
+  const knownWikis = new Map<string, HelperWikiCitation>();
+  for (const c of wikiCitations) {
+    const key = `${c.project_id}/${c.slug}`;
+    if (!knownWikis.has(key)) knownWikis.set(key, c);
   }
 
   const sources: Source[] = [];
@@ -268,6 +365,7 @@ export function processCitations(
         messageIndexes: [],
         // Until the turn settles the server hasn't said yet; assume readable.
         verified: k !== undefined || !opts.settled,
+        at: k?.at ?? null,
       };
       sources.push(s);
     }
@@ -292,22 +390,78 @@ export function processCitations(
     return s;
   };
 
+  const ticketSourceFor = (ticketId: string): TicketSource => {
+    let s = sources.find((x): x is TicketSource => x.kind === 'ticket' && x.ticketId === ticketId);
+    if (!s) {
+      const k = knownTickets.get(ticketId);
+      s = {
+        kind: 'ticket',
+        n: sources.length + 1,
+        ticketId,
+        projectId: k?.project_id ?? null,
+        title: k?.title ?? null,
+        verified: k !== undefined || !opts.settled,
+        at: k?.at ?? null,
+      };
+      sources.push(s);
+    }
+    return s;
+  };
+
+  const wikiSourceFor = (projectId: string, slug: string): WikiSource => {
+    let s = sources.find((x): x is WikiSource => x.kind === 'wiki' && x.projectId === projectId && x.slug === slug);
+    if (!s) {
+      const k = knownWikis.get(`${projectId}/${slug}`);
+      s = {
+        kind: 'wiki',
+        n: sources.length + 1,
+        projectId,
+        slug,
+        title: k?.title ?? slug,
+        verified: k !== undefined || !opts.settled,
+        at: k?.at ?? null,
+      };
+      sources.push(s);
+    }
+    return s;
+  };
+
   let body = text;
   if (opts.streaming) body = stripPartialMarker(body);
 
-  const markdown = body.replace(MARKER_RE, (_m, sid?: string, idx?: string, slug?: string, anchor?: string) => {
-    if (sid !== undefined) {
-      const s = sessionSourceFor(sid);
-      if (idx !== undefined) {
-        const i = Number(idx);
-        if (!s.messageIndexes.includes(i)) s.messageIndexes.push(i);
-        return `[${s.n}](${citeHref(s.n, i)})`;
+  const markdown = body.replace(
+    MARKER_RE,
+    (
+      _m,
+      sid?: string,
+      idx?: string,
+      docSlug?: string,
+      docAnchor?: string,
+      ticketId?: string,
+      wikiProject?: string,
+      wikiSlug?: string,
+    ) => {
+      if (sid !== undefined) {
+        const s = sessionSourceFor(sid);
+        if (idx !== undefined) {
+          const i = Number(idx);
+          if (!s.messageIndexes.includes(i)) s.messageIndexes.push(i);
+          return `[${s.n}](${citeHref(s.n, i)})`;
+        }
+        return `[${s.n}](${citeHref(s.n)})`;
       }
+      if (ticketId !== undefined) {
+        const s = ticketSourceFor(ticketId);
+        return `[${s.n}](${citeHref(s.n)})`;
+      }
+      if (wikiProject !== undefined) {
+        const s = wikiSourceFor(wikiProject, wikiSlug ?? '');
+        return `[${s.n}](${citeHref(s.n)})`;
+      }
+      const s = docSourceFor(docSlug!, docAnchor ?? null);
       return `[${s.n}](${citeHref(s.n)})`;
-    }
-    const s = docSourceFor(slug!, anchor ?? null);
-    return `[${s.n}](${citeHref(s.n)})`;
-  });
+    },
+  );
 
   for (const c of sessionCitations) {
     const s = sessionSourceFor(c.session_id);
@@ -315,9 +469,9 @@ export function processCitations(
       s.messageIndexes.push(c.message_index);
     }
   }
-  for (const c of docCitations) {
-    docSourceFor(c.slug, c.anchor);
-  }
+  for (const c of docCitations) docSourceFor(c.slug, c.anchor);
+  for (const c of ticketCitations) ticketSourceFor(c.ticket_id);
+  for (const c of wikiCitations) wikiSourceFor(c.project_id, c.slug);
   for (const s of sources) if (s.kind === 'session') s.messageIndexes.sort((x, y) => x - y);
   return { markdown, sources };
 }
@@ -325,21 +479,87 @@ export function processCitations(
 /** Plain-text copy of an answer: markers become [n], sources listed below. */
 export function answerAsPlainText(text: string, citations: HelperCitationRef[]): string {
   const { sources } = processCitations(text, citations, { settled: true });
-  const numbered = text.replace(MARKER_RE, (_m, sid?: string, _idx?: string, slug?: string, anchor?: string) => {
-    if (sid !== undefined) {
-      const s = sources.find((x): x is SessionSource => x.kind === 'session' && x.sessionId === sid);
-      return s ? `[${s.n}]` : '';
-    }
-    const s = sources.find((x): x is DocSource => x.kind === 'doc' && x.slug === slug! && x.anchor === (anchor ?? null));
-    return s?.url ? `[${s.n}]` : '';
-  });
-  // A doc marker the server didn't confirm has no URL: drop it from the copy.
-  const listed = sources.filter((s) => s.kind !== 'doc' || s.url);
-  if (listed.length === 0) return numbered;
-  const lines = listed.map((s) =>
-    s.kind === 'doc' ? `[${s.n}] ${s.title} (${s.url})` : `[${s.n}] ${s.title || s.sessionId} (session ${s.sessionId})`,
+  const numbered = text.replace(
+    MARKER_RE,
+    (
+      _m,
+      sid?: string,
+      _idx?: string,
+      docSlug?: string,
+      docAnchor?: string,
+      ticketId?: string,
+      wikiProject?: string,
+      wikiSlug?: string,
+    ) => {
+      if (sid !== undefined) {
+        const s = sources.find((x): x is SessionSource => x.kind === 'session' && x.sessionId === sid);
+        return s ? `[${s.n}]` : '';
+      }
+      if (ticketId !== undefined) {
+        const s = sources.find((x): x is TicketSource => x.kind === 'ticket' && x.ticketId === ticketId);
+        return s?.verified ? `[${s.n}]` : '';
+      }
+      if (wikiProject !== undefined) {
+        const s = sources.find(
+          (x): x is WikiSource => x.kind === 'wiki' && x.projectId === wikiProject && x.slug === (wikiSlug ?? ''),
+        );
+        return s?.verified ? `[${s.n}]` : '';
+      }
+      const s = sources.find(
+        (x): x is DocSource => x.kind === 'doc' && x.slug === docSlug! && x.anchor === (docAnchor ?? null),
+      );
+      return s?.url ? `[${s.n}]` : '';
+    },
   );
+  // A marker the server didn't confirm (doc without a URL, or an unverified
+  // ticket/wiki) has no link: drop it from the copy.
+  const listed = sources.filter((s) => s.kind === 'session' || (s.kind === 'doc' ? !!s.url : s.verified));
+  if (listed.length === 0) return numbered;
+  const lines = listed.map((s) => {
+    if (s.kind === 'doc') return `[${s.n}] ${s.title} (${s.url})`;
+    if (s.kind === 'ticket') return `[${s.n}] ${s.title || s.ticketId} (ticket ${s.ticketId})`;
+    if (s.kind === 'wiki') return `[${s.n}] ${s.title || s.slug} (wiki ${s.projectId}/${s.slug})`;
+    return `[${s.n}] ${s.title || s.sessionId} (session ${s.sessionId})`;
+  });
   return `${numbered}\n\nSources:\n${lines.join('\n')}`;
+}
+
+/**
+ * Compact relative age for a cited source, from the ``at`` timestamp the
+ * server sends with the citation. Returns null (no badge) when ``at`` is
+ * missing or unparseable — older stored citations have none, and the chip
+ * must never claim an age the server didn't provide.
+ */
+export function citationAgeLabel(at: string | null | undefined, now = Date.now()): string | null {
+  if (!at) return null;
+  const t = Date.parse(at);
+  if (Number.isNaN(t)) return null;
+  const days = Math.floor(Math.max(0, now - t) / 86_400_000);
+  if (days <= 0) return 'today';
+  if (days < 30) return `${days}d`;
+  if (days < 365) return `${Math.floor(days / 30)}mo`;
+  return `${Math.floor(days / 365)}y`;
+}
+
+/**
+ * The age as words for a screen reader ("updated 15 days ago"), or null
+ * when there is no age badge.
+ */
+export function citationAgeSpoken(at: string | null | undefined, now = Date.now()): string | null {
+  const label = citationAgeLabel(at, now);
+  if (label === null) return null;
+  if (label === 'today') return 'updated today';
+  const n = Number.parseInt(label, 10);
+  const unit = label.endsWith('mo') ? 'month' : label.endsWith('y') ? 'year' : 'day';
+  return `updated ${n} ${unit}${n === 1 ? '' : 's'} ago`;
+}
+
+/** Exact timestamp for a cited source's tooltip; empty when unknown. */
+export function citationTimestamp(at: string | null | undefined): string {
+  if (!at) return '';
+  const t = Date.parse(at);
+  if (Number.isNaN(t)) return '';
+  return new Date(t).toLocaleString();
 }
 
 // ── Errors ──

@@ -13,7 +13,13 @@ export interface TurnAction extends HelperActionProposal {
 }
 
 /** Tools whose stored result text starts with "Proposed action ha_…". */
-export const ACTION_TOOLS = new Set(['set_project_auto_narrative', 'trash_sessions']);
+export const ACTION_TOOLS = new Set([
+  'set_project_auto_narrative',
+  'trash_sessions',
+  'propose_ticket',
+  'propose_assignment',
+  'propose_comment',
+]);
 
 const PROPOSED_RE = /^Proposed action (ha_[0-9a-f]{24})\b/;
 
@@ -28,6 +34,25 @@ export function proposedActionId(
   if (!message.tool_name || !ACTION_TOOLS.has(message.tool_name)) return null;
   if (message.action_id) return message.action_id;
   return PROPOSED_RE.exec(message.content)?.[1] ?? null;
+}
+
+/** The action kind a proposal tool produces; used to rebuild a card's kind
+ *  from a stored tool row when restoring a conversation from history. */
+export function actionKindForTool(toolName: string | null | undefined): string {
+  switch (toolName) {
+    case 'set_project_auto_narrative':
+      return 'set_auto_narrative';
+    case 'trash_sessions':
+      return 'trash_sessions';
+    case 'propose_ticket':
+      return 'create_ticket';
+    case 'propose_assignment':
+      return 'assign_ticket';
+    case 'propose_comment':
+      return 'comment_ticket';
+    default:
+      return 'set_auto_narrative';
+  }
 }
 
 function plural(n: number, one: string, many: string): string {
@@ -45,6 +70,20 @@ export function actionTitle(action: Pick<HelperActionProposal, 'kind' | 'summary
   if (action.kind === 'trash_sessions') {
     return `Move ${plural(changing.length, 'session', 'sessions')} to Trash`;
   }
+  if (action.kind === 'create_ticket') {
+    const kind = typeof action.params?.kind === 'string' && action.params.kind ? action.params.kind : 'task';
+    return `Create ${/^[aeiou]/i.test(kind) ? 'an' : 'a'} ${kind} ticket`;
+  }
+  if (action.kind === 'assign_ticket') {
+    const to = typeof action.params?.assigned_to === 'string' && action.params.assigned_to
+      ? action.params.assigned_to
+      : changing[0]?.after;
+    return `Assign to ${typeof to === 'string' && to ? to : 'a persona'}`;
+  }
+  if (action.kind === 'comment_ticket') {
+    const name = typeof changing[0]?.name === 'string' && changing[0].name ? changing[0].name : 'ticket';
+    return `Comment on ${name}`;
+  }
   return action.summary || 'Proposed change';
 }
 
@@ -57,6 +96,9 @@ const REASONS: Record<string, string> = {
   upgrade_required: 'Needs a plan upgrade',
   forbidden: 'No access',
   not_found: 'Not found',
+  ticket_moved: 'The ticket moved to another project',
+  lease_epoch_required: 'Your organization requires a ticket lease to comment',
+  error: 'Something went wrong',
 };
 
 /** A short human label for a skip/failure reason code. */
@@ -81,7 +123,19 @@ export function targetState(
   if (target.change === 'skipped') return { tone: 'warning', label: 'Skipped', reason: reasonLabel(target.reason) };
   if (target.change === 'unchanged') return { tone: 'default', label: 'Unchanged' };
   if (result) {
-    if (result.ok) return { tone: 'success', label: kind === 'trash_sessions' ? 'In Trash' : 'Changed' };
+    if (result.ok) {
+      const label =
+        kind === 'trash_sessions'
+          ? 'In Trash'
+          : kind === 'create_ticket'
+            ? 'Created'
+            : kind === 'assign_ticket'
+              ? 'Assigned'
+              : kind === 'comment_ticket'
+                ? 'Commented'
+                : 'Changed';
+      return { tone: 'success', label };
+    }
     return { tone: 'danger', label: 'Failed', reason: reasonLabel(result.error) };
   }
   return { tone: 'info', label: 'Will change' };
@@ -98,7 +152,7 @@ export function expiryLabel(expiresAt: string | null, now: number): string | nul
 
 /** A pending record built from the streamed proposal (before any server read). */
 export function pendingRecord(p: HelperActionProposal): HelperAction {
-  return { ...p, status: 'pending', params: {}, result: {}, created_at: null, decided_at: null };
+  return { ...p, status: 'pending', params: p.params ?? {}, result: {}, created_at: null, decided_at: null };
 }
 
 /** True when a confirm/cancel failed because the action had already expired. */

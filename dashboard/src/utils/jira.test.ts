@@ -1,5 +1,17 @@
 import { describe, expect, it } from 'vitest';
-import { canUnlinkTicket, hasJiraEnterpriseTier, jiraErrorCode } from './jira';
+import {
+  canUnlinkTicket,
+  hasJiraEnterpriseTier,
+  isJiraOrgMember,
+  JIRA_REWRITE_SOURCE_FIELDS,
+  JIRA_SOURCE_FIELDS,
+  JIRA_TEMPLATES,
+  JIRA_VERBATIM_SOURCE_FIELDS,
+  jiraErrorCode,
+  jiraSourceFieldsForMode,
+  jiraTemplateLabel,
+  jiraTemplateOptions,
+} from './jira';
 
 /**
  * Pure helpers behind the Jira ticket surface. `hasJiraEnterpriseTier` gates
@@ -126,5 +138,118 @@ describe('jiraErrorCode', () => {
   it('returns undefined for non-ApiError values', () => {
     expect(jiraErrorCode(new Error('boom'))).toBeUndefined();
     expect(jiraErrorCode('nope')).toBeUndefined();
+  });
+});
+
+describe('isJiraOrgMember', () => {
+  it('is true for any member of the project org, whatever the role', () => {
+    expect(isJiraOrgMember({ org_id: 'org_x' }, [{ org_id: 'org_x' }])).toBe(true);
+  });
+
+  it('is false for non-members, personal projects and while orgs load', () => {
+    expect(isJiraOrgMember({ org_id: 'org_x' }, [{ org_id: 'org_y' }])).toBe(false);
+    expect(isJiraOrgMember({ org_id: null }, [{ org_id: 'org_x' }])).toBe(false);
+    expect(isJiraOrgMember({ org_id: 'org_x' }, undefined)).toBe(false);
+  });
+});
+
+describe('jiraTemplateOptions', () => {
+  const custom = (slug: string, name: string, archived: boolean) => ({
+    slug,
+    name,
+    builtin: false,
+    archived_at: archived ? '2026-01-01T00:00:00Z' : null,
+  });
+
+  it('lists the built-ins including the Design/UX template', () => {
+    expect(JIRA_TEMPLATES).toContainEqual({ value: 'design', label: 'Design / UX' });
+    const options = jiraTemplateOptions();
+    expect(options).toHaveLength(5);
+    expect(options.map((o) => o.value)).toEqual(['agile', 'compliance', 'sre', 'bug', 'design']);
+  });
+
+  it('appends active custom templates after the built-ins and drops archived ones', () => {
+    const options = jiraTemplateOptions([
+      custom('design-lite', 'Design Lite', false),
+      custom('old-tpl', 'Old', true),
+    ]);
+    expect(options).toEqual([
+      { value: 'agile', label: 'Agile Standard' },
+      { value: 'compliance', label: 'Enterprise / Compliance' },
+      { value: 'sre', label: 'Platform / SRE' },
+      { value: 'bug', label: 'Bug Report' },
+      { value: 'design', label: 'Design / UX' },
+      { value: 'design-lite', label: 'Design Lite' },
+    ]);
+  });
+
+  it('keeps the current archived value selectable for that field only', () => {
+    const templates = [custom('design-lite', 'Design Lite', false), custom('old-tpl', 'Old', true)];
+    const forField = jiraTemplateOptions(templates, 'old-tpl');
+    expect(forField).toContainEqual({ value: 'old-tpl', label: 'Old (archived)' });
+    // Another field whose value isn't the archived slug never sees it.
+    expect(jiraTemplateOptions(templates, 'agile').map((o) => o.value)).not.toContain('old-tpl');
+    expect(jiraTemplateOptions(templates).map((o) => o.value)).not.toContain('old-tpl');
+  });
+
+  it('lets an org custom template shadow a built-in with the same slug', () => {
+    const options = jiraTemplateOptions([custom('bug', 'Our Bug', false)]);
+    expect(options.filter((o) => o.value === 'bug')).toEqual([{ value: 'bug', label: 'Our Bug' }]);
+  });
+});
+
+describe('jiraSourceFieldsForMode', () => {
+  it('offers only fields with a verbatim rendering for verbatim sections', () => {
+    expect(jiraSourceFieldsForMode('verbatim').map((f) => f.value)).toEqual([
+      ...JIRA_VERBATIM_SOURCE_FIELDS,
+    ]);
+    expect(jiraSourceFieldsForMode('verbatim').map((f) => f.value)).not.toContain('title');
+  });
+
+  it('offers the whole vocabulary for rewrite sections', () => {
+    expect(jiraSourceFieldsForMode('rewrite').map((f) => f.value)).toEqual([
+      ...JIRA_REWRITE_SOURCE_FIELDS,
+    ]);
+    expect(JIRA_REWRITE_SOURCE_FIELDS).toEqual(JIRA_SOURCE_FIELDS.map((f) => f.value));
+  });
+});
+
+describe('jiraTemplateLabel', () => {
+  it('resolves built-in slugs and falls back to the raw slug when unknown', () => {
+    expect(jiraTemplateLabel('design')).toBe('Design / UX');
+    expect(jiraTemplateLabel('agile')).toBe('Agile Standard');
+    expect(jiraTemplateLabel('made-up')).toBe('made-up');
+    expect(jiraTemplateLabel(null)).toBe('—');
+  });
+
+  it('resolves custom template names by slug', () => {
+    expect(
+      jiraTemplateLabel('design-lite', [
+        { slug: 'design-lite', name: 'Design Lite', builtin: false, archived_at: null },
+      ]),
+    ).toBe('Design Lite');
+  });
+
+  it('marks an archived custom template', () => {
+    expect(
+      jiraTemplateLabel('old', [
+        { slug: 'old', name: 'Old', builtin: false, archived_at: '2026-01-01T00:00:00Z' },
+      ]),
+    ).toBe('Old (archived)');
+  });
+});
+
+describe('JIRA_SOURCE_FIELDS', () => {
+  it('exposes the full 8-field source vocabulary', () => {
+    expect(JIRA_SOURCE_FIELDS.map((f) => f.value)).toEqual([
+      'title',
+      'description',
+      'acceptance_criteria',
+      'priority',
+      'kind',
+      'persona',
+      'completion_notes',
+      'linked_sessions',
+    ]);
   });
 });

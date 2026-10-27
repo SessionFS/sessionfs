@@ -46,9 +46,15 @@ vi.mock('./OrgPersonasSection', () => ({
   ),
 }));
 
-function renderPage() {
+vi.mock('./groups/GroupsTab', () => ({
+  default: ({ orgId, isOrgAdmin }: { orgId: string; isOrgAdmin: boolean }) => (
+    <div data-testid="groups-stub" data-org-id={orgId} data-is-admin={String(isOrgAdmin)} />
+  ),
+}));
+
+function renderPage(tab = 'personas') {
   return render(
-    <MemoryRouter initialEntries={['/settings/organization?tab=personas&org=org_2']}>
+    <MemoryRouter initialEntries={[`/settings/organization?tab=${tab}&org=org_2`]}>
       <SecondaryOrgPage orgId="org_2" />
     </MemoryRouter>,
   );
@@ -83,6 +89,22 @@ describe('SecondaryOrgPage', () => {
       'href',
       '/settings/organization',
     );
+  });
+
+  it('has a Groups tab so secondary-org admins can manage groups', () => {
+    mockUseOrgMembers.mockReturnValue({
+      data: { org_id: 'org_2', current_user_role: 'owner', members: [] },
+      isLoading: false,
+    });
+    mockUseMe.mockReturnValue({ data: { user_id: 'u_9' } });
+    mockUseMyOrgs.mockReturnValue({ data: [{ org_id: 'org_2', name: 'Globex', role: 'owner' }] });
+
+    renderPage('groups');
+
+    expect(screen.getByRole('tab', { name: 'Groups' })).toHaveAttribute('aria-selected', 'true');
+    const stub = screen.getByTestId('groups-stub');
+    expect(stub).toHaveAttribute('data-org-id', 'org_2');
+    expect(stub).toHaveAttribute('data-is-admin', 'true');
   });
 
   it('treats a secondary-org member as non-admin', () => {

@@ -7,7 +7,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { useAuth } from '../auth/AuthContext';
-import type { HelperAction, HelperConversation, HelperConversationSummary, HelperStatus } from '../api/client';
+import type { HelperAction, HelperActionConfirmBody, HelperConversation, HelperConversationSummary, HelperStatus } from '../api/client';
 import type { HelperScope } from './HelperProvider';
 import { scopeKey } from './scope';
 
@@ -85,18 +85,25 @@ export function useHelperAction(id: string, seed: HelperAction, fromHistory: boo
   });
 }
 
+/** The decision a card can take: cancel, or confirm with an optional body. */
+export type HelperDecision =
+  | { decision: 'confirm'; body?: HelperActionConfirmBody }
+  | { decision: 'cancel' };
+
 /** Confirm or cancel an action; the result replaces the cached record. */
 export function useDecideHelperAction(id: string) {
   const { auth } = useAuth();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (decision: 'confirm' | 'cancel') =>
-      decision === 'confirm' ? auth!.client.confirmHelperAction(id) : auth!.client.cancelHelperAction(id),
-    onSuccess: (action, decision) => {
+    mutationFn: (d: HelperDecision) =>
+      d.decision === 'confirm'
+        ? auth!.client.confirmHelperAction(id, d.body)
+        : auth!.client.cancelHelperAction(id),
+    onSuccess: (action, d) => {
       queryClient.setQueryData(helperActionKey(id), action);
-      if (decision === 'confirm') {
+      if (d.decision === 'confirm') {
         // Whatever the action touched is now stale wherever it is shown.
-        for (const key of ['projects', 'project', 'compileStatus', 'sessions', 'session']) {
+        for (const key of ['projects', 'project', 'compileStatus', 'sessions', 'session', 'tickets', 'ticket']) {
           void queryClient.invalidateQueries({ queryKey: [key] });
         }
       }

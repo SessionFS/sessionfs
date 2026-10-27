@@ -104,8 +104,8 @@ export default function TransferPanel({
 
   return (
     <section aria-labelledby="transfer-heading" className="space-y-3">
-      <h3 id="transfer-heading" className="text-lg font-semibold text-text-primary">Transfer ownership</h3>
-      <p className="text-sm text-text-secondary">
+      <h3 id="transfer-heading" className="text-sm font-semibold text-text-primary">Transfer ownership</h3>
+      <p className="text-sm text-text-tertiary">
         Currently {scopeLabel(currentScope, availableOrgs)}.{' '}
         Transferring moves the project's org scope; sessions and audit history are preserved.
       </p>
@@ -139,6 +139,7 @@ export default function TransferPanel({
             className="w-auto min-w-[180px]"
           />
           <Button
+            variant="secondary"
             onClick={handleInitiate}
             disabled={initiate.isPending || !selectedDest}
             loading={initiate.isPending}

@@ -75,11 +75,13 @@ function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
         {others.map((t) => <p key={t.id}>{t.message}</p>)}
       </div>
       {toasts.length > 0 && (
-        <div className="fixed top-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
+        // A named region so the visible stack sits inside a landmark (it is
+        // rendered outside the app shell's <main>).
+        <section aria-label="Status messages" className="fixed top-4 right-4 z-[100] flex flex-col gap-2 pointer-events-none">
           {toasts.map((toast) => (
             <ToastItem key={toast.id} toast={toast} onDismiss={onDismiss} />
           ))}
-        </div>
+        </section>
       )}
     </>
   );

@@ -1,11 +1,17 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { JiraPreview, JiraSection, Ticket } from '../../api/client';
-import { Alert, Badge, Button, Dialog, DialogFooter, DialogHeader, Input, Textarea } from '../../components/ui';
-import { useJiraLink, useJiraPreview, usePublishJira, useUnlinkJira } from '../../hooks/useJiraTickets';
+import { Alert, Badge, Button, Dialog, DialogFooter, DialogHeader, Input, Select, Textarea } from '../../components/ui';
+import {
+  useJiraLink,
+  useJiraPreview,
+  usePublishJira,
+  useTicketJiraTemplates,
+  useUnlinkJira,
+} from '../../hooks/useJiraTickets';
 import { useToast } from '../../hooks/useToast';
 import { errorMessage } from '../../utils/errorMessage';
-import { jiraErrorCode } from '../../utils/jira';
+import { defaultJiraTemplateChoice, jiraErrorCode } from '../../utils/jira';
 import { safeHttpUrl } from '../../utils/url';
 
 /* ── Ticket-detail Jira surface (Enterprise, org-scoped projects) ──
@@ -16,6 +22,36 @@ import { safeHttpUrl } from '../../utils/url';
  * embedded link summary, with the live status refreshed via GET /jira. */
 
 const MAX_SUMMARY = 255;
+
+/**
+ * The provenance note shown above the draft: which template this publish
+ * resolves to, and — on a re-publish — whether the link's pinned version has
+ * since moved. Built-in templates carry no version, so a bump only shows for
+ * custom templates.
+ */
+function templateNote(preview: JiraPreview): string | null {
+  const current = preview.template;
+  const existing = preview.existing;
+  if (!existing) {
+    return current.version != null ? `Using ${current.name} v${current.version}.` : `Using ${current.name}.`;
+  }
+  const publishedSlug = existing.template_slug;
+  if (!publishedSlug) return null; // a link predating template pinning
+  if (publishedSlug !== current.slug) {
+    return `Published with ${publishedSlug}; current is ${current.name}.`;
+  }
+  if (
+    existing.template_version != null &&
+    current.version != null &&
+    existing.template_version !== current.version
+  ) {
+    return `Published with ${current.name} v${existing.template_version}; current is v${current.version}.`;
+  }
+  return null;
+}
+
+const TEMPLATE_CHANGED_MESSAGE =
+  'The story template changed since this draft was built. The draft has been rebuilt with the current template; review it and publish again.';
 
 function friendlyError(err: unknown): string {
   switch (jiraErrorCode(err)) {
@@ -46,6 +82,10 @@ function friendlyError(err: unknown): string {
     case 'jira_upstream_error':
     case 'jira_timeout':
       return 'Jira is unreachable right now; try again shortly.';
+    case 'template_changed':
+      return TEMPLATE_CHANGED_MESSAGE;
+    case 'template_archived':
+      return 'That template was archived; pick another one.';
     default:
       return errorMessage(err, 'Could not load the Jira draft');
   }
@@ -77,13 +117,10 @@ export function JiraTicketSection({ projectId, ticket, orgId, isProjectAdmin, is
     return null;
   }
 
+  // Compact: sits in the ticket header next to the status and assignee.
   return (
-    <div className="pt-1">
-      <h4 className="text-micro uppercase font-semibold tracking-wide text-text-tertiary mb-1">
-        Jira
-      </h4>
-
-      <div className="flex flex-wrap items-center gap-2">
+    <div>
+      <div role="group" aria-label="Jira issue" className="flex flex-wrap items-center gap-2">
         {linked && (
           <LinkedIssueBadge
             issueKey={linked.issue_key}
@@ -160,23 +197,33 @@ function LinkedIssueBadge({
   status: string;
 }) {
   const href = safeHttpUrl(issueUrl);
+  const chip = `inline-flex items-center gap-1.5 rounded-md border border-border bg-surface px-2 py-1 text-xs ${
+    href ? 'hover:border-border-strong' : ''
+  }`;
   const badge = (
     <>
-      <Badge variant="info" label={issueKey} />
-      <span className={`text-xs text-text-secondary ${href ? 'hover:text-brand' : ''}`}>
-        {status}
-      </span>
+      <span className="text-text-tertiary">Jira</span>
+      <span className="font-mono font-medium text-text-primary">{issueKey}</span>
+      <span aria-hidden="true" className="text-text-tertiary">·</span>
+      <span className="text-text-secondary">{status}</span>
+      {href && (
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="text-text-tertiary">
+          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+          <polyline points="15 3 21 3 21 9" />
+          <line x1="10" y1="14" x2="21" y2="3" />
+        </svg>
+      )}
     </>
   );
   if (!href) {
-    return <span className="inline-flex items-center gap-1.5">{badge}</span>;
+    return <span className={chip}>{badge}</span>;
   }
   return (
     <a
       href={href}
       target="_blank"
       rel="noopener noreferrer"
-      className="inline-flex items-center gap-1.5 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] rounded"
+      className={`${chip} outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]`}
     >
       {badge}
     </a>
@@ -241,9 +288,39 @@ interface PromoteToJiraDialogProps {
   onClose: () => void;
 }
 
+function templateChoiceLabel(t: { name: string; version: number | null }): string {
+  return t.version != null ? `${t.name} v${t.version}` : t.name;
+}
+
 export function PromoteToJiraDialog({ projectId, ticketId, onClose }: PromoteToJiraDialogProps) {
-  const preview = useJiraPreview(projectId, ticketId, true);
+  const choices = useTicketJiraTemplates(projectId, ticketId, true);
+  const [picked, setPicked] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  // Wait for the template list before the first preview so it renders with the
+  // picker's starting choice. An older server without the list endpoint (or
+  // an error, surfaced by the preview below) falls back to the inherited draft.
+  const choicesSettled = choices.isSuccess || choices.isError;
+  const selected = choices.data ? (picked ?? defaultJiraTemplateChoice(choices.data)) : undefined;
+  const preview = useJiraPreview(projectId, ticketId, choicesSettled, selected);
   const queryClient = useQueryClient();
+
+  const options = useMemo(() => {
+    const list = choices.data?.templates ?? [];
+    // This ticket's pinned template is listed even after it was archived (a
+    // published ticket keeps its template); label it so it's not mistaken for
+    // a normal choice.
+    const opts = list.map((t) => ({
+      value: t.slug,
+      label: t.archived ? `${templateChoiceLabel(t)} (archived)` : templateChoiceLabel(t),
+    }));
+    // The inherited default may be an archived template (still in use by the
+    // mapping/connection): keep it selectable, labelled.
+    const inherited = choices.data?.inherited_default;
+    if (inherited && !list.some((t) => t.slug === inherited.slug)) {
+      opts.push({ value: inherited.slug, label: `${templateChoiceLabel(inherited)} (archived)` });
+    }
+    return opts;
+  }, [choices.data]);
 
   function handleClose() {
     // Drop the cached draft so the next open rebuilds it from the live ticket
@@ -252,13 +329,42 @@ export function PromoteToJiraDialog({ projectId, ticketId, onClose }: PromoteToJ
     onClose();
   }
 
+  function handleTemplateChanged() {
+    setNotice(TEMPLATE_CHANGED_MESSAGE);
+    void preview.refetch?.();
+    void choices.refetch?.();
+  }
+
   return (
     <Dialog open onClose={handleClose} titleId="jira-promote-heading" className="max-w-3xl">
       <DialogHeader titleId="jira-promote-heading">
         {preview.data?.existing ? 'Update Jira issue' : 'Promote to Jira'}
       </DialogHeader>
 
-      {preview.isLoading && <p className="text-sm text-text-tertiary">Building draft…</p>}
+      {choices.data && options.length > 0 && (
+        <div className="mb-3">
+          <Select
+            title="Template"
+            value={selected ?? ''}
+            onValueChange={(v) => {
+              setNotice(null);
+              setPicked(v);
+            }}
+            options={options}
+            hint="Defaults to the template this ticket was published with, else the project's template."
+          />
+        </div>
+      )}
+
+      {notice && (
+        <Alert variant="warning" className="mb-3">
+          {notice}
+        </Alert>
+      )}
+
+      {(preview.isLoading || (!choicesSettled && !preview.data)) && (
+        <p className="text-sm text-text-tertiary">Building draft…</p>
+      )}
 
       {preview.isError && (
         <Alert variant="danger">{friendlyError(preview.error)}</Alert>
@@ -272,6 +378,7 @@ export function PromoteToJiraDialog({ projectId, ticketId, onClose }: PromoteToJ
           preview={preview.data}
           isFetching={preview.isFetching}
           onClose={handleClose}
+          onTemplateChanged={handleTemplateChanged}
         />
       )}
     </Dialog>
@@ -284,12 +391,14 @@ function JiraDraftForm({
   preview,
   isFetching,
   onClose,
+  onTemplateChanged,
 }: {
   projectId: string;
   ticketId: string;
   preview: JiraPreview;
   isFetching?: boolean;
   onClose: () => void;
+  onTemplateChanged?: () => void;
 }) {
   const publish = usePublishJira(projectId);
   const { addToast } = useToast();
@@ -298,6 +407,7 @@ function JiraDraftForm({
   const [summary, setSummary] = useState(preview.summary);
   const [sections, setSections] = useState<JiraSection[]>(preview.sections);
   const [publishError, setPublishError] = useState<string | null>(null);
+  const note = templateNote(preview);
 
   function updateParagraph(sectionKey: string, index: number, text: string) {
     setSections((prev) =>
@@ -327,11 +437,19 @@ function JiraDraftForm({
             paragraphs: s.paragraphs.map((p) => ({ text: p.text, citations: p.citations })),
           })),
           confirm: true,
+          // Echo the template this draft was built with: the server refuses
+          // (409 template_changed) rather than publish a different version.
+          template: preview.template.slug,
+          template_version: preview.template.version,
         },
       });
       addToast('success', 'Published to Jira');
       onClose();
     } catch (err: unknown) {
+      if (jiraErrorCode(err) === 'template_changed' && onTemplateChanged) {
+        onTemplateChanged();
+        return;
+      }
       setPublishError(friendlyError(err));
     }
   }
@@ -345,6 +463,8 @@ function JiraDraftForm({
             below as a diff against what was last published.
           </Alert>
         )}
+
+        {note && <p className="text-xs text-text-tertiary">{note}</p>}
 
         <div>
           <p className="text-sm font-medium text-text-secondary mb-1">

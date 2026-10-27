@@ -1,32 +1,50 @@
 import { useState } from 'react';
-import { useWikiPages, useWikiPage, useUpdateWikiPage, useDeleteWikiPage, useRegenerateWikiPage } from '../../hooks/useProjects';
+import {
+  useWikiPages,
+  useWikiPage,
+  useUpdateWikiPage,
+  useDeleteWikiPage,
+  useRegenerateWikiPage,
+  useSetWikiPagePublish,
+} from '../../hooks/useProjects';
 import { useToast } from '../../hooks/useToast';
 import RelativeDate from '../../components/RelativeDate';
 import type { WikiPage } from '../../api/client';
-import { Button, Input, Markdown, Textarea } from '../../components/ui';
+import { Button, Input, Markdown, Switch, Textarea } from '../../components/ui';
 import { errorMessage } from '../../utils/errorMessage';
+import type { ConfluenceSurface } from '../../utils/confluence';
+import { ConfluencePublishDialog } from '../confluence/ConfluencePublishDialog';
 
 /** `canEdit` is the project's `can_edit` flag; view-only readers get no
- *  create / edit / regenerate / delete controls. */
+ *  create / edit / regenerate / delete controls. `initialSlug` (the
+ *  `?page=` query param) opens that page on arrival, e.g. from a helper
+ *  wiki citation. `confluence` gates the publish surface (Enterprise +
+ *  org member). */
 export default function PagesTab({
   projectId,
   canEdit = true,
+  initialSlug = null,
+  confluence,
 }: {
   projectId: string;
   canEdit?: boolean;
+  initialSlug?: string | null;
+  confluence?: ConfluenceSurface;
 }) {
   const { data, isLoading } = useWikiPages(projectId);
-  const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
+  const [selectedSlug, setSelectedSlug] = useState<string | null>(initialSlug || null);
   const [editingSlug, setEditingSlug] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState('');
   const [showNewPage, setShowNewPage] = useState(false);
   const [newSlug, setNewSlug] = useState('');
   const [newTitle, setNewTitle] = useState('');
   const [newContent, setNewContent] = useState('');
+  const [publishSlug, setPublishSlug] = useState<string | null>(null);
   const { addToast } = useToast();
 
   const { data: pageDetail } = useWikiPage(projectId, selectedSlug);
   const updatePage = useUpdateWikiPage(projectId);
+  const setPublish = useSetWikiPagePublish(projectId);
   const deletePage = useDeleteWikiPage(projectId);
   const regeneratePage = useRegenerateWikiPage(projectId);
 
@@ -40,6 +58,18 @@ export default function PagesTab({
           setEditDraft('');
         },
         onError: (err) => addToast('error', `Save failed: ${errorMessage(err)}`),
+      },
+    );
+  }
+
+  function handleTogglePublish(page: WikiPage, next: boolean) {
+    // PATCH flips only the opt-in: no content write, no new revision.
+    setPublish.mutate(
+      { slug: page.slug, publish: next },
+      {
+        onSuccess: () =>
+          addToast('success', next ? 'This page will publish to Confluence.' : 'Publish opt-in turned off.'),
+        onError: (err) => addToast('error', `Update failed: ${errorMessage(err)}`),
       },
     );
   }
@@ -227,7 +257,20 @@ export default function PagesTab({
                         )}
 
                         {/* Actions */}
-                        <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border">
+                        <div className="flex items-center gap-3 mt-4 pt-3 border-t border-border flex-wrap">
+                          {canEdit && confluence?.isEnterprise && (
+                            <Switch
+                              checked={pageDetail?.publish ?? page.publish ?? false}
+                              onChange={(next) => handleTogglePublish(page, next)}
+                              label="Publish"
+                              disabled={setPublish.isPending}
+                            />
+                          )}
+                          {canEdit && confluence?.isEnterprise && (
+                            <Button size="sm" variant="secondary" onClick={() => setPublishSlug(page.slug)}>
+                              Publish to Confluence
+                            </Button>
+                          )}
                           {canEdit && (<>
                           <button
                             onClick={() => { setEditingSlug(page.slug); setEditDraft(pageDetail?.content ?? page.content ?? ''); }}
@@ -264,6 +307,16 @@ export default function PagesTab({
             );
           })}
         </div>
+      )}
+
+      {publishSlug && (
+        <ConfluencePublishDialog
+          projectId={projectId}
+          kind="wiki_page"
+          slug={publishSlug}
+          canAdmin={confluence?.canAdmin === true}
+          onClose={() => setPublishSlug(null)}
+        />
       )}
     </div>
   );

@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import MarketplacePage, { isTierGate } from './MarketplacePage';
 import { ApiError } from '../api/client';
+import { axe } from '../test/axe';
 
 const { hooks } = vi.hoisted(() => ({
   hooks: {
@@ -25,6 +26,7 @@ const { hooks } = vi.hoisted(() => ({
     useRequestRegistryPoll: vi.fn(() => ({ mutate: vi.fn(), isPending: false })),
     addToast: vi.fn(),
     useMarketplaceDisclosure: vi.fn((_versionId?: string, _tools?: string[]) => ({ data: undefined as unknown, isLoading: false, error: null })),
+    useHeldUpdateCounts: vi.fn((...args: unknown[]) => { void args; return { total: 0, more: false, byOrg: {} as Record<string, number>, errors: {} as Record<string, unknown>, loaded: false }; }),
   },
 }));
 
@@ -51,6 +53,7 @@ vi.mock('../transfers/useTransfers', () => ({ useMyOrgs: hooks.useMyOrgs }));
 vi.mock('../hooks/useMe', () => ({ useMe: hooks.useMe }));
 vi.mock('../hooks/useMarketplaceDisclosure', () => ({
   useMarketplaceDisclosure: (versionId?: string, tools?: string[]) => hooks.useMarketplaceDisclosure(versionId, tools),
+  useHeldUpdateCounts: (orgIds: string[]) => hooks.useHeldUpdateCounts(orgIds),
 }));
 vi.mock('../hooks/useProjects', () => ({ useProjects: hooks.useProjects }));
 vi.mock('../hooks/useNativeCatalogs', () => ({
@@ -58,8 +61,8 @@ vi.mock('../hooks/useNativeCatalogs', () => ({
   useWorksIn: () => ({ data: undefined, isLoading: false, error: null }),
 }));
 vi.mock('./HeldUpdates', () => ({
-  HeldUpdateQueues: ({ orgs }: { orgs: { org_id: string }[] }) => (
-    <div data-testid="held-queues">{orgs.map((org) => org.org_id).join(',')}</div>
+  HeldUpdateQueues: ({ orgs, value }: { orgs: { org_id: string }[]; value?: string }) => (
+    <div data-testid="held-queues" data-value={value}>{orgs.map((org) => org.org_id).join(',')}</div>
   ),
 }));
 vi.mock('../hooks/useToast', () => ({ useToast: () => ({ addToast: hooks.addToast }) }));
@@ -112,6 +115,8 @@ function pages(items: unknown[], extra: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  hooks.useMarketplaceDisclosure.mockReturnValue({ data: undefined, isLoading: false, error: null });
+  hooks.useHeldUpdateCounts.mockReturnValue({ total: 0, more: false, byOrg: {}, errors: {}, loaded: false });
   hooks.useMarketplacePackages.mockReturnValue(pages([packageRow]));
   hooks.useMarketplacePreview.mockReturnValue({
     data: { instruction_preview: [{ path: 'skills/review/SKILL.md', content: '# Review contract' }] },
@@ -140,22 +145,58 @@ beforeEach(() => {
 describe('MarketplacePage', () => {
   it('renders discoverable package trust state', () => {
     render(<MarketplacePage />);
-    expect(screen.getByRole('heading', { name: /Portable agent capabilities/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Inspect Review Helper' })).toBeInTheDocument();
-    // Publisher identity, not "a platform admin published it" (marketplace v2 §4.3).
-    expect(screen.getByText('verified publisher')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { level: 1, name: 'Marketplace' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Review Helper/ })).toBeInTheDocument();
+    // Publisher identity, not "a platform admin published it" (marketplace v2 §4.3):
+    // a check mark whose tooltip carries the server-derived badge text.
+    // The check mark is decorative; the title button carries the words.
+    expect(screen.getByTestId('verified-mark')).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByRole('button', { name: 'Review Helper, verified publisher' })).toBeInTheDocument();
     expect(screen.queryByText('verified')).toBeNull();
-    expect(screen.getByText(/1 elevated capability flag/)).toBeInTheDocument();
+    expect(screen.getByTestId('capability-summary')).toHaveTextContent('Includes scripts');
+  });
+
+  it('keeps cards quiet: one interactive element, no public pill, no dangling separator', () => {
+    hooks.useMarketplacePackages.mockReturnValue(pages([
+      packageRow,
+      { ...packageRow, listing_id: 'sml_2', display_name: 'Org Helper', visibility: 'org', installs: undefined },
+    ]));
+    render(<MarketplacePage />);
+    const cards = screen.getAllByRole('article');
+    expect(cards).toHaveLength(2);
+    for (const card of cards) {
+      // The title button is the only control; its ::after overlay makes the card clickable.
+      expect(within(card).getAllByRole('button')).toHaveLength(1);
+      expect(within(card).queryByRole('link')).toBeNull();
+      const meta = card.lastElementChild as HTMLElement;
+      expect(meta.textContent?.trim().endsWith('·')).toBe(false);
+    }
+    expect(within(cards[0]).queryByText('Public')).toBeNull();
+    expect(within(cards[0]).queryByText('public')).toBeNull();
+    // Visibility sits in the footer meta line, not in the namespace row.
+    // Visibility sits in the namespace row as plain text; the footer stays one line.
+    expect(within(cards[1]).getByTestId('card-visibility')).toHaveTextContent('Organization only');
+    expect(within(cards[1].lastElementChild as HTMLElement).queryByText('Organization only')).toBeNull();
+    expect(within(cards[1]).getByText('— installs')).toBeInTheDocument();
+  });
+
+  it('opens the package from the card title', async () => {
+    const user = userEvent.setup();
+    render(<MarketplacePage />);
+    await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
+    expect(screen.getByRole('dialog', { name: 'Review Helper' })).toBeInTheDocument();
   });
 
   it('shows provenance, license, degradation, and a visibly untrusted preview', async () => {
     const user = userEvent.setup();
     render(<MarketplacePage />);
-    await user.click(screen.getByRole('button', { name: 'Inspect Review Helper' }));
-    expect(screen.getByText('Apache-2.0')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
+    expect(screen.getAllByText('Apache-2.0').length).toBeGreaterThan(0);
     expect(screen.getByText(/upload:review.tar.gz/)).toBeInTheDocument();
+    expect(screen.getByText('Asks for consent')).toBeInTheDocument();
+    expect(screen.getByText(/Not included: MCP servers/)).toBeInTheDocument();
+    await user.click(screen.getByRole('tab', { name: 'Compatibility' }));
     expect(screen.getByText('scripts_require_consent')).toBeInTheDocument();
-    expect(screen.getByText('Present — explicit consent')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Preview instructions' }));
     expect(screen.getByRole('heading', { name: 'Untrusted instruction preview' })).toBeInTheDocument();
     expect(screen.getByText('# Review contract')).toBeInTheDocument();
@@ -168,13 +209,13 @@ describe('MarketplacePage', () => {
       risk: { ...packageRow.risk, hooks: true, hook_events: ['PreToolUse'], allowed_tools: ['allowed-tools:Bash'] },
     }]));
     render(<MarketplacePage />);
-    expect(screen.getByText(/3 elevated capability flags/)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Inspect Review Helper' }));
-    expect(screen.getByText('Frontmatter hooks')).toBeInTheDocument();
+    expect(screen.getByTestId('capability-summary')).toHaveTextContent('Includes scripts +2');
+    await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
+    expect(screen.getByText('Hooks')).toBeInTheDocument();
     expect(screen.getByText('PreToolUse')).toBeInTheDocument();
     expect(screen.getByText('Pre-approved tools')).toBeInTheDocument();
     expect(screen.getByText('allowed-tools:Bash')).toBeInTheDocument();
-    expect(screen.getAllByText('Present — explicit consent')).toHaveLength(3);
+    expect(screen.getAllByText('Asks for consent')).toHaveLength(3);
   });
 
   it('lets the owner delete their own private version behind a confirmation', async () => {
@@ -183,7 +224,7 @@ describe('MarketplacePage', () => {
     hooks.useDeletePersonalSkillVersion.mockReturnValue({ mutateAsync, isPending: false });
     hooks.useMarketplacePackages.mockReturnValue(pages([{ ...packageRow, visibility: 'user', owner_user_id: 'user_1' }]));
     render(<MarketplacePage />);
-    await user.click(screen.getByRole('button', { name: 'Inspect Review Helper' }));
+    await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
     await user.click(screen.getByRole('button', { name: 'Delete version…' }));
     expect(screen.getByRole('alertdialog')).toBeInTheDocument();
     expect(mutateAsync).not.toHaveBeenCalled();
@@ -194,7 +235,7 @@ describe('MarketplacePage', () => {
   it('hides the delete action on packages the viewer does not own', async () => {
     const user = userEvent.setup();
     render(<MarketplacePage />);
-    await user.click(screen.getByRole('button', { name: 'Inspect Review Helper' }));
+    await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
     expect(screen.queryByRole('button', { name: 'Delete version…' })).not.toBeInTheDocument();
   });
 
@@ -205,7 +246,7 @@ describe('MarketplacePage', () => {
       risk: { ...packageRow.risk, disclosed_metadata: { 'review-helper': { model: 'opus', effort: 'high', shell: 'bash' } } },
     }]));
     render(<MarketplacePage />);
-    await user.click(screen.getByRole('button', { name: 'Inspect Review Helper' }));
+    await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
     expect(screen.getByRole('heading', { name: 'Declared behavior' })).toBeInTheDocument();
     expect(screen.getByText('review-helper · model')).toBeInTheDocument();
     expect(screen.getByText('opus')).toBeInTheDocument();
@@ -215,7 +256,7 @@ describe('MarketplacePage', () => {
   it('omits the declared behavior block when nothing is declared', async () => {
     const user = userEvent.setup();
     render(<MarketplacePage />);
-    await user.click(screen.getByRole('button', { name: 'Inspect Review Helper' }));
+    await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
     expect(screen.queryByRole('heading', { name: 'Declared behavior' })).not.toBeInTheDocument();
   });
 
@@ -227,14 +268,14 @@ describe('MarketplacePage', () => {
       fetchNextPage,
     }));
     const first = render(<MarketplacePage />);
-    expect(screen.getByText('2 packages loaded')).toBeInTheDocument();
+    expect(screen.getByTestId('package-count')).toHaveTextContent('2 loaded');
     await user.click(screen.getByRole('button', { name: 'Load more' }));
     expect(fetchNextPage).toHaveBeenCalledTimes(1);
     first.unmount();
 
     hooks.useMarketplacePackages.mockReturnValue(pages([packageRow]));
     render(<MarketplacePage />);
-    expect(screen.getByText('1 package')).toBeInTheDocument();
+    expect(screen.getByTestId('package-count')).toHaveTextContent(/^1$/);
     expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
@@ -246,7 +287,9 @@ describe('MarketplacePage', () => {
     });
     render(<MarketplacePage />);
     expect(screen.getByText('Upgrade to Team')).toBeInTheDocument();
-    expect(screen.queryByText('No organization registries configured.')).not.toBeInTheDocument();
+    expect(screen.queryByText('No registries configured.')).not.toBeInTheDocument();
+    // Only the registries part is gated; the viewer's assignments still show.
+    expect(screen.getByRole('heading', { name: /Assigned to you/ })).toBeInTheDocument();
     expect(isTierGate(new ApiError(403, JSON.stringify({ error: { code: 'feature_not_available', message: 'x' } })))).toBe(true);
     expect(isTierGate(new ApiError(500, 'boom'))).toBe(false);
   });
@@ -295,7 +338,10 @@ describe('MarketplacePage publishing and moderation entry points', () => {
       ],
       isLoading: false,
     });
+    hooks.useHeldUpdateCounts.mockReturnValue({ total: 2, more: false, byOrg: { org_2: 1, org_3: 1 }, errors: {}, loaded: true });
     const first = render(<MarketplacePage />);
+    // Counts are asked for administered orgs only, never the member org.
+    expect(hooks.useHeldUpdateCounts).toHaveBeenLastCalledWith(['org_2', 'org_3']);
     // Not the primary org (member there), but both administered orgs.
     expect(screen.getByTestId('held-queues')).toHaveTextContent('org_2,org_3');
     first.unmount();
@@ -303,6 +349,7 @@ describe('MarketplacePage publishing and moderation entry points', () => {
     // Administering an org is enough even without a primary org.
     hooks.useMe.mockReturnValue({ data: { user_id: 'user_1', tier: 'free' } });
     hooks.useMyOrgs.mockReturnValue({ data: [{ org_id: 'org_9', name: 'Other', role: 'admin' }], isLoading: false });
+    hooks.useHeldUpdateCounts.mockReturnValue({ total: 1, more: false, byOrg: { org_9: 1 }, errors: {}, loaded: true });
     render(<MarketplacePage />);
     expect(screen.getByTestId('held-queues')).toHaveTextContent('org_9');
   });
@@ -329,7 +376,7 @@ describe('MarketplacePage publishing and moderation entry points', () => {
     });
     render(<MarketplacePage />);
     expect(screen.getByText('yanked')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Inspect Review Helper' }));
+    await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
     expect(screen.getByText('This version is yanked.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Download archive' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Request for project' })).toBeDisabled();
@@ -343,7 +390,7 @@ describe('MarketplacePage publishing and moderation entry points', () => {
     });
     render(<MarketplacePage />);
     expect(screen.getByText('blocked')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Inspect Review Helper' }));
+    await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
     expect(screen.getByText('This version is blocked.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Download archive' })).toBeDisabled();
   });
@@ -359,7 +406,7 @@ describe('Report dialog', () => {
   async function openReport() {
     const user = userEvent.setup();
     render(<MarketplacePage />);
-    await user.click(screen.getByRole('button', { name: 'Inspect Review Helper' }));
+    await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
     await user.click(screen.getByRole('button', { name: 'Report…' }));
     return user;
   }
@@ -454,8 +501,9 @@ describe('MarketplacePage discovery (marketplace v2 §9)', () => {
     expect(hooks.useMarketplacePackages).toHaveBeenLastCalledWith('', '', { sort: 'relevance' });
     await user.click(screen.getByRole('button', { name: 'Code review' }));
     expect(hooks.useMarketplacePackages).toHaveBeenLastCalledWith('', '', { sort: 'relevance', category: 'review' });
-    await user.click(screen.getByLabelText('Verified publishers'));
-    await user.click(screen.getByLabelText('Hide deprecated'));
+    await user.click(screen.getByRole('button', { name: 'Filters' }));
+    await user.click(screen.getByLabelText('Verified publishers only'));
+    await user.click(screen.getByLabelText('Hide deprecated packages'));
     expect(hooks.useMarketplacePackages).toHaveBeenLastCalledWith('', '', {
       sort: 'relevance', category: 'review', verified: true, include_deprecated: false,
     });
@@ -484,9 +532,10 @@ describe('MarketplacePage discovery (marketplace v2 §9)', () => {
       error: null,
     });
     render(<MarketplacePage />);
-    await user.click(screen.getByRole('button', { name: 'Inspect Review Helper' }));
+    await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
     expect(screen.getByText('Deprecated by its publisher.')).toBeInTheDocument();
     expect(screen.getByText('sessionfs/review-helper-2')).toBeInTheDocument();
+    await user.click(screen.getByRole('tab', { name: 'Compatibility' }));
     expect(screen.getByRole('heading', { name: 'Installs and freshness by tool' })).toBeInTheDocument();
     expect(screen.getByText(/regressed · stale/)).toBeInTheDocument();
     await user.click(screen.getByRole('tab', { name: 'README' }));
@@ -496,5 +545,293 @@ describe('MarketplacePage discovery (marketplace v2 §9)', () => {
     expect(readme.querySelectorAll('a')).toHaveLength(1);
     expect(screen.getByRole('link', { name: 'good' })).toHaveAttribute('rel', 'noopener noreferrer nofollow');
     expect(screen.getByText('bad').tagName).toBe('SPAN');
+  });
+});
+
+describe('MarketplacePage filters menu', () => {
+  const lastFilters = () => hooks.useMarketplacePackages.mock.lastCall?.[2];
+
+  it('keeps only search, tool, sort and Filters on the page and maps every panel filter to the same params', async () => {
+    const user = userEvent.setup();
+    render(<MarketplacePage />);
+    expect(screen.queryByRole('dialog', { name: 'Filters' })).toBeNull();
+    expect(screen.queryByLabelText('Verified publishers only')).not.toBeVisible();
+    await user.type(screen.getByRole('searchbox', { name: 'Search marketplace' }), 'review');
+    expect(hooks.useMarketplacePackages.mock.lastCall?.[0]).toBe('review');
+    await user.click(screen.getByRole('button', { name: 'Filter marketplace by tool' }));
+    await user.click(screen.getByRole('option', { name: 'codex' }));
+    expect(hooks.useMarketplacePackages.mock.lastCall?.[1]).toBe('codex');
+    await user.click(screen.getByRole('button', { name: 'Sort' }));
+    await user.click(screen.getByRole('option', { name: 'Newest' }));
+    expect(lastFilters()).toEqual({ sort: 'recent' });
+
+    const trigger = screen.getByRole('button', { name: 'Filters' });
+    await user.click(trigger);
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    const panel = screen.getByRole('dialog', { name: 'Filters' });
+    await user.click(within(panel).getByRole('button', { name: /Scanner findings/ }));
+    await user.click(within(panel).getByRole('option', { name: 'No open findings' }));
+    await user.click(within(panel).getByRole('button', { name: /Includes/ }));
+    await user.click(within(panel).getByRole('option', { name: 'Scripts' }));
+    await user.click(within(panel).getByRole('button', { name: /Works in/ }));
+    await user.click(within(panel).getByRole('option', { name: 'gemini' }));
+    await user.click(within(panel).getByRole('button', { name: /Last updated/ }));
+    await user.click(within(panel).getByRole('option', { name: 'Past 30 days' }));
+    await user.type(within(panel).getByLabelText('License'), 'MIT{Enter}');
+    await user.click(within(panel).getByLabelText(/Published from CI only/));
+    expect(lastFilters()).toEqual({
+      sort: 'recent', max_severity: 'none', capability: 'scripts', works_in: 'gemini', updated_within: 30, license: 'MIT', attested: true,
+    });
+    expect(screen.getByRole('button', { name: /Filters/ })).toHaveTextContent('6');
+  });
+
+  it('shows active filters as removable chips with Clear all', async () => {
+    const user = userEvent.setup();
+    render(<MarketplacePage />);
+    await user.click(screen.getByRole('button', { name: 'Filters' }));
+    await user.click(screen.getByLabelText('Verified publishers only'));
+    await user.click(screen.getByLabelText('Hide deprecated packages'));
+    await user.click(screen.getByRole('button', { name: 'Done' }));
+    expect(screen.queryByRole('dialog', { name: 'Filters' })).toBeNull();
+    const chips = screen.getByRole('group', { name: 'Active filters' });
+    await user.click(within(chips).getByRole('button', { name: 'Remove filter: Verified publishers' }));
+    expect(lastFilters()).toEqual({ sort: 'relevance', include_deprecated: false });
+    await user.click(within(chips).getByRole('button', { name: 'Clear all' }));
+    expect(lastFilters()).toEqual({ sort: 'relevance' });
+    expect(screen.queryByRole('group', { name: 'Active filters' })).toBeNull();
+  });
+
+  it('closes on Escape and returns focus to the trigger', async () => {
+    const user = userEvent.setup();
+    render(<MarketplacePage />);
+    const trigger = screen.getByRole('button', { name: 'Filters' });
+    await user.click(trigger);
+    expect(screen.getByRole('dialog', { name: 'Filters' })).toBeVisible();
+    await user.keyboard('{Escape}');
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    expect(trigger).toHaveFocus();
+  });
+});
+
+describe('MarketplacePage organization library', () => {
+  it('collapses to one quiet line when nothing is assigned and no registry exists', () => {
+    hooks.useMe.mockReturnValue({ data: { org_id: 'org_1', user_id: 'user_1' } });
+    render(<MarketplacePage />);
+    expect(screen.getByText(/hasn.t assigned any packages to you/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'How organization libraries work' })).toHaveAttribute('href', expect.stringContaining('sessionfs.dev/skills-marketplace/'));
+    expect(screen.queryByRole('heading', { name: /Assigned to you/ })).toBeNull();
+    expect(screen.queryByText(/0 effective assignments/)).toBeNull();
+  });
+
+  it('lists assignments and registries without nested cards when there is content', () => {
+    hooks.useMe.mockReturnValue({ data: { org_id: 'org_1', user_id: 'user_1' } });
+    hooks.useEffectiveSkillAssignments.mockReturnValue({
+      data: { items: [{ id: 'asg_1', org_id: 'org_1', version_id: 'skv_9', content_hash: 'x', target_type: 'org', target_id: 'org_1', target_user_id: null, mode: 'required', target_tools: ['codex'], policy: {}, created_at: '' }] },
+      isLoading: false,
+    });
+    hooks.useOrgSkillControl.mockReturnValue({
+      registries: { data: { items: [{ id: 'reg_1', alias: 'acme-skills', source_url: 'https://example.test/x.git', policy_state: 'approved', server_fetch_enabled: false }] }, isLoading: false },
+    });
+    render(<MarketplacePage />);
+    expect(screen.getByRole('heading', { name: 'From your organization' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /Assigned to you/ })).toBeInTheDocument();
+    expect(screen.getByText('skv_9')).toBeInTheDocument();
+    expect(screen.getByText('Required')).toBeInTheDocument();
+    expect(screen.getByText('acme-skills')).toBeInTheDocument();
+  });
+});
+
+describe('MarketplacePage accessibility', () => {
+  it('browse page has no axe violations', async () => {
+    const { container } = render(<main><MarketplacePage /></main>);
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('open filters menu has no axe violations', async () => {
+    const user = userEvent.setup();
+    const { container } = render(<main><MarketplacePage /></main>);
+    await user.click(screen.getByRole('button', { name: 'Filters' }));
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('package detail has no axe violations', async () => {
+    const user = userEvent.setup();
+    hooks.useMarketplacePackages.mockReturnValue(pages([{
+      ...packageRow,
+      risk: { ...packageRow.risk, hooks: true, hook_events: ['PreToolUse'] },
+    }]));
+    render(<main><MarketplacePage /></main>);
+    await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
+    expect(await axe(document.body)).toHaveNoViolations();
+    await user.click(screen.getByRole('tab', { name: 'Compatibility' }));
+    expect(await axe(document.body)).toHaveNoViolations();
+  });
+});
+
+const disclosureCard = {
+  version_id: 'skv_1', content_hash: 'sha256:x', capability_digest: 'sha256:c', capabilities: ['instructions', 'scripts'],
+  provenance: { publisher_verified: true, attested: false },
+  scan: { ruleset: '2026.10.6', max_severity: 'critical', finding_count: 2, counts: { critical: 1, low: 1 } },
+  unicode: { flagged_files: 1, findings: [{ path: 'skills/x/SKILL.md', line: 3, column: 1, rule_id: 'bidi', class: 'bidi', severity: 'high', visible: '' }], counts: { bidi: 1 } },
+  incomplete: ['scripts/huge.bin'],
+  shell_commands: [], network_endpoints: [], env_names: [],
+  mcp_servers: { local: [], remote: [], declared: false },
+  allowed_tools: [], persistence_targets: [], executable_extensions: [],
+  tools: {}, consent_required: ['instructions', 'skill-scripts', 'hidden-unicode'],
+};
+
+describe('MarketplacePage package trust signals', () => {
+  it('fetches the disclosure on open and shows the scanner result and alerts on Overview', async () => {
+    const user = userEvent.setup();
+    hooks.useMarketplaceDisclosure.mockReturnValue({ data: disclosureCard, isLoading: false, error: null });
+    render(<MarketplacePage />);
+    await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
+    expect(hooks.useMarketplaceDisclosure).toHaveBeenCalledWith('skv_1', []);
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+    const summary = screen.getByTestId('trust-summary');
+    expect(summary).toHaveTextContent('ruleset 2026.10.6: 2 findings, worst critical');
+    expect(within(summary).getByTestId('trust-alert-unicode')).toHaveTextContent('Hidden characters found in 1 file');
+    expect(within(summary).getByTestId('trust-alert-incomplete')).toHaveTextContent('scripts/huge.bin');
+    expect(within(summary).getByTestId('trust-alert-scan')).toHaveTextContent('critical');
+    expect(within(summary).getByTestId('trust-alert-consent')).toHaveTextContent('scripts, hidden characters');
+    expect(within(summary).getAllByRole('alert').length).toBeGreaterThanOrEqual(3);
+    // The Install details tab is marked while alerts exist, and holds the full card.
+    const installTab = screen.getByRole('tab', { name: /Install details/ });
+    expect(installTab).toHaveTextContent('(4 alerts)');
+    await user.click(installTab);
+    expect(screen.getByTestId('disclosure-card')).toBeInTheDocument();
+    expect(screen.getByTestId('disclosure-unicode')).toBeInTheDocument();
+    expect(screen.queryByTestId('trust-summary')).toBeNull();
+  });
+
+  it('shows a calm scanner line and no alert marker for a clean package', async () => {
+    const user = userEvent.setup();
+    hooks.useMarketplaceDisclosure.mockReturnValue({
+      data: { ...disclosureCard, scan: { ruleset: '2026.10.6', finding_count: 0 }, unicode: { flagged_files: 0, findings: [], counts: {} }, incomplete: [], consent_required: ['instructions'] },
+      isLoading: false,
+      error: null,
+    });
+    render(<MarketplacePage />);
+    await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
+    expect(screen.getByTestId('trust-summary')).toHaveTextContent('no open findings');
+    expect(screen.queryByTestId(/trust-alert-/)).toBeNull();
+    expect(screen.getByRole('tab', { name: 'Install details' })).toBeInTheDocument();
+  });
+
+  it('has a visible close button', async () => {
+    const user = userEvent.setup();
+    render(<MarketplacePage />);
+    await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
+    await user.click(within(screen.getByRole('dialog', { name: 'Review Helper' })).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog', { name: 'Review Helper' })).toBeNull();
+  });
+});
+
+describe('MarketplacePage updates to review', () => {
+  it('sums updates across every administered org and opens when any has some', () => {
+    hooks.useMe.mockReturnValue({ data: { user_id: 'user_1', org_id: 'org_1' } });
+    hooks.useMyOrgs.mockReturnValue({
+      data: [{ org_id: 'org_1', name: 'Acme', role: 'admin' }, { org_id: 'org_2', name: 'Globex', role: 'owner' }],
+      isLoading: false,
+    });
+    hooks.useHeldUpdateCounts.mockReturnValue({ total: 3, more: false, byOrg: { org_1: 0, org_2: 3 }, errors: {}, loaded: true });
+    render(<MarketplacePage />);
+    expect(hooks.useHeldUpdateCounts).toHaveBeenLastCalledWith(['org_1', 'org_2']);
+    const details = screen.getByTestId('updates-to-review');
+    expect(details).toHaveTextContent('Updates to review (3)across 2 organizations');
+    expect(details).toHaveAttribute('open');
+    // The queue starts on the org that has something waiting.
+    expect(screen.getByTestId('held-queues')).toHaveAttribute('data-value', 'org_2');
+  });
+
+  it('leaves orgs below the Team plan out of the picker and still settles', () => {
+    hooks.useMe.mockReturnValue({ data: { user_id: 'user_1', org_id: 'org_1' } });
+    hooks.useMyOrgs.mockReturnValue({
+      data: [{ org_id: 'org_1', name: 'Acme', role: 'admin' }, { org_id: 'org_free', name: 'Free Co', role: 'owner' }],
+      isLoading: false,
+    });
+    hooks.useHeldUpdateCounts.mockReturnValue({
+      total: 1, more: false, byOrg: { org_1: 1, org_free: 0 },
+      errors: { org_free: new ApiError(403, JSON.stringify({ error: { code: 'upgrade_required', message: 'Team plan required' } })) },
+      loaded: true,
+    });
+    render(<MarketplacePage />);
+    const details = screen.getByTestId('updates-to-review');
+    expect(details).toHaveTextContent('Updates to review (1)');
+    expect(details).not.toHaveTextContent('across');
+    expect(screen.getByTestId('held-queues')).toHaveTextContent(/^org_1$/);
+  });
+
+  it('hides the section when every administered org is below the Team plan', () => {
+    hooks.useMe.mockReturnValue({ data: { user_id: 'user_1' } });
+    hooks.useMyOrgs.mockReturnValue({ data: [{ org_id: 'org_free', name: 'Free Co', role: 'owner' }], isLoading: false });
+    hooks.useHeldUpdateCounts.mockReturnValue({
+      total: 0, more: false, byOrg: { org_free: 0 },
+      errors: { org_free: new ApiError(403, JSON.stringify({ error: { code: 'upgrade_required', message: 'Team plan required' } })) },
+      loaded: true,
+    });
+    render(<MarketplacePage />);
+    expect(screen.queryByTestId('updates-to-review')).toBeNull();
+    expect(screen.queryByText(/Review package updates/)).toBeNull();
+  });
+
+  it('does not load the queue while the section is closed, and loads it when opened', async () => {
+    const user = userEvent.setup();
+    hooks.useMe.mockReturnValue({ data: { user_id: 'user_1', org_id: 'org_1' } });
+    hooks.useMyOrgs.mockReturnValue({ data: [{ org_id: 'org_1', name: 'Acme', role: 'admin' }], isLoading: false });
+    hooks.useHeldUpdateCounts.mockReturnValue({ total: 0, more: false, byOrg: { org_1: 0 }, errors: {}, loaded: true });
+    render(<MarketplacePage />);
+    expect(screen.queryByTestId('held-queues')).toBeNull();
+    await user.click(screen.getByText(/Updates to review/));
+    expect(screen.getByTestId('updates-to-review')).toHaveAttribute('open');
+    expect(screen.getByTestId('held-queues')).toHaveAttribute('data-value', 'org_1');
+  });
+
+  it('waits for the counts before mounting the queue, so it never starts on a gated org', async () => {
+    const user = userEvent.setup();
+    hooks.useMe.mockReturnValue({ data: { user_id: 'user_1', org_id: 'org_1' } });
+    hooks.useMyOrgs.mockReturnValue({ data: [{ org_id: 'org_1', name: 'Acme', role: 'admin' }], isLoading: false });
+    hooks.useHeldUpdateCounts.mockReturnValue({ total: 0, more: false, byOrg: {}, errors: {}, loaded: false });
+    render(<MarketplacePage />);
+    await user.click(screen.getByText(/Updates to review/));
+    expect(screen.queryByTestId('held-queues')).toBeNull();
+    expect(within(screen.getByTestId('updates-to-review')).getByText('Loading…')).toBeInTheDocument();
+  });
+
+  it('shows an unknown count when an org failed for a reason other than its plan', () => {
+    hooks.useMe.mockReturnValue({ data: { user_id: 'user_1', org_id: 'org_1' } });
+    hooks.useMyOrgs.mockReturnValue({
+      data: [{ org_id: 'org_1', name: 'Acme', role: 'admin' }, { org_id: 'org_2', name: 'Globex', role: 'admin' }],
+      isLoading: false,
+    });
+    hooks.useHeldUpdateCounts.mockReturnValue({
+      total: 0, more: false, byOrg: { org_1: 0, org_2: 0 }, errors: { org_2: new ApiError(500, 'boom') }, loaded: true,
+    });
+    const first = render(<MarketplacePage />);
+    expect(screen.getByTestId('updates-to-review')).toHaveTextContent('Updates to review (?)');
+    first.unmount();
+
+    hooks.useHeldUpdateCounts.mockReturnValue({
+      total: 2, more: false, byOrg: { org_1: 2, org_2: 0 }, errors: { org_2: new ApiError(500, 'boom') }, loaded: true,
+    });
+    render(<MarketplacePage />);
+    expect(screen.getByTestId('updates-to-review')).toHaveTextContent('Updates to review (2+)');
+  });
+
+  it('marks a partial total and stays collapsed when nothing is waiting', () => {
+    hooks.useMe.mockReturnValue({ data: { user_id: 'user_1', org_id: 'org_1' } });
+    hooks.useMyOrgs.mockReturnValue({ data: [{ org_id: 'org_1', name: 'Acme', role: 'admin' }], isLoading: false });
+    hooks.useHeldUpdateCounts.mockReturnValue({ total: 0, more: false, byOrg: { org_1: 0 }, errors: {}, loaded: true });
+    const first = render(<MarketplacePage />);
+    let details = screen.getByTestId('updates-to-review');
+    expect(details).toHaveTextContent('Updates to review (0)');
+    expect(details).not.toHaveAttribute('open');
+    first.unmount();
+
+    hooks.useHeldUpdateCounts.mockReturnValue({ total: 20, more: true, byOrg: { org_1: 20 }, errors: {}, loaded: true });
+    render(<MarketplacePage />);
+    details = screen.getByTestId('updates-to-review');
+    expect(details).toHaveTextContent('Updates to review (20+)');
+    expect(details).toHaveAttribute('open');
   });
 });

@@ -145,6 +145,83 @@ async def test_update_page(
 
 
 @pytest.mark.asyncio
+async def test_page_publish_opt_in_defaults_off_and_toggles(
+    client: AsyncClient, auth_headers: dict, test_project: Project,
+):
+    """The Confluence sweep opt-in (`knowledge_pages.publish`) defaults to
+    false, is surfaced on list/detail, and can be toggled without touching
+    content or title."""
+    created = await client.put(
+        f"/api/v1/projects/{test_project.id}/pages/sweep-me",
+        json={"content": "Body", "title": "Sweep Me"},
+        headers=auth_headers,
+    )
+    assert created.status_code == 200
+    assert created.json()["publish"] is False
+
+    listed = await client.get(
+        f"/api/v1/projects/{test_project.id}/pages", headers=auth_headers
+    )
+    assert listed.status_code == 200
+    summary = next(p for p in listed.json() if p["slug"] == "sweep-me")
+    assert summary["publish"] is False
+
+    toggled = await client.put(
+        f"/api/v1/projects/{test_project.id}/pages/sweep-me",
+        json={"content": "Body", "publish": True},
+        headers=auth_headers,
+    )
+    assert toggled.status_code == 200
+    assert toggled.json()["publish"] is True
+    assert toggled.json()["title"] == "Sweep Me"
+
+    detail = await client.get(
+        f"/api/v1/projects/{test_project.id}/pages/sweep-me", headers=auth_headers
+    )
+    assert detail.status_code == 200
+    assert detail.json()["publish"] is True
+
+
+@pytest.mark.asyncio
+async def test_page_publish_patch_flips_only_the_flag(
+    client: AsyncClient, auth_headers: dict, test_project: Project,
+):
+    """PATCH toggles the Confluence opt-in without a content write: no new
+    revision, unchanged content and ``updated_at`` (so the publish sweep does
+    not see the toggle as an edit)."""
+    base = f"/api/v1/projects/{test_project.id}/pages/toggle-me"
+    created = await client.put(
+        base, json={"content": "Original body", "title": "Toggle"}, headers=auth_headers
+    )
+    assert created.status_code == 200
+    before = (await client.get(base, headers=auth_headers)).json()
+    history_before = (await client.get(f"{base}/history", headers=auth_headers)).json()
+
+    resp = await client.patch(base, json={"publish": True}, headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"slug": "toggle-me", "publish": True}
+
+    after = (await client.get(base, headers=auth_headers)).json()
+    assert after["publish"] is True
+    assert after["content"] == before["content"]
+    assert after["updated_at"] == before["updated_at"]
+    history_after = (await client.get(f"{base}/history", headers=auth_headers)).json()
+    assert history_after == history_before
+
+    resp = await client.patch(base, json={"publish": False}, headers=auth_headers)
+    assert resp.json()["publish"] is False
+
+    missing = await client.patch(
+        f"/api/v1/projects/{test_project.id}/pages/nope",
+        json={"publish": True},
+        headers=auth_headers,
+    )
+    assert missing.status_code == 404
+    bad = await client.patch(base, json={"content": "x"}, headers=auth_headers)
+    assert bad.status_code == 422
+
+
+@pytest.mark.asyncio
 async def test_page_revision_history_recorded_per_write(
     client: AsyncClient, auth_headers: dict, test_project: Project,
     db_session: AsyncSession, test_user: User,

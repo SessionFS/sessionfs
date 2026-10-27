@@ -37,11 +37,17 @@ def _cfg(url: str) -> Config:
     return config
 
 
+# Later tables that reference the 091 tables (migration 100's sync ledger
+# points at ticket_tracker_links), so they can't exist before 091 either.
+_LATER_TABLES = {"tracker_sync_events"}
+
+
 def _prior_metadata() -> sa.MetaData:
-    """089's schema — Base.metadata minus the three 091 tables."""
+    """089's schema — Base.metadata minus the three 091 tables (and the later
+    tables that depend on them)."""
     metadata = sa.MetaData()
     for name, table in Base.metadata.tables.items():
-        if name not in _NEW_TABLES:
+        if name not in _NEW_TABLES and name not in _LATER_TABLES:
             table.to_metadata(metadata)
     return metadata
 

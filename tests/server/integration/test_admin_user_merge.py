@@ -499,3 +499,120 @@ async def test_merge_reassigns_and_dedupes_ticket_watcher_tables(
         select(UserNotificationSettings).where(UserNotificationSettings.user_id == tgt.id)
     )).scalar_one()
     assert settings.ticket_email == "off"
+
+
+@pytest.mark.asyncio
+async def test_merge_moves_project_group_grants_keeping_higher_role(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """GitHub #101 — project_group_members dedupes on (group, user) with the
+    higher group role winning; grants the target lacks move over; the
+    attribution columns reassign; one org audit row per grant."""
+    from sessionfs.server.db.models import ProjectGroup, ProjectGroupAccess, ProjectGroupMember
+
+    _, admin_key = await _user(db_session, "ops", "admin")
+    src, _ = await _user(db_session, "typo")
+    tgt, _ = await _user(db_session, "real")
+    org = await _org(db_session)
+    await _member(db_session, org, src, "member")
+    await _member(db_session, org, tgt, "member")
+    project = Project(id=f"proj_{uuid.uuid4().hex[:12]}", name="p",
+                      git_remote_normalized=f"github.com/x/{uuid.uuid4().hex[:8]}",
+                      owner_id=tgt.id, org_id=org.id)
+    db_session.add(project)
+    groups = []
+    for i in range(3):
+        g = ProjectGroup(id=f"pg_{uuid.uuid4().hex[:12]}", org_id=org.id, slug=f"g{i}",
+                         name=f"G{i}", created_by_user_id=src.id)
+        db_session.add(g)
+        groups.append(g)
+    await db_session.flush()
+    up, keep, move = groups
+    db_session.add(ProjectGroupAccess(group_id=move.id, project_id=project.id,
+                                      added_by_user_id=src.id))
+    db_session.add_all([
+        ProjectGroupMember(group_id=up.id, user_id=src.id, role="admin", granted_by_user_id=src.id),
+        ProjectGroupMember(group_id=up.id, user_id=tgt.id, role="reader"),
+        ProjectGroupMember(group_id=keep.id, user_id=src.id, role="reader"),
+        ProjectGroupMember(group_id=keep.id, user_id=tgt.id, role="editor"),
+        ProjectGroupMember(group_id=move.id, user_id=src.id, role="editor"),
+    ])
+    await db_session.commit()
+
+    r = await _merge(client, admin_key, src.id, tgt.id, dry_run=False)
+    assert r.status_code == 200, r.text
+    dedup = r.json()["plan"]["deduped"]["project_group_members"]
+    assert dedup["moved"]["count"] == 1
+    assert dedup["merged_higher_role_wins"]["count"] == 2
+
+    rows = (await db_session.execute(
+        select(ProjectGroupMember.group_id, ProjectGroupMember.user_id, ProjectGroupMember.role)
+        .execution_options(populate_existing=True)
+        .where(ProjectGroupMember.group_id.in_([g.id for g in groups]))
+    )).all()
+    assert {(g, u, role) for g, u, role in rows} == {
+        (up.id, tgt.id, "admin"),
+        (keep.id, tgt.id, "editor"),
+        (move.id, tgt.id, "editor"),
+    }
+    assert await _count(db_session, ProjectGroup, ProjectGroup.created_by_user_id == src.id) == 0
+    assert await _count(db_session, ProjectGroupAccess, ProjectGroupAccess.added_by_user_id == tgt.id) == 1
+    assert await _count(
+        db_session, OrgAuditEvent,
+        OrgAuditEvent.org_id == org.id, OrgAuditEvent.event_type == "project_group_member_merged",
+    ) == 3
+
+
+def test_project_group_user_columns_are_classified() -> None:
+    """Every users.id FK on the project-group tables is reassigned or deduped."""
+    from sessionfs.server.db.models import Base
+    from sessionfs.server.services import user_merge
+
+    classified = set(user_merge.REASSIGN_COLUMNS) | {("project_group_members", "user_id")}
+    for name in ("project_groups", "project_group_members", "project_group_access"):
+        for col in Base.metadata.tables[name].columns:
+            if any(fk.column.table.name == "users" for fk in col.foreign_keys):
+                assert (name, col.name) in classified, (name, col.name)
+
+
+@pytest.mark.asyncio
+async def test_merge_drops_grants_outside_source_orgs(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A source grant in an org the source no longer belongs to is dropped
+    (audited), never handed to the target."""
+    from sessionfs.server.db.models import ProjectGroup, ProjectGroupMember
+
+    _, admin_key = await _user(db_session, "ops", "admin")
+    src, _ = await _user(db_session, "typo")
+    tgt, _ = await _user(db_session, "real")
+    member_org = await _org(db_session)
+    foreign_org = await _org(db_session)
+    await _member(db_session, member_org, src, "member")
+    kept = ProjectGroup(id=f"pg_{uuid.uuid4().hex[:12]}", org_id=member_org.id, slug="k", name="K")
+    orphan = ProjectGroup(id=f"pg_{uuid.uuid4().hex[:12]}", org_id=foreign_org.id, slug="o", name="O")
+    db_session.add_all([kept, orphan])
+    await db_session.flush()
+    db_session.add_all([
+        ProjectGroupMember(group_id=kept.id, user_id=src.id, role="reader"),
+        ProjectGroupMember(group_id=orphan.id, user_id=src.id, role="admin"),
+    ])
+    await db_session.commit()
+
+    r = await _merge(client, admin_key, src.id, tgt.id, dry_run=False)
+    assert r.status_code == 200, r.text
+    dedup = r.json()["plan"]["deduped"]["project_group_members"]
+    assert dedup["moved"]["count"] == 1
+    assert dedup["dropped_not_org_member"]["count"] == 1
+
+    rows = (await db_session.execute(
+        select(ProjectGroupMember.group_id, ProjectGroupMember.user_id)
+        .execution_options(populate_existing=True)
+        .where(ProjectGroupMember.group_id.in_([kept.id, orphan.id]))
+    )).all()
+    assert set(rows) == {(kept.id, tgt.id)}
+    assert await _count(
+        db_session, OrgAuditEvent,
+        OrgAuditEvent.org_id == foreign_org.id,
+        OrgAuditEvent.event_type == "project_group_member_revoked",
+    ) == 1

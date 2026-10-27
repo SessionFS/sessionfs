@@ -3477,3 +3477,51 @@ async def test_list_compilations_reports_word_counts(
     assert item["context_words_before"] == len("one two three four five".split())
     assert item["context_words_after"] > 0
     assert item["context_words_after"] == len(item["context_after"].split())
+
+
+async def test_new_project_backfill_reads_only_the_creators_sessions(
+    db_session: AsyncSession, test_user, blob_store, sample_sfs_tar, monkeypatch
+):
+    """Creating a project for a remote must never harvest knowledge from
+    other users' sessions on that remote."""
+    from sessionfs.server.db import engine as engine_mod
+    from sessionfs.server.db.models import Session, User
+    from sessionfs.server.routes import projects as projects_mod
+    from sessionfs.server.services import knowledge as knowledge_mod
+
+    other = User(
+        id=str(uuid.uuid4()), email="other@example.com", display_name="Other",
+        tier="pro", created_at=datetime.now(timezone.utc), email_verified=True,
+    )
+    db_session.add(other)
+    remote = "github.com/acme/backfill"
+    now = datetime.now(timezone.utc)
+    ids = {}
+    for owner in (test_user, other):
+        sid = f"ses_{uuid.uuid4().hex[:16]}"
+        key = f"sessions/{owner.id}/{sid}/session.tar.gz"
+        await blob_store.put(key, sample_sfs_tar)
+        db_session.add(Session(
+            id=sid, user_id=owner.id, title="t", tags="[]", source_tool="claude-code",
+            blob_key=key, blob_size_bytes=len(sample_sfs_tar), etag="x",
+            git_remote_normalized=remote, created_at=now, updated_at=now, uploaded_at=now,
+        ))
+        ids[owner.id] = sid
+    await db_session.commit()
+
+    async def fake_get_db():
+        yield db_session
+
+    seen: list[str] = []
+
+    async def fake_extract(session_id, summary, project_id, user_id, db):
+        seen.append(session_id)
+        return []
+
+    monkeypatch.setattr(engine_mod, "get_db", fake_get_db)
+    monkeypatch.setattr(knowledge_mod, "extract_knowledge_entries", fake_extract)
+
+    await projects_mod._backfill_knowledge_for_project(
+        "proj_backfill", remote, test_user.id, blob_store
+    )
+    assert seen == [ids[test_user.id]]

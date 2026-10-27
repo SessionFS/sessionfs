@@ -3,15 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import tempfile
 from typing import Literal
 
 import typer
+from rich.markdown import Markdown
 from rich.markup import escape
 
-from sessionfs.cli.common import console, err_console
+from sessionfs.cli.common import (
+    confirm_or_exit,
+    console,
+    err_console,
+    format_api_error,
+    handle_errors,
+)
 
 project_app = typer.Typer(name="project", help="Manage shared project context.", no_args_is_help=True)
 
@@ -124,6 +132,70 @@ async def _api_request(method: str, path: str, api_url: str, api_key: str, json_
         )
         raise typer.Exit(1)
     return resp.json()
+
+
+@project_app.command("list")
+@handle_errors
+def project_list(
+    group: str | None = typer.Option(
+        None, "--group", help="Only projects in this group (org-scoped slug)."
+    ),
+    org: str | None = typer.Option(
+        None, "--org", help="Org id (default org if omitted)."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON."),
+) -> None:
+    """List the projects you can read, optionally filtered to one group."""
+    api_url, api_key = _get_project_client()
+
+    projects = asyncio.run(_api_request("GET", "/api/v1/projects/", api_url, api_key))
+    project_rows = projects if isinstance(projects, list) else []
+    if not isinstance(projects, list):
+        err_console.print("[red]Could not list projects.[/red]")
+        raise typer.Exit(1)
+
+    if group is not None:
+        # The list endpoint omits the `groups` field (N+1 on the list), so
+        # filter via the group detail's `projects` id list.
+        from sessionfs.cli.cmd_project_group import (
+            _group_path,
+            _resolve_group_id,
+            _resolve_org_id,
+        )
+
+        org_id = _resolve_org_id(org, api_url, api_key)
+        group_id = _resolve_group_id(org_id, group, api_url, api_key)
+        detail = asyncio.run(
+            _api_request("GET", _group_path(org_id, group_id), api_url, api_key)
+        )
+        if detail.get("_status") == 404:
+            err_console.print("[red]Project group not found.[/red]")
+            raise typer.Exit(1)
+        member_ids = set(detail.get("projects", []))
+        project_rows = [p for p in project_rows if p.get("id") in member_ids]
+
+    if json_output:
+        console.print_json(json.dumps(project_rows, sort_keys=True, default=str))
+        return
+    if not project_rows:
+        console.print("[dim]No projects.[/dim]")
+        return
+
+    from rich.table import Table
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("ID", style="bold")
+    table.add_column("Name")
+    table.add_column("Git remote")
+    table.add_column("Org")
+    for p in project_rows:
+        table.add_row(
+            p.get("id", ""),
+            p.get("name", ""),
+            p.get("git_remote_normalized") or "-",
+            p.get("org_id") or "-",
+        )
+    console.print(table)
 
 
 @project_app.command("init")
@@ -1828,3 +1900,163 @@ def _print_merge_plan(plan: dict) -> None:
     console.print(
         "[dim]Run with --confirm to execute this merge.[/dim]"
     )
+
+
+# ── sfs project confluence … ──
+
+
+confluence_app = typer.Typer(
+    name="confluence",
+    help="Publish this project's docs to Confluence Cloud.",
+    no_args_is_help=True,
+)
+
+
+def _confluence_structure_error(result: dict) -> None:
+    """Turn a structured 404/409 response into a friendly message and exit."""
+    status = result.get("_status")
+    if status == 404:
+        err_console.print("[red]Project not found (or no Confluence mapping).[/red]")
+        raise typer.Exit(1)
+    if status != 409:
+        return
+    body = result.get("_body")
+    error = (body or {}).get("detail") if isinstance(body, dict) else None
+    if isinstance(error, dict):
+        code = error.get("error")
+        if code == "confluence_mapping_required":
+            err_console.print(
+                "[yellow]This project isn't mapped to Confluence yet.[/yellow]\n"
+                "[dim]An org admin can map it with:[/dim]\n"
+                "  sfs org confluence map <project-id> --space-key DEV "
+                "--parent-page-id 123"
+            )
+            raise typer.Exit(1)
+        if code == "confluence_page_drifted":
+            err_console.print(
+                "[red]The Confluence page was edited since the last push.[/red]\n"
+                "[dim]Resolve the drift (overwrite or unlink) before republishing.[/dim]"
+            )
+            raise typer.Exit(1)
+    err_console.print(f"[red]API error (409): {format_api_error(body, 409)}[/red]")
+    raise typer.Exit(1)
+
+
+def _confluence_preview(
+    api_url: str, api_key: str, project_id: str, kind: str, slug: str | None
+) -> dict:
+    body: dict = {"kind": kind}
+    if slug is not None:
+        body["slug"] = slug
+    result = asyncio.run(
+        _api_request(
+            "POST",
+            f"/api/v1/projects/{project_id}/confluence/preview",
+            api_url, api_key,
+            json_data=body,
+        )
+    )
+    if isinstance(result, dict) and result.get("_status"):
+        _confluence_structure_error(result)
+    return result
+
+
+def _render_confluence_preview(body: dict) -> None:
+    console.print(f"[bold]{body.get('title', '')}[/bold]")
+    existing = body.get("existing")
+    if existing:
+        console.print(f"[yellow]Already linked:[/yellow] {existing.get('page_url', '')}")
+    for section in body.get("sections", []):
+        heading = section.get("heading") or section.get("key") or ""
+        console.print(f"\n[bold cyan]{heading}[/bold cyan]")
+        for para in section.get("paragraphs", []):
+            console.print(Markdown(para.get("text", "")))
+            cites = para.get("citations") or []
+            if cites:
+                console.print(f"[dim]  ↳ {', '.join(cites)}[/dim]", soft_wrap=True)
+    if body.get("llm_used"):
+        console.print(
+            f"\n[dim]Rewritten with the {body.get('key_source', 'user')} LLM key.[/dim]"
+        )
+    else:
+        console.print("\n[dim]Deterministic draft (no LLM key configured).[/dim]")
+
+
+@confluence_app.command("publish")
+@handle_errors
+def confluence_publish(
+    slug: str | None = typer.Argument(None, help="Wiki page slug to publish."),
+    context: bool = typer.Option(
+        False, "--context", help="Publish the project context doc instead of a wiki page."
+    ),
+    preview: bool = typer.Option(
+        False, "--preview", help="Show the draft without publishing."
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", "-y", help="Skip the confirmation prompt."
+    ),
+) -> None:
+    """Draft a wiki page or the context doc, then push it to Confluence.
+
+    With ``--preview`` the draft is rendered and nothing is published. Without
+    it the resolved draft is pushed (creating or updating the linked
+    Confluence page) after a confirmation prompt. Requires the org to have
+    connected Confluence and mapped this project.
+    """
+    project_id, api_url, api_key = _resolve_project_id()
+    if context and slug:
+        err_console.print("[red]Pass a slug or --context, not both.[/red]")
+        raise typer.Exit(1)
+    if not context and not slug:
+        err_console.print("[red]Pass a wiki page slug or --context.[/red]")
+        raise typer.Exit(1)
+    kind = "context" if context else "wiki_page"
+    source_slug = None if context else slug
+
+    draft = _confluence_preview(api_url, api_key, project_id, kind, source_slug)
+    if preview:
+        _render_confluence_preview(draft)
+        return
+
+    confirm_or_exit(
+        f"Publish '{draft.get('title', '')}' to Confluence?",
+        yes=yes,
+        yes_hint="Pass --yes to publish this draft without prompting.",
+    )
+    publish_body: dict = {
+        "kind": kind,
+        "title": draft.get("title", ""),
+        "sections": draft.get("sections", []),
+        "confirm": True,
+    }
+    if source_slug is not None:
+        publish_body["slug"] = source_slug
+    template = draft.get("template")
+    if isinstance(template, dict) and isinstance(template.get("slug"), str):
+        # Echo the previewed template so a mapping/default change in between
+        # is refused (409 template_changed) instead of publishing an unseen shape.
+        publish_body["template"] = template["slug"]
+        publish_body["template_version"] = template.get("version")
+
+    result = asyncio.run(
+        _api_request(
+            "POST",
+            f"/api/v1/projects/{project_id}/confluence/publish",
+            api_url, api_key,
+            json_data=publish_body,
+        )
+    )
+    if isinstance(result, dict) and result.get("_status"):
+        _confluence_structure_error(result)
+    console.print(
+        f"[green]Published to Confluence:[/green] [bold]{result.get('page_url', '')}[/bold]\n"
+        f"  page id {result.get('page_id')} · version {result.get('version')}"
+    )
+
+
+# Imported last: cmd_project_group reuses _get_project_client from this
+# module lazily, so the top-level import runs only after cmd_project is loaded.
+from sessionfs.cli.cmd_project_group import group_app  # noqa: E402
+
+project_app.add_typer(group_app, name="group")
+project_app.add_typer(confluence_app, name="confluence")

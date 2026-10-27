@@ -13,10 +13,11 @@ import OrgPersonasSection, { type OrgPersonaMember } from './OrgPersonasSection'
 import SecondaryOrgPage from './SecondaryOrgPage';
 import ActivateLicensePanel from './ActivateLicensePanel';
 import OwnerTransferDialog from './OwnerTransferDialog';
-import { JiraCard } from './JiraCard';
+import IntegrationsTab from './integrations/IntegrationsTab';
+import GroupsTab from './groups/GroupsTab';
 import { errorMessage } from '../utils/errorMessage';
 
-type OrgTab = 'members' | 'personas' | 'policies' | 'security' | 'integrations';
+type OrgTab = 'members' | 'groups' | 'personas' | 'policies' | 'security' | 'integrations';
 
 export default function OrgPage() {
   const { auth } = useAuth();
@@ -169,6 +170,7 @@ export default function OrgPage() {
   }
 
   const visibleTabs: OrgTab[] = ['members'];
+  if (org.id) visibleTabs.push('groups');
   if (org.id && (isAdmin || myUserId)) visibleTabs.push('personas');
   if (org.id) visibleTabs.push('policies');
   if (org.id && isAdmin) visibleTabs.push('security');
@@ -180,6 +182,9 @@ export default function OrgPage() {
       (prev) => {
         const next = new URLSearchParams(prev);
         next.set('tab', key);
+        // An integration's detail view belongs to the Integrations tab.
+        next.delete('integration');
+        next.delete('section');
         return next;
       },
       { replace: true },
@@ -188,6 +193,7 @@ export default function OrgPage() {
 
   const TAB_LABELS: Record<OrgTab, string> = {
     members: 'Members',
+    groups: 'Groups',
     personas: 'Personas',
     policies: 'Policies',
     security: 'Security',
@@ -367,6 +373,7 @@ export default function OrgPage() {
 
       </div>
     ),
+    groups: org?.id ? <GroupsTab orgId={org.id} isOrgAdmin={isAdmin} tier={org.tier} /> : null,
     personas: (
       <>
       {/* GH #70 — org-level personas (admins and owners manage them).
@@ -388,7 +395,7 @@ export default function OrgPage() {
       {/* v0.10.0 Phase 6 — org defaults (retention, compile model, KB knobs). */}
       {org?.id && (
         <div className="bg-bg-elevated border border-border rounded-xl p-5">
-          <OrgSettingsTab orgId={org.id} canEdit={isAdmin} />
+          <OrgSettingsTab orgId={org.id} canEdit={isAdmin} tier={org.tier} />
         </div>
       )}
 
@@ -424,14 +431,10 @@ export default function OrgPage() {
       </>
     ),
     integrations: (
-      <>
-      {/* Jira integration (Enterprise). Admins on lower tiers see an upgrade
-          note inside the card; members never see this tab at all. */}
-      {org?.id && (
-        <JiraCard orgId={org.id} tier={org.tier} />
-      )}
-
-      </>
+      // Jira and Confluence (Enterprise): an overview row each, with the
+      // settings on a per-integration detail view. Admins on lower tiers see
+      // an upgrade note; members never see this tab at all.
+      org?.id ? <IntegrationsTab orgId={org.id} tier={org.tier} /> : null
     ),
   };
 

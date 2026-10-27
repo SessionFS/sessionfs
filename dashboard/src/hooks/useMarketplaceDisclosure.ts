@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AdvanceAssignmentInput } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import { useMe } from './useMe';
@@ -71,4 +71,38 @@ export function useAdvanceAssignment(orgId: string | undefined) {
       void qc.invalidateQueries({ queryKey: ['skill-assignments-effective'] });
     },
   });
+}
+
+/** Held-update counts for several orgs, summed, from the cheap count
+ *  endpoint (no diffs are built). `more` is true when any org's count is
+ *  capped. A failed org (for example below the Team plan) counts as 0 and is
+ *  listed in `errors`, so `loaded` still settles. Keys sit under
+ *  ['held-updates'] so an advance refreshes them too. */
+export function useHeldUpdateCounts(orgIds: string[]) {
+  const { auth } = useAuth();
+  const me = useMe();
+  const identity = me.data?.user_id ?? null;
+  const results = useQueries({
+    queries: orgIds.map((orgId) => ({
+      queryKey: ['held-updates', identity, orgId, 'count'],
+      queryFn: () => auth!.client.countHeldUpdates(orgId),
+      enabled: !!auth && !!identity,
+      staleTime: 30_000,
+      retry: false,
+    })),
+  });
+  const byOrg: Record<string, number> = {};
+  const errors: Record<string, unknown> = {};
+  let total = 0;
+  let more = false;
+  results.forEach((result, index) => {
+    const orgId = orgIds[index];
+    if (result.error) errors[orgId] = result.error;
+    const count = result.data?.count ?? 0;
+    byOrg[orgId] = count;
+    total += count;
+    more = more || !!result.data?.has_more;
+  });
+  const loaded = results.length > 0 && results.every((result) => !!result.data || !!result.error);
+  return { total, more, byOrg, errors, loaded };
 }

@@ -1611,3 +1611,137 @@ async def test_held_updates_offer_the_newest_deliverable_version(
     )
     assert downgrade.status_code == 409
     assert downgrade.json()["error"]["code"] == "not_newer"
+
+
+async def _assigned_pair(client, headers, db_session, org, namespace: str) -> tuple[dict, dict, dict]:
+    """Publish v1 and v2 of one org package and assign v1; returns (v1, v2, assignment)."""
+    url = f"/api/v1/orgs/{org.id}/skills/assignments"
+    first = (await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages", headers=headers,
+        files={"package": ("p.tar.gz", _tar(), "application/gzip")},
+        data={"namespace": namespace, "collection": "kit", "visibility": "org"},
+    )).json()
+    second = await client.post(
+        f"/api/v1/orgs/{org.id}/skills/packages", headers=headers,
+        files={"package": ("p.tar.gz", _tar(body="Two.", version="2.0.0"), "application/gzip")},
+        data={"namespace": namespace, "collection": "kit", "visibility": "org"},
+    )
+    assert second.status_code == 201, second.text
+    await _sequence_versions(db_session, first, second.json())
+    created = await client.post(url, headers=headers,
+                                json={"version_id": first["version_id"], "content_hash": first["content_hash"]})
+    assert created.status_code == 201, created.text
+    return first, second.json(), created.json()
+
+
+async def test_held_updates_count_matches_the_queue_without_building_diffs(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession, test_user: User, monkeypatch
+) -> None:
+    from sessionfs.server.db.models import Organization, SkillMarketplaceListing
+    from sessionfs.server.routes import marketplace_disclosure
+
+    org, _project = await _org(db_session, test_user)
+    url = f"/api/v1/orgs/{org.id}/skills/assignments"
+    counted_ids = set()
+    for index in range(2):
+        _v1, _v2, assignment = await _assigned_pair(client, auth_headers, db_session, org, f"cnt{index}")
+        counted_ids.add(assignment["id"])
+    # An assignment already on the newest version is not an update.
+    latest = await _publish(client, auth_headers, org=org)
+    assert (await client.post(url, headers=auth_headers,
+                              json={"version_id": latest["version_id"], "content_hash": latest["content_hash"]})).status_code == 201
+    # Its only newer version is yanked: not deliverable, so not an update.
+    _v1, yanked, _a = await _assigned_pair(client, auth_headers, db_session, org, "cntyank")
+    # Its only newer version is private to ANOTHER org: not deliverable here.
+    _v1, foreign, _a = await _assigned_pair(client, auth_headers, db_session, org, "cntforeign")
+    other = Organization(id=f"org_other_{org.id[-8:]}", name="Other", slug=f"other-{org.id[-8:]}", tier="team")
+    db_session.add(other)
+    await db_session.flush()
+    for listing in (await db_session.execute(select(SkillMarketplaceListing))).scalars():
+        if listing.version_id == yanked["version_id"]:
+            listing.is_yanked = True
+        if listing.version_id == foreign["version_id"]:
+            listing.org_id = other.id
+    await db_session.commit()
+
+    # Counting never classifies a diff (no blob reads).
+    async def _no_classify(*_args, **_kwargs):
+        raise AssertionError("count must not build diffs")
+
+    monkeypatch.setattr(marketplace_disclosure.skill_disclosure, "classify_grant_update", _no_classify)
+    counted = await client.get(f"{url}/updates/count", headers=auth_headers)
+    assert counted.status_code == 200, counted.text
+    assert counted.json() == {"count": 2, "has_more": False}
+    monkeypatch.undo()
+    listed = (await client.get(f"{url}/updates", headers=auth_headers)).json()
+    # Exact parity with the queue: the same assignments, yanked and foreign excluded.
+    assert {item["assignment"]["id"] for item in listed["items"]} == counted_ids
+
+    # Same access rules as the queue: org admins only, outsiders see nothing.
+    member, member_headers = await _user(db_session)
+    db_session.add(OrgMember(org_id=org.id, user_id=member.id, role="member"))
+    await db_session.commit()
+    assert (await client.get(f"{url}/updates/count", headers=member_headers)).status_code == 403
+    _outsider, outsider_headers = await _user(db_session)
+    assert (await client.get(f"{url}/updates/count", headers=outsider_headers)).status_code == 404
+
+
+async def test_held_updates_count_uses_a_fixed_number_of_statements(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession, test_user: User
+) -> None:
+    from sqlalchemy import event
+
+    org, _project = await _org(db_session, test_user)
+    url = f"/api/v1/orgs/{org.id}/skills/assignments/updates/count"
+    engine = db_session.bind.sync_engine
+
+    async def statements() -> tuple[int, dict]:
+        log: list[str] = []
+
+        def _before(conn, cursor, statement, params, context, executemany):
+            log.append(statement)
+
+        event.listen(engine, "before_cursor_execute", _before)
+        try:
+            response = await client.get(url, headers=auth_headers)
+        finally:
+            event.remove(engine, "before_cursor_execute", _before)
+        assert response.status_code == 200, response.text
+        return len(log), response.json()
+
+    await _assigned_pair(client, auth_headers, db_session, org, "stmt0")
+    one, body = await statements()
+    assert body["count"] == 1
+    assert one > 0  # the listener is on the engine the route uses
+    for index in range(1, 5):
+        await _assigned_pair(client, auth_headers, db_session, org, f"stmt{index}")
+    five, body = await statements()
+    assert body["count"] == 5
+    # No per-assignment queries: the work does not grow with the assignments.
+    assert five == one
+
+
+async def test_held_updates_count_has_the_queue_plan_gate(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession, test_user: User
+) -> None:
+    org, _project = await _org(db_session, test_user)
+    org.tier = "free"
+    await db_session.commit()
+    url = f"/api/v1/orgs/{org.id}/skills/assignments/updates"
+    listed = await client.get(url, headers=auth_headers)
+    counted = await client.get(f"{url}/count", headers=auth_headers)
+    assert listed.status_code == 403 and listed.json()["error"]["code"] == "upgrade_required"
+    assert counted.status_code == 403 and counted.json()["error"]["code"] == "upgrade_required"
+
+
+async def test_held_updates_count_is_capped(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession, test_user: User, monkeypatch
+) -> None:
+    from sessionfs.server.routes import marketplace_disclosure
+
+    org, _project = await _org(db_session, test_user)
+    for index in range(2):
+        await _assigned_pair(client, auth_headers, db_session, org, f"cap{index}")
+    monkeypatch.setattr(marketplace_disclosure, "MAX_UPDATES_COUNT", 1)
+    counted = await client.get(f"/api/v1/orgs/{org.id}/skills/assignments/updates/count", headers=auth_headers)
+    assert counted.json() == {"count": 1, "has_more": True}

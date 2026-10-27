@@ -182,8 +182,29 @@ export function useUpdateWikiPage(projectId: string | undefined) {
   const { auth } = useAuth();
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: ({ slug, content, title }: { slug: string; content: string; title?: string }) =>
-      auth!.client.updateWikiPage(projectId!, slug, content, title),
+    mutationFn: ({
+      slug,
+      content,
+      title,
+    }: {
+      slug: string;
+      content: string;
+      title?: string;
+    }) => auth!.client.updateWikiPage(projectId!, slug, content, title),
+    onSuccess: (_data, variables) => {
+      void queryClient.invalidateQueries({ queryKey: ['wikiPages', projectId] });
+      void queryClient.invalidateQueries({ queryKey: ['wikiPage', projectId, variables.slug] });
+    },
+  });
+}
+
+/** Toggle a wiki page's Confluence publish opt-in (PATCH, no content write). */
+export function useSetWikiPagePublish(projectId: string | undefined) {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ slug, publish }: { slug: string; publish: boolean }) =>
+      auth!.client.setWikiPagePublish(projectId!, slug, publish),
     onSuccess: (_data, variables) => {
       void queryClient.invalidateQueries({ queryKey: ['wikiPages', projectId] });
       void queryClient.invalidateQueries({ queryKey: ['wikiPage', projectId, variables.slug] });

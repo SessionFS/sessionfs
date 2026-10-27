@@ -314,8 +314,8 @@ export default function MergeSurface({ projectId, projectName }: MergeSurfacePro
 
   return (
     <div className="p-5">
-      <div className="mb-4">
-        <h2 className="text-base font-semibold text-text-primary mb-1">Merge into this project</h2>
+      <div className="mb-3">
+        <h3 className="text-sm font-semibold text-text-primary mb-1">Merge into this project</h3>
         <p className="text-sm text-text-tertiary">
           Fold another project&apos;s personas, tickets, knowledge entries, wiki pages,
           and repos into <span className="font-medium text-text-secondary">{projectName}</span>.
@@ -331,40 +331,40 @@ export default function MergeSurface({ projectId, projectName }: MergeSurfacePro
       )}
 
       {step === 'select' && (
-        <Card level="elevated" className="p-4">
-          <div className="mb-4">
-            <label className="block text-sm font-medium text-text-secondary mb-2">
-              Source project to merge in:
-            </label>
-            {otherProjects.length === 0 ? (
-              <p className="text-text-tertiary text-sm">
-                No other projects available to merge.
-              </p>
-            ) : (
-              <Select
-                aria-label="Source project"
-                value={sourceId}
-                onValueChange={(v) => { setSourceId(v); setError(''); }}
-                options={otherProjects.map((p) => ({
-                  value: p.id,
-                  label: p.name || p.git_remote_normalized,
-                }))}
-                placeholder="Select a project…"
-              />
-            )}
-          </div>
-          <Button
-            onClick={handleDryRun}
-            disabled={!sourceId || otherProjects.length === 0 || mergeProject.isPending}
-            loading={mergeProject.isPending}
-          >
-            Preview merge (dry-run)
-          </Button>
-          <p className="text-xs text-text-tertiary mt-3">
-            Dry-run performs all validation and reports what WOULD happen without
-            writing anything. No side effects.
+        <div>
+          {otherProjects.length === 0 ? (
+            <p className="text-text-tertiary text-sm">
+              No other projects available to merge.
+            </p>
+          ) : (
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="min-w-0 flex-[1_1_16rem] max-w-md">
+                <Select
+                  title="Source project"
+                  aria-label="Source project"
+                  value={sourceId}
+                  onValueChange={(v) => { setSourceId(v); setError(''); }}
+                  options={otherProjects.map((p) => ({
+                    value: p.id,
+                    label: p.name || p.git_remote_normalized,
+                  }))}
+                  placeholder="Select a project…"
+                />
+              </div>
+              <Button
+                variant="secondary"
+                onClick={handleDryRun}
+                disabled={!sourceId || mergeProject.isPending}
+                loading={mergeProject.isPending}
+              >
+                Preview merge (dry-run)
+              </Button>
+            </div>
+          )}
+          <p className="text-xs text-text-tertiary mt-2">
+            The preview runs every check and reports what would change without writing anything.
           </p>
-        </Card>
+        </div>
       )}
 
       {step === 'review' && dryRunResult && (

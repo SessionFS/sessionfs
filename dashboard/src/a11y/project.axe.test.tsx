@@ -20,6 +20,7 @@ const { hooks } = vi.hoisted(() => ({
     useWikiPages: vi.fn(),
     useWikiPage: vi.fn(),
     useUpdateWikiPage: vi.fn(),
+    useSetWikiPagePublish: vi.fn(),
     useDeleteWikiPage: vi.fn(),
     useRegenerateWikiPage: vi.fn(),
     useUpdateProjectSettings: vi.fn(),
@@ -38,6 +39,9 @@ const { hooks } = vi.hoisted(() => ({
 }));
 
 vi.mock('../hooks/useProjects', () => hooks);
+vi.mock('../hooks/useConfluencePublish', () => ({
+  useConfluenceLinks: () => ({ data: undefined }),
+}));
 vi.mock('../hooks/useToast', () => ({ useToast: () => ({ addToast: vi.fn() }) }));
 vi.mock('../helper/HelperProvider', () => ({ useHelper: () => ({ openHelper: vi.fn() }) }));
 vi.mock('../transfers/useTransfers', () => ({
@@ -97,7 +101,7 @@ beforeEach(() => {
   hooks.useProjects.mockReturnValue({ data: [], isLoading: false, error: null });
   for (const k of [
     'useDismissEntry', 'useCompileProject', 'useUpdateProjectContext', 'useDeleteProject',
-    'useUpdateWikiPage', 'useDeleteWikiPage', 'useRegenerateWikiPage', 'useUpdateProjectSettings',
+    'useUpdateWikiPage', 'useSetWikiPagePublish', 'useDeleteWikiPage', 'useRegenerateWikiPage', 'useUpdateProjectSettings',
     'useDismissStaleEntries', 'usePromoteEntry', 'useSupersedeEntry', 'useUpdateProjectName',
     'useLinkRepo', 'useUnlinkRepo', 'useMergeProject', 'useRebuildProject', 'useRefreshEntry',
   ] as const) hooks[k].mockReturnValue(mutation());

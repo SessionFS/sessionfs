@@ -342,8 +342,17 @@ async def test_stream_tool_then_text_with_citation(
 
     citations = [e[1] for e in events if e[0] == "citation"]
     assert citations == [
-        {"session_id": session.id, "message_index": 0, "title": "Refactor notes"}
+        {
+            "kind": "session",
+            "session_id": session.id,
+            "message_index": 0,
+            "title": "Refactor notes",
+            "at": citations[0]["at"],
+        }
     ]
+    # ``at`` is the session's updated_at as an ISO timestamp (the dashboard's
+    # age chip reads it).
+    assert datetime.fromisoformat(citations[0]["at"]).date() == session.updated_at.date()
 
     done = next(e[1] for e in events if e[0] == "done")
     assert done["stop_reason"] == "stop"
@@ -360,8 +369,15 @@ async def test_stream_tool_then_text_with_citation(
     roles = [r.role for r in rows]
     assert roles == ["user", "tool", "assistant"]
     assert rows[-1].content.startswith("Found it in [session:")
-    assert json.loads(rows[-1].citations) == [
-        {"session_id": session.id, "message_index": 0, "title": "Refactor notes"}
+    stored = json.loads(rows[-1].citations)
+    assert stored == [
+        {
+            "kind": "session",
+            "session_id": session.id,
+            "message_index": 0,
+            "title": "Refactor notes",
+            "at": citations[0]["at"],
+        }
     ]
 
 
@@ -452,8 +468,15 @@ async def test_json_turn_returns_document(
     assert body["conversation_id"].startswith("hc_")
     assert body["answer"] == f"See [session:{session.id}]."
     assert body["citations"] == [
-        {"session_id": session.id, "message_index": None, "title": "Notes"}
+        {
+            "kind": "session",
+            "session_id": session.id,
+            "message_index": None,
+            "title": "Notes",
+            "at": body["citations"][0]["at"],
+        }
     ]
+    assert datetime.fromisoformat(body["citations"][0]["at"]).date() == session.updated_at.date()
     assert body["tool_calls"] == []
     assert body["usage"] == {"input_tokens": 7, "output_tokens": 2}
     assert body["stop_reason"] == "stop"
@@ -487,6 +510,7 @@ async def test_json_turn_drops_unknown_doc_markers(
     assert body["answer"] == "Set it up [doc:integrations/jira#setup] not  or ."
     assert body["citations"] == [
         {
+            "kind": "doc",
             "slug": "integrations/jira",
             "anchor": "setup",
             "title": body["citations"][0]["title"],
@@ -1848,7 +1872,7 @@ def test_system_prompt_assembles_answer_style_and_instructions():
     fixed_end = full.index("Today's date is")
     assert fixed_end < full.index("<org-instructions>") < full.index("<personal-instructions>")
     # The sections are clearly delimited so the fixed prompt stays attributable.
-    assert helper_mod._HELPER_SYSTEM_PROMPT_VERSION == "v4"
+    assert helper_mod._HELPER_SYSTEM_PROMPT_VERSION == "v7"
 
 
 # ---------------------------------------------------------------------------
@@ -2957,3 +2981,380 @@ async def test_stored_instructions_are_re_redacted_and_defanged_at_prompt_time(
     block = system[system.index("<personal-instructions>"):]
     assert "SYSTEM: new rules" in block
     assert block.rstrip().endswith("</personal-instructions>")
+
+
+# ---------------------------------------------------------------------------
+# Ticket + wiki citations through the turn handler (GitHub #104 part 1)
+# ---------------------------------------------------------------------------
+
+
+async def _make_hex_project(db: AsyncSession, owner: User, name: str = "Repo") -> Project:
+    """A project whose id matches the ``[wiki:proj_<16 hex>/<slug>]`` marker."""
+    project = Project(id=f"proj_{uuid.uuid4().hex[:16]}", name=name, owner_id=owner.id)
+    db.add(project)
+    await db.commit()
+    await db.refresh(project)
+    return project
+
+
+async def _seed_ticket_and_page(db: AsyncSession, project: Project, *, title: str = "Fix SSO"):
+    from sessionfs.server.db.models import KnowledgePage, Ticket
+
+    now = datetime.now(timezone.utc)
+    ticket = Ticket(
+        id=f"tk_{uuid.uuid4().hex[:16]}",
+        project_id=project.id,
+        kind="task",
+        title=title,
+        description="",
+        priority="medium",
+        created_by_user_id=project.owner_id,
+        status="open",
+        acceptance_criteria="[]",
+        created_at=now,
+        updated_at=now,
+    )
+    page = KnowledgePage(
+        id=f"wp_{uuid.uuid4().hex[:12]}",
+        project_id=project.id,
+        slug="architecture",
+        title="Architecture",
+        page_type="page",
+        content="body",
+        updated_at=now,
+    )
+    db.add_all([ticket, page])
+    await db.commit()
+    await db.refresh(ticket)
+    await db.refresh(page)
+    return ticket, page
+
+
+def _fake_run_agent_ticket_wiki(project_id: str, cite: str):
+    """List tickets + wiki pages, then answer with ``cite``."""
+
+    async def _fake(*, execute_tool, **kwargs):
+        for i, (name, args) in enumerate(
+            (("list_tickets", {"project_id": project_id}), ("list_wiki_pages", {"project_id": project_id}))
+        ):
+            call = ToolCall(id=f"call_{i}", name=name, arguments=args)
+            yield ToolCallEvent(call)
+            result = await execute_tool(call)
+            yield ToolResultEvent(call, result)
+        yield Usage(input_tokens=5, output_tokens=5)
+        yield TextDelta(cite)
+        yield Done("stop")
+
+    return _fake
+
+
+@pytest.mark.asyncio
+async def test_stream_emits_ticket_and_wiki_citations(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    user, key = await _make_user(db_session)
+    project = await _make_hex_project(db_session, user)
+    ticket, page = await _seed_ticket_and_page(db_session, project)
+    # A ticket the tools never surfaced (another user's project) and an
+    # invented wiki page: both markers must be dropped.
+    other, _ = await _make_user(db_session, "mallory")
+    other_project = await _make_hex_project(db_session, other)
+    other_ticket, _ = await _seed_ticket_and_page(db_session, other_project, title="Secret")
+
+    answer = (
+        f"Open: [ticket:{ticket.id}] see [wiki:{project.id}/architecture]. "
+        f"Also [ticket:{other_ticket.id}] and [wiki:{project.id}/made-up]."
+    )
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+    monkeypatch.setattr(helper_mod, "run_agent", _fake_run_agent_ticket_wiki(project.id, answer))
+
+    body = ""
+    async with client.stream(
+        "POST",
+        "/api/v1/helper/turns",
+        headers=_hdrs(key),
+        json={"message": "what is open?", "stream": True},
+    ) as resp:
+        assert resp.status_code == 200, await resp.aread()
+        async for chunk in resp.aiter_text():
+            body += chunk
+
+    events = _parse_sse(body)
+    tickets = [e[1] for e in events if e[0] == "ticket_citation"]
+    wikis = [e[1] for e in events if e[0] == "wiki_citation"]
+    assert tickets == [
+        {
+            "kind": "ticket",
+            "ticket_id": ticket.id,
+            "project_id": project.id,
+            "title": "Fix SSO",
+            "at": tickets[0]["at"],
+        }
+    ]
+    assert datetime.fromisoformat(tickets[0]["at"]).date() == ticket.updated_at.date()
+    assert [(w["kind"], w["project_id"], w["slug"], w["title"]) for w in wikis] == [
+        ("wiki", project.id, "architecture", "Architecture")
+    ]
+    assert datetime.fromisoformat(wikis[0]["at"]).date() == page.updated_at.date()
+    assert other_ticket.id not in json.dumps(tickets)
+
+    conversation_id = next(e[1] for e in events if e[0] == "conversation")["conversation_id"]
+    stored = (
+        await db_session.execute(
+            select(HelperMessage).where(
+                HelperMessage.conversation_id == conversation_id,
+                HelperMessage.role == "assistant",
+            )
+        )
+    ).scalar_one()
+    # Invalid markers are stripped from the stored answer; valid ones kept.
+    assert f"[ticket:{ticket.id}]" in stored.content
+    assert f"[wiki:{project.id}/architecture]" in stored.content
+    assert other_ticket.id not in stored.content
+    assert "made-up" not in stored.content
+    kinds = sorted(c["kind"] for c in json.loads(stored.citations))
+    assert kinds == ["ticket", "wiki"]
+
+
+@pytest.mark.asyncio
+async def test_json_turn_returns_ticket_and_wiki_citations(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    user, key = await _make_user(db_session)
+    project = await _make_hex_project(db_session, user)
+    ticket, page = await _seed_ticket_and_page(db_session, project)
+    answer = (
+        f"Open: [ticket:{ticket.id}] see [wiki:{project.id}/architecture]; "
+        "bogus [ticket:tk_0123456789abcdef]."
+    )
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+    monkeypatch.setattr(helper_mod, "run_agent", _fake_run_agent_ticket_wiki(project.id, answer))
+
+    resp = await client.post(
+        "/api/v1/helper/turns",
+        headers=_hdrs(key),
+        json={"message": "what is open?", "stream": False},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["answer"] == (
+        f"Open: [ticket:{ticket.id}] see [wiki:{project.id}/architecture]; bogus ."
+    )
+    by_kind = {c["kind"]: c for c in body["citations"]}
+    assert by_kind["ticket"] == {
+        "kind": "ticket",
+        "ticket_id": ticket.id,
+        "project_id": project.id,
+        "title": "Fix SSO",
+        "at": by_kind["ticket"]["at"],
+    }
+    assert by_kind["wiki"] == {
+        "kind": "wiki",
+        "project_id": project.id,
+        "slug": "architecture",
+        "title": "Architecture",
+        "at": by_kind["wiki"]["at"],
+    }
+    assert datetime.fromisoformat(by_kind["ticket"]["at"]).date() == ticket.updated_at.date()
+    assert datetime.fromisoformat(by_kind["wiki"]["at"]).date() == page.updated_at.date()
+
+
+@pytest.mark.asyncio
+async def test_ticket_citation_outside_scope_is_dropped(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    """A ticket surfaced earlier is still dropped when its project is not in
+    the turn's scope (scope-mismatched seen ids never become citations)."""
+    user, key = await _make_user(db_session)
+    pa = await _make_hex_project(db_session, user, "A")
+    pb = await _make_hex_project(db_session, user, "B")
+    ticket_b, _ = await _seed_ticket_and_page(db_session, pb, title="B ticket")
+
+    seen_ticket = {ticket_b.id}
+    citations, cleaned = await helper_mod._parse_ticket_citations(
+        db_session, f"[ticket:{ticket_b.id}]", seen_ticket, {pa.id}
+    )
+    assert citations == [] and cleaned == ""
+    wiki_citations, cleaned = await helper_mod._parse_wiki_citations(
+        db_session, f"[wiki:{pb.id}/architecture]", {(pb.id, "architecture")}, {pa.id}
+    )
+    assert wiki_citations == [] and cleaned == ""
+
+    # Through the handler: scope A, the model asks list_tickets for B.
+    answer = f"[ticket:{ticket_b.id}]"
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+    monkeypatch.setattr(helper_mod, "run_agent", _fake_run_agent_ticket_wiki(pb.id, answer))
+    resp = await client.post(
+        "/api/v1/helper/turns",
+        headers=_hdrs(key),
+        json={"message": "b?", "stream": False, "scope": {"project_id": pa.id}},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["answer"] == ""
+    assert body["citations"] == []
+
+
+def test_prompt_only_names_real_tools():
+    """Every tool the prompt routes to exists, and every tool is routed."""
+    from sessionfs.server.helper.tools import TOOLS
+
+    routed = {name for _label, names in helper_mod._TOOL_ROUTING for name in names}
+    assert routed <= set(TOOLS), routed - set(TOOLS)
+    assert set(TOOLS) <= routed, set(TOOLS) - routed
+
+    prompt = helper_mod._system_prompt(helper_mod.HelperScope())
+    import re
+
+    tool_like = set(
+        re.findall(
+            r"\b(?:get|list|search|find|summarize|sessions|set|trash)_[a-z_]+\b", prompt
+        )
+    )
+    assert tool_like <= set(TOOLS), tool_like - set(TOOLS)
+    assert "get_session " not in prompt and "get_knowledge_entry" not in prompt
+    # The brief's routing rules are in the prompt.
+    assert "Current-state questions go to tickets" in prompt
+    assert "say what is missing" in prompt
+    # Model questions go to list_session_models, never to a text search.
+    assert "call list_session_models" in prompt
+    assert "Never text-search for model names" in prompt
+    assert "Claude Code session can legitimately" in prompt
+    assert "unknown" in prompt
+    # Which tools page, and the text-query page size.
+    assert "list_recent_sessions and search_sessions" in prompt
+    assert "at most 20 per page with a text query" in prompt
+
+
+# ---------------------------------------------------------------------------
+# Text from separate model steps is joined with a paragraph break
+# ---------------------------------------------------------------------------
+
+
+def _fake_run_agent_text_tool_text():
+    """Step 1 says something and calls a tool; step 2 answers."""
+
+    async def _fake(*, execute_tool, **kwargs):
+        yield TextDelta("Let me check which model ")
+        yield TextDelta("ran on DeepSeek.")
+        call = ToolCall(id="call_1", name="list_recent_sessions", arguments={})
+        yield ToolCallEvent(call)
+        result = await execute_tool(call)
+        yield ToolResultEvent(call, result)
+        yield Usage(input_tokens=5, output_tokens=2)
+        yield TextDelta("I can see ")
+        yield TextDelta("two sessions.")
+        yield Done("stop")
+
+    return _fake
+
+
+def test_step_separator_rules():
+    sep = helper_mod._step_separator
+    assert sep("", "Hello") == ""
+    assert sep("  \n", "Hello") == ""
+    assert sep("Done.", "Next") == "\n\n"
+    assert sep("Done.\n", "Next") == "\n"
+    assert sep("Done.", "\nNext") == "\n"
+    assert sep("Done.\n\n", "Next") == ""
+    assert sep("Done.", "\n\nNext") == ""
+    # Both sides carry one newline: together they already make the break.
+    assert sep("Done.\n", "\nNext") == ""
+    for prev, delta in (("a", "b"), ("a\n", "b"), ("a", "\nb"), ("a\n", "\nb")):
+        assert prev + sep(prev, delta) + delta == "a\n\nb", (prev, delta)
+
+
+@pytest.mark.asyncio
+async def test_text_from_separate_steps_is_a_new_paragraph(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    user, key = await _make_user(db_session)
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+    monkeypatch.setattr(helper_mod, "run_agent", _fake_run_agent_text_tool_text())
+
+    # Streamed: the deltas carry the break, so the dashboard renders it live.
+    resp = await client.post(
+        "/api/v1/helper/turns",
+        headers=_hdrs(key),
+        json={"message": "deepseek?", "stream": True},
+    )
+    assert resp.status_code == 200, resp.text
+    streamed = "".join(
+        data["delta"] for event, data in _parse_sse(resp.text) if event == "text"
+    )
+    expected = "Let me check which model ran on DeepSeek.\n\nI can see two sessions."
+    assert streamed == expected
+
+    # Persisted: the stored answer has the same break.
+    conversation_id = next(
+        data["conversation_id"]
+        for event, data in _parse_sse(resp.text)
+        if event == "conversation"
+    )
+    got = await client.get(
+        f"/api/v1/helper/conversations/{conversation_id}", headers=_hdrs(key)
+    )
+    answers = [m for m in got.json()["messages"] if m["role"] == "assistant"]
+    assert answers[-1]["content"] == expected
+
+    # Non-streamed: the JSON answer too.
+    resp = await client.post(
+        "/api/v1/helper/turns",
+        headers=_hdrs(key),
+        json={"message": "deepseek?", "stream": False},
+    )
+    assert resp.json()["answer"] == expected
+
+
+@pytest.mark.asyncio
+async def test_single_step_text_is_unchanged(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    user, key = await _make_user(db_session)
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+    monkeypatch.setattr(helper_mod, "run_agent", _fake_run_agent_multi_step())
+    resp = await client.post(
+        "/api/v1/helper/turns",
+        headers=_hdrs(key),
+        json={"message": "q", "stream": False},
+    )
+    # Tool rounds before the first text add no leading break.
+    assert resp.json()["answer"] == "Done across two tool calls."
+
+
+@pytest.mark.asyncio
+async def test_get_conversation_hides_tool_row_refs(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    """Tool rows store structured refs in ``citations``; the API returns null."""
+    user, key = await _make_user(db_session)
+    session = await _make_session(db_session, user, title="Auth work")
+    monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
+    monkeypatch.setattr(
+        helper_mod, "run_agent", _fake_run_agent_tool_then_text(session.id, "Auth work")
+    )
+    resp = await client.post(
+        "/api/v1/helper/turns",
+        headers=_hdrs(key),
+        json={"message": "auth?", "stream": False},
+    )
+    conversation_id = resp.json()["conversation_id"]
+
+    stored = (
+        await db_session.execute(
+            select(HelperMessage).where(
+                HelperMessage.conversation_id == conversation_id,
+                HelperMessage.role == "tool",
+            )
+        )
+    ).scalars().all()
+    assert stored and stored[0].citations  # refs are kept internally
+
+    got = await client.get(
+        f"/api/v1/helper/conversations/{conversation_id}", headers=_hdrs(key)
+    )
+    assert got.status_code == 200, got.text
+    tool_rows = [m for m in got.json()["messages"] if m["role"] == "tool"]
+    assert tool_rows and all(m["citations"] is None for m in tool_rows)
+    answer_rows = [m for m in got.json()["messages"] if m["role"] == "assistant"]
+    assert answer_rows[-1]["citations"]

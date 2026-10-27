@@ -73,14 +73,14 @@ describe('useJiraPreview', () => {
     });
     await waitFor(() => expect(previewJira).toHaveBeenCalled());
 
-    const query = qc.getQueryCache().find({ queryKey: ['jiraPreview', 'proj_1', 't_1'] });
+    const query = qc.getQueryCache().find({ queryKey: ['jiraPreview', 'proj_1', 't_1', null] });
     expect(query?.options.retry).toBe(false);
     expect(query?.options.gcTime).toBe(0);
 
     unmount();
     // With gcTime 0 the cache entry is dropped as soon as it has no observers.
     await waitFor(() => {
-      expect(qc.getQueryCache().find({ queryKey: ['jiraPreview', 'proj_1', 't_1'] })).toBeUndefined();
+      expect(qc.getQueryCache().find({ queryKey: ['jiraPreview', 'proj_1', 't_1', null] })).toBeUndefined();
     });
   });
 });

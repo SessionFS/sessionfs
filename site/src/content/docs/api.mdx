@@ -244,6 +244,26 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | GET | `/api/v1/orgs/{org_id}/personas/{name}/rollup` | Bearer | Org persona activity across the projects you can see — v0.23.0 |
 | GET | `/api/v1/orgs/{org_id}/personas/{name}/represent-history` | Bearer | Who has represented an org persona over time (admin) — v0.23.0 |
 
+### Project Groups
+
+Project groups are org-scoped flat collections of projects (Team+). Group roles are `reader` (read), `editor` (edit) and `admin` (edit + manage the group); no group role grants project-admin standing. Org admins/owners have admin standing on every group in their org.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/v1/orgs/{org_id}/groups` | Bearer | List the org's live groups (org admins see all; other members see the groups they hold a grant on; non-members `404`) |
+| POST | `/api/v1/orgs/{org_id}/groups` | Bearer | Create a group (org admin). Body: `name`, optional `slug`, `description`. `409` on duplicate slug |
+| GET | `/api/v1/orgs/{org_id}/groups/{group_id}` | Bearer | Group detail with members and projects (org admin or a member granted on the group) |
+| PATCH | `/api/v1/orgs/{org_id}/groups/{group_id}` | Bearer | Rename / re-slug / re-describe (group admin) |
+| DELETE | `/api/v1/orgs/{org_id}/groups/{group_id}` | Bearer | Soft-delete the group, freeing its slug (org admin) |
+| PUT | `/api/v1/orgs/{org_id}/groups/{group_id}/members/{user_id}` | Bearer | Grant or update a member's role (group admin). Grantee must be an org member, else `422 not_org_member` |
+| DELETE | `/api/v1/orgs/{org_id}/groups/{group_id}/members/{user_id}` | Bearer | Revoke a member's grant (group admin) |
+| PUT | `/api/v1/orgs/{org_id}/groups/{group_id}/projects/{project_id}` | Bearer | Add a project to the group (group admin). Project must be in this org, else `422 project_not_in_org`; a non-org-admin needs edit standing on it, and an unreadable project is `404` |
+| DELETE | `/api/v1/orgs/{org_id}/groups/{group_id}/projects/{project_id}` | Bearer | Remove a project from the group (group admin) |
+| GET | `/api/v1/projects/{project_id}/groups` | Bearer | The live groups a project belongs to (project reader; empty unless an org member) |
+| GET | `/api/v1/me/groups` | Bearer | The caller's groups across orgs |
+
+Restricted project visibility is toggled through the org settings surface (`PUT /api/v1/orgs/{org_id}/settings`, `{"restrict_project_visibility": true}`) and turning it on requires the `project_groups` feature (Team+). Creating groups, granting members and adding projects also need the feature; reads and cleanup (revoke, remove project, delete) do not.
+
 ### Skills Marketplace
 
 All package versions are immutable and addressed by `content_hash`. Visibility failures return `404` so callers cannot probe private user or organization listings.

@@ -49,9 +49,9 @@ export default function OrgAssistantSection({ orgId }: { orgId: string }) {
 
   const heading = (
     <div className="mb-4">
-      <h3 id={HEADING_ID} className="text-base font-semibold text-text-primary">
+      <h2 id={HEADING_ID} className="text-text-primary">
         Assistant
-      </h3>
+      </h2>
       <p className="mt-1 text-sm text-text-secondary">
         How the session helper answers for everyone on the org key: model settings, limits, instructions and token
         usage.
@@ -113,7 +113,7 @@ function MemberView({ data }: { data: OrgHelperSettings }) {
         </Alert>
       )}
       <div>
-        <SubsectionHeading id="org-assistant-effective" description="Set by your org admins. They apply when you use the org key.">
+        <SubsectionHeading level={3} id="org-assistant-effective" description="Set by your org admins. They apply when you use the org key.">
           Model settings
         </SubsectionHeading>
         <EffectiveSettingsList settings={data.effective_settings} labelledBy="org-assistant-effective" />
@@ -124,7 +124,7 @@ function MemberView({ data }: { data: OrgHelperSettings }) {
         </p>
       </div>
       <div>
-        <SubsectionHeading description="Your turns on the org key, this calendar month (UTC).">Your usage this month</SubsectionHeading>
+        <SubsectionHeading level={3} description="Your turns on the org key, this calendar month (UTC).">Your usage this month</SubsectionHeading>
         <UsageTotals usage={data.usage} />
         {!data.budget_reached && data.budget_used_pct != null && (
           <div className="mt-3 rounded-lg border border-border bg-bg-sunken px-3 py-2.5">
@@ -192,7 +192,7 @@ function AdminView({ orgId, data }: { orgId: string; data: OrgHelperSettings }) 
       {!editable && <PlanNote admin />}
 
       <div>
-        <SubsectionHeading description="Used for every turn on the org key. Members' personal keys use their own settings.">
+        <SubsectionHeading level={3} description="Used for every turn on the org key. Members' personal keys use their own settings.">
           Model settings
         </SubsectionHeading>
         <ModelSettingsFields
@@ -207,7 +207,7 @@ function AdminView({ orgId, data }: { orgId: string; data: OrgHelperSettings }) 
       </div>
 
       <div>
-        <SubsectionHeading description="Caps for members using the org key. Leave empty for no ceiling.">
+        <SubsectionHeading level={3} description="Caps for members using the org key. Leave empty for no ceiling.">
           Ceilings and budget
         </SubsectionHeading>
         <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
@@ -264,7 +264,7 @@ function AdminView({ orgId, data }: { orgId: string; data: OrgHelperSettings }) 
       </div>
 
       <div>
-        <SubsectionHeading description="Added to every turn that uses the org key or asks about this org's projects.">
+        <SubsectionHeading level={3} description="Added to every turn that uses the org key or asks about this org's projects.">
           Org instructions
         </SubsectionHeading>
         <InstructionsField
@@ -292,7 +292,7 @@ function AdminView({ orgId, data }: { orgId: string; data: OrgHelperSettings }) 
       </div>
 
       <div className="border-t border-border pt-6">
-        <SubsectionHeading id="org-assistant-usage" description="Turns on the org key this calendar month (UTC).">
+        <SubsectionHeading level={3} id="org-assistant-usage" description="Turns on the org key this calendar month (UTC).">
           Usage this month
         </SubsectionHeading>
         <UsageTotals usage={data.usage} />

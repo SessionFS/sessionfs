@@ -8,6 +8,8 @@
 - ``GET /api/v1/marketplace/versions/{from}/diff/{to}``: files added /
   removed / changed with bounded text diffs, capability delta, scan and
   Unicode delta, and the D2 update class.
+- ``GET /api/v1/orgs/{org}/skills/assignments/updates/count``: how many
+  held updates there are, without building any diff (dashboard badge).
 - ``GET /api/v1/orgs/{org}/skills/assignments/updates``: the org's "held
   updates" queue: active assignments whose package has a newer deliverable
   version, with its update class.
@@ -32,18 +34,25 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from sessionfs.server.auth.dependencies import AuthContext, require_scope
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import OrgSkillAssignment, SkillPackage, SkillPackageVersion
+from sessionfs.server.db.models import (
+    OrgSkillAssignment,
+    SkillMarketplaceListing,
+    SkillPackage,
+    SkillPackageVersion,
+)
 from sessionfs.server.routes.marketplace import (
     _assignment_response,
     _audit,
     _blob_store,
     _check_org_feature,
+    _deliverable_predicates,
+    _org_ids,
     lock_content_hashes,
     _org_access,
     _org_tier,
@@ -334,6 +343,78 @@ async def list_assignment_updates(
     )
     await db.rollback()  # read-only: nothing to keep
     return {"items": items, "count": len(items), "has_more": has_more, "next_cursor": next_cursor}
+
+
+# Held-update counts stop here and report has_more: the number is a badge,
+# not an inventory, and each candidate costs a deliverability check.
+MAX_UPDATES_COUNT = 100
+
+
+def _deliverable_to_org_predicate(org_id: str, caller_org_ids: list[str]):
+    """The listing filter `_deliverable_for_org` applies, as SQL: a listing
+    the caller can see (`_visible_listings`) that is public, or private to
+    THIS org. An org listing only counts while the caller's own visibility
+    includes the org (member of an org that still has the skill library)."""
+    if org_id in caller_org_ids:
+        return or_(
+            SkillMarketplaceListing.visibility == "public",
+            and_(
+                SkillMarketplaceListing.visibility == "org",
+                SkillMarketplaceListing.org_id == org_id,
+            ),
+        )
+    return SkillMarketplaceListing.visibility == "public"
+
+
+def _has_deliverable_update(assigned: Any, org_id: str, caller_org_ids: list[str]):
+    """EXISTS a strictly newer version of the assigned package with a listing
+    deliverable to this org: the same rule as `_newest_deliverable_after`
+    (newer publication, not quarantined, every shared delivery predicate,
+    visible to the caller as public or this org's listing), set-based."""
+    return (
+        select(SkillMarketplaceListing.id)
+        .join(SkillPackageVersion, SkillPackageVersion.id == SkillMarketplaceListing.version_id)
+        .join(SkillPackage, SkillPackage.id == SkillMarketplaceListing.package_id)
+        .where(
+            SkillPackageVersion.package_id == assigned.package_id,
+            SkillPackageVersion.publication_seq > assigned.publication_seq,
+            *_deliverable_predicates(),
+            _deliverable_to_org_predicate(org_id, caller_org_ids),
+        )
+        .exists()
+    )
+
+
+@router.get("/orgs/{org_id}/skills/assignments/updates/count")
+async def count_assignment_updates(
+    org_id: str,
+    auth: AuthContext = Depends(require_scope("skills:read")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """How many active assignments have a newer deliverable version: the same
+    rows the queue lists, without building or classifying any diff (no blob
+    reads). Same access and plan gate as the queue. One set-based query
+    whatever the number of assignments, capped at MAX_UPDATES_COUNT;
+    ``has_more`` says the real number is higher."""
+    org, _role = await _org_access(db, auth, org_id, admin=True)
+    await _check_org_feature(db, org, "team_skill_library")
+    caller_org_ids = await _org_ids(db, auth)
+    assigned = aliased(SkillPackageVersion)
+    ids = (
+        await db.execute(
+            select(OrgSkillAssignment.id)
+            .join(assigned, assigned.id == OrgSkillAssignment.version_id)
+            .where(
+                OrgSkillAssignment.org_id == org.id,
+                OrgSkillAssignment.revoked_at.is_(None),
+                _has_deliverable_update(assigned, org.id, caller_org_ids),
+            )
+            .order_by(OrgSkillAssignment.id)
+            .limit(MAX_UPDATES_COUNT + 1)
+        )
+    ).scalars().all()
+    await db.rollback()  # read-only: nothing to keep
+    return {"count": min(len(ids), MAX_UPDATES_COUNT), "has_more": len(ids) > MAX_UPDATES_COUNT}
 
 
 def _is_diff_unavailable(exc: HTTPException) -> bool:

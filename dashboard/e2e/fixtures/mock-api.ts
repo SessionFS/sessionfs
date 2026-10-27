@@ -11,8 +11,8 @@ const notFound = (): MockResult => ({ status: 404, body: { detail: 'not found' }
 
 /**
  * Resolve an /api/** request to fixture JSON. Returns null when no fixture
- * exists; the caller records the miss and answers with an empty object so a
- * page never hangs on an unmocked request.
+ * exists; the caller records the miss and answers 501 so the page shows its
+ * error state instead of hanging, and the scenario then fails on the miss.
  */
 export function resolve(method: string, pathname: string): MockResult | null {
   // Ids such as 'acme/widgets' arrive percent-encoded as one path segment, so
@@ -46,21 +46,43 @@ export function resolve(method: string, pathname: string): MockResult | null {
     const rest = proj[2] ?? '';
     const project = d.projects.find((p) => p.id === id || p.git_remote_normalized === id);
     if (!project) return notFound();
-    if (rest === '') return ok(project);
+    if (rest === '') {
+      // The detail carries the groups containing an org project (GitHub #101).
+      return ok(project.org_id ? { ...project, groups: [d.projectGroups[0]] } : project);
+    }
+    if (rest === '/groups') return ok(project.org_id ? [d.projectGroups[0]] : []);
     if (rest === '/entries') return ok({ entries: d.knowledgeEntries, total: d.knowledgeEntries.length });
     if (rest === '/health') return ok(d.projectHealth);
     if (rest === '/compilations') return ok({ compilations: d.compilations });
     if (rest === '/pages') return ok({ pages: d.wikiPages });
     if (rest.startsWith('/pages/')) return ok({ ...d.wikiPages[0], backlinks: [] });
     if (rest === '/personas') return ok(d.personas);
-    if (rest === '/tickets') return ok(d.tickets);
-    if (/^\/tickets\/[^/]+\/comments$/.test(rest)) return ok({ comments: [] });
+    if (rest === '/tickets') return ok(d.tickets.map((t) => (t.id === d.LINKED_TICKET_ID ? d.linkedTicket : t)));
+    const tk = rest.match(/^\/tickets\/([^/]+)(\/.*)?$/);
+    if (tk) {
+      const tid = decodeURIComponent(tk[1]);
+      const sub = tk[2] ?? '';
+      const linked = tid === d.LINKED_TICKET_ID;
+      const base = d.tickets.find((t) => t.id === tid);
+      if (!base) return notFound();
+      if (sub === '') return ok(linked ? d.linkedTicket : base);
+      if (sub === '/comments') return ok(linked ? d.linkedTicketComments : tid === d.tickets[1].id ? d.openTicketComments : []);
+      if (sub === '/watchers') return ok(linked ? d.linkedTicketWatchers : []);
+      if (sub === '/review-state') return ok(linked ? d.linkedTicketReviewState : { ticket_id: tid, review_state: null });
+      if (sub === '/jira-sync-events') return ok(linked ? d.linkedTicketSyncEvents : { events: [] });
+      if (sub === '/jira') return linked ? ok(d.linkedTicketJiraLink) : notFound();
+      return null;
+    }
     if (rest === '/agent-runs') return ok(d.agentRuns);
     if (rest === '/rules') return ok(d.rules.rules);
     if (rest === '/rules/versions') return ok(d.rulesVersions);
+    const rulesVersion = rest.match(/^\/rules\/versions\/(\d+)$/);
+    if (rulesVersion) return ok(d.rulesVersionDetail(Number(rulesVersion[1])));
+    if (rest === '/compile-status') return ok(d.compileStatus);
     if (rest === '/repos') return ok(project.repos ?? []);
     if (rest === '/skill-install-requests') return ok({ items: [], can_approve: true });
     if (rest === '/settings') return ok({ auto_narrative: project.auto_narrative });
+    if (rest === '/confluence/links') return ok(d.confluenceLinks);
     return null;
   }
 
@@ -71,17 +93,36 @@ export function resolve(method: string, pathname: string): MockResult | null {
   if (path === '/api/v1/marketplace/catalogs') return ok(d.nativeCatalogs);
   if (path === '/api/v1/users/me/skills/packages') return ok({ items: [], count: 0 });
   if (path === '/api/v1/users/me/skills/assignments') return ok({ items: [], count: 0 });
-  if (path === '/api/v1/publishers') return ok({ items: [], count: 0 });
+  if (path === '/api/v1/publishers') return ok(d.myPublishers);
+  if (/^\/api\/v1\/publishers\/[^/]+\/listings$/.test(path)) return ok(d.publisherListings);
+  if (path === '/api/v1/marketplace/reports') return ok(d.marketplaceReports);
+  if (/^\/api\/v1\/marketplace\/versions\/[^/]+\/works-in$/.test(path)) return ok(d.marketplaceWorksIn);
+  if (/^\/api\/v1\/marketplace\/versions\/[^/]+\/disclosure$/.test(path)) return ok(d.marketplaceDisclosure);
+  const mpkg = path.match(/^\/api\/v1\/marketplace\/packages\/([^/]+)(\/readme)?$/);
+  if (mpkg) {
+    const found = d.marketplacePackages.items.find((p) => p.package_id === decodeURIComponent(mpkg[1]));
+    if (!found) return notFound();
+    if (mpkg[2]) {
+      return ok({
+        version_id: found.version_id, package_id: found.package_id, source: 'readme', path: 'README.md',
+        content: `# ${found.display_name}\n\nReviews a change before it lands.\n\n## Usage\n\nAsk your agent to review the current branch.`,
+        hidden_unicode: [], truncated: false, untrusted: true, image_path_prefix: '',
+      });
+    }
+    return ok(found);
+  }
 
   // ── organization ──
   if (path === '/api/v1/org') return ok(d.orgInfo);
   if (path === '/api/v1/org/invites') return ok(d.orgInvites);
   if (path === '/api/v1/org/invites/me') return ok({ invites: [] });
-  if (path === '/api/v1/orgs') return ok([{ org_id: d.ORG_ID, name: 'Acme Fixtures', role: 'admin' }]);
+  if (path === '/api/v1/orgs') return ok(d.myOrgs);
   const org = path.match(/^\/api\/v1\/orgs\/([^/]+)(\/.*)?$/);
   if (org) {
     const rest = org[2] ?? '';
     if (rest === '/settings') return ok(d.orgSettings);
+    if (rest === '/groups') return ok(d.projectGroups);
+    if (/^\/groups\/[^/]+$/.test(rest)) return ok(d.projectGroupDetail);
     if (rest === '/personas') return ok(d.orgPersonas);
     if (rest === '/sso/provider') return ok(d.ssoProvider);
     if (rest === '/sso/domains') return ok(d.ssoDomains);
@@ -96,12 +137,41 @@ export function resolve(method: string, pathname: string): MockResult | null {
         current_user_role: d.orgInfo.current_user_role,
       });
     }
+    if (rest === '/members/me/digest') return ok({ org_id: decodeURIComponent(org[1]), opt_out: false });
     if (rest === '/helper-settings') return ok(d.orgHelperSettingsAdmin);
     if (rest === '/llm-settings') return ok(d.orgLlmSettings);
+    if (rest === '/skills/assignments/updates/count') return ok({ count: 0, has_more: false });
     if (rest.startsWith('/skills/')) return ok({ items: [], count: 0, has_more: false });
+    if (rest === '/integrations/confluence') return ok(d.confluenceConnection);
+    if (rest === '/integrations/confluence/mappings') return ok(d.confluenceMappings);
+    if (rest === '/integrations/confluence/health') return ok(d.confluenceHealth);
+    if (rest === '/integrations/confluence/spaces') {
+      return ok({ spaces: [{ key: 'ENG', name: 'Engineering' }], has_more: false, query: null, limit: 50 });
+    }
+    if (/^\/integrations\/confluence\/spaces\/[^/]+\/pages$/.test(rest)) return ok([{ id: '65538', title: 'Engineering home' }]);
+    if (rest === '/integrations/jira') return ok(d.jiraConnection);
+    if (rest === '/integrations/jira/mappings') return ok(d.jiraMappings);
+    if (rest === '/integrations/jira/health') return ok(d.jiraHealth);
+    if (rest === '/integrations/jira/sync-events') return ok(d.jiraSyncEvents);
+    // The built-in templates exactly as the server lists them, then the
+    // fixture org's one custom template.
+    if (rest === '/integrations/jira/templates') return ok([...d.jiraBuiltinTemplates, ...d.jiraCustomTemplates]);
+    if (rest === '/integrations/confluence/templates') return ok(d.confluenceBuiltinTemplates);
+    // Search terms arrive as ?q= — visual scenarios that type route that
+    // themselves; the bare path is the unfiltered first page.
+    if (rest === '/integrations/jira/projects') return ok(d.jiraProjectPage(''));
+    if (/^\/integrations\/jira\/projects\/[^/]+\/issue-types$/.test(rest)) {
+      return ok([{ name: 'Story', id: '10001' }, { name: 'Bug', id: '10004' }]);
+    }
     return null;
   }
   if (path === '/api/v1/transfers') return ok({ transfers: [] });
+  if (path === '/api/v1/me/groups') return ok(d.myGroups);
+
+  // ── notifications ──
+  if (path === '/api/v1/me/ticket-notifications') return ok(d.ticketNotifications);
+  if (path === '/api/v1/me/ticket-notifications/unread-count') return ok({ count: 3 });
+  if (path === '/api/v1/me/notification-settings') return ok({ ticket_email: 'your_turn' });
 
   // ── settings ──
   if (path === '/api/v1/settings/audit-trigger') return ok({ trigger: 'manual', auto_audit: false, enabled: false });
@@ -127,7 +197,9 @@ export async function mockApi(page: Page): Promise<string[]> {
     const url = new URL(route.request().url());
     const result = resolve(route.request().method(), url.pathname);
     if (!result) misses.push(`${route.request().method()} ${url.pathname}`);
-    const r = result ?? { status: 200, body: {} };
+    // A 501 rather than an empty 200: an empty object in place of a list
+    // crashes some pages, which hides which request was missing.
+    const r = result ?? { status: 501, body: { detail: `unmocked in the visual harness: ${url.pathname}` } };
     await route.fulfill({
       status: r.status,
       contentType: 'application/json',

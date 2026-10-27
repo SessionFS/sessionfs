@@ -1,12 +1,5 @@
 import { useState, useRef, useEffect, useCallback, useId, type InputHTMLAttributes, type TextareaHTMLAttributes, type ReactNode } from 'react';
-
-/* ── shared field styling ── */
-
-const baseField =
-  'w-full bg-bg-sunken border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary transition-[background-color,border-color,box-shadow] duration-150 ease-out outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] disabled:opacity-50 disabled:cursor-not-allowed';
-
-const errorField =
-  'border-[var(--danger)] focus-visible:border-[var(--danger)] focus-visible:shadow-[0_0_0_3px_color-mix(in_srgb,var(--danger)_25%,transparent)]';
+import { baseField, describedBy, errorField } from './fieldStyles';
 
 /* ── field wrapper ── */
 
@@ -19,7 +12,7 @@ interface FieldWrapperProps {
   children: ReactNode;
 }
 
-function FieldWrapper({ label, htmlFor, error, hint, children }: FieldWrapperProps) {
+export function FieldWrapper({ label, htmlFor, error, hint, children }: FieldWrapperProps) {
   return (
     <div className="flex flex-col gap-1">
       {label && (
@@ -40,12 +33,6 @@ function FieldWrapper({ label, htmlFor, error, hint, children }: FieldWrapperPro
       )}
     </div>
   );
-}
-
-/** Join the caller's aria-describedby with the hint/error ids the wrapper renders. */
-function describedBy(controlId: string, own: string | undefined, hint: unknown, error: unknown): string | undefined {
-  const ids = [own, hint ? `${controlId}-hint` : null, error ? `${controlId}-error` : null].filter(Boolean);
-  return ids.length ? ids.join(' ') : undefined;
 }
 
 /* ── Input ── */
@@ -166,6 +153,21 @@ export function Select({
     return () => document.removeEventListener('mousedown', handleClick);
   }, [open, close]);
 
+  // Escape closes only the popup. A Dialog listens for Escape in the
+  // document capture phase, so claim the key earlier, on window.
+  useEffect(() => {
+    if (!open) return;
+    function handleEscape(e: KeyboardEvent) {
+      if (e.key !== 'Escape') return;
+      if (!wrapperRef.current?.contains(e.target as Node)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      close(true);
+    }
+    window.addEventListener('keydown', handleEscape, true);
+    return () => window.removeEventListener('keydown', handleEscape, true);
+  }, [open, close]);
+
   // One keyboard handler shared by the trigger button (closed: open on
   // Arrow/Enter/Space) and the listbox (open: navigation). Focus moves to the
   // listbox while open and the active option is exposed with
@@ -281,7 +283,7 @@ export function Select({
 
         {open && (
           <div
-            className="absolute top-full left-0 mt-1 z-40 min-w-full rounded-lg py-1 border border-border bg-overlay"
+            className="absolute top-full left-0 mt-1 z-40 min-w-full max-h-[min(360px,50vh)] overflow-y-auto overscroll-contain rounded-lg py-1 border border-border bg-overlay"
             style={{ boxShadow: 'var(--shadow-overlay)' }}
           >
             {/* Listbox popup with aria-activedescendant — options are NOT

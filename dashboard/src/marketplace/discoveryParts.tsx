@@ -66,8 +66,8 @@ export function ToolFreshnessTable({ item }: { item: MarketplacePackage }) {
         Installs over the last {item.installs?.window_days ?? 30} days (counts under 10 show as "&lt;10").
         {item.freshness?.computed_at ? ` Freshness computed ${shortDate(item.freshness.computed_at)}.` : ' Freshness not computed yet.'}
       </p>
-      <TableShell minWidth={620} bordered wrapperClassName="mt-2">
-          <thead className="bg-bg-sunken text-xs uppercase tracking-wider text-text-tertiary">
+      <TableShell minWidth={620} bordered wrapperClassName="mt-2" label="Installs and freshness table">
+          <thead className="bg-bg-sunken text-xs text-text-tertiary">
             <tr>
               <th className="px-3 py-2">Tool</th>
               <th className="px-3 py-2">Installs</th>

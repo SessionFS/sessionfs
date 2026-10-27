@@ -187,7 +187,7 @@ Storage is pooled across all org members. The `GET /api/v1/org` response include
 
 ## Dashboard
 
-Open **Organization** (under **Manage** in the sidebar) in the web dashboard. Its tabs are **Members** (view members, change roles, send invites), **Personas** (org-wide agent personas), **Policies** (organization defaults, domain auto-join, notifications and, on Enterprise, the session helper AI key), **Integrations** (Jira Cloud, Enterprise) and, for admins, **Security** (single sign-on). Subscription management is under **Billing**. Members see the org info and their role but cannot modify settings.
+Open **Organization** (under **Manage** in the sidebar) in the web dashboard. Its tabs are **Members** (view members, change roles, send invites), **Personas** (org-wide agent personas), **Policies** (organization defaults, domain auto-join, notifications and, on Enterprise, the session helper AI key), **Integrations** (Jira Cloud and Confluence Cloud, Enterprise) and, for admins, **Security** (single sign-on). Subscription management is under **Billing**. Members see the org info and their role but cannot modify settings.
 
 ## Multi-org membership (v0.10.0)
 
@@ -268,4 +268,12 @@ Owners and admins can set one provider, model, API key and optional base URL tha
 
 ## Jira Cloud (Enterprise, v0.23.0)
 
-Owners and admins connect the org to Jira Cloud from the **Integrations** tab (or `sfs org jira connect`), map projects to Jira projects and check the integration's health. Members then promote tickets to Jira issues from the ticket panel. See [Jira Cloud](/integrations/jira/).
+Owners and admins connect the org to Jira Cloud from the **Integrations** tab (or `sfs org jira connect`), map projects to Jira projects and check the integration's health. Members then promote tickets to Jira issues from the ticket panel. Since v0.26.0, status changes and comments can sync both ways and admins can define custom story templates. See [Jira Cloud](/integrations/jira/).
+
+## Confluence Cloud (Enterprise, v0.26.0)
+
+Owners and admins connect the org to Confluence Cloud from the **Integrations** tab (or `sfs org confluence connect`) and map projects to a space and parent page. Project wiki pages and the compiled context can then be published there. See [Confluence Cloud](/integrations/confluence/).
+
+## Project groups (Team+, v0.26.0)
+
+Owners and admins can group the org's projects, grant members reader, editor or admin access to a whole group, and turn on restricted project visibility so members see only the projects they own, created, or reach through a group. See [Project Groups](/project-groups/).

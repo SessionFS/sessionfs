@@ -14,7 +14,7 @@ import re
 from collections.abc import Callable
 from datetime import datetime, timezone
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from sessionfs.server.db.models import (
@@ -29,6 +29,7 @@ from sessionfs.server.db.models import (
     KnowledgePage,
     Project,
     ProjectFeatureGrandfather,
+    ProjectGroupAccess,
     ProjectMergeAudit,
     ProjectRepo,
     ProjectRules,
@@ -40,7 +41,7 @@ from sessionfs.server.db.models import (
     User,
     WikiPageRevision,
 )
-from sessionfs.server.services.tracker_scope import drop_project_tracker_mapping
+from sessionfs.server.services.tracker_scope import drop_project_integration_mappings
 
 logger = logging.getLogger("sessionfs.server.services.merge")
 
@@ -440,6 +441,28 @@ async def _compute_merge_stats(
     # KE duplicates
     ke_dupes = await _detect_ke_duplicates(db, source_id, target_id)
     stats["ke_duplicates"] = len(ke_dupes)
+
+    # Project-group memberships: moved to the target, or dropped where the
+    # group already contains the target.
+    target_groups = select(ProjectGroupAccess.group_id).where(
+        ProjectGroupAccess.project_id == target_id
+    )
+    stats["project_group_memberships_moved"] = (
+        await db.execute(
+            select(func.count()).select_from(ProjectGroupAccess).where(
+                ProjectGroupAccess.project_id == source_id,
+                ProjectGroupAccess.group_id.not_in(target_groups),
+            )
+        )
+    ).scalar() or 0
+    stats["project_group_memberships_dropped"] = (
+        await db.execute(
+            select(func.count()).select_from(ProjectGroupAccess).where(
+                ProjectGroupAccess.project_id == source_id,
+                ProjectGroupAccess.group_id.in_(target_groups),
+            )
+        )
+    ).scalar() or 0
 
     # Rules
     stats["source_has_rules"] = await _has_rules(db, source_id)
@@ -989,12 +1012,19 @@ async def _step_knowledge_entries(
     db: AsyncSession,
     source_id: str,
     target_id: str,
-) -> tuple[dict[str, str], list[str]]:
+) -> tuple[dict[str, str], list[int]]:
     """Step 6: Dedup + reassign knowledge entries.
 
     Returns (entry_id_map, skipped_ids).
-    entry_id_map: source_entry_id → target_equivalent_id.
+    entry_id_map: str(source_entry_id) → str(target_equivalent_id). Keys and
+    values are strings because KnowledgeLink stores entry ids as strings;
+    the map is only ever used to rewrite those link columns.
     Reassigned (non-dup) entries map to themselves (identity).
+    skipped_ids: the integer ids of source entries left behind as duplicates.
+
+    Moved entries whose ``superseded_by`` points at a skipped duplicate are
+    re-pointed to the target's equivalent entry, so a supersession chain
+    never ends in the tombstoned source project.
     """
     target_entries = (
         await db.execute(
@@ -1014,18 +1044,26 @@ async def _step_knowledge_entries(
     ).scalars().all()
 
     entry_id_map: dict[str, str] = {}
-    skipped_ids: list[str] = []
+    skipped_ids: list[int] = []
+    redirects: dict[int, int] = {}
+    moved: list[KnowledgeEntry] = []
 
     for entry in source_entries:
         key = (entry.entry_type, _normalize_content(entry.content))
         if key in target_keys:
             # Skip — redirect references to target equivalent.
-            entry_id_map[entry.id] = target_keys[key]
+            entry_id_map[str(entry.id)] = str(target_keys[key])
+            redirects[entry.id] = target_keys[key]
             skipped_ids.append(entry.id)
         else:
             # Reassign unique entry.
             entry.project_id = target_id
-            entry_id_map[entry.id] = entry.id  # identity mapping
+            entry_id_map[str(entry.id)] = str(entry.id)  # identity mapping
+            moved.append(entry)
+
+    for entry in moved:
+        if entry.superseded_by is not None and entry.superseded_by in redirects:
+            entry.superseded_by = redirects[entry.superseded_by]
 
     return entry_id_map, skipped_ids
 
@@ -1035,12 +1073,15 @@ async def _step_knowledge_links(
     source_id: str,
     target_id: str,
     entry_id_map: dict[str, str],
-) -> list[str]:
+) -> list[int]:
     """Step 7: Map + dedup + reassign knowledge links.
 
     COMPUTE BEFORE MUTATE: the remapped key is computed FIRST from the
     entry_id_map WITHOUT mutating the ORM row.  Duplicates are
     db.delete()'d.  Only non-duplicate rows are mutated.
+
+    Only the entry side of a link is remapped: a ``page`` endpoint keeps
+    its id even if it happens to look like an entry id.
 
     Returns skipped_link_ids.
     """
@@ -1060,15 +1101,29 @@ async def _step_knowledge_links(
         for lk in target_links
     }
 
-    skipped_link_ids: list[str] = []
+    skipped_link_ids: list[int] = []
     for link in source_links:
         # Compute remapped key BEFORE mutating the row.
-        new_source_id = entry_id_map.get(link.source_id, link.source_id)
-        new_target_id = entry_id_map.get(link.target_id, link.target_id)
+        new_source_id = (
+            entry_id_map.get(link.source_id, link.source_id)
+            if link.source_type == "entry"
+            else link.source_id
+        )
+        new_target_id = (
+            entry_id_map.get(link.target_id, link.target_id)
+            if link.target_type == "entry"
+            else link.target_id
+        )
         key = (link.source_type, new_source_id, link.target_type, new_target_id)
 
-        if key in running_keys:
-            # Duplicate — delete source link, do NOT mutate.
+        if key in running_keys or (
+            link.source_type == "entry"
+            and link.target_type == "entry"
+            and new_source_id == new_target_id
+        ):
+            # Duplicate (or a link that collapsed onto itself because both
+            # ends deduplicated to the same target entry) — delete the
+            # source link, do NOT mutate.
             skipped_link_ids.append(link.id)
             await db.delete(link)
         else:
@@ -1078,6 +1133,67 @@ async def _step_knowledge_links(
             link.target_id = new_target_id
 
     return skipped_link_ids
+
+
+def _remap_id_list(raw: str | None, redirects: dict[str, str]) -> str | None:
+    """Rewrite a JSON list of entry ids, keeping each item's original type.
+
+    Returns the new JSON text, or None when nothing changed or the value is
+    not a JSON list (left untouched rather than guessed at).
+    """
+    if not raw:
+        return None
+    try:
+        items = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(items, list):
+        return None
+    changed = False
+    out: list = []
+    for item in items:
+        if isinstance(item, (int, str)) and not isinstance(item, bool):
+            mapped = redirects.get(str(item))
+            if mapped is not None:
+                out.append(int(mapped) if isinstance(item, int) else mapped)
+                changed = True
+                continue
+        out.append(item)
+    return json.dumps(out) if changed else None
+
+
+async def _step_remap_entry_refs(
+    db: AsyncSession,
+    source_id: str,
+    redirects: dict[str, str],
+) -> None:
+    """Point the source's tickets and agent runs at the target's equivalents
+    of deduplicated knowledge entries (ticket ``knowledge_entry_ids`` and
+    ``context_refs``, agent run ``context_refs``).
+
+    Runs before the straight reassign moves those rows to the target, so
+    their references resolve inside the target project afterwards.
+    Compile manifests and retrieval-audit events are historical provenance
+    and are deliberately left as they were.
+    """
+    if not redirects:
+        return
+    tickets = (
+        await db.execute(select(Ticket).where(Ticket.project_id == source_id))
+    ).scalars().all()
+    for ticket in tickets:
+        for attr in ("knowledge_entry_ids", "context_refs"):
+            new = _remap_id_list(getattr(ticket, attr), redirects)
+            if new is not None:
+                setattr(ticket, attr, new)
+    runs = (
+        await db.execute(select(AgentRun).where(AgentRun.project_id == source_id))
+    ).scalars().all()
+    for run in runs:
+        new = _remap_id_list(run.context_refs, redirects)
+        if new is not None:
+            run.context_refs = new
+    await db.flush()
 
 
 async def _step_straight_reassign(
@@ -1128,6 +1244,91 @@ async def _step_feature_grandfathers(
 
 
 # ── main entry point ───────────────────────────────────────────────
+
+async def _move_group_memberships(
+    db: AsyncSession,
+    *,
+    source_id: str,
+    target_id: str,
+    actor_user_id: str,
+    actor_role: str | None,
+) -> dict:
+    """Move the source's project-group memberships onto the target (or drop
+    them where the group already contains the target), one
+    ``project_group_project_moved`` / ``project_group_project_removed`` org
+    audit row each. Returns ``{"moved": n, "dropped": n}``."""
+    from sessionfs.server.db.models import Organization, ProjectGroup
+    from sessionfs.server.services.project_groups import group_audit_event
+
+    rows = (
+        await db.execute(
+            select(ProjectGroupAccess.group_id, ProjectGroup.org_id)
+            .join(ProjectGroup, ProjectGroup.id == ProjectGroupAccess.group_id)
+            .where(ProjectGroupAccess.project_id == source_id)
+            .order_by(ProjectGroupAccess.group_id)
+        )
+    ).all()
+    if not rows:
+        return {"moved": 0, "dropped": 0}
+    target_groups = set(
+        (
+            await db.execute(
+                select(ProjectGroupAccess.group_id).where(
+                    ProjectGroupAccess.project_id == target_id
+                )
+            )
+        ).scalars().all()
+    )
+    actor = (
+        await db.execute(select(User.email).where(User.id == actor_user_id))
+    ).scalar_one_or_none()
+    org_names = dict(
+        (
+            await db.execute(
+                select(Organization.id, Organization.name).where(
+                    Organization.id.in_({o for _, o in rows})
+                )
+            )
+        ).all()
+    )
+    dropped = [g for g, _ in rows if g in target_groups]
+    if dropped:
+        await db.execute(
+            delete(ProjectGroupAccess).where(
+                ProjectGroupAccess.project_id == source_id,
+                ProjectGroupAccess.group_id.in_(dropped),
+            )
+        )
+    await db.execute(
+        update(ProjectGroupAccess)
+        .where(ProjectGroupAccess.project_id == source_id)
+        .values(project_id=target_id)
+    )
+    for group_id, org_id in rows:
+        was_dropped = group_id in target_groups
+        db.add(
+            group_audit_event(
+                org_id=org_id,
+                org_name=org_names.get(org_id),
+                actor_user_id=actor_user_id,
+                actor_email=actor,
+                actor_role=actor_role,
+                event_type=(
+                    "project_group_project_removed"
+                    if was_dropped
+                    else "project_group_project_moved"
+                ),
+                group_id=group_id,
+                before={"project_id": source_id},
+                after={
+                    "project_id": None if was_dropped else target_id,
+                    "merged_into_project_id": target_id,
+                    "reason": "project_merged",
+                },
+            )
+        )
+    return {"moved": len(rows) - len(dropped), "dropped": len(dropped)}
+
 
 async def merge_projects(
     db: AsyncSession,
@@ -1235,8 +1436,8 @@ async def merge_projects(
 
     persona_renames: list[dict] = []
     slug_renames_list: list[dict] = []
-    skipped_ke_ids: list[str] = []
-    skipped_link_ids: list[str] = []
+    skipped_ke_ids: list[int] = []
+    skipped_link_ids: list[int] = []
     rules_action: str = "none"
 
     try:
@@ -1432,6 +1633,13 @@ async def merge_projects(
             db, source_id, target_id, entry_id_map
         )
 
+        # References to deduplicated entries on rows about to move.
+        await _step_remap_entry_refs(
+            db,
+            source_id,
+            {k: v for k, v in entry_id_map.items() if k != v},
+        )
+
         # Steps 8-15: Remaining tables — straight reassign.
         await _step_straight_reassign(db, source_id, target_id)
         await _step_feature_grandfathers(db, source_id, target_id)
@@ -1448,8 +1656,22 @@ async def merge_projects(
         source.git_remote_normalized = None
 
         # The source project no longer exists as its own org-scoped unit, so
-        # drop its tracker mapping; any links on its tickets go stale.
-        await drop_project_tracker_mapping(db, source_id)
+        # drop its Jira/Confluence mappings; links on its tickets go stale
+        # and its Confluence page links are dropped.
+        await drop_project_integration_mappings(db, source_id)
+
+        # Project groups are org-scoped and the target absorbs the source's
+        # content, so the source's group memberships follow it to the
+        # target. A group already containing the target keeps its existing
+        # row (the composite PK is (group_id, project_id)); the source's
+        # duplicate is dropped rather than colliding. Every moved/dropped
+        # membership gets an org audit row (GitHub #101).
+        group_moves = await _move_group_memberships(
+            db, source_id=source_id, target_id=target_id, actor_user_id=user_id,
+            actor_role="platform_admin" if platform_admin else None,
+        )
+        stats["project_group_memberships_moved"] = group_moves["moved"]
+        stats["project_group_memberships_dropped"] = group_moves["dropped"]
 
         # Step 17: Catch-up UPDATE for concurrent-sync race.
         await db.execute(

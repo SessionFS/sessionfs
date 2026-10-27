@@ -96,6 +96,8 @@ describe('PublishDialog', () => {
     });
     renderDialog();
     expect(screen.getByText(/personal library needs the Starter plan/)).toBeInTheDocument();
+    // An org-only publisher sees both the plan note and the license rule.
+    expect(screen.getByText(/personal library needs the Starter plan/)).toHaveTextContent(/must declare a license/);
     await user.click(screen.getByRole('button', { name: /Publish to/ }));
     expect(screen.getByRole('option', { name: 'Organization: Owned Co' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'Organization: Admin Co' })).toBeInTheDocument();

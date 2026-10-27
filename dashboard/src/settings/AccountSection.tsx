@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { Card, Button, Badge } from '../components/ui';
 import type { RepresentedPersona } from '../api/client';
 import { displayTier } from '../utils/tier';
+import YourGroupsCard from './YourGroupsCard';
 
 export default function AccountSection({ profile, logout }: { profile: any; logout: () => void }) {
   return (
@@ -46,6 +47,9 @@ export default function AccountSection({ profile, logout }: { profile: any; logo
           </div>
         </Card>
       )}
+
+      {/* GitHub #101 — project groups the user has access to */}
+      <YourGroupsCard inOrg={!!profile?.org_id} />
 
       {/* Capture Health card — only visible when at least one watcher is degraded */}
       <CaptureHealthCard captureHealth={profile?.capture_health} />

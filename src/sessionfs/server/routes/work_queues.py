@@ -933,4 +933,10 @@ async def complete_work_queue_step(
             {"error": exc.code, "message": exc.message},
         )
     await db.commit()
+    if result.jira_event_ids:
+        # A forwarded trusted verdict: deliver its Jira outbox row now (the
+        # sweep retries it if this task is lost).
+        from sessionfs.server.services import jira_sync
+
+        jira_sync.schedule_drain(result.jira_event_ids)
     return result.to_dict()

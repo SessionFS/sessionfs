@@ -1,6 +1,6 @@
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
-import { ApiError, type Ticket, type TicketComment, type TicketCreate, type TicketPreview, type TicketWatcher } from '../api/client';
+import { ApiError, type JiraSyncEventsPage, type Ticket, type TicketComment, type TicketCreate, type TicketPreview, type TicketReviewState, type TicketWatcher } from '../api/client';
 
 /**
  * React-Query hooks for v0.10.1 Tickets (Team+).
@@ -79,6 +79,36 @@ export function useTicketComments(
   });
 }
 
+/** Trusted review rounds for a ticket: which comments are verdicts. */
+export function useTicketReviewState(
+  projectId: string | undefined,
+  ticketId: string | undefined,
+) {
+  const { auth } = useAuth();
+  return useQuery<TicketReviewState>({
+    queryKey: ['ticketReviewState', projectId, ticketId],
+    queryFn: () => auth!.client.getTicketReviewState(projectId!, ticketId!),
+    enabled: !!auth && !!projectId && !!ticketId,
+    staleTime: 10_000,
+  });
+}
+
+/** Two-way sync ledger rows for one linked ticket (Jira activity timeline). */
+export function useTicketJiraSyncEvents(
+  projectId: string | undefined,
+  ticketId: string | undefined,
+  /** Only fetch for a Jira-linked ticket; unlinked tickets would 403/409. */
+  enabled = true,
+) {
+  const { auth } = useAuth();
+  return useQuery<JiraSyncEventsPage>({
+    queryKey: ['ticketJiraSyncEvents', projectId, ticketId],
+    queryFn: () => auth!.client.getTicketJiraSyncEvents(projectId!, ticketId!),
+    enabled: !!auth && !!projectId && !!ticketId && enabled,
+    staleTime: 15_000,
+  });
+}
+
 export function useCreateTicket(projectId: string | undefined) {
   const { auth } = useAuth();
   const qc = useQueryClient();
@@ -133,12 +163,29 @@ export function useAddTicketComment(projectId: string | undefined) {
   const { auth } = useAuth();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ ticketId, content }: { ticketId: string; content: string }) =>
-      auth!.client.addTicketComment(projectId!, ticketId, content),
-    onSuccess: (_data, { ticketId }) => {
+    mutationFn: ({
+      ticketId,
+      content,
+      sendToJira,
+    }: {
+      ticketId: string;
+      content: string;
+      sendToJira?: boolean;
+    }) => auth!.client.addTicketComment(projectId!, ticketId, content, sendToJira),
+    onSuccess: (_data, { ticketId, sendToJira }) => {
       void qc.invalidateQueries({
         queryKey: ['ticketComments', projectId, ticketId],
       });
+      // A reviewer's comment may be a trusted verdict.
+      void qc.invalidateQueries({
+        queryKey: ['ticketReviewState', projectId, ticketId],
+      });
+      if (sendToJira) {
+        // The outbound push is queued in the sync ledger; show it right away.
+        void qc.invalidateQueries({
+          queryKey: ['ticketJiraSyncEvents', projectId, ticketId],
+        });
+      }
     },
   });
 }

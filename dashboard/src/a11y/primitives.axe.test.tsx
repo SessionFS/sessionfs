@@ -2,7 +2,7 @@ import { render } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it } from 'vitest';
 import {
-  Alert, Badge, Button, Card, Checkbox, Dialog, DialogFooter, DialogHeader, Dropdown,
+  Alert, Badge, Button, Card, Checkbox, Combobox, Dialog, DialogFooter, DialogHeader, Dropdown,
   IconButton, Input, Kbd, KbdShortcut, PageContainer, PageHeader, Select, Switch, Table,
   TableShell, TabPanel, Tabs, Textarea, Tooltip,
 } from '../components/ui';
@@ -32,6 +32,8 @@ describe('ui primitives have no axe violations', () => {
         <Textarea title="Notes" />
         <Select title="Tier" value="a" onValueChange={() => {}} options={[{ value: 'a', label: 'A' }]} />
         <Select aria-label="Sort" value="a" onValueChange={() => {}} options={[{ value: 'a', label: 'A' }]} />
+        <Combobox title="Project" value="" placeholder="Pick a project" onValueChange={() => {}} options={[{ value: 'a', label: 'A' }]} />
+        <Combobox aria-label="Jira project" value="KEY" selectedLabel="KEY · Key" onValueChange={() => {}} options={[]} />
         <Checkbox label="Remember me" />
         <Switch checked={false} onChange={() => {}} label="Auto sync" />
       </form>,

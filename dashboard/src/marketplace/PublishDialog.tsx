@@ -1,8 +1,6 @@
 import { useId, useState } from 'react';
 import type { MarketplacePackage, PublishTarget } from '../api/client';
-import { Badge } from '../components/Badge';
-import CopyButton from '../components/CopyButton';
-import { Button, Dialog, DialogFooter, DialogHeader, Input, Select } from '../components/ui';
+import { Button, Dialog, DialogFooter, Input, Select } from '../components/ui';
 import { usePublishSkillPackage } from '../hooks/useMarketplace';
 import { useMe } from '../hooks/useMe';
 import { useToast } from '../hooks/useToast';
@@ -21,19 +19,21 @@ import {
 } from './marketplaceErrors';
 import { adminOrgs, canPublishPersonal, isPlatformAdmin } from './moderationState';
 import { ExplanationAlert } from './parts';
+import { CommandWell } from './CommandWell';
+import { VISIBILITY_LABELS } from './capabilities';
+import { ChevronIcon } from './icons';
 
 const CLI_PUBLISH = 'sfs skill publish <dir>';
 
 export function CliPackingNote() {
   return (
-    <div className="rounded-lg border border-border bg-bg-sunken p-3 text-xs leading-5 text-text-secondary">
+    <div className="text-xs leading-5 text-text-tertiary">
       <p>
-        The dashboard uploads a pre-built <span className="font-mono">.tar.gz</span>. Packing a folder is CLI-only:
-        it builds a deterministic archive and runs the same checks as the server first.
+        Have a folder instead? Packing a folder is CLI-only: it builds the archive and runs the same checks as the
+        server first.
       </p>
-      <div className="mt-2 flex items-center gap-2">
-        <code className="rounded bg-bg-elevated px-2 py-1 font-mono text-text-primary">{CLI_PUBLISH}</code>
-        <CopyButton text={CLI_PUBLISH} label="Copy command" />
+      <div className="mt-2">
+        <CommandWell command={CLI_PUBLISH} label="CLI publish command" />
       </div>
     </div>
   );
@@ -76,6 +76,7 @@ export default function PublishDialog({ onClose }: { onClose: () => void }) {
   const [collection, setCollection] = useState('');
   const [problem, setProblem] = useState<Explanation | null>(null);
   const [published, setPublished] = useState<MarketplacePackage | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const selected = target || targetOptions[0]?.value || '';
   const isOrg = selected.startsWith('org:');
@@ -126,20 +127,20 @@ export default function PublishDialog({ onClose }: { onClose: () => void }) {
   const loading = me.isLoading || orgs.isLoading;
 
   return (
-    <Dialog open onClose={onClose} titleId="publish-package-title" className="max-w-2xl max-h-[90vh] overflow-y-auto">
-      <p className="text-2xs font-semibold uppercase tracking-[0.16em] text-brand">Publish to the marketplace</p>
-      <DialogHeader titleId="publish-package-title">Publish a skill package</DialogHeader>
+    <Dialog open onClose={onClose} titleId="publish-package-title" className="!max-w-2xl max-h-[90vh] overflow-y-auto">
+      <h2 id="publish-package-title" className="text-lg font-semibold text-text-primary">Publish a package</h2>
+      <p className="mt-1 mb-5 text-sm text-text-secondary">Upload a packed skill or plugin. It is scanned and checked before it is listed.</p>
 
       {published ? (
         <div className="space-y-4" aria-live="polite">
-          <div className="rounded-lg border border-accent/40 bg-success/6 p-4">
+          <div>
             <p className="text-sm font-semibold text-accent">Published {published.display_name || published.name}</p>
-            <dl className="mt-3 grid gap-x-6 gap-y-2 text-xs sm:grid-cols-2">
-              <div><dt className="text-text-tertiary">Version</dt><dd className="font-mono text-text-primary">{published.version || 'unversioned'} · {published.version_id}</dd></div>
-              <div><dt className="text-text-tertiary">Listing</dt><dd className="font-mono text-text-primary">{published.collection} / {published.namespace}</dd></div>
-              <div className="sm:col-span-2"><dt className="text-text-tertiary">Content hash</dt><dd className="break-all font-mono text-text-primary">{published.content_hash}</dd></div>
+            <dl className="mt-3 divide-y divide-border border-y border-border text-xs">
+              <div className="flex flex-col gap-0.5 py-2 sm:flex-row sm:gap-4"><dt className="text-text-tertiary sm:w-28">Version</dt><dd className="font-mono text-text-primary">{published.version || 'unversioned'} · {published.version_id}</dd></div>
+              <div className="flex flex-col gap-0.5 py-2 sm:flex-row sm:gap-4"><dt className="text-text-tertiary sm:w-28">Listing</dt><dd className="font-mono text-text-primary">{published.collection} / {published.namespace}</dd></div>
+              <div className="flex flex-col gap-0.5 py-2 sm:flex-row sm:gap-4"><dt className="text-text-tertiary sm:w-28">Visibility</dt><dd className="text-text-primary">{VISIBILITY_LABELS[published.visibility] ?? published.visibility} · {published.verification_state}</dd></div>
+              <div className="flex flex-col gap-0.5 py-2 sm:flex-row sm:gap-4"><dt className="text-text-tertiary sm:w-28">Content hash</dt><dd className="min-w-0 break-all font-mono text-text-primary">{published.content_hash}</dd></div>
             </dl>
-            <div className="mt-3 flex gap-2"><Badge label={published.visibility} tint /><Badge label={published.verification_state} tint /></div>
           </div>
           <DialogFooter>
             <Button onClick={onClose}>Done</Button>
@@ -162,7 +163,6 @@ export default function PublishDialog({ onClose }: { onClose: () => void }) {
         </div>
       ) : (
         <form onSubmit={submit} className="space-y-4">
-          <CliPackingNote />
           <div className="flex flex-col gap-1">
             <label htmlFor={fileInputId} className="text-sm font-medium text-text-secondary">Package archive (.tar.gz)</label>
             <input
@@ -170,14 +170,22 @@ export default function PublishDialog({ onClose }: { onClose: () => void }) {
               type="file"
               accept=".tar.gz,.tgz,application/gzip,application/x-gzip"
               onChange={chooseFile}
-              className="block w-full text-sm text-text-secondary file:mr-3 file:rounded-lg file:border file:border-border file:bg-surface file:px-3 file:py-1.5 file:text-xs file:text-text-primary"
+              className="block w-full rounded-lg border border-dashed border-border-strong bg-bg-sunken p-3 text-sm text-text-secondary file:mr-3 file:rounded-md file:border file:border-border file:bg-surface file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-text-primary"
             />
             {file && <p className="text-xs text-text-tertiary">{file.name} · {formatBytes(file.size)}</p>}
           </div>
-          <Select title="Publish to" value={selected} onValueChange={(value) => { setTarget(value); setProblem(null); }} options={targetOptions} />
-          {!personalAllowed && (
-            <p className="text-xs text-text-tertiary">Your personal library needs the Starter plan or above; you can still publish into organizations you administer.</p>
-          )}
+          <Select
+            title="Publish to"
+            value={selected}
+            onValueChange={(value) => { setTarget(value); setProblem(null); }}
+            options={targetOptions}
+            hint={
+              [
+                !personalAllowed && 'Your personal library needs the Starter plan or above; you can still publish into organizations you administer.',
+                isOrg && 'Organization and public listings must declare a license in plugin.json.',
+              ].filter(Boolean).join(' ') || undefined
+            }
+          />
           {isOrg && platformAdmin && (
             <Select
               title="Visibility"
@@ -189,28 +197,39 @@ export default function PublishDialog({ onClose }: { onClose: () => void }) {
               ]}
             />
           )}
-          {isOrg && (
-            <p className="text-xs text-text-tertiary">Organization and public listings must declare a license in plugin.json.</p>
-          )}
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Input
-              title="Namespace"
-              placeholder={serverDefault}
-              value={namespace}
-              onChange={(event) => setNamespace(event.target.value)}
-              error={namespaceError}
-              maxLength={100}
-            />
-            <Input
-              title="Collection"
-              placeholder={serverDefault}
-              value={collection}
-              onChange={(event) => setCollection(event.target.value)}
-              error={collectionError}
-              maxLength={100}
-            />
+          <details
+            className="group"
+            open={detailsOpen || !!namespaceError || !!collectionError}
+            onToggle={(event) => setDetailsOpen((event.currentTarget as HTMLDetailsElement).open)}
+          >
+            <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 rounded text-sm font-medium text-text-secondary hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] [&::-webkit-details-marker]:hidden">
+              <ChevronIcon size={14} className="transition-transform group-open:rotate-90" />
+              Namespace and collection
+              <span className="font-normal text-text-tertiary">(optional)</span>
+            </summary>
+            <div className="mt-3 grid gap-4 sm:grid-cols-2">
+              <Input
+                title="Namespace"
+                placeholder={serverDefault}
+                value={namespace}
+                onChange={(event) => setNamespace(event.target.value)}
+                error={namespaceError}
+                maxLength={100}
+              />
+              <Input
+                title="Collection"
+                placeholder={serverDefault}
+                value={collection}
+                onChange={(event) => setCollection(event.target.value)}
+                error={collectionError}
+                maxLength={100}
+              />
+            </div>
+            <p className="mt-2 text-xs text-text-tertiary">Leave blank to use the default ({serverDefault}).</p>
+          </details>
+          <div className="border-t border-border pt-4">
+            <CliPackingNote />
           </div>
-          <p className="-mt-2 text-xs text-text-tertiary">Leave blank to use the server default ({serverDefault}).</p>
           {problem && <ExplanationAlert explanation={problem} />}
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>

@@ -111,7 +111,11 @@ class HelperAuditSink:
     (one per turn).  A tool call may reference sessions in several projects, so
     the sink resolves the tool's ``session_ids``/``project_ids`` to project ids
     and emits one event per distinct project (a project-less retrieval emits a
-    single event with ``project_id = NULL``).  ``key_source`` and the
+    single event with ``project_id = NULL``).  The per-project fan-out is
+    deliberate: each project's retrieval-audit trail shows exactly what the
+    helper read from it.  Tools therefore put a project in ``project_ids`` only
+    when that project returned rows — an unscoped list over many projects
+    audits just the projects it surfaced data from.  ``key_source`` and the
     ``conversation_id`` are recorded with the sanitized tool arguments — the
     only free-form JSON field on the event (the context has no metadata column).
     The sink only appends events; it never commits — the turn handler owns the
@@ -167,6 +171,15 @@ class HelperAuditSink:
         sanitized_args: dict[str, Any],
         returned_refs: dict[str, Any],
     ) -> None:
+        """Record one tool call: one event per project it read from.
+
+        The project set is ``returned_refs["project_ids"]`` plus the projects
+        of any ``returned_refs["session_ids"]``.  Every event carries the same
+        arguments and refs; the fan-out exists so each project's audit trail
+        lists the retrievals that touched it.  Repeating an identical call in
+        one turn writes nothing (``execute`` answers it from the per-turn
+        cache), so the fan-out is the only source of multiple rows per call.
+        """
         # Defense-in-depth: sanitize again even though callers already did.
         safe_args = sanitize_arguments(sanitized_args or {})
         try:
@@ -260,3 +273,28 @@ class HelperContext:
     # session before emitting ``action_proposed`` (the agent-loop session is
     # read-only for writes).
     pending_actions: list[Any] = field(default_factory=list)
+    # Per-turn dedup cache: (tool_name, sorted-json args) -> the exact text
+    # already returned this turn.  A repeat identical call returns a marker
+    # result and writes NO second retrieval-audit event (GitHub #104 part 1).
+    result_cache: dict[tuple[str, str], str] = field(default_factory=dict)
+    # Ticket ids and (project_id, slug) wiki refs the conversation's tool
+    # results have surfaced as structured refs.  Citation validation in the
+    # turn handler only accepts ``[ticket:…]`` / ``[wiki:…]`` markers for ids
+    # in these sets, and the proposal ``sources`` validation reuses them.  The
+    # turn handler seeds them (and the session/message/doc sets below) from
+    # prior turns' stored structured refs and confirmed helper-action results
+    # — never from marker text inside tool output, which stored content
+    # (a ticket, wiki page or session) could carry.
+    seen_ticket_ids: set[str] = field(default_factory=set)
+    seen_wiki_refs: set[tuple[str, str]] = field(default_factory=set)
+    # Session ids, (session_id, message index) pairs and docs slugs the
+    # conversation's tool results have surfaced — used to validate
+    # ``[session:…]`` (with optional ``msg:…``) and ``[doc:…]`` proposal
+    # sources.  A message index is only meaningful within its own session.
+    seen_session_ids: set[str] = field(default_factory=set)
+    seen_message_refs: set[tuple[str, int]] = field(default_factory=set)
+    seen_doc_slugs: set[str] = field(default_factory=set)
+    # Plan-gate results for this turn, keyed (feature, project_id), and the
+    # caller's tier context they are resolved against (built lazily).
+    feature_cache: dict[tuple[str, str], bool] = field(default_factory=dict)
+    user_context: Any = None

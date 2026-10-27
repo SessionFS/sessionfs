@@ -22,7 +22,9 @@ so no handler can forget them.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -30,16 +32,47 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, and_, case, func, or_, select
 
 from sessionfs.judge.agent_stream import ToolCall, ToolResult, ToolSpec
 from sessionfs.retrieval_audit import sanitize_arguments
 from sessionfs.server.auth.project_access import (
+    accessible_project_ids_subquery,
     list_accessible_projects,
+    project_session_clause,
     user_can_access_project,
     user_can_edit_project,
 )
-from sessionfs.server.db.models import KnowledgeEntry, Organization, Project, Session
+from sessionfs.server.db.models import (
+    AgentPersona,
+    AgentRun,
+    KnowledgeEntry,
+    KnowledgePage,
+    Organization,
+    Project,
+    Session,
+    Ticket,
+    TicketComment,
+    TicketDependency,
+    User,
+    WikiPageRevision,
+)
+from sessionfs.server.services.personas import (
+    list_effective_personas,
+    visible_persona_org_id,
+)
+from sessionfs.server.services.helper_ticket_actions import (
+    MAX_COMMENT_CHARS,
+    MAX_CRITERIA,
+    MAX_CRITERION_CHARS,
+    MAX_DESCRIPTION_CHARS,
+    MAX_TITLE_CHARS,
+    HelperDraftError,
+    check_comment_body,
+    check_reassignment_allowed,
+    check_ticket_draft,
+    resolve_assignee,
+)
 from sessionfs.server.helper.context import HelperContext
 from sessionfs.server.helper.docs import MAX_QUERY_CHARS, MAX_QUERY_TERMS, get_docs_index
 from sessionfs.server.helper.excerpts import (
@@ -56,18 +89,38 @@ from sessionfs.server.helper.excerpts import (
 )
 from sessionfs.server.helper.redaction import RedactionError, redact
 from sessionfs.server.services.session_archive import extract_archive
+from sessionfs.server.services.session_models import (
+    escape_like,
+    model_bucket,
+    model_family_filter,
+    provider_bucket,
+    provider_family_filter,
+)
 from sessionfs.server.services.session_search import (
     search_sessions as search_sessions_service,
+    source_tool_filter_values,
 )
 from sessionfs.server.services.summarizer import SessionSummary, summarize_session
 from sessionfs.server.services.project_settings import check_auto_narrative_gate
-from sessionfs.server.tier_gate import UserContext, build_user_context, resolve_project_plan_tiers
+from sessionfs.server.tier_gate import (
+    UserContext,
+    build_user_context,
+    check_project_feature,
+    resolve_project_plan_tiers,
+)
 
 logger = logging.getLogger("sessionfs.helper")
 
 # Per-call result caps (the design's max counts).
 MAX_SEARCH_RESULTS = 20
-MAX_RECENT_RESULTS = 20
+# A metadata listing (no text query) may page through up to 100 sessions at a
+# time — the trash proposal's cap — so "all sessions that used X" fits a page.
+MAX_RECENT_RESULTS = 100
+MAX_MODEL_FILTER_VALUES = 20
+MAX_MODEL_FILTER_CHARS = 100
+MAX_FILTER_DAYS = 3650
+MAX_MODEL_BUCKETS = 100
+MAX_OFFSET = 100_000
 MAX_RELATED_RESULTS = 10
 MAX_SUMMARIZE_SESSIONS = 5
 MAX_PATH_RESULTS = 20
@@ -90,6 +143,51 @@ MAX_LIST_PROJECTS = 200
 
 # Official-docs search (piece: session helper can search the SessionFS docs).
 MAX_DOC_SEARCH_RESULTS = 8
+
+# Read-tool caps for tickets / wiki / agent runs / personas (GitHub #104 part 1).
+MAX_LIST_TICKETS = 50
+MAX_TICKET_COMMENTS = 10
+MAX_TICKET_COMMENT_CHARS = 1_500
+MAX_LIST_WIKI_PAGES = 200
+MAX_WIKI_BODY_CHARS = 20_000
+MAX_LIST_AGENT_RUNS = 50
+MAX_LIST_PERSONAS = 100
+MAX_AGENT_RUN_FINDINGS = 20
+MAX_TICKET_DESCRIPTION_CHARS = 6_000
+MAX_TICKET_CRITERIA = 30
+MAX_TICKET_CRITERION_CHARS = 400
+# Dependency links shown on one ticket (the rest are counted, not listed).
+MAX_TICKET_DEPENDENCIES = 50
+MAX_RUN_SUMMARY_CHARS = 2_000
+MAX_RUN_SUMMARY_LINE_CHARS = 200
+MAX_FINDING_MESSAGE_CHARS = 500
+# Global cap on one tool result's text, applied in ``execute`` after
+# redaction: twice the wiki body cap, so no single call can eat the whole
+# per-turn retrieval budget (~96k characters).  The per-part ticket caps
+# above are sized so a whole get_ticket result fits within it: description
+# (6k) + 30 capped criteria (~12.1k) + 10 capped comments (~15.8k with their
+# headers) + 50 dependency refs (~1.5k) + header lines (title ≤ 200, project
+# name, status, dates; well under 1k) ≈ 36.4k worst case.
+MAX_TOOL_RESULT_CHARS = 2 * MAX_WIKI_BODY_CHARS
+TRUNCATED_NOTE = "…[truncated]"
+_VALID_TICKET_KINDS = {"issue", "task"}
+_VALID_PRIORITIES = {"critical", "high", "medium", "low"}
+
+# Proposal-source citation markers.  These mirror the turn handler's citation
+# regexes in ``routes/helper.py`` (a circular import keeps them local): a
+# proposal's ``sources`` list must contain only these forms or the literal
+# ``user``, and every non-user source must have been surfaced by a tool result
+# this conversation (tracked in ``ctx.seen_*``).
+_SOURCE_SESSION_RE = re.compile(r"\[session:(?P<id>[A-Za-z0-9_-]+)(?:\s+msg:(?P<idx>\d+))?\]")
+_SOURCE_DOC_RE = re.compile(r"\[doc:(?P<slug>[a-z0-9][a-z0-9/_-]*)(?:#(?P<anchor>[a-z0-9_-]+))?\]")
+_SOURCE_TICKET_RE = re.compile(r"\[ticket:(?P<id>tk_[0-9a-f]{16})\]")
+_SOURCE_WIKI_RE = re.compile(r"\[wiki:(?P<project_id>proj_[0-9a-f]{16})/(?P<slug>[^\]\s]+)\]")
+
+# Plan features the routes gate these read tools on (``check_project_feature``).
+# The wiki read routes have no plan gate, so the wiki tools have none either.
+FEATURE_TICKETS = "agent_tickets"
+FEATURE_AGENT_RUNS = "agent_runs"
+FEATURE_PERSONAS = "agent_personas"
 
 
 class ToolArgumentError(ValueError):
@@ -169,12 +267,67 @@ def _fmt_dt(dt: datetime | str | None) -> str:
     return dt.strftime("%Y-%m-%d")
 
 
+def _age(dt: datetime | str | None, now: datetime | None = None) -> int | None:
+    """Whole days between ``dt`` and now (positive = in the past)."""
+    if dt is None:
+        return None
+    if isinstance(dt, str):
+        try:
+            dt = datetime.fromisoformat(dt.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    else:
+        dt = dt.astimezone(timezone.utc)
+    ref = now or datetime.now(timezone.utc)
+    return (ref - dt).days
+
+
+def _fmt_dt_with_age(dt: datetime | str | None) -> str:
+    """``YYYY-MM-DD (Nd ago)`` — the per-result source date the model cites.
+
+    Results always carry a date so the model can say "as of <date>" and the
+    dashboard can render a relative-age chip.  Same-day results read "today".
+    """
+    if dt is None:
+        return ""
+    date_str = _fmt_dt(dt)
+    age = _age(dt)
+    if age is None:
+        return date_str
+    if age < 1:
+        return f"{date_str} (today)"
+    return f"{date_str} ({age}d ago)"
+
+
+def _cap(text: str, limit: int) -> str:
+    """Cut ``text`` to ``limit`` characters with a visible truncation note."""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + TRUNCATED_NOTE
+
+
+def _loads_json_list(raw: str | None) -> list:
+    """Decode a JSON-list Text column (acceptance_criteria, findings, …)."""
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return []
+    return data if isinstance(data, list) else []
+
+
 def _refs(
     session_ids: list[str] | None = None,
     message_indexes: list[int] | None = None,
     kb_entry_ids: list[int] | None = None,
     project_ids: list[str] | None = None,
     doc_slugs: list[str] | None = None,
+    ticket_ids: list[str] | None = None,
+    wiki_refs: list[tuple[str, str]] | None = None,
+    message_refs: list[tuple[str, int]] | None = None,
 ) -> dict[str, list[Any]]:
     out: dict[str, list[Any]] = {}
     if session_ids:
@@ -187,6 +340,14 @@ def _refs(
         out["project_ids"] = sorted(set(project_ids))
     if doc_slugs:
         out["doc_slugs"] = sorted(set(doc_slugs))
+    if ticket_ids:
+        out["ticket_ids"] = sorted(set(ticket_ids))
+    if wiki_refs:
+        out["wiki_refs"] = sorted({(pid, slug) for pid, slug in wiki_refs})
+    if message_refs:
+        # (session_id, message index) pairs: an index only means something
+        # within its own session.
+        out["message_refs"] = sorted({(sid, idx) for sid, idx in message_refs})
     return out
 
 
@@ -201,22 +362,26 @@ async def _owned_session(ctx: HelperContext, session_id: str) -> Session | None:
     """A session the caller owns, not deleted, and inside ``ctx.scope``."""
     if ctx.scope.session_ids and session_id not in ctx.scope.session_ids:
         return None
-    result = await ctx.db.execute(
-        select(Session).where(
-            Session.id == session_id,
-            Session.user_id == ctx.user.id,
-            Session.is_deleted == False,  # noqa: E712
-        )
+    stmt = select(Session).where(
+        Session.id == session_id,
+        Session.user_id == ctx.user.id,
+        Session.is_deleted == False,  # noqa: E712
     )
-    session = result.scalar_one_or_none()
-    if session is None:
-        return None
-    if (
-        ctx.scope.project_id is not None
-        and session.project_id != ctx.scope.project_id
-    ):
-        return None
-    return session
+    if ctx.scope.project_id is not None:
+        project = (
+            await ctx.db.execute(
+                select(Project).where(Project.id == ctx.scope.project_id)
+            )
+        ).scalar_one_or_none()
+        if project is None:
+            return None
+        # Multi-repo aware: a legacy session with a NULL project_id still
+        # belongs to the scope project when its remote matches the project's
+        # primary or linked remotes (v0.10.22 P2 §3.3 B1).  ``legacy_only``:
+        # a session attributed to ANOTHER project never belongs to this one,
+        # even when it sits on one of this project's remotes.
+        stmt = stmt.where(project_session_clause(project, legacy_only=True))
+    return (await ctx.db.execute(stmt)).scalar_one_or_none()
 
 
 async def _accessible_project(ctx: HelperContext, project_id: str) -> Project | None:
@@ -239,16 +404,313 @@ async def _accessible_project(ctx: HelperContext, project_id: str) -> Project | 
     return project
 
 
-async def _scoped_session_project_ids(ctx: HelperContext) -> set[str]:
-    """Project ids of the caller's own, non-deleted sessions in ``ctx.scope``."""
-    result = await ctx.db.execute(
+async def _session_project_ids(
+    db: Any, user_id: str, session_ids: tuple[str, ...]
+) -> set[str]:
+    """Project ids of the caller's own, non-deleted sessions in ``session_ids``."""
+    result = await db.execute(
         select(Session.project_id).where(
-            Session.id.in_(ctx.scope.session_ids),
-            Session.user_id == ctx.user.id,
+            Session.id.in_(session_ids),
+            Session.user_id == user_id,
             Session.is_deleted == False,  # noqa: E712
         )
     )
     return {pid for (pid,) in result.all() if pid}
+
+
+async def _scoped_session_project_ids(ctx: HelperContext) -> set[str]:
+    """Project ids of the caller's own, non-deleted sessions in ``ctx.scope``."""
+    return await _session_project_ids(ctx.db, ctx.user.id, ctx.scope.session_ids)
+
+
+async def scope_project_ids(db: Any, user_id: str, scope: Any) -> set[str]:
+    """Every project id a turn with ``scope`` may read — the id-set form of
+    :func:`_accessible_projects` (same access predicate, same scope rules).
+
+    The turn handler uses it to validate ``[ticket:…]`` / ``[wiki:…]``
+    citations: a cited ticket or page must live in one of these projects.
+    """
+    if scope.project_id is not None:
+        project = (
+            await db.execute(select(Project).where(Project.id == scope.project_id))
+        ).scalar_one_or_none()
+        if project is None or not await user_can_access_project(db, user_id, project):
+            return set()
+        return {project.id}
+    ids = set(
+        (await db.execute(await accessible_project_ids_subquery(db, user_id))).scalars().all()
+    )
+    if scope.session_ids:
+        ids &= await _session_project_ids(db, user_id, scope.session_ids)
+    return ids
+
+
+async def _accessible_projects(ctx: HelperContext) -> list[Project]:
+    """The projects a tool may reach this turn.  Scope wins; the model never
+    widens it (same rules as ``_list_projects`` / ``_accessible_project``)."""
+    if ctx.scope.project_id is not None:
+        project = await _accessible_project(ctx, ctx.scope.project_id)
+        return [project] if project is not None else []
+    if ctx.scope.session_ids:
+        allowed = await _scoped_session_project_ids(ctx)
+        return [
+            p for p in await list_accessible_projects(ctx.db, ctx.user.id)
+            if p.id in allowed
+        ]
+    return await list_accessible_projects(ctx.db, ctx.user.id)
+
+
+async def _feature_allowed(ctx: HelperContext, feature: str, project: Project) -> bool:
+    """Whether the project's plan includes ``feature`` — the same
+    ``check_project_feature`` gate the matching read route applies.
+
+    Call only for a project the caller can already read.  Cached per turn.
+    """
+    key = (feature, project.id)
+    cached = ctx.feature_cache.get(key)
+    if cached is not None:
+        return cached
+    if ctx.user_context is None:
+        ctx.user_context = await build_user_context(ctx.user, ctx.db)
+    try:
+        await check_project_feature(ctx.user_context, feature, project, ctx.db)
+        allowed = True
+    except HTTPException as exc:
+        if exc.status_code != 403:
+            raise
+        allowed = False
+    ctx.feature_cache[key] = allowed
+    return allowed
+
+
+@dataclass(frozen=True)
+class _SessionFilter:
+    """A project/scope restriction on the caller's own sessions.
+
+    ``clause`` is a SQL predicate over ``Session`` (None = no restriction
+    beyond the caller's own, non-deleted sessions).  ``empty`` means the
+    requested project is not reachable, so nothing may match.
+    """
+
+    clause: ColumnElement[bool] | None = None
+    empty: bool = False
+
+
+def _check_scope_project(ctx: HelperContext, requested: str | None) -> None:
+    """Refuse a project the conversation's scope doesn't cover.
+
+    The session tools used to swap a different requested project for the
+    scope project silently, so "trash project B's sessions" in a project-A
+    conversation proposed A's sessions.  Say so instead.
+    """
+    scope_project = ctx.scope.project_id
+    if scope_project is not None and requested is not None and requested != scope_project:
+        raise ToolArgumentError(
+            f"This conversation is limited to project {scope_project}; start an "
+            f"unscoped conversation to work with project {requested}."
+        )
+
+
+async def _project_session_filter(
+    ctx: HelperContext, project_id: str | None
+) -> _SessionFilter:
+    """Resolve a project filter to a SQL predicate (multi-repo aware).
+
+    The predicate is :func:`project_session_clause` in ``legacy_only`` mode
+    (sessions attributed to the project, plus unattributed legacy sessions
+    on its remotes), ANDed with ``ctx.scope.session_ids`` when set.  It is a
+    clause, never a materialized id list, so a project with thousands of
+    sessions costs one subquery rather than thousands of bind parameters.
+    """
+    _check_scope_project(ctx, project_id)
+    effective = _scope_project(ctx, project_id)
+    scope_clause = (
+        Session.id.in_(ctx.scope.session_ids) if ctx.scope.session_ids else None
+    )
+    if effective is None:
+        return _SessionFilter(clause=scope_clause)
+
+    project = await _accessible_project(ctx, effective)
+    if project is None:
+        return _SessionFilter(empty=True)
+
+    clause = project_session_clause(project, legacy_only=True)
+    if scope_clause is not None:
+        clause = and_(clause, scope_clause)
+    return _SessionFilter(clause=clause)
+
+
+def _string_list_arg(
+    args: dict[str, Any], key: str, *, max_items: int, max_chars: int
+) -> tuple[str, ...]:
+    """A string-or-list-of-strings argument, stripped, deduped (case-insensitive)."""
+    raw = args.get(key)
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list) or not all(isinstance(v, str) for v in raw):
+        raise ToolArgumentError(f"'{key}' must be a string or a list of strings")
+    out: list[str] = []
+    seen: set[str] = set()
+    for value in raw:
+        value = value.strip()
+        if not value or value.lower() in seen:
+            continue
+        if len(value) > max_chars:
+            raise ToolArgumentError(f"each '{key}' value must be at most {max_chars} characters")
+        seen.add(value.lower())
+        out.append(value)
+    if len(out) > max_items:
+        raise ToolArgumentError(f"at most {max_items} '{key}' values")
+    return tuple(out)
+
+
+def _date_arg(args: dict[str, Any], key: str, *, end_of_day: bool) -> datetime | None:
+    """A ``YYYY-MM-DD`` (or ISO datetime) argument as an aware UTC datetime.
+
+    A bare date used as an upper bound means the END of that day, so
+    ``until: 2026-10-01`` includes sessions active on Oct 1.
+    """
+    raw = _optional_str(args, key)
+    if raw is None:
+        return None
+    try:
+        if len(raw) == 10:
+            day = datetime.strptime(raw, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            return day + timedelta(days=1) if end_of_day else day
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise ToolArgumentError(f"'{key}' must be a date like 2026-10-01") from None
+    return _as_utc(dt)
+
+
+@dataclass(frozen=True)
+class _SessionMatch:
+    """Metadata filters on the caller's sessions (model, provider, tool, dates).
+
+    ``models`` / ``providers`` are case-insensitive family matches
+    (``deepseek`` matches ``deepseek-v4-pro``); ``unknown`` selects the
+    unknown bucket.  Dates bound ``updated_at`` (last activity): ``since`` is
+    inclusive, ``until`` exclusive.
+    """
+
+    models: tuple[str, ...] = ()
+    providers: tuple[str, ...] = ()
+    source_tool: str | None = None
+    since: datetime | None = None
+    until: datetime | None = None
+
+    def any(self) -> bool:
+        return bool(
+            self.models or self.providers or self.source_tool or self.since or self.until
+        )
+
+    def clauses(self) -> list[ColumnElement[bool]]:
+        out: list[ColumnElement[bool]] = []
+        if self.models:
+            out.append(model_family_filter(list(self.models)))
+        if self.providers:
+            out.append(provider_family_filter(list(self.providers)))
+        if self.source_tool:
+            out.append(Session.source_tool.in_(source_tool_filter_values(self.source_tool)))
+        if self.since is not None:
+            out.append(Session.updated_at >= self.since)
+        if self.until is not None:
+            out.append(Session.updated_at < self.until)
+        return out
+
+    def describe(self) -> str:
+        parts: list[str] = []
+        if self.models:
+            parts.append("model ~ " + " or ".join(_clean_meta(m) for m in self.models))
+        if self.providers:
+            parts.append(
+                "provider ~ " + " or ".join(_clean_meta(p) for p in self.providers)
+            )
+        if self.source_tool:
+            parts.append(f"tool = {_clean_meta(self.source_tool)}")
+        if self.since is not None:
+            parts.append(f"active since {_fmt_dt(self.since)}")
+        if self.until is not None:
+            parts.append(f"active before {_fmt_dt(self.until)}")
+        # Echoed into the paging note that leads every listing; keep it short
+        # so the note never eats into the listing's character budget.
+        return _clip(", ".join(parts), MAX_MATCH_DESCRIPTION_CHARS)
+
+    def as_params(self) -> dict[str, Any]:
+        """JSON-safe form, stored on a proposal for the audit trail."""
+        out: dict[str, Any] = {}
+        if self.models:
+            out["model"] = list(self.models)
+        if self.providers:
+            out["provider"] = list(self.providers)
+        if self.source_tool:
+            out["source_tool"] = self.source_tool
+        if self.since is not None:
+            out["since"] = self.since.isoformat()
+        if self.until is not None:
+            out["until"] = self.until.isoformat()
+        return out
+
+
+def _session_match(args: dict[str, Any]) -> _SessionMatch:
+    models = _string_list_arg(
+        args, "model", max_items=MAX_MODEL_FILTER_VALUES, max_chars=MAX_MODEL_FILTER_CHARS
+    )
+    providers = _string_list_arg(
+        args, "provider", max_items=MAX_MODEL_FILTER_VALUES, max_chars=MAX_MODEL_FILTER_CHARS
+    )
+    source_tool = _optional_str(args, "source_tool")
+    since = _date_arg(args, "since", end_of_day=False)
+    until = _date_arg(args, "until", end_of_day=True)
+    if args.get("days") is not None:
+        days = _capped_int(args, "days", 30, 1, MAX_FILTER_DAYS)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        since = max(since, cutoff) if since is not None else cutoff
+    if since is not None and until is not None and since >= until:
+        raise ToolArgumentError("'since' must be before 'until'")
+    return _SessionMatch(
+        models=models,
+        providers=providers,
+        source_tool=source_tool,
+        since=since,
+        until=until,
+    )
+
+
+async def _session_where(
+    ctx: HelperContext, project_id: str | None, match: _SessionMatch
+) -> list[ColumnElement[bool]] | None:
+    """Every predicate for "the caller's sessions in scope matching ``match``".
+
+    Ownership, trash state, the conversation scope (and requested project,
+    which can only narrow it) and the metadata filters.  None = the requested
+    project is not reachable, so nothing may match.
+    """
+    session_filter = await _project_session_filter(ctx, project_id)
+    if session_filter.empty:
+        return None
+    where: list[ColumnElement[bool]] = [
+        Session.user_id == ctx.user.id,
+        Session.is_deleted == False,  # noqa: E712
+    ]
+    if session_filter.clause is not None:
+        where.append(session_filter.clause)
+    where.extend(match.clauses())
+    return where
+
+
+def _page_note(shown: int, offset: int, total: int, match: _SessionMatch, noun: str) -> str:
+    """``Showing 21–40 of 57 sessions (model ~ deepseek). Next page: offset=40.``"""
+    filters = match.describe()
+    suffix = f" ({filters})" if filters else ""
+    if shown == 0:
+        return f"Showing 0 of {total} {noun}{suffix}."
+    note = f"Showing {offset + 1}–{offset + shown} of {total} {noun}{suffix}."
+    if offset + shown < total:
+        note += f" Next page: offset={offset + shown}."
+    return note
 
 
 async def _load_archive(ctx: HelperContext, session: Session) -> dict:
@@ -345,14 +807,75 @@ def _indexed_text_mentions(messages_text: str | None, normalized_path: str) -> b
 # ---------------------------------------------------------------------------
 
 
+_META_UNSAFE_RE = re.compile(r"[\x00-\x1f\x7f\[\]]+")
+
+
+def _clean_meta(value: str | None, limit: int = MAX_MODEL_FILTER_CHARS) -> str:
+    """Client-supplied metadata (model id, provider) made safe for one line.
+
+    The values come from the capture manifest, so control characters and
+    brackets (which could forge a ``[session:…]`` marker) become spaces.
+    """
+    return _META_UNSAFE_RE.sub(" ", value or "").strip()[:limit]
+
+
+def _model_name(model_id: str | None, provider: str | None) -> str:
+    """``deepseek-v4-pro (deepseek)`` — or ``unknown`` for the unknown bucket.
+
+    The provider is added only when the id doesn't already name it.
+    """
+    bucket = model_bucket(model_id)
+    if bucket is None:
+        return "unknown"
+    name = _clean_meta(bucket)
+    prov = provider_bucket(provider)
+    if prov is not None and prov.lower() not in bucket.lower():
+        name += f" ({_clean_meta(prov, 50)})"
+    return name
+
+
+def _model_label(model_id: str | None, provider: str | None) -> str:
+    """``model: deepseek-v4-pro`` — the per-session model the helper sees."""
+    return f"model: {_model_name(model_id, provider)}"
+
+
+MAX_LISTING_TITLE_CHARS = 120
+MAX_LISTING_ALIAS_CHARS = 60
+# Room a listing's lines may take: the global result cap minus space for the
+# paging note, so a page is never cut mid-line by ``execute``.
+MAX_MATCH_DESCRIPTION_CHARS = 300
+_LISTING_CHAR_BUDGET = MAX_TOOL_RESULT_CHARS - 1_000
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _title_part(title: str | None, alias: str | None) -> str:
+    out = _clip(title or "(untitled)", MAX_LISTING_TITLE_CHARS)
+    if alias:
+        out += f" ({_clip(alias, MAX_LISTING_ALIAS_CHARS)})"
+    return out
+
+
+def _fit_lines(lines: list[str], budget: int | None = None) -> int:
+    """How many leading ``lines`` fit in ``budget`` characters (at least one)."""
+    if budget is None:
+        budget = _LISTING_CHAR_BUDGET
+    used = 0
+    for i, line in enumerate(lines):
+        used += len(line) + 1
+        if used > budget and i > 0:
+            return i
+    return len(lines)
+
+
 def _format_search_hit(hit: Any, ctx: HelperContext, query: str = "") -> str:
-    line = f"[session:{hit.session_id}] {hit.title or '(untitled)'}"
-    if hit.alias:
-        line += f" ({hit.alias})"
-    line += f" [{hit.source_tool}]"
+    line = f"[session:{hit.session_id}] {_title_part(hit.title, hit.alias)}"
+    line += f" [{hit.source_tool}] {_model_label(hit.model_id, hit.model_provider)}"
     if hit.project_id:
         line += f" [project:{hit.project_id}]"
-    line += f" {_display_name(ctx)} {_fmt_dt(hit.updated_at)}"
+    line += f" {_display_name(ctx)} {_fmt_dt_with_age(hit.updated_at)}"
     # Snippet is built from the REDACTED full text (not the SQL substr), so a
     # secret straddling the window boundary is redacted in place, never cut.
     snippet = redacted_snippet(hit.messages_text or "", query, _redactor(ctx))
@@ -362,13 +885,11 @@ def _format_search_hit(hit: Any, ctx: HelperContext, query: str = "") -> str:
 
 
 def _format_session(session: Session, ctx: HelperContext) -> str:
-    line = f"[session:{session.id}] {session.title or '(untitled)'}"
-    if session.alias:
-        line += f" ({session.alias})"
-    line += f" [{session.source_tool}]"
+    line = f"[session:{session.id}] {_title_part(session.title, session.alias)}"
+    line += f" [{session.source_tool}] {_model_label(session.model_id, session.model_provider)}"
     if session.project_id:
         line += f" [project:{session.project_id}]"
-    line += f" {_display_name(ctx)} {_fmt_dt(session.updated_at)}"
+    line += f" {_display_name(ctx)} {_fmt_dt_with_age(session.updated_at)}"
     return line
 
 
@@ -377,8 +898,9 @@ def _format_summary(session: Session, summary: SessionSummary) -> str:
     meta: list[str] = []
     if summary.tool:
         meta.append(f"tool: {summary.tool}")
-    if summary.model:
-        meta.append(f"model: {summary.model}")
+    # The stored model id first (the one the model filters match), then the
+    # archive's manifest value.
+    meta.append(_model_label(session.model_id or summary.model, session.model_provider))
     if summary.duration_minutes:
         meta.append(f"duration: {summary.duration_minutes} min")
     meta.append(f"messages: {summary.message_count}")
@@ -407,50 +929,226 @@ def _format_summary(session: Session, summary: SessionSummary) -> str:
 
 
 async def _search_sessions(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
-    query = _require_str(args, "query")
-    limit = _capped_int(args, "limit", 20, 1, MAX_SEARCH_RESULTS)
-    project_id = _scope_project(ctx, _optional_str(args, "project_id"))
-    source_tool = _optional_str(args, "source_tool")
+    query = _optional_str(args, "query")
+    match = _session_match(args)
+    if query is None:
+        if not match.any():
+            raise ToolArgumentError(
+                "'query' is required unless model, provider, source_tool, days, "
+                "since or until is given"
+            )
+        # "All sessions that used X": a metadata listing, no text match.
+        return await _list_sessions(ctx, args, match, empty_text="No sessions matched.")
 
-    hits, _total = await search_sessions_service(
+    raw_limit = args.get("limit")
+    if isinstance(raw_limit, int) and not isinstance(raw_limit, bool) and raw_limit > MAX_SEARCH_RESULTS:
+        raise ToolArgumentError(
+            f"'limit' is at most {MAX_SEARCH_RESULTS} with a text query (up to "
+            f"{MAX_RECENT_RESULTS} without one); page with 'offset'"
+        )
+    limit = _capped_int(args, "limit", 20, 1, MAX_SEARCH_RESULTS)
+    offset = _capped_int(args, "offset", 0, 0, MAX_OFFSET)
+    project_id = _optional_str(args, "project_id")
+
+    where = await _session_where(ctx, project_id, match)
+    if where is None:
+        return ToolOutput("No sessions matched.", refs=_refs())
+
+    # ``where`` already carries ownership + trash; the service re-applies those
+    # and adds the full-text match.
+    hits, total = await search_sessions_service(
         ctx.db,
         user_id=ctx.user.id,
         query=query,
-        tool=source_tool,
         limit=limit,
-        project_id=project_id,
-        session_ids=ctx.scope.session_ids or None,
+        offset=offset,
+        project_id=None,
+        session_clause=and_(*where),
         include_text=True,
     )
 
     if not hits:
-        return ToolOutput("No sessions matched.", refs=_refs())
+        text = "No sessions matched."
+        if total:
+            text += " " + _page_note(0, offset, total, match, "matching sessions")
+        return ToolOutput(text, refs=_refs())
+    lines = [_format_search_hit(h, ctx, query) for h in hits]
+    shown = _fit_lines(lines)
+    lines, hits = lines[:shown], hits[:shown]
+    # The paging note leads, so a cut later on can never drop it.
+    if offset or total > len(hits) or match.any():
+        lines.insert(0, _page_note(len(hits), offset, total, match, "matching sessions"))
     return ToolOutput(
-        "\n".join(_format_search_hit(h, ctx, query) for h in hits),
+        "\n".join(lines),
         refs=_refs(session_ids=[h.session_id for h in hits]),
     )
 
 
-async def _list_recent_sessions(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+async def _list_sessions(
+    ctx: HelperContext,
+    args: dict[str, Any],
+    match: _SessionMatch,
+    *,
+    empty_text: str,
+) -> ToolOutput:
+    """Newest-first metadata listing of the caller's in-scope sessions, paged."""
     limit = _capped_int(args, "limit", 20, 1, MAX_RECENT_RESULTS)
-    project_id = _scope_project(ctx, _optional_str(args, "project_id"))
+    offset = _capped_int(args, "offset", 0, 0, MAX_OFFSET)
+    project_id = _optional_str(args, "project_id")
 
-    stmt = select(Session).where(
-        Session.user_id == ctx.user.id,
-        Session.is_deleted == False,  # noqa: E712
+    where = await _session_where(ctx, project_id, match)
+    if where is None:
+        return ToolOutput(empty_text, refs=_refs())
+
+    total = (
+        await ctx.db.execute(select(func.count()).select_from(Session).where(*where))
+    ).scalar_one() or 0
+    stmt = (
+        select(Session)
+        .where(*where)
+        .order_by(Session.updated_at.desc(), Session.id.asc())
+        .offset(offset)
+        .limit(limit)
     )
-    if project_id is not None:
-        stmt = stmt.where(Session.project_id == project_id)
-    if ctx.scope.session_ids:
-        stmt = stmt.where(Session.id.in_(ctx.scope.session_ids))
-    stmt = stmt.order_by(Session.updated_at.desc()).limit(limit)
     sessions = (await ctx.db.execute(stmt)).scalars().all()
 
     if not sessions:
-        return ToolOutput("No recent sessions.", refs=_refs())
+        text = empty_text
+        if total:
+            text += " " + _page_note(0, offset, total, match, "sessions")
+        return ToolOutput(text, refs=_refs())
+    lines = [_format_session(s, ctx) for s in sessions]
+    shown = _fit_lines(lines)
+    lines, sessions = lines[:shown], sessions[:shown]
+    # The paging note leads, so a cut later on can never drop it; ``shown``
+    # (and the refs) count only the lines actually returned.
+    lines.insert(0, _page_note(len(sessions), offset, total, match, "sessions"))
     return ToolOutput(
-        "\n".join(_format_session(s, ctx) for s in sessions),
+        "\n".join(lines),
         refs=_refs(session_ids=[s.id for s in sessions]),
+    )
+
+
+async def _list_recent_sessions(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    return await _list_sessions(
+        ctx, args, _session_match(args), empty_text="No recent sessions."
+    )
+
+
+@dataclass
+class _ModelBucket:
+    """One row of ``list_session_models``: a (model, provider) bucket."""
+
+    model: str | None
+    provider: str | None
+    count: int = 0
+    tools: dict[str, int] = field(default_factory=dict)
+    first: datetime | None = None
+    last: datetime | None = None
+
+
+def _agg_dt(value: Any) -> datetime | None:
+    """An aggregate (min/max) timestamp as aware UTC; SQLite may return text."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return _as_utc(value)
+
+
+async def _list_session_models(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    """Models used across the caller's in-scope sessions, with counts.
+
+    Grouped by (model id, provider) with the same unknown bucket as
+    ``GET /sessions/models``: NULL, "", "unknown" and "<synthetic>" model ids
+    are one "unknown" row whatever their provider.
+    """
+    project_id = _optional_str(args, "project_id")
+    match = _session_match(args)
+    if match.models or match.providers:
+        raise ToolArgumentError(
+            "list_session_models lists every model; filter by model with "
+            "list_recent_sessions or search_sessions"
+        )
+    where = await _session_where(ctx, project_id, match)
+    if where is None:
+        return ToolOutput("No sessions found.", refs=_refs())
+
+    rows = (
+        await ctx.db.execute(
+            select(
+                Session.model_id,
+                Session.model_provider,
+                Session.source_tool,
+                func.count(Session.id),
+                func.min(Session.created_at),
+                func.max(Session.updated_at),
+            )
+            .where(*where)
+            .group_by(Session.model_id, Session.model_provider, Session.source_tool)
+        )
+    ).all()
+
+    buckets: dict[tuple[str | None, str | None], _ModelBucket] = {}
+    for model_id, provider, tool, count, first, last in rows:
+        model = model_bucket(model_id)
+        # One unknown bucket, whatever provider the rows carry.
+        prov = provider_bucket(provider) if model is not None else None
+        key = (model, prov.lower() if prov else None)
+        bucket = buckets.setdefault(key, _ModelBucket(model=model, provider=prov))
+        bucket.count += count
+        bucket.tools[tool] = bucket.tools.get(tool, 0) + count
+        first_dt, last_dt = _agg_dt(first), _agg_dt(last)
+        if first_dt is not None and (bucket.first is None or first_dt < bucket.first):
+            bucket.first = first_dt
+        if last_dt is not None and (bucket.last is None or last_dt > bucket.last):
+            bucket.last = last_dt
+
+    if not buckets:
+        filters = match.describe()
+        return ToolOutput(
+            "No sessions found" + (f" ({filters})." if filters else "."), refs=_refs()
+        )
+
+    ordered = sorted(
+        buckets.values(),
+        key=lambda b: (b.model is None, -b.count, (b.model or "").lower(), b.provider or ""),
+    )
+    total_sessions = sum(b.count for b in ordered)
+    filters = match.describe()
+    lines = [
+        f"{len(ordered)} model bucket(s) across {total_sessions} session(s)"
+        + (f" ({filters})" if filters else "")
+        + ", most used first. Model ids are reported by the capturing tool."
+    ]
+    for b in ordered[:MAX_MODEL_BUCKETS]:
+        if b.model is None:
+            name = "unknown (no model recorded)"
+        else:
+            name = _clean_meta(b.model)
+            if b.provider:
+                name += f" (provider: {_clean_meta(b.provider, 50)})"
+        tools = ", ".join(
+            f"{_clean_meta(t, 50)} {n}"
+            for t, n in sorted(b.tools.items(), key=lambda kv: (-kv[1], kv[0]))
+        )
+        lines.append(
+            f"- {name} — {b.count} session(s); tools: {tools}; "
+            f"first {_fmt_dt(b.first)}, last {_fmt_dt_with_age(b.last)}"
+        )
+    if len(ordered) > MAX_MODEL_BUCKETS:
+        lines.append(f"[showing {MAX_MODEL_BUCKETS} of {len(ordered)} model buckets]")
+    lines.append(
+        "To list the sessions, pass model (or provider) to list_recent_sessions "
+        "or search_sessions; \"unknown\" selects the unknown bucket."
+    )
+    effective = _scope_project(ctx, project_id)
+    return ToolOutput(
+        "\n".join(lines),
+        refs=_refs(project_ids=[effective] if effective else None),
     )
 
 
@@ -460,7 +1158,11 @@ async def _find_related_sessions(ctx: HelperContext, args: dict[str, Any]) -> To
     if not file_path and not error_text:
         raise ToolArgumentError("provide 'file_path' or 'error_text'")
     limit = _capped_int(args, "limit", 10, 1, MAX_RELATED_RESULTS)
-    project_id = _scope_project(ctx, _optional_str(args, "project_id"))
+    project_id = _optional_str(args, "project_id")
+
+    session_filter = await _project_session_filter(ctx, project_id)
+    if session_filter.empty:
+        return ToolOutput("No related sessions found.", refs=_refs())
 
     # No server-side related-sessions index exists; map to full-text search
     # with the path/error text as the query.
@@ -470,8 +1172,8 @@ async def _find_related_sessions(ctx: HelperContext, args: dict[str, Any]) -> To
         user_id=ctx.user.id,
         query=query,
         limit=limit,
-        project_id=project_id,
-        session_ids=ctx.scope.session_ids or None,
+        project_id=None,
+        session_clause=session_filter.clause,
         include_text=True,
     )
 
@@ -549,18 +1251,14 @@ async def _get_session_excerpts(ctx: HelperContext, args: dict[str, Any]) -> Too
         refs=_refs(
             session_ids=[session.id],
             message_indexes=[e.index for e in excerpts],
+            message_refs=[(session.id, e.index) for e in excerpts],
         ),
     )
 
 
-def _escape_like(query: str) -> str:
-    """Escape LIKE wildcards so a query of ``%`` or ``_`` matches literally.
-
-    The ``escape="\\"`` argument on ``ilike`` tells the DB to treat a
-    backslash as the escape character; here we backslash-escape every
-    ``\\``, ``%`` and ``_`` in the user's query.
-    """
-    return query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+# LIKE-wildcard escaping lives with the session model filters (which use it
+# too); pair it with ``escape="\\"`` on ``ilike``.
+_escape_like = escape_like
 
 
 async def _search_project_knowledge(
@@ -574,6 +1272,15 @@ async def _search_project_knowledge(
     if project is None:
         return ToolOutput("Project not found.", refs=_refs())
 
+    # Freshness first: current > aging > stale, then confidence, then newest.
+    # Superseded/dismissed rows are excluded above, so the only freshness
+    # classes left are current/aging/stale (any unknown value sorts last).
+    freshness_order = case(
+        (KnowledgeEntry.freshness_class == "current", 0),
+        (KnowledgeEntry.freshness_class == "aging", 1),
+        (KnowledgeEntry.freshness_class == "stale", 2),
+        else_=3,
+    )
     stmt = (
         select(KnowledgeEntry)
         .where(
@@ -583,7 +1290,11 @@ async def _search_project_knowledge(
             KnowledgeEntry.claim_class != "note",
             KnowledgeEntry.content.ilike(f"%{_escape_like(query)}%", escape="\\"),
         )
-        .order_by(KnowledgeEntry.confidence.desc(), KnowledgeEntry.created_at.desc())
+        .order_by(
+            freshness_order,
+            KnowledgeEntry.confidence.desc(),
+            KnowledgeEntry.created_at.desc(),
+        )
         .limit(limit)
     )
     entries = (await ctx.db.execute(stmt)).scalars().all()
@@ -592,7 +1303,9 @@ async def _search_project_knowledge(
         return ToolOutput("No knowledge entries matched.", refs=_refs())
 
     lines = [
-        f"[kb:{e.id}] ({e.claim_class}) {e.content}" for e in entries
+        f"[kb:{e.id}] ({e.freshness_class}, {e.claim_class}, "
+        f"as of {_fmt_dt_with_age(e.compiled_at or e.created_at)}) {e.content}"
+        for e in entries
     ]
     return ToolOutput(
         "\n".join(lines),
@@ -628,6 +1341,7 @@ async def _summarize_sessions(ctx: HelperContext, args: dict[str, Any]) -> ToolO
     blocks: list[str] = []
     found: list[str] = []
     indexes: list[int] = []
+    pairs: list[tuple[str, int]] = []
     for session_id in session_ids:
         session = await _owned_session(ctx, session_id)
         if session is None:
@@ -667,12 +1381,13 @@ async def _summarize_sessions(ctx: HelperContext, args: dict[str, Any]) -> ToolO
                 f"  [session:{session.id} msg:{e.index}] {e.text}" for e in excerpts
             )
             indexes.extend(e.index for e in excerpts)
+            pairs.extend((session.id, e.index) for e in excerpts)
         blocks.append(block)
         found.append(session.id)
 
     return ToolOutput(
         "\n\n".join(blocks),
-        refs=_refs(session_ids=found, message_indexes=indexes),
+        refs=_refs(session_ids=found, message_indexes=indexes, message_refs=pairs),
     )
 
 
@@ -681,26 +1396,16 @@ async def _sessions_touching_path(
 ) -> ToolOutput:
     path = _require_str(args, "path")
     limit = _capped_int(args, "limit", 20, 1, MAX_PATH_RESULTS)
-    project_id = _scope_project(ctx, _optional_str(args, "project_id"))
+    project_id = _optional_str(args, "project_id")
     normalized = normalize_path(path)
+    match = _session_match(args)
 
-    stmt = select(Session).where(
-        Session.user_id == ctx.user.id,
-        Session.is_deleted == False,  # noqa: E712
-    )
-    if project_id is not None:
-        stmt = stmt.where(Session.project_id == project_id)
-    if ctx.scope.session_ids:
-        stmt = stmt.where(Session.id.in_(ctx.scope.session_ids))
+    where = await _session_where(ctx, project_id, match)
+    if where is None:
+        return ToolOutput("No sessions touched that path.", refs=_refs())
 
-    count_stmt = select(func.count()).select_from(Session).where(
-        Session.user_id == ctx.user.id,
-        Session.is_deleted == False,  # noqa: E712
-    )
-    if project_id is not None:
-        count_stmt = count_stmt.where(Session.project_id == project_id)
-    if ctx.scope.session_ids:
-        count_stmt = count_stmt.where(Session.id.in_(ctx.scope.session_ids))
+    stmt = select(Session).where(*where)
+    count_stmt = select(func.count()).select_from(Session).where(*where)
     total = (await ctx.db.execute(count_stmt)).scalar_one() or 0
 
     # Cost bound: only the 200 most recent sessions are candidates.
@@ -806,18 +1511,7 @@ async def _list_projects(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput
     can never widen the scope); otherwise the full accessible list, capped at
     ``MAX_LIST_PROJECTS`` with a truncation note.
     """
-    if ctx.scope.project_id is not None:
-        project = await _accessible_project(ctx, ctx.scope.project_id)
-        projects = [project] if project is not None else []
-    elif ctx.scope.session_ids:
-        # A session-scoped conversation only reaches the projects its
-        # sessions belong to (same rule as ``_accessible_project``).
-        allowed = await _scoped_session_project_ids(ctx)
-        projects = [
-            p for p in await list_accessible_projects(ctx.db, ctx.user.id) if p.id in allowed
-        ]
-    else:
-        projects = await list_accessible_projects(ctx.db, ctx.user.id)
+    projects = await _accessible_projects(ctx)
 
     truncated = len(projects) > MAX_LIST_PROJECTS
     shown = projects[:MAX_LIST_PROJECTS]
@@ -879,9 +1573,13 @@ def _format_action_targets(targets: list[dict[str, Any]]) -> str:
     lines: list[str] = []
     for t in targets:
         if t["change"] == "will_change":
-            lines.append(
-                f"- [{t['id']}] {t['name']}: {t['before']} -> {t['after']} (will change)"
-            )
+            if "before" in t and "after" in t:
+                lines.append(
+                    f"- [{t['id']}] {t['name']}: {t['before']} -> {t['after']} (will change)"
+                )
+            else:
+                # Create/comment kinds have no meaningful before/after state.
+                lines.append(f"- [{t['id']}] {t['name']} (will change)")
         elif t["change"] == "unchanged":
             lines.append(f"- [{t['id']}] {t['name']}: already {t['after']} (unchanged)")
         else:
@@ -913,13 +1611,16 @@ def _propose_action(
     params: dict[str, Any],
     targets: list[dict[str, Any]],
     summary: str,
+    refs: dict[str, Any] | None = None,
 ) -> ToolOutput:
     """Queue a pending write-action proposal; never mutates anything.
 
     The proposal is only queued here.  The turn handler persists it (and only
     then emits ``action_proposed``) once ``execute`` returns a successful
     result, so a call that fails redaction or the audit write never leaves a
-    row or a card behind.
+    row or a card behind.  ``refs`` is the audit fan-out (project/ticket ids
+    the handler actually read); callers pass it for kinds whose params don't
+    use the historical ``project_ids``/``session_ids`` keys.
     """
     action_id = _new_action_id()
     created_at = _proposal_time()
@@ -943,7 +1644,9 @@ def _propose_action(
     )
     return ToolOutput(
         text,
-        refs=_refs(
+        refs=refs
+        if refs is not None
+        else _refs(
             project_ids=params.get("project_ids"),
             session_ids=params.get("session_ids"),
         ),
@@ -1042,9 +1745,14 @@ async def _set_project_auto_narrative(
             will_change.append(pid)
 
     if not will_change:
+        # Audit only the projects the caller could actually read here.
         return ToolOutput(
             "Nothing to change.\n" + _format_action_targets(targets),
-            refs=_refs(project_ids=project_ids),
+            refs=_refs(
+                project_ids=[
+                    t["id"] for t in targets if t.get("reason") != "not_accessible"
+                ]
+            ),
         )
 
     summary = f"Set auto-narrative {'on' if enabled else 'off'} for {len(will_change)} project(s)"
@@ -1057,9 +1765,81 @@ async def _set_project_auto_narrative(
     )
 
 
+async def _resolve_trash_filter(
+    ctx: HelperContext, match: _SessionMatch, project_id: str | None
+) -> tuple[list[str], int]:
+    """Resolve trash filters to concrete session ids, server-side.
+
+    Returns ``(ids, total)``: at most ``MAX_ACTION_TARGETS`` ids of the
+    caller's own, active, in-scope sessions matching the filters, newest
+    activity first (id breaks ties) so the same filters always propose the
+    same batch, plus the total match count.  A ``project_id`` outside the
+    conversation's scope is refused (:func:`_check_scope_project`).
+    """
+    where = await _session_where(ctx, project_id, match)
+    if where is None:
+        return [], 0
+    total = (
+        await ctx.db.execute(select(func.count()).select_from(Session).where(*where))
+    ).scalar_one() or 0
+    ids = list(
+        (
+            await ctx.db.execute(
+                select(Session.id)
+                .where(*where)
+                .order_by(Session.updated_at.desc(), Session.id.asc())
+                .limit(MAX_ACTION_TARGETS)
+            )
+        ).scalars().all()
+    )
+    return ids, total
+
+
 async def _trash_sessions(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
-    session_ids = _session_ids_arg(args)
+    has_ids = args.get("session_ids") is not None
+    # Decided AFTER parsing: blank values (" ", [""], an empty date) parse to
+    # nothing and must not turn into "trash my 100 newest sessions".
+    match = _session_match(args)
+    project_id = _optional_str(args, "project_id")
+    has_filter = match.any() or project_id is not None
+    if has_ids and has_filter:
+        raise ToolArgumentError("pass either 'session_ids' or filters, not both")
+    if not has_ids and not has_filter:
+        raise ToolArgumentError(
+            "pass 'session_ids', or at least one filter (model, provider, "
+            "project_id, source_tool, days, since, until)"
+        )
     reason = _optional_str(args, "reason")
+
+    filter_note = ""
+    match_params: dict[str, Any] | None = None
+    if has_ids:
+        session_ids = _session_ids_arg(args)
+    else:
+        session_ids, total = await _resolve_trash_filter(ctx, match, project_id)
+        # A requested project equals the scope project here (anything else was
+        # refused); a scoped conversation resolves against its project.
+        project_id = _scope_project(ctx, project_id)
+        described = match.describe()
+        if project_id:
+            described = ", ".join(p for p in (f"project = {project_id}", described) if p)
+        if not session_ids:
+            return ToolOutput(
+                f"No sessions match ({described}); nothing to propose.", refs=_refs()
+            )
+        match_params = match.as_params()
+        if project_id:
+            match_params["project_id"] = project_id
+        match_params["matched"] = total
+        if total > len(session_ids):
+            filter_note = (
+                f"{total} sessions match ({described}); this proposal covers the "
+                f"first {len(session_ids)} (most recently active first). After the "
+                "user confirms, call trash_sessions again with the same filters to "
+                "propose the next batch.\n"
+            )
+        else:
+            filter_note = f"{total} session(s) match ({described}).\n"
 
     targets: list[dict[str, Any]] = []
     will_change: list[str] = []
@@ -1077,14 +1857,15 @@ async def _trash_sessions(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
                 {"id": sid, "name": _session_name(session), "change": "skipped", "reason": "already_trashed"}
             )
             continue
-        if ctx.scope.session_ids and sid not in ctx.scope.session_ids:
+        # Same scope rule as every read tool (``_owned_session``: scope
+        # session ids, and the scope project's sessions incl. unattributed
+        # legacy ones on its remotes).  An out-of-scope session is named by
+        # id only — nothing from outside the scope reaches the model.
+        if (ctx.scope.session_ids or ctx.scope.project_id is not None) and (
+            await _owned_session(ctx, sid)
+        ) is None:
             targets.append(
-                {"id": sid, "name": _session_name(session), "change": "skipped", "reason": "not_in_scope"}
-            )
-            continue
-        if ctx.scope.project_id is not None and session.project_id != ctx.scope.project_id:
-            targets.append(
-                {"id": sid, "name": _session_name(session), "change": "skipped", "reason": "not_in_scope"}
+                {"id": sid, "name": sid, "change": "skipped", "reason": "not_in_scope"}
             )
             continue
         targets.append(
@@ -1095,6 +1876,7 @@ async def _trash_sessions(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
                 "before": "active",
                 "after": "trashed",
                 "tool": session.source_tool,
+                "model": _model_name(session.model_id, session.model_provider),
                 "created_at": (
                     _as_utc(session.created_at).isoformat() if session.created_at else None
                 ),
@@ -1103,22 +1885,326 @@ async def _trash_sessions(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
         will_change.append(sid)
 
     if not will_change:
+        # Audit only the caller's own, in-scope sessions.
         return ToolOutput(
-            "Nothing to change.\n" + _format_action_targets(targets),
-            refs=_refs(session_ids=session_ids),
+            filter_note + "Nothing to change.\n" + _format_action_targets(targets),
+            refs=_refs(
+                session_ids=[
+                    t["id"]
+                    for t in targets
+                    if t.get("reason") not in ("not_owned", "not_in_scope")
+                ]
+            ),
         )
 
     summary = f"Move {len(will_change)} session(s) to Trash"
     params: dict[str, Any] = {"session_ids": will_change}
+    if match_params is not None:
+        # The filters the ids were resolved from — audit context only; confirm
+        # acts on ``session_ids`` exactly.
+        params["match"] = match_params
+        if match_params["matched"] > len(will_change):
+            summary += f" (first {len(will_change)} of {match_params['matched']} matching)"
     if reason:
         # Model-written free text: stored and audited, so redacted first.
         params["reason"] = redact(reason, ctx.dlp_policy)[:500]
-    return _propose_action(
+    out = _propose_action(
         ctx,
         kind="trash_sessions",
         params=params,
         targets=targets,
         summary=summary,
+    )
+    return ToolOutput(filter_note + out.text, refs=out.refs) if filter_note else out
+
+
+# ---------------------------------------------------------------------------
+# Ticket write-action tools (GitHub #104 part 2): propose only
+# ---------------------------------------------------------------------------
+
+
+# Fields a proposal's ``sources`` object may map to citations.
+_SOURCE_FIELDS = (
+    "title",
+    "description",
+    "acceptance_criteria",
+    "priority",
+    "kind",
+    "assignee_persona",
+    "body",
+)
+
+
+def _not_seen(src: str) -> ToolArgumentError:
+    return ToolArgumentError(f"source {src!r} was not returned by a tool this conversation")
+
+
+def _validate_source_list(
+    ctx: HelperContext, field: str, raw: list[Any]
+) -> list[str]:
+    """Validate one field's citations; every marker must have been seen.
+
+    "Seen" means a tool returned that exact row as a structured ref
+    (``ctx.seen_*``) — never that the marker text appeared somewhere in a
+    tool result's content, which a ticket, wiki page or session could carry.
+    A ``[session:<id> msg:<n>]`` source needs that exact (session, message)
+    pair; a message index surfaced for another session doesn't count.
+    """
+    if not all(isinstance(r, str) and r.strip() for r in raw):
+        raise ToolArgumentError(
+            f"every source for {field!r} must be a non-empty string"
+        )
+    cleaned: list[str] = []
+    for item in raw:
+        src = item.strip()
+        if src == "user":
+            cleaned.append(src)
+            continue
+        m = _SOURCE_TICKET_RE.fullmatch(src)
+        if m:
+            if m.group("id") not in ctx.seen_ticket_ids:
+                raise _not_seen(src)
+            cleaned.append(src)
+            continue
+        m = _SOURCE_WIKI_RE.fullmatch(src)
+        if m:
+            if (m.group("project_id"), m.group("slug")) not in ctx.seen_wiki_refs:
+                raise _not_seen(src)
+            cleaned.append(src)
+            continue
+        m = _SOURCE_SESSION_RE.fullmatch(src)
+        if m:
+            sid = m.group("id")
+            if m.group("idx") is not None:
+                if (sid, int(m.group("idx"))) not in ctx.seen_message_refs:
+                    raise _not_seen(src)
+            elif sid not in ctx.seen_session_ids:
+                raise _not_seen(src)
+            cleaned.append(src)
+            continue
+        m = _SOURCE_DOC_RE.fullmatch(src)
+        if m:
+            if m.group("slug") not in ctx.seen_doc_slugs:
+                raise _not_seen(src)
+            cleaned.append(src)
+            continue
+        raise ToolArgumentError(f"unrecognized source {src!r}")
+    return cleaned
+
+
+def _validate_sources(
+    ctx: HelperContext,
+    sources: Any,
+    *,
+    required_fields: tuple[str, ...],
+) -> dict[str, list[str]]:
+    """Reject a proposal that leaves a content field unsourced or cites
+    something the conversation's tool results never surfaced.
+
+    ``sources`` maps each field to the citations that back it ("the
+    conversation citations each field came from").  Every required field must
+    carry at least one citation; every citation must be one of the markers
+    (``[session:…]``, ``[ticket:…]``, ``[wiki:…]``, ``[doc:…]``) or ``user``,
+    and a marker's id/ref must be in the conversation's seen sets: the
+    structured refs ``execute`` records as results are delivered, seeded by
+    the turn handler from prior turns' stored tool refs and confirmed
+    helper-action results.
+    """
+    if not isinstance(sources, dict):
+        raise ToolArgumentError(
+            "'sources' must be an object mapping each field to a list of citations"
+        )
+    cleaned: dict[str, list[str]] = {}
+    for fname in required_fields:
+        raw = sources.get(fname)
+        if not isinstance(raw, list) or not raw:
+            raise ToolArgumentError(f"field {fname!r} needs at least one source")
+        cleaned[fname] = _validate_source_list(ctx, fname, raw)
+    for fname, raw in sources.items():
+        if fname in cleaned:
+            continue
+        if fname not in _SOURCE_FIELDS:
+            raise ToolArgumentError(f"unknown source field {fname!r}")
+        if not isinstance(raw, list) or not raw:
+            raise ToolArgumentError(f"field {fname!r} needs at least one source")
+        cleaned[fname] = _validate_source_list(ctx, fname, raw)
+    return cleaned
+
+
+async def _propose_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    project_id = _require_str(args, "project_id")
+    title = args.get("title")
+    if not isinstance(title, str):
+        raise ToolArgumentError("'title' is required")
+    assignee = _optional_str(args, "assignee_persona")
+    # Same shape rules as the tickets route (``TicketCreate``) plus the
+    # helper's write limits; an over-length draft is refused, not truncated.
+    try:
+        draft = check_ticket_draft(
+            title=title,
+            description=args.get("description") or "",
+            acceptance_criteria=args.get("acceptance_criteria") or [],
+            priority=args.get("priority") or "medium",
+            kind=args.get("kind") or "task",
+            assigned_to=assignee,
+        )
+    except HelperDraftError as exc:
+        raise ToolArgumentError(str(exc)) from None
+    sources = _validate_sources(
+        ctx,
+        args.get("sources"),
+        required_fields=("title", "description", "acceptance_criteria"),
+    )
+
+    project = await _accessible_project(ctx, project_id)
+    if project is None:
+        return ToolOutput("Project not found.", refs=_refs())
+    if not await _feature_allowed(ctx, FEATURE_TICKETS, project):
+        return ToolOutput(
+            "Tickets are not available on this project's plan.", refs=_refs()
+        )
+
+    # A drafted assignee resolves exactly like propose_assignment: a persona
+    # name, or a human org member to the persona representing them.
+    assigned_to: str | None = None
+    if assignee:
+        try:
+            assigned_to = await resolve_assignee(
+                ctx.db, project=project, user_id=ctx.user.id, name=assignee
+            )
+        except HelperDraftError as exc:
+            raise ToolArgumentError(str(exc)) from None
+
+    # The model draft is stored redacted — it is user-authored free text drawn
+    # from the caller's own data.
+    params: dict[str, Any] = {
+        "project_id": project_id,
+        "title": redact(draft.title, ctx.dlp_policy),
+        "description": redact(draft.description, ctx.dlp_policy),
+        "acceptance_criteria": [redact(c, ctx.dlp_policy) for c in draft.acceptance_criteria],
+        "priority": draft.priority,
+        "kind": draft.kind,
+        "assigned_to": assigned_to,
+        "sources": sources,
+    }
+    summary = redact(f"Create {_article(draft.kind)} {draft.kind} ticket in {project.name}", ctx.dlp_policy)
+    return _propose_action(
+        ctx,
+        kind="create_ticket",
+        params=params,
+        targets=[{"id": project_id, "name": project.name, "change": "will_change"}],
+        summary=summary,
+        refs=_refs(project_ids=[project_id]),
+    )
+
+
+def _article(word: str) -> str:
+    return "an" if word[:1].lower() in "aeiou" else "a"
+
+
+async def _propose_assignment(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    ticket_id = _require_str(args, "ticket_id")
+    persona_name = _require_str(args, "persona_name")
+
+    ticket = (
+        await ctx.db.execute(select(Ticket).where(Ticket.id == ticket_id))
+    ).scalar_one_or_none()
+    if ticket is None:
+        return ToolOutput("Ticket not found.", refs=_refs())
+    project = await _accessible_project(ctx, ticket.project_id)
+    if project is None or not await _feature_allowed(ctx, FEATURE_TICKETS, project):
+        return ToolOutput("Ticket not found.", refs=_refs())
+
+    # Same rules as the assignment route (ticket creator or project admin; a
+    # non-editor can't reassign once the ticket is past suggested/open or a
+    # work queue holds it).  Checked again at confirm time.
+    refusal = await check_reassignment_allowed(
+        ctx.db, ticket=ticket, project=project, user_id=ctx.user.id
+    )
+    if refusal is not None:
+        return ToolOutput(
+            f"You cannot assign this ticket: {refusal}",
+            refs=_refs(project_ids=[ticket.project_id], ticket_ids=[ticket.id]),
+        )
+
+    try:
+        canonical = await resolve_assignee(
+            ctx.db, project=project, user_id=ctx.user.id, name=persona_name
+        )
+    except HelperDraftError as exc:
+        raise ToolArgumentError(str(exc)) from None
+    before = ticket.assigned_to
+    if before == canonical:
+        return ToolOutput(
+            "Nothing to change: the ticket is already assigned to "
+            f"{canonical}.\n"
+            + _format_action_targets(
+                [{"id": ticket.id, "name": ticket.title, "change": "unchanged", "before": before, "after": canonical}]
+            ),
+            refs=_refs(project_ids=[ticket.project_id], ticket_ids=[ticket.id]),
+        )
+
+    summary = redact(f"Assign {ticket.title} to {canonical}", ctx.dlp_policy)
+    return _propose_action(
+        ctx,
+        kind="assign_ticket",
+        # ``project_id`` pins the ticket's project: confirm refuses if the
+        # ticket has moved since.
+        params={
+            "ticket_id": ticket.id,
+            "project_id": ticket.project_id,
+            "assigned_to": canonical,
+        },
+        targets=[
+            {
+                "id": ticket.id,
+                "name": ticket.title,
+                "change": "will_change",
+                "before": before,
+                "after": canonical,
+            }
+        ],
+        summary=summary,
+        refs=_refs(project_ids=[ticket.project_id], ticket_ids=[ticket.id]),
+    )
+
+
+async def _propose_comment(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    ticket_id = _require_str(args, "ticket_id")
+    # Same shape rules as the comment route (strip, required, 10,000 chars)
+    # and never a review verdict; an over-length draft is refused.
+    try:
+        body = check_comment_body(args.get("body"))
+    except HelperDraftError as exc:
+        raise ToolArgumentError(str(exc)) from None
+    sources = _validate_sources(
+        ctx, args.get("sources"), required_fields=("body",)
+    )
+
+    ticket = (
+        await ctx.db.execute(select(Ticket).where(Ticket.id == ticket_id))
+    ).scalar_one_or_none()
+    if ticket is None:
+        return ToolOutput("Ticket not found.", refs=_refs())
+    project = await _accessible_project(ctx, ticket.project_id)
+    if project is None or not await _feature_allowed(ctx, FEATURE_TICKETS, project):
+        return ToolOutput("Ticket not found.", refs=_refs())
+
+    params: dict[str, Any] = {
+        "ticket_id": ticket.id,
+        # Pins the ticket's project: confirm refuses if the ticket has moved.
+        "project_id": ticket.project_id,
+        "body": redact(body, ctx.dlp_policy),
+        "sources": sources,
+    }
+    summary = redact(f"Comment on {ticket.title}", ctx.dlp_policy)
+    return _propose_action(
+        ctx,
+        kind="comment_ticket",
+        params=params,
+        targets=[{"id": ticket.id, "name": ticket.title, "change": "will_change"}],
+        summary=summary,
+        refs=_refs(project_ids=[ticket.project_id], ticket_ids=[ticket.id]),
     )
 
 
@@ -1183,8 +2269,608 @@ async def _get_sessionfs_doc(
 
 
 # ---------------------------------------------------------------------------
+# Read tools: tickets, wiki pages, agent runs, personas (GitHub #104 part 1)
+# ---------------------------------------------------------------------------
+
+
+def _format_ticket_line(t: Ticket, project_name: str) -> str:
+    assignee = t.assigned_to or "unassigned"
+    return (
+        f"[ticket:{t.id}] {t.title} "
+        f"(kind: {t.kind}, status: {t.status}, priority: {t.priority or '—'}, "
+        f"assignee: {assignee}, project: {project_name}) "
+        f"{_fmt_dt_with_age(t.updated_at)}"
+    )
+
+
+async def _my_persona_names(
+    ctx: HelperContext, projects: list[Project]
+) -> dict[str, set[str]]:
+    """Per project id: lower-cased names of the active org personas that
+    represent the caller there.
+
+    ``assigned_to_me`` means "assigned to a persona whose represented_user_id
+    is the caller, or created by the caller".  Only org personas carry a
+    ``represented_user_id`` (project personas have it NULL by constraint), an
+    org persona is only visible from a project whose org the caller is a
+    member of, and an ACTIVE project persona with the same name
+    (case-insensitive) overrides it — exactly how the personas route resolves
+    the effective set (``list_effective_personas``).
+    """
+    names: dict[str, set[str]] = {}
+    for p in projects:
+        if not p.org_id:
+            continue
+        visible_org = await visible_persona_org_id(ctx.db, p, user_id=ctx.user.id)
+        if visible_org is None:
+            continue
+        effective = await list_effective_personas(ctx.db, p, org_id=visible_org)
+        mine = {
+            e.persona.name.lower()
+            for e in effective
+            if e.persona.org_id is not None
+            and e.persona.represented_user_id == ctx.user.id
+        }
+        if mine:
+            names[p.id] = mine
+    return names
+
+
+async def _readable_ticket_ids(
+    ctx: HelperContext, ticket_ids: set[str]
+) -> set[str]:
+    """The subset of ``ticket_ids`` that resolve to tickets in accessible,
+    in-scope projects whose plan includes tickets — the only ids a tool may
+    surface as ``[ticket:…]`` (and so the only ones the model may cite).
+
+    Each distinct project is checked with the same ``_accessible_project`` +
+    plan gate as ``get_ticket``."""
+    if not ticket_ids:
+        return set()
+    rows = (
+        await ctx.db.execute(
+            select(Ticket.id, Ticket.project_id).where(Ticket.id.in_(sorted(ticket_ids)))
+        )
+    ).all()
+    allowed: dict[str, bool] = {}
+    for _tid, pid in rows:
+        if pid in allowed:
+            continue
+        project = await _accessible_project(ctx, pid)
+        allowed[pid] = project is not None and await _feature_allowed(
+            ctx, FEATURE_TICKETS, project
+        )
+    return {tid for tid, pid in rows if allowed.get(pid)}
+
+
+async def _list_tickets(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    project_id = _optional_str(args, "project_id")
+    status = _optional_str(args, "status")
+    kind = _optional_str(args, "kind")
+    assignee = _optional_str(args, "assignee")
+    assigned_to_me = args.get("assigned_to_me") is True
+    query = _optional_str(args, "query")
+    limit = _capped_int(args, "limit", 50, 1, MAX_LIST_TICKETS)
+
+    if kind is not None and kind not in _VALID_TICKET_KINDS:
+        raise ToolArgumentError(f"kind must be one of: {sorted(_VALID_TICKET_KINDS)}")
+
+    projects = await _accessible_projects(ctx)
+    if project_id is not None:
+        projects = [p for p in projects if p.id == project_id]
+        if projects and not await _feature_allowed(ctx, FEATURE_TICKETS, projects[0]):
+            return ToolOutput(
+                "Tickets are not available on this project's plan.", refs=_refs()
+            )
+    else:
+        projects = [p for p in projects if await _feature_allowed(ctx, FEATURE_TICKETS, p)]
+    if not projects:
+        return ToolOutput("No tickets accessible.", refs=_refs())
+    project_ids = [p.id for p in projects]
+    project_names = {p.id: p.name for p in projects}
+
+    stmt = select(Ticket).where(Ticket.project_id.in_(project_ids))
+    if status is not None:
+        stmt = stmt.where(Ticket.status == status)
+    if kind is not None:
+        stmt = stmt.where(Ticket.kind == kind)
+    if assignee is not None:
+        # Case-insensitive to match the list_tickets route (tk_884b2321fdb74170).
+        stmt = stmt.where(func.lower(Ticket.assigned_to) == assignee.lower())
+    if assigned_to_me:
+        conditions: list[ColumnElement[bool]] = [Ticket.created_by_user_id == ctx.user.id]
+        for pid, names in (await _my_persona_names(ctx, projects)).items():
+            conditions.append(
+                and_(
+                    Ticket.project_id == pid,
+                    func.lower(Ticket.assigned_to).in_(sorted(names)),
+                )
+            )
+        stmt = stmt.where(or_(*conditions))
+    if query is not None:
+        stmt = stmt.where(
+            or_(
+                Ticket.title.ilike(f"%{_escape_like(query)}%", escape="\\"),
+                Ticket.description.ilike(f"%{_escape_like(query)}%", escape="\\"),
+            )
+        )
+    stmt = stmt.order_by(Ticket.updated_at.desc()).limit(limit + 1)
+    tickets = (await ctx.db.execute(stmt)).scalars().all()
+
+    truncated = len(tickets) > limit
+    shown = tickets[:limit]
+    if not shown:
+        return ToolOutput("No tickets matched.", refs=_refs())
+
+    text = "\n".join(
+        _format_ticket_line(t, project_names.get(t.project_id, t.project_id))
+        for t in shown
+    )
+    if truncated:
+        text += f"\n[showing {limit} of more results; narrow the filter or pass project_id]"
+    # Only the projects that actually returned rows (the audit fans out one
+    # event per project in refs).
+    return ToolOutput(
+        text,
+        refs=_refs(
+            project_ids=[t.project_id for t in shown],
+            ticket_ids=[t.id for t in shown],
+        ),
+    )
+
+
+async def _get_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    ticket_id = _require_str(args, "ticket_id")
+    ticket = (
+        await ctx.db.execute(select(Ticket).where(Ticket.id == ticket_id))
+    ).scalar_one_or_none()
+    if ticket is None:
+        return ToolOutput("Ticket not found.", refs=_refs())
+    project = await _accessible_project(ctx, ticket.project_id)
+    if project is None or not await _feature_allowed(ctx, FEATURE_TICKETS, project):
+        return ToolOutput("Ticket not found.", refs=_refs())
+
+    dep_ids = list(
+        (
+            await ctx.db.execute(
+                select(TicketDependency.depends_on_id).where(
+                    TicketDependency.ticket_id == ticket.id
+                )
+            )
+        ).scalars().all()
+    )
+    # Parent / dependency ids are only shown (and become citable) when they
+    # resolve to tickets the caller can read in this conversation's scope.
+    linked = {t for t in (ticket.parent_ticket_id, *dep_ids) if t}
+    readable = await _readable_ticket_ids(ctx, linked)
+    parent_id = ticket.parent_ticket_id if ticket.parent_ticket_id in readable else None
+    deps = sorted(d for d in dep_ids if d in readable)
+
+    comments = list(
+        (
+            await ctx.db.execute(
+                select(TicketComment)
+                .where(TicketComment.ticket_id == ticket.id)
+                .order_by(TicketComment.created_at.desc(), TicketComment.id.desc())
+                .limit(MAX_TICKET_COMMENTS)
+            )
+        ).scalars().all()
+    )
+
+    lines = [f"[ticket:{ticket.id}] {ticket.title}"]
+    lines.append(f"project: {project.name} [project:{ticket.project_id}]")
+    lines.append(
+        f"kind: {ticket.kind} | status: {ticket.status} | "
+        f"priority: {ticket.priority or '—'}"
+    )
+    lines.append(f"assignee: {ticket.assigned_to or 'unassigned'}")
+    lines.append(f"created: {_fmt_dt_with_age(ticket.created_at)}")
+    lines.append(f"updated: {_fmt_dt_with_age(ticket.updated_at)}")
+    if ticket.resolved_at:
+        lines.append(f"resolved: {_fmt_dt_with_age(ticket.resolved_at)}")
+    lines.append(f"parent: [ticket:{parent_id}]" if parent_id else "parent: none")
+    shown_deps = deps[:MAX_TICKET_DEPENDENCIES]
+    deps_text = ", ".join(f"[ticket:{d}]" for d in shown_deps) if shown_deps else "none"
+    if len(deps) > len(shown_deps):
+        deps_text += f" +{len(deps) - len(shown_deps)} more"
+    lines.append("depends on: " + deps_text)
+
+    criteria = _loads_json_list(ticket.acceptance_criteria)
+    if criteria:
+        lines.append("acceptance criteria:")
+        lines.extend(
+            f"- {_cap(str(c), MAX_TICKET_CRITERION_CHARS)}"
+            for c in criteria[:MAX_TICKET_CRITERIA]
+        )
+        if len(criteria) > MAX_TICKET_CRITERIA:
+            lines.append(f"[showing {MAX_TICKET_CRITERIA} of {len(criteria)} criteria]")
+
+    description = (ticket.description or "").strip()
+    lines.append("description:")
+    lines.append(_cap(description, MAX_TICKET_DESCRIPTION_CHARS) if description else "(none)")
+
+    if comments:
+        lines.append(f"comments (last {len(comments)}):")
+        for c in reversed(comments):
+            author = c.author_persona or "user"
+            body = _cap(c.content or "", MAX_TICKET_COMMENT_CHARS)
+            lines.append(f"- [{_fmt_dt_with_age(c.created_at)}] {author}: {body}")
+    else:
+        lines.append("comments: none")
+
+    return ToolOutput(
+        "\n".join(lines),
+        refs=_refs(
+            project_ids=[ticket.project_id],
+            # Only the ids this result actually shows become citable.
+            ticket_ids=sorted(
+                {ticket.id, *shown_deps, *([parent_id] if parent_id else [])}
+            ),
+        ),
+    )
+
+
+async def _list_wiki_pages(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    project_id = _require_str(args, "project_id")
+    project = await _accessible_project(ctx, project_id)
+    if project is None:
+        return ToolOutput("Project not found.", refs=_refs())
+
+    stmt = (
+        select(KnowledgePage)
+        .where(KnowledgePage.project_id == project_id)
+        .order_by(KnowledgePage.title)
+        .limit(MAX_LIST_WIKI_PAGES + 1)
+    )
+    pages = (await ctx.db.execute(stmt)).scalars().all()
+    if not pages:
+        return ToolOutput("No wiki pages.", refs=_refs())
+
+    truncated = len(pages) > MAX_LIST_WIKI_PAGES
+    shown = pages[:MAX_LIST_WIKI_PAGES]
+    text = "\n".join(
+        f"[wiki:{project_id}/{p.slug}] {p.title} {_fmt_dt_with_age(p.updated_at)}"
+        for p in shown
+    )
+    if truncated:
+        text += f"\n[showing {MAX_LIST_WIKI_PAGES} of more pages]"
+    return ToolOutput(
+        text,
+        refs=_refs(
+            project_ids=[project_id],
+            wiki_refs=[(project_id, p.slug) for p in shown],
+        ),
+    )
+
+
+async def _wiki_editor_name(
+    ctx: HelperContext, rev: WikiPageRevision | None
+) -> str | None:
+    """The latest revision's author: persona name, else the user's display
+    name, else "a project member".  Never an email address."""
+    if rev is None:
+        return None
+    if rev.persona_name:
+        return rev.persona_name
+    if rev.user_id:
+        user = (
+            await ctx.db.execute(select(User).where(User.id == rev.user_id))
+        ).scalar_one_or_none()
+        if user is not None and user.display_name:
+            return user.display_name
+    return "a project member"
+
+
+async def _get_wiki_page(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    project_id = _require_str(args, "project_id")
+    slug = _require_str(args, "slug")
+    project = await _accessible_project(ctx, project_id)
+    if project is None:
+        return ToolOutput("Project not found.", refs=_refs())
+
+    page = (
+        await ctx.db.execute(
+            select(KnowledgePage).where(
+                KnowledgePage.project_id == project_id,
+                KnowledgePage.slug == slug,
+            )
+        )
+    ).scalar_one_or_none()
+    if page is None:
+        return ToolOutput("Wiki page not found.", refs=_refs())
+
+    latest_rev = (
+        await ctx.db.execute(
+            select(WikiPageRevision)
+            .where(
+                WikiPageRevision.project_id == project_id,
+                WikiPageRevision.page_slug == slug,
+            )
+            .order_by(WikiPageRevision.revised_at.desc(), WikiPageRevision.id.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    editor = await _wiki_editor_name(ctx, latest_rev)
+
+    body = page.content or ""
+    truncated = len(body) > MAX_WIKI_BODY_CHARS
+    if truncated:
+        body = body[:MAX_WIKI_BODY_CHARS] + "\n…truncated"
+
+    lines = [f"[wiki:{project_id}/{slug}] {page.title}"]
+    lines.append(f"updated: {_fmt_dt_with_age(page.updated_at)}")
+    if editor:
+        lines.append(f"last editor: {editor}")
+    lines.append(body)
+    return ToolOutput(
+        "\n".join(lines),
+        refs=_refs(project_ids=[project_id], wiki_refs=[(project_id, slug)]),
+    )
+
+
+def _format_finding(f: dict[str, Any]) -> str:
+    severity = f.get("severity") or ""
+    title = f.get("rule") or f.get("title") or ""
+    location = f.get("file") or ""
+    if f.get("line") is not None:
+        location = f"{location}:{f['line']}" if location else str(f["line"])
+    message = _cap(str(f.get("message") or f.get("description") or ""), MAX_FINDING_MESSAGE_CHARS)
+    parts = [str(p) for p in (severity, title, location, message) if p]
+    if parts:
+        return " | ".join(parts)
+    return _cap(json.dumps(f, sort_keys=True, default=str), MAX_FINDING_MESSAGE_CHARS)
+
+
+def _run_ticket_text(run: AgentRun, readable: set[str]) -> str | None:
+    """The run's ticket as a citable marker only when it resolves to a ticket
+    the caller can read here; otherwise the raw id, flagged."""
+    if not run.ticket_id:
+        return None
+    if run.ticket_id in readable:
+        return f"ticket: [ticket:{run.ticket_id}]"
+    return f"ticket: {run.ticket_id} (not accessible)"
+
+
+def _format_agent_run(run: AgentRun, readable: set[str]) -> str:
+    parts = [f"{run.id} | persona: {run.persona_name} | status: {run.status}"]
+    ticket = _run_ticket_text(run, readable)
+    if ticket:
+        parts.append(ticket)
+    if run.severity:
+        parts.append(f"severity: {run.severity}")
+    parts.append(f"findings: {run.findings_count}")
+    if run.policy_result:
+        parts.append(f"policy: {run.policy_result}")
+    parts.append(f"created: {_fmt_dt_with_age(run.created_at)}")
+    if run.completed_at:
+        parts.append(f"completed: {_fmt_dt_with_age(run.completed_at)}")
+    line = " ".join(parts)
+    if run.result_summary:
+        line += f" — {_cap(run.result_summary, MAX_RUN_SUMMARY_LINE_CHARS)}"
+    return line
+
+
+async def _agent_run_project(
+    ctx: HelperContext, project_id: str
+) -> tuple[Project | None, ToolOutput | None]:
+    """The run's project, or the result to return instead (not found /
+    not on this plan)."""
+    project = await _accessible_project(ctx, project_id)
+    if project is None:
+        return None, ToolOutput("Project not found.", refs=_refs())
+    if not await _feature_allowed(ctx, FEATURE_AGENT_RUNS, project):
+        return None, ToolOutput(
+            "Agent runs are not available on this project's plan.", refs=_refs()
+        )
+    return project, None
+
+
+async def _list_agent_runs(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    project_id = _require_str(args, "project_id")
+    status = _optional_str(args, "status")
+    persona = _optional_str(args, "persona")
+    limit = _capped_int(args, "limit", 50, 1, MAX_LIST_AGENT_RUNS)
+
+    project, early = await _agent_run_project(ctx, project_id)
+    if early is not None:
+        return early
+
+    stmt = select(AgentRun).where(AgentRun.project_id == project_id)
+    if status is not None:
+        stmt = stmt.where(AgentRun.status == status)
+    if persona is not None:
+        stmt = stmt.where(func.lower(AgentRun.persona_name) == persona.lower())
+    stmt = stmt.order_by(AgentRun.created_at.desc()).limit(limit + 1)
+    runs = (await ctx.db.execute(stmt)).scalars().all()
+
+    truncated = len(runs) > limit
+    shown = runs[:limit]
+    if not shown:
+        return ToolOutput("No agent runs matched.", refs=_refs())
+
+    readable = await _readable_ticket_ids(ctx, {r.ticket_id for r in shown if r.ticket_id})
+    text = "\n".join(_format_agent_run(r, readable) for r in shown)
+    if truncated:
+        text += f"\n[showing {limit} of more runs]"
+    return ToolOutput(
+        text,
+        refs=_refs(project_ids=[project_id], ticket_ids=sorted(readable)),
+    )
+
+
+async def _get_agent_run(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    project_id = _require_str(args, "project_id")
+    run_id = _require_str(args, "run_id")
+    project, early = await _agent_run_project(ctx, project_id)
+    if early is not None:
+        return early
+
+    run = (
+        await ctx.db.execute(
+            select(AgentRun).where(
+                AgentRun.id == run_id,
+                AgentRun.project_id == project_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        return ToolOutput("Agent run not found.", refs=_refs())
+
+    readable = await _readable_ticket_ids(ctx, {run.ticket_id} if run.ticket_id else set())
+    lines = [f"{run.id} | persona: {run.persona_name} | tool: {run.tool}"]
+    lines.append(f"status: {run.status} | trigger: {run.trigger_source}")
+    ticket = _run_ticket_text(run, readable)
+    if ticket:
+        lines.append(ticket)
+    lines.append(f"created: {_fmt_dt_with_age(run.created_at)}")
+    if run.started_at:
+        lines.append(f"started: {_fmt_dt_with_age(run.started_at)}")
+    if run.completed_at:
+        lines.append(f"completed: {_fmt_dt_with_age(run.completed_at)}")
+    if run.duration_seconds is not None:
+        lines.append(f"duration: {run.duration_seconds}s")
+    if run.severity:
+        lines.append(f"severity: {run.severity}")
+    lines.append(f"findings_count: {run.findings_count}")
+    if run.fail_on:
+        lines.append(f"fail_on: {run.fail_on}")
+    if run.policy_result:
+        lines.append(f"policy_result: {run.policy_result}")
+    if run.result_summary:
+        lines.append(f"result_summary: {_cap(run.result_summary, MAX_RUN_SUMMARY_CHARS)}")
+    findings = [f for f in _loads_json_list(run.findings) if isinstance(f, dict)]
+    if findings:
+        lines.append("findings:")
+        lines.extend(f"- {_format_finding(f)}" for f in findings[:MAX_AGENT_RUN_FINDINGS])
+        if len(findings) > MAX_AGENT_RUN_FINDINGS:
+            lines.append(f"[showing {MAX_AGENT_RUN_FINDINGS} of {len(findings)} findings]")
+
+    return ToolOutput(
+        "\n".join(lines),
+        refs=_refs(project_ids=[project_id], ticket_ids=sorted(readable)),
+    )
+
+
+def _format_persona(p: AgentPersona, represented_name: str | None) -> str:
+    scope = "org" if p.org_id is not None else "project"
+    parts = [
+        p.name,
+        f"role: {p.role}",
+        f"scope: {scope}",
+        f"active: {'yes' if p.is_active else 'no'}",
+        f"updated: {_fmt_dt_with_age(p.updated_at)}",
+    ]
+    if represented_name:
+        parts.append(f"represents: {represented_name}")
+    line = " | ".join(parts)
+    specs = _loads_json_list(p.specializations)
+    if specs:
+        line += "\n  specializations: " + ", ".join(str(s) for s in specs[:20])
+    return line
+
+
+async def _list_personas(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    project_id = _optional_str(args, "project_id")
+
+    projects = await _accessible_projects(ctx)
+    if project_id is not None:
+        projects = [p for p in projects if p.id == project_id]
+        if projects and not await _feature_allowed(ctx, FEATURE_PERSONAS, projects[0]):
+            return ToolOutput(
+                "Personas are not available on this project's plan.", refs=_refs()
+            )
+    else:
+        projects = [p for p in projects if await _feature_allowed(ctx, FEATURE_PERSONAS, p)]
+    if not projects:
+        return ToolOutput("No personas accessible.", refs=_refs())
+
+    # Union project + visible-org personas across the searched projects,
+    # de-duplicated by id (an org persona may appear from several projects).
+    # Remember which projects each persona came from so the audit names only
+    # the projects that actually returned rows.
+    seen: dict[str, AgentPersona] = {}
+    sources: dict[str, set[str]] = {}
+    for p in projects:
+        visible_org = await visible_persona_org_id(ctx.db, p, user_id=ctx.user.id)
+        effective = await list_effective_personas(
+            ctx.db, p, org_id=visible_org, include_inactive=True
+        )
+        for e in effective:
+            seen.setdefault(e.persona.id, e.persona)
+            sources.setdefault(e.persona.id, set()).add(p.id)
+
+    personas = list(seen.values())
+    personas.sort(key=lambda p: (p.name, p.org_id is not None))
+
+    represented_ids = {p.represented_user_id for p in personas if p.represented_user_id}
+    represented_names: dict[str, str] = {}
+    if represented_ids:
+        users = (
+            await ctx.db.execute(select(User).where(User.id.in_(represented_ids)))
+        ).scalars().all()
+        # Display name only — never email.
+        represented_names = {u.id: (u.display_name or "a project member") for u in users}
+
+    truncated = len(personas) > MAX_LIST_PERSONAS
+    shown = personas[:MAX_LIST_PERSONAS]
+    if not shown:
+        return ToolOutput("No personas found.", refs=_refs())
+
+    text = "\n".join(
+        _format_persona(p, represented_names.get(p.represented_user_id or ""))
+        for p in shown
+    )
+    if truncated:
+        text += f"\n[showing {MAX_LIST_PERSONAS} of {len(personas)} personas]"
+    return ToolOutput(
+        text,
+        refs=_refs(project_ids=sorted({pid for p in shown for pid in sources[p.id]})),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
+
+
+# The metadata filters shared by the session-finding tools and the trash
+# proposal.  Model/provider match case-insensitively by substring
+# ("deepseek" matches deepseek-v4-pro and deepseek-flash); several values OR.
+# An array (not anyOf) so every provider's tool-schema dialect accepts it; the
+# handler also accepts a bare string.
+_FILTER_VALUES_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {"type": "string", "maxLength": MAX_MODEL_FILTER_CHARS},
+    "maxItems": MAX_MODEL_FILTER_VALUES,
+}
+_SESSION_FILTER_PROPERTIES: dict[str, Any] = {
+    "model": {
+        **_FILTER_VALUES_SCHEMA,
+        "description": (
+            "Model ids or families, case-insensitive substring; any of them "
+            "matches. \"unknown\" selects sessions with no recorded model."
+        ),
+    },
+    "provider": {
+        **_FILTER_VALUES_SCHEMA,
+        "description": "Model providers, case-insensitive substring; \"unknown\" = none recorded.",
+    },
+    "source_tool": {"type": "string", "description": "Capturing tool, e.g. claude-code."},
+    "days": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": MAX_FILTER_DAYS,
+        "description": "Only sessions active in the last N days (UTC).",
+    },
+    "since": {
+        "type": "string",
+        "description": "Active on or after this date (YYYY-MM-DD, UTC; start of day).",
+    },
+    "until": {
+        "type": "string",
+        "description": "Active on or before this date (YYYY-MM-DD, UTC; the whole day counts).",
+    },
+}
 
 
 TOOLS: dict[str, HelperTool] = {
@@ -1192,32 +2878,73 @@ TOOLS: dict[str, HelperTool] = {
     for t in [
         HelperTool(
             name="search_sessions",
-            description="Full-text search over the caller's own sessions.",
+            description=(
+                "Search the caller's own sessions. With 'query': full-text "
+                "search (limit at most 20 per page). Without 'query' but with a "
+                "metadata filter (model, provider, source_tool, days, since, "
+                "until): every matching session, newest first, up to 100 per "
+                "page. Results end with 'Showing N–M of T'; page with 'offset'."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string"},
-                    "limit": {"type": "integer", "minimum": 1, "maximum": MAX_SEARCH_RESULTS},
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": MAX_RECENT_RESULTS,
+                        "description": (
+                            f"At most {MAX_SEARCH_RESULTS} with a query; up to "
+                            f"{MAX_RECENT_RESULTS} for a filter-only listing."
+                        ),
+                    },
+                    "offset": {"type": "integer", "minimum": 0},
                     "project_id": {"type": "string"},
-                    "source_tool": {"type": "string"},
+                    **_SESSION_FILTER_PROPERTIES,
                 },
-                "required": ["query"],
                 "additionalProperties": False,
             },
             handler=_search_sessions,
         ),
         HelperTool(
             name="list_recent_sessions",
-            description="Most recently updated sessions the caller owns.",
+            description=(
+                "The caller's sessions, most recently active first, optionally "
+                "filtered by model, provider, tool and dates. Up to 100 per "
+                "page; results end with 'Showing N–M of T'; page with 'offset'."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "limit": {"type": "integer", "minimum": 1, "maximum": MAX_RECENT_RESULTS},
+                    "offset": {"type": "integer", "minimum": 0},
                     "project_id": {"type": "string"},
+                    **_SESSION_FILTER_PROPERTIES,
                 },
                 "additionalProperties": False,
             },
             handler=_list_recent_sessions,
+        ),
+        HelperTool(
+            name="list_session_models",
+            description=(
+                "Which AI models (LLMs) the caller's sessions used, with session "
+                "counts, the capturing tools and first/last dates. Call this "
+                "first for any question about models or providers, then filter "
+                "the session tools by model or provider."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "source_tool": _SESSION_FILTER_PROPERTIES["source_tool"],
+                    "days": _SESSION_FILTER_PROPERTIES["days"],
+                    "since": _SESSION_FILTER_PROPERTIES["since"],
+                    "until": _SESSION_FILTER_PROPERTIES["until"],
+                },
+                "additionalProperties": False,
+            },
+            handler=_list_session_models,
         ),
         HelperTool(
             name="find_related_sessions",
@@ -1314,6 +3041,7 @@ TOOLS: dict[str, HelperTool] = {
                     "path": {"type": "string"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PATH_RESULTS},
                     "project_id": {"type": "string"},
+                    **_SESSION_FILTER_PROPERTIES,
                 },
                 "required": ["path"],
                 "additionalProperties": False,
@@ -1398,10 +3126,125 @@ TOOLS: dict[str, HelperTool] = {
             handler=_get_sessionfs_doc,
         ),
         HelperTool(
+            name="list_tickets",
+            description=(
+                "List sessionfs tickets (tk_…) across the caller's accessible "
+                "projects. These are the project's own work items — NOT Jira "
+                "issues (KEY-123). Newest-updated first, capped at 50."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "status": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["issue", "task"]},
+                    "assignee": {"type": "string"},
+                    "assigned_to_me": {"type": "boolean"},
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIST_TICKETS},
+                },
+                "additionalProperties": False,
+            },
+            handler=_list_tickets,
+        ),
+        HelperTool(
+            name="get_ticket",
+            description=(
+                "Full detail for one sessionfs ticket (tk_…): description, "
+                "acceptance criteria, status, assignee, dependencies, parent, "
+                "timestamps and the last 10 comments."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"ticket_id": {"type": "string"}},
+                "required": ["ticket_id"],
+                "additionalProperties": False,
+            },
+            handler=_get_ticket,
+        ),
+        HelperTool(
+            name="list_wiki_pages",
+            description="List a project's wiki pages (title + updated date).",
+            input_schema={
+                "type": "object",
+                "properties": {"project_id": {"type": "string"}},
+                "required": ["project_id"],
+                "additionalProperties": False,
+            },
+            handler=_list_wiki_pages,
+        ),
+        HelperTool(
+            name="get_wiki_page",
+            description="One wiki page's body (capped) with its updated date and last editor.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "slug": {"type": "string"},
+                },
+                "required": ["project_id", "slug"],
+                "additionalProperties": False,
+            },
+            handler=_get_wiki_page,
+        ),
+        HelperTool(
+            name="list_agent_runs",
+            description=(
+                "List a project's agent runs: status, severity/findings summary, "
+                "ticket, persona and timestamps."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "status": {"type": "string"},
+                    "persona": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIST_AGENT_RUNS},
+                },
+                "required": ["project_id"],
+                "additionalProperties": False,
+            },
+            handler=_list_agent_runs,
+        ),
+        HelperTool(
+            name="get_agent_run",
+            description="One agent run's full detail (status, verdict, findings, ticket, timestamps).",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "run_id": {"type": "string"},
+                },
+                "required": ["project_id", "run_id"],
+                "additionalProperties": False,
+            },
+            handler=_get_agent_run,
+        ),
+        HelperTool(
+            name="list_personas",
+            description=(
+                "List a project's (or all accessible projects') personas: name, "
+                "role, specializations, the human they represent (display name "
+                "only) and whether they are active."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"project_id": {"type": "string"}},
+                "additionalProperties": False,
+            },
+            handler=_list_personas,
+        ),
+        HelperTool(
             name="trash_sessions",
             description=(
                 "PROPOSE moving the caller's own sessions to Trash (restorable for "
-                "30 days). Nothing changes until the user confirms in the dashboard."
+                "30 days). Nothing changes until the user confirms in the "
+                "dashboard. Pass either 'session_ids' the session tools returned, "
+                "or filters (model, provider, project_id, source_tool, days, "
+                "since, until) that the server resolves to sessions — use filters "
+                "for \"all sessions that used model X\". At most 100 sessions per "
+                "proposal; when more match, the first 100 (most recently active "
+                "first) are proposed and the result says how many remain."
             ),
             input_schema={
                 "type": "object",
@@ -1412,12 +3255,100 @@ TOOLS: dict[str, HelperTool] = {
                         "minItems": 1,
                         "maxItems": MAX_ACTION_TARGETS,
                     },
+                    "project_id": {"type": "string"},
+                    **_SESSION_FILTER_PROPERTIES,
                     "reason": {"type": "string"},
                 },
-                "required": ["session_ids"],
                 "additionalProperties": False,
             },
             handler=_trash_sessions,
+        ),
+        HelperTool(
+            name="propose_ticket",
+            description=(
+                "PROPOSE creating a ticket. Nothing changes until the user "
+                "confirms in the dashboard. Never claim the ticket exists "
+                "until it is confirmed; do not invent requirements — every "
+                "field must be grounded in the conversation."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "project_id": {"type": "string"},
+                    "title": {"type": "string", "maxLength": MAX_TITLE_CHARS},
+                    "description": {"type": "string", "maxLength": MAX_DESCRIPTION_CHARS},
+                    "acceptance_criteria": {
+                        "type": "array",
+                        "items": {"type": "string", "maxLength": MAX_CRITERION_CHARS},
+                        "maxItems": MAX_CRITERIA,
+                    },
+                    "priority": {"type": "string", "enum": sorted(_VALID_PRIORITIES)},
+                    "kind": {"type": "string", "enum": sorted(_VALID_TICKET_KINDS)},
+                    "assignee_persona": {"type": "string"},
+                    "sources": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                            "description": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                            "acceptance_criteria": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                            "priority": {"type": "array", "items": {"type": "string"}},
+                            "kind": {"type": "array", "items": {"type": "string"}},
+                            "assignee_persona": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["title", "description", "acceptance_criteria"],
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["project_id", "title", "description", "acceptance_criteria", "sources"],
+                "additionalProperties": False,
+            },
+            handler=_propose_ticket,
+        ),
+        HelperTool(
+            name="propose_assignment",
+            description=(
+                "PROPOSE assigning a ticket to a persona (or to a person via "
+                "their represented persona). Nothing changes until the user "
+                "confirms. Only the ticket creator or a project admin may "
+                "assign, and only a project editor may reassign a ticket "
+                "that is in progress or held by a work queue."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "ticket_id": {"type": "string"},
+                    "persona_name": {"type": "string"},
+                },
+                "required": ["ticket_id", "persona_name"],
+                "additionalProperties": False,
+            },
+            handler=_propose_assignment,
+        ),
+        HelperTool(
+            name="propose_comment",
+            description=(
+                "PROPOSE posting a comment on a ticket as the user. Nothing "
+                "changes until the user confirms. The comment is a plain user "
+                "comment — it never carries a review verdict."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "ticket_id": {"type": "string"},
+                    "body": {"type": "string", "maxLength": MAX_COMMENT_CHARS},
+                    "sources": {
+                        "type": "object",
+                        "properties": {
+                            "body": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+                        },
+                        "required": ["body"],
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["ticket_id", "body", "sources"],
+                "additionalProperties": False,
+            },
+            handler=_propose_comment,
         ),
     ]
 }
@@ -1487,6 +3418,20 @@ async def execute(
             is_error=True,
         )
 
+    # Duplicate retrieval (GitHub #104 part 1): an identical (tool, args)
+    # pair within one turn returns a marker instead of re-running the handler
+    # and writing a second retrieval-audit row.  The data is already in the
+    # conversation; no new retrieval happened, so no audit event is recorded.
+    cache_key = (call.name, json.dumps(safe_args, sort_keys=True, default=str))
+    if cache_key in ctx.result_cache:
+        return ToolResult(
+            tool_call_id=call.id,
+            content=(
+                "You already retrieved this with the same arguments earlier in "
+                "this turn — the result is above. No new retrieval was performed."
+            ),
+        )
+
     # Finding 1: the budget is checked before any handler work (no blob reads,
     # no DB scans) once the per-turn retrieval budget is exhausted.
     if ctx.budget.remaining <= 0:
@@ -1522,6 +3467,13 @@ async def execute(
             tool_call_id=call.id, content=f"{call.name} failed", is_error=True
         )
 
+    # Global per-result cap (after redaction, so a cut never splits a secret
+    # the redactor would have masked), then the per-turn budget.
+    if len(text) > MAX_TOOL_RESULT_CHARS:
+        text = (
+            text[:MAX_TOOL_RESULT_CHARS]
+            + f"\n[truncated: tool result exceeded {MAX_TOOL_RESULT_CHARS} characters]"
+        )
     text = ctx.budget.charge(text)
     try:
         await _record(ctx, call.name, safe_args, output.refs)
@@ -1533,4 +3485,22 @@ async def execute(
             content="could not record retrieval audit; nothing was sent",
             is_error=True,
         )
+    # Remember the ids this result surfaced so the turn handler can accept
+    # ``[ticket:…]`` / ``[wiki:…]`` citations and a proposal's ``sources`` can
+    # cite ``[session:…]`` / ``[doc:…]`` markers — only once the result was
+    # actually delivered (redacted and audited).  Handlers put an id in refs
+    # only after resolving it to a readable, in-scope row.
+    if output.refs.get("ticket_ids"):
+        ctx.seen_ticket_ids.update(output.refs["ticket_ids"])
+    if output.refs.get("wiki_refs"):
+        ctx.seen_wiki_refs.update((pid, slug) for pid, slug in output.refs["wiki_refs"])
+    if output.refs.get("session_ids"):
+        ctx.seen_session_ids.update(output.refs["session_ids"])
+    if output.refs.get("message_refs"):
+        ctx.seen_message_refs.update(
+            (sid, idx) for sid, idx in output.refs["message_refs"]
+        )
+    if output.refs.get("doc_slugs"):
+        ctx.seen_doc_slugs.update(output.refs["doc_slugs"])
+    ctx.result_cache[cache_key] = text
     return ToolResult(tool_call_id=call.id, content=text)

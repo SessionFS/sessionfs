@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timezone
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, Float, Index, Integer, SmallInteger, String, Text, ForeignKey, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, Float, Index, Integer, JSON, SmallInteger, String, Text, ForeignKey, UniqueConstraint, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -1769,6 +1769,9 @@ class KnowledgePage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     auto_generated: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # Opt-in for the Confluence publish sweep: when true and the project's
+    # doc_space_mapping has auto_publish_pages, the sweep pushes this page.
+    publish: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
 
 
 class WikiPageRevision(Base):
@@ -2208,6 +2211,11 @@ class TicketComment(Base):
     author_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     author_persona: Mapped[str | None] = mapped_column(String(50), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
+    # Where the comment originated: 'sessionfs' for a normal comment written in
+    # the app/CLI, 'jira' for a comment mirrored in from Jira (never trusted).
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="sessionfs", server_default="sessionfs"
+    )
     session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -3458,6 +3466,137 @@ class OrgAuditEvent(Base):
     )
 
 
+# v0.25 — project groups + restricted project visibility (GitHub #101).
+
+
+class ProjectGroup(Base):
+    """An org-scoped, flat grouping of projects (migration 096).
+
+    ``org_id`` is immutable and constrains every member and project: a
+    grant only has meaning for an org member, and only a project whose
+    ``Project.org_id`` equals this org may join the group. ``slug`` is
+    unique per org among live groups (partial index on deleted_at IS
+    NULL); soft-deleting a group frees its slug but keeps the row.
+    """
+
+    __tablename__ = "project_groups"
+    __table_args__ = (
+        Index("idx_project_groups_org", "org_id"),
+        Index(
+            "uq_project_groups_org_slug",
+            "org_id", "slug",
+            unique=True,
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    slug: Mapped[str] = mapped_column(String(100), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Group knowledge context (migration 098). ``compile_enabled`` opts the
+    # group into the deterministic group-compile sweep; ``context_document``
+    # + ``context_compiled_at`` + ``compiled_by_user_id`` record the last
+    # overview; ``context_sources`` is the JSON list of contributing project
+    # ids the context view gates on.
+    compile_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    context_document: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    context_compiled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    compiled_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    context_sources: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    # When the scheduled sweep last claimed this group (success, skip or
+    # failure): orders the sweep's due set and fences overlapping sweeps.
+    compile_attempted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class ProjectGroupMember(Base):
+    """A user's grant inside a group: ``reader`` | ``editor`` | ``admin``.
+
+    ``reader`` grants read standing; ``editor`` grants edit standing
+    (``user_can_edit_project``); ``admin`` is editor + manage the group.
+    No group role grants project-ADMIN standing (``user_is_project_admin``).
+    Grantees must be active org members (routes layer) so a membership
+    removal can delete the grants first in the same transaction.
+    """
+
+    __tablename__ = "project_group_members"
+    __table_args__ = (
+        Index("idx_project_group_members_user", "user_id"),
+        CheckConstraint(
+            "role IN ('reader', 'editor', 'admin')",
+            name="ck_project_group_members_role",
+        ),
+    )
+
+    group_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("project_groups.id", ondelete="CASCADE"), primary_key=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    granted_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ProjectGroupAccess(Base):
+    """Project membership in a group (migration 096).
+
+    One row per (group, project). Only projects with
+    ``Project.org_id == ProjectGroup.org_id`` may be added; the routes
+    enforce that same-org invariant, which is what keeps a grant from
+    ever exposing a project outside the group's org.
+    """
+
+    __tablename__ = "project_group_access"
+    __table_args__ = (
+        Index("idx_project_group_access_project", "project_id"),
+    )
+
+    group_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("project_groups.id", ondelete="CASCADE"), primary_key=True
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+    )
+    added_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 # v0.23 — Jira integration (migration 091).
 
 
@@ -3489,6 +3628,40 @@ class OrgTrackerConnection(Base):
     )
     connected_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     last_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # ── two-way sync (migration 100) ──
+    # The inbound webhook secret, Fernet-encrypted (needed to verify the
+    # X-Hub-Signature HMAC). ``webhook_secret_hash`` is a sha256 hex used for
+    # integrity checks and constant-time comparison; ``webhook_secret_last4`` is
+    # the write-only display hint. The plaintext is returned exactly once at
+    # generation time, never stored in the clear.
+    encrypted_webhook_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    webhook_secret_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    webhook_secret_last4: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    # Two-way status sync toggle; comment mirroring direction; status_map JSON
+    # ({"transitions": {sessionfs_status: jira_transition_name},
+    #   "categories": {jira_status_category: sessionfs_action}}).
+    sync_status: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    sync_comments: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="off", server_default="off"
+    )
+    status_map: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The connection's own Atlassian accountId (from /myself), persisted so an
+    # inbound webhook can recognise — and drop — the echo of a write SessionFS
+    # itself made through this connection.
+    jira_account_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # Rejected (bad-signature) inbound deliveries, counted in a 24 h window on
+    # the connection instead of one audit row per unauthenticated request.
+    webhook_auth_failure_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    webhook_auth_failure_window_start: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_webhook_auth_failure_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
@@ -3590,6 +3763,318 @@ class TicketTrackerLink(Base):
         DateTime(timezone=True), nullable=True
     )
     last_push_failure: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # The template that produced the last published draft, pinned so a re-publish
+    # can report "Published with <name> v<n>; current is v<m>". ``template_slug``
+    # is a built-in slug or a custom template's slug; ``template_version`` is the
+    # custom version (NULL for built-ins, which have no version).
+    template_slug: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    template_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Two-way sync timestamps (migration 100): last_synced_at is the last time a
+    # status change was pushed out to Jira; last_inbound_at the last time a Jira
+    # webhook mutated this ticket. Both feed the org health surface.
+    last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_inbound_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class TrackerSyncEvent(Base):
+    """Append-only ledger of two-way Jira sync actions (migration 100).
+
+    One row per inbound/outbound status transition, field edit, comment push,
+    completion-evidence push, or error. ``jira_event_id`` is nullable and unique
+    *per link* for inbound idempotency; outbound rows leave it NULL. ``payload``
+    is a JSON string bounded by the writer (the schema uses ``Text`` for
+    SQLite/PostgreSQL parity). ``applied`` is True when the event changed
+    durable state; ``error`` records the reason an outbound push failed or an
+    inbound transition was refused (never forced).
+    """
+
+    __tablename__ = "tracker_sync_events"
+    __table_args__ = (
+        Index("idx_tracker_sync_events_org_created", "org_id", "created_at"),
+        Index("idx_tracker_sync_events_link", "link_id"),
+        UniqueConstraint("link_id", "jira_event_id", name="uq_tracker_sync_event_jira_id"),
+        UniqueConstraint("link_id", "dedupe_key", name="uq_tracker_sync_event_dedupe"),
+        Index("idx_tracker_sync_events_due", "state", "next_attempt_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    link_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("ticket_tracker_links.ticket_id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ticket_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    direction: Mapped[str] = mapped_column(String(10), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    jira_event_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    applied: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Outbox state (outbound rows): ``pending`` rows are delivered by the
+    # request-spawned drain and, if that is lost or fails, by the sweep once
+    # ``next_attempt_at`` is due. ``done`` / ``exhausted`` / ``skipped`` are
+    # terminal. Inbound rows are written ``done``.
+    state: Mapped[str] = mapped_column(
+        String(12), nullable=False, default="done", server_default="done"
+    )
+    retry_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Unique per link: one completion-evidence row per completion.
+    dedupe_key: Mapped[str | None] = mapped_column(String(160), nullable=True)
+
+
+class JiraTemplate(Base):
+    """An org-custom Jira story template (migration 097).
+
+    Sections are stored as a JSON array of ``{key, heading, mode, source_fields,
+    guidance}`` validated against the fixed source-field vocabulary. ``slug`` is
+    unique within the org and may not collide with a built-in slug. ``version``
+    is the current version; every mutation appends a ``JiraTemplateVersion``
+    snapshot so links pinned to an older version stay reproducible.
+    ``archived_at`` soft-deletes the template: it can no longer be newly
+    selected, but existing links keep their pinned version.
+    """
+
+    __tablename__ = "jira_templates"
+    __table_args__ = (
+        UniqueConstraint("org_id", "slug", name="uq_jira_template_org_slug"),
+        Index("idx_jira_templates_org", "org_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    slug: Mapped[str] = mapped_column(String(50), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # JSON array of section dicts (see ``custom_templates.sections_to_template``).
+    sections: Mapped[str] = mapped_column(Text, nullable=False)
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    created_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class JiraTemplateVersion(Base):
+    """An immutable point-in-time snapshot of a custom template's sections."""
+
+    __tablename__ = "jira_template_versions"
+    __table_args__ = (
+        UniqueConstraint("template_id", "version", name="uq_jira_template_version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    template_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("jira_templates.id", ondelete="CASCADE"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # JSON array of section dicts, identical in shape to ``JiraTemplate.sections``.
+    sections: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class OrgDocConnection(Base):
+    """An org's connection to Confluence Cloud (migration 099).
+
+    One row per org (org_id is the PK). The API token is Fernet-encrypted at
+    rest with the same derivation the tracker connection uses; it is never
+    returned by any route. ``default_template`` is the built-in template slug
+    the org admin force-picks when connecting — new mappings default to it.
+    """
+
+    __tablename__ = "org_doc_connections"
+
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="confluence", server_default="confluence"
+    )
+    site_url: Mapped[str] = mapped_column(String(255), nullable=False)
+    account_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    encrypted_api_token: Mapped[str] = mapped_column(Text, nullable=False)
+    default_template: Mapped[str] = mapped_column(
+        String(50), nullable=False, default="reference", server_default="reference"
+    )
+    batch_window_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=15, server_default="15"
+    )
+    enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    connected_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    last_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class DocSpaceMapping(Base):
+    """Maps a SessionFS project to a Confluence space (migration 099).
+
+    One mapping per SessionFS project (project_id unique). ``template`` NULL
+    means "use the org's default template". ``parent_page_id`` is the page
+    under which SessionFS pages are created; the route refuses the space root
+    page id so pages are always real children.
+    """
+
+    __tablename__ = "doc_space_mappings"
+    __table_args__ = (
+        Index("idx_doc_space_mapping_org", "org_id"),
+        Index("idx_doc_space_mapping_attempted", "last_attempted_at"),
+        UniqueConstraint("project_id", name="uq_doc_space_mapping_project"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    space_key: Mapped[str] = mapped_column(String(50), nullable=False)
+    # Numeric space id resolved from ``space_key`` on save (v2 takes the id).
+    space_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    parent_page_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    template: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    publish_context: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    auto_publish_pages: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    created_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Stamped by the publish sweep before it works this mapping (NULLS FIRST
+    # ordering keeps one failing/huge mapping from starving the rest).
+    last_attempted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class DocPageLink(Base):
+    """Strict 1:1 link from a SessionFS source to a Confluence page (migration 099).
+
+    ``source_kind`` is ``wiki_page`` (source_key is the page slug),
+    ``context_root`` (source_key is the literal ``"root"``) or
+    ``context_section`` (source_key is the section slug). ``(project_id,
+    source_kind, source_key)`` is unique — at most one remote page per source.
+    ``page_id`` + ``version`` snapshot the remote page so the next publish can
+    detect drift before overwriting.
+
+    ``status`` is ``linked`` while the remote page is known, ``unknown`` when a
+    publish's outcome is unconfirmed (the next publish adopts the page by its
+    stored id or its ``sessionfs-<project>-<kind>-<key>-<hash>`` label),
+    ``failed`` when the create was definitively refused (the next publish
+    creates and never adopts), ``unlinked``
+    when an admin severed the link, and ``drifted`` when Confluence was edited
+    since the last push (a resolve action then overwrites or unlinks).
+    """
+
+    __tablename__ = "doc_page_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "source_kind", "source_key", name="uq_doc_page_link_source"
+        ),
+        Index("idx_doc_page_link_org", "org_id"),
+        Index("idx_doc_page_link_status", "status"),
+        # One Confluence page is never shared by two SessionFS sources.
+        Index(
+            "uq_doc_page_link_site_page",
+            "site_url",
+            "page_id",
+            unique=True,
+            postgresql_where=text("page_id IS NOT NULL"),
+            sqlite_where=text("page_id IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    source_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Site the link was created against; org/site mismatch → stale (409).
+    site_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Space the page lives in (page URLs are built from it).
+    space_key: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    page_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    last_content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Storage body of the last successful publish (drift diff baseline).
+    last_published_storage: Mapped[str | None] = mapped_column(Text, nullable=True)
+    template_slug: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    template_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="linked", server_default="linked"
+    )
+    # Fences a publish claim (create, adopt or update): a fresh
+    # ``secrets.token_hex(16)`` on claim/reclaim, cleared when the publish settles.
+    claim_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_pushed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_pushed_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_push_failed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_push_failure: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
 
 # v0.16 — portable skills/plugins marketplace (migration 063).

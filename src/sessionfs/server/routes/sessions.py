@@ -23,7 +23,7 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel as _BaseModel
-from sqlalchemy import case, delete, func, literal, or_, select, text, update
+from sqlalchemy import case, delete, func, literal, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
@@ -67,6 +67,7 @@ from sessionfs.server.services.session_search import (
     search_sessions as _search_sessions_service,
     source_tool_filter_values as _source_tool_filter_values,
 )
+from sessionfs.server.services import session_models as _session_models
 from sessionfs.server.services.session_trash import soft_delete_session
 from sessionfs.server.storage.base import BlobStore
 from sessionfs.server.timing import PhaseTimer
@@ -727,7 +728,9 @@ async def _resolve_project_id_for_session(
     Returns the project id when:
       - A project exists for `git_remote_normalized`, AND
       - The caller is either the project owner OR a member of
-        project.org_id when the project is org-scoped.
+        project.org_id when the project is org-scoped. When that org
+        restricts project visibility (GitHub #101) the member must also
+        have read standing: org admin/owner or a group grant.
 
     Returns None when no project exists, the remote is empty, or the
     caller lacks access — in which case the session row keeps
@@ -781,7 +784,23 @@ async def _resolve_project_id_for_session(
             )
         ).scalar_one_or_none()
         if membership is not None:
-            return project_row.id
+            # GitHub #101: in an org that restricts project visibility, a
+            # pushed session links to the project only when the pusher has
+            # read standing under the restricted rules (org admin/owner or a
+            # group grant). Otherwise project_id stays NULL and the session
+            # remains the user's own, like any unlinked session.
+            from sessionfs.server.auth.project_access import (
+                project_restricts_visibility,
+                user_group_roles_for_project,
+            )
+            from sessionfs.server.roles import ADMIN_ROLES
+
+            if membership.role in ADMIN_ROLES:
+                return project_row.id
+            if not await project_restricts_visibility(db, project_row):
+                return project_row.id
+            if await user_group_roles_for_project(db, user_id, project_row):
+                return project_row.id
     return None
 
 
@@ -1255,20 +1274,15 @@ def _sessions_base_where(user_id: str, deleted: bool) -> list:
     return [Session.user_id == user_id, deleted_filter]
 
 
-# The ``?model=`` sentinel for the "unknown model" bucket.
-UNKNOWN_MODEL = "unknown"
-# model_id is client-supplied (manifest), so these stored values carry no real
-# model and fold into the unknown bucket alongside NULL: an empty id, a
-# literal "unknown" (which would otherwise collide with the sentinel) and
-# Claude Code's ``<synthetic>`` placeholder for locally generated turns.
-_UNKNOWN_MODEL_IDS = ("", UNKNOWN_MODEL, "<synthetic>")
+# The unknown-bucket rules and the model filters live in
+# ``services/session_models`` so this route, ``/sessions/models`` and the
+# session helper share one definition.
+UNKNOWN_MODEL = _session_models.UNKNOWN_MODEL
+_UNKNOWN_MODEL_IDS = _session_models.UNKNOWN_MODEL_IDS
+_model_is_unknown = _session_models.model_is_unknown
+_model_filter = _session_models.exact_model_filter
 MAX_MODEL_FILTER_VALUES = 50
 MAX_MODEL_FILTER_LENGTH = 200
-
-
-def _model_is_unknown():
-    """SQL predicate: the row belongs to the unknown-model bucket."""
-    return or_(Session.model_id.is_(None), Session.model_id.in_(_UNKNOWN_MODEL_IDS))
 
 
 def _normalize_model_filter(values: list[str] | None) -> list[str]:
@@ -1291,22 +1305,6 @@ def _normalize_model_filter(values: list[str] | None) -> list[str]:
             detail=f"Model values must be at most {MAX_MODEL_FILTER_LENGTH} characters",
         )
     return deduped
-
-
-def _model_filter(values: list[str]):
-    """Exact, repeatable model filter (OR across values).
-
-    Known ids become one ``IN`` clause; the ``unknown`` sentinel (or any value
-    that is itself an unknown-bucket id) adds a single unknown-bucket clause.
-    """
-    known = [v for v in values if v not in _UNKNOWN_MODEL_IDS]
-    wants_unknown = len(known) != len(values)
-    clauses = []
-    if known:
-        clauses.append(Session.model_id.in_(known))
-    if wants_unknown:
-        clauses.append(_model_is_unknown())
-    return clauses[0] if len(clauses) == 1 else or_(*clauses)
 
 
 def _apply_session_sort(query, sort: str, order: str):
@@ -1460,7 +1458,7 @@ async def list_session_models(
 
     counts: dict[str | None, int] = {}
     for model_id, count in rows:
-        key = None if model_id is None or model_id in _UNKNOWN_MODEL_IDS else model_id
+        key = _session_models.model_bucket(model_id)
         counts[key] = counts.get(key, 0) + count
 
     models = [SessionModelCount(model_id=key, count=value) for key, value in counts.items()]
@@ -2768,6 +2766,20 @@ async def _auto_extract_knowledge(
             except ProjectResolutionLoopError:
                 return
             if not project:
+                return
+            # GitHub #101: in an org that restricts project visibility, only a
+            # pusher who would be linked to the project (owner, org
+            # admin/owner, or a group grant) may add knowledge to it. Outside
+            # restricted orgs extraction keeps running for any pusher on the
+            # remote, as before.
+            from sessionfs.server.auth.project_access import (
+                project_restricts_visibility,
+                user_has_read_standing,
+            )
+
+            if await project_restricts_visibility(
+                db, project
+            ) and not await user_has_read_standing(db, user_id, project):
                 return
 
             from sessionfs.server.services.knowledge import extract_knowledge_entries

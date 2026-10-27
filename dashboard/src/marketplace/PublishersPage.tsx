@@ -2,9 +2,10 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import type { PublisherDetail, PublisherVerification, StartVerificationInput } from '../api/publisherTypes';
 import { Badge } from '../components/Badge';
-import CopyButton from '../components/CopyButton';
 import EmptyState from '../components/EmptyState';
-import { Button, Card, Input, Select } from '../components/ui';
+import { Button, Card, Input, PageContainer, PageHeader, Select } from '../components/ui';
+import { CommandWell } from './CommandWell';
+import { ChevronIcon, VerifiedIcon } from './icons';
 import { useMe } from '../hooks/useMe';
 import MarketplaceNav from './MarketplaceNav';
 import {
@@ -24,6 +25,12 @@ import { workflowSnippet } from './publisherWorkflow';
 import { errorMessage } from '../utils/errorMessage';
 
 const NAMESPACE_RE = /^[a-z0-9](?:[a-z0-9-]{1,37})[a-z0-9]$/;
+
+const METHOD_LABELS: Record<PublisherVerification['method'], string> = {
+  dns_txt: 'DNS',
+  github_org: 'GitHub org',
+  github_user: 'GitHub account',
+};
 
 const STATUS_VARIANT: Record<PublisherVerification['status'], 'success' | 'warning' | 'danger' | 'default'> = {
   verified: 'success',
@@ -60,7 +67,11 @@ function ClaimForm() {
   }
 
   return (
-    <Card className="p-5">
+    <section aria-labelledby="claim-heading">
+      <h2 id="claim-heading" className="text-base font-semibold text-text-primary">Claim a namespace</h2>
+      <p className="mt-1 mb-4 text-sm text-text-tertiary">
+        Namespaces are global and never released. Names that imitate a reserved brand or a verified publisher are refused.
+      </p>
       <form onSubmit={submit} className="grid gap-3 sm:grid-cols-[1fr_1fr_200px_auto] sm:items-end" aria-label="Claim a namespace">
         <Input
           title="Namespace"
@@ -79,11 +90,7 @@ function ClaimForm() {
         />
         <Button type="submit" disabled={!valid} loading={claim.isPending}>Claim</Button>
       </form>
-      <p className="mt-3 text-xs leading-5 text-text-tertiary">
-        Namespaces are global and never released. Names that imitate a reserved brand or a verified publisher
-        (lookalike letters, digits for letters, added "-official" and similar) are refused.
-      </p>
-    </Card>
+    </section>
   );
 }
 
@@ -101,11 +108,11 @@ function VerificationRow({ publisher, row }: { publisher: PublisherDetail; row: 
     }
   }
   return (
-    <li className="rounded-lg border border-border bg-bg-sunken p-3 text-sm">
+    <li className="py-3 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-mono text-text-primary">{row.subject_display}</span>
-          <Badge label={row.method} />
+          <Badge label={METHOD_LABELS[row.method] ?? row.method} />
           <Badge label={row.status} variant={STATUS_VARIANT[row.status]} tint />
         </div>
         <div className="flex gap-2">
@@ -119,10 +126,9 @@ function VerificationRow({ publisher, row }: { publisher: PublisherDetail; row: 
       </div>
       {row.status === 'pending' && row.txt_record && (
         <div className="mt-2 text-xs text-text-secondary">
-          Add this TXT record at <span className="font-mono">{row.txt_host}</span>, then check:
-          <div className="mt-1 flex items-center gap-2">
-            <code className="rounded bg-bg-elevated px-2 py-1 font-mono text-text-primary">{row.txt_record}</code>
-            <CopyButton text={row.txt_record} label="Copy TXT record" />
+          Add this TXT record at <span className="break-all font-mono">{row.txt_host}</span>, then choose Check now:
+          <div className="mt-1.5">
+            <CommandWell command={row.txt_record} label="TXT record" copiedMessage="TXT record copied" />
           </div>
         </div>
       )}
@@ -228,17 +234,17 @@ function TrustedPublishers({ publisher }: { publisher: PublisherDetail }) {
 
   const rows = publisher.trusted_publishers || [];
   return (
-    <section className="mt-5" aria-labelledby={`trusted-${publisher.id}`}>
-      <h3 id={`trusted-${publisher.id}`} className="text-sm font-semibold text-text-primary">Trusted publishing (GitHub Actions)</h3>
-      <p className="mt-1 text-xs text-text-secondary">
-        A workflow listed here publishes with a short-lived OIDC token instead of an API key. The trust is bound to the
-        repository&apos;s numeric id, so a renamed or recreated repository does not inherit it.
+    <section className="mt-5 border-t border-border pt-4" aria-labelledby={`trusted-${publisher.id}`}>
+      <h3 id={`trusted-${publisher.id}`} className="text-sm font-semibold text-text-primary">Publish from CI</h3>
+      <p className="mt-1 text-xs text-text-tertiary">
+        Workflows listed here publish with a short-lived token instead of an API key. The trust is tied to the
+        repository&apos;s numeric id, so a renamed or recreated repository doesn&apos;t inherit it.
       </p>
       {rows.length > 0 && (
-        <ul className="mt-2 space-y-2">
+        <ul className="mt-2 divide-y divide-border border-y border-border">
           {rows.map((row) => (
-            <li key={row.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-bg-sunken p-3 text-xs">
-              <span className="font-mono text-text-primary">
+            <li key={row.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-xs">
+              <span className="min-w-0 break-all font-mono text-text-primary">
                 {row.provider === 'gitlab'
                   ? `GitLab ${row.gitlab_host ?? ''} · ${row.repository} (project #${row.gitlab_project_id})`
                   : `${row.repository} (#${row.repository_id}) · ${row.workflow}`}
@@ -258,7 +264,12 @@ function TrustedPublishers({ publisher }: { publisher: PublisherDetail }) {
           ))}
         </ul>
       )}
-      <form onSubmit={submit} className="mt-3 grid gap-2 sm:grid-cols-2" aria-label={`Add trusted publisher for ${publisher.namespace}`}>
+      <details className="group mt-3" open={rows.length === 0 ? true : undefined}>
+        <summary className="inline-flex cursor-pointer list-none items-center gap-1.5 rounded text-sm font-medium text-text-secondary hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] [&::-webkit-details-marker]:hidden">
+          <ChevronIcon size={14} className="transition-transform group-open:rotate-90" />
+          Add a GitHub Actions workflow
+        </summary>
+      <form onSubmit={submit} className="mt-3 grid gap-3 sm:grid-cols-2" aria-label={`Add trusted publisher for ${publisher.namespace}`}>
         <Input title="Repository (owner/repo)" value={repository} onChange={(event) => setRepository(event.target.value)} placeholder="acme/skills" />
         <Input title="Workflow file" value={workflow} onChange={(event) => setWorkflow(event.target.value)} placeholder="release.yml" />
         <Input title="Environment (recommended)" value={environment} onChange={(event) => setEnvironment(event.target.value)} />
@@ -271,12 +282,10 @@ function TrustedPublishers({ publisher }: { publisher: PublisherDetail }) {
           </Button>
         </div>
       </form>
-      <details className="mt-3 text-xs text-text-secondary">
-        <summary className="cursor-pointer text-text-primary">Example workflow</summary>
-        <div className="mt-2 flex items-start gap-2">
-          <pre className="flex-1 overflow-x-auto rounded-lg bg-bg-sunken p-3 font-mono text-2xs">{workflowSnippet(publisher.namespace)}</pre>
-          <CopyButton text={workflowSnippet(publisher.namespace)} label="Copy workflow" />
-        </div>
+      <div className="mt-4 text-xs text-text-tertiary">
+        <p className="mb-1.5">Example workflow</p>
+        <CommandWell command={workflowSnippet(publisher.namespace)} label="Example workflow" copiedMessage="Workflow copied" />
+      </div>
       </details>
     </section>
   );
@@ -287,11 +296,11 @@ function Listings({ publisher }: { publisher: PublisherDetail }) {
   const items = listings.data?.items || [];
   if (items.length === 0) return null;
   return (
-    <section className="mt-5" aria-labelledby={`listings-${publisher.id}`}>
+    <section className="mt-5 border-t border-border pt-4" aria-labelledby={`listings-${publisher.id}`}>
       <h3 id={`listings-${publisher.id}`} className="text-sm font-semibold text-text-primary">Listings</h3>
-      <ul className="mt-2 space-y-1 text-xs">
+      <ul className="mt-2 divide-y divide-border border-y border-border text-xs">
         {items.map((item) => (
-          <li key={item.listing_id} className="flex flex-wrap items-center gap-2">
+          <li key={item.listing_id} className="flex flex-wrap items-center gap-2 py-2">
             <span className="font-mono text-text-primary">{item.name} {item.version || ''}</span>
             <Badge label={item.visibility} tint />
             <Badge
@@ -312,31 +321,43 @@ function PublisherCard({ publisher }: { publisher: PublisherDetail }) {
   return (
     <Card className="p-5" aria-label={`Publisher ${publisher.namespace}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-2xs font-semibold uppercase tracking-[0.15em] text-text-tertiary">{publisher.owner_type} publisher</p>
-          <h2 className="mt-1 font-mono text-lg font-semibold text-text-primary">{publisher.namespace}</h2>
-          <p className="text-sm text-text-secondary">{publisher.display_name}</p>
+        <div className="min-w-0">
+          <h2 className="flex flex-wrap items-center gap-2 font-mono text-lg font-semibold text-text-primary">
+            {publisher.namespace}
+            {publisher.status !== 'active' && <Badge label={publisher.status} variant="danger" />}
+          </h2>
+          <p className="mt-0.5 text-sm text-text-secondary">
+            {publisher.display_name}
+            <span className="text-text-tertiary"> · {publisher.owner_type === 'org' ? 'Organization' : 'Personal'} publisher · Public publishing {publisher.public_publishing ? 'on' : 'off'}</span>
+          </p>
+          <p className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            {publisher.verified && publisher.badges.length > 0 ? (
+              publisher.badges.map((badge) => (
+                <span key={badge} className="inline-flex items-center gap-1 text-text-secondary">
+                  <VerifiedIcon size={13} className="text-brand" />
+                  {badge}
+                </span>
+              ))
+            ) : (
+              <span className="text-text-tertiary">Not verified yet</span>
+            )}
+          </p>
         </div>
-        <div className="flex flex-wrap gap-1">
-          <Link
-            to={`/marketplace/publishers/${encodeURIComponent(publisher.id)}/analytics`}
-            className="rounded-lg border border-border px-2 py-0.5 text-xs text-text-secondary hover:border-border-strong hover:text-text-primary"
-          >
-            Analytics
-          </Link>
-          {publisher.verified ? publisher.badges.map((badge) => <Badge key={badge} label={badge} variant="success" />) : <Badge label="not verified" />}
-          {publisher.status !== 'active' && <Badge label={publisher.status} variant="danger" />}
-          <Badge label={publisher.public_publishing ? 'public publishing on' : 'public publishing off'} variant={publisher.public_publishing ? 'info' : 'default'} tint />
-        </div>
+        <Link
+          to={`/marketplace/publishers/${encodeURIComponent(publisher.id)}/analytics`}
+          className="inline-flex items-center rounded-lg border border-border bg-surface px-3 py-1.5 text-xs font-semibold text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+        >
+          Analytics
+        </Link>
       </div>
       {publisher.suspended_reason && <p className="mt-2 text-xs text-danger">Suspended: {publisher.suspended_reason}</p>}
       {(publisher.review_flags || []).length > 0 && (
         <p className="mt-2 text-xs text-warning">Similar to {publisher.review_flags!.map((flag) => flag.conflict).join(', ')}; a moderator may review this namespace.</p>
       )}
-      <section className="mt-4" aria-labelledby={`verify-${publisher.id}`}>
+      <section className="mt-5 border-t border-border pt-4" aria-labelledby={`verify-${publisher.id}`}>
         <h3 id={`verify-${publisher.id}`} className="text-sm font-semibold text-text-primary">Verification</h3>
         {verifications.length > 0 && (
-          <ul className="mt-2 space-y-2">
+          <ul className="mt-1 divide-y divide-border">
             {verifications.map((row) => <VerificationRow key={row.id} publisher={publisher} row={row} />)}
           </ul>
         )}
@@ -352,23 +373,27 @@ export default function PublishersPage() {
   const publishers = useMyPublishers();
   const items = publishers.data?.items || [];
   return (
-    <div className="mx-auto w-full max-w-5xl space-y-5 px-4 py-7 sm:px-6">
+    <PageContainer width="wide">
       <MarketplaceNav />
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight text-text-primary">Publishers</h1>
-        <p className="mt-2 max-w-3xl text-sm leading-6 text-text-secondary">
-          Claim a namespace, prove who you are with a DNS record or a GitHub account, and let a GitHub Actions
-          workflow publish without a stored API key. Verified publishers can be invited to publish public packages;
-          the first public version and any update that asks for more access are reviewed by SessionFS.
-        </p>
-      </header>
-      <ClaimForm />
-      {publishers.isLoading && <p className="text-sm text-text-tertiary">Loading publishers…</p>}
-      {publishers.error && <p role="alert" className="text-sm text-danger">Could not load publishers: {errorMessage(publishers.error)}</p>}
-      {!publishers.isLoading && !publishers.error && items.length === 0 && (
-        <EmptyState title="No publishers yet" description="Claim a namespace above to start." />
-      )}
-      {items.map((publisher) => <PublisherCard key={publisher.id} publisher={publisher} />)}
-    </div>
+      <PageHeader
+        title="Publishers"
+        description="Claim a namespace, verify it with a DNS record or a GitHub account, and publish from CI without storing an API key."
+      />
+      <div className="space-y-5">
+        {publishers.isLoading && <p className="text-sm text-text-tertiary">Loading publishers…</p>}
+        {publishers.error && <p role="alert" className="text-sm text-danger">Could not load publishers: {errorMessage(publishers.error)}</p>}
+        {!publishers.isLoading && !publishers.error && items.length === 0 && (
+          <EmptyState title="No publishers yet" description="Claim a namespace below to start." />
+        )}
+        {items.map((publisher) => <PublisherCard key={publisher.id} publisher={publisher} />)}
+      </div>
+      <div className="mt-8 border-t border-border pt-6">
+        <ClaimForm />
+      </div>
+      <p className="mt-6 text-xs text-text-tertiary">
+        Verified publishers can be invited to publish public packages. SessionFS reviews the first public version and
+        any update that asks for more access.
+      </p>
+    </PageContainer>
   );
 }

@@ -3,7 +3,7 @@ import type { MarketplaceReport, ModerationAction, ModerationTargetKind, Quarant
 import { Badge } from '../components/Badge';
 import EmptyState from '../components/EmptyState';
 import RelativeDate from '../components/RelativeDate';
-import { Button, Dialog, DialogFooter, DialogHeader, Select, Textarea } from '../components/ui';
+import { Button, Dialog, DialogFooter, PageContainer, PageHeader, Select, Textarea } from '../components/ui';
 import {
   useDismissMarketplaceReport,
   useMarketplacePackageInfo,
@@ -133,7 +133,7 @@ function ModerationPanel({ report, index, feedIncomplete = false }: { report: Ma
   }
 
   return (
-    <section aria-labelledby={`moderate-${report.id}`} className="rounded-lg border border-border bg-bg-sunken p-4">
+    <section aria-labelledby={`moderate-${report.id}`} className="border-t border-border pt-5">
       <h3 id={`moderate-${report.id}`} className="text-sm font-semibold text-text-primary">Take down or restore</h3>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
         <Select
@@ -220,7 +220,7 @@ function ModerationPanel({ report, index, feedIncomplete = false }: { report: Ma
             {copy.verb} {kind === 'versions' ? 'this version' : 'the whole package'}?
           </h4>
           <p className="mt-1 text-xs leading-5 text-text-secondary">{copy.impact}</p>
-          <dl className="mt-3 space-y-1 rounded-lg border border-border bg-bg-sunken p-3 text-xs">
+          <dl className="mt-3 space-y-1 text-xs">
             <div className="flex gap-2"><dt className="text-text-tertiary">Target</dt><dd className="break-all font-mono text-text-primary">{targetId}</dd></div>
             <div className="flex gap-2"><dt className="text-text-tertiary">Reason</dt><dd className="whitespace-pre-wrap break-words text-text-primary">{reason.trim()}</dd></div>
           </dl>
@@ -255,7 +255,7 @@ function DismissPanel({ report }: { report: MarketplaceReport }) {
   }
 
   return (
-    <form onSubmit={submit} className="rounded-lg border border-border bg-bg-sunken p-4" aria-label="Dismiss report">
+    <form onSubmit={submit} className="border-t border-border pt-5" aria-label="Dismiss report">
       <h3 className="text-sm font-semibold text-text-primary">Dismiss without action</h3>
       <div className="mt-3">
         <Textarea
@@ -277,15 +277,15 @@ function ReportDetail({ report, index, feedIncomplete = false, onClose }: { repo
   const info = useMarketplacePackageInfo(report.package_id);
   const titleId = `report-detail-${report.id}`;
   return (
-    <Dialog open onClose={onClose} titleId={titleId} className="max-w-3xl max-h-[90vh] overflow-y-auto">
-      <p className="text-2xs font-semibold uppercase tracking-[0.16em] text-brand">Marketplace report</p>
-      <DialogHeader titleId={titleId}>{reasonLabel(report.reason)}</DialogHeader>
-      <div className="-mt-2 mb-4 flex flex-wrap gap-2">
+    <Dialog open onClose={onClose} titleId={titleId} className="!max-w-3xl max-h-[90vh] overflow-y-auto">
+      <p className="text-xs text-text-tertiary">Report</p>
+      <h2 id={titleId} className="mt-0.5 text-lg font-semibold text-text-primary">{reasonLabel(report.reason)}</h2>
+      <div className="mt-2 mb-5 flex flex-wrap gap-2">
         <Badge label={report.status} variant={statusVariant(report.status)} tint />
         <ModerationStateBadge state={versionState(index, report.package_id, report.version_id)} />
         {report.scope_kind && <Badge label={`${report.scope_kind} scope`} tint />}
       </div>
-      <dl className="grid gap-x-6 gap-y-3 rounded-xl border border-border bg-bg-sunken p-4 text-sm sm:grid-cols-2">
+      <dl className="grid gap-x-6 gap-y-3 border-y border-border py-4 text-sm sm:grid-cols-2">
         <div>
           <dt className="text-xs text-text-tertiary">Package</dt>
           <dd className="mt-1 text-text-primary">
@@ -315,13 +315,13 @@ function ReportDetail({ report, index, feedIncomplete = false, onClose }: { repo
         </pre>
       </section>
       {report.status !== 'open' && report.resolution_note && (
-        <section className="mt-4 rounded-lg border border-border p-3 text-sm">
-          <h3 className="text-xs uppercase tracking-wider text-text-tertiary">Resolution</h3>
+        <section className="mt-4 text-sm">
+          <h3 className="text-sm font-semibold text-text-primary">Resolution</h3>
           <p className="mt-1 whitespace-pre-wrap break-words text-text-secondary">{report.resolution_note}</p>
           {report.resolved_at && <p className="mt-1 text-xs text-text-tertiary">Resolved <RelativeDate iso={report.resolved_at} /></p>}
         </section>
       )}
-      <div className="mt-5 grid gap-4">
+      <div className="mt-6 grid gap-6">
         {report.status === 'open' && <DismissPanel report={report} />}
         <ModerationPanel report={report} index={index} feedIncomplete={feedIncomplete} />
       </div>
@@ -344,51 +344,54 @@ export default function ModerationPage() {
   const selected = items.find((item) => item.id === selectedId) ?? null;
 
   if (me.isLoading || orgs.isLoading) {
-    return <div className="mx-auto w-full max-w-6xl px-4 py-7 text-sm text-text-tertiary sm:px-6">Loading…</div>;
+    return (
+      <PageContainer width="wide">
+        <MarketplaceNav />
+        <p className="text-sm text-text-tertiary">Loading…</p>
+      </PageContainer>
+    );
   }
 
   if (!allowed) {
     return (
-      <div className="mx-auto w-full max-w-6xl px-4 py-7 sm:px-6">
+      <PageContainer width="wide">
+        <MarketplaceNav />
         <EmptyState
           title="Moderation is limited to admins"
           description="The marketplace moderation queue is available to platform admins and to owners and admins of an organization."
         />
-      </div>
+      </PageContainer>
     );
   }
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-4 py-7 sm:px-6">
+    <PageContainer width="wide">
       <MarketplaceNav />
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-text-primary">Moderation queue</h1>
-          <p className="mt-1 max-w-2xl text-sm text-text-secondary">
-            {isPlatformAdmin(me.data)
-              ? 'Reports on public and personal listings, plus any organization you administer.'
-              : 'Reports on listings in the organizations you own or administer.'}{' '}
-            Every action is audited and published to the revocations feed.
-          </p>
-        </div>
-        <div className="w-56">
-          <Select aria-label="Filter reports by status" value={status} onValueChange={(value) => { setStatus(value); setSelectedId(null); }} options={STATUS_OPTIONS} />
-        </div>
-      </header>
+      <PageHeader
+        title="Moderation queue"
+        description={`${isPlatformAdmin(me.data)
+          ? 'Reports on public and personal listings, plus any organization you administer.'
+          : 'Reports on listings in the organizations you own or administer.'} Every action is audited and published to the revocations feed.`}
+        actions={
+          <div className="w-48">
+            <Select aria-label="Filter reports by status" value={status} onValueChange={(value) => { setStatus(value); setSelectedId(null); }} options={STATUS_OPTIONS} />
+          </div>
+        }
+      />
 
-      <RevocationIncompleteNotice error={revocations.error} hasPrevious={!!revocations.data} className="mt-4" />
+      <RevocationIncompleteNotice error={revocations.error} hasPrevious={!!revocations.data} className="mb-4" />
 
-      {reports.isLoading && <p className="mt-6 text-sm text-text-tertiary">Loading reports…</p>}
+      {reports.isLoading && <p className="text-sm text-text-tertiary">Loading reports…</p>}
       {reports.error && (
-        <div className="mt-6"><ExplanationAlert explanation={explainModerationError(reports.error)} /></div>
+        <div><ExplanationAlert explanation={explainModerationError(reports.error)} /></div>
       )}
       {reports.data && items.length === 0 && (
-        <div className="mt-6">
+        <div>
           <EmptyState title="Nothing to review" description="No reports match this filter for the listings you moderate." />
         </div>
       )}
       {items.length > 0 && (
-        <ul className="mt-6 divide-y divide-border overflow-hidden rounded-xl border border-border bg-bg-elevated">
+        <ul className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-surface">
           {items.map((report) => (
             <li key={report.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
               <div className="min-w-0 flex-1">
@@ -416,6 +419,6 @@ export default function ModerationPage() {
         </div>
       )}
       {selected && <ReportDetail report={selected} index={revocations.data} feedIncomplete={isRevocationFeedIncomplete(revocations.error)} onClose={() => setSelectedId(null)} />}
-    </div>
+    </PageContainer>
   );
 }

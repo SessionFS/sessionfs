@@ -982,8 +982,8 @@ async def _create_knowledge_entry(db, *, project_id, entry_type="discovery",
     return e
 
 
-async def _create_knowledge_link(db, *, project_id, source_type="kb",
-                                 source_id="1", target_type="kb",
+async def _create_knowledge_link(db, *, project_id, source_type="entry",
+                                 source_id="1", target_type="entry",
                                  target_id="2"):
     import uuid as _uuid
     link = KnowledgeLink(
@@ -1692,9 +1692,9 @@ async def test_step_knowledge_entries_exact_duplicate_skipped(db_session: AsyncS
     assert src_entry.id in skipped
     assert src_unique.id not in skipped
     # Map redirects duplicate to target equivalent.
-    assert entry_id_map[src_entry.id] == tgt_entry.id
+    assert entry_id_map[str(src_entry.id)] == str(tgt_entry.id)
     # Unique entry identity-mapped.
-    assert entry_id_map[src_unique.id] == src_unique.id
+    assert entry_id_map[str(src_unique.id)] == str(src_unique.id)
 
 
 @pytest.mark.anyio
@@ -1753,7 +1753,7 @@ async def test_step_knowledge_links_rewrite_deduped_ref(db_session: AsyncSession
     # Source link references the deduped entry.
     link = await _create_knowledge_link(
         db_session, project_id=src.id,
-        source_type="kb", source_id="old_src_ke_id",
+        source_type="entry", source_id="old_src_ke_id",
         target_type="file", target_id="some_file",
     )
 
@@ -1832,13 +1832,13 @@ async def test_step_knowledge_links_self_collision_guard(db_session: AsyncSessio
 
     link1 = await _create_knowledge_link(
         db_session, project_id=src.id,
-        source_type="kb", source_id="x",
-        target_type="kb", target_id="z",
+        source_type="entry", source_id="x",
+        target_type="entry", target_id="z",
     )
     link2 = await _create_knowledge_link(
         db_session, project_id=src.id,
-        source_type="kb", source_id="y",
-        target_type="kb", target_id="z",
+        source_type="entry", source_id="y",
+        target_type="entry", target_id="z",
     )
 
     skipped = await _step_knowledge_links(

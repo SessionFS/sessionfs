@@ -138,6 +138,27 @@
         { "name": "list_skill_install_requests", "desc": "Install requests for this project" },
         { "name": "cancel_skill_install_request", "desc": "Cancel a pending install request" }
       ]
+    },
+    {
+      "id": "project-groups",
+      "label": "Project groups",
+      "tools": [
+        { "name": "list_project_groups", "desc": "An org's project groups and your role in each" },
+        { "name": "get_project_group", "desc": "One group's members, projects and compile setting" },
+        { "name": "create_project_group", "desc": "Create a project group (org admin)" },
+        { "name": "update_project_group", "desc": "Rename a group or turn its knowledge compile on or off" },
+        { "name": "delete_project_group", "desc": "Delete a project group (org admin)" },
+        { "name": "add_project_to_group", "desc": "Add a project to a group" },
+        { "name": "remove_project_from_group", "desc": "Remove a project from a group" },
+        { "name": "list_group_members", "desc": "A group's member grants" },
+        { "name": "grant_group_access", "desc": "Give a member reader, editor or admin access" },
+        { "name": "revoke_group_access", "desc": "Remove a member's group access" },
+        { "name": "list_group_access", "desc": "Every group you have access to, across orgs" },
+        { "name": "search_group_knowledge", "desc": "Search claims across the group's projects you can read" },
+        { "name": "get_group_context", "desc": "The group's compiled knowledge overview" },
+        { "name": "compile_group_knowledge", "desc": "Rebuild the group's knowledge overview" },
+        { "name": "ask_group", "desc": "Research a question across a group, with sources" }
+      ]
     }
   ]
 }

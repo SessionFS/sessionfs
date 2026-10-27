@@ -55,7 +55,7 @@ function DisclosureFields({ disclosure }: { disclosure: MarketplaceDisclosure })
   return (
     <div className="mt-3" data-testid="disclosure-fields">
       <p className="text-xs font-semibold text-text-primary">Every disclosed field ({leaves.length})</p>
-      <ul className="mt-1 max-h-64 overflow-auto rounded-lg bg-bg-elevated p-2 font-mono text-2xs text-text-secondary">
+      <ul className="mt-1 max-h-64 overflow-auto rounded-lg bg-bg-elevated p-2 font-mono text-2xs text-text-secondary" tabIndex={0} aria-label="Every disclosed field">
         {leaves.map(([path, value]) => (
           <li key={path} data-leaf={path} className="break-all">
             {path} = {value}
@@ -175,7 +175,7 @@ export function DisclosureCard({ disclosure }: { disclosure: MarketplaceDisclosu
       {tools.map(([tool, item]) => (
         <div key={tool} className="mt-3 text-xs" data-testid={`disclosure-tool-${tool}`}>
           <p className="font-semibold text-text-primary">{tool}: <span className="font-normal">{item.summary}</span></p>
-          <ul className="mt-1 max-h-40 overflow-auto font-mono text-2xs text-text-tertiary">
+          <ul className="mt-1 max-h-40 overflow-auto font-mono text-2xs text-text-tertiary" tabIndex={0} aria-label={`Files written for ${tool}`}>
             {item.writes.map((path) => <li key={path}>writes {path}</li>)}
           </ul>
           {item.writes_total > item.writes.length && (
@@ -189,7 +189,7 @@ export function DisclosureCard({ disclosure }: { disclosure: MarketplaceDisclosu
       {disclosure.shell_commands.length > 0 && (
         <div className="mt-3" data-testid="disclosure-shell">
           <p className="text-xs text-text-tertiary">Shell commands the instructions tell the agent to run</p>
-          <ul className="mt-1 max-h-40 overflow-auto font-mono text-2xs text-text-secondary">
+          <ul className="mt-1 max-h-40 overflow-auto font-mono text-2xs text-text-secondary" tabIndex={0} aria-label="Shell commands">
             {disclosure.shell_commands.map((command) => (
               <li key={`${command.path}:${command.line}`}>{command.path}:{command.line} {command.text}</li>
             ))}
@@ -280,7 +280,7 @@ export function UpdateDiff({ diff }: { diff: UpdateDiffDetail }) {
       ))}
       <div className="mt-2" data-testid="update-deltas">
         <p className="text-xs font-semibold text-text-primary">Scanner, hidden-character and provenance changes</p>
-        <ul className="mt-1 max-h-40 overflow-auto rounded-lg bg-bg-elevated p-2 font-mono text-2xs text-text-secondary">
+        <ul className="mt-1 max-h-40 overflow-auto rounded-lg bg-bg-elevated p-2 font-mono text-2xs text-text-secondary" tabIndex={0} aria-label="Scanner, hidden-character and provenance changes">
           {deltaLeaves.map(([path, value]) => (
             <li key={path} data-leaf={path} className="break-all">
               {path} = {value}

@@ -133,11 +133,16 @@ export function parseActionProposed(data: string): HelperActionProposal | null {
     if (!r || typeof r.id !== 'string' || typeof r.change !== 'string' || !ACTION_CHANGES.has(r.change)) continue;
     targets.push({ ...(r as object), id: r.id, name: typeof r.name === 'string' ? r.name : r.id } as HelperActionTarget);
   }
+  const params =
+    a.params && typeof a.params === 'object' && !Array.isArray(a.params)
+      ? (a.params as Record<string, unknown>)
+      : {};
   return {
     id: a.id,
     kind: a.kind,
     summary: typeof a.summary === 'string' ? a.summary : '',
     targets,
+    params,
     expires_at: typeof a.expires_at === 'string' ? a.expires_at : null,
   };
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { ApiError } from '../api/client';
 import {
   answerAsPlainText,
+  appendStepText,
   classifyError,
   describeToolStep,
   citeHref,
@@ -15,6 +16,10 @@ import {
   processCitations,
   relativeTime,
   sourceHref,
+  citationAgeLabel,
+  citationAgeSpoken,
+  wikiHref,
+  citationTimestamp,
   type SessionSource,
 } from './format';
 import { activeOption, scopeOptions } from './scope';
@@ -32,8 +37,8 @@ describe('processCitations', () => {
     );
     expect(markdown).toBe('A [1](#sfs-cite-1-m4) then [2](#sfs-cite-2) and [1](#sfs-cite-1-m2).');
     expect(sources).toEqual([
-      { kind: 'session', n: 1, sessionId: 's_b', title: 'B', messageIndexes: [2, 4], verified: true },
-      { kind: 'session', n: 2, sessionId: 's_a', title: 'A', messageIndexes: [], verified: true },
+      { kind: 'session', n: 1, sessionId: 's_b', title: 'B', messageIndexes: [2, 4], verified: true, at: null },
+      { kind: 'session', n: 2, sessionId: 's_a', title: 'A', messageIndexes: [], verified: true, at: null },
     ]);
   });
 
@@ -44,7 +49,7 @@ describe('processCitations', () => {
 
   it('appends cited sessions the text never marked', () => {
     const { sources } = processCitations('no markers', [{ session_id: 's_1', message_index: 7, title: 'T' }]);
-    expect(sources).toEqual([{ kind: 'session', n: 1, sessionId: 's_1', title: 'T', messageIndexes: [7], verified: true }]);
+    expect(sources).toEqual([{ kind: 'session', n: 1, sessionId: 's_1', title: 'T', messageIndexes: [7], verified: true, at: null }]);
   });
 
   it('numbers doc and session sources in one shared order', () => {
@@ -60,7 +65,7 @@ describe('processCitations', () => {
     expect(markdown).toBe('See [1](#sfs-cite-1) then [2](#sfs-cite-2) and [3](#sfs-cite-3).');
     expect(sources).toEqual([
       { kind: 'doc', n: 1, slug: 'integrations/jira', anchor: 'setup', title: 'Jira Cloud', url: 'https://sessionfs.dev/integrations/jira/#setup', verified: true },
-      { kind: 'session', n: 2, sessionId: 's_a', title: 'A', messageIndexes: [], verified: true },
+      { kind: 'session', n: 2, sessionId: 's_a', title: 'A', messageIndexes: [], verified: true, at: null },
       { kind: 'doc', n: 3, slug: 'quickstart', anchor: null, title: 'Quickstart', url: 'https://sessionfs.dev/quickstart/', verified: true },
     ]);
   });
@@ -211,6 +216,50 @@ describe('time helpers', () => {
   });
 });
 
+describe('citation freshness', () => {
+  const now = Date.parse('2026-10-25T12:00:00');
+
+  it('shows no age for citations without a usable timestamp', () => {
+    expect(citationAgeLabel(null, now)).toBeNull();
+    expect(citationAgeLabel(undefined, now)).toBeNull();
+    expect(citationAgeLabel('', now)).toBeNull();
+    expect(citationAgeLabel('not a date', now)).toBeNull();
+    expect(citationAgeSpoken(null, now)).toBeNull();
+    expect(citationAgeSpoken('not a date', now)).toBeNull();
+  });
+
+  it('spells the age out for screen readers', () => {
+    expect(citationAgeSpoken('2026-10-25T12:00:00', now)).toBe('updated today');
+    expect(citationAgeSpoken('2026-10-24T11:00:00', now)).toBe('updated 1 day ago');
+    expect(citationAgeSpoken('2026-10-10T12:00:00', now)).toBe('updated 15 days ago');
+    expect(citationAgeSpoken('2026-07-25T12:00:00', now)).toBe('updated 3 months ago');
+    expect(citationAgeSpoken('2025-10-25T12:00:00', now)).toBe('updated 1 year ago');
+  });
+
+  it('links a wiki citation to the page itself', () => {
+    expect(wikiHref('proj_1', 'architecture')).toBe(
+      '/projects/proj_1?tab=knowledge&sub=pages&page=architecture',
+    );
+    expect(wikiHref('proj_1', 'guides/setup')).toBe(
+      '/projects/proj_1?tab=knowledge&sub=pages&page=guides%2Fsetup',
+    );
+    expect(wikiHref('proj_1')).toBe('/projects/proj_1?tab=knowledge&sub=pages');
+  });
+
+  it('labels relative age in days, months and years', () => {
+    expect(citationAgeLabel('2026-10-25T12:00:00', now)).toBe('today');
+    expect(citationAgeLabel('2026-10-10T12:00:00', now)).toBe('15d');
+    expect(citationAgeLabel('2026-07-25T12:00:00', now)).toBe('3mo');
+    expect(citationAgeLabel('2025-10-25T12:00:00', now)).toBe('1y');
+  });
+
+  it('gives the exact timestamp for the tooltip and nothing when unknown', () => {
+    expect(citationTimestamp(null)).toBe('');
+    expect(citationTimestamp('not a date')).toBe('');
+    expect(citationTimestamp('2026-10-10T08:30:00')).toBe(new Date('2026-10-10T08:30:00').toLocaleString());
+  });
+});
+
 describe('scope options', () => {
   it('offers the entry scope, the thread scope and all sessions, labelled', () => {
     const entry = { project_id: 'p1', label: 'Acme' };
@@ -280,5 +329,46 @@ describe('references', () => {
       ]),
     ).toBeNull();
     expect(repoLinksFor([{ git_remote_normalized: 'grp/sub/repo', provider: 'github' }])).toBeNull();
+  });
+});
+
+describe('appendStepText', () => {
+  it('joins deltas within a step as-is', () => {
+    expect(appendStepText('The middle', 'ware', false)).toBe('The middleware');
+  });
+
+  it('starts a new paragraph for the first text of a new step', () => {
+    expect(appendStepText('…ran on DeepSeek.', 'I can see…', true)).toBe('…ran on DeepSeek.\n\nI can see…');
+  });
+
+  it('adds only the missing part of the break', () => {
+    expect(appendStepText('Done.\n', 'Next', true)).toBe('Done.\n\nNext');
+    expect(appendStepText('Done.', '\nNext', true)).toBe('Done.\n\nNext');
+    expect(appendStepText('Done.\n\n', 'Next', true)).toBe('Done.\n\nNext');
+    expect(appendStepText('Done.', '\n\nNext', true)).toBe('Done.\n\nNext');
+    // A newline on each side already makes the break — never a third.
+    expect(appendStepText('Done.\n', '\nNext', true)).toBe('Done.\n\nNext');
+  });
+
+  it('never leads the answer with a break', () => {
+    expect(appendStepText('', 'Hello', true)).toBe('Hello');
+  });
+});
+
+describe('describeToolStep — model filters', () => {
+  it('names the model or provider a step filters by', () => {
+    expect(describeToolStep({ name: 'list_session_models', args: {}, status: 'ok' })).toBe(
+      'Checked which models your sessions used',
+    );
+    expect(describeToolStep({ name: 'list_recent_sessions', args: { model: ['deepseek', 'qwen'] }, status: 'running' })).toBe(
+      'Listing sessions using “deepseek or qwen”',
+    );
+    expect(describeToolStep({ name: 'list_recent_sessions', args: {}, status: 'ok' })).toBe('Listed recent sessions');
+    expect(describeToolStep({ name: 'search_sessions', args: { provider: 'anthropic' }, status: 'ok' })).toBe(
+      'Searched sessions using “anthropic”',
+    );
+    expect(describeToolStep({ name: 'trash_sessions', args: { model: 'deepseek' }, status: 'ok' })).toBe(
+      'Prepared a move to Trash using “deepseek”',
+    );
   });
 });

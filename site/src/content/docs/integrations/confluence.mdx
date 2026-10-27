@@ -1,0 +1,121 @@
+---
+title: Confluence Cloud
+description: Sync wiki pages and the project context to Confluence Cloud as polished pages. One way, Enterprise.
+---
+
+Sync a project's wiki pages and context document to Confluence Cloud as real, polished pages. The link is **one way**: SessionFS creates or updates the Confluence page from the SessionFS source and reads the page's version back for drift detection. Changes made in Confluence never come back. The wiki page and context document stay the source of truth.
+
+Available on the **Enterprise** plan, from the dashboard, the CLI and the API. Added in v0.26.0.
+
+## What it does
+
+A member of a project's organization who can edit the project can:
+
+- **Preview** a Confluence page built from a wiki page or the project context, without sending anything to Confluence.
+- **Publish** it. The first publish creates the page; later publishes update its content. Markdown is converted through a strict allowlist to Confluence storage format — never raw markup.
+- **Opt into the scheduled sweep**, which batch-pushes opted-in wiki pages and, when the mapping allows it, the context tree on a schedule without a model call. A wiki page opts in with its **Publish** switch, which changes only that flag.
+- **Resolve drift** (project admins). If Confluence was edited since the last push, the link is marked drifted and must be overwritten or unlinked before publishing again.
+
+Each source links to at most one Confluence page, so publishing again updates the same page instead of creating a duplicate. Publishing is safe to retry:
+
+- Each page gets a `sessionfs-…` label right after it is created. If a publish times out or its answer is lost once the page may exist, the link is kept as *unconfirmed* (never dropped), and the next publish adopts the page by its id, its label (CQL `label = "…"`), or its exact title before creating anything. A page is only adopted if it is in the mapped space, was created by the connection's account, is not older than the publish that went missing, and is not already linked to another SessionFS source (`409 confluence_title_conflict`).
+- If Confluence refuses a create outright (for example a page with that title already exists), nothing is adopted: the publish returns `409 confluence_create_refused` and the next publish simply tries to create again. Two wiki pages of one project with the same title get distinct Confluence titles (`Title (slug)`).
+- Two publishes of the same source at once can't both run: the second gets `409 publish_in_progress`, never a false drift.
+- One publish shares a single 60-second deadline across all its Confluence calls.
+- A body over the 1 MiB cap is refused before anything is sent.
+
+## Setup
+
+1. **Connect the org** (org owners and admins): on the Organization page's **Integrations** tab, choose **Connect** on the Confluence row, or:
+
+   ```bash
+   sfs org confluence connect \
+     --site-url https://acme.atlassian.net \
+     --email docs@acme.com \
+     --template reference
+   ```
+
+   The credentials are checked against Confluence first (the current-user endpoint). You'll be prompted for an Atlassian API token, which is encrypted at rest and never returned.
+
+2. **Map projects** to a Confluence space and parent page under **Manage → Mappings**, or with `PUT /api/v1/orgs/{org_id}/integrations/confluence/mappings/{project_id}`. A mapping sets the space key, a parent page (which must be in that space and a real child page, never the space's home page), an optional template override, and two opt-ins: publish the context document (this also shows the context tab's publish button), and include opted-in wiki pages in the scheduled sweep. Both pickers in the **Add mapping** dialog are searchable against the real Confluence site.
+
+3. **Publish pages.** On a wiki page or the context tab, **Publish to Confluence** opens a preview. From the CLI:
+
+   ```bash
+   sfs project confluence publish my-page --preview
+   sfs project confluence publish my-page
+   sfs project confluence publish --context
+   ```
+
+The Confluence row on the Integrations tab shows a one-line summary of any problems. **Manage** opens **Overview** (health first: unmapped projects, drifted links, unconfirmed publishes and push failures from the last 24 hours, with in-progress publishes listed for information), **Connection** (a read-only summary; **Edit connection** opens the form) and **Mappings** (`sfs org confluence status`).
+
+## Templates
+
+Five built-in templates: **Reference** (`reference`), **Architecture** (`architecture`), **Runbook** (`runbook`), **Onboarding** (`onboarding`), and **Concept** (`concept`). The org picks a default when connecting, and a project mapping can override it.
+
+Each template is a list of sections:
+
+- **Copied word for word** from the source: claims by type, session evidence, and backlinks. These never come from a model.
+- **Reworded** sections are built from the source fields (page body, context sections, claims, evidence, compile metadata) and, when the org or user has an LLM key, reshaped by that model.
+
+Every reworded paragraph has to cite a real source field, or it is dropped; a section with nothing left falls back to the plain draft. With no LLM key, every section uses the plain draft.
+
+Custom Confluence templates are out of the MVP — only the built-ins exist.
+
+Every published page ends with a footer such as `Generated by SessionFS · Shaped by 12 active claims (9 current, 2 aging, 1 stale) · last compile <ts> · template Reference`. Only active claims count. When the dashboard URL is configured it also links back to the source page.
+
+Publishing echoes the template the preview used; if the mapping's or the org's default template changed since, publish is refused with `409 template_changed` and you preview again.
+
+## Drift, stale links and resolution
+
+Before an update SessionFS reads the page's version. If someone edited the page in Confluence since the last publish, the link is marked drifted and publish returns `409 confluence_page_drifted` with a short diff of what changed in Confluence. A project admin then chooses **Overwrite** (the next publish replaces the Confluence edit) or **Stop syncing** (unlink; the next publish creates a fresh page) in the publish dialog or through the resolve endpoint. Unlink and resolve wait while a publish is in progress.
+
+Resolve and unlink are shown to project admins only.
+
+A link belongs to the organization and Confluence site it was created on. If the connection moves to another site, or the link came from another organization, the link is *stale*: publish and resolve refuse with `409 confluence_link_stale` and touch nothing; the publish dialog shows the stale link so an admin can unlink it. Transferring or merging a project removes its Confluence mapping and page links.
+
+If a linked page was deleted in Confluence, the next publish removes the link and returns `409 confluence_page_missing`; publishing again by hand creates a fresh page, while the scheduled sweep leaves it alone so automation never resurrects a deleted page. Confluence answers the same way when the page still exists but the connection's account lost permission to see it; restore the permission and unlink and republish. Moving a mapping to another space forgets the links to pages in the old space (they stay in Confluence, and the move is audited) so the next publish and the sweep create them in the new one; the move waits while a publish is in progress. Saving a mapping makes you the admin the sweep publishes as.
+
+Drift is detected when you publish; webhook-driven drift and pulling Confluence edits back into SessionFS are planned for later.
+
+## Scheduled sweep
+
+Operators run `POST /api/v1/admin/sweeps/confluence-publish` (platform admin, or a `platform_sweeps:run` service key; optional `{"limit": N}`, default 100). Each run:
+
+- rotates through opted-in mappings, least recently attempted first, stamping each one before working it, so a failing or very large mapping can't starve the others; at most 20 publishes per mapping per run, with pages that failed last time tried after the healthy ones;
+- skips a mapping when the org no longer has the Confluence feature or the mapping's creator is no longer an org owner or admin — every publish is attributed to that creator;
+- publishes the context tree (the context page, with one child page per section) when the mapping publishes context, and wiki pages switched to **Publish** when it auto-publishes pages;
+- skips anything unchanged since its last publish, or changed within the connection's batch window, so several compiles become one publish. Drifted, unlinked and stale pages are left alone.
+
+Running the sweep again with nothing changed does nothing and calls Confluence zero times.
+
+## Security
+
+- The Atlassian API token is encrypted at rest and never returned or logged.
+- Site URLs must be `https://<name>.atlassian.net`. Redirects aren't followed, requests time out after 20 seconds, and responses are capped.
+- Raw HTML and markup are escaped, not injected; links are limited to `http(s)` and `mailto:`.
+- Source text is redacted for secrets before any of it reaches a model, even when the org has no DLP policy, and the final page is redacted again with the org's DLP policy before it is sent (the preview shows the redacted text).
+- Org routes check membership and the org's plan; project routes check the project's org, require org membership and edit standing on the project, and reuse the existing `knowledge:read` / `knowledge:write` scopes. Service keys can list links but not publish, unlink or resolve.
+
+## API
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| GET / PUT / DELETE | `/api/v1/orgs/{org_id}/integrations/confluence` | Read, save or remove the connection |
+| POST | `/api/v1/orgs/{org_id}/integrations/confluence/test` | Validate credentials without saving |
+| GET | `/api/v1/orgs/{org_id}/integrations/confluence/spaces[/{key}/pages]` | List/search spaces and pages |
+| GET | `/api/v1/orgs/{org_id}/integrations/confluence/templates` | List the built-in templates |
+| GET / PUT / DELETE | `/api/v1/orgs/{org_id}/integrations/confluence/mappings[/{project_id}]` | Read, save or remove mappings |
+| GET | `/api/v1/orgs/{org_id}/integrations/confluence/health` | Unmapped projects, failures, drifted links |
+| POST | `/api/v1/projects/{pid}/confluence/preview` | Draft a page |
+| POST | `/api/v1/projects/{pid}/confluence/publish` | Create or update the page |
+| GET | `/api/v1/projects/{pid}/confluence/links` | List the project's page links |
+| DELETE | `/api/v1/projects/{pid}/confluence/links/{link_id}` | Unlink (project admin) |
+| POST | `/api/v1/projects/{pid}/confluence/links/{link_id}/resolve` | Resolve drift: overwrite or unlink |
+
+| PATCH | `/api/v1/projects/{pid}/pages/{slug}` | Set a wiki page's `publish` opt-in (flag only) |
+
+## Limitations
+
+- Confluence Cloud is the only documentation provider so far.
+- Failures are reported when you publish; there is no background retry. A failed update of a linked page is listed in the health view until the next successful publish.

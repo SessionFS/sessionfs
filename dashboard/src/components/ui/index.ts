@@ -2,6 +2,7 @@ export { Badge, ToolBadge, ModelBadge } from './Badge';
 export { Button } from './Button';
 export { Card } from './Card';
 export { Input, Textarea, Select } from './Input';
+export { Combobox, type ComboboxOption } from './Combobox';
 export { Dialog, DialogHeader, DialogFooter } from './Dialog';
 export { Drawer } from './Drawer';
 export { Tabs, TabPanel } from './Tabs';

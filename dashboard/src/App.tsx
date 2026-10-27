@@ -21,6 +21,7 @@ const HandoffClaimLanding = React.lazy(() => import('./handoffs/HandoffClaimLand
 const AdminDashboard = React.lazy(() => import('./admin/AdminDashboard'));
 const BillingPage = React.lazy(() => import('./billing/BillingPage'));
 const OrgPage = React.lazy(() => import('./org/OrgPage'));
+const GroupDetailPage = React.lazy(() => import('./org/groups/GroupDetailPage'));
 const ProjectsPage = React.lazy(() => import('./projects/ProjectsPage'));
 const ProjectDetail = React.lazy(() => import('./projects/ProjectDetail'));
 const TransferInbox = React.lazy(() => import('./transfers/TransferInbox'));
@@ -102,6 +103,7 @@ export default function App() {
               <Route path="/settings/:section" element={<SettingsPage />} />
               <Route path="/settings/billing" element={<BillingPage />} />
               <Route path="/settings/organization" element={<OrgPage />} />
+              <Route path="/settings/organization/groups/:groupId" element={<GroupDetailPage />} />
               <Route path="/help" element={<HelpPage />} />
               <Route
                 path="/admin"

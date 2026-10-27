@@ -38,8 +38,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs mcp install --for claude-code</span></div>
             <div class="mt-2 text-muted">MCP server configured for Claude Code.</div>
             <div class="text-muted">Restart Claude Code to activate.</div>
-            <div class="mt-4 text-muted-dim">85 tools available to your AI agent:</div>
-            <div class="mt-1 text-muted-dim">Session tools (8):</div>
+            <div class="mt-4 text-muted-dim">100 tools available to your AI agent:</div>
+            <div class="mt-1 text-muted-dim">Session tools (10):</div>
             <div class="text-txt">&bull; <span class="text-brand">search_sessions</span> <span class="text-muted-dim">— Search past sessions</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_session_context</span> <span class="text-muted-dim">— Full conversation from a session</span></div>
             <div class="text-txt">&bull; <span class="text-brand">list_recent_sessions</span> <span class="text-muted-dim">— Browse recent work</span></div>
@@ -48,6 +48,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div class="text-txt">&bull; <span class="text-brand">get_audit_report</span> <span class="text-muted-dim">— Trust audit report</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_session_provenance</span> <span class="text-muted-dim">— Which rules instructed a session</span></div>
             <div class="text-txt">&bull; <span class="text-brand">ask_session_helper</span> <span class="text-muted-dim">— Ask the helper over sessions you can read</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">get_session_retrieval_log</span> <span class="text-muted-dim">— What an agent retrieved during a session</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">rename_session</span> <span class="text-muted-dim">— Rename a session or set its alias</span></div>
             <div class="mt-2 text-muted-dim">Knowledge read (9):</div>
             <div class="text-txt">&bull; <span class="text-brand">get_project_context</span> <span class="text-muted-dim">— Full wiki: overview + pages + concepts</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_context_section</span> <span class="text-muted-dim">— One section of the context doc</span></div>
@@ -58,31 +60,40 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div class="text-txt">&bull; <span class="text-brand">get_knowledge_entry</span> <span class="text-muted-dim">— One entry's full record</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_knowledge_health</span> <span class="text-muted-dim">— Pending / compiled counts</span></div>
             <div class="text-txt">&bull; <span class="text-brand">ask_project</span> <span class="text-muted-dim">— Q&A with sources_cited</span></div>
-            <div class="mt-2 text-muted-dim">Knowledge write (5):</div>
+            <div class="mt-2 text-muted-dim">Knowledge write (8):</div>
             <div class="text-txt">&bull; <span class="text-accent">add_knowledge</span> <span class="text-muted-dim">— Save a discovery / decision / pattern</span></div>
             <div class="text-txt">&bull; <span class="text-accent">update_wiki_page</span> <span class="text-muted-dim">— Create or update a wiki page</span></div>
             <div class="text-txt">&bull; <span class="text-accent">list_wiki_pages</span> <span class="text-muted-dim">— Browse wiki structure</span></div>
             <div class="text-txt">&bull; <span class="text-accent">compile_knowledge_base</span> <span class="text-muted-dim">— Trigger a compile pass</span></div>
             <div class="text-txt">&bull; <span class="text-accent">dismiss_knowledge_entry</span> <span class="text-muted-dim">— Dismiss a stale or wrong entry (audited)</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">update_entry_confidence</span> <span class="text-muted-dim">— Raise or lower an entry's confidence</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">promote_entry</span> <span class="text-muted-dim">— Promote a note to a claim</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">promote_eligible_entries</span> <span class="text-muted-dim">— Promote every eligible note at once</span></div>
             <div class="mt-2 text-muted-dim">Rules (2):</div>
             <div class="text-txt">&bull; <span class="text-brand">get_rules</span> <span class="text-muted-dim">— Canonical project rules</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_compiled_rules</span> <span class="text-muted-dim">— Compiled rules per tool</span></div>
-            <div class="mt-2 text-muted-dim">Personas (5) — <span class="text-accent">Pro+</span>:</div>
+            <div class="mt-2 text-muted-dim">Personas (7) — <span class="text-accent">Pro+</span>:</div>
             <div class="text-txt">&bull; <span class="text-brand">list_personas</span> <span class="text-muted-dim">— Project personas</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_persona</span> <span class="text-muted-dim">— One persona's full content</span></div>
             <div class="text-txt">&bull; <span class="text-accent">create_persona</span> <span class="text-muted-dim">— Define a new project persona</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">update_persona</span> <span class="text-muted-dim">— Edit a persona</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">delete_persona</span> <span class="text-muted-dim">— Retire a persona</span></div>
             <div class="text-txt">&bull; <span class="text-accent">assume_persona</span> <span class="text-muted-dim">— Tag captured sessions with this persona</span></div>
             <div class="text-txt">&bull; <span class="text-accent">forget_persona</span> <span class="text-muted-dim">— Clear the active persona bundle</span></div>
-            <div class="mt-2 text-muted-dim">Tickets (11) — <span class="text-accent">Team+</span>:</div>
+            <div class="mt-2 text-muted-dim">Tickets (15) — <span class="text-accent">Team+</span>:</div>
             <div class="text-txt">&bull; <span class="text-brand">list_tickets</span> <span class="text-muted-dim">— Filter by status / assignee</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_ticket</span> <span class="text-muted-dim">— Ticket detail + dependencies</span></div>
             <div class="text-txt">&bull; <span class="text-accent">create_ticket</span> <span class="text-muted-dim">— Open new ticket (acceptance criteria required for agents)</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">update_ticket</span> <span class="text-muted-dim">— Edit a ticket (diff comment + audit)</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">approve_ticket</span> <span class="text-muted-dim">— Approve a suggested ticket</span></div>
             <div class="text-txt">&bull; <span class="text-accent">start_ticket</span> <span class="text-muted-dim">— Atomic claim + compiled context + bundle write</span></div>
             <div class="text-txt">&bull; <span class="text-accent">complete_ticket</span> <span class="text-muted-dim">— Send to review, clear owned bundle</span></div>
             <div class="text-txt">&bull; <span class="text-accent">resolve_ticket</span> <span class="text-muted-dim">— Mark done from review</span></div>
             <div class="text-txt">&bull; <span class="text-accent">assign_persona</span> <span class="text-muted-dim">— Set the persona on a ticket</span></div>
             <div class="text-txt">&bull; <span class="text-accent">escalate_ticket</span> <span class="text-muted-dim">— Audit comment + raise priority</span></div>
             <div class="text-txt">&bull; <span class="text-accent">add_ticket_comment</span> <span class="text-muted-dim">— Slack-like thread</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">list_ticket_comments</span> <span class="text-muted-dim">— Page through a ticket's comments</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">get_ticket_review_state</span> <span class="text-muted-dim">— Open findings + last review verdict</span></div>
             <div class="text-txt">&bull; <span class="text-accent">watch_ticket</span> <span class="text-muted-dim">— Follow a ticket to be told when it changes</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_ticket_updates</span> <span class="text-muted-dim">— Poll what changed on followed tickets</span></div>
             <div class="mt-2 text-muted-dim">Agent runs (4) — <span class="text-accent">Team+</span>:</div>
@@ -90,6 +101,23 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div class="text-txt">&bull; <span class="text-accent">complete_agent_run</span> <span class="text-muted-dim">— Record findings, evaluate fail-on policy</span></div>
             <div class="text-txt">&bull; <span class="text-accent">replay_agent_run</span> <span class="text-muted-dim">— Re-run with an edited prompt or context</span></div>
             <div class="text-txt">&bull; <span class="text-brand">list_agent_runs</span> <span class="text-muted-dim">— Browse runs by persona / status / ticket</span></div>
+            <div class="mt-2 text-muted-dim">Agent feedback (3) — <span class="text-accent">Team+</span>:</div>
+            <div class="text-txt">&bull; <span class="text-accent">record_agent_feedback</span> <span class="text-muted-dim">— Record how an agent run or ticket turned out</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">list_agent_feedback</span> <span class="text-muted-dim">— Browse feedback records</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">get_agent_feedback_summary</span> <span class="text-muted-dim">— Counts by type and verdict</span></div>
+            <div class="mt-2 text-muted-dim">Handoffs (8) — <span class="text-accent">Pro+</span>:</div>
+            <div class="text-txt">&bull; <span class="text-accent">create_handoff</span> <span class="text-muted-dim">— Hand work to a teammate or team</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">claim_handoff</span> <span class="text-muted-dim">— Claim a handoff with its ticket and context</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">get_handoff</span> <span class="text-muted-dim">— One handoff in full</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">list_inbox_handoffs</span> <span class="text-muted-dim">— Handoffs sent to you</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">list_sent_handoffs</span> <span class="text-muted-dim">— Handoffs you sent</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">revoke_handoff</span> <span class="text-muted-dim">— Withdraw a handoff</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">decline_handoff</span> <span class="text-muted-dim">— Decline a handoff</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">add_handoff_comment</span> <span class="text-muted-dim">— Comment on a handoff</span></div>
+            <div class="mt-2 text-muted-dim">Checkpoints (3):</div>
+            <div class="text-txt">&bull; <span class="text-accent">checkpoint_session</span> <span class="text-muted-dim">— Snapshot a session</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">list_checkpoints</span> <span class="text-muted-dim">— A session's checkpoints</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">fork_session</span> <span class="text-muted-dim">— Branch a new session from a checkpoint</span></div>
             <div class="mt-2 text-muted-dim">Work queues (6):</div>
             <div class="text-txt">&bull; <span class="text-accent">create_work_queue</span> <span class="text-muted-dim">— Aim an agent at a queue of tickets</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_work_queue</span> <span class="text-muted-dim">— Queue config + progress</span></div>
@@ -108,6 +136,12 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div class="text-txt">&bull; <span class="text-brand">list_skill_install_requests</span> <span class="text-muted-dim">— Project install requests</span></div>
             <div class="text-txt">&bull; <span class="text-accent">cancel_skill_install_request</span> <span class="text-muted-dim">— Cancel a pending request</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_skill_policy</span> <span class="text-muted-dim">— Your org's skills policy, per tool</span></div>
+            <div class="mt-2 text-muted-dim">Project groups (15):</div>
+            <div class="text-txt">&bull; <span class="text-brand">search_group_knowledge</span> <span class="text-muted-dim">— Search claims across a group's projects you can read</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">get_group_context</span> <span class="text-muted-dim">— The group's compiled overview</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">ask_group</span> <span class="text-muted-dim">— Research a question across a group, with sources</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">update_project_group</span> <span class="text-muted-dim">— Rename a group or turn its knowledge compile on</span></div>
+            <div class="text-muted-dim">&hellip; plus list, create, delete, add/remove projects, members, grant/revoke access, compile</div>
           </div>
         </div>
       </div>

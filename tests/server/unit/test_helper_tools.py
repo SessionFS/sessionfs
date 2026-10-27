@@ -293,6 +293,7 @@ def test_tool_specs_exposes_read_and_proposal_tools():
     assert {s.name for s in specs} == {
         "search_sessions",
         "list_recent_sessions",
+        "list_session_models",
         "find_related_sessions",
         "get_session_summary",
         "get_session_excerpts",
@@ -306,6 +307,16 @@ def test_tool_specs_exposes_read_and_proposal_tools():
         "search_sessionfs_docs",
         "get_sessionfs_doc",
         "trash_sessions",
+        "list_tickets",
+        "get_ticket",
+        "list_wiki_pages",
+        "get_wiki_page",
+        "list_agent_runs",
+        "get_agent_run",
+        "list_personas",
+        "propose_ticket",
+        "propose_assignment",
+        "propose_comment",
     }
     for s in specs:
         assert isinstance(s.input_schema, dict)
@@ -351,10 +362,16 @@ async def test_search_sessions_scope_project_not_widened(db_session, test_user, 
         db_session, test_user, blob_store=blob_store,
         scope=HelperScope(project_id=pa.id), audit=RecordingSink(),
     )
-    # Model asks for project B; scope (project A) must win.
+    # Model asks for project B: refused (never silently swapped for A), and
+    # nothing from B comes back.
     result = await _run(ctx, "search_sessions", {"query": "sso", "project_id": pb.id})
-    assert "alpha SSO" in result.content
+    assert result.is_error
+    assert f"limited to project {pa.id}" in result.content
     assert "beta SSO" not in result.content
+    # Without a project the scope applies.
+    scoped = await _run(ctx, "search_sessions", {"query": "sso"})
+    assert "alpha SSO" in scoped.content
+    assert "beta SSO" not in scoped.content
 
 
 @pytest.mark.asyncio
@@ -380,7 +397,10 @@ async def test_list_recent_sessions_happy_path(db_session, test_user, blob_store
     ctx = _ctx(db_session, test_user, blob_store=blob_store, audit=RecordingSink())
     result = await _run(ctx, "list_recent_sessions", {})
     assert "newest" in result.content
-    assert result.content.startswith("[session:")
+    # The paging note leads; the session lines follow.
+    first, second = result.content.splitlines()[:2]
+    assert first.startswith("Showing 1–1 of 1 sessions")
+    assert second.startswith("[session:")
 
 
 @pytest.mark.asyncio

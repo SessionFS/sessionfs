@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Badge } from '../components/Badge';
 import EmptyState from '../components/EmptyState';
-import { Card, Select, TableShell } from '../components/ui';
+import { Card, PageContainer, PageHeader, Select, TableShell } from '../components/ui';
 import { useOrgSkillUsage } from '../hooks/useMarketplace';
 import { useMe } from '../hooks/useMe';
 import MarketplaceNav from './MarketplaceNav';
@@ -23,28 +23,27 @@ export default function OrgUsagePage() {
   const usage = useOrgSkillUsage(active || undefined, days);
   const items = usage.data?.items || [];
   return (
-    <div className="mx-auto w-full max-w-5xl space-y-5 px-4 py-7 sm:px-6">
+    <PageContainer width="wide">
       <MarketplaceNav />
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-text-primary">Skill usage</h1>
-          <p className="mt-1 max-w-3xl text-sm text-text-secondary">
-            Installs, active installs and translation failures from your organization's members, by package and tool,
-            with stale and deprecated packages called out.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          {orgs.length > 1 && (
-            <Select aria-label="Organization" value={active} onValueChange={setOrgId} options={orgs.map((org) => ({ value: org.org_id, label: org.name }))} />
-          )}
-          <Select
-            aria-label="Window"
-            value={String(days)}
-            onValueChange={(value) => setDays(Number(value))}
-            options={[{ value: '7', label: 'Last 7 days' }, { value: '30', label: 'Last 30 days' }, { value: '90', label: 'Last 90 days' }]}
-          />
-        </div>
-      </header>
+      <PageHeader
+        title="Skill usage"
+        description="Installs, active installs and translation failures from your organization's members, by package and tool, with stale and deprecated packages called out."
+        actions={
+          <>
+            {orgs.length > 1 && (
+              <Select aria-label="Organization" value={active} onValueChange={setOrgId} options={orgs.map((org) => ({ value: org.org_id, label: org.name }))} />
+            )}
+            <Select
+              aria-label="Window"
+              value={String(days)}
+              onValueChange={(value) => setDays(Number(value))}
+              options={[{ value: '7', label: 'Last 7 days' }, { value: '30', label: 'Last 30 days' }, { value: '90', label: 'Last 90 days' }]}
+            />
+          </>
+        }
+      />
+      <div className="space-y-5">
+        <h2 className="sr-only">Usage by package</h2>
       {!myOrgs.isLoading && orgs.length === 0 && (
         <EmptyState title="No organization to show" description="Organization owners and admins can see their members' skill usage here." />
       )}
@@ -97,6 +96,7 @@ export default function OrgUsagePage() {
           </TableShell>
         </Card>
       )}
-    </div>
+      </div>
+    </PageContainer>
   );
 }

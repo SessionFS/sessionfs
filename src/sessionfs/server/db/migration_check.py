@@ -37,7 +37,13 @@ def code_head_revision() -> str | None:
         from alembic.script import ScriptDirectory
     except ImportError:  # pragma: no cover - alembic is a server dependency
         return None
-    heads = ScriptDirectory(str(_MIGRATIONS_DIR)).get_heads()
+    try:
+        heads = ScriptDirectory(str(_MIGRATIONS_DIR)).get_heads()
+    except Exception:
+        # A dangling down_revision (e.g. a branch whose parent revision is not
+        # merged yet) makes alembic unable to walk the chain. Report None
+        # rather than raise — this module must never fail startup or readiness.
+        return None
     if len(heads) != 1:
         return None
     return heads[0]
@@ -78,8 +84,12 @@ def known_revisions() -> frozenset[str] | None:
         from alembic.script import ScriptDirectory
     except ImportError:  # pragma: no cover - alembic is a server dependency
         return None
-    script = ScriptDirectory(str(_MIGRATIONS_DIR))
-    return frozenset(rev.revision for rev in script.walk_revisions())
+    try:
+        script = ScriptDirectory(str(_MIGRATIONS_DIR))
+        return frozenset(rev.revision for rev in script.walk_revisions())
+    except Exception:
+        # Same dangling-down_revision case as ``code_head_revision``.
+        return None
 
 
 async def _read_db_revision(engine) -> str | None:

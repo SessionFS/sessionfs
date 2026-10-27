@@ -11,7 +11,10 @@ import {
 import { useToast } from '../hooks/useToast';
 import { useMe } from '../hooks/useMe';
 import { useMyOrgs } from '../transfers/useTransfers';
-import { canUnlinkTicket, hasJiraEnterpriseTier } from '../utils/jira';
+import { canUnlinkTicket, hasJiraEnterpriseTier, isJiraOrgMember } from '../utils/jira';
+import { hasConfluenceEnterpriseTier, isConfluenceOrgMember, type ConfluenceSurface } from '../utils/confluence';
+import { ConfluencePublishDialog } from './confluence/ConfluencePublishDialog';
+import { useConfluenceLinks } from '../hooks/useConfluencePublish';
 import RelativeDate from '../components/RelativeDate';
 import RulesTab from './RulesTab';
 import PersonasTab from './PersonasTab';
@@ -161,6 +164,15 @@ export default function ProjectDetail() {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [publishConfluenceOpen, setPublishConfluenceOpen] = useState(false);
+  // The context publish button follows the project mapping's
+  // publish_context flag, read from the links endpoint (any project member).
+  // Only fetched on an Enterprise Confluence surface; a 409 (not connected /
+  // no mapping) leaves the button hidden.
+  const confluenceEnterprise =
+    !!project?.org_id && isConfluenceOrgMember(project, myOrgs) && hasConfluenceEnterpriseTier(project, me);
+  const { data: confluenceLinks } = useConfluenceLinks(project?.id, confluenceEnterprise);
+  const canPublishContext = confluenceEnterprise && !!confluenceLinks?.mapping?.publish_context;
 
   // Fetch pending entries count for workflow hint
   const { data: pendingData } = useKnowledgeEntries(project?.id, { pending: true, limit: 1 });
@@ -280,13 +292,30 @@ export default function ProjectDetail() {
   // project + user + membership) and threaded down so the ticket detail stays
   // free of auth wiring. `canUnlinkTicket` uses the full org membership rather
   // than the primary-org `me.org_id`.
-  const jira: TicketJiraSurface | undefined = project.org_id
+  // Only members of the project's org may use its Jira connection (the server
+  // returns 403 org_membership_required to anyone else), so readers who are
+  // not members see no Jira surface at all.
+  const jira: TicketJiraSurface | undefined = project.org_id && isJiraOrgMember(project, myOrgs)
     ? {
         orgId: project.org_id,
         isProjectAdmin: canUnlinkTicket(project, me, myOrgs),
         isEnterprise: hasJiraEnterpriseTier(project, me),
       }
     : undefined;
+
+  // Confluence surface for the wiki and context sections, resolved here (the
+  // page already has the project + user + membership). Only members of the
+  // project's org may use its Confluence connection (the server returns 403
+  // org_membership_required to everyone else), so non-members see no
+  // Confluence surface at all.
+  const confluence: ConfluenceSurface | undefined =
+    project.org_id && isConfluenceOrgMember(project, myOrgs)
+      ? {
+          orgId: project.org_id,
+          isEnterprise: hasConfluenceEnterpriseTier(project, me),
+          canAdmin: project.can_admin === true,
+        }
+      : undefined;
 
   return (
     <div className="max-w-6xl w-full mx-auto px-4 py-6">
@@ -397,6 +426,11 @@ export default function ProjectDetail() {
                 </div>
                 {canEdit && (
                   <div className="flex items-center gap-2">
+                    {canPublishContext && (
+                      <Button variant="secondary" size="sm" onClick={() => setPublishConfluenceOpen(true)}>
+                        Publish to Confluence
+                      </Button>
+                    )}
                     <Button variant="secondary" onClick={handleEdit}>Edit</Button>
                   </div>
                 )}
@@ -451,7 +485,7 @@ export default function ProjectDetail() {
         <Panel sub={sub}><KnowledgeEntriesTab projectId={project.id} canEdit={canEdit} /></Panel>
       )}
       {section === 'knowledge' && sub === 'pages' && (
-        <Panel sub={sub}><PagesTab projectId={project.id} canEdit={canEdit} /></Panel>
+        <Panel sub={sub}><PagesTab projectId={project.id} canEdit={canEdit} confluence={confluence} initialSlug={searchParams.get('page')} /></Panel>
       )}
       {section === 'knowledge' && sub === 'history' && (
         <Panel sub={sub}><HistoryTab projectId={project.id} /></Panel>
@@ -481,6 +515,16 @@ export default function ProjectDetail() {
       )}
 
       </TabPanel>
+
+      {/* Confluence publish dialog for the compiled context document. */}
+      {publishConfluenceOpen && project.id && (
+        <ConfluencePublishDialog
+          projectId={project.id}
+          kind="context"
+          canAdmin={project.can_admin === true}
+          onClose={() => setPublishConfluenceOpen(false)}
+        />
+      )}
 
       {/* Delete confirmation modal */}
       <Dialog open={showDeleteConfirm} onClose={() => setShowDeleteConfirm(false)} titleId="delete-project-title">

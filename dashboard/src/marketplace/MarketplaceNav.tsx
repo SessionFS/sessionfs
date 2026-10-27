@@ -23,14 +23,17 @@ export default function MarketplaceNav() {
   ].filter((l) => l.show);
 
   return (
-    <nav aria-label="Marketplace sections" className="mb-5 flex flex-wrap gap-1">
+    <nav
+      aria-label="Marketplace sections"
+      className="mb-6 flex gap-1 overflow-x-auto border-b border-border pb-px [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+    >
       {links.map((l) => (
         <NavLink
           key={l.to}
           to={l.to}
           end={l.end}
           className={({ isActive }) =>
-            `rounded-md border px-3 py-1.5 text-sm font-medium transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
+            `shrink-0 whitespace-nowrap rounded-md border px-3 py-1.5 text-sm font-medium transition-colors outline-none focus-visible:shadow-[inset_0_0_0_2px_var(--brand-glow)] ${
               isActive
                 ? 'bg-surface border-border text-text-primary'
                 : 'border-transparent text-text-secondary hover:text-text-primary hover:bg-surface-hover'

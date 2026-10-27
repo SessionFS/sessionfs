@@ -111,6 +111,7 @@ describe('parseActionProposed', () => {
         { id: 'ses_a', name: 'A', change: 'will_change', before: 'active', after: 'trashed' },
         { id: 'ses_b', name: 'B', change: 'skipped', reason: 'not_owned' },
       ],
+      params: { session_ids: ['ses_a', 'ses_b'] },
       expires_at: '2026-10-25T12:00:00+00:00',
     });
     expect(ev.event).toBe('action_proposed');
@@ -122,8 +123,14 @@ describe('parseActionProposed', () => {
         { id: 'ses_a', name: 'A', change: 'will_change', before: 'active', after: 'trashed' },
         { id: 'ses_b', name: 'B', change: 'skipped', reason: 'not_owned' },
       ],
+      params: { session_ids: ['ses_a', 'ses_b'] },
       expires_at: '2026-10-25T12:00:00+00:00',
     });
+  });
+
+  it('defaults params to an empty object when the event has none', () => {
+    const ev = frame({ id: 'ha_3', kind: 'trash_sessions', targets: [], params: ['not', 'an', 'object'] });
+    expect(parseActionProposed(ev.data)?.params).toEqual({});
   });
 
   it('drops malformed targets and rejects payloads without an id', () => {

@@ -61,11 +61,12 @@ vi.mock('./SecondaryOrgPage', () => ({
   ),
 }));
 
-// JiraCard mounts the typed client; it has its own test file. Stub it so this
-// suite can assert the Integrations tab's admin-only gating.
-vi.mock('./JiraCard', () => ({
-  JiraCard: ({ orgId }: { orgId: string }) => (
-    <div data-testid={`jira-card-stub-${orgId}`}>jira card</div>
+// The Integrations tab mounts the typed client; IntegrationsTab, JiraCard and
+// ConfluenceCard have their own test files. Stub it so this suite can assert
+// the tab's admin-only gating.
+vi.mock('./integrations/IntegrationsTab', () => ({
+  default: ({ orgId, tier }: { orgId: string; tier: string }) => (
+    <div data-testid={`integrations-stub-${orgId}`}>integrations ({tier})</div>
   ),
 }));
 
@@ -249,7 +250,7 @@ describe('OrgPage', () => {
     expect(screen.getByRole('tab', { name: 'Policies' })).toBeInTheDocument();
   });
 
-  it('admins see the Integrations tab and its Jira card', async () => {
+  it('admins see the Integrations tab and its integrations', async () => {
     stubFetch((url) => {
       if (url.endsWith('/api/v1/org')) {
         return jsonOk({
@@ -285,7 +286,7 @@ describe('OrgPage', () => {
       expect(screen.getByRole('heading', { name: /sessionfs/i })).toBeInTheDocument();
     });
     await userEvent.setup().click(screen.getByRole('tab', { name: 'Integrations' }));
-    expect(screen.getByTestId('jira-card-stub-org_x')).toBeInTheDocument();
+    expect(screen.getByTestId('integrations-stub-org_x')).toHaveTextContent('integrations (enterprise)');
   });
 
   it('clicking Invite Member opens the invite form and submits the POST', async () => {

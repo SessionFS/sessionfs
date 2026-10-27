@@ -13,7 +13,7 @@ from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
 from sessionfs.server.middleware import MetricsMiddleware, RequestLoggingMiddleware
-from sessionfs.server.routes import activation, admin, admin_licenses, agent_feedback, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, dlp, handoffs, health, helm, helper, helper_settings, jira, knowledge, llm_providers, marketplace, marketplace_disclosure, marketplace_discovery, marketplace_moderation, marketplace_publishers, marketplace_scanning, me, metrics, native_catalogs, org, org_llm_settings, org_members, personas, project_transfers, projects, residents, retrieval_audit, rules, sessions, settings, skill_policy, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, uploads, webhooks, wiki, work_queues
+from sessionfs.server.routes import activation, admin, admin_licenses, agent_feedback, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, confluence, dlp, handoffs, health, helm, helper, helper_settings, jira, knowledge, llm_providers, marketplace, marketplace_disclosure, marketplace_discovery, marketplace_moderation, marketplace_publishers, marketplace_scanning, me, metrics, native_catalogs, org, org_llm_settings, org_members, personas, project_groups, project_transfers, projects, residents, retrieval_audit, rules, sessions, settings, skill_policy, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, uploads, webhooks, wiki, work_queues
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -102,6 +102,12 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             root.mkdir(parents=True, exist_ok=True)
             app.state.blob_store = LocalBlobStore(root)
 
+        # The Jira completion-evidence job runs in a spawned task with no
+        # request, so it reads session archives through this bound store.
+        from sessionfs.server.services.jira_sync import set_jira_sync_blob_store
+
+        set_jira_sync_blob_store(app.state.blob_store)
+
         from sessionfs.server.email import NullProvider, create_email_provider
 
         provider = create_email_provider(config)
@@ -150,7 +156,10 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             # always readable there — which is why the bug was cloud-only.
             # v0.10.24 (febd732) added If-Match to allow_headers (send side);
             # this completes the round-trip by exposing ETag (read side).
-            expose_headers=["ETag"],
+            # GitHub #103: the unpaged Jira projects list reports a cut-off
+            # list through X-Jira-Projects-Truncated; expose it so a
+            # cross-origin caller can read it like a same-origin one.
+            expose_headers=["ETag", "X-Jira-Projects-Truncated"],
             max_age=3600,
         )
 
@@ -192,6 +201,9 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     # `/{project_id}/rules`, `/{project_id}/transfer`, and sibling endpoints.
     app.include_router(rules.router)
     app.include_router(project_transfers.router)
+    # Project-groups project subpath must precede projects' catch-all
+    # `/{git_remote_normalized:path}` (same precedence trick as rules/transfers).
+    app.include_router(project_groups.project_router)
     # Personas register BEFORE projects so the `/personas` subpath is
     # matched before projects' catch-all `/{git_remote_normalized:path}`
     # route (v0.10.1 Phase 2 — same precedence trick as rules/transfers).
@@ -203,12 +215,18 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(tickets.router)
     app.include_router(tickets.by_id_router)
     app.include_router(me.router)
+    app.include_router(project_groups.me_router)
     # Jira promotion routes register before projects.router's catch-all
     # `/{git_remote_normalized:path}` (same precedence trick as
     # rules/transfers/personas/tickets); org-scoped connection routes are
     # safe wherever they land but sit here for symmetry.
     app.include_router(jira.router)
     app.include_router(jira.org_router)
+    # Confluence promotion routes register before projects.router's catch-all
+    # for the same reason as Jira (page/context publish under /projects).
+    app.include_router(confluence.router)
+    app.include_router(confluence.org_router)
+    app.include_router(jira.webhook_router)
     # Agent runs same precedence (v0.10.2): `/agent-runs` subpath under
     # projects must beat the projects catch-all `/{git_remote:path}`.
     app.include_router(agent_runs.router)
@@ -235,6 +253,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(billing.webhook_router)
     app.include_router(org.router)
     app.include_router(org_members.router)
+    app.include_router(project_groups.router)
     app.include_router(org_llm_settings.router)
     app.include_router(helper_settings.user_router)
     app.include_router(helper_settings.org_router)

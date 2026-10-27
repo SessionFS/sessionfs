@@ -5,13 +5,13 @@
  * target list come from the stored preview.
  */
 
-import { useEffect, useId, useState, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 
-import { ApiError, type HelperAction, type HelperActionTarget } from '../api/client';
+import { ApiError, type HelperAction, type HelperActionConfirmBody, type HelperActionTarget } from '../api/client';
 import { errorMessage } from '../utils/errorMessage';
-import { Alert, Badge, Button, MonoText } from '../components/ui';
+import { Alert, Badge, Button, Input, MonoText, Select, Textarea } from '../components/ui';
 import {
   actionTitle,
   expiryLabel,
@@ -21,6 +21,8 @@ import {
   targetState,
   type TurnAction,
 } from './actions';
+import { refHref } from './format';
+import { renderRefLink } from './refs';
 import { helperActionKey, useDecideHelperAction, useHelperAction } from './useHelper';
 import { LayersIcon, RetryIcon, TrashIcon } from './icons';
 
@@ -59,6 +61,51 @@ function onOff(v: unknown): string {
   return v === true ? 'on' : 'off';
 }
 
+/** The model draft an editable card starts from; `params` is always an object. */
+function draftParam(params: Record<string, unknown> | undefined, key: string): unknown {
+  return params ? params[key] : undefined;
+}
+
+function asString(v: unknown, fallback = ''): string {
+  return typeof v === 'string' ? v : fallback;
+}
+
+/** One acceptance criterion per line in the editor. */
+function criteriaToText(v: unknown): string {
+  return Array.isArray(v) ? v.filter((c): c is string => typeof c === 'string').join('\n') : '';
+}
+
+function splitCriteria(text: string): string[] {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+const PRIORITIES = ['critical', 'high', 'medium', 'low'] as const;
+
+/** Editable draft for the ticket kinds; `criteria` is one item per line. */
+type TicketForm = {
+  title: string;
+  description: string;
+  criteria: string;
+  priority: string;
+  assigned_to: string;
+  body: string;
+};
+
+/** Seed the editor from the stored model draft (params may be absent/partial). */
+function seedForm(params: Record<string, unknown> | undefined): TicketForm {
+  return {
+    title: asString(draftParam(params, 'title')),
+    description: asString(draftParam(params, 'description')),
+    criteria: criteriaToText(draftParam(params, 'acceptance_criteria')),
+    priority: asString(draftParam(params, 'priority'), 'medium'),
+    assigned_to: asString(draftParam(params, 'assigned_to')),
+    body: asString(draftParam(params, 'body')),
+  };
+}
+
 function TargetRow({
   kind,
   target,
@@ -73,12 +120,23 @@ function TargetRow({
   const meta: string[] = [];
   if (isSession) {
     if (target.tool) meta.push(target.tool);
+    if (target.model) meta.push(target.model);
     const day = formatDay(target.created_at);
     if (day) meta.push(day);
-  } else if (target.change === 'will_change') {
-    meta.push(`Auto Narrative ${onOff(target.before)} → ${onOff(target.after)}`);
-  } else if (target.change === 'unchanged') {
-    meta.push(`Already ${onOff(target.after)}`);
+  } else if (kind === 'set_auto_narrative') {
+    if (target.change === 'will_change') {
+      meta.push(`Auto Narrative ${onOff(target.before)} → ${onOff(target.after)}`);
+    } else if (target.change === 'unchanged') {
+      meta.push(`Already ${onOff(target.after)}`);
+    }
+  } else if (kind === 'assign_ticket') {
+    // `before`/`after` are persona names (or null for unassigned), not flags.
+    const name = (v: unknown) => (typeof v === 'string' && v ? v : 'unassigned');
+    if (target.change === 'will_change') {
+      meta.push(`${name(target.before)} → ${name(target.after)}`);
+    } else if (target.change === 'unchanged') {
+      meta.push(`Already ${name(target.after)}`);
+    }
   }
   const reason = 'reason' in state ? state.reason : null;
   return (
@@ -127,21 +185,61 @@ export default function HelperActionCard({
   const expiredLocally = pending && !!record.expires_at && expiry === null;
   const status: HelperAction['status'] | null = record ? (expiredLocally ? 'expired' : record.status) : null;
 
+  const isCreate = action.kind === 'create_ticket';
+  const isComment = action.kind === 'comment_ticket';
+  const editable = pending && (isCreate || isComment);
+  const params = useMemo(() => record?.params ?? action.params ?? {}, [record?.params, action.params]);
+  // The editor shows the stored draft until the user types; a card restored
+  // from history therefore picks up the draft once the server read lands,
+  // and the user's edits are never clobbered by a later read.
+  const [edited, setEdited] = useState<TicketForm | null>(null);
+  const form = edited ?? seedForm(params);
+
+  function update(patch: Partial<TicketForm>) {
+    setEdited((prev) => ({ ...(prev ?? seedForm(params)), ...patch }));
+  }
+
+  function confirmBody(): HelperActionConfirmBody | undefined {
+    if (isCreate) {
+      const body: HelperActionConfirmBody = {
+        title: form.title.trim(),
+        description: form.description,
+        acceptance_criteria: splitCriteria(form.criteria),
+        priority: form.priority,
+      };
+      // Only send the assignee when the user changed it: an unchanged (or
+      // still blank) field keeps the draft, and clearing a drafted assignee
+      // sends null so the ticket is created unassigned.
+      const assignee = form.assigned_to.trim();
+      const drafted = asString(draftParam(params, 'assigned_to')).trim();
+      if (assignee !== drafted) body.assigned_to = assignee || null;
+      return body;
+    }
+    if (isComment) {
+      return { body: form.body.trim() };
+    }
+    return undefined;
+  }
+
   function run(decision: 'confirm' | 'cancel') {
     setLastDecision(decision);
     setError(null);
-    decide.mutate(decision, {
-      onError: (err) => {
-        if (record && (isExpiredError(err) || isCancelledError(err))) {
-          queryClient.setQueryData<HelperAction>(helperActionKey(action.id), {
-            ...record,
-            status: isExpiredError(err) ? 'expired' : 'cancelled',
-          });
-          return;
-        }
-        setError(err);
+    const body = decision === 'confirm' ? confirmBody() : undefined;
+    decide.mutate(
+      decision === 'confirm' ? { decision: 'confirm', body } : { decision: 'cancel' },
+      {
+        onError: (err) => {
+          if (record && (isExpiredError(err) || isCancelledError(err))) {
+            queryClient.setQueryData<HelperAction>(helperActionKey(action.id), {
+              ...record,
+              status: isExpiredError(err) ? 'expired' : 'cancelled',
+            });
+            return;
+          }
+          setError(err);
+        },
       },
-    });
+    );
   }
 
   const isTrash = action.kind === 'trash_sessions';
@@ -156,7 +254,12 @@ export default function HelperActionCard({
   const applied = [...results.values()].filter((r) => r.ok).length;
   const failed = results.size - applied;
   const appliedCount = results.size > 0 ? applied : changing;
-  const noun = (n: number) => (isTrash ? (n === 1 ? 'session' : 'sessions') : n === 1 ? 'project' : 'projects');
+  const noun = (n: number) => {
+    if (isTrash) return n === 1 ? 'session' : 'sessions';
+    if (action.kind === 'assign_ticket' || action.kind === 'comment_ticket') return n === 1 ? 'ticket' : 'tickets';
+    return n === 1 ? 'project' : 'projects';
+  };
+  const createdTicketId = [...results.values()].find((r) => r.ticket_id)?.ticket_id;
 
   const counts = [
     changing ? `${changing} will change` : null,
@@ -191,28 +294,50 @@ export default function HelperActionCard({
     );
   } else if (status === 'pending') {
     footer = (
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <Button
-          size="sm"
-          variant={isTrash ? 'danger' : 'primary'}
-          loading={decide.isPending && lastDecision === 'confirm'}
-          disabled={decide.isPending}
-          onClick={() => run('confirm')}
-        >
-          {isTrash ? 'Move to Trash' : 'Confirm'}
-        </Button>
-        <Button
-          size="sm"
-          variant="secondary"
-          loading={decide.isPending && lastDecision === 'cancel'}
-          disabled={decide.isPending}
-          onClick={() => run('cancel')}
-        >
-          Cancel
-        </Button>
-        <span className="ml-auto text-2xs tabular-nums text-text-tertiary">
-          {decide.isPending && lastDecision === 'confirm' ? 'Applying…' : expiry}
-        </span>
+      <div className="space-y-3">
+        {editable && (
+          <div className="space-y-2 rounded-lg border border-border bg-surface/60 p-2.5">
+            {isCreate ? (
+              <>
+                <Input title="Title" value={form.title} onChange={(e) => update({ title: e.target.value })} />
+                <Textarea title="Description" value={form.description} onChange={(e) => update({ description: e.target.value })} />
+                <Textarea title="Acceptance criteria" hint="One per line" value={form.criteria} onChange={(e) => update({ criteria: e.target.value })} />
+                <Select
+                  title="Priority"
+                  value={form.priority}
+                  onValueChange={(v) => update({ priority: v })}
+                  options={PRIORITIES.map((p) => ({ value: p, label: p }))}
+                />
+                <Input title="Assignee" placeholder="Persona name (optional)" value={form.assigned_to} onChange={(e) => update({ assigned_to: e.target.value })} />
+              </>
+            ) : (
+              <Textarea title="Comment" value={form.body} onChange={(e) => update({ body: e.target.value })} />
+            )}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <Button
+            size="sm"
+            variant={isTrash ? 'danger' : 'primary'}
+            loading={decide.isPending && lastDecision === 'confirm'}
+            disabled={decide.isPending}
+            onClick={() => run('confirm')}
+          >
+            {isTrash ? 'Move to Trash' : 'Confirm'}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={decide.isPending && lastDecision === 'cancel'}
+            disabled={decide.isPending}
+            onClick={() => run('cancel')}
+          >
+            Cancel
+          </Button>
+          <span className="ml-auto text-2xs tabular-nums text-text-tertiary">
+            {decide.isPending && lastDecision === 'confirm' ? 'Applying…' : expiry}
+          </span>
+        </div>
       </div>
     );
   } else if (status === 'confirmed') {
@@ -236,6 +361,9 @@ export default function HelperActionCard({
             </Link>{' '}
             within {TRASH_RETENTION_DAYS} days.
           </p>
+        )}
+        {isCreate && createdTicketId && (
+          <p>Created {renderRefLink(refHref('ticket', createdTicketId), createdTicketId)}.</p>
         )}
       </div>
     );

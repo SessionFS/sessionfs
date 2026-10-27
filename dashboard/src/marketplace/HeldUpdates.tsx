@@ -80,7 +80,7 @@ function HeldUpdateRow({ orgId, item, onStale }: { orgId: string; item: HeldUpda
   }
 
   return (
-    <li className="rounded-lg border border-border bg-bg-elevated p-4" data-testid={`held-update-${item.assignment.id}`}>
+    <li className="border-t border-border pt-4 first:border-t-0 first:pt-0" data-testid={`held-update-${item.assignment.id}`}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-semibold text-text-primary">{item.name}</span>
         <span className="font-mono text-xs text-text-tertiary">
@@ -141,9 +141,9 @@ export default function HeldUpdates({ orgId }: { orgId: string }) {
   const updates = useHeldUpdates(orgId);
   const items = updates.data?.pages.flatMap((page) => page.items) ?? [];
   return (
-    <section aria-labelledby="held-updates-heading" className="mt-4 rounded-lg border border-border bg-bg-sunken p-4">
-      <h3 id="held-updates-heading" className="text-sm font-semibold text-text-primary">Updates to review</h3>
-      <p className="mt-1 text-xs text-text-secondary">
+    <section aria-labelledby="held-updates-heading" className="mt-3">
+      <h3 id="held-updates-heading" className="sr-only">Updates to review</h3>
+      <p className="text-xs text-text-tertiary">
         Assigned packages with a newer version. Updates that change executable content or ask for more access stay on the
         current version until you advance them.
       </p>
@@ -154,7 +154,7 @@ export default function HeldUpdates({ orgId }: { orgId: string }) {
       ) : items.length === 0 ? (
         <p className="mt-3 text-sm text-text-tertiary">No assigned package has a newer version.</p>
       ) : (
-        <ul className="mt-3 space-y-3">
+        <ul className="mt-3 space-y-4">
           {items.map((item) => (
             <HeldUpdateRow key={item.assignment.id} orgId={orgId} item={item} onStale={() => void updates.refetch()} />
           ))}
@@ -171,11 +171,28 @@ export default function HeldUpdates({ orgId }: { orgId: string }) {
   );
 }
 
-/** Held-update queues for every org the viewer administers (selector when several). */
-export function HeldUpdateQueues({ orgs }: { orgs: OrgMembership[] }) {
-  const [chosen, setChosen] = useState<string>('');
+/** Held-update queues for every org the viewer administers (selector when
+ *  several). Pass value/onChange to control which org is shown. */
+export function HeldUpdateQueues({
+  orgs,
+  value,
+  onChange,
+  counts,
+}: {
+  orgs: OrgMembership[];
+  value?: string;
+  onChange?: (orgId: string) => void;
+  /** Waiting updates per org, shown in the selector when known. */
+  counts?: Record<string, number>;
+}) {
+  const [own, setOwn] = useState<string>('');
   if (orgs.length === 0) return null;
+  const chosen = value ?? own;
   const orgId = orgs.some((org) => org.org_id === chosen) ? chosen : orgs[0].org_id;
+  const choose = (next: string) => {
+    setOwn(next);
+    onChange?.(next);
+  };
   return (
     <div data-testid="held-update-queues">
       {orgs.length > 1 && (
@@ -184,8 +201,11 @@ export function HeldUpdateQueues({ orgs }: { orgs: OrgMembership[] }) {
             aria-label="Organization for updates to review"
             title="Organization"
             value={orgId}
-            onValueChange={setChosen}
-            options={orgs.map((org) => ({ value: org.org_id, label: org.name || org.org_id }))}
+            onValueChange={choose}
+            options={orgs.map((org) => ({
+              value: org.org_id,
+              label: `${org.name || org.org_id}${counts && org.org_id in counts ? ` (${counts[org.org_id]})` : ''}`,
+            }))}
           />
         </div>
       )}

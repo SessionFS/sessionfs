@@ -1,6 +1,8 @@
 import type { MarketplacePackage } from '../api/client';
 import type { GithubOidcProvenance, GitlabOidcProvenance } from '../api/publisherTypes';
 import { Badge } from '../components/Badge';
+import { VerifiedIcon } from './icons';
+import { isVerifiedPublisher } from './capabilities';
 
 const REPO_RE = /^github\.com\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
 // host[:port][/root]/group[/subgroup...]/project, as the server writes it.
@@ -30,6 +32,25 @@ export function PublisherBadge({ item, compact = false }: { item: MarketplacePac
     </span>
   );
 }
+
+/**
+ * Compact publisher mark for package cards: a decorative check icon next to
+ * the namespace (the card's title button carries the accessible "verified
+ * publisher" text, and the dossier shows the badge itself), a danger badge
+ * for a suspended or revoked publisher, nothing for an unverified one.
+ */
+export function VerifiedMark({ item }: { item: MarketplacePackage }) {
+  const publisher = item.publisher;
+  if (!publisher) return null;
+  if (publisher.status !== 'active') return <Badge label={`publisher ${publisher.status}`} variant="danger" tint />;
+  if (!isVerifiedPublisher(item)) return null;
+  return (
+    <span className="inline-flex text-brand" aria-hidden="true" data-testid="verified-mark">
+      <VerifiedIcon size={14} />
+    </span>
+  );
+}
+
 
 /** "pending review" / "rejected" listing state (visible to the publisher). */
 export function ListingReviewBadge({ item }: { item: MarketplacePackage }) {
@@ -73,17 +94,17 @@ function GitlabProvenancePanel({ signature }: { signature: GitlabOidcProvenance 
     ['Runner', signature.runner_environment || 'unknown'],
   ];
   return (
-    <section className="mt-4 rounded-lg border border-accent/30 bg-bg-sunken px-3 py-2" aria-labelledby="provenance-heading">
-      <h3 id="provenance-heading" className="text-2xs uppercase tracking-wider text-text-tertiary">Published from</h3>
+    <section className="mt-6" aria-labelledby="provenance-heading">
+      <h3 id="provenance-heading" className="text-sm font-semibold text-text-primary">Published from</h3>
       <p className="mt-1 text-xs text-text-secondary">
         Published by a trusted GitLab CI job; SessionFS verified GitLab&apos;s signed ID token for it.
         This shows where the version was published from, not how it was built: no build attestation binds this
         archive to the commit yet.
       </p>
-      <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+      <dl className="mt-3 grid gap-x-6 gap-y-1.5 text-xs sm:grid-cols-2">
         {rows.map(([label, value]) => (
           <div key={label} className="flex gap-2">
-            <dt className="text-text-tertiary">{label}</dt>
+            <dt className="w-28 shrink-0 text-text-tertiary">{label}</dt>
             <dd className="break-all text-text-primary">{value}</dd>
           </div>
         ))}
@@ -99,8 +120,8 @@ export function ProvenancePanel({ item }: { item: MarketplacePackage }) {
   }
   if (!isProvenance(signature)) {
     return (
-      <section className="mt-4 rounded-lg border border-border bg-bg-sunken px-3 py-2" aria-labelledby="provenance-heading">
-        <h3 id="provenance-heading" className="text-2xs uppercase tracking-wider text-text-tertiary">Published from</h3>
+      <section className="mt-6" aria-labelledby="provenance-heading">
+        <h3 id="provenance-heading" className="text-sm font-semibold text-text-primary">Published from</h3>
         <p className="mt-1 text-xs text-text-secondary">
           Uploaded with an API key. No CI publishing run is recorded for this version.
         </p>
@@ -127,17 +148,17 @@ export function ProvenancePanel({ item }: { item: MarketplacePackage }) {
     ['Runner', signature.runner_environment || 'unknown'],
   ];
   return (
-    <section className="mt-4 rounded-lg border border-accent/30 bg-bg-sunken px-3 py-2" aria-labelledby="provenance-heading">
-      <h3 id="provenance-heading" className="text-2xs uppercase tracking-wider text-text-tertiary">Published from</h3>
+    <section className="mt-6" aria-labelledby="provenance-heading">
+      <h3 id="provenance-heading" className="text-sm font-semibold text-text-primary">Published from</h3>
       <p className="mt-1 text-xs text-text-secondary">
         Published by a trusted GitHub Actions workflow run; SessionFS verified GitHub&apos;s signed OIDC token for it.
         This shows where the version was published from, not how it was built: no build attestation binds this
         archive to the commit yet.
       </p>
-      <dl className="mt-2 grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+      <dl className="mt-3 grid gap-x-6 gap-y-1.5 text-xs sm:grid-cols-2">
         {rows.map(([label, value]) => (
           <div key={label} className="flex gap-2">
-            <dt className="text-text-tertiary">{label}</dt>
+            <dt className="w-28 shrink-0 text-text-tertiary">{label}</dt>
             <dd className="break-all text-text-primary">{value}</dd>
           </div>
         ))}

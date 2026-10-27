@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -53,8 +52,12 @@ from sessionfs.server.services.auto_join import maybe_auto_join
 from sessionfs.server.roles import OrgRole
 from sessionfs.server.services.entitlements import apply_entitlement, lock_billing_owner
 from sessionfs.server.services.personas import clear_represented_user
+from sessionfs.server.services.project_groups import (
+    remove_project_from_all_groups,
+    revoke_user_group_grants,
+)
 from sessionfs.server.services.publishers import advisory_xact_lock
-from sessionfs.server.services.tracker_scope import drop_project_tracker_mapping
+from sessionfs.server.services.tracker_scope import drop_project_integration_mappings
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 
@@ -650,6 +653,18 @@ async def delete_user(
         update(ApiKey).where(ApiKey.user_id == user_id).values(is_active=False)
     )
 
+    # GitHub #101 — a grant only means something for a current org member:
+    # revoke every project-group grant (audited per grant) before the
+    # memberships go.
+    await revoke_user_group_grants(
+        db,
+        user_id=user_id,
+        org_id=None,
+        actor_user_id=admin.id,
+        actor_email=admin.email,
+        actor_role="platform_admin",
+        reason="user_deactivated",
+    )
     # Remove org memberships to free seats
     await db.execute(
         delete(OrgMember).where(OrgMember.user_id == user_id)
@@ -1763,21 +1778,10 @@ async def sweep_github_webhook_deliveries(
 
 
 def _digest_dashboard_url(config) -> str:
-    """Dashboard base URL for the digest's filtered-view links.
+    """Dashboard base URL for the digest's links (see ``dashboard_link_base``)."""
+    from sessionfs.server.config import dashboard_link_base
 
-    Resolution order: ``SFS_DASHBOARD_URL`` (``config.dashboard_url``), then
-    ``config.app_url`` (what invite emails already use), then ``""`` which
-    means "skip links". There is no hosted-dashboard fallback so self-hosted
-    installs never link recipients to the hosted app.
-    """
-    explicit_app_url = "app_url" in getattr(config, "model_fields_set", set()) or bool(
-        os.environ.get("SFS_APP_URL")
-    )
-    return str(
-        getattr(config, "dashboard_url", None)
-        or (getattr(config, "app_url", None) if explicit_app_url else None)
-        or ""
-    ).strip().rstrip("/")
+    return dashboard_link_base(config)
 
 
 @router.post("/sweeps/org-digest")
@@ -2381,6 +2385,117 @@ async def sweep_kb_compile(
         db,
         admin_id,
         "kb_compile_sweep",
+        "project",
+        "bulk",
+        {**result, **actor},
+    )
+    await db.commit()
+    return result
+
+
+@router.post("/sweeps/jira-sync")
+async def sweep_jira_sync(
+    body: dict | None = None,
+    auth: AuthContext = Depends(require_platform_sweeper()),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run the scheduled Jira two-way sync sweep (GitHub #98 remainder).
+
+    Delivers due outbound outbox rows (``state='pending'``, fewer than 5
+    attempts, ``next_attempt_at`` reached) — including rows whose request-time
+    background delivery was lost — with exponential backoff between attempts,
+    and expires terminal ``tracker_sync_events`` rows older than 90 days.
+    Accepts a platform-admin user key or a ``platform_sweeps:run`` service
+    key. Optional body {"limit": N (1–1000, default 100), "budget_seconds": S
+    (1–120, default 50)} bounds the run by count and wall clock. Each event is
+    committed on its own; safe to run repeatedly.
+    """
+    from sessionfs.server.db.engine import _session_factory
+    from sessionfs.server.services import jira_sync
+
+    limit = jira_sync.SWEEP_DEFAULT_LIMIT
+    budget = jira_sync.SWEEP_DEFAULT_BUDGET_SECONDS
+    if body and isinstance(body.get("limit"), int) and not isinstance(
+        body.get("limit"), bool
+    ):
+        limit = max(1, min(1000, body["limit"]))
+    raw_budget = body.get("budget_seconds") if body else None
+    if isinstance(raw_budget, (int, float)) and not isinstance(raw_budget, bool):
+        budget = max(1.0, min(120.0, float(raw_budget)))
+    if _session_factory is None:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    admin_id = auth.user.id
+    actor = sweep_actor_details(auth)
+    result = await jira_sync.run_jira_sync_sweep(db, limit=limit, budget_seconds=budget)
+    await _log_action(
+        db,
+        admin_id,
+        "jira_sync_sweep",
+        "tracker_sync_events",
+        "bulk",
+        {**result, **actor},
+    )
+    await db.commit()
+    return result
+
+
+@router.post("/sweeps/confluence-publish")
+async def sweep_confluence_publish(
+    request: Request,
+    body: dict | None = None,
+    auth: AuthContext = Depends(require_platform_sweeper()),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run the scheduled Confluence publish sweep (GitHub #99).
+
+    Works through Confluence space mappings that opted in (``publish_context``
+    → the context tree; ``auto_publish_pages`` → wiki pages with
+    ``publish = true``) for orgs with an enabled connection. Mappings rotate
+    by ``last_attempted_at`` (NULLS FIRST, stamped before any work); a mapping
+    is skipped unless the org still has ``confluence_integration`` and the
+    mapping's creator is still an org owner/admin — every publish is
+    attributed to that creator. A source is skipped when its content hash is
+    unchanged since its last publish or it changed within the connection's
+    batch window. Deterministic only — never the LLM. Accepts a
+    platform-admin user key or a ``platform_sweeps:run`` service key.
+    Optional body {"limit": N} bounds the publish attempts of the run
+    (default 100, max 1000).
+
+    Each source publishes in its own transaction through the same
+    claim-fenced create/adopt/update/drift engine as the interactive route; a
+    failure (or a drifted/in-flight source) is reported and does not stop the
+    batch. Re-running with nothing changed is a no-op: every source is skipped
+    as unchanged without any Confluence call.
+    """
+    from sessionfs.server.config import dashboard_link_base
+    from sessionfs.server.db.engine import _session_factory
+    from sessionfs.server.services.confluence_sweep import run_confluence_publish_sweep
+
+    limit = 100
+    if body and isinstance(body.get("limit"), int) and not isinstance(
+        body.get("limit"), bool
+    ):
+        limit = max(1, min(1000, body["limit"]))
+    if _session_factory is None:
+        raise HTTPException(status_code=503, detail="Database not initialized")
+
+    admin_id = auth.user.id
+    actor = sweep_actor_details(auth)
+    dashboard_url = dashboard_link_base(getattr(request.app.state, "config", None))
+    # End the request session's auth transaction; the sweep selects in a
+    # fresh short transaction and publishes each source in its own session.
+    await db.rollback()
+    result = await run_confluence_publish_sweep(
+        db,
+        limit=limit,
+        session_factory=_session_factory,
+        dashboard_url=dashboard_url,
+    )
+    await _log_action(
+        db,
+        admin_id,
+        "confluence_publish_sweep",
         "project",
         "bulk",
         {**result, **actor},
@@ -3135,8 +3250,19 @@ async def force_transfer_project(
     project.org_id = dest_org.id
     project.owner_id = new_owner_id
     project.updated_at = now
-    # Drop the old org's tracker mapping; existing links go stale.
-    await drop_project_tracker_mapping(db, project.id)
+    # Drop the old org's Jira/Confluence mappings (Jira links go stale,
+    # Confluence page links are dropped).
+    await drop_project_integration_mappings(db, project.id)
+    # Project groups are org-scoped: a project leaving an org leaves all of
+    # its groups (audited per membership) so no grant follows it.
+    await remove_project_from_all_groups(
+        db,
+        project_id=project.id,
+        actor_user_id=admin.id,
+        actor_email=admin.email,
+        actor_role="platform_admin",
+        reason="project_transferred",
+    )
     after = {
         "org_id": dest_org.id,
         "scope": dest_org.id,

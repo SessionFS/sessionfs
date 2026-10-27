@@ -1159,6 +1159,43 @@ sfs project compile-schedule weekly --no-after-claims
 
 `nightly` makes the project eligible every 24 hours, `weekly` every 7 days. `off` turns off the time-based schedule, but an `--after-claims` threshold still applies. Scheduled compiles use the deterministic compiler, never an LLM. On self-hosted servers the schedule takes effect only when something calls the compile sweep (see [Self-Hosted](/self-hosted/)).
 
+### `sfs project group` (Team+)
+
+Group an org's projects and grant people access to the whole group (v0.26.0). Every command addresses a group by its slug and takes `--org` (default: your default org); most take `--json`. `sfs project list --group SLUG` lists only that group's projects. See [Project Groups](/project-groups/).
+
+| Command | Description |
+|---|---|
+| `sfs project group list` | The org's groups |
+| `sfs project group create NAME [--slug S] [--description D]` | Create a group (org admin or owner) |
+| `sfs project group show GROUP` | A group's members and projects |
+| `sfs project group set GROUP [--name N] [--slug S] [--description D] [--compile\|--no-compile]` | Rename or describe a group, or turn its overview compile on or off (group admin) |
+| `sfs project group delete GROUP` | Delete a group (org admin or owner) |
+| `sfs project group add GROUP PROJECT_ID...` | Add projects (group admin who can edit each project) |
+| `sfs project group remove GROUP PROJECT_ID` | Remove a project (group admin) |
+| `sfs project group members GROUP` | Members and their roles |
+| `sfs project group grant GROUP USER --role reader\|editor\|admin` | Grant or change a member's role; `USER` is an org member's email or user id (group admin) |
+| `sfs project group revoke GROUP USER` | Revoke a member's grant (group admin) |
+| `sfs project group access` | Every group you have access to, across your orgs |
+| `sfs project group search GROUP [QUERY] [--entry-type T] [--limit N]` | Search knowledge claims across the group's projects you can read (`QUERY` 3–200 characters; omit it to list top claims) |
+| `sfs project group context GROUP` | The group's compiled overview |
+| `sfs project group compile GROUP` | Compile the overview (group editor or admin; the group must have compile turned on) |
+
+### `sfs project confluence publish` (Enterprise)
+
+Publish a wiki page, or with `--context` the project context document, to the Confluence space mapped to this project (v0.26.0). See [Confluence Cloud](/integrations/confluence/).
+
+```
+sfs project confluence publish architecture --preview
+sfs project confluence publish --context --yes
+```
+
+| Argument / option | Description |
+|---|---|
+| `slug` | Wiki page slug to publish |
+| `--context` | Publish the project context document instead of a wiki page |
+| `--preview` | Show the draft, with its citations and anything dropped, without publishing |
+| `--yes`, `-y` | Skip the confirmation prompt |
+
 ---
 
 ## `sfs rules`
@@ -1488,7 +1525,7 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed: 85, covering sessions (including `ask_session_helper`), knowledge, rules, personas, tickets (including `watch_ticket` and `get_ticket_updates`), agent runs (including `replay_agent_run`), agent feedback, handoffs, work queues and the skills marketplace. See [MCP Server](/mcp/) for the full catalogue.
+Tools exposed: 100, covering sessions (including `ask_session_helper`), knowledge, rules, personas, tickets (including `watch_ticket` and `get_ticket_updates`), agent runs (including `replay_agent_run`), agent feedback, handoffs, work queues, the skills marketplace and project groups. See [MCP Server](/mcp/) for the full catalogue.
 
 ---
 
@@ -1965,6 +2002,19 @@ Connect the org's Jira Cloud site (org admins, v0.23.0). The API token is encryp
 | `sfs org jira connect --site-url https://NAME.atlassian.net --email EMAIL --template agile\|compliance\|sre\|bug [--api-token TOKEN]` | Check the credentials against Jira and save the connection; the token is prompted for (hidden) when omitted |
 | `sfs org jira mappings` | Project to Jira project mappings (key, issue type, template override, done status) |
 | `sfs org jira health` | Unmapped projects, failed updates, and links not checked in 7+ days |
+| `sfs org jira templates list` | Built-in and org-custom story templates (v0.26.0) |
+| `sfs org jira templates show SLUG [--versions]` | One template and its sections; `--versions` lists a custom template's version history (v0.26.0) |
+
+## `sfs org confluence` (Enterprise)
+
+Connect the org's Confluence Cloud site and map projects to spaces (org admins, v0.26.0). See [Confluence Cloud](/integrations/confluence/).
+
+| Command | Description |
+|---|---|
+| `sfs org confluence status` | The connection, project mappings and publishing health |
+| `sfs org confluence connect --site-url https://NAME.atlassian.net --email EMAIL --template reference\|architecture\|runbook\|onboarding\|concept [--api-token TOKEN] [--batch-window MIN]` | Save the connection; the token is prompted for (hidden) when omitted |
+| `sfs org confluence map PROJECT_ID --space-key KEY --parent-page-id ID [--template T] [--publish-context] [--auto-publish-pages]` | Map a project to a space and parent page; `--auto-publish-pages` opts it into the scheduled publish sweep |
+| `sfs org confluence unmap PROJECT_ID` | Remove a project's mapping |
 
 ## `sfs policy` (Enterprise)
 

@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 85 tools in eleven categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, and Skills Marketplace.
+The MCP server exposes 100 tools in twelve categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Skills Marketplace, and Project Groups (Team+).
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -123,6 +123,16 @@ Ask the session helper a question over sessions and project knowledge you can al
 | `project` | string | no | Project ID (`proj_...`) to scope the question to |
 | `session_ids` | array | no | Session IDs (`ses_...`) to scope the question to |
 | `conversation_id` | string | no | Conversation ID (`hc_...`) to continue an existing helper thread |
+
+#### `rename_session`
+
+Rename a captured session's title and/or alias. Only the session's owner can rename it. Pass at least one of `new_title` or `new_alias`; an empty `new_alias` clears the alias. Setting an alias needs Starter or above; title edits work on every plan.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `session_id` | string | yes | Session ID (`ses_...`) or alias |
+| `new_title` | string | no | New title (up to 500 characters) |
+| `new_alias` | string | no | New alias (3–100 characters: letters, digits, hyphens, underscores; starts with a letter or digit). Empty string clears it |
 
 ### Knowledge Read
 
@@ -263,6 +273,36 @@ Dismiss a knowledge entry that is stale, wrong, or no longer relevant. Idempoten
 | `id` | number | yes | Knowledge entry ID |
 | `reason` | string | yes | Short justification (e.g., `"superseded by entry 412"` or `"wrong file path"`) |
 
+#### `update_entry_confidence`
+
+Set a knowledge entry's confidence (0.0–1.0). It doesn't promote the entry: once confidence is above the 0.8 promotion gate, call `promote_entry`.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | number | yes | Knowledge entry ID |
+| `confidence` | number | yes | New confidence, 0.0–1.0 |
+
+#### `promote_entry`
+
+Promote a knowledge entry from note to claim when it passes the quality gates: confidence of at least 0.8, at least 50 characters, and no near-duplicate (more than 85% word overlap) of an active claim. A failure returns 422 naming the gates that didn't pass. Only claims reach the compiled project context.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | number | yes | Knowledge entry ID |
+
+#### `promote_eligible_entries`
+
+Promote every eligible note in the project in one call. Dry-run by default: the result lists what would be promoted and why the rest was skipped (`too_short`, `low_confidence`, `duplicate`, `dismissed`, `superseded`, `wrong_type`). Notes written by people who can view but not edit the project are only counted (`reader_notes_excluded`) unless `include_reader_notes` is true. Run `compile_knowledge_base` afterwards.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `dry_run` | boolean | no | Default `true`; pass `false` to promote |
+| `min_length` | number | no | Minimum content length (default 50) |
+| `min_confidence` | number | no | Minimum confidence (default 0.8); ignored when `set_confidence` is given |
+| `set_confidence` | number | no | Set each candidate's confidence to this value before checking |
+| `entry_type` | string | no | Only consider this entry type |
+| `include_reader_notes` | boolean | no | Also consider notes from people who can only view the project |
+
 ### Rules (Read-only)
 
 #### `get_rules`
@@ -395,6 +435,21 @@ Open a new ticket. Agent-created tickets require ≥1 acceptance criterion + ≥
 | `depends_on` | array | no | List of ticket IDs |
 | `persona` | string | no | Assign a persona |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `update_ticket`
+
+Change a ticket's title, description, acceptance criteria, context or file references, dependencies or priority. Only the fields you pass change. Each update posts a diff comment on the ticket and records one audit row per changed field. Status changes go through the lifecycle tools and reassignment through `assign_persona`. Only the ticket's creator or a project admin can edit it.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | yes | Ticket ID |
+| `title` | string | no | New title |
+| `description` | string | no | New Markdown body |
+| `priority` | string | no | New priority |
+| `acceptance_criteria` | array | no | Replacement list of criteria |
+| `context_refs` / `file_refs` | array | no | Replacement reference lists |
+| `depends_on` | array | no | Replacement list of ticket IDs |
+| `lease_epoch` | number | no | Optional fence from `get_ticket`; returns 409 if the ticket has moved on |
 
 #### `approve_ticket`
 
@@ -613,6 +668,14 @@ Paginated read of the existing `GET /api/v1/projects/{id}/tickets/{id}/comments`
 | `limit` | number | no | Page size (default: 50) |
 | `cursor` | string | no | Opaque pagination cursor |
 
+#### `get_ticket_review_state`
+
+A compact summary of a review ticket: open and closed findings, the last verdict, and open-finding counts by severity, derived from the comment thread. Cheaper than reading a long thread with `list_ticket_comments`. Returns `review_state: null` for tickets with no review comments.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | yes | Ticket ID |
+
 ### Work Queues
 
 Point an agent at a queue of tickets and wake it repeatedly — via `/loop`, cron, or CI — to service, review, and close them with SessionFS as the source of truth. The server holds all loop state, so the agent resumes correctly with no chat memory: each wake returns one bounded directive, and a crash between steps re-emits the same directive rather than losing or repeating work. Modes: `review_until_clean` (auto-finishes an item only on a server-verified, trusted, literal `VERIFIED-CLEAN`), `implement_until_done`, and `triage`. A built-in safety envelope (per-item attempt cap with `2m → 5m → 15m → 60m` backoff that parks a stuck item for human reset, a per-wake ticket cap, a cadence floor, and a step rate limit) keeps an unattended loop bounded. These tools require the `work_queues:read` / `work_queues:write` scopes; acting on items also requires the relevant `tickets` / `agent_runs` write scopes. Available on all tiers. MCP / API only — there is no dashboard UI or CLI for work queues yet.
@@ -771,6 +834,28 @@ Marketplace tools separate discovery from authority. Search and preview return m
 | `cancel_skill_install_request` | Cancel a pending request as requester or project admin |
 
 Use the [Skills Marketplace guide](/skills-marketplace/) for the four consumption modes and their security boundaries.
+
+### Project Groups (Team+)
+
+Org-scoped groups of projects. Every tool addresses a group by its org-scoped slug and takes an optional `org_id` (default: your default org, `sfs config default-org`); `list_group_access` needs no org at all. Group-wide reads (`search_group_knowledge`, `get_group_context`, `ask_group`) only ever return content from member projects you can read yourself. See [Project Groups](/project-groups/).
+
+| Tool | Purpose |
+|------|---------|
+| `list_project_groups` | List an org's groups with counts and your role |
+| `get_project_group` | One group's members, member projects, and compile setting |
+| `create_project_group` | Create a group (org admin/owner) |
+| `update_project_group` | Rename, re-slug or re-describe a group, or turn its knowledge compile on/off with `compile_enabled` (group admin or org admin/owner) |
+| `delete_project_group` | Soft-delete a group (org admin/owner) |
+| `add_project_to_group` | Add a project (group admin with edit standing on it) |
+| `remove_project_from_group` | Remove a project (group admin) |
+| `list_group_members` | A group's member grants |
+| `grant_group_access` | Grant or change a member's role: `reader`, `editor`, `admin` (group admin) |
+| `revoke_group_access` | Revoke a member's grant (group admin) |
+| `list_group_access` | Every group you have standing on, across your orgs |
+| `search_group_knowledge` | Search active claims across the group's readable member projects (`q` 3–200 chars, `limit` ≤ 100) |
+| `get_group_context` | The group's compiled overview (only if you can read every contributing project) |
+| `compile_group_knowledge` | Compile the deterministic overview (group editor/admin or org admin; the group must have `compile_enabled`) |
+| `ask_group` | Research a question across the group's context and knowledge, with typed `sources_cited` including project ids |
 
 ## Agent Knowledge Contribution
 

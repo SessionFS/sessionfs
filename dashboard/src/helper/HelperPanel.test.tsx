@@ -210,6 +210,48 @@ afterEach(() => {
 });
 
 describe('HelperPanel — streaming', () => {
+  it('starts a new paragraph for text from a later model step', async () => {
+    fetchMock.mockResolvedValue(
+      okResponse([
+        ['conversation', { conversation_id: 'conv_steps' }],
+        ['text', { delta: 'Checking which sessions ran on DeepSeek.' }],
+        ['tool_call', { id: 't1', name: 'list_session_models', args: {} }],
+        ['tool_result', { id: 't1', name: 'list_session_models', ok: true }],
+        ['text', { delta: 'I can see two sessions.' }],
+        DONE,
+      ]),
+    );
+    renderPanel();
+    const user = userEvent.setup();
+    await ask(user, 'deepseek sessions?');
+
+    const first = await screen.findByText('Checking which sessions ran on DeepSeek.');
+    const second = screen.getByText('I can see two sessions.');
+    expect(first.tagName).toBe('P');
+    expect(second.tagName).toBe('P');
+    expect(first).not.toBe(second);
+  });
+
+  it('does not double the break the server already streamed', async () => {
+    fetchMock.mockResolvedValue(
+      okResponse([
+        ['conversation', { conversation_id: 'conv_steps2' }],
+        ['text', { delta: 'First.' }],
+        ['tool_call', { id: 't1', name: 'list_recent_sessions', args: { model: ['deepseek'] } }],
+        ['tool_result', { id: 't1', name: 'list_recent_sessions', ok: true }],
+        ['text', { delta: '\n\n' }],
+        ['text', { delta: 'Second.' }],
+        DONE,
+      ]),
+    );
+    renderPanel();
+    const user = userEvent.setup();
+    await ask(user, 'q');
+    const second = await screen.findByText('Second.');
+    expect(second.tagName).toBe('P');
+    expect(screen.getByRole('button', { name: /Listed sessions using “deepseek”/ })).toBeInTheDocument();
+  });
+
   it('streams an answer with tool steps, inline citation chips and a sources row', async () => {
     fetchMock.mockResolvedValue(
       okResponse([

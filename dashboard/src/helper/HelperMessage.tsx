@@ -6,6 +6,11 @@ import HelperActionCard from './HelperActionCard';
 import {
   parseCiteHref,
   sourceHref,
+  ticketHref,
+  wikiHref,
+  citationAgeLabel,
+  citationAgeSpoken,
+  citationTimestamp,
   ERROR_TITLES,
   answerAsPlainText,
   compactTokens,
@@ -121,6 +126,8 @@ export function ToolSteps({ steps, live }: { steps: ToolStep[]; live: boolean })
 
 function sourceLabel(s: Source, messageIndex?: number): string {
   if (s.kind === 'doc') return s.title;
+  if (s.kind === 'ticket') return s.title || `Ticket ${s.ticketId}`;
+  if (s.kind === 'wiki') return s.title || `Wiki ${s.slug}`;
   const indexes = messageIndex !== undefined ? [messageIndex] : s.messageIndexes;
   const msgs = indexes.length
     ? `, message${indexes.length > 1 ? 's' : ''} ${indexes.join(', ')}`
@@ -166,6 +173,13 @@ export function CitationChip({
       </span>
     );
   }
+  if ((source.kind === 'ticket' || source.kind === 'wiki') && !source.verified) {
+    return (
+      <span className={`${base} bg-bg-sunken text-text-tertiary`} title="Source not available to you">
+        {source.n}
+      </span>
+    );
+  }
   if (source.kind === 'doc') {
     return (
       <a
@@ -178,6 +192,40 @@ export function CitationChip({
       >
         {source.n}
       </a>
+    );
+  }
+  if (source.kind === 'ticket' && !source.projectId) {
+    // No project to link into: show the marker without a link.
+    return (
+      <span className={`${base} bg-[color-mix(in_oklch,var(--brand)_16%,transparent)] text-brand`} title={sourceLabel(source)}>
+        {source.n}
+      </span>
+    );
+  }
+  if (source.kind === 'ticket') {
+    return (
+      <Link
+        to={ticketHref(source.projectId ?? '', source.ticketId)}
+        onClick={onNavigate}
+        aria-label={`Source ${source.n}: ${sourceLabel(source)}`}
+        title={sourceLabel(source)}
+        className={`${base} bg-[color-mix(in_oklch,var(--brand)_16%,transparent)] text-brand transition-colors hover:bg-brand hover:text-text-on-brand outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]`}
+      >
+        {source.n}
+      </Link>
+    );
+  }
+  if (source.kind === 'wiki') {
+    return (
+      <Link
+        to={wikiHref(source.projectId, source.slug)}
+        onClick={onNavigate}
+        aria-label={`Source ${source.n}: ${sourceLabel(source)}`}
+        title={sourceLabel(source)}
+        className={`${base} bg-[color-mix(in_oklch,var(--brand)_16%,transparent)] text-brand transition-colors hover:bg-brand hover:text-text-on-brand outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]`}
+      >
+        {source.n}
+      </Link>
     );
   }
   return (
@@ -193,43 +241,130 @@ export function CitationChip({
   );
 }
 
+function sourceAgeLabel(s: Source): string | null {
+  // Only session/ticket/wiki citations carry a freshness timestamp; a docs
+  // page has none, and a citation without a usable ``at`` shows no badge.
+  return s.kind === 'doc' ? null : citationAgeLabel(s.at);
+}
+
+/** The chip's accessible name: number, label and (when known) the age in
+ *  words — the visible age badge is part of the name, not replaced by it. */
+function chipName(s: Source): string {
+  const age = s.kind === 'doc' ? null : citationAgeSpoken(s.at);
+  return `${s.n}. ${sourceLabel(s)}${age ? `, ${age}` : ''}`;
+}
+
+function sourceTitle(s: Source, messageIndex?: number): string {
+  const label = sourceLabel(s, messageIndex);
+  if (s.kind === 'doc') return label;
+  const exact = citationTimestamp(s.at);
+  return exact ? `${label} · ${exact}` : label;
+}
+
+const CHIP =
+  'group flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-bg-primary py-1 pl-1 pr-2 text-xs text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]';
+
+function SourceNumber({ n }: { n: number }) {
+  return (
+    <span className="grid h-4 min-w-4 shrink-0 place-items-center rounded bg-[color-mix(in_oklch,var(--brand)_16%,transparent)] px-1 text-2xs font-semibold tabular-nums text-brand">
+      {n}
+    </span>
+  );
+}
+
+function SourceAge({ age }: { age: string | null }) {
+  if (!age) return null;
+  return <span className="shrink-0 font-mono text-2xs text-text-tertiary">{age}</span>;
+}
+
 function Sources({ sources, onNavigate }: { sources: Source[]; onNavigate: () => void }) {
-  // Only confirmed sources: readable sessions and docs the server resolved.
+  // Only confirmed sources: readable sessions, resolved docs, and tickets/wiki
+  // that came from a tool result this turn.
   const shown = sources.filter((s) => s.verified && (s.kind !== 'doc' || s.url));
   if (shown.length === 0) return null;
   return (
     <div className="mt-3">
       <p className="mb-1.5 text-2xs font-semibold uppercase tracking-wide text-text-tertiary">Sources</p>
       <ul className="flex flex-wrap gap-1.5" aria-label="Sources">
-        {shown.map((s) =>
-          s.kind === 'doc' ? (
-            <li key={`doc:${s.slug}#${s.anchor ?? ''}`} className="min-w-0 max-w-full">
-              <a
-                href={s.url ?? undefined}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label={`${s.n}. ${sourceLabel(s)}${NEW_TAB}`}
-                title={sourceLabel(s)}
-                className="group flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-bg-primary py-1 pl-1 pr-2 text-xs text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
-              >
-                <span className="grid h-4 min-w-4 shrink-0 place-items-center rounded bg-[color-mix(in_oklch,var(--brand)_16%,transparent)] px-1 text-2xs font-semibold tabular-nums text-brand">
-                  {s.n}
-                </span>
-                <span className="min-w-0 truncate">{s.title}</span>
-              </a>
-            </li>
-          ) : (
+        {shown.map((s) => {
+          if (s.kind === 'doc') {
+            return (
+              <li key={`doc:${s.slug}#${s.anchor ?? ''}`} className="min-w-0 max-w-full">
+                <a
+                  href={s.url ?? undefined}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  aria-label={`${s.n}. ${sourceLabel(s)}${NEW_TAB}`}
+                  title={sourceTitle(s)}
+                  className={CHIP}
+                >
+                  <SourceNumber n={s.n} />
+                  <span className="min-w-0 truncate">{s.title}</span>
+                </a>
+              </li>
+            );
+          }
+          if (s.kind === 'ticket') {
+            const body = (
+              <>
+                <SourceNumber n={s.n} />
+                <span className="min-w-0 truncate">{s.title || s.ticketId}</span>
+                <SourceAge age={sourceAgeLabel(s)} />
+              </>
+            );
+            return (
+              <li key={`ticket:${s.ticketId}`} className="min-w-0 max-w-full">
+                {s.projectId ? (
+                  <Link
+                    to={ticketHref(s.projectId, s.ticketId)}
+                    onClick={onNavigate}
+                    aria-label={chipName(s)}
+                    title={sourceTitle(s)}
+                    className={CHIP}
+                  >
+                    {body}
+                  </Link>
+                ) : (
+                  // No project to link into: a plain chip, still named for
+                  // screen readers via visually hidden text (not a "note"
+                  // role or an aria-label on a generic span).
+                  <span title={sourceTitle(s)} className={CHIP}>
+                    <span aria-hidden="true" className="flex min-w-0 max-w-full items-center gap-1.5">
+                      {body}
+                    </span>
+                    <span className="sr-only">{chipName(s)}</span>
+                  </span>
+                )}
+              </li>
+            );
+          }
+          if (s.kind === 'wiki') {
+            return (
+              <li key={`wiki:${s.projectId}/${s.slug}`} className="min-w-0 max-w-full">
+                <Link
+                  to={wikiHref(s.projectId, s.slug)}
+                  onClick={onNavigate}
+                  aria-label={chipName(s)}
+                  title={sourceTitle(s)}
+                  className={CHIP}
+                >
+                  <SourceNumber n={s.n} />
+                  <span className="min-w-0 truncate">{s.title || s.slug}</span>
+                  <SourceAge age={sourceAgeLabel(s)} />
+                </Link>
+              </li>
+            );
+          }
+          return (
             <li key={s.sessionId} className="min-w-0 max-w-full">
               <Link
                 to={sourceHref(s.sessionId, s.messageIndexes[0])}
                 onClick={onNavigate}
-                aria-label={`${s.n}. ${sourceLabel(s)}`}
-                title={sourceLabel(s)}
-                className="group flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-bg-primary py-1 pl-1 pr-2 text-xs text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                aria-label={chipName(s)}
+                title={sourceTitle(s)}
+                className={CHIP}
               >
-                <span className="grid h-4 min-w-4 shrink-0 place-items-center rounded bg-[color-mix(in_oklch,var(--brand)_16%,transparent)] px-1 text-2xs font-semibold tabular-nums text-brand">
-                  {s.n}
-                </span>
+                <SourceNumber n={s.n} />
                 <span className="min-w-0 truncate">{s.title || s.sessionId}</span>
                 {s.messageIndexes.length > 0 && (
                   <span className="shrink-0 font-mono text-2xs text-text-tertiary">
@@ -237,10 +372,11 @@ function Sources({ sources, onNavigate }: { sources: Source[]; onNavigate: () =>
                     {s.messageIndexes.length > 3 ? '…' : ''}
                   </span>
                 )}
+                <SourceAge age={sourceAgeLabel(s)} />
               </Link>
             </li>
-          ),
-        )}
+          );
+        })}
       </ul>
     </div>
   );

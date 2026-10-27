@@ -25,7 +25,7 @@ import { ApiError } from '../api/client';
 
 // vi.mock is hoisted above imports, so any referenced variables must be
 // created inside vi.hoisted() which runs before the mock factory.
-const { hooks, mockAddToast, meData, jiraSurface } = vi.hoisted(() => ({
+const { hooks, mockAddToast, meData, jiraSurface, myOrgsData, confluenceLinks } = vi.hoisted(() => ({
   hooks: {
     useProject: vi.fn(),
     useProjects: vi.fn(),
@@ -39,6 +39,7 @@ const { hooks, mockAddToast, meData, jiraSurface } = vi.hoisted(() => ({
     useWikiPages: vi.fn(),
     useWikiPage: vi.fn(),
     useUpdateWikiPage: vi.fn(),
+    useSetWikiPagePublish: vi.fn(),
     useDeleteWikiPage: vi.fn(),
     useRegenerateWikiPage: vi.fn(),
     useUpdateProjectSettings: vi.fn(),
@@ -57,9 +58,27 @@ const { hooks, mockAddToast, meData, jiraSurface } = vi.hoisted(() => ({
   mockAddToast: vi.fn(),
   meData: { value: { user_id: 'u_1', tier: 'enterprise', effective_tier: 'enterprise' } },
   jiraSurface: { value: null as { isEnterprise?: boolean } | null },
+  myOrgsData: { value: [{ org_id: 'org_x', name: 'X', role: 'member' }] as { org_id: string; name: string; role: string }[] },
+  confluenceLinks: {
+    value: undefined as { links: unknown[]; mapping: { publish_context: boolean } } | undefined,
+    enabled: [] as boolean[],
+  },
 }));
 
 vi.mock('../hooks/useProjects', () => hooks);
+
+// The context "Publish to Confluence" button follows the links endpoint's
+// mapping.publish_context; capture whether the query was enabled.
+vi.mock('../hooks/useConfluencePublish', () => ({
+  useConfluenceLinks: (_projectId: string | undefined, enabled: boolean) => {
+    confluenceLinks.enabled.push(enabled);
+    return { data: enabled ? confluenceLinks.value : undefined };
+  },
+  useConfluencePreview: () => ({ isLoading: true }),
+  usePublishConfluence: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useResolveConfluenceLink: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUnlinkConfluence: () => ({ mutateAsync: vi.fn(), isPending: false }),
+}));
 
 vi.mock('../hooks/useToast', () => ({
   useToast: () => ({ addToast: mockAddToast }),
@@ -75,7 +94,7 @@ vi.mock('../helper/HelperProvider', () => ({
 // component tests, so we stub the hook here to avoid wiring the auth
 // context for the broader ProjectDetail suite.
 vi.mock('../transfers/useTransfers', () => ({
-  useMyOrgs: () => ({ data: [], isLoading: false, error: null }),
+  useMyOrgs: () => ({ data: myOrgsData.value, isLoading: false, error: null }),
 }));
 
 // The Jira ticket surface resolves the current user's tier/role; stub the me
@@ -179,6 +198,9 @@ describe('ProjectDetail', () => {
     mockAddToast.mockReset();
     meData.value = { user_id: 'u_1', tier: 'enterprise', effective_tier: 'enterprise' };
     jiraSurface.value = null;
+    myOrgsData.value = [{ org_id: 'org_x', name: 'X', role: 'member' }];
+    confluenceLinks.value = undefined;
+    confluenceLinks.enabled = [];
 
     // Default: entries-related hooks return empty pages so the Entries
     // tab renders without crashes when we switch to it.
@@ -195,6 +217,7 @@ describe('ProjectDetail', () => {
     hooks.useUpdateProjectContext.mockReturnValue(makeMutation());
     hooks.useDeleteProject.mockReturnValue(makeMutation());
     hooks.useUpdateWikiPage.mockReturnValue(makeMutation());
+    hooks.useSetWikiPagePublish.mockReturnValue(makeMutation());
     hooks.useDeleteWikiPage.mockReturnValue(makeMutation());
     hooks.useRegenerateWikiPage.mockReturnValue(makeMutation());
     hooks.useUpdateProjectSettings.mockReturnValue(makeMutation());
@@ -505,6 +528,49 @@ describe('ProjectDetail', () => {
       renderPage('/projects/proj_abc?tab=work&sub=tickets');
       await screen.findByText('tickets body');
       expect(jiraSurface.value?.isEnterprise).toBe(false);
+    });
+
+    it('offers no Jira surface to a reader who is not a member of the project org', async () => {
+      // A captured-session reader can read the org project, but the server
+      // refuses its Jira routes with 403 org_membership_required.
+      setProjectData({ org_id: 'org_x', effective_tier: 'enterprise', can_edit: false });
+      myOrgsData.value = [{ org_id: 'org_other', name: 'Other', role: 'admin' }];
+      renderPage('/projects/proj_abc?tab=work&sub=tickets');
+      await screen.findByText('tickets body');
+      expect(jiraSurface.value).toBeNull();
+    });
+  });
+
+  describe('Confluence context publish button', () => {
+    const PUBLISH = { name: 'Publish to Confluence' };
+
+    it('shows when the mapping publishes the context', () => {
+      setProjectData({ org_id: 'org_x', effective_tier: 'enterprise', can_edit: true });
+      confluenceLinks.value = { links: [], mapping: { publish_context: true } };
+      renderPage();
+      expect(screen.getByRole('button', PUBLISH)).toBeInTheDocument();
+    });
+
+    it('hides when the mapping does not publish the context', () => {
+      setProjectData({ org_id: 'org_x', effective_tier: 'enterprise', can_edit: true });
+      confluenceLinks.value = { links: [], mapping: { publish_context: false } };
+      renderPage();
+      expect(screen.queryByRole('button', PUBLISH)).not.toBeInTheDocument();
+    });
+
+    it('hides when the links query fails (not connected / no mapping)', () => {
+      setProjectData({ org_id: 'org_x', effective_tier: 'enterprise', can_edit: true });
+      confluenceLinks.value = undefined;
+      renderPage();
+      expect(screen.queryByRole('button', PUBLISH)).not.toBeInTheDocument();
+    });
+
+    it('does not fetch links below Enterprise', () => {
+      setProjectData({ org_id: 'org_x', effective_tier: 'team', can_edit: true });
+      confluenceLinks.value = { links: [], mapping: { publish_context: true } };
+      renderPage();
+      expect(confluenceLinks.enabled.every((e) => e === false)).toBe(true);
+      expect(screen.queryByRole('button', PUBLISH)).not.toBeInTheDocument();
     });
   });
 

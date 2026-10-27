@@ -359,11 +359,13 @@ async def _run_compile_housekeeping(
     from sessionfs.server.auth.project_access import (
         editor_authored_clause,
         project_editor_user_ids,
+        project_restricts_visibility,
     )
 
     await _auto_supersede(
         project_id, db, editor_ids=await project_editor_user_ids(db, project)
     )
+    restricted = await project_restricts_visibility(db, project)
 
     # Decay: reduce confidence of entries not referenced recently, once per
     # 30-day period since the project last decayed (time-based, not
@@ -437,7 +439,10 @@ async def _run_compile_housekeeping(
             # (anyone who synced a session on the repo) is never promoted
             # automatically; an editor must promote it explicitly.
             editor_authored_clause(
-                KnowledgeEntry.user_id, project, KnowledgeEntry.actor_type
+                KnowledgeEntry.user_id,
+                project,
+                KnowledgeEntry.actor_type,
+                restricted=restricted,
             ),
         )
         .values(claim_class="claim")

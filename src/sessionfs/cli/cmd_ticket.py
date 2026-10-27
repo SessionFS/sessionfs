@@ -1459,16 +1459,25 @@ def jira_publish_cmd(
         yes=yes,
         yes_hint="Pass --yes to publish this draft without prompting.",
     )
+    publish_body: dict = {
+        "summary": payload["summary"],
+        "sections": payload["sections"],
+        "confirm": True,
+    }
+    # Echo the template the preview resolved to, so the server refuses
+    # (409 template_changed) instead of publishing with a template version
+    # that changed after the preview file was written.
+    template = payload.get("template")
+    if isinstance(template, dict) and isinstance(template.get("slug"), str):
+        publish_body["template"] = template["slug"]
+        version = template.get("version")
+        publish_body["template_version"] = version if isinstance(version, int) else None
     s, body, _ = asyncio.run(
         _api_request(
             "POST",
             f"/api/v1/projects/{project_id}/tickets/{ticket_id}/jira/publish",
             api_url, api_key,
-            json_data={
-                "summary": payload["summary"],
-                "sections": payload["sections"],
-                "confirm": True,
-            },
+            json_data=publish_body,
         )
     )
     if s >= 400 or not isinstance(body, dict):

@@ -82,6 +82,37 @@ def _render_answer(answer: str, *, markdown: bool) -> None:
         console.print(answer, markup=False, highlight=False, soft_wrap=True)
 
 
+def _citation_kind(c: dict) -> str:
+    """The citation's kind; stored citations from before ``kind`` existed are
+    a session (``session_id``) or a docs page (``slug`` + ``url``)."""
+    kind = c.get("kind")
+    if isinstance(kind, str) and kind:
+        return kind
+    if "ticket_id" in c:
+        return "ticket"
+    if "slug" in c and "url" not in c and "project_id" in c:
+        return "wiki"
+    if "slug" in c:
+        return "doc"
+    return "session"
+
+
+def _citation_line(c: dict) -> tuple[str, str]:
+    """``(title, location)`` for one citation of any kind."""
+    kind = _citation_kind(c)
+    if kind == "doc":
+        # A docs citation: the page/section title and its public URL.
+        return c.get("title") or c.get("slug") or "SessionFS docs", c.get("url") or ""
+    if kind == "ticket":
+        return c.get("title") or "Ticket", c.get("ticket_id") or ""
+    if kind == "wiki":
+        loc = f"wiki:{c.get('project_id', '')}/{c.get('slug', '')}"
+        return c.get("title") or c.get("slug") or "Wiki page", loc
+    sid = c.get("session_id", "")
+    idx = c.get("message_index")
+    return c.get("title") or "Untitled", sid + (f"#msg-{idx}" if idx is not None else "")
+
+
 def _render_citations(citations: list[dict], *, markdown: bool) -> None:
     if not citations:
         return
@@ -89,23 +120,7 @@ def _render_citations(citations: list[dict], *, markdown: bool) -> None:
     console.print("[bold]Citations:[/bold]")
     for c in citations:
         prefix = "  • " if markdown else "  - "
-        if "slug" in c:
-            # A docs citation: the page/section title and its public URL.
-            title = c.get("title") or c.get("slug") or "SessionFS docs"
-            url = c.get("url") or ""
-            if markdown:
-                console.print(
-                    f"{prefix}[cyan]{markup_escape(title)}[/cyan] — {markup_escape(url)}"
-                )
-            else:
-                console.print(
-                    f"{prefix}{title} — {url}", markup=False, highlight=False, soft_wrap=True
-                )
-            continue
-        sid = c.get("session_id", "")
-        idx = c.get("message_index")
-        title = c.get("title") or "Untitled"
-        loc = sid + (f"#msg-{idx}" if idx is not None else "")
+        title, loc = _citation_line(c)
         if markdown:
             console.print(f"{prefix}[cyan]{markup_escape(title)}[/cyan] — {markup_escape(loc)}")
         else:
@@ -185,6 +200,10 @@ async def _iter_sse_events(client: Any, url: str, headers: dict, payload: dict):
             yield (event_type, "\n".join(data_lines))
 
 
+# SSE events that carry one citation each.
+_CITATION_EVENTS = ("citation", "doc_citation", "ticket_citation", "wiki_citation")
+
+
 def _parse_event_data(event_type: str, data: str) -> dict:
     try:
         parsed = json.loads(data)
@@ -237,7 +256,7 @@ async def _stream_ask(api_url: str, api_key: str, payload: dict) -> None:
                             delta = _parse_event_data(event_type, data).get("delta", "")
                             answer_parts.append(delta)
                             live.update(Markdown("".join(answer_parts)))
-                        elif event_type in ("citation", "doc_citation"):
+                        elif event_type in _CITATION_EVENTS:
                             citations.append(_parse_event_data(event_type, data))
                         elif event_type == "error":
                             error_message = _parse_event_data(event_type, data).get(
@@ -264,7 +283,7 @@ async def _stream_ask(api_url: str, api_key: str, payload: dict) -> None:
                         sys.stdout.write(delta)
                         sys.stdout.flush()
                         answer_parts.append(delta)
-                    elif event_type in ("citation", "doc_citation"):
+                    elif event_type in _CITATION_EVENTS:
                         citations.append(_parse_event_data(event_type, data))
                     elif event_type == "error":
                         error_message = _parse_event_data(event_type, data).get(

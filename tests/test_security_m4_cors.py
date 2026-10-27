@@ -197,19 +197,22 @@ class TestCORSDefaults:
             "Cross-origin browsers will hide the rules ETag, the dashboard "
             "will replay If-Match: '' and the rules PUT will 428 (cloud-only)."
         )
+        # GitHub #103: the Jira projects truncation flag is readable too.
+        assert "x-jira-projects-truncated" in exposed, exposed
 
     def test_expose_headers_pinned_to_audited_set(self):
-        """Drift guard — pins CORSMiddleware.expose_headers. ETag is the only
-        response header the cross-origin dashboard reads back from JS
-        (dashboard/src/api/client.ts:644). Adding to this list means a new
-        cross-origin header read was introduced; removing ETag re-breaks the
-        rules PUT round-trip (tk_1a73a7bf359f41c3)."""
+        """Drift guard — pins CORSMiddleware.expose_headers. ETag is read back
+        by the cross-origin dashboard (the rules PUT round-trip,
+        tk_1a73a7bf359f41c3); X-Jira-Projects-Truncated is the unpaged Jira
+        projects list's truncation flag (GitHub #103), which carries no
+        secret. Adding to this list means a new cross-origin header read was
+        introduced; removing ETag re-breaks the rules PUT round-trip."""
         import inspect
 
         from sessionfs.server import app as app_module
 
         source = inspect.getsource(app_module.create_app)
-        assert 'expose_headers=["ETag"]' in source, (
+        assert 'expose_headers=["ETag", "X-Jira-Projects-Truncated"]' in source, (
             "CORS expose_headers drifted from audited set. ETag must be exposed "
             "so the cross-origin dashboard can read the rules ETag and replay "
             "it as If-Match on PUT. If this change is intentional, re-audit the "

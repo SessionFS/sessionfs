@@ -64,6 +64,10 @@ from sessionfs.server.auth.dependencies import (
     assert_service_key_can_access_project,
     require_scope,
 )
+from sessionfs.server.auth.project_access import (
+    accessible_project_ids_subquery,
+    org_restricts_visibility,
+)
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
     AgentPersona,
@@ -79,7 +83,7 @@ from sessionfs.server.db.models import (
     Ticket,
     User,
 )
-from sessionfs.server.roles import has_minimum_role
+from sessionfs.server.roles import ADMIN_ROLES, has_minimum_role
 from sessionfs.server.routes.knowledge import (
     _get_project_for_auth,
     _get_project_for_editor,
@@ -1112,7 +1116,7 @@ async def org_persona_rollup(
     sees only its allowlist. Projects with their own active same-named
     project persona are excluded — there the project persona overrides this
     org persona, so its activity belongs to the project persona, not here."""
-    await _authorize_org_personas(db, auth, org_id, write=False)
+    _org, caller_role = await _authorize_org_personas(db, auth, org_id, write=False)
     row = await find_org_persona(db, org_id, name, active_only=True)
     if row is None:
         raise HTTPException(404, "Persona not found")
@@ -1128,6 +1132,18 @@ async def org_persona_rollup(
     )
     if auth.project_ids is not None:
         project_filter = and_(project_filter, Project.id.in_(auth.project_ids))
+    # GitHub #101 — when the org restricts project visibility, a non-admin
+    # member only sees activity on projects they can read (owner or group
+    # grant). Org admins/owners keep the whole org.
+    if (
+        auth.key_kind != "service"
+        and caller_role not in ADMIN_ROLES
+        and await org_restricts_visibility(db, org_id)
+    ):
+        project_filter = and_(
+            project_filter,
+            Project.id.in_(await accessible_project_ids_subquery(db, auth.user.id)),
+        )
     return await _persona_rollup(db, auth, row, project_filter=project_filter)
 
 

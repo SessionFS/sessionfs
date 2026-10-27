@@ -18,6 +18,7 @@ from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.auth.rate_limit import SlidingWindowRateLimiter
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import AdminAction, OrgMember, Project, ProjectRepo, Session, User
+from sessionfs.server.routes.project_groups import ProjectGroupSummary
 from sessionfs.server.tier_gate import (
     UserContext,
     check_feature,
@@ -125,6 +126,10 @@ class ProjectResponse(BaseModel):
     git_remote_normalized: str
     context_document: str
     owner_id: str
+    # The organization that owns the project; None for a personal project.
+    # The dashboard groups and gates org projects on it (Jira mappings,
+    # ticket promotion, the transfer panel's current scope).
+    org_id: str | None = None
     created_at: datetime
     updated_at: datetime
     session_count: int = 0
@@ -150,6 +155,24 @@ class ProjectResponse(BaseModel):
     # knowledge/tickets/comments but not change settings, rules, wiki pages
     # or curate the knowledge base. None only from servers that predate it.
     can_edit: bool | None = None
+    # Whether the CALLER has project-ADMIN standing (user_is_project_admin):
+    # the owner or an admin/owner of the project's org. Rename, repo
+    # link/unlink, merge and transfer need it; no group role grants it.
+    # None only from servers that predate it.
+    can_admin: bool | None = None
+    # Whether the CALLER may delete this project — the same rule as
+    # delete_project (_can_delete_project): the owner or a platform admin.
+    # Org admins and group roles do not grant it. None only from servers
+    # that predate it.
+    can_delete: bool | None = None
+    # Whether the CALLER may start a transfer of this project — the same rule
+    # as initiate_transfer: the owner of a personal project, or an admin of
+    # the project's org for an org project (the project owner alone is not
+    # enough there). None only from servers that predate it.
+    can_transfer: bool | None = None
+    # Groups this project belongs to (project_groups, GitHub #101). Populated
+    # on detail endpoints only (like `repos`) to avoid an N+1 on the list.
+    groups: list[ProjectGroupSummary] | None = None
 
 
 class LinkRepoRequest(BaseModel):
@@ -200,8 +223,9 @@ class MergeResponse(BaseModel):
     audit_id: str | None = None
     persona_renames: list[dict] | None = None
     slug_renames: list[dict] | None = None
-    skipped_ke_ids: list[str] | None = None
-    skipped_link_ids: list[str] | None = None
+    # Knowledge entry and link ids are integers (GitHub #105).
+    skipped_ke_ids: list[int] | None = None
+    skipped_link_ids: list[int] | None = None
     rules_action: str | None = None
     would_refuse: bool | None = None
     blocking_reason: str | None = None
@@ -251,6 +275,22 @@ async def _check_repo_access(db: AsyncSession, user_id: str, git_remote: str) ->
     return result.scalar_one_or_none() is not None
 
 
+def _can_delete_project(project: Project, user: User) -> bool:
+    """The delete_project rule: the project owner or a platform admin."""
+    return project.owner_id == user.id or user.tier == "admin"
+
+
+async def _can_transfer_project(db: AsyncSession, user_id: str, project: Project) -> bool:
+    """The initiate_transfer source rule: owner of a personal project, or an
+    admin of the project's org."""
+    if project.org_id is None:
+        return project.owner_id == user_id
+    # The same helper initiate_transfer uses, so the flag can't drift.
+    from sessionfs.server.routes.project_transfers import _user_is_org_admin
+
+    return await _user_is_org_admin(db, user_id, project.org_id)
+
+
 def _project_response(
     project: Project,
     *,
@@ -258,6 +298,10 @@ def _project_response(
     repos: list[ProjectRepoResponse] | None = None,
     effective_tier: str | None = None,
     can_edit: bool | None = None,
+    can_admin: bool | None = None,
+    can_delete: bool | None = None,
+    can_transfer: bool | None = None,
+    groups: list[ProjectGroupSummary] | None = None,
 ) -> ProjectResponse:
     """Build a ProjectResponse, mapping the structural reclaimed state
     (NULL git_remote_normalized + repo_reclaimed_at) onto the wire
@@ -268,6 +312,7 @@ def _project_response(
         git_remote_normalized=project.git_remote_normalized or "",
         context_document=project.context_document,
         owner_id=project.owner_id,
+        org_id=project.org_id,
         created_at=project.created_at,
         updated_at=project.updated_at,
         session_count=session_count,
@@ -282,6 +327,10 @@ def _project_response(
         repo_reclaimed=project.repo_reclaimed_at is not None,
         effective_tier=effective_tier,
         can_edit=can_edit,
+        can_admin=can_admin,
+        can_delete=can_delete,
+        can_transfer=can_transfer,
+        groups=groups,
     )
 
 
@@ -380,24 +429,55 @@ async def list_projects(
     # Batch-resolve so a long list stays O(1) round-trips.
     plan_tiers = await resolve_project_plan_tiers(projects, db) if projects else {}
 
-    # Editor standing per project (owner or org member) from one membership
-    # query — same rule as user_can_edit_project.
-    member_org_ids = set(
-        (
-            await db.execute(
-                select(OrgMember.org_id).where(OrgMember.user_id == user.id)
-            )
-        ).scalars().all()
-    )
+    # Editor standing per project — the set form of user_can_edit_project
+    # (owner, member of an unrestricted org, org admin/owner, or a group
+    # editor/admin grant), in one query narrowed to the listed projects.
+    from sessionfs.server.auth.project_access import editable_project_ids_subquery
+
+    editable_ids: set[str] = set()
+    if projects:
+        editable_ids = set(
+            (
+                await db.execute(
+                    select(Project.id).where(
+                        Project.id.in_([p.id for p in projects]),
+                        Project.id.in_(
+                            await editable_project_ids_subquery(db, user.id)
+                        ),
+                    )
+                )
+            ).scalars().all()
+        )
+
+    # Project-admin standing per project — the set form of
+    # user_is_project_admin: owner, or admin/owner of the project's org.
+    from sessionfs.server.roles import ADMIN_ROLES
+
+    admin_org_ids: set[str] = set()
+    if any(p.org_id for p in projects):
+        admin_org_ids = set(
+            (
+                await db.execute(
+                    select(OrgMember.org_id).where(
+                        OrgMember.user_id == user.id,
+                        OrgMember.role.in_(ADMIN_ROLES),
+                    )
+                )
+            ).scalars().all()
+        )
 
     return [
         _project_response(
             p,
             session_count=session_counts.get(p.id, 0),
             effective_tier=plan_tiers[p.id].value if p.id in plan_tiers else None,
-            can_edit=(
+            can_edit=p.id in editable_ids,
+            can_admin=p.owner_id == user.id or (p.org_id is not None and p.org_id in admin_org_ids),
+            can_delete=_can_delete_project(p, user),
+            can_transfer=(
                 p.owner_id == user.id
-                or (p.org_id is not None and p.org_id in member_org_ids)
+                if p.org_id is None
+                else p.org_id in admin_org_ids
             ),
         )
         for p in projects
@@ -425,6 +505,10 @@ async def _backfill_knowledge_for_project(
 
     Reads blob archives to run the real summarizer, producing actual
     files_modified, key_decisions, errors, and packages for extraction.
+
+    Only the creator's own sessions are read: other users' sessions on the
+    same remote may belong to people with no standing on the new project
+    (another org, or a member without a grant in a restricted org).
     """
     import io
     import json
@@ -439,6 +523,7 @@ async def _backfill_knowledge_for_project(
             result = await db.execute(
                 select(Session).where(
                     Session.git_remote_normalized == git_remote,
+                    Session.user_id == user_id,
                     Session.is_deleted == False,  # noqa: E712
                 ).order_by(Session.created_at.desc()).limit(20)
             )
@@ -665,7 +750,14 @@ async def create_project(
         )
 
     effective_tier = (await resolve_project_plan_tier(project, db)).value
-    return _project_response(project, effective_tier=effective_tier, can_edit=True)
+    return _project_response(
+        project,
+        effective_tier=effective_tier,
+        can_edit=True,
+        can_admin=True,
+        can_delete=_can_delete_project(project, user),
+        can_transfer=await _can_transfer_project(db, user.id, project),
+    )
 
 
 # ── P3: Multi-Repo Link / Unlink / List ──────────────────────────────────
@@ -1571,14 +1663,24 @@ async def get_project(
     if not await user_can_access_project(db, user.id, project):
         raise HTTPException(403, "No access to this project")
 
-    from sessionfs.server.auth.project_access import user_can_edit_project
+    from sessionfs.server.auth.project_access import (
+        user_can_edit_project,
+        user_is_project_admin,
+    )
+    from sessionfs.server.routes.project_groups import project_group_summaries
 
     effective_tier = (await resolve_project_plan_tier(project, db)).value
+    # Groups are shown only to members of the project's org (GitHub #101).
+    groups = await project_group_summaries(db, project, user.id)
     return _project_response(
         project,
         repos=await _repos_for_project(db, project.id),
         effective_tier=effective_tier,
         can_edit=await user_can_edit_project(db, user.id, project),
+        can_admin=await user_is_project_admin(db, user.id, project),
+        can_delete=_can_delete_project(project, user),
+        can_transfer=await _can_transfer_project(db, user.id, project),
+        groups=groups,
     )
 
 
@@ -1791,6 +1893,9 @@ async def update_project(
         repos=await _repos_for_project(db, project.id),
         effective_tier=effective_tier,
         can_edit=True,
+        can_admin=True,
+        can_delete=_can_delete_project(project, user),
+        can_transfer=await _can_transfer_project(db, user.id, project),
     )
 
 
@@ -1807,9 +1912,38 @@ async def delete_project(
     if not project:
         raise HTTPException(404, "Project not found")
 
+    if not _can_delete_project(project, user):
+        raise HTTPException(403, "Only the project owner or an admin can delete this project")
+
+    # Leave every project group first, audited per membership (GitHub #101).
+    # The FK cascade would drop the rows on PostgreSQL, but silently. Take the
+    # project scope lock first (before any write) so a concurrent
+    # add_project_to_group, which takes the same lock, can't insert a
+    # membership after the removal.
+    from sessionfs.server.services.project_groups import remove_project_from_all_groups
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    await lock_scopes(db, project_ids=[project.id])
+    project = (
+        await db.execute(
+            select(Project)
+            .where(Project.id == project_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if project is None:
+        raise HTTPException(404, "Project not found")
     if project.owner_id != user.id and user.tier != "admin":
         raise HTTPException(403, "Only the project owner or an admin can delete this project")
 
+    await remove_project_from_all_groups(
+        db,
+        project_id=project.id,
+        actor_user_id=user.id,
+        actor_email=user.email,
+        actor_role="platform_admin" if project.owner_id != user.id else None,
+        reason="project_deleted",
+    )
     await db.delete(project)
     await db.commit()
 

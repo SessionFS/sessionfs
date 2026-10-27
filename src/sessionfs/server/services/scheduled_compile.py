@@ -29,7 +29,14 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from sessionfs.server.db.models import KnowledgeEntry, Project
+from sessionfs.server.db.models import (
+    ContextCompilation,
+    KnowledgeEntry,
+    Project,
+    ProjectGroup,
+    ProjectGroupAccess,
+    User,
+)
 from sessionfs.server.services.knowledge import compile_work_condition
 from sessionfs.server.tier_gate import resolve_project_plan_tiers
 from sessionfs.server.tiers import get_features_for_tier
@@ -190,6 +197,179 @@ async def select_due_projects(
     ]
 
 
+# A group claimed by a sweep is left alone by other sweeps for this long, so
+# overlapping runs never compile it twice; a skip or failure also waits this
+# long before the group is retried.
+GROUP_CLAIM_LEASE = timedelta(minutes=10)
+
+
+def _group_due_condition(now: datetime):
+    """An opted-in group is due when it was never compiled, or when any
+    member project has a ``ContextCompilation`` newer than the group's last
+    compile — whether that project compiled in this sweep, by hand, or
+    through the API — and no sweep claimed it within ``GROUP_CLAIM_LEASE``."""
+    newer_member_compile = (
+        select(ContextCompilation.id)
+        .join(
+            ProjectGroupAccess,
+            ProjectGroupAccess.project_id == ContextCompilation.project_id,
+        )
+        .where(
+            ProjectGroupAccess.group_id == ProjectGroup.id,
+            ContextCompilation.compiled_at > ProjectGroup.context_compiled_at,
+        )
+        .correlate(ProjectGroup)
+        .exists()
+    )
+    return and_(
+        ProjectGroup.compile_enabled.is_(True),
+        ProjectGroup.deleted_at.is_(None),
+        or_(ProjectGroup.context_compiled_at.is_(None), newer_member_compile),
+        _claimable(now),
+    )
+
+
+def _claimable(now: datetime):
+    return or_(
+        ProjectGroup.compile_attempted_at.is_(None),
+        ProjectGroup.compile_attempted_at <= now - GROUP_CLAIM_LEASE,
+    )
+
+
+async def select_due_groups(
+    db: AsyncSession, *, limit: int, now: datetime | None = None
+) -> list[str]:
+    """Ids of up to ``limit`` × ``SELECT_OVERFETCH_FACTOR`` due groups, those
+    never attempted first, then the least recently attempted. Every attempt
+    (success, skip or failure) stamps ``compile_attempted_at``, so a group
+    that keeps being skipped or failing rotates behind healthy ones instead of
+    starving them."""
+    now = now or datetime.now(timezone.utc)
+    return list(
+        (
+            await db.execute(
+                select(ProjectGroup.id)
+                .where(_group_due_condition(now))
+                .order_by(
+                    ProjectGroup.compile_attempted_at.is_(None).desc(),
+                    ProjectGroup.compile_attempted_at.asc(),
+                    ProjectGroup.id.asc(),
+                )
+                .limit(limit * SELECT_OVERFETCH_FACTOR)
+            )
+        ).scalars().all()
+    )
+
+
+async def claim_group(db: AsyncSession, group_id: str, now: datetime) -> bool:
+    """Claim ``group_id`` for this sweep by stamping ``compile_attempted_at``
+    with a conditional UPDATE, committed at once so the stamp survives a
+    failed compile. Returns False when another sweep claimed it within the
+    lease (on PostgreSQL the second UPDATE waits on the row lock, then
+    re-checks the condition and matches nothing) or it is no longer enabled."""
+    claimed = await db.execute(
+        update(ProjectGroup)
+        .where(
+            ProjectGroup.id == group_id,
+            ProjectGroup.compile_enabled.is_(True),
+            ProjectGroup.deleted_at.is_(None),
+            _claimable(now),
+        )
+        .values(compile_attempted_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    await db.commit()
+    return claimed.rowcount == 1
+
+
+async def _group_skip_reason(db: AsyncSession, group: ProjectGroup) -> str | None:
+    """Why a scheduled recompile of ``group`` can't run, or None.
+
+    The recompile is attributed to (and scoped by the read access of) the
+    group's creator, so the creator must still be an active user with
+    org-admin or group-admin standing, and the org's plan must still include
+    ``project_groups``."""
+    from sessionfs.server.auth.project_access import GROUP_ROLE_ADMIN, user_group_role
+    from sessionfs.server.tier_gate import resolve_org_plan_tier
+
+    creator_id = group.created_by_user_id
+    if creator_id is None:
+        return "group has no creator"
+    creator = await db.get(User, creator_id)
+    if creator is None or not creator.is_active:
+        return "creator is inactive"
+    if await user_group_role(db, creator_id, group) != GROUP_ROLE_ADMIN:
+        return "creator lacks admin standing"
+    plan = await resolve_org_plan_tier(group.org_id, db)
+    if "project_groups" not in get_features_for_tier(plan):
+        return "org plan lacks project_groups"
+    return None
+
+
+async def _recompile_due_groups(
+    db: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    limit: int,
+    now: datetime,
+) -> dict:
+    """Recompile up to ``limit`` opted-in groups whose context is stale.
+
+    See ``_group_due_condition`` for when a group is stale. The recompile is
+    attributed to the group's creator; a group whose creator lost standing
+    (or whose org lost the feature) is skipped with a log line."""
+    from sessionfs.server.services import group_compiler
+
+    result: dict = {
+        "groups_selected": 0,
+        "groups_compiled": 0,
+        "groups_skipped": 0,
+        "groups_failed": 0,
+        "groups_claimed_elsewhere": 0,
+    }
+    # Wall clock, never earlier than the caller's `now`: the claim lease and
+    # the group's compile stamp must order after member compiles recorded
+    # during this sweep.
+    stamp = max(now, datetime.now(timezone.utc))
+    group_ids = await select_due_groups(db, limit=limit, now=stamp)
+    result["groups_selected"] = len(group_ids)
+    # Release the read transaction before the loop (see the project sweep);
+    # only the plain ids survive past the rollback.
+    await db.rollback()
+
+    for group_id in group_ids:
+        if result["groups_compiled"] >= limit:
+            break
+        try:
+            async with session_factory() as group_db:
+                if not await claim_group(group_db, group_id, stamp):
+                    result["groups_claimed_elsewhere"] += 1
+                    continue
+                loaded = await group_db.get(ProjectGroup, group_id)
+                if loaded is None:
+                    continue
+                reason = await _group_skip_reason(group_db, loaded)
+                if reason is not None:
+                    logger.info("Skipping group %s recompile: %s", loaded.id, reason)
+                    result["groups_skipped"] += 1
+                    continue
+                await group_compiler.compile_group_context(
+                    group_db, loaded, loaded.created_by_user_id, now=stamp
+                )
+                loaded.updated_at = stamp
+                await group_db.commit()
+                result["groups_compiled"] += 1
+        except Exception as exc:  # noqa: BLE001 - one failure must not stop the batch
+            logger.warning(
+                "Scheduled group recompile failed for group %s: %s",
+                group_id,
+                exc,
+                exc_info=True,
+            )
+            result["groups_failed"] += 1
+    return result
+
+
 async def run_kb_compile_sweep(
     db: AsyncSession,
     *,
@@ -204,7 +384,9 @@ async def run_kb_compile_sweep(
     project's work in or out. ``api_key=None`` forces the deterministic
     compiler — the sweep must never call the LLM. Each compilation is
     attributed to the project's owner, not the platform admin that ran the
-    sweep.
+    sweep. After the project pass, up to ``limit`` opted-in groups whose
+    context is stale (never compiled, or a member project compiled since)
+    are recompiled (GitHub #101 phase 2).
     """
     from sessionfs.server.services.compiler import compile_project_context
 
@@ -275,4 +457,12 @@ async def run_kb_compile_sweep(
                 )
             result["failed"] += 1
             result["errors"].append({"project_id": project_id, "error": str(exc)[:200]})
+
+    group_result = await _recompile_due_groups(
+        db,
+        session_factory,
+        limit=limit,
+        now=now,
+    )
+    result.update(group_result)
     return result

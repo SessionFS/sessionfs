@@ -52,7 +52,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div class="flex-1">
               <h3 class="font-heading font-semibold text-lg mb-2 group-hover:text-brand transition-colors">Knowledge Base</h3>
               <p class="text-muted text-base mb-4 leading-relaxed">Sessions distil into claims, decisions, patterns, and bugs. Auto-compiled wiki with backlinks. Agents read AND write &mdash; the next session inherits everything the last one learned.</p>
-              <div class="font-mono text-sm text-accent bg-bg/50 rounded px-3 py-2">85 MCP tools &middot; wiki &middot; backlinks</div>
+              <div class="font-mono text-sm text-accent bg-bg/50 rounded px-3 py-2">100 MCP tools &middot; wiki &middot; backlinks</div>
             </div>
           </div>
         </a>
@@ -189,6 +189,28 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
               <h3 class="font-heading font-semibold text-lg mb-2 group-hover:text-brand transition-colors">Team Handoff</h3>
               <p class="text-muted text-base mb-4 leading-relaxed">Hand off a session to a teammate with full context. Session data copies to recipient &mdash; full conversation, workspace state, git snapshot, status stepper.</p>
               <div class="font-mono text-sm text-accent bg-bg/50 rounded px-3 py-2">sfs handoff ses_abc --to sarah@co.dev</div>
+            </div>
+          </div>
+        </a>
+
+        <a href="/project-groups/" class="glass fade-up p-6 block group">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0"><svg class="w-8 h-8" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg></div>
+            <div class="flex-1">
+              <h3 class="font-heading font-semibold text-lg mb-2 group-hover:text-brand transition-colors">Project Groups <span class="text-xs font-mono text-accent align-middle">Team+</span></h3>
+              <p class="text-muted text-base mb-4 leading-relaxed">Group related projects, grant reader, editor or admin access to the whole group, and optionally restrict project visibility to what each member owns or reaches through a group. Search knowledge and read an overview across the group, filtered to what each person can read.</p>
+              <div class="font-mono text-sm text-accent bg-bg/50 rounded px-3 py-2">sfs project group search payments "retry policy"</div>
+            </div>
+          </div>
+        </a>
+
+        <a href="/integrations/jira/" class="glass fade-up p-6 block group">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0"><svg class="w-8 h-8" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/></svg></div>
+            <div class="flex-1">
+              <h3 class="font-heading font-semibold text-lg mb-2 group-hover:text-brand transition-colors">Jira &amp; Confluence <span class="text-xs font-mono text-accent align-middle">Enterprise</span></h3>
+              <p class="text-muted text-base mb-4 leading-relaxed">Two-way Jira sync: status changes and comments move both ways, with custom story templates and one evidence comment when a ticket completes. Publish wiki pages and project context to Confluence, without overwriting pages edited there.</p>
+              <div class="font-mono text-sm text-accent bg-bg/50 rounded px-3 py-2">sfs project confluence publish</div>
             </div>
           </div>
         </a>

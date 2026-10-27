@@ -562,3 +562,52 @@ def test_conversations_surfaces_not_found(monkeypatch):
         result = _invoke("conversations", "show", "hc_missing")
     assert result.exit_code == 1
     assert "Conversation not found" in result.output
+
+
+@pytest.mark.asyncio
+async def test_stream_ask_renders_ticket_and_wiki_citation_events(monkeypatch, capsys):
+    async def fake_events(client, url, headers, payload):
+        yield ("conversation", '{"conversation_id": "hc_1"}')
+        yield ("text", '{"delta": "See it."}')
+        yield (
+            "ticket_citation",
+            '{"kind": "ticket", "ticket_id": "tk_0123456789abcdef", "project_id":'
+            ' "proj_0123456789abcdef", "title": "Fix SSO", "at": "2026-10-20T00:00:00+00:00"}',
+        )
+        yield (
+            "wiki_citation",
+            '{"kind": "wiki", "project_id": "proj_0123456789abcdef", "slug": "architecture",'
+            ' "title": "Architecture", "at": "2026-10-20T00:00:00+00:00"}',
+        )
+        yield (
+            "done",
+            '{"stop_reason": "stop", "input_tokens": 3, "output_tokens": 2, "key_source": "user"}',
+        )
+
+    monkeypatch.setattr(cmd_helper, "_iter_sse_events", fake_events)
+    await cmd_helper._stream_ask("https://api.test", "key", {"message": "hi"})
+    out = capsys.readouterr().out
+    assert "Fix SSO — tk_0123456789abcdef" in out
+    assert "Architecture — wiki:proj_0123456789abcdef/architecture" in out
+
+
+def test_render_citations_handles_every_kind(capsys):
+    cmd_helper._render_citations(
+        [
+            {"kind": "session", "session_id": "ses_1", "message_index": 2, "title": "Auth"},
+            {"session_id": "ses_2", "message_index": None, "title": "Legacy"},
+            {"kind": "doc", "slug": "quickstart", "title": "Quickstart",
+             "url": "https://sessionfs.dev/quickstart/"},
+            {"slug": "cli", "anchor": None, "title": "CLI", "url": "https://sessionfs.dev/cli/"},
+            {"kind": "ticket", "ticket_id": "tk_1", "project_id": "proj_1", "title": "T"},
+            {"kind": "wiki", "project_id": "proj_1", "slug": "arch", "title": "Arch"},
+        ],
+        markdown=False,
+    )
+    out = capsys.readouterr().out
+    assert "Auth — ses_1#msg-2" in out
+    assert "Legacy — ses_2" in out
+    assert "Quickstart — https://sessionfs.dev/quickstart/" in out
+    assert "CLI — https://sessionfs.dev/cli/" in out
+    assert "T — tk_1" in out
+    assert "Arch — wiki:proj_1/arch" in out

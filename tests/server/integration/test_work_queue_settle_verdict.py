@@ -505,3 +505,86 @@ async def test_settle_verdict_trusted_alias_does_not_auto_stop(
 
     final = await _refetch_item(db_session, item.id)
     assert final.item_status != "done"
+
+
+# ── (6) two-way Jira sync: a trusted VERIFIED-CLEAN settle is forwarded ──
+
+
+async def _link_to_jira(db: AsyncSession, org: Organization, user: User, ticket: Ticket) -> None:
+    from sessionfs.server.db.models import OrgTrackerConnection, TicketTrackerLink
+    from sessionfs.server.llm_keys import encrypt_secret
+
+    db.add(
+        OrgTrackerConnection(
+            org_id=org.id,
+            site_url="https://acme.atlassian.net",
+            account_email="jira@acme.com",
+            encrypted_api_token=encrypt_secret("tok"),
+            default_template="agile",
+            enabled=True,
+            connected_by_user_id=user.id,
+            sync_comments="outbound",
+        )
+    )
+    db.add(
+        TicketTrackerLink(
+            ticket_id=ticket.id,
+            org_id=org.id,
+            provider="jira",
+            status="linked",
+            site_url="https://acme.atlassian.net",
+            issue_key="KEY-1",
+            issue_id="10001",
+        )
+    )
+    await db.commit()
+
+
+async def test_settle_verified_clean_verdict_is_queued_for_jira(db_session: AsyncSession):
+    from sessionfs.server.db.models import TrackerSyncEvent
+
+    org, user, project, ticket, queue, item = await _setup(db_session, registered=True)
+    await _link_to_jira(db_session, org, user, ticket)
+    d = await _emit_directive(db_session, queue)
+    await db_session.commit()
+    comp = await wq_engine.complete_work_queue_step(
+        db_session, queue=queue, item_id=d["item_id"],
+        directive_id=d["directive_id"], ticket_id=ticket.id,
+        outcome="posted_review", comment_id=None,
+        agent_run_id=None, failed=False,
+        verdict_content=R2_CLEAN,
+        actor_user_id=user.id, actor_org_id=org.id,
+        actor_service_key_id=None, actor_type="user",
+        service_key_name=None,
+    )
+    await db_session.commit()
+    assert len(comp.jira_event_ids) == 1
+    assert "jira_event_ids" not in comp.to_dict()
+    row = await db_session.get(TrackerSyncEvent, comp.jira_event_ids[0])
+    assert row.kind == "comment" and row.state == "pending"
+    assert json.loads(row.payload)["reason"] == "verified_clean"
+
+
+async def test_settle_changes_requested_verdict_is_not_queued_for_jira(db_session: AsyncSession):
+    from sessionfs.server.db.models import TrackerSyncEvent
+
+    org, user, project, ticket, queue, item = await _setup(db_session, registered=True)
+    await _link_to_jira(db_session, org, user, ticket)
+    d = await _emit_directive(db_session, queue)
+    await db_session.commit()
+    comp = await wq_engine.complete_work_queue_step(
+        db_session, queue=queue, item_id=d["item_id"],
+        directive_id=d["directive_id"], ticket_id=ticket.id,
+        outcome="posted_review", comment_id=None,
+        agent_run_id=None, failed=False,
+        verdict_content=R1_CHANGES,
+        actor_user_id=user.id, actor_org_id=org.id,
+        actor_service_key_id=None, actor_type="user",
+        service_key_name=None,
+    )
+    await db_session.commit()
+    assert comp.jira_event_ids == []
+    rows = (
+        await db_session.execute(select(TrackerSyncEvent).where(TrackerSyncEvent.ticket_id == ticket.id))
+    ).scalars().all()
+    assert rows == []

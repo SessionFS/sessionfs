@@ -16,15 +16,18 @@ from sessionfs.server.integrations.trackers.base import (
 from sessionfs.server.integrations.trackers.jira import JiraClient
 from sessionfs.server.integrations.trackers.templates import (
     DEFAULT_TEMPLATE,
+    SOURCE_FIELDS,
     Template,
     TemplateSection,
     get_template,
+    is_builtin_slug,
     list_templates,
 )
 
 __all__ = [
     "DEFAULT_TEMPLATE",
     "JiraClient",
+    "SOURCE_FIELDS",
     "Template",
     "TemplateSection",
     "TrackerError",
@@ -33,5 +36,6 @@ __all__ = [
     "TrackerProject",
     "TrackerProvider",
     "get_template",
+    "is_builtin_slug",
     "list_templates",
 ]

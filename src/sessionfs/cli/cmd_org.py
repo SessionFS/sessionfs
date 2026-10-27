@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from typing import NoReturn, cast
+from urllib.parse import quote
 
 import typer
+from rich.markup import escape
 from rich.table import Table
 
 from sessionfs.cli.cmd_rules import _api_request
-from sessionfs.cli.common import console, err_console, format_api_error
+from sessionfs.cli.common import console, err_console, format_api_error, handle_errors
 
 org_app = typer.Typer(name="org", help="Organization management.")
 
@@ -542,7 +544,7 @@ def jira_connect(
         hide_input=True,
     ),
     default_template: str = typer.Option(
-        ..., "--template", help="Template slug: agile, compliance, sre, bug"
+        ..., "--template", help="Template slug: agile, compliance, sre, bug, design"
     ),
 ) -> None:
     """Connect this org to Jira Cloud (admin only)."""
@@ -632,4 +634,362 @@ def jira_health() -> None:
         console.print("[dim]No stale links.[/dim]")
 
 
+# ── sfs org jira templates … ──
+
+
+org_jira_templates_app = typer.Typer(
+    name="templates",
+    help="Manage the org's Jira issue templates.",
+    no_args_is_help=True,
+)
+
+
+def _template_path(org_id: str, slug: str, tail: str = "") -> str:
+    # The slug comes from the command line; quote it so a stray "/" or "?"
+    # can't address a different route.
+    return (
+        f"/api/v1/orgs/{quote(org_id, safe='')}/integrations/jira/templates/"
+        f"{quote(slug, safe='')}{tail}"
+    )
+
+
+def _shape_error(what: str) -> NoReturn:
+    err_console.print(f"[red]Unexpected response from the server ({what}).[/red]")
+    raise typer.Exit(1)
+
+
+@org_jira_templates_app.command("list")
+@handle_errors
+def jira_templates_list() -> None:
+    """List Jira templates (built-in and org-custom)."""
+    api_url, api_key = _load_api_config()
+    org_id = _org_id(api_url, api_key)
+    s, body, _ = asyncio.run(
+        _api_request(
+            "GET",
+            f"/api/v1/orgs/{quote(org_id, safe='')}/integrations/jira/templates",
+            api_url, api_key,
+        )
+    )
+    if s >= 400:
+        _jira_error(s, body)
+    if not isinstance(body, list) or not all(isinstance(t, dict) for t in body):
+        _shape_error("expected a list of templates")
+    if not body:
+        console.print("[dim]No Jira templates.[/dim]")
+        return
+    table = Table()
+    table.add_column("Slug", style="cyan")
+    table.add_column("Name")
+    table.add_column("Kind")
+    table.add_column("Version")
+    table.add_column("Status")
+    for t in body:
+        version = t.get("version")
+        table.add_row(
+            escape(str(t.get("slug", ""))),
+            escape(str(t.get("name", ""))),
+            "built-in" if t.get("builtin") else "custom",
+            f"v{version}" if isinstance(version, int) else "—",
+            "archived" if t.get("archived_at") else "active",
+        )
+    console.print(table)
+
+
+@org_jira_templates_app.command("show")
+@handle_errors
+def jira_templates_show(
+    slug: str = typer.Argument(..., help="Template slug"),
+    versions: bool = typer.Option(
+        False, "--versions", help="Also list version history (custom templates only)."
+    ),
+) -> None:
+    """Show a single Jira template and its sections."""
+    api_url, api_key = _load_api_config()
+    org_id = _org_id(api_url, api_key)
+    s, body, _ = asyncio.run(
+        _api_request("GET", _template_path(org_id, slug), api_url, api_key)
+    )
+    if s >= 400:
+        _jira_error(s, body)
+    if not isinstance(body, dict):
+        _shape_error("expected a template object")
+    sections = body.get("sections") or []
+    if not isinstance(sections, list) or not all(isinstance(x, dict) for x in sections):
+        _shape_error("expected a list of sections")
+    kind = "built-in" if body.get("builtin") else "custom"
+    version = body.get("version")
+    version_text = f"v{version}" if isinstance(version, int) else "no version"
+    status = " · archived" if body.get("archived_at") else ""
+    console.print(
+        f"[bold]{escape(str(body.get('name', slug)))}[/bold] "
+        f"[dim]({escape(slug)} · {kind} · {version_text}{status})[/dim]"
+    )
+    if body.get("description"):
+        console.print(escape(str(body.get("description"))))
+    if not sections:
+        console.print("[dim]No sections.[/dim]")
+    for sec in sections:
+        heading = sec.get("heading") or sec.get("key", "")
+        console.print(
+            f"  [cyan]{escape(str(heading))}[/cyan] "
+            f"[dim]({escape(str(sec.get('mode', 'rewrite')))})[/dim]"
+        )
+        sources = sec.get("source_fields") or []
+        if isinstance(sources, list) and sources:
+            console.print(f"    sources: {escape(', '.join(str(x) for x in sources))}")
+        guidance = sec.get("guidance")
+        if guidance:
+            console.print(f"    guidance: {escape(str(guidance))}")
+
+    if versions and not body.get("builtin"):
+        s2, vbody, _ = asyncio.run(
+            _api_request(
+                "GET", _template_path(org_id, slug, "/versions"), api_url, api_key
+            )
+        )
+        if s2 >= 400:
+            _jira_error(s2, vbody)
+        if not isinstance(vbody, list) or not all(isinstance(v, dict) for v in vbody):
+            _shape_error("expected a list of versions")
+        if not vbody:
+            console.print("[dim]No version history.[/dim]")
+        else:
+            console.print("[bold]Versions:[/bold]")
+            for v in vbody:
+                console.print(
+                    f"  v{v.get('version')} — {escape(str(v.get('created_at') or 'unknown'))}"
+                )
+
+
+org_jira_app.add_typer(org_jira_templates_app, name="templates")
+
 org_app.add_typer(org_jira_app, name="jira")
+
+
+# ── sfs org confluence … ──
+
+
+org_confluence_app = typer.Typer(
+    name="confluence",
+    help="Manage the org's Confluence Cloud integration.",
+    no_args_is_help=True,
+)
+
+
+def _confluence_error(status: int, body) -> NoReturn:
+    err_console.print(f"[red]API error ({status}): {format_api_error(body, status)}[/red]")
+    raise typer.Exit(1)
+
+
+@org_confluence_app.command("status")
+def confluence_status() -> None:
+    """Show the Confluence connection, project mappings and push health."""
+    api_url, api_key = _load_api_config()
+    org_id = _org_id(api_url, api_key)
+    s, body, _ = asyncio.run(
+        _api_request(
+            "GET",
+            f"/api/v1/orgs/{org_id}/integrations/confluence",
+            api_url, api_key,
+        )
+    )
+    if s >= 400 or not isinstance(body, dict):
+        _confluence_error(s, body)
+    if not body.get("connected"):
+        console.print("[dim]Not connected to Confluence.[/dim]")
+        console.print("[dim]Connect with `sfs org confluence connect`.[/dim]")
+        return
+
+    state = "enabled" if body.get("enabled") else "disabled"
+    console.print(
+        f"[green]Connected:[/green] {body.get('site_url')} "
+        f"({body.get('account_email')})"
+    )
+    console.print(
+        f"[dim]template:[/dim] {body.get('default_template')}  "
+        f"[dim]batch window:[/dim] {body.get('batch_window_minutes')}m  "
+        f"[dim]token:[/dim] {body.get('token_hint') or 'present'}  "
+        f"[dim]state:[/dim] {state}"
+    )
+
+    s2, mbody, _ = asyncio.run(
+        _api_request(
+            "GET",
+            f"/api/v1/orgs/{org_id}/integrations/confluence/mappings",
+            api_url, api_key,
+        )
+    )
+    if s2 >= 400:
+        _confluence_error(s2, mbody)
+    mappings = cast(list[dict], mbody)
+    if not mappings:
+        console.print("[dim]No project mappings yet.[/dim]")
+    else:
+        table = Table()
+        table.add_column("Project", style="cyan")
+        table.add_column("Space", style="magenta")
+        table.add_column("Parent page")
+        table.add_column("Template")
+        table.add_column("Context")
+        table.add_column("Auto-publish")
+        for m in mappings:
+            table.add_row(
+                m.get("project_id", ""),
+                m.get("space_key", ""),
+                m.get("parent_page_id", ""),
+                m.get("template") or "(org default)",
+                "yes" if m.get("publish_context") else "no",
+                "yes" if m.get("auto_publish_pages") else "no",
+            )
+        console.print(table)
+
+    s3, hbody, _ = asyncio.run(
+        _api_request(
+            "GET",
+            f"/api/v1/orgs/{org_id}/integrations/confluence/health",
+            api_url, api_key,
+        )
+    )
+    if s3 >= 400 or not isinstance(hbody, dict):
+        _confluence_error(s3, hbody)
+    console.print(
+        f"[bold]Unmapped projects:[/bold] {hbody.get('unmapped_project_count', 0)}"
+    )
+    drifted = hbody.get("drifted_links") or []
+    if drifted:
+        console.print(f"[bold yellow]Drifted links ({len(drifted)}):[/bold yellow]")
+        for link in drifted:
+            console.print(
+                f"  - {link.get('project_id')}/{link.get('source_key')} "
+                f"(page {link.get('page_id')})"
+            )
+    in_progress = hbody.get("publishes_in_progress") or []
+    if in_progress:
+        console.print(
+            f"[yellow]Publishes in progress:[/yellow] {len(in_progress)}"
+        )
+    failures = hbody.get("last_push_failures") or []
+    if failures:
+        console.print(f"[red]Push failures ({len(failures)}):[/red]")
+        for f in failures:
+            console.print(
+                f"  - {f.get('project_id')}/{f.get('source_key')}: "
+                f"{f.get('reason') or 'unknown'}"
+            )
+
+
+@org_confluence_app.command("connect")
+def confluence_connect(
+    site_url: str = typer.Option(
+        ..., "--site-url", help="Confluence Cloud site, e.g. https://acme.atlassian.net"
+    ),
+    account_email: str = typer.Option(..., "--email", help="Atlassian account email"),
+    api_token: str = typer.Option(
+        ...,
+        "--api-token",
+        "-t",
+        help="Atlassian API token (prompted if omitted).",
+        prompt=True,
+        hide_input=True,
+    ),
+    default_template: str = typer.Option(
+        ...,
+        "--template",
+        help="Default template slug: reference, architecture, runbook, onboarding, concept",
+    ),
+    batch_window: int = typer.Option(
+        15, "--batch-window", help="Batch window in minutes (1-1440)."
+    ),
+) -> None:
+    """Connect this org to Confluence Cloud (admin only)."""
+    api_url, api_key = _load_api_config()
+    org_id = _org_id(api_url, api_key)
+    s, body, _ = asyncio.run(
+        _api_request(
+            "PUT",
+            f"/api/v1/orgs/{org_id}/integrations/confluence",
+            api_url, api_key,
+            json_data={
+                "site_url": site_url,
+                "account_email": account_email,
+                "api_token": api_token,
+                "default_template": default_template,
+                "batch_window_minutes": batch_window,
+            },
+        )
+    )
+    if s >= 400 or not isinstance(body, dict):
+        _confluence_error(s, body)
+    console.print(
+        f"[green]Connected Confluence:[/green] {body.get('site_url')} "
+        f"({body.get('account_email')})"
+    )
+
+
+@org_confluence_app.command("map")
+def confluence_map(
+    project_id: str = typer.Argument(..., help="Project id to map"),
+    space_key: str = typer.Option(..., "--space-key", help="Confluence space key, e.g. DEV"),
+    parent_page_id: str = typer.Option(
+        ..., "--parent-page-id", help="Confluence page id to publish under"
+    ),
+    template: str | None = typer.Option(
+        None, "--template", help="Template slug override (default: org connection default)"
+    ),
+    publish_context: bool = typer.Option(
+        False, "--publish-context", help="Also publish the project context doc."
+    ),
+    auto_publish_pages: bool = typer.Option(
+        False,
+        "--auto-publish-pages",
+        help="Opt this project into the scheduled publish sweep.",
+    ),
+) -> None:
+    """Map a project to a Confluence space + parent page (admin only)."""
+    api_url, api_key = _load_api_config()
+    org_id = _org_id(api_url, api_key)
+    s, body, _ = asyncio.run(
+        _api_request(
+            "PUT",
+            f"/api/v1/orgs/{org_id}/integrations/confluence/mappings/"
+            f"{quote(project_id, safe='')}",
+            api_url, api_key,
+            json_data={
+                "space_key": space_key,
+                "parent_page_id": parent_page_id,
+                "template": template,
+                "publish_context": publish_context,
+                "auto_publish_pages": auto_publish_pages,
+            },
+        )
+    )
+    if s >= 400 or not isinstance(body, dict):
+        _confluence_error(s, body)
+    console.print(
+        f"[green]Mapped[/green] {body.get('project_id')} → "
+        f"{body.get('space_key')} under page {body.get('parent_page_id')}"
+    )
+
+
+@org_confluence_app.command("unmap")
+def confluence_unmap(
+    project_id: str = typer.Argument(..., help="Project id to unmap"),
+) -> None:
+    """Remove a project's Confluence mapping (admin only)."""
+    api_url, api_key = _load_api_config()
+    org_id = _org_id(api_url, api_key)
+    s, body, _ = asyncio.run(
+        _api_request(
+            "DELETE",
+            f"/api/v1/orgs/{org_id}/integrations/confluence/mappings/"
+            f"{quote(project_id, safe='')}",
+            api_url, api_key,
+        )
+    )
+    if s >= 400:
+        _confluence_error(s, body)
+    console.print(f"[green]Unmapped {project_id}.[/green]")
+
+
+org_app.add_typer(org_confluence_app, name="confluence")

@@ -8,6 +8,9 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import AccountSection from './AccountSection';
 
+// "Your groups" fetches through react-query; it has its own suite.
+vi.mock('./YourGroupsCard', () => ({ default: () => null }));
+
 function profile(extra: Record<string, unknown> = {}) {
   return {
     email: 'kelvin@example.com',

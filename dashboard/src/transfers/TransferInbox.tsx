@@ -120,9 +120,9 @@ export default function TransferInbox() {
       <PageHeader title="Project transfers" className="" />
 
       <section aria-labelledby="incoming-heading">
-        <h3 id="incoming-heading" className="text-micro uppercase text-text-tertiary mb-3">
+        <h2 id="incoming-heading" className="!text-base !tracking-normal uppercase text-text-tertiary mb-3">
           Incoming ({incomingRows.length})
-        </h3>
+        </h2>
         {incomingRows.length === 0 ? (
           <p className="text-sm text-text-tertiary">No pending incoming transfers.</p>
         ) : (
@@ -157,9 +157,9 @@ export default function TransferInbox() {
       </section>
 
       <section aria-labelledby="outgoing-heading">
-        <h3 id="outgoing-heading" className="text-micro uppercase text-text-tertiary mb-3">
+        <h2 id="outgoing-heading" className="!text-base !tracking-normal uppercase text-text-tertiary mb-3">
           Outgoing ({outgoingRows.length})
-        </h3>
+        </h2>
         {outgoingRows.length === 0 ? (
           <p className="text-sm text-text-tertiary">No pending outgoing transfers.</p>
         ) : (

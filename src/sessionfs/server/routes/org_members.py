@@ -277,6 +277,14 @@ class OrgGeneralSettings(BaseModel):
     # is the "leave unchanged on partial PUT" sentinel; the stored/returned
     # value is always a list ([] when unset).
     auto_join_domains: list[str] | None = None
+    # GitHub #101 — restricted project visibility (opt-in). OFF (False) keeps
+    # today's behavior: every org member reads/edits every org project. ON
+    # (True) narrows read to owner / org admin / group grant (a captured
+    # session no longer grants read), and edit to owner / org admin / group
+    # editor-or-admin. Turning it on requires the `project_groups` feature
+    # (Team+). ``None`` is the partial-PUT "leave unchanged" sentinel; reads
+    # always return a bool.
+    restrict_project_visibility: bool | None = None
 
 
 def _read_general_settings(org: Organization) -> OrgGeneralSettings:
@@ -289,12 +297,17 @@ def _read_general_settings(org: Organization) -> OrgGeneralSettings:
     auto_join = general.get("auto_join_domains")
     if not isinstance(auto_join, list):
         auto_join = []
+    from sessionfs.server.auth.project_access import settings_restrict_visibility
+
     return OrgGeneralSettings(
         kb_retention_days=general.get("kb_retention_days"),
         kb_max_context_words=general.get("kb_max_context_words"),
         kb_section_page_limit=general.get("kb_section_page_limit"),
         helper_retention_days=general.get("helper_retention_days"),
         auto_join_domains=auto_join,
+        # Always a bool on read. Unreadable settings report True: access
+        # checks treat them as restricted (fail closed).
+        restrict_project_visibility=settings_restrict_visibility(org.settings),
     )
 
 
@@ -356,6 +369,36 @@ async def update_org_settings(
         1 <= body.helper_retention_days <= 3650
     ):
         raise HTTPException(400, "helper_retention_days must be between 1 and 3650")
+
+    # GitHub #101 — restricted visibility requires the project_groups feature
+    # (Team+). Only the OFF -> ON transition is gated: clearing it is always
+    # allowed, re-saving an already-on setting (e.g. a settings form that sends
+    # every field after a downgrade) must not fail, and kb_*-only PUTs must not
+    # hit the entitlement gate. If the plan later drops the feature the
+    # restriction stays on (fail closed).
+    from sessionfs.server.auth.project_access import settings_restrict_visibility
+
+    prev_restrict = settings_restrict_visibility(org.settings)
+    if body.restrict_project_visibility is True and not prev_restrict:
+        from sessionfs.server.tier_gate import resolve_org_plan_tier
+        from sessionfs.server.tiers import (
+            get_features_for_tier,
+            get_minimum_tier_for_feature,
+        )
+
+        plan = await resolve_org_plan_tier(org_id, db)
+        if "project_groups" not in get_features_for_tier(plan):
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "upgrade_required",
+                    "feature": "project_groups",
+                    "plan_scope": "org",
+                    "current_tier": plan.value,
+                    "required_tier": get_minimum_tier_for_feature("project_groups"),
+                    "message": "Restricted project visibility requires the Team plan or above.",
+                },
+            )
 
     # GitHub #59 — auto-join domains: normalize, validate against THIS
     # org's verified domains, and gate the feature on oidc_sso (only when
@@ -448,8 +491,34 @@ async def update_org_settings(
             general.pop(key, None)
         else:
             general[key] = value
+    # Unreadable stored settings counted as restricted (fail closed); a save
+    # that doesn't address the flag must not silently lift that by rewriting
+    # the document, so carry the restriction forward explicitly.
+    if prev_restrict and "restrict_project_visibility" not in fields_set:
+        general["restrict_project_visibility"] = True
     raw["general"] = general
     org.settings = _json.dumps(raw)
+    # Audit a restricted-visibility toggle (GitHub #101) — an org-wide access
+    # change is exactly what the org audit trail is for.
+    new_restrict = settings_restrict_visibility(org.settings)
+    if prev_restrict != new_restrict:
+        db.add(
+            OrgAuditEvent(
+                id=f"oae_{uuid.uuid4().hex[:24]}",
+                org_id=org.id,
+                org_name_snapshot=org.name,
+                event_type="org_settings_restrict_visibility_changed",
+                actor_user_id=user.id,
+                actor_email_snapshot=user.email,
+                actor_role_at_time=role,
+                target_type="settings",
+                target_id=org.id,
+                before=json.dumps(
+                    {"restrict_project_visibility": prev_restrict}
+                ),
+                after=json.dumps({"restrict_project_visibility": new_restrict}),
+            )
+        )
     await db.commit()
     await db.refresh(org)
     return _read_general_settings(org)
@@ -1281,6 +1350,24 @@ async def perform_member_removal(
         reason="member_removed",
     )
 
+    # GitHub #101 — revoke the removed member's group grants in this org's
+    # groups (product decision #3). A grant only has meaning for an active org
+    # member, so membership removal revokes every grant; without this a
+    # re-added member would silently regain their old group standing. Done in
+    # the same transaction as the membership delete.
+    # One project_group_member_revoked audit row per grant.
+    from sessionfs.server.services.project_groups import revoke_user_group_grants
+
+    revoked_grants = await revoke_user_group_grants(
+        db,
+        user_id=target_user_id,
+        org_id=org_id,
+        actor_user_id=removing_admin.id,
+        actor_email=removing_admin.email,
+        actor_role=remover_role,
+        reason="member_removed",
+    )
+
     # 4. Delete the membership row last.
     await db.execute(
         delete(OrgMember).where(
@@ -1325,6 +1412,18 @@ async def perform_member_removal(
             target_type="user",
             target_id=target_user_id,
             target_email_snapshot=target_user.email if target_user else None,
+            after=(
+                json.dumps(
+                    {
+                        "revoked_group_grants": [
+                            {"group_id": g["group_id"], "role": g["role"]}
+                            for g in revoked_grants
+                        ]
+                    }
+                )
+                if revoked_grants
+                else None
+            ),
         )
     )
 

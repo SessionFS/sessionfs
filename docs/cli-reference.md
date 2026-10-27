@@ -1116,6 +1116,98 @@ before v0.17.2) can still edit their schedule, but the platform sweep never
 auto-compiles them — the grandfather exemption applies to the settings
 editor's plan, not to the sweep's project-plan resolution.
 
+### `sfs project list`
+
+*v0.26.0+.* List the projects you can read, optionally filtered to one
+project group. The list endpoint omits the `groups` field (to avoid an N+1 on
+the list), so `--group` filters through the group detail's project id list.
+
+```
+sfs project list [--group SLUG] [--org ORG_ID] [--json]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--group SLUG` | Only projects in this group (org-scoped slug). Requires `--org` or a default org to resolve the slug. |
+| `--org ORG_ID` | Org id (default org if omitted). |
+| `--json` | Print JSON. |
+
+### `sfs project group`
+
+*v0.26.0+.* Manage org-scoped project groups. Groups are addressed by their
+org-scoped slug; CRUD resolves the slug to a group id through the org's group
+listing. Every command takes `--org` to pick the org, otherwise it falls back
+to the server-side default org (`sfs config default-org`). Every id is
+percent-encoded into the request path, and API errors (404, 403, 409, …)
+print a clear message and exit 1.
+
+```
+sfs project group list [--org ORG_ID] [--json]
+sfs project group create NAME [--slug SLUG] [--description TEXT] [--org ORG_ID] [--json]
+sfs project group show SLUG [--org ORG_ID] [--json]
+sfs project group set SLUG [--name NAME] [--slug NEW_SLUG] [--description TEXT] [--compile|--no-compile] [--org ORG_ID] [--json]
+sfs project group delete SLUG [--org ORG_ID]
+sfs project group add SLUG PROJECT_ID... [--org ORG_ID]
+sfs project group remove SLUG PROJECT_ID [--org ORG_ID]
+sfs project group members SLUG [--org ORG_ID] [--json]
+sfs project group grant SLUG EMAIL_OR_USER_ID --role reader|editor|admin [--org ORG_ID]
+sfs project group revoke SLUG EMAIL_OR_USER_ID [--org ORG_ID]
+sfs project group access [--json]
+sfs project group search SLUG [QUERY] [--entry-type TYPE] [--limit N] [--org ORG_ID] [--json]
+sfs project group context SLUG [--org ORG_ID] [--json]
+sfs project group compile SLUG [--org ORG_ID] [--json]
+```
+
+| Command | Description |
+|---------|-------------|
+| `list` | List the org's groups (slug, name, project/member counts, your role). |
+| `create NAME` | Create a group named NAME (org admin/owner). The slug is derived from the name unless `--slug` is passed. |
+| `show SLUG` | Show a group's description, members, project ids and whether its knowledge compile is on. |
+| `set SLUG` | Rename (`--name`), re-slug (`--slug`), re-describe (`--description`, `''` clears it), or turn the knowledge compile on or off (`--compile` / `--no-compile`). Group admin or org admin/owner; `--compile` needs the Team plan or above. |
+| `delete SLUG` | Soft-delete a group (org admin/owner). |
+| `add SLUG PROJECT_ID...` | Add one or more projects to a group (group admin with edit standing on each). Stops at the first project that fails. |
+| `remove SLUG PROJECT_ID` | Remove a project from a group (group admin). |
+| `members SLUG` | List a group's members and their roles. |
+| `grant SLUG USER --role ROLE` | Grant or update a member's role (`reader` / `editor` / `admin`; group admin). USER is an email (looked up among the org's members) or a user id. |
+| `revoke SLUG USER` | Revoke a member's grant (group admin). USER is an email or a user id. |
+| `access` | List every group you have standing on across your orgs. |
+| `search SLUG [QUERY]` | Search active KB claims across the group's readable member projects. QUERY is a case-insensitive substring of 3–200 characters (`%` and `_` match literally); omit it to list the top claims. `--entry-type` is one of `decision`, `pattern`, `discovery`, `convention`, `bug`, `dependency`; `--limit` caps at 100. |
+| `context SLUG` | Print the group's compiled knowledge overview document. |
+| `compile SLUG` | Compile the group's deterministic knowledge overview (group editor/admin or org admin). The group must have the compile turned on (`set SLUG --compile`). |
+
+`context` prints the raw document to stdout by default; pass `--json` for the
+full response (document, `compiled_at`, `sources`, …).
+
+### `sfs project confluence`
+
+*v0.26.0+.* Publish a wiki page or the project context to Confluence Cloud. The
+project's org must have a Confluence connection and a mapping for this project
+(`sfs org confluence connect` / `map`), otherwise the command prints the
+structured error (`confluence_mapping_required`) and exits 1. Publishing
+follows the integration's citation rule: rewritten sections must cite a real
+source field or they fall back to the deterministic draft.
+
+```
+sfs project confluence publish SLUG [--preview] [--yes]
+sfs project confluence publish --context [--preview] [--yes]
+```
+
+| Command | Description |
+|---------|-------------|
+| `publish SLUG` | Publish the wiki page `SLUG` to Confluence, creating or updating its linked page. |
+| `publish --context` | Publish the project's context document instead of a wiki page. |
+
+By default `publish` drafts a preview first, prints it, and asks for
+confirmation before it sends anything to Confluence. Pass `--yes` to publish
+without the prompt. Pass `--preview` to print the draft and stop — nothing is
+sent to Confluence.
+
+If the link has drifted (the page was edited in Confluence since the last
+push) the command prints `confluence_page_drifted` and exits 1; a project
+admin resolves it from the dashboard or the resolve API. A body over the 1 MiB
+Confluence cap is refused before anything is sent
+(`content_too_large_for_confluence`).
+
 ---
 
 ## `sfs rules`
@@ -1735,13 +1827,38 @@ Manage the org's Jira Cloud integration (admin only). Requires the org's plan to
 sfs org jira connect --site-url https://acme.atlassian.net --email jira@acme.com --template agile
 sfs org jira mappings
 sfs org jira health
+sfs org jira templates list
+sfs org jira templates show design-lite
+sfs org jira templates show design-lite --versions
 ```
 
 | Command | Description |
 |---------|-------------|
-| `connect` | Validate the Jira Cloud credentials (`GET /rest/api/3/myself`) and upsert the org connection. `--api-token` is prompted for (hidden) when omitted. `--template` is required and one of `agile`, `compliance`, `sre`, `bug`. |
+| `connect` | Validate the Jira Cloud credentials (`GET /rest/api/3/myself`) and upsert the org connection. `--api-token` is prompted for (hidden) when omitted. `--template` is required and one of `agile`, `compliance`, `sre`, `bug`, `design`. |
 | `mappings` | List project → Jira project mappings (key, issue type, template override, done status). Mappings are created/updated via the API, not this CLI. |
 | `health` | Show unmapped project count, push-failure count, and links whose status hasn't been checked in 7+ days. |
+| `templates list` | List Jira issue templates: the built-ins plus the org's custom templates, with their slug, name, kind, version and archive status. |
+| `templates show <slug>` | Show one template's name, description and sections (heading, mode, source fields, rewrite guidance). `--versions` also lists a custom template's version history. |
+
+---
+
+### `sfs org confluence`
+
+Manage the org's Confluence Cloud integration (admin only). Requires the org's plan to include the Enterprise `confluence_integration` feature. The API token is stored Fernet-encrypted at rest and is never printed back.
+
+```bash
+sfs org confluence status
+sfs org confluence connect --site-url https://acme.atlassian.net --email docs@acme.com --template reference
+sfs org confluence map proj_abc --space-key DEV --parent-page-id 123 --auto-publish-pages
+sfs org confluence unmap proj_abc
+```
+
+| Command | Description |
+|---------|-------------|
+| `status` | Show the connection (site, email, template, batch window, enabled state), the project mappings, and push health (unmapped projects, drifted links, in-progress publishes, failures). |
+| `connect` | Validate the Confluence Cloud credentials (`GET /wiki/api/v2/me`) and upsert the org connection. `--api-token` is prompted for (hidden) when omitted. `--template` is required and one of `reference`, `architecture`, `runbook`, `onboarding`, `concept`. `--batch-window` (minutes, default 15) caps how far back the scheduled sweep looks. |
+| `map <project-id>` | Map a project to a Confluence space + parent page. `--space-key` and `--parent-page-id` are required; `--template` overrides the org default; `--publish-context` and `--auto-publish-pages` opt the project into context publishing and the scheduled sweep respectively. |
+| `unmap <project-id>` | Remove a project's Confluence mapping. |
 
 ---
 
@@ -1753,7 +1870,7 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed (85):
+Tools exposed (100):
 
 - **Sessions:** `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_session_summary`, `get_audit_report`, `get_session_provenance`, `get_session_retrieval_log`, `rename_session`, `checkpoint_session`, `list_checkpoints`, `fork_session`, `ask_session_helper`
 - **Knowledge (read):** `get_project_context`, `get_context_section`, `get_wiki_page`, `get_wiki_page_history`, `search_project_knowledge`, `list_knowledge_entries`, `get_knowledge_entry`, `get_knowledge_health`, `ask_project`
@@ -1765,6 +1882,7 @@ Tools exposed (85):
 - **Work queues:** `create_work_queue`, `list_work_queues`, `get_work_queue`, `set_work_queue_status`, `run_work_queue_step`, `complete_work_queue_step`
 - **Handoffs:** `create_handoff`, `get_handoff`, `list_inbox_handoffs`, `list_sent_handoffs`, `claim_handoff`, `decline_handoff`, `revoke_handoff`, `add_handoff_comment`
 - **Marketplace (never writes files or enables executable content):** `search_skill_marketplace`, `get_marketplace_package`, `diff_marketplace_versions`, `get_skill_policy`, `preview_marketplace_skill`, `load_marketplace_skill`, `request_skill_install`, `list_skill_install_requests`, `get_skill_install_request`, `cancel_skill_install_request`
+- **Project groups:** `list_project_groups`, `get_project_group`, `create_project_group`, `update_project_group`, `delete_project_group`, `add_project_to_group`, `remove_project_from_group`, `list_group_members`, `grant_group_access`, `revoke_group_access`, `list_group_access`, `search_group_knowledge`, `get_group_context`, `compile_group_knowledge`, `ask_group`
 
 If you are an agent or have the MCP server installed, prefer the MCP tools over the CLI equivalents listed in this reference — they are faster, run in-process, and avoid hitting API rate limits.
 

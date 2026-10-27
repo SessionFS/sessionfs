@@ -13,6 +13,7 @@ vi.mock('../auth/AuthContext', () => ({
 vi.mock('../org/OrgSettingsTab', () => ({ default: () => <p>org settings</p> }));
 vi.mock('../org/SsoTab', () => ({ default: () => <p>sso config</p> }));
 vi.mock('../org/OrgPersonasSection', () => ({ default: () => <p>org personas</p> }));
+vi.mock('../org/groups/GroupsTab', () => ({ default: () => <p>project groups</p> }));
 
 const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body }) as unknown as Response;
 
@@ -51,6 +52,14 @@ describe('Organization page', () => {
   it('Members tab has no axe violations', async () => {
     const { container } = renderPage();
     await screen.findByText('member@example.test');
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('Groups tab is reachable and has no axe violations', async () => {
+    const { container } = renderPage();
+    await screen.findByText('member@example.test');
+    await userEvent.setup().click(screen.getByRole('tab', { name: 'Groups' }));
+    await screen.findByText('project groups');
     expect(await axe(container)).toHaveNoViolations();
   });
 

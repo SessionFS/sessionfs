@@ -590,3 +590,105 @@ async def test_list_projects_follows_pagination_and_skips_issue_types():
     await client.aclose()
     assert [p.key for p in projects] == ["A", "B"]
     assert all(p.issue_types == [] for p in projects)
+
+
+def _paged_site(keys: list[str], seen: list[dict]):
+    """A fake ``project/search`` over ``keys`` honouring query/startAt/maxResults."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/rest/api/3/project/search"
+        params = dict(request.url.params)
+        seen.append(params)
+        query = params.get("query", "").lower()
+        matched = [k for k in keys if query in k.lower()]
+        start = int(params.get("startAt", "0"))
+        size = min(int(params.get("maxResults", "50")), 50)
+        values = [{"key": k, "name": f"Name {k}"} for k in matched[start:start + size]]
+        return httpx.Response(200, json={
+            "startAt": start, "maxResults": size, "total": len(matched),
+            "isLast": start + size >= len(matched), "values": values,
+        })
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_search_projects_passes_query_to_jira_and_reports_more():
+    keys = [f"AIOPS{i}" for i in range(80)] + ["BETA", "ZULU"]
+    seen: list[dict] = []
+    client = _client(_paged_site(keys, seen))
+    page = await client.search_projects("aiops", 60)
+    await client.aclose()
+    assert [p.key for p in page.projects] == keys[:60]
+    assert page.has_more is True
+    # Jira filters server-side: the query rides on every page request, and
+    # no page asks for more than Atlassian's 50.
+    assert all(p["query"] == "aiops" for p in seen)
+    assert [int(p["maxResults"]) for p in seen] == [50, 10]
+
+
+@pytest.mark.asyncio
+async def test_search_projects_last_page_is_not_truncated():
+    seen: list[dict] = []
+    client = _client(_paged_site(["ACME", "BETA", "ZULU"], seen))
+    page = await client.search_projects("zu", 50)
+    await client.aclose()
+    assert [p.key for p in page.projects] == ["ZULU"]
+    assert page.has_more is False
+
+
+@pytest.mark.asyncio
+async def test_search_projects_without_query_reports_truncation_at_limit():
+    keys = [f"P{i:04d}" for i in range(120)]
+    seen: list[dict] = []
+    client = _client(_paged_site(keys, seen))
+    page = await client.search_projects(None, 50)
+    await client.aclose()
+    assert len(page.projects) == 50
+    assert page.has_more is True
+    assert all("query" not in p for p in seen)
+
+
+@pytest.mark.asyncio
+async def test_list_projects_caps_at_500_but_site_has_more():
+    keys = [f"P{i:04d}" for i in range(700)]
+    seen: list[dict] = []
+    client = _client(_paged_site(keys, seen))
+    projects = await client.list_projects()
+    page_seen = len(seen)
+    page = await client.search_projects(None, 1000)  # clamped to 500
+    await client.aclose()
+    assert len(projects) == 500
+    assert page_seen == 10
+    assert len(page.projects) == 500
+    assert page.has_more is True
+
+
+@pytest.mark.asyncio
+async def test_search_projects_stops_on_malformed_pages():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        # Never the last page and never a usable entry: the client must give
+        # up after a bounded number of pages instead of looping forever.
+        return httpx.Response(200, json={"isLast": False, "values": [{"name": "no key"}]})
+
+    client = _client(handler)
+    page = await client.search_projects("x", 50)
+    await client.aclose()
+    assert page.projects == []
+    assert page.has_more is True
+    assert calls["n"] <= 11
+
+
+@pytest.mark.asyncio
+async def test_search_projects_errors_stay_sanitized():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"errorMessages": [f"boom {_TOKEN}"]})
+
+    client = _client(handler)
+    with pytest.raises(TrackerError) as exc:
+        await client.search_projects("acme", 50)
+    await client.aclose()
+    assert _TOKEN not in str(exc.value)

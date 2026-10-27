@@ -1,7 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 ---
-<BaseLayout title="Enterprise — SessionFS" activeNav="enterprise" description="AI session portability, governance, and coordination for enterprise. Capture, resume, handoff, personas, tickets, AgentRuns, a session helper, Jira, and the audit trail your compliance team needs.">
+<BaseLayout title="Enterprise — SessionFS" activeNav="enterprise" description="AI session portability, governance, and coordination for enterprise. Capture, resume, handoff, personas, tickets, AgentRuns, a session helper, Jira and Confluence, project groups, and the audit trail your compliance team needs.">
 
   <!-- Section 1: Hero -->
   <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
@@ -358,8 +358,22 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <div class="border-t border-border pt-4 flex items-start gap-3">
               <span class="text-accent text-lg mt-0.5">&#10003;</span>
               <div>
-                <div class="font-semibold text-sm mb-1">Jira Cloud integration</div>
-                <div class="text-muted text-base">Promote tickets to Jira issues from an editable preview, using Agile, Compliance, SRE or Bug report templates. One way: acceptance criteria are copied word for word, the API token is encrypted at rest, and Jira changes never write back.</div>
+                <div class="font-semibold text-sm mb-1">Two-way Jira Cloud sync</div>
+                <div class="text-muted text-base">Promote tickets to Jira issues from an editable preview, using built-in or your own story templates; acceptance criteria are copied word for word and every issue is pinned to its template version. Status changes and comments sync both ways through a signed webhook, completed tickets post one evidence comment, and the API token is encrypted at rest.</div>
+              </div>
+            </div>
+            <div class="border-t border-border pt-4 flex items-start gap-3">
+              <span class="text-accent text-lg mt-0.5">&#10003;</span>
+              <div>
+                <div class="font-semibold text-sm mb-1">Confluence publishing</div>
+                <div class="text-muted text-base">Publish wiki pages and the compiled project context to a Confluence Cloud space your admins choose, after a preview of citations and anything dropped. Pages someone edited in Confluence are never overwritten silently: SessionFS shows the drift and lets a project admin decide.</div>
+              </div>
+            </div>
+            <div class="border-t border-border pt-4 flex items-start gap-3">
+              <span class="text-accent text-lg mt-0.5">&#10003;</span>
+              <div>
+                <div class="font-semibold text-sm mb-1">Project groups + restricted visibility</div>
+                <div class="text-muted text-base">Group related projects and grant reader, editor or admin access to the whole group. Turn on restricted project visibility so members see only the projects they own, created or reach through a group. Group search and overviews only return what each person can read.</div>
               </div>
             </div>
             <div class="border-t border-border pt-4 flex items-start gap-3">

@@ -144,6 +144,27 @@ def test_ticket_publish_with_from_and_yes_posts_sections(tmp_path):
     assert api.publish_calls[0]["sections"] == _PREVIEW["sections"]
 
 
+def test_ticket_publish_echoes_the_previewed_template(tmp_path):
+    from_file = tmp_path / "preview.json"
+    preview = dict(_PREVIEW, template={"slug": "design-lite", "name": "Design Lite", "version": 3})
+    from_file.write_text(json.dumps(preview))
+    api = _TicketApi()
+    result = _run_ticket(["jira", "publish", "tk_abc", "--from", str(from_file), "--yes"], api)
+    assert result.exit_code == 0, result.output
+    assert api.publish_calls[0]["template"] == "design-lite"
+    assert api.publish_calls[0]["template_version"] == 3
+
+
+def test_ticket_publish_without_template_in_file_sends_no_template(tmp_path):
+    from_file = tmp_path / "preview.json"
+    from_file.write_text(json.dumps(_PREVIEW))
+    api = _TicketApi()
+    result = _run_ticket(["jira", "publish", "tk_abc", "--from", str(from_file), "--yes"], api)
+    assert result.exit_code == 0, result.output
+    assert "template" not in api.publish_calls[0]
+    assert "template_version" not in api.publish_calls[0]
+
+
 def test_ticket_status_renders_issue():
     result = _run_ticket(["jira", "status", "tk_abc"], _TicketApi())
     assert result.exit_code == 0, result.output

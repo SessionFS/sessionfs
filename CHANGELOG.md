@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0] - 2026-10-27
+
+**Project groups, two-way Jira sync, Confluence publishing, and a session helper that can draft tickets and find sessions by model.** Server migrations 096–100. Adds 15 MCP tools (85 → 100).
+
+### Added
+- **Project groups.** Org admins can group projects (for example "Payments platform") and grant people reader, editor or admin access to the whole group. An org can turn on **restricted project visibility** so members see only projects they own, created, or reach through a group. Groups offer knowledge search and a list of wiki pages across their projects, and an optional deterministic overview document compiled from them. Everything is filtered to the projects each person can actually read. Team and Enterprise. API: `/api/v1/orgs/{org_id}/groups…`, `GET /api/v1/me/groups`, `GET /api/v1/projects/{id}/groups`. CLI: `sfs project group list|create|show|set|delete|add|remove|members|grant|revoke|access|search|context|compile`, `sfs project list --group`. MCP: 15 new group tools.
+- **Two-way Jira sync.**
+  - **Status:** a linked ticket's status changes move the Jira issue through your status map. Moving the issue to Done in Jira resolves the ticket.
+  - **Comments:** comments can be mirrored in either direction. A **Send to Jira** checkbox posts a comment to the issue, and trusted VERIFIED-CLEAN review verdicts are forwarded automatically.
+  - **Completion evidence:** when a ticket completes, one evidence comment goes to the issue: the verdict, changed files, and promoted knowledge.
+  - **Webhook:** inbound changes arrive at `POST /api/v1/webhooks/jira/{org_id}`, signed with a per-org secret (`POST /api/v1/orgs/{org_id}/integrations/jira/webhook-secret`).
+  - **Reliability:** changes going out are queued and retried with backoff (`POST /api/v1/admin/sweeps/jira-sync`), and our own changes echoing back are ignored.
+  - **Settings:** `PATCH /api/v1/orgs/{org_id}/integrations/jira/sync` changes sync settings without re-entering the token.
+- **Custom Jira story templates.** Org admins can define story templates with verbatim and rewritten sections and pick one per mapping or per ticket. Every published issue is pinned to the template version it used, and a footer links back to SessionFS. CLI: `sfs org jira templates list|show`.
+- **Searchable Jira project mapping.** The mapping dialog searches your Jira projects instead of loading them all.
+- **Confluence publishing (Enterprise).** Publish wiki pages and the compiled project context to a Confluence Cloud space chosen by an org admin, with a preview showing citations and anything dropped.
+  - **Edited in Confluence:** a page that someone edits there is never overwritten. Publishing reports the drift with a diff and lets a project admin overwrite or unlink.
+  - **Scheduled publishing:** an optional publish sweep (`POST /api/v1/admin/sweeps/confluence-publish`) keeps opted-in pages current and skips unchanged ones.
+  - **Endpoints and commands:** API `/api/v1/orgs/{org_id}/integrations/confluence…` and `/api/v1/projects/{id}/confluence/preview|publish|links`. CLI: `sfs org confluence status|connect|map|unmap`, `sfs project confluence publish`.
+- **The session helper reads more of your project.** It can look up tickets, wiki pages, agent runs and personas, with the date each answer is as of, and cite them.
+- **The helper can draft tickets, assign them and comment.** You review and edit every field before pressing **Confirm**, and nothing changes until you do. It follows the same permissions as the ticket pages, never posts a trusted review verdict, and records which conversation the change came from.
+- **The helper finds sessions by model.** Ask "which sessions used DeepSeek?" and it lists the models you've used with counts, filters by model or provider family, pages through results, and can propose moving every match to Trash (100 per proposal).
+
+### Changed
+- **Calmer marketplace.**
+  - **Browse:** a compact header, with most filters moved behind a **Filters** button that shows removable chips.
+  - **Install:** install commands now live in an **Install in your tool** dialog.
+  - **Cards:** simpler cards.
+  - **Package detail:** tabs, with scan results and safety alerts always on the first tab.
+- **Organization → Integrations** starts with one summary row per integration that names only real problems. Each integration's settings sit in their own sections: overview, connection, mappings, templates, sync and activity.
+- **Ticket detail** has a clear header and one timeline of comments, review verdicts, Jira activity and edits.
+- **Project settings** are grouped into General, Knowledge, Repositories, Access & ownership and Danger zone.
+- The top bar no longer overlaps its icons at tablet widths, and headings, landmarks and scrollable tables are labelled for screen readers.
+
+### Fixed
+- Merging two projects that both had knowledge entries no longer fails with a server error.
+- The project Transfer panel only appears for people allowed to start a transfer.
+- Session search with a date range no longer fails on PostgreSQL.
+- Text from consecutive helper steps no longer runs together.
+
+### Security
+- Two-way Jira sync stops for a project that leaves the linked org.
+- The Confluence Markdown converter can't be made to stall the server.
+- Confluence pages and new-project knowledge backfill only use sessions that belong to the project or its creator.
+
+### Upgrade notes
+- **Self-hosted servers: run migrations 096–100.** They add project groups, Jira custom templates, group context, Confluence and Jira sync. All are additive.
+- **Optional schedules:** to keep Jira sync retries and Confluence auto-publishing running, schedule `POST /api/v1/admin/sweeps/jira-sync` and `POST /api/v1/admin/sweeps/confluence-publish` with a `platform_sweeps:run` key.
+
 ## [0.25.0] - 2026-10-26
 
 **The session helper can clean up for you, answers from the SessionFS docs, and is configurable per org; filter sessions by model; test an LLM key before saving it.** Server migrations 094–095. MCP tools unchanged (85).

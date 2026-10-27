@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
-import { Button, Card, Input, Textarea, Select, Dialog, DialogHeader, DialogFooter, Tabs, TabPanel, Table, Dropdown, Tooltip, Kbd, KbdShortcut, PageHeader, PageContainer } from '../';
+import { Button, Card, Input, Textarea, Select, Dialog, DialogHeader, DialogFooter, Tabs, TabPanel, Table, TableShell, Dropdown, Tooltip, Kbd, KbdShortcut, PageHeader, PageContainer } from '../';
 
 // ── Button ──
 
@@ -560,6 +560,42 @@ describe('Table', () => {
   it('shows empty state when no data', () => {
     render(<Table columns={cols} data={[]} rowKey={(r: Row) => r.name} />);
     expect(screen.getByText('No data')).toBeInTheDocument();
+  });
+
+  it('is a plain scroll container without a label', () => {
+    render(<Table columns={cols} data={data} rowKey={(r) => r.name} />);
+    expect(screen.queryByRole('region')).toBeNull();
+  });
+
+  it('becomes a focusable named region with a label', () => {
+    render(<Table columns={cols} data={data} rowKey={(r) => r.name} label="Counts" />);
+    const region = screen.getByRole('region', { name: 'Counts' });
+    expect(region).toHaveAttribute('tabindex', '0');
+    expect(region).toContainElement(screen.getByRole('table'));
+  });
+});
+
+describe('TableShell', () => {
+  const body = (
+    <tbody>
+      <tr>
+        <td>cell</td>
+      </tr>
+    </tbody>
+  );
+
+  it('is a plain scroll container without a label', () => {
+    render(<TableShell>{body}</TableShell>);
+    expect(screen.queryByRole('region')).toBeNull();
+    expect(screen.getByRole('table').parentElement).not.toHaveAttribute('tabindex');
+  });
+
+  it('becomes a focusable named region with a label', async () => {
+    render(<TableShell label="Wide table">{body}</TableShell>);
+    const region = screen.getByRole('region', { name: 'Wide table' });
+    expect(region).toContainElement(screen.getByRole('table'));
+    await userEvent.tab();
+    expect(region).toHaveFocus();
   });
 });
 

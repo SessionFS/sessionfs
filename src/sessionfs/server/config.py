@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
@@ -100,3 +102,22 @@ class ServerConfig(BaseSettings):
         from sessionfs.skills.catalog_mirror import parse_mirror
 
         return parse_mirror(value) or ""
+
+
+def dashboard_link_base(config) -> str:
+    """Dashboard origin for links the server emits (emails, Jira footers).
+
+    Resolution order: ``SFS_DASHBOARD_URL`` (``config.dashboard_url``), then
+    ``config.app_url`` only when the operator set it explicitly (field or
+    ``SFS_APP_URL``), then ``""`` which means "emit no link". There is no
+    hosted-dashboard fallback, so self-hosted installs never link to the
+    hosted app.
+    """
+    explicit_app_url = "app_url" in getattr(config, "model_fields_set", set()) or bool(
+        os.environ.get("SFS_APP_URL")
+    )
+    return str(
+        getattr(config, "dashboard_url", None)
+        or (getattr(config, "app_url", None) if explicit_app_url else None)
+        or ""
+    ).strip().rstrip("/")

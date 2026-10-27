@@ -144,6 +144,10 @@ class CompleteResult:
     reason: str | None = None
     attempts: int | None = None
     next_eligible_at: datetime | None = None
+    # Outbound Jira outbox rows queued by this settle (a forwarded trusted
+    # VERIFIED-CLEAN verdict); the route drains them after commit. Not part
+    # of the API response.
+    jira_event_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         out: dict[str, Any] = {
@@ -323,11 +327,12 @@ def _comment_to_delta(c: TicketComment) -> dict:
     }
 
 
-def _agent_visible_comment_clause(project: Project):
+def _agent_visible_comment_clause(project: Project, *, restricted: bool):
     """Comments an autonomous agent may be fed (tk_25872885e3274a7d).
 
-    Written by an editor of the project (owner / org member), by a service
-    key (org-bound by its own boundary), or a server-trusted reviewer
+    Written by an editor of the project (owner / org member — or, when the
+    org restricts visibility, org admin/owner or a group editor/admin), by a
+    service key (org-bound by its own boundary), or a server-trusted reviewer
     verdict. Comments from captured-session readers stay visible to people
     (UI, API, get_ticket / list_ticket_comments) but never reach agents
     through work-queue directives or trigger a reviewer turn.
@@ -336,7 +341,10 @@ def _agent_visible_comment_clause(project: Project):
 
     return or_(
         editor_authored_clause(
-            TicketComment.author_user_id, project, TicketComment.actor_type
+            TicketComment.author_user_id,
+            project,
+            TicketComment.actor_type,
+            restricted=restricted,
         ),
         TicketComment.verdict_trusted.is_(True),
     )
@@ -358,11 +366,14 @@ async def _comment_delta(
     _COMMENT_DELTA_LIMIT (token control, design §9 — small delta, NOT the
     whole thread).
     """
+    from sessionfs.server.auth.project_access import project_restricts_visibility
+
+    restricted = await project_restricts_visibility(db, project)
     query = (
         select(TicketComment)
         .where(
             TicketComment.ticket_id == ticket_id,
-            _agent_visible_comment_clause(project),
+            _agent_visible_comment_clause(project, restricted=restricted),
         )
         .order_by(TicketComment.created_at, TicketComment.id)
         .limit(_COMMENT_DELTA_LIMIT)
@@ -483,13 +494,16 @@ async def _implementer_comment_since(
     "the implementer's turn produced new content for review", never as a
     verdict that ends the loop.) Compared against the ACKED cursor, never SEEN.
     """
+    from sessionfs.server.auth.project_access import project_restricts_visibility
+
+    restricted = await project_restricts_visibility(db, project)
     query = (
         select(TicketComment)
         .where(
             TicketComment.ticket_id == ticket_id,
             TicketComment.verdict_trusted.is_(False),
             # A reader's comment never makes it the reviewer's turn.
-            _agent_visible_comment_clause(project),
+            _agent_visible_comment_clause(project, restricted=restricted),
         )
         .order_by(TicketComment.created_at.desc(), TicketComment.id.desc())
         .limit(1)
@@ -512,13 +526,14 @@ async def _implementer_comment_since(
     return (await db.execute(query)).scalars().first()
 
 
-def editor_backed_ticket_clause(project: Project):
+def editor_backed_ticket_clause(project: Project, *, restricted: bool):
     """SQL predicate over ``Ticket``: an editor stands behind this ticket.
 
     True when the ticket was filed by an editor of the project (owner / org
-    member) acting as themselves, by a service key of the project's org, or
-    approved by an editor (the approve route writes a status TicketEdit) after
-    the last change any non-editor made to it. The one rule shared by
+    member — or, when the org restricts visibility, org admin/owner or a group
+    editor/admin) acting as themselves, by a service key of the project's org,
+    or approved by an editor (the approve route writes a status TicketEdit)
+    after the last change any non-editor made to it. The one rule shared by
     auto-adoption, the candidate filter and the step engine's holds
     (tk_25872885e3274a7d).
     """
@@ -536,7 +551,13 @@ def editor_backed_ticket_clause(project: Project):
         select(func.max(non_editor_edit.edited_at))
         .where(
             non_editor_edit.ticket_id == Ticket.id,
-            not_(editor_authored_clause(non_editor_edit.edited_by_user_id, project)),
+            not_(
+                editor_authored_clause(
+                    non_editor_edit.edited_by_user_id,
+                    project,
+                    restricted=restricted,
+                )
+            ),
         )
         .scalar_subquery()
     )
@@ -544,7 +565,9 @@ def editor_backed_ticket_clause(project: Project):
         TicketEdit.ticket_id == Ticket.id,
         TicketEdit.field_name == "status",
         TicketEdit.new_value == json.dumps("open"),
-        editor_authored_clause(TicketEdit.edited_by_user_id, project),
+        editor_authored_clause(
+            TicketEdit.edited_by_user_id, project, restricted=restricted
+        ),
         or_(
             latest_non_editor_edit.is_(None),
             TicketEdit.edited_at > latest_non_editor_edit,
@@ -553,14 +576,16 @@ def editor_backed_ticket_clause(project: Project):
     return or_(
         and_(
             Ticket.actor_type.is_distinct_from("service_key"),
-            editor_authored_clause(Ticket.created_by_user_id, project),
+            editor_authored_clause(
+                Ticket.created_by_user_id, project, restricted=restricted
+            ),
         ),
         and_(Ticket.actor_type == "service_key", service_key_ok),
         editor_approved.exists(),
     )
 
 
-def _not_held_clause(queue: WorkQueue, project: Project):
+def _not_held_clause(queue: WorkQueue, project: Project, *, restricted: bool):
     """SQL predicate over ``Ticket``: the engine may dispatch work for it.
 
     Cancelled tickets are held in every mode. Suggested tickets are held,
@@ -568,7 +593,7 @@ def _not_held_clause(queue: WorkQueue, project: Project):
     may take a suggested ticket an editor stands behind.
     """
     if queue.mode == "triage":
-        suggested_ok = editor_backed_ticket_clause(project)
+        suggested_ok = editor_backed_ticket_clause(project, restricted=restricted)
     else:
         suggested_ok = false()
     return and_(
@@ -586,11 +611,15 @@ async def _ticket_hold_reason(
     if ticket.status != "suggested":
         return None
     if queue.mode == "triage":
+        from sessionfs.server.auth.project_access import project_restricts_visibility
+
         project = await _queue_project(db, queue)
+        restricted = await project_restricts_visibility(db, project)
         backed = (
             await db.execute(
                 select(Ticket.id).where(
-                    Ticket.id == ticket.id, editor_backed_ticket_clause(project)
+                    Ticket.id == ticket.id,
+                    editor_backed_ticket_clause(project, restricted=restricted),
                 )
             )
         ).first()
@@ -629,7 +658,10 @@ async def _materialize_auto_adopt(
     ).scalar_one_or_none()
     if project is None:
         return 0
-    stmt = stmt.where(editor_backed_ticket_clause(project))
+    from sessionfs.server.auth.project_access import project_restricts_visibility
+
+    restricted = await project_restricts_visibility(db, project)
+    stmt = stmt.where(editor_backed_ticket_clause(project, restricted=restricted))
     status = selector.get("status")
     if isinstance(status, str) and status:
         stmt = stmt.where(Ticket.status == status)
@@ -1114,6 +1146,10 @@ async def run_work_queue_step(
     # Candidate eligible items (the atomic claim is the real guard — this
     # SELECT only narrows the set the claim races over).
     await _settle_cancelled_items(db, queue, now=now)
+    from sessionfs.server.auth.project_access import project_restricts_visibility
+
+    queue_project = await _queue_project(db, queue)
+    queue_restricted = await project_restricts_visibility(db, queue_project)
     candidates = list(
         (
             await db.execute(
@@ -1126,7 +1162,9 @@ async def run_work_queue_step(
                 .where(
                     or_(
                         Ticket.id.is_(None),
-                        _not_held_clause(queue, await _queue_project(db, queue)),
+                        _not_held_clause(
+                            queue, queue_project, restricted=queue_restricted
+                        ),
                     ),
                     WorkQueueItem.work_queue_id == queue.id,
                     WorkQueueItem.item_status.in_(("pending", _WAITING_STATUS)),
@@ -1497,6 +1535,7 @@ async def complete_work_queue_step(
         )
 
     # ── (4) SUCCESS branch ──
+    jira_event_ids: list[str] = []
 
     # (4a) SERVER-CREATED REVIEWER VERDICT (tk_3539f7761e554ed5 / design §5.0).
     # When a review_until_clean directive (intent=post_review) settles with a
@@ -1552,6 +1591,17 @@ async def complete_work_queue_step(
         # the acked target so the validation below is satisfied without the
         # caller round-tripping a comment_id.
         comment_id = created_comment.id
+        # Two-way Jira sync: a trusted VERIFIED-CLEAN verdict is forwarded to
+        # the linked Jira issue exactly like one posted through the comment
+        # route (outbox row in this transaction; best-effort, never raises).
+        jira_event_ids = await _queue_verdict_for_jira(
+            db,
+            ticket_id=ticket_id,
+            comment=created_comment,
+            project_id=queue.project_id,
+            actor_user_id=actor_user_id,
+            actor_service_key_id=actor_service_key_id,
+        )
 
     # ── (4b) Validate the writeback landed ──
     acked_comment: TicketComment | None = None
@@ -1781,4 +1831,51 @@ async def complete_work_queue_step(
         item_terminal=terminal,
         attempts=item.attempts,
         next_eligible_at=item.next_eligible_at,
+        jira_event_ids=jira_event_ids,
     )
+
+
+async def _queue_verdict_for_jira(
+    db: AsyncSession,
+    *,
+    ticket_id: str,
+    comment: TicketComment,
+    project_id: str,
+    actor_user_id: str | None,
+    actor_service_key_id: str | None,
+) -> list[str]:
+    """Queue a trusted VERIFIED-CLEAN verdict for the linked Jira issue.
+
+    Same rules as the comment route: only a trusted verdict whose structured
+    header parses as VERIFIED-CLEAN, only for an actor that may drive Jira (a
+    service key inside its boundary, or a user with edit standing). Never
+    raises — a failure here must not fail the settle.
+    """
+    try:
+        if not comment.verdict_trusted:
+            return []
+        from sessionfs.server.services import jira_sync
+        from sessionfs.server.services.review_state import VERDICT_CLEAN
+        from sessionfs.server.services.ticket_watchers import parse_verdict
+
+        if parse_verdict(comment.content or "") != VERDICT_CLEAN:
+            return []
+        if actor_service_key_id is None:
+            from sessionfs.server.auth.project_access import user_can_edit_project
+            from sessionfs.server.db.models import Project
+
+            project = await db.get(Project, project_id)
+            if (
+                project is None
+                or actor_user_id is None
+                or not await user_can_edit_project(db, actor_user_id, project)
+            ):
+                return []
+        ticket = await db.get(Ticket, ticket_id)
+        if ticket is None:
+            return []
+        return await jira_sync.enqueue_comment(
+            db, ticket, comment.id, reason="verified_clean"
+        )
+    except Exception:  # noqa: BLE001 — best-effort side channel
+        return []

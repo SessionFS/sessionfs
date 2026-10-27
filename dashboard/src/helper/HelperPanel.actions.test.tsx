@@ -162,6 +162,46 @@ describe('HelperPanel — write actions', () => {
     expect(screen.queryByText(/changed, 0 failed/)).not.toBeInTheDocument();
   });
 
+  it('recovers a ticket proposal with the right action kind', async () => {
+    getHelperConversation.mockResolvedValue({
+      id: 'c1',
+      org_id: null,
+      title: 'Assign',
+      created_at: '',
+      updated_at: '',
+      scope: null,
+      messages: [
+        { id: 'm1', role: 'user', content: 'assign it' },
+        {
+          id: 't1',
+          role: 'tool',
+          content: `Proposed action ${ACTION_ID} — waiting for the user to confirm. Do not claim it is done.`,
+          tool_name: 'propose_assignment',
+          tool_call_id: 'tc1',
+          tool_args: {},
+        },
+        { id: 'm2', role: 'assistant', content: 'Proposed.', citations: null },
+      ],
+    });
+    getHelperAction.mockResolvedValue({
+      id: ACTION_ID,
+      kind: 'assign_ticket',
+      status: 'pending',
+      summary: 'Assign Fix webhook retry to Atlas',
+      targets: [{ id: 'tk_1', name: 'Fix webhook retry', change: 'will_change', before: null, after: 'Atlas' }],
+      params: { ticket_id: 'tk_1', assigned_to: 'Atlas' },
+      result: {},
+      created_at: null,
+      expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+      decided_at: null,
+    });
+    renderPanel();
+    await userEvent.click(screen.getByRole('button', { name: /Cleanup/ }));
+    expect(await screen.findByRole('heading', { name: 'Assign to Atlas' })).toBeInTheDocument();
+    expect(screen.getByText(/unassigned → Atlas/)).toBeInTheDocument();
+    expect(getHelperAction).toHaveBeenCalledWith(ACTION_ID);
+  });
+
   it('prefers the structured action_id over the result text', async () => {
     getHelperConversation.mockResolvedValue({
       id: 'c1',

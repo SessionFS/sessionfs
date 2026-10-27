@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import type { ButtonHTMLAttributes, ReactNode, Ref } from 'react';
 
 type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 type ButtonSize = 'sm' | 'md';
@@ -8,6 +8,8 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   size?: ButtonSize;
   loading?: boolean;
   children: ReactNode;
+  /** React 19 passes ref as a prop; it lands on the <button> via ...rest. */
+  ref?: Ref<HTMLButtonElement>;
 }
 
 const VARIANT_CLASSES: Record<ButtonVariant, string> = {

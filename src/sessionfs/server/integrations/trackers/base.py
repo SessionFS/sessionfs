@@ -35,6 +35,14 @@ class TrackerProject:
 
 
 @dataclass
+class TrackerProjectPage:
+    """One page of a project search: the projects plus whether more matched."""
+
+    projects: list[TrackerProject]
+    has_more: bool
+
+
+@dataclass
 class TrackerIssue:
     """A lightweight view of a remote issue (enough to fill the link row).
 
@@ -67,6 +75,12 @@ class TrackerProvider(Protocol):
 
     async def list_projects(self) -> list[TrackerProject]:
         """All projects the credentials can see, with their issue types."""
+        ...
+
+    async def search_projects(
+        self, query: str | None, limit: int
+    ) -> TrackerProjectPage:
+        """Up to ``limit`` projects whose key or name matches ``query``."""
         ...
 
     async def list_issue_types(self, project_key: str) -> list[TrackerIssueType]:

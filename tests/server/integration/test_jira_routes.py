@@ -40,6 +40,7 @@ from sessionfs.server.integrations.trackers.base import (
     TrackerIssue,
     TrackerIssueType,
     TrackerProject,
+    TrackerProjectPage,
 )
 from sessionfs.server.integrations.trackers.jira import validate_site_url
 
@@ -214,6 +215,23 @@ def fake_jira(monkeypatch):
 
         async def list_projects(self) -> list[TrackerProject]:
             return [TrackerProject(key="ACME", name="Acme", issue_types=[])]
+
+        async def search_projects(self, query, limit) -> TrackerProjectPage:
+            self.state.setdefault("searches", []).append((query, limit))
+            keys = self.state.get("project_keys", ["ACME"])
+            names = {"ACME": "Acme"}
+            matched = [
+                k for k in keys
+                if not query or query.lower() in k.lower()
+                or query.lower() in names.get(k, k).lower()
+            ]
+            return TrackerProjectPage(
+                projects=[
+                    TrackerProject(key=k, name=names.get(k, k.title()), issue_types=[])
+                    for k in matched[:limit]
+                ],
+                has_more=len(matched) > limit,
+            )
 
         async def list_issue_types(self, project_key: str) -> list[TrackerIssueType]:
             return [TrackerIssueType(name="Story", id="10000")]
@@ -512,6 +530,131 @@ async def test_projects_list_and_health(client: AsyncClient, db_session: AsyncSe
     assert health["unmapped_project_count"] == 1
     assert health["last_push_failures"] == []
     assert health["stale_links"] == []
+
+
+@pytest.mark.asyncio
+async def test_projects_search_passes_query_and_reports_has_more(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org = await _org(db_session)
+    user, key = await _member(db_session, org, "admin")
+    await _insert_connection(db_session, org, user)
+    url = f"/api/v1/orgs/{org.id}/integrations/jira/projects"
+
+    # Seed the fake site with many projects so paging matters.
+    resp = await client.get(url, params={"limit": 5}, headers=_hdrs(key))
+    state = fake_jira[-1].state
+    state["project_keys"] = ["ACME", "AIOPS"] + [f"B{i:03d}" for i in range(120)]
+
+    resp = await client.get(url, params={"q": "  aio  "}, headers=_hdrs(key))
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {
+        "projects": [{"key": "AIOPS", "name": "Aiops", "issue_types": []}],
+        "has_more": False,
+        "query": "aio",
+        "limit": 50,
+    }
+    # The trimmed query and the default page size reach the Jira client.
+    assert state["searches"][-1] == ("aio", 50)
+
+    resp = await client.get(url, params={"limit": 100}, headers=_hdrs(key))
+    body = resp.json()
+    assert len(body["projects"]) == 100
+    assert body["has_more"] is True
+    assert body["query"] is None
+    assert state["searches"][-1] == (None, 100)
+
+    # A blank query is the unfiltered first page, not a Jira search for "".
+    resp = await client.get(url, params={"q": "   "}, headers=_hdrs(key))
+    assert resp.json()["query"] is None
+    assert state["searches"][-1] == (None, 50)
+
+
+@pytest.mark.asyncio
+async def test_projects_unpaged_list_keeps_bare_shape_and_flags_truncation(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org = await _org(db_session)
+    user, key = await _member(db_session, org, "admin")
+    await _insert_connection(db_session, org, user)
+    url = f"/api/v1/orgs/{org.id}/integrations/jira/projects"
+
+    resp = await client.get(url, headers=_hdrs(key))
+    assert resp.json() == [{"key": "ACME", "name": "Acme", "issue_types": []}]
+    assert resp.headers["X-Jira-Projects-Truncated"] == "false"
+    fake_jira[-1].state["project_keys"] = [f"P{i:04d}" for i in range(600)]
+
+    resp = await client.get(url, headers=_hdrs(key))
+    assert isinstance(resp.json(), list)
+    assert len(resp.json()) == 500
+    assert resp.headers["X-Jira-Projects-Truncated"] == "true"
+    assert fake_jira[-1].state["searches"][-1] == (None, 500)
+
+
+@pytest.mark.asyncio
+async def test_projects_search_validates_params(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org = await _org(db_session)
+    user, key = await _member(db_session, org, "admin")
+    await _insert_connection(db_session, org, user)
+    url = f"/api/v1/orgs/{org.id}/integrations/jira/projects"
+
+    for params in ({"q": "x" * 101}, {"limit": 0}, {"limit": 101}, {"limit": "many"}):
+        resp = await client.get(url, params=params, headers=_hdrs(key))
+        assert resp.status_code == 422, params
+    assert fake_jira == [] or "searches" not in fake_jira[-1].state
+
+
+@pytest.mark.asyncio
+async def test_projects_search_is_admin_only_and_sanitizes_upstream_errors(
+    client: AsyncClient, db_session: AsyncSession, fake_jira, monkeypatch
+):
+    org = await _org(db_session)
+    admin, admin_key = await _member(db_session, org, "admin")
+    _, member_key = await _member(db_session, org, "member")
+    await _insert_connection(db_session, org, admin)
+    url = f"/api/v1/orgs/{org.id}/integrations/jira/projects"
+
+    resp = await client.get(url, params={"q": "acme"}, headers=_hdrs(member_key))
+    assert resp.status_code == 403
+
+    other = await _org(db_session)
+    resp = await client.get(
+        f"/api/v1/orgs/{other.id}/integrations/jira/projects",
+        params={"q": "acme"},
+        headers=_hdrs(admin_key),
+    )
+    assert resp.status_code == 404
+
+    async def boom(self, query, limit):
+        raise TrackerError("Jira API 500: upstream failure")
+
+    monkeypatch.setattr(
+        "sessionfs.server.routes.jira.JiraClient.search_projects", boom
+    )
+    resp = await client.get(url, params={"q": "acme"}, headers=_hdrs(admin_key))
+    assert resp.status_code == 502
+    assert _TOKEN not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_project_listing_carries_org_id_for_the_mapping_picker(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """GH #103: the dashboard's SessionFS-project picker filters
+    ``GET /api/v1/projects/`` by ``org_id``. The response model used to drop
+    the column, so every project was filtered out and the picker was empty."""
+    org = await _org(db_session)
+    user, key = await _member(db_session, org, "admin")
+    org_project = await _project(db_session, user, org)
+    personal = await _project(db_session, user, None)
+
+    listed = (await client.get("/api/v1/projects/", headers=_hdrs(key))).json()
+    by_id = {p["id"]: p for p in listed}
+    assert by_id[org_project.id]["org_id"] == org.id
+    assert by_id[personal.id]["org_id"] is None
 
 
 # ── ticket promotion ──
@@ -886,7 +1029,7 @@ async def test_stale_link_after_org_change_blocks_outbound(
 async def test_project_transfer_drops_mapping_and_leaves_link(
     client: AsyncClient, db_session: AsyncSession, fake_jira
 ):
-    from sessionfs.server.services.tracker_scope import drop_project_tracker_mapping
+    from sessionfs.server.services.tracker_scope import drop_project_integration_mappings
 
     org, user, key, project, ticket = await _ready(db_session)
     preview = (await client.post(
@@ -902,7 +1045,7 @@ async def test_project_transfer_drops_mapping_and_leaves_link(
     assert link_before.status == "linked"
 
     # A transfer drops the tracker mapping but leaves the link row in place.
-    await drop_project_tracker_mapping(db_session, project.id)
+    await drop_project_integration_mappings(db_session, project.id)
     await db_session.commit()
 
     assert (await db_session.execute(
@@ -928,7 +1071,7 @@ async def test_project_transfer_drops_mapping_and_leaves_link(
 async def test_transfer_lets_new_org_remap_and_stale_link_stays_blocked(
     client: AsyncClient, db_session: AsyncSession, fake_jira
 ):
-    from sessionfs.server.services.tracker_scope import drop_project_tracker_mapping
+    from sessionfs.server.services.tracker_scope import drop_project_integration_mappings
 
     # Org A owns the project and has a published Jira link.
     org_a, admin_a, key_a, project, ticket = await _ready(db_session)
@@ -948,7 +1091,7 @@ async def test_transfer_lets_new_org_remap_and_stale_link_stays_blocked(
     # The accept path moves the project to org B and drops the source-org
     # mapping, leaving the old link in place (now stale).
     project.org_id = org_b.id
-    await drop_project_tracker_mapping(db_session, project.id)
+    await drop_project_integration_mappings(db_session, project.id)
     await db_session.commit()
 
     # The new org can map the transferred project: the dropped mapping must not
@@ -2229,3 +2372,54 @@ async def test_non_member_with_captured_session_cannot_use_org_jira(
         )
     ).scalars().all()
     assert links == []
+
+
+@pytest.mark.asyncio
+async def test_restricted_org_jira_preview_and_publish_need_edit_standing(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """GitHub #101 — in an org that restricts project visibility, Jira
+    preview/publish need edit standing: a group reader is refused, a group
+    editor goes through. Unrestricted orgs keep member-level access."""
+    from sessionfs.server.db.models import (
+        ProjectGroup,
+        ProjectGroupAccess,
+        ProjectGroupMember,
+    )
+
+    org, admin, _key, project, ticket = await _ready(db_session)
+    reader, reader_key = await _member(db_session, org, "member")
+    editor, editor_key = await _member(db_session, org, "member")
+    plain, plain_key = await _member(db_session, org, "member")
+    group = ProjectGroup(
+        id=f"pg_{uuid.uuid4().hex[:12]}", org_id=org.id, slug="g", name="G",
+        created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(group)
+    await db_session.flush()
+    db_session.add(ProjectGroupAccess(group_id=group.id, project_id=project.id))
+    db_session.add(ProjectGroupMember(group_id=group.id, user_id=reader.id, role="reader"))
+    db_session.add(ProjectGroupMember(group_id=group.id, user_id=editor.id, role="editor"))
+    await db_session.commit()
+
+    url = f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira"
+    # Unrestricted: a plain member previews.
+    resp = await client.post(f"{url}/preview", headers=_hdrs(plain_key))
+    assert resp.status_code == 200, resp.text
+    preview = resp.json()
+
+    org.settings = json.dumps({"general": {"restrict_project_visibility": True}})
+    await db_session.commit()
+
+    resp = await client.post(f"{url}/preview", headers=_hdrs(reader_key))
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["error"]["code"] == "project_edit_forbidden"
+    resp = await client.post(
+        f"{url}/publish", headers=_hdrs(reader_key),
+        json={"summary": preview["summary"], "sections": preview["sections"], "confirm": True},
+    )
+    assert resp.status_code == 403, resp.text
+    resp = await client.post(f"{url}/preview", headers=_hdrs(plain_key))
+    assert resp.status_code == 403, resp.text
+    resp = await client.post(f"{url}/preview", headers=_hdrs(editor_key))
+    assert resp.status_code == 200, resp.text

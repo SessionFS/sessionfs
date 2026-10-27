@@ -66,6 +66,7 @@ export default defineConfig({
             { label: 'MCP Server', slug: 'mcp' },
             { label: 'Git Integration', slug: 'git-integration' },
             { label: 'Project Context', slug: 'project-context' },
+            { label: 'Project Groups', slug: 'project-groups' },
             { label: 'Skills Marketplace', slug: 'skills-marketplace' },
             { label: 'Session Helper', slug: 'session-helper' },
           ],
@@ -85,6 +86,7 @@ export default defineConfig({
             { label: 'External Agent Orchestration', slug: 'integrations/external-agents' },
             { label: 'CI Integration (Agent Runs)', slug: 'integrations/ci-integration' },
             { label: 'Jira Cloud', slug: 'integrations/jira' },
+            { label: 'Confluence Cloud', slug: 'integrations/confluence' },
           ],
         },
         {

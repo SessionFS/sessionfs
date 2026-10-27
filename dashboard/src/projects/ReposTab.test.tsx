@@ -73,6 +73,19 @@ describe('ReposTab', () => {
     expect(screen.getByText('verified')).toBeInTheDocument();
   });
 
+  it('hides link and unlink without project-admin standing', () => {
+    render(<ReposTab projectId="proj_1" canAdmin={false} />);
+    expect(screen.getByTitle('github.com/acme/frontend')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Add repo/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Unlink/ })).not.toBeInTheDocument();
+  });
+
+  it('shows link and unlink by default', () => {
+    render(<ReposTab projectId="proj_1" />);
+    expect(screen.getByRole('button', { name: /Add repo/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unlink github.com/acme/frontend' })).toBeInTheDocument();
+  });
+
   it('shows unverified badge for owner-attested repos', () => {
     hooks.useProjectRepos.mockReturnValue({
       data: [repo({ verified: false, verification_method: 'owner_attested' })],

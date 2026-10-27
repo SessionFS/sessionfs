@@ -21,9 +21,10 @@ import { Button, Dialog, DialogFooter, DialogHeader, Drawer } from '../component
 import type { HelperScope } from './HelperProvider';
 import { useDeleteHelperConversation, useHelperConversations, useHelperStatus } from './useHelper';
 import { SseParser, parseActionProposed, type SseEvent } from './sse';
-import { proposedActionId, type TurnAction } from './actions';
+import { actionKindForTool, proposedActionId, type TurnAction } from './actions';
 import {
   MAX_MESSAGE_CHARS,
+  appendStepText,
   TITLE_ID,
   classifyError,
   streamError,
@@ -238,8 +239,14 @@ export default function HelperPanel({
         } else if (m.role === 'tool') {
           const actionId = proposedActionId(m);
           if (actionId) {
-            const kind = m.tool_name === 'trash_sessions' ? 'trash_sessions' : 'set_auto_narrative';
-            const action: TurnAction = { id: actionId, kind, summary: '', targets: [], expires_at: null, fromHistory: true };
+            const action: TurnAction = {
+              id: actionId,
+              kind: actionKindForTool(m.tool_name),
+              summary: '',
+              targets: [],
+              expires_at: null,
+              fromHistory: true,
+            };
             if (lastAssistant) lastAssistant.actions = [...(lastAssistant.actions ?? []), action];
             else pendingActions.push(action);
           }
@@ -325,6 +332,8 @@ export default function HelperPanel({
     let gotDone = false;
     let streamFailed = false;
     let citationCount = 0;
+    // True between a tool round and the next model step's first text.
+    let stepBreak = false;
 
     const handleEvent = (ev: SseEvent) => {
       try {
@@ -332,7 +341,11 @@ export default function HelperPanel({
           newConversationId = (JSON.parse(ev.data) as { conversation_id?: string }).conversation_id ?? null;
         } else if (ev.event === 'text') {
           const delta = (JSON.parse(ev.data) as { delta?: string }).delta ?? '';
-          if (delta) patchAssistant((t) => ({ ...t, content: t.content + delta }));
+          if (delta) {
+            const newStep = stepBreak;
+            stepBreak = false;
+            patchAssistant((t) => ({ ...t, content: appendStepText(t.content, delta, newStep) }));
+          }
         } else if (ev.event === 'tool_call') {
           const c = JSON.parse(ev.data) as { id?: string; name?: string; args?: Record<string, unknown> };
           patchAssistant((t) => ({
@@ -343,6 +356,7 @@ export default function HelperPanel({
             ],
           }));
         } else if (ev.event === 'tool_result') {
+          stepBreak = true;
           const r = JSON.parse(ev.data) as { id?: string; name?: string; ok?: boolean; item_count?: number };
           const finished: Pick<ToolStep, 'status' | 'itemCount'> = {
             status: r.ok === false ? 'error' : 'ok',

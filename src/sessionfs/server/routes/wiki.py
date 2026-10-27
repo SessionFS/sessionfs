@@ -9,7 +9,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
@@ -52,6 +52,8 @@ class PageSummary(BaseModel):
     entry_count: int
     auto_generated: bool
     updated_at: datetime
+    # Opt-in for the Confluence publish sweep (knowledge_pages.publish).
+    publish: bool = False
 
 
 class BacklinkItem(BaseModel):
@@ -75,6 +77,8 @@ class PageDetail(BaseModel):
     created_at: datetime
     updated_at: datetime
     backlinks: list[BacklinkItem] = []
+    # Opt-in for the Confluence publish sweep (knowledge_pages.publish).
+    publish: bool = False
 
 
 class PageWriteRequest(BaseModel):
@@ -82,6 +86,8 @@ class PageWriteRequest(BaseModel):
     title: str | None = None
     persona_name: str | None = None
     ticket_id: str | None = None
+    # Confluence publish-sweep opt-in; omitted leaves the current value alone.
+    publish: bool | None = None
 
 
 class WikiRevisionResponse(BaseModel):
@@ -188,6 +194,7 @@ async def list_pages(
             entry_count=p.entry_count,
             auto_generated=p.auto_generated,
             updated_at=p.updated_at,
+            publish=p.publish,
         )
         for p in pages
     ]
@@ -306,6 +313,7 @@ async def get_page(
         auto_generated=page.auto_generated,
         created_at=page.created_at,
         updated_at=page.updated_at,
+        publish=page.publish,
         backlinks=[
             BacklinkItem(
                 source_type=lnk.source_type,
@@ -475,6 +483,8 @@ async def create_or_update_page(
         page.updated_at = now
         if body.title is not None:
             page.title = body.title
+        if body.publish is not None:
+            page.publish = body.publish
         effective_title = page.title
     else:
         title = body.title or slug.replace("-", " ").title()
@@ -488,6 +498,7 @@ async def create_or_update_page(
             word_count=word_count,
             created_at=now,
             updated_at=now,
+            publish=body.publish is True,
         )
         db.add(page)
         effective_title = title
@@ -554,7 +565,45 @@ async def create_or_update_page(
         created_at=page.created_at,
         updated_at=page.updated_at,
         backlinks=[],
+        publish=page.publish,
     )
+
+
+class PagePublishRequest(BaseModel):
+    publish: bool
+
+
+@router.patch("/{project_id}/pages/{slug:path}")
+async def set_page_publish(
+    project_id: str,
+    slug: str,
+    body: PagePublishRequest,
+    user: User = Depends(get_current_user),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Flip a wiki page's Confluence publish opt-in — the flag only.
+
+    Unlike PUT this never touches the content, writes no revision and leaves
+    ``updated_at`` alone (a curation toggle is not an edit, and must not make
+    the publish sweep think the page changed). Editors only.
+    """
+    project = await _get_editable_project_or_404(project_id, db, user.id)
+    await check_project_feature(ctx, "project_context", project, db)
+    result = await db.execute(
+        update(KnowledgePage)
+        .where(
+            KnowledgePage.project_id == project_id,
+            KnowledgePage.slug == slug,
+        )
+        .values(publish=body.publish)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:  # type: ignore[attr-defined]
+        await db.rollback()
+        raise HTTPException(404, "Page not found")
+    await db.commit()
+    return {"slug": slug, "publish": body.publish}
 
 
 @router.delete("/{project_id}/pages/{slug:path}")

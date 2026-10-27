@@ -21,6 +21,7 @@ from sessionfs.server.integrations.trackers.base import (
     TrackerIssue,
     TrackerIssueType,
     TrackerProject,
+    TrackerProjectPage,
 )
 
 # Strict host allowlist: only Jira Cloud sites, no ports, no paths, no
@@ -37,6 +38,13 @@ _ISSUE_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]+-\d+$")
 _LINK_SCHEME_RE = re.compile(r"^(?:https?|mailto):", re.IGNORECASE)
 
 _TIMEOUT = 20.0
+
+# ``project/search`` returns at most 50 projects per page; listing without a
+# search query stops after ``_LIST_PROJECTS_CAP`` projects and reports that it
+# was cut short instead of paging through a huge site.
+_PROJECT_PAGE_SIZE = 50
+_LIST_PROJECTS_CAP = 500
+_MAX_PROJECT_PAGES = _LIST_PROJECTS_CAP // _PROJECT_PAGE_SIZE + 1
 
 # Cap response bodies so a hostile or misbehaving Jira response cannot balloon
 # memory; anything larger is a TrackerError.
@@ -297,7 +305,69 @@ def markdown_to_adf(text: str) -> dict:
     return {"type": "doc", "version": 1, "content": blocks}
 
 
+def adf_to_text(adf: dict) -> str:
+    """Flatten an ADF ``doc``/node into plain text (loose inverse of
+    ``markdown_to_adf``).
+
+    Jira comments arrive as ADF. This keeps the readable text for the mirrored
+    ticket comment: paragraphs/headings become lines, list items are bulleted,
+    ``hardBreak`` becomes a newline, and ``mention``/``emoji``/``inlineCard``
+    render their display text. Unknown nodes just yield their ``text`` node.
+    """
+    if not isinstance(adf, dict):
+        return ""
+
+    def inline(node: dict) -> str:
+        ntype = node.get("type")
+        content = node.get("content")
+        if ntype == "text":
+            return str(node.get("text", ""))
+        if ntype == "hardBreak":
+            return "\n"
+        if ntype == "mention":
+            attrs = node.get("attrs") or {}
+            return str(attrs.get("text") or attrs.get("id") or "")
+        if ntype == "emoji":
+            attrs = node.get("attrs") or {}
+            return str(attrs.get("text") or attrs.get("shortName") or "")
+        if ntype == "inlineCard":
+            attrs = node.get("attrs") or {}
+            return str(attrs.get("url") or "")
+        if isinstance(content, list):
+            return "".join(inline(c) for c in content if isinstance(c, dict))
+        return ""
+
+    lines: list[str] = []
+
+    def blocks(node: dict) -> None:
+        content = node.get("content")
+        if not isinstance(content, list):
+            return
+        for child in content:
+            if not isinstance(child, dict):
+                continue
+            ctype = child.get("type")
+            if ctype in {"paragraph", "heading"}:
+                lines.append(inline(child).strip())
+            elif ctype in {"bulletList", "orderedList"}:
+                for item in child.get("content") or []:
+                    if isinstance(item, dict):
+                        lines.append("- " + inline(item).strip())
+            elif ctype == "codeBlock":
+                lines.append(inline(child).strip())
+            else:
+                text = inline(child).strip()
+                if text:
+                    lines.append(text)
+
+    blocks(adf)
+    return "\n".join(lines).strip()
+
+
 # ── Jira Cloud client ──
+
+# Comments read when looking for a SessionFS outbox reference before posting.
+_MARKER_LOOKUP_PAGE = 20
 
 
 class JiraClient:
@@ -452,35 +522,65 @@ class JiraClient:
         return str(account_id) if account_id else ""
 
     async def list_projects(self) -> list[TrackerProject]:
-        """All projects the credentials can see (issue types left empty).
+        """The first ``_LIST_PROJECTS_CAP`` projects the credentials can see.
 
-        ``project/search`` pages via ``startAt``/``isLast``; Atlassian caps
-        ``maxResults`` at 50, so page until ``isLast`` or the 500-project cap.
-        Issue types are intentionally NOT fetched here — callers use the
-        separate ``list_issue_types`` endpoint lazily.
+        Kept for callers that want a plain list; ``search_projects`` also
+        reports whether the cap cut the list short.
         """
+        page = await self.search_projects(None, _LIST_PROJECTS_CAP)
+        return page.projects
+
+    async def search_projects(
+        self, query: str | None, limit: int
+    ) -> TrackerProjectPage:
+        """Up to ``limit`` projects, filtered by Jira when ``query`` is set.
+
+        ``project/search`` matches ``query`` case-insensitively against the
+        project key and name on Jira's side, so a site with thousands of
+        projects never has to be listed in full. Atlassian caps
+        ``maxResults`` at 50, so this pages via ``startAt``/``isLast`` until
+        ``limit`` projects are collected. ``has_more`` is true when Jira has
+        more matches than were returned. Issue types are intentionally left
+        empty — callers fetch them lazily via ``list_issue_types``.
+        """
+        limit = max(1, min(int(limit), _LIST_PROJECTS_CAP))
         projects: list[TrackerProject] = []
         start_at = 0
-        while len(projects) < 500:
+        # Ends as False only when Jira reports the last page. Running out of
+        # page budget (e.g. pages full of malformed entries) counts as more.
+        has_more = True
+        for _ in range(_MAX_PROJECT_PAGES):
+            params: dict[str, str | int] = {
+                "startAt": start_at,
+                "maxResults": min(_PROJECT_PAGE_SIZE, limit - len(projects)),
+            }
+            if query:
+                params["query"] = query
             data = await self._request(
-                "GET",
-                "/rest/api/3/project/search",
-                params={"startAt": start_at, "maxResults": 50},
+                "GET", "/rest/api/3/project/search", params=params
             )
-            values = data.get("values", []) if isinstance(data, dict) else []
+            values = data.get("values", [])
             if not isinstance(values, list):
-                break
+                values = []
             for p in values:
                 if isinstance(p, dict) and p.get("key"):
                     projects.append(
                         TrackerProject(
-                            key=p["key"], name=p.get("name", ""), issue_types=[]
+                            key=str(p["key"]),
+                            name=str(p.get("name") or ""),
+                            issue_types=[],
                         )
                     )
-            if data.get("isLast") or not values:
+            if data.get("isLast") is True or not values:
+                has_more = False
                 break
             start_at += len(values)
-        return projects[:500]
+            if len(projects) >= limit:
+                break
+        if len(projects) > limit:
+            projects = projects[:limit]
+            has_more = True
+        return TrackerProjectPage(projects=projects, has_more=has_more)
 
     async def list_issue_types(self, project_key: str) -> list[TrackerIssueType]:
         # ``GET /rest/api/3/issue/createmeta/{projectIdOrKey}/issuetypes`` is
@@ -630,6 +730,112 @@ class JiraClient:
             updated_at=updated,
             id=str(data.get("id")) if data.get("id") is not None else None,
         )
+
+    async def find_transition(self, issue_key: str, transition_name: str) -> dict | None:
+        """The transition named ``transition_name`` (exact, then
+        case-insensitive) that the issue's workflow offers right now, or None.
+
+        Returns ``{"id", "name", "to_name", "to_category"}``: ``to_*`` is the
+        status the transition leads to (Jira's transitions API includes it), so
+        a caller can tell whether the issue already reached the target even
+        when the transition and status names differ (e.g. "Resolve" →
+        "Resolved").
+        """
+        key = validate_issue_key(issue_key)
+        name = (transition_name or "").strip()
+        if not name:
+            raise TrackerError("a non-empty transition name is required")
+        data = await self._request(
+            "GET", f"/rest/api/3/issue/{quote(key)}/transitions"
+        )
+        transitions = data.get("transitions", []) if isinstance(data, dict) else []
+        if not isinstance(transitions, list):
+            transitions = []
+        candidates = [t for t in transitions if isinstance(t, dict) and t.get("id") is not None]
+        chosen = next((t for t in candidates if t.get("name") == name), None)
+        if chosen is None:
+            chosen = next(
+                (t for t in candidates if str(t.get("name", "")).lower() == name.lower()),
+                None,
+            )
+        if chosen is None:
+            return None
+        raw_to = chosen.get("to")
+        to: dict = raw_to if isinstance(raw_to, dict) else {}
+        raw_category = to.get("statusCategory")
+        category: dict = raw_category if isinstance(raw_category, dict) else {}
+        to_name = to.get("name")
+        to_category = category.get("key")
+        return {
+            "id": str(chosen["id"]),
+            "name": chosen.get("name"),
+            "to_name": to_name if isinstance(to_name, str) and to_name else None,
+            "to_category": to_category if isinstance(to_category, str) and to_category else None,
+        }
+
+    async def apply_transition(self, issue_key: str, transition_id: str) -> None:
+        """POST one transition by id."""
+        key = validate_issue_key(issue_key)
+        await self._request(
+            "POST",
+            f"/rest/api/3/issue/{quote(key)}/transitions",
+            json_body={"transition": {"id": transition_id}},
+        )
+
+    async def transition_issue(self, issue_key: str, transition_name: str) -> dict:
+        """Drive ``issue_key`` through the Jira workflow transition named
+        ``transition_name`` (by display name, matched case-insensitively).
+
+        Returns the transition dict that was applied. Raises ``TrackerError``
+        when the transition is not available on the issue (its workflow
+        doesn't offer that name) — the two-way sync records that as a distinct
+        error event rather than forcing a different transition.
+        """
+        key = validate_issue_key(issue_key)
+        chosen = await self.find_transition(key, transition_name)
+        if chosen is None:
+            raise TrackerError(
+                f"no transition named {transition_name.strip()!r} is available for issue {key}"
+            )
+        await self.apply_transition(key, chosen["id"])
+        return chosen
+
+    async def find_comment_with_marker(self, issue_key: str, marker: str) -> str | None:
+        """Id of a recent comment on ``issue_key`` whose text contains
+        ``marker``, or None. Reads one small page of the newest comments —
+        enough to recognise a post SessionFS itself made moments ago, and small
+        enough that an issue full of long evidence comments stays well under
+        the response cap."""
+        key = validate_issue_key(issue_key)
+        if not marker:
+            return None
+        data = await self._request(
+            "GET",
+            f"/rest/api/3/issue/{quote(key)}/comment",
+            params={"orderBy": "-created", "maxResults": str(_MARKER_LOOKUP_PAGE)},
+        )
+        comments = data.get("comments") if isinstance(data, dict) else None
+        if not isinstance(comments, list):
+            return None
+        for comment in comments:
+            if not isinstance(comment, dict):
+                continue
+            body = comment.get("body")
+            text = adf_to_text(body) if isinstance(body, dict) else str(body or "")
+            if marker in text and comment.get("id") is not None:
+                return str(comment["id"])
+        return None
+
+    async def add_comment(self, issue_key: str, adf_body: dict) -> str:
+        """Post an ADF comment to ``issue_key``; returns the new comment id."""
+        key = validate_issue_key(issue_key)
+        data = await self._request(
+            "POST",
+            f"/rest/api/3/issue/{quote(key)}/comment",
+            json_body={"body": adf_body},
+        )
+        comment_id = data.get("id") if isinstance(data, dict) else None
+        return str(comment_id) if comment_id is not None else ""
 
 
 # C0 control characters (plus DEL) that must never be echoed back from a

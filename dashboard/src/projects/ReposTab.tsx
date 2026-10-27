@@ -161,7 +161,8 @@ function UnlinkConfirm({ repo, repoCount, onConfirm, onCancel, isPending, error 
   );
 }
 
-export default function ReposTab({ projectId }: { projectId: string }) {
+/** `canAdmin` false hides link/unlink: they need the project owner or an org admin. */
+export default function ReposTab({ projectId, canAdmin = true }: { projectId: string; canAdmin?: boolean }) {
   const { data: repos, isLoading, error } = useProjectRepos(projectId);
   const unlinkRepo = useUnlinkRepo(projectId);
   const { addToast } = useToast();
@@ -195,25 +196,27 @@ export default function ReposTab({ projectId }: { projectId: string }) {
   return (
     <div className="p-5">
       {/* Toolbar */}
-      <div className="flex items-center justify-between mb-4">
-        <span className="text-sm text-text-tertiary">
-          {repoList.length} {repoList.length === 1 ? 'repo' : 'repos'}
-        </span>
-        <Button onClick={() => setShowAdd(true)}>+ Add repo</Button>
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <h3 className="text-sm font-semibold text-text-primary">
+          Linked repos
+          <span className="ml-2 font-normal text-text-tertiary">{repoList.length}</span>
+        </h3>
+        {canAdmin && (
+          <Button size="sm" variant="secondary" onClick={() => setShowAdd(true)}>
+            Add repo
+          </Button>
+        )}
       </div>
 
       {/* Empty state */}
       {!repoList.length ? (
-        <p className="text-text-tertiary text-sm py-8 text-center">
+        <p className="text-text-tertiary text-sm py-6 text-center">
           No repos linked. Link your first repo to get started.
         </p>
       ) : (
-        <div className="space-y-2">
+        <ul className="divide-y divide-border border-y border-border">
           {repoList.map((repo) => (
-            <div
-              key={repo.id}
-              className="px-4 py-3 rounded-lg border border-border bg-bg-elevated"
-            >
+            <li key={repo.id} className="py-2.5">
               {/* Wraps on narrow screens so the remote keeps its own line
                   instead of being squeezed by the badges. */}
               <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -245,6 +248,7 @@ export default function ReposTab({ projectId }: { projectId: string }) {
                   {repo.is_primary && <PrimaryMarker />}
                   <VerifiedBadge repo={repo} />
                   {/* Unlink button — separate from expand/collapse (a11y: sibling, not nested) */}
+                  {canAdmin && (
                   <button
                     onClick={() => setUnlinkTarget(unlinkTarget === repo.id ? null : repo.id)}
                     className="text-xs text-text-tertiary hover:text-danger transition-colors px-2 py-1"
@@ -253,6 +257,7 @@ export default function ReposTab({ projectId }: { projectId: string }) {
                   >
                     Unlink
                   </button>
+                  )}
                 </div>
               </div>
 
@@ -267,9 +272,9 @@ export default function ReposTab({ projectId }: { projectId: string }) {
                   error={unlinkError}
                 />
               )}
-            </div>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
 
       {/* Add repo modal */}

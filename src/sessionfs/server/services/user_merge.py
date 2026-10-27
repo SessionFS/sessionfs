@@ -14,6 +14,10 @@ DEDUPED (a unique key means one side must win; the rule is explicit):
   org_members          higher role wins (owner > admin > member), the target
                        wins ties; sole-owner invariant kept
   team_members         the target's row wins, the source's is deleted
+  project_group_members
+                       one grant per (group, user): the higher group role
+                       wins (admin > editor > reader), the target wins ties;
+                       one org audit row per grant moved or merged
   sync_watchlist       one row per (user, session); the target's wins
   sessions.alias       unique per user; a source alias the target already
                        uses is cleared on the moved session (ids listed)
@@ -85,6 +89,9 @@ REASSIGN_COLUMNS: tuple[tuple[str, str], ...] = (
     ("work_queue_items", "implementer_user_id"),
     ("org_invites", "invited_by"),
     ("pr_comments", "owner_user_id"),
+    ("project_groups", "created_by_user_id"),
+    ("project_group_members", "granted_by_user_id"),
+    ("project_group_access", "added_by_user_id"),
 )
 
 # (table, key column or None): one row per (user, key); the target's wins.
@@ -248,6 +255,7 @@ async def merge_users(
     src_members = (
         await db.execute(select(OrgMember).where(OrgMember.user_id == sid).order_by(OrgMember.org_id))
     ).scalars().all()
+    src_org_ids = {m.org_id for m in src_members}
     tgt_members = {
         m.org_id: m
         for m in (await db.execute(select(OrgMember).where(OrgMember.user_id == tid))).scalars().all()
@@ -389,6 +397,95 @@ async def merge_users(
                     await db.execute(delete(t).where(t.c.user_id == sid))
             if move:
                 await db.execute(update(t).where(t.c.user_id == sid).values(user_id=tid))
+
+    # --- project-group grants (GitHub #101) ---------------------------------
+    # One grant per (group, user); the higher group role wins, the target
+    # wins ties. The target is a member of every source org after the
+    # membership merge above, so a moved grant stays meaningful.
+    from sessionfs.server.auth.project_access import group_role_level
+
+    pgm = _tbl("project_group_members")
+    pg = _tbl("project_groups")
+    src_grants = (
+        await db.execute(
+            select(pgm.c.group_id, pgm.c.role, pg.c.org_id)
+            .join(pg, pg.c.id == pgm.c.group_id)
+            .where(pgm.c.user_id == sid)
+            .order_by(pgm.c.group_id)
+        )
+    ).all()
+    if src_grants:
+        tgt_grants = dict(
+            (
+                await db.execute(
+                    select(pgm.c.group_id, pgm.c.role).where(pgm.c.user_id == tid)
+                )
+            ).all()
+        )
+        # Only grants in orgs the source belongs to carry over (the target
+        # is a member of each after the membership merge). A grant in any
+        # other org is an orphan that grants nothing; drop it, audited.
+        orphaned = [g for g, _, o in src_grants if o not in src_org_ids]
+        live = [r for r in src_grants if r[2] in src_org_ids]
+        moved = [g for g, _, _ in live if g not in tgt_grants]
+        merged = [g for g, _, _ in live if g in tgt_grants]
+        plan["deduped"]["project_group_members"] = {
+            "moved": _entry(moved),
+            "merged_higher_role_wins": _entry(merged),
+            "dropped_not_org_member": _entry(orphaned),
+        }
+        if apply:
+            grant_orgs = {
+                o.id: o
+                for o in (
+                    await db.execute(
+                        select(Organization).where(
+                            Organization.id.in_({o for _, _, o in src_grants})
+                        )
+                    )
+                ).scalars().all()
+            }
+            for group_id, src_role, org_id in src_grants:
+                if org_id not in src_org_ids:
+                    await db.execute(
+                        delete(pgm).where(pgm.c.group_id == group_id, pgm.c.user_id == sid)
+                    )
+                    db.add(_org_event(
+                        grant_orgs.get(str(org_id)), org_id, admin, "project_group_member_revoked",
+                        "project_group", group_id,
+                        {"user_id": sid, "role": src_role},
+                        {"user_id": sid, "role": None, "reason": "user_merged_not_org_member"},
+                    ))
+                    continue
+                tgt_role = tgt_grants.get(group_id)
+                if tgt_role is None:
+                    resulting = src_role
+                    await db.execute(
+                        update(pgm)
+                        .where(pgm.c.group_id == group_id, pgm.c.user_id == sid)
+                        .values(user_id=tid)
+                    )
+                else:
+                    resulting = (
+                        src_role
+                        if group_role_level(src_role) > group_role_level(tgt_role)
+                        else tgt_role
+                    )
+                    await db.execute(
+                        delete(pgm).where(pgm.c.group_id == group_id, pgm.c.user_id == sid)
+                    )
+                    if resulting != tgt_role:
+                        await db.execute(
+                            update(pgm)
+                            .where(pgm.c.group_id == group_id, pgm.c.user_id == tid)
+                            .values(role=resulting)
+                        )
+                db.add(_org_event(
+                    grant_orgs.get(org_id), org_id, admin, "project_group_member_merged",
+                    "project_group", group_id,
+                    {"source_user_id": sid, "source_role": src_role, "target_role": tgt_role},
+                    {"target_user_id": tid, "role": resulting, "reason": "user_merged"},
+                ))
 
     gi = _tbl("github_installations")
     gi_ids = await _ids(db, gi, gi.c.user_id == sid)

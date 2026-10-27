@@ -10,6 +10,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { useAuth } from '../auth/AuthContext';
+import { ApiError } from '../api/client';
 
 export interface OrgGeneralSettings {
   kb_retention_days: number | null;
@@ -17,6 +18,9 @@ export interface OrgGeneralSettings {
   kb_section_page_limit: number | null;
   helper_retention_days: number | null;
   auto_join_domains?: string[];
+  /** GitHub #101 — restricted project visibility. Always a bool on read;
+   *  omit it on a PUT to leave it unchanged. */
+  restrict_project_visibility?: boolean;
 }
 
 function useApiBase(): { base: string; headers: { Authorization: string } } {
@@ -44,7 +48,7 @@ export function useOrgSettings(orgId: string | undefined) {
 export function useUpdateOrgSettings(orgId: string | undefined) {
   const { base, headers } = useApiBase();
   const queryClient = useQueryClient();
-  return useMutation<OrgGeneralSettings, Error, OrgGeneralSettings>({
+  return useMutation<OrgGeneralSettings, Error, Partial<OrgGeneralSettings>>({
     mutationFn: async (body) => {
       const resp = await fetch(`${base}/api/v1/orgs/${orgId}/settings`, {
         method: 'PUT',
@@ -52,13 +56,19 @@ export function useUpdateOrgSettings(orgId: string | undefined) {
         body: JSON.stringify(body),
       });
       if (!resp.ok) {
-        const text = await resp.text();
-        throw new Error(text || `Settings update failed: ${resp.status}`);
+        // ApiError parses the error envelope, so callers get a readable
+        // message and can branch on codes such as upgrade_required.
+        throw new ApiError(resp.status, await resp.text());
       }
       return resp.json();
     },
-    onSuccess: () => {
+    onSuccess: (_data, body) => {
       void queryClient.invalidateQueries({ queryKey: ['orgSettings', orgId] });
+      // Restricting visibility changes which projects members can see and edit.
+      if (body.restrict_project_visibility !== undefined) {
+        void queryClient.invalidateQueries({ queryKey: ['projects'] });
+        void queryClient.invalidateQueries({ queryKey: ['project'] });
+      }
     },
   });
 }

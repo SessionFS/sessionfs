@@ -299,10 +299,10 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_85(self):
+    def test_tool_count_is_100(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 85, (
-            "Expected 85 MCP tools after watch_ticket/get_ticket_updates, "
+        assert len(_TOOLS) == 100, (
+            "Expected 100 MCP tools after project-group tools (GitHub #101), "
             f"got {len(_TOOLS)}"
         )
 
@@ -380,6 +380,22 @@ class TestToolRegistryV0996:
             # Ticket watchers — follow/unfollow + agent notification delta
             "watch_ticket",
             "get_ticket_updates",
+            # Project groups phase 2 (GitHub #101)
+            "list_project_groups",
+            "get_project_group",
+            "create_project_group",
+            "delete_project_group",
+            "update_project_group",
+            "add_project_to_group",
+            "remove_project_from_group",
+            "list_group_members",
+            "grant_group_access",
+            "revoke_group_access",
+            "list_group_access",
+            "search_group_knowledge",
+            "get_group_context",
+            "compile_group_knowledge",
+            "ask_group",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
         # A3: approval is dashboard/CLI/API only — never brokered over MCP,
@@ -4289,3 +4305,427 @@ class TestAskSessionHelper:
         monkeypatch.setattr(mcp_server, "load_config", lambda: _NoKeyCfg)
         result = await mcp_server._handle_ask_session_helper({"question": "hi"})
         assert result == {"error": "Not authenticated. Run 'sfs auth login' first."}
+
+
+# ── Project-group tools (GitHub #101, phase 2) ──
+
+_GROUP_SUMMARY = {
+    "id": "pg_core",
+    "org_id": "org_1",
+    "slug": "core",
+    "name": "Core",
+    "description": None,
+    "member_count": 2,
+    "project_count": 1,
+    "my_role": "admin",
+}
+
+_GROUP_DETAIL = {
+    "id": "pg_core",
+    "org_id": "org_1",
+    "slug": "core",
+    "name": "Core",
+    "description": None,
+    "my_role": "admin",
+    "members": [
+        {
+            "user_id": "u_1",
+            "email": "a@x.io",
+            "role": "admin",
+            "granted_by_user_id": None,
+            "created_at": None,
+        }
+    ],
+    "projects": ["proj_alpha"],
+}
+
+_GROUP_HIT = {
+    "project_id": "proj_alpha",
+    "project_name": "Alpha",
+    "entry_id": 7,
+    "entry_type": "decision",
+    "confidence": 0.95,
+    "freshness": "current",
+    "created_at": None,
+    "content": "Use Postgres",
+}
+
+_GROUP_CONTEXT = {
+    "group_id": "pg_core",
+    "slug": "core",
+    "document": "# Core — Group Knowledge Context",
+    "compiled_at": None,
+    "compiled_by_user_id": "u_1",
+    "sources": ["proj_alpha"],
+}
+
+
+class TestProjectGroupTools:
+    """Dispatch tests for the project-group MCP tools.
+
+    `_group_config` is stubbed to a fixed (api_url, api_key, org_id) and
+    `httpx.AsyncClient` is faked, so these are pure unit tests. slug→id is
+    stubbed too unless a test explicitly wants the group-list fallback.
+    """
+
+    def _stub_group_config(self, monkeypatch):
+        async def _cfg(args):
+            return ("https://api.test", "test-key", "org_1")
+
+        monkeypatch.setattr(mcp_server, "_group_config", _cfg)
+
+    def _stub_slug_to_id(self, monkeypatch):
+        async def _slug(api_url, api_key, org_id, slug):
+            assert slug == "core"
+            return "pg_core"
+
+        monkeypatch.setattr(mcp_server, "_group_slug_to_id", _slug)
+
+    @pytest.fixture
+    def group_http(self, monkeypatch):
+        import httpx
+
+        state = {"calls": [], "responses": {}}
+
+        def _respond(method, url):
+            for key, (status, body) in state["responses"].items():
+                if key == (method, url):
+                    return status, body
+            return (200, {})
+
+        class _Resp:
+            def __init__(self, status, body):
+                self.status_code = status
+                self._body = body
+                self.text = json.dumps(body) if not isinstance(body, str) else body
+
+            def json(self):
+                if isinstance(self._body, str):
+                    return json.loads(self._body)
+                return self._body
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def _go(self, method, url, *, params=None, json=None, headers=None):
+                state["calls"].append(
+                    {
+                        "method": method,
+                        "url": url,
+                        "params": params or {},
+                        "json": json,
+                        "headers": headers or {},
+                    }
+                )
+                status, body = _respond(method, url)
+                return _Resp(status, body)
+
+            async def get(self, url, *, params=None, headers=None):
+                return await self._go("GET", url, params=params, headers=headers)
+
+            async def post(self, url, *, json=None, headers=None):
+                return await self._go("POST", url, json=json, headers=headers)
+
+            async def put(self, url, *, json=None, headers=None):
+                return await self._go("PUT", url, json=json, headers=headers)
+
+            async def patch(self, url, *, json=None, headers=None):
+                return await self._go("PATCH", url, json=json, headers=headers)
+
+            async def delete(self, url, *, params=None, headers=None):
+                return await self._go("DELETE", url, params=params, headers=headers)
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+        return state
+
+    # ── update (compile_enabled) ──
+
+    @pytest.mark.asyncio
+    async def test_update_project_group_patches_compile_enabled(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        self._stub_slug_to_id(monkeypatch)
+        updated = dict(_GROUP_SUMMARY, compile_enabled=True)
+        group_http["responses"] = {
+            ("PATCH", "https://api.test/api/v1/orgs/org_1/groups/pg_core"): (200, updated)
+        }
+        result = await mcp_server._handle_update_project_group(
+            {"slug": "core", "compile_enabled": True, "new_slug": "core-2"}
+        )
+        assert result == {"group": updated}
+        call = group_http["calls"][0]
+        assert call["method"] == "PATCH"
+        assert call["json"] == {"compile_enabled": True, "slug": "core-2"}
+
+    @pytest.mark.asyncio
+    async def test_update_project_group_validates_args(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        self._stub_slug_to_id(monkeypatch)
+        assert "error" in await mcp_server._handle_update_project_group({"slug": "core"})
+        assert "error" in await mcp_server._handle_update_project_group(
+            {"slug": "core", "compile_enabled": "yes"}
+        )
+        assert "error" in await mcp_server._handle_update_project_group({"compile_enabled": True})
+        assert group_http["calls"] == []
+
+    @pytest.mark.asyncio
+    async def test_update_project_group_reports_api_error(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        self._stub_slug_to_id(monkeypatch)
+        group_http["responses"] = {
+            ("PATCH", "https://api.test/api/v1/orgs/org_1/groups/pg_core"): (
+                403,
+                {"error": {"code": "forbidden", "message": "Group admin role required"}},
+            )
+        }
+        result = await mcp_server._handle_update_project_group(
+            {"slug": "core", "compile_enabled": True}
+        )
+        assert "error" in result
+        assert "Group admin role required" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_list_group_access_needs_no_default_org(self, monkeypatch, group_http):
+        class _Cfg:
+            class sync:
+                api_key = "test-key"
+                api_url = "https://api.test"
+
+        monkeypatch.setattr(mcp_server, "load_config", lambda: _Cfg)
+        group_http["responses"] = {
+            ("GET", "https://api.test/api/v1/auth/me"): (200, {"default_org_id": None}),
+            ("GET", "https://api.test/api/v1/me/groups"): (200, [_GROUP_SUMMARY]),
+        }
+        result = await mcp_server._handle_list_group_access({})
+        assert result == {"groups": [_GROUP_SUMMARY]}
+        assert [c["url"] for c in group_http["calls"]] == [
+            "https://api.test/api/v1/me/groups"
+        ]
+
+    # ── list / get / create / delete ──
+
+    @pytest.mark.asyncio
+    async def test_list_project_groups(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        group_http["responses"] = {
+            ("GET", "https://api.test/api/v1/orgs/org_1/groups"): (200, [_GROUP_SUMMARY])
+        }
+        result = await mcp_server._handle_list_project_groups({})
+        assert result == {"groups": [_GROUP_SUMMARY]}
+        assert group_http["calls"][0]["url"] == "https://api.test/api/v1/orgs/org_1/groups"
+
+    @pytest.mark.asyncio
+    async def test_get_project_group_resolves_slug(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        self._stub_slug_to_id(monkeypatch)
+        group_http["responses"] = {
+            ("GET", "https://api.test/api/v1/orgs/org_1/groups/pg_core"): (200, _GROUP_DETAIL)
+        }
+        result = await mcp_server._handle_get_project_group({"slug": "core"})
+        assert result == {"group": _GROUP_DETAIL}
+
+    @pytest.mark.asyncio
+    async def test_get_project_group_requires_slug(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        result = await mcp_server._handle_get_project_group({})
+        assert "slug" in result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_create_project_group_posts_body(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        group_http["responses"] = {
+            ("POST", "https://api.test/api/v1/orgs/org_1/groups"): (201, _GROUP_DETAIL)
+        }
+        result = await mcp_server._handle_create_project_group(
+            {"name": "Core", "slug": "core", "description": "Core services"}
+        )
+        assert result == {"group": _GROUP_DETAIL}
+        assert group_http["calls"][0]["json"] == {
+            "name": "Core",
+            "slug": "core",
+            "description": "Core services",
+        }
+
+    @pytest.mark.asyncio
+    async def test_delete_project_group(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        self._stub_slug_to_id(monkeypatch)
+        result = await mcp_server._handle_delete_project_group({"slug": "core"})
+        assert result == {"deleted": True, "group_id": "pg_core"}
+        assert group_http["calls"][0]["method"] == "DELETE"
+
+    # ── project membership ──
+
+    @pytest.mark.asyncio
+    async def test_add_project_to_group(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        self._stub_slug_to_id(monkeypatch)
+        group_http["responses"] = {
+            ("PUT", "https://api.test/api/v1/orgs/org_1/groups/pg_core/projects/proj_alpha"): (
+                200,
+                _GROUP_DETAIL,
+            )
+        }
+        result = await mcp_server._handle_add_project_to_group(
+            {"slug": "core", "project_id": "proj_alpha"}
+        )
+        assert result == {"group": _GROUP_DETAIL}
+        assert group_http["calls"][0]["method"] == "PUT"
+
+    @pytest.mark.asyncio
+    async def test_remove_project_from_group(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        self._stub_slug_to_id(monkeypatch)
+        await mcp_server._handle_remove_project_from_group(
+            {"slug": "core", "project_id": "proj_alpha"}
+        )
+        assert group_http["calls"][0]["method"] == "DELETE"
+        assert group_http["calls"][0]["url"].endswith("/projects/proj_alpha")
+
+    # ── members / access ──
+
+    @pytest.mark.asyncio
+    async def test_list_group_members(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        self._stub_slug_to_id(monkeypatch)
+        group_http["responses"] = {
+            ("GET", "https://api.test/api/v1/orgs/org_1/groups/pg_core"): (200, _GROUP_DETAIL)
+        }
+        result = await mcp_server._handle_list_group_members({"slug": "core"})
+        assert result["members"] == _GROUP_DETAIL["members"]
+        assert result["group_id"] == "pg_core"
+
+    @pytest.mark.asyncio
+    async def test_grant_group_access(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        self._stub_slug_to_id(monkeypatch)
+        await mcp_server._handle_grant_group_access(
+            {"slug": "core", "user_id": "u_2", "role": "editor"}
+        )
+        call = group_http["calls"][0]
+        assert call["method"] == "PUT"
+        assert call["url"].endswith("/members/u_2")
+        assert call["json"] == {"role": "editor"}
+
+    @pytest.mark.asyncio
+    async def test_grant_group_access_rejects_bad_role(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        result = await mcp_server._handle_grant_group_access(
+            {"slug": "core", "user_id": "u_2", "role": "superuser"}
+        )
+        assert "reader" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_revoke_group_access(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        self._stub_slug_to_id(monkeypatch)
+        await mcp_server._handle_revoke_group_access({"slug": "core", "user_id": "u_2"})
+        call = group_http["calls"][0]
+        assert call["method"] == "DELETE"
+        assert call["url"].endswith("/members/u_2")
+
+    @pytest.mark.asyncio
+    async def test_list_group_access(self, monkeypatch, group_http):
+        monkeypatch.setattr(
+            mcp_server, "_group_api_config", lambda: ("https://api.test", "test-key")
+        )
+        group_http["responses"] = {
+            ("GET", "https://api.test/api/v1/me/groups"): (200, [_GROUP_SUMMARY])
+        }
+        result = await mcp_server._handle_list_group_access({})
+        assert result == {"groups": [_GROUP_SUMMARY]}
+        assert group_http["calls"][0]["url"] == "https://api.test/api/v1/me/groups"
+
+    # ── knowledge / context ──
+
+    @pytest.mark.asyncio
+    async def test_search_group_knowledge_builds_params(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        group_http["responses"] = {
+            (
+                "GET",
+                "https://api.test/api/v1/orgs/org_1/groups/core/knowledge/search",
+            ): (200, [_GROUP_HIT])
+        }
+        result = await mcp_server._handle_search_group_knowledge(
+            {"slug": "core", "q": "postgres", "entry_type": "decision", "limit": 25}
+        )
+        assert result == {"hits": [_GROUP_HIT]}
+        assert group_http["calls"][0]["params"] == {
+            "q": "postgres",
+            "entry_type": "decision",
+            "limit": "25",
+        }
+
+    @pytest.mark.asyncio
+    async def test_get_group_context(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        group_http["responses"] = {
+            ("GET", "https://api.test/api/v1/orgs/org_1/groups/core/context"): (
+                200,
+                _GROUP_CONTEXT,
+            )
+        }
+        result = await mcp_server._handle_get_group_context({"slug": "core"})
+        assert result == {"context": _GROUP_CONTEXT}
+
+    @pytest.mark.asyncio
+    async def test_compile_group_knowledge(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        group_http["responses"] = {
+            ("POST", "https://api.test/api/v1/orgs/org_1/groups/core/compile"): (
+                200,
+                _GROUP_CONTEXT,
+            )
+        }
+        result = await mcp_server._handle_compile_group_knowledge({"slug": "core"})
+        assert result == {"context": _GROUP_CONTEXT}
+        assert group_http["calls"][0]["method"] == "POST"
+
+    @pytest.mark.asyncio
+    async def test_ask_group_assembles_research(self, monkeypatch, group_http):
+        self._stub_group_config(monkeypatch)
+        group_http["responses"] = {
+            ("GET", "https://api.test/api/v1/orgs/org_1/groups/core/context"): (
+                200,
+                _GROUP_CONTEXT,
+            ),
+            (
+                "GET",
+                "https://api.test/api/v1/orgs/org_1/groups/core/knowledge/search",
+            ): (200, [_GROUP_HIT]),
+        }
+        result = await mcp_server._handle_ask_group(
+            {"slug": "core", "question": "How do we persist?"}
+        )
+        assert "How do we persist?" in result["markdown"]
+        assert "Group Context" in result["markdown"]
+        assert "Group Knowledge Base Matches" in result["markdown"]
+        assert result["sources_cited"] == [
+            {"type": "kb", "id": 7, "project_id": "proj_alpha"}
+        ]
+
+    # ── default-org fallback ──
+
+    @pytest.mark.asyncio
+    async def test_group_config_falls_back_to_default_org(self, monkeypatch, group_http):
+        class _Cfg:
+            class sync:
+                api_key = "test-key"
+                api_url = "https://api.test"
+
+        monkeypatch.setattr(mcp_server, "load_config", lambda: _Cfg)
+        group_http["responses"] = {
+            ("GET", "https://api.test/api/v1/auth/me"): (
+                200,
+                {"default_org_id": "org_default"},
+            )
+        }
+        api_url, api_key, org_id = await mcp_server._group_config({})
+        assert (api_url, api_key, org_id) == ("https://api.test", "test-key", "org_default")

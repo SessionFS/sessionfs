@@ -95,6 +95,8 @@ async def test_get_settings_returns_defaults_when_unset(
     ))
     # auto_join_domains defaults to an empty list (GitHub #59, v0.17.0).
     assert body["auto_join_domains"] == []
+    # Restricted project visibility (GitHub #101) defaults to False, not None.
+    assert body["restrict_project_visibility"] is False
     # Phase 6 Round 3 (KB 298) — retention_days and compile_model are
     # not part of the schema anymore (no runtime consumer).
     assert "retention_days" not in body
@@ -118,11 +120,13 @@ async def test_admin_can_update_all_fields(
         f"/api/v1/orgs/{org.id}/settings", headers=_hdrs(key), json=payload
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json() == payload
+    # restrict_project_visibility (GitHub #101) always reads back as a bool.
+    expected = {**payload, "restrict_project_visibility": False}
+    assert resp.json() == expected
 
     # Round-trip via GET.
     resp2 = await client.get(f"/api/v1/orgs/{org.id}/settings", headers=_hdrs(key))
-    assert resp2.json() == payload
+    assert resp2.json() == expected
 
 
 @pytest.mark.asyncio

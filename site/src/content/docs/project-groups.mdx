@@ -1,0 +1,186 @@
+---
+title: "Project Groups"
+description: "Group org projects and grant scoped read/edit access, with opt-in restricted project visibility."
+---
+
+Project groups are flat, org-scoped collections of projects. They let a Team or Enterprise organization grant a member read or edit access to a subset of its projects, and — when combined with restricted project visibility — narrow who can see and change each project from "every org member" to a chosen few.
+
+Project groups are available on the **Team** and **Enterprise** tiers.
+
+## What is a project group?
+
+A group is always scoped to one organization (`org_id` is immutable) and can only ever contain projects from that same org. A project can belong to many groups. Each member of a group holds a role:
+
+| Role | Meaning |
+|------|---------|
+| **reader** | Can read the group's projects (read tier). |
+| **editor** | Can change the group's projects (edit tier: settings, rules, wiki, knowledge curation, context document, personas, work queues). |
+| **admin** | Everything an editor can do, plus manage the group itself (rename, grant/revoke members, add/remove projects). |
+
+No group role grants project-**admin** standing (rename, link, merge, transfer, delete). That stays with the project owner or an org admin/owner. Org admins and owners have admin standing on every group in their org.
+
+## Restricted project visibility
+
+By default an organization keeps today's behavior: every member can read and edit every org project. An org can opt into **restricted project visibility**, which narrows standing per project:
+
+| Action | Unrestricted (default) | Restricted |
+|--------|------------------------|------------|
+| Read | Owner, any org member, captured-session reader | Owner, org admin/owner, group grant (reader/editor/admin) |
+| Edit | Owner, any org member | Owner, org admin/owner, group grant (editor/admin) |
+
+In a restricted org, syncing a session from a project's repository no longer gives anyone access to that project, and a pushed session is linked to the project only if the person pushing it already has read access; otherwise it stays an unlinked session that belongs to them.
+
+Turning it on is an org-wide access change, so it is recorded in the org audit trail. It requires the `project_groups` feature (Team+); if the org's plan later drops that feature, the restriction stays on (fail closed) until an admin clears it. If an org's stored settings can't be read, the org is treated as restricted.
+
+```
+GET /api/v1/orgs/{org_id}/settings                          # read (includes restrict_project_visibility)
+PUT /api/v1/orgs/{org_id}/settings                          # {"restrict_project_visibility": true}
+```
+
+## REST API
+
+Group CRUD is org-scoped:
+
+```
+GET    /api/v1/orgs/{org_id}/groups                       — list (org admins see all; members see groups they're granted on)
+POST   /api/v1/orgs/{org_id}/groups                       — create (org admin)
+GET    /api/v1/orgs/{org_id}/groups/{group_id}            — detail (org admin or a member granted on the group)
+PATCH  /api/v1/orgs/{org_id}/groups/{group_id}            — rename/re-slug/re-describe, compile_enabled (group admin)
+DELETE /api/v1/orgs/{org_id}/groups/{group_id}            — soft delete (org admin)
+```
+
+Membership grants (group admin):
+
+```
+PUT    /api/v1/orgs/{org_id}/groups/{group_id}/members/{user_id}   {"role": "reader" | "editor" | "admin"}
+DELETE /api/v1/orgs/{org_id}/groups/{group_id}/members/{user_id}
+```
+
+Non-members of the org get `404` on every group route. Grantees must be active members of the group's org; granting a non-member returns `422 not_org_member`. Removing a member from the org, or deactivating their account, deletes their group grants in the same transaction.
+
+Project placement (group admin):
+
+```
+PUT    /api/v1/orgs/{org_id}/groups/{group_id}/projects/{project_id}
+DELETE /api/v1/orgs/{org_id}/groups/{group_id}/projects/{project_id}
+```
+
+Only projects whose `org_id` matches the group's org can join (`422 project_not_in_org` otherwise). A group admin who is not an org admin can only add projects they can already edit; a project they can't read returns `404`. A project leaving an org (transfer) leaves all of its groups; merging a project moves its group memberships to the target, deduplicated.
+
+Creating a group, granting a member and adding a project need the `project_groups` feature. Reading, renaming, revoking, removing a project and deleting a group keep working after a downgrade so admins can clean up.
+
+Reads from the project and caller side:
+
+```
+GET /api/v1/projects/{project_id}/groups   — the groups a project belongs to (project reader who is an org member)
+GET /api/v1/me/groups                       — the caller's groups across orgs
+```
+
+## Group knowledge
+
+A group can surface the knowledge of its member projects as one shared
+picture, without widening who can see each individual project. Every
+group-knowledge read respects the caller's per-project access: a claim, page
+or context document is only visible to a caller who can read its source
+project, so a group grant never leaks a project's knowledge to someone who
+couldn't read it anyway.
+
+```
+GET  /api/v1/orgs/{org_id}/groups/{slug}/knowledge/search?q=&entry_type=&limit=   — active KB claims across readable member projects
+GET  /api/v1/orgs/{org_id}/groups/{slug}/pages?limit=                                — wiki pages across readable member projects, newest first
+POST /api/v1/orgs/{org_id}/groups/{slug}/compile                                     — compile the deterministic overview (opt-in)
+GET  /api/v1/orgs/{org_id}/groups/{slug}/context                                     — the stored overview document
+```
+
+`knowledge/search` returns active claims (not dismissed, superseded, or stale)
+with each hit carrying its source project id/name, entry id, type, confidence,
+freshness and content. `q` is an optional case-insensitive substring of 3–200
+characters (`%` and `_` match literally). `entry_type` is one of `decision`,
+`pattern`, `discovery`, `convention`, `bug`, `dependency`; `limit` caps at
+100. `pages` returns up to `limit` pages (default 200, max 500).
+
+Every group-knowledge route needs standing on the group, exactly like the
+group detail: org admins/owners, or a member holding a grant on it. Any other
+caller — including an org member without a grant, in a restricted org or not —
+gets `404`.
+
+### Compiled context
+
+`compile` builds a **deterministic** overview from the group's active claims —
+no LLM. It is opt-in: the group's `compile_enabled` flag defaults to false, so
+existing groups keep their current behavior until a group admin or org
+admin/owner turns it on:
+
+```
+PATCH /api/v1/orgs/{org_id}/groups/{group_id}   {"compile_enabled": true}
+sfs project group set SLUG --compile
+```
+
+Turning it on needs the `project_groups` feature (Team+); turning it off never
+does. The change is recorded in the org audit trail. Once it is on, a group
+editor/admin or org admin can run `compile`.
+
+The compile is attributed to, and scoped by, the person who runs it: only
+member projects they can read contribute. For each, the overview quotes the
+start of the project's compiled context and lists its highest-value active
+claims (at most 50 per project, highest confidence first, then most recently
+relevant) grouped by type,
+each citing `[project/claim #id]`. The document is capped at 20,000 words;
+when it would overflow, the budget is split fairly across projects (a large
+project can't crowd out the others), a note says how many claims were left
+out, and the footer counts the claims actually included. It stores who
+compiled it and which projects contributed.
+
+The scheduled platform sweep (`POST /api/v1/admin/sweeps/kb-compile`) also
+recompiles opted-in groups that were never compiled or whose member projects
+compiled since the group last did — however the project compile happened —
+up to the sweep's `limit` groups per run. A scheduled recompile is attributed
+to the group's creator and is skipped (with a log line) if the creator is
+deactivated, no longer an org admin or group admin, or the org's plan no
+longer includes project groups. Each attempt is stamped on the group, so a
+group that keeps being skipped or failing waits ten minutes and then queues
+behind healthy groups, and two overlapping sweeps never compile the same group.
+
+A group reader (or org admin) can view the stored document with `context`.
+
+The stored document is returned only to a caller who can still read *every*
+contributing project; if a source project has since been deleted, removed from
+the group, or restricted away from the caller, `context` returns `403
+group_context_partial` rather than leaking a partial picture.
+
+### CLI and MCP
+
+The CLI ships `sfs project group` (list/create/show/set/delete/add/remove/
+members/grant/revoke/access/search/context/compile) and `sfs project list
+--group SLUG`. The MCP server
+exposes the same surface as fifteen tools (`list_project_groups`,
+`get_project_group`, `create_project_group`, `update_project_group`,
+`delete_project_group`, `add_project_to_group`, `remove_project_from_group`,
+`list_group_members`, `grant_group_access`, `revoke_group_access`,
+`list_group_access`, `search_group_knowledge`, `get_group_context`,
+`compile_group_knowledge`, and `ask_group`). Both address groups by
+org-scoped slug and resolve the org from `--org`/`org_id` else the default org
+(`list_group_access` / `sfs project group access` need no org).
+
+```
+sfs project group create NAME [--slug SLUG] [--description TEXT] [--org ORG_ID]
+sfs project group set SLUG [--name NAME] [--slug NEW_SLUG] [--description TEXT] [--compile|--no-compile]
+sfs project group add SLUG PROJECT_ID...
+sfs project group grant SLUG EMAIL_OR_USER_ID --role reader|editor|admin
+sfs project group revoke SLUG EMAIL_OR_USER_ID
+sfs project group search SLUG [QUERY] [--entry-type TYPE] [--limit N]
+sfs project group compile SLUG
+sfs project group context SLUG
+```
+
+## Lifecycle
+
+- **Soft delete** frees a group's slug for reuse but keeps the row for audit continuity.
+- **Soft-deleted groups** grant nothing.
+- **Transfer-out** removes a project from all of its groups when it leaves the org.
+- **Merge** moves the source project's group memberships to the target project, dropping duplicates.
+- **Account merge** moves a user's grants to the surviving account, keeping the higher role.
+
+## Audit
+
+Group create/update/delete (including turning the knowledge compile on or off), group compiles, member grant/revoke, project add/remove (including removals and moves caused by transfers, merges, member removal and account deactivation), and restricted-visibility toggles all write org audit events, so access changes are reconstructable from the org audit trail.

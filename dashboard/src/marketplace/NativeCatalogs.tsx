@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import type { NativeCatalog, WorksIn, WorksInBadge } from '../api/client';
 import { Badge } from '../components/Badge';
-import CopyButton from '../components/CopyButton';
-import { Card, TableShell } from '../components/ui';
+import { Button, Dialog, IconButton, Select, TableShell, Tabs, TabPanel } from '../components/ui';
 import { useNativeCatalogs, useWorksIn } from '../hooks/useNativeCatalogs';
+import { CommandWell } from './CommandWell';
+import { isCommand } from './commands';
+import { CloseIcon, TerminalIcon } from './icons';
 import { isTierGate } from './tierGate';
 import { errorMessage } from '../utils/errorMessage';
 
@@ -17,9 +19,9 @@ const TOOL_LABELS: Record<string, string> = {
 };
 
 const STEP_LABELS: Record<string, string> = {
-  add: 'Add',
-  cli: 'Shell',
-  install: 'Install',
+  add: 'Add the catalog',
+  cli: 'From your shell',
+  install: 'Install a package',
   add_hosted: 'Or add from SessionFS',
 };
 
@@ -29,78 +31,108 @@ function scopeLabel(catalog: NativeCatalog): string {
   return `Org ${catalog.scope_id}`;
 }
 
-/** "Use in your tool": each tool's own add/install command (marketplace v2 §7.6). */
+/**
+ * Each tool's own add/install commands for a native catalog (marketplace v2
+ * §7.6), one tool at a time. Rendered inside the "Install in your tool" dialog.
+ */
 export function UseInYourTool() {
   const catalogs = useNativeCatalogs();
   const [selected, setSelected] = useState(0);
+  const [toolKey, setToolKey] = useState('');
   if (catalogs.isLoading || catalogs.error || !catalogs.data || catalogs.data.items.length === 0) return null;
   const items = catalogs.data.items;
   const catalog = items[Math.min(selected, items.length - 1)];
+  const tools = Object.keys(catalog.tools);
+  const tool = tools.includes(toolKey) ? toolKey : tools[0];
+  const steps = tool ? catalog.tools[tool] : {};
   return (
-    <Card className="mt-6 p-5" aria-labelledby="use-in-tool-heading">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 id="use-in-tool-heading" className="text-lg font-semibold text-text-primary">Use in your tool</h2>
-        <p className="text-xs text-text-tertiary">
-          Native catalogs hold only approved versions · {catalog.plugin_count ?? '–'} plugins
-        </p>
-      </div>
-      <p className="mt-1 text-sm text-text-secondary">
-        Add a SessionFS catalog with your tool&apos;s own plugin command. Run{' '}
-        <code className="font-mono text-xs">sfs catalog add --for &lt;tool&gt;</code> once so git authenticates to
-        this host through <code className="font-mono text-xs">{catalogs.data.credential_helper}</code>.
+    <div>
+      <p className="text-sm leading-6 text-text-secondary">
+        Add the SessionFS catalog to your tool once. Packages then install with the tool&apos;s own plugin commands, and
+        only approved versions are listed{catalog.plugin_count != null ? ` (${catalog.plugin_count} right now)` : ''}.
       </p>
       {items.length > 1 && (
-        <div role="tablist" aria-label="Catalog scope" className="mt-4 flex flex-wrap gap-2">
-          {items.map((item, index) => (
-            <button
-              key={`${item.scope}:${item.scope_id ?? ''}`}
-              type="button"
-              role="tab"
-              aria-selected={index === selected}
-              onClick={() => setSelected(index)}
-              className={`rounded-lg border px-3 py-1.5 text-xs ${index === selected ? 'border-brand text-text-primary' : 'border-border text-text-secondary hover:border-border-strong'}`}
-            >
-              {scopeLabel(item)}
-            </button>
-          ))}
+        <div className="mt-4 max-w-xs">
+          <Select
+            title="Catalog"
+            value={String(Math.min(selected, items.length - 1))}
+            onValueChange={(value) => setSelected(Number(value))}
+            options={items.map((item, index) => ({ value: String(index), label: scopeLabel(item) }))}
+          />
         </div>
       )}
-      <p className="mt-4 break-all font-mono text-xs text-text-tertiary" data-testid="catalog-clone-url">
-        {catalog.marketplace} · {catalog.clone_url}
-      </p>
+      {tools.length > 0 && (
+        <div className="mt-5">
+          <Tabs
+            bare
+            idPrefix="install-tool"
+            aria-label="Tool"
+            tabs={tools.map((key) => ({ key, label: TOOL_LABELS[key] ?? key }))}
+            activeKey={tool}
+            onChange={setToolKey}
+          />
+          <TabPanel idPrefix="install-tool" tabKey={tool} className="mt-1 rounded-sm pt-3 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]">
+            <ol className="space-y-3" data-testid={`use-in-${tool}`}>
+              {Object.entries(steps).map(([step, command]) => (
+                <li key={step}>
+                  <p className="mb-1 text-xs font-medium text-text-tertiary">{STEP_LABELS[step] ?? step}</p>
+                  {isCommand(command) ? (
+                    <CommandWell command={command} label={`${TOOL_LABELS[tool] ?? tool} ${STEP_LABELS[step] ?? step}`} />
+                  ) : (
+                    <p className="text-sm leading-6 text-text-secondary" data-testid={`step-prose-${step}`}>{command}</p>
+                  )}
+                </li>
+              ))}
+            </ol>
+          </TabPanel>
+        </div>
+      )}
       {catalog.mirror && catalog.mirror.url.startsWith('https://') ? (
-        <p className="mt-1 text-xs text-text-secondary" data-testid="catalog-mirror">
+        <p className="mt-4 text-xs leading-5 text-text-secondary" data-testid="catalog-mirror">
           No SessionFS key needed: this catalog is mirrored to{' '}
-          <a
-            href={catalog.mirror.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="font-mono text-brand hover:underline"
-          >
+          <a href={catalog.mirror.url} target="_blank" rel="noopener noreferrer" className="font-mono text-brand hover:underline">
             {catalog.mirror.repo}
           </a>{' '}
           on GitHub. Gemini CLI still installs from SessionFS.
         </p>
       ) : null}
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
-        {Object.entries(catalog.tools).map(([tool, steps]) => (
-          <div key={tool} className="rounded-lg border border-border bg-bg-sunken p-3" data-testid={`use-in-${tool}`}>
-            <p className="text-sm font-semibold text-text-primary">{TOOL_LABELS[tool] ?? tool}</p>
-            <ul className="mt-2 space-y-2">
-              {Object.entries(steps).map(([step, command]) => (
-                <li key={step} className="flex items-start justify-between gap-2">
-                  <span className="min-w-0">
-                    <span className="text-2xs uppercase tracking-wider text-text-tertiary">{STEP_LABELS[step] ?? step}</span>
-                    <span className="block break-all font-mono text-xs text-text-secondary">{command}</span>
-                  </span>
-                  {command.startsWith('/') || /^[a-z-]+ /.test(command) ? <CopyButton text={command} /> : null}
-                </li>
-              ))}
-            </ul>
-          </div>
-        ))}
+      <div className="mt-5 border-t border-border pt-4">
+        <p className="text-xs leading-5 text-text-secondary">
+          Run this once so git can sign in to this server with your SessionFS key.
+        </p>
+        <div className="mt-2">
+          <CommandWell command={`sfs catalog add --for ${tool ?? '<tool>'}`} label="Sign-in command" />
+        </div>
+        <p className="mt-3 truncate font-mono text-2xs text-text-tertiary" data-testid="catalog-clone-url" title={catalog.clone_url}>
+          {catalog.marketplace} · {catalog.clone_url}
+        </p>
       </div>
-    </Card>
+    </div>
+  );
+}
+
+/** Header button that opens the per-tool install commands in a dialog.
+ *  Renders nothing when no native catalog is available. */
+export function InstallInYourTool() {
+  const catalogs = useNativeCatalogs();
+  const [open, setOpen] = useState(false);
+  if (catalogs.isLoading || catalogs.error || !catalogs.data || catalogs.data.items.length === 0) return null;
+  return (
+    <>
+      <Button variant="secondary" onClick={() => setOpen(true)}>
+        <TerminalIcon size={15} />
+        Install in your tool
+      </Button>
+      <Dialog open={open} onClose={() => setOpen(false)} titleId="install-in-tool-title" className="!max-w-xl max-h-[90vh] overflow-y-auto">
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <h2 id="install-in-tool-title" className="text-lg font-semibold text-text-primary">Install in your tool</h2>
+          <IconButton label="Close" size="sm" onClick={() => setOpen(false)}>
+            <CloseIcon size={16} />
+          </IconButton>
+        </div>
+        <UseInYourTool />
+      </Dialog>
+    </>
   );
 }
 
@@ -127,10 +159,10 @@ function bestLevel(entry: WorksIn['tools'][string]) {
 export function WorksInMatrix({ versionId, enabled }: { versionId: string; enabled: boolean }) {
   const worksIn = useWorksIn(versionId, enabled);
   if (!enabled) return null;
-  if (worksIn.isLoading) return <p className="mt-4 text-sm text-text-tertiary">Checking which tools this works in…</p>;
+  if (worksIn.isLoading) return <p className="mt-6 text-sm text-text-tertiary first:mt-0">Checking which tools this works in…</p>;
   if (worksIn.error) {
     return (
-      <p role="status" className="mt-4 text-sm text-text-tertiary">
+      <p role="status" className="mt-6 text-sm text-text-tertiary first:mt-0">
         {isTierGate(worksIn.error)
           ? 'Works-in verification of private packages is available on Team and above.'
           : `Works-in evidence unavailable: ${errorMessage(worksIn.error)}`}
@@ -140,14 +172,14 @@ export function WorksInMatrix({ versionId, enabled }: { versionId: string; enabl
   if (!worksIn.data) return null;
   const rows = Object.entries(worksIn.data.tools);
   return (
-    <section className="mt-6" aria-labelledby="works-in-heading">
+    <section className="mt-6 first:mt-0" aria-labelledby="works-in-heading">
       <h3 id="works-in-heading" className="text-sm font-semibold text-text-primary">Works in</h3>
       <p className="mt-1 text-xs text-text-tertiary">
-        Verified = the tool&apos;s own installer accepted it. Format valid = the generated catalog entry matches the tool&apos;s
+        Verified means the tool&apos;s own installer accepted it. Format valid means the catalog entry matches the tool&apos;s
         documented format (checked {worksIn.data.vendor_docs_checked}).
       </p>
-      <TableShell minWidth={560} bordered wrapperClassName="mt-2">
-          <thead className="bg-bg-sunken text-xs uppercase tracking-wider text-text-tertiary">
+      <TableShell minWidth={560} bordered wrapperClassName="mt-2" label="Works in table">
+          <thead className="bg-bg-sunken text-xs text-text-tertiary">
             <tr><th className="px-3 py-2">Tool</th><th className="px-3 py-2">Status</th><th className="px-3 py-2">Evidence</th></tr>
           </thead>
           <tbody>

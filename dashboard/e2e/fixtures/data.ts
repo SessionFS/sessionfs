@@ -368,7 +368,7 @@ function pkg(i: number, over: Record<string, unknown> = {}) {
     is_yanked: false,
     moderation_state: 'approved',
     publisher_id: 'pub_fixture01',
-    publisher: { id: 'pub_fixture01', namespace: 'acme', display_name: 'Acme', owner_type: 'org', status: 'active', verified: true, badges: ['dns'] },
+    publisher: { id: 'pub_fixture01', namespace: 'acme', display_name: 'Acme', owner_type: 'org', status: 'active', verified: true, badges: ['verified: acme.example.test'] },
     package_id: `spk_fixture${i}`,
     namespace: 'acme',
     name,
@@ -397,7 +397,20 @@ function pkg(i: number, over: Record<string, unknown> = {}) {
 }
 
 export const marketplacePackages = {
-  items: [0, 1, 2, 3, 4, 5].map((i) => pkg(i)),
+  items: [
+    pkg(0),
+    pkg(1, {
+      display_name: 'Database Migration Reviewer For Large Monorepos',
+      risk: { scripts: true, mcp: false, hooks: true, executable_extensions: false, allowed_tools: ['allowed-tools:Bash(git diff:*)'], hook_events: ['PreToolUse'] },
+    }),
+    pkg(2, { visibility: 'org', org_id: ORG_ID, owner_org_id: ORG_ID, publisher: { id: 'pub_fixture02', namespace: 'acme-internal', display_name: 'Acme internal', owner_type: 'org', status: 'active', verified: false, badges: [] }, namespace: 'acme-internal' }),
+    pkg(3, {
+      deprecation: { deprecated_at: EARLIER, message: 'Use incident-timeline instead.', successor: { package_id: 'spk_fixture5', namespace: 'acme', name: 'incident-timeline', display_name: 'Incident Timeline' } },
+      freshness: { stale: true, unmaintained: false, deprecated: true, last_updated_at: OLD, computed_at: NOW, tools: {} },
+    }),
+    pkg(4, { installs: { window_days: 30, total: { count: null, display: '<10' }, by_tool: {} }, description: 'Short one.' }),
+    pkg(5),
+  ],
   count: 6,
   has_more: false,
   next_cursor: null,
@@ -415,7 +428,20 @@ export const nativeCatalogs = {
     {
       scope: 'public', scope_id: null, marketplace: 'sessionfs', clone_url: 'https://example.test/git/public/sessionfs.git',
       current_commit: 'abc1234', generated_at: NOW, plugin_count: 6, export_remote: null, mirror: null,
-      tools: { 'claude-code': { add: '/plugin marketplace add https://example.test/git/public/sessionfs.git' } },
+      tools: {
+        'claude-code': {
+          add: '/plugin marketplace add https://example.test/git/public/sessionfs.git',
+          install: '/plugin install <plugin>@sessionfs',
+        },
+        codex: { cli: 'codex plugin marketplace add https://example.test/git/public/sessionfs.git' },
+        gemini: { install: 'gemini extensions install https://example.test/git/public/plugins/<plugin>.git' },
+        copilot: { add: 'copilot plugin marketplace add https://example.test/git/public/sessionfs.git' },
+      },
+    },
+    {
+      scope: 'org', scope_id: ORG_ID, marketplace: 'sessionfs-org-acme', clone_url: 'https://example.test/git/org/org_fixture01/catalog.git',
+      current_commit: 'def5678', generated_at: NOW, plugin_count: 2, export_remote: null, mirror: null,
+      tools: { 'claude-code': { add: '/plugin marketplace add https://example.test/git/org/org_fixture01/catalog.git' } },
     },
   ],
   credential_helper: 'sfs catalog credential-helper',
@@ -475,6 +501,8 @@ export const orgInvites = {
 
 export const orgSettings = {
   general: { kb_retention_days: 180, kb_max_context_words: 8000, kb_section_page_limit: 30 },
+  // GET /orgs/{org}/settings is flat; the dashboard reads this key from the top.
+  restrict_project_visibility: false,
   dlp: { enabled: true, mode: 'warn', patterns: ['secrets'], categories: ['secrets', 'phi'] },
 };
 
@@ -614,3 +642,1065 @@ export const helperStatus = {
   has_org_instructions: true,
   has_personal_instructions: true,
 };
+
+// ── Jira integration (org settings → Integrations) ──
+
+export const jiraConnection = {
+  connected: true,
+  has_token: true,
+  site_url: 'https://acme.atlassian.net',
+  account_email: 'jira@acme.example',
+  token_hint: '9c2e',
+  default_template: 'agile',
+  last_verified_at: NOW,
+  sync_status: true,
+  sync_comments: 'both',
+  status_map: {
+    transitions: {
+      open: 'To Do', in_progress: 'In Progress', blocked: 'none', review: 'Submit for Review',
+      done: 'Done', cancelled: 'none', closed: 'Done',
+    },
+    categories: { new: 'none', indeterminate: 'start', done: 'resolve' },
+  },
+  has_webhook_secret: true,
+  webhook_secret_last4: 'b7e1',
+  webhook_url: 'https://api.example.test/api/v1/webhooks/jira/org_fixture01',
+};
+
+export const jiraHealth = {
+  unmapped_project_count: 1,
+  last_push_failures: [],
+  stale_links: [],
+  publishes_in_progress: [],
+  publishes_unknown: [],
+  last_inbound_at: EARLIER,
+  last_synced_at: NOW,
+  failed_sync_events_24h: 1,
+  webhook_auth_failures_24h: 0,
+};
+
+// GET /api/v1/orgs/{id}/integrations/jira/mappings
+export const jiraMappings = [
+  { project_id: PROJECT_ID, jira_project_key: 'WID', issue_type: 'Story', template: 'design-lite', done_status_name: 'Done' },
+];
+
+// One org-custom story template, listed after the built-ins by the server.
+export const jiraCustomTemplates = [
+  {
+    slug: 'design-lite',
+    name: 'Design Lite',
+    description: 'Short stories for UI polish work.',
+    sections: [
+      { key: 'summary', heading: 'Summary', mode: 'rewrite', source_fields: ['title', 'description'], guidance: null },
+      { key: 'criteria', heading: 'Acceptance criteria', mode: 'verbatim', source_fields: ['acceptance_criteria'], guidance: null },
+    ],
+    version: 3,
+    builtin: false,
+    archived_at: null,
+    created_at: OLD,
+    updated_at: EARLIER,
+    created_by_user_id: me.user_id,
+    updated_by_user_id: me.user_id,
+  },
+];
+
+export const confluenceConnection = {
+  connected: true,
+  provider: 'confluence_cloud',
+  has_token: true,
+  site_url: 'https://acme.atlassian.net',
+  account_email: 'confluence@acme.example',
+  token_hint: '4f1a',
+  default_template: 'reference',
+  batch_window_minutes: 15,
+  enabled: true,
+  last_verified_at: NOW,
+};
+
+export const confluenceMappings = [
+  {
+    project_id: PROJECT_ID,
+    space_key: 'ENG',
+    parent_page_id: '65538',
+    template: 'architecture',
+    publish_context: true,
+    auto_publish_pages: false,
+  },
+];
+
+export const confluenceHealth = {
+  unmapped_project_count: 1,
+  last_push_failures: [
+    {
+      project_id: PROJECT_ID,
+      source_kind: 'wiki_page',
+      source_key: 'concept-idempotency',
+      failed_at: NOW,
+      reason: 'Confluence is unreachable right now',
+    },
+  ],
+  publishes_in_progress: [],
+  publishes_unknown: [],
+  drifted_links: [
+    { project_id: PROJECT_ID, source_kind: 'wiki_page', source_key: 'architecture', page_id: '98311', stored_version: 4 },
+  ],
+};
+
+export const confluenceLink = {
+  id: 'cl_fixture01',
+  source_kind: 'wiki_page',
+  source_key: 'architecture',
+  page_id: '98311',
+  page_url: 'https://acme.atlassian.net/wiki/spaces/ENG/pages/98311/Architecture',
+  version: 4,
+  status: 'linked',
+  publishing: false,
+  stale: false,
+  template_slug: 'architecture',
+  template_version: null,
+  last_pushed_at: EARLIER,
+  last_push_failed_at: null,
+  last_push_failure: null,
+};
+
+export const confluenceLinks = {
+  links: [confluenceLink],
+  mapping: { space_key: 'ENG', template: 'architecture', publish_context: true, auto_publish_pages: false },
+};
+
+export const confluencePreview = {
+  title: 'Architecture',
+  sections: [
+    {
+      key: 'summary',
+      heading: 'Summary',
+      mode: 'rewrite',
+      paragraphs: [
+        {
+          text: 'The API, worker and dashboard deploy together; the worker drains one queue per payment provider so slow callbacks never block checkout.',
+          citations: ['kb:3115', 'kb:3119'],
+        },
+      ],
+    },
+    {
+      key: 'source',
+      heading: 'Source page',
+      mode: 'verbatim',
+      paragraphs: [{ text: 'API, worker and dashboard.', citations: [] }],
+    },
+  ],
+  citations: ['kb:3115', 'kb:3119'],
+  llm_used: false,
+  key_source: 'none',
+  project_id: PROJECT_ID,
+  source_kind: 'wiki_page',
+  source_key: 'architecture',
+  template: { slug: 'architecture', name: 'Architecture', version: null },
+  dropped: [
+    {
+      section: 'summary',
+      text: 'Checkout latency dropped by forty percent after the queue split.',
+      reason: 'missing citation',
+    },
+  ],
+  notes: ['No model key is configured; rewrite sections use the source text verbatim.'],
+  link: confluenceLink,
+  existing: {
+    page_id: '98311',
+    page_url: confluenceLink.page_url,
+    version: 4,
+    template_slug: 'architecture',
+    template_version: null,
+  },
+};
+
+export const confluenceDriftError = {
+  error: {
+    code: '409',
+    message: 'The Confluence page was edited since the last publish',
+    details: {
+      error: 'confluence_page_drifted',
+      link_id: 'cl_fixture01',
+      page_id: '98311',
+      stored_version: 4,
+      remote_version: 6,
+      diff: [
+        '--- last published (v4)',
+        '+++ confluence (v6)',
+        '@@ -1,4 +1,5 @@',
+        ' # Architecture',
+        '-API, worker and dashboard.',
+        '+API, worker, dashboard and the new reporting service, which reads from a nightly replica of the primary database so analysts never touch production.',
+        '+Owner: platform team.',
+        ' ',
+        ' ## Deploys',
+      ],
+      diff_truncated: true,
+    },
+  },
+};
+
+/** A large Jira site: the real report had ~500 projects, A* first. */
+export const jiraProjectKeys = [
+  'AACD', 'AAI', 'AASPD2U', 'ACMTE', 'ACN2S', 'ACRD', 'AD', 'ADPI', 'AIDR', 'AIGPCI', 'AIML', 'AIOPS',
+  'AKITABOX', 'ALGOSEC', 'AMFASSPR', 'AMLZ1T2', 'AMY',
+  ...Array.from({ length: 480 }, (_, i) => `B${String(i).padStart(3, '0')}`),
+  'ZULU',
+];
+
+export function jiraProjectPage(q: string, limit = 50) {
+  const needle = q.trim().toLowerCase();
+  const name = (k: string) => (k.startsWith('AI') ? `AI platform ${k}` : `Team ${k}`);
+  const matched = jiraProjectKeys.filter(
+    (k) => !needle || k.toLowerCase().includes(needle) || name(k).toLowerCase().includes(needle),
+  );
+  return {
+    projects: matched.slice(0, limit).map((k) => ({ key: k, name: name(k), issue_types: [] })),
+    has_more: matched.length > limit,
+    query: needle || null,
+    limit,
+  };
+}
+
+// ── project groups (GitHub #101) ──
+export const GROUP_ID = 'pg_fixture01';
+
+export const projectGroups = [
+  {
+    id: GROUP_ID, org_id: ORG_ID, slug: 'payments-platform', name: 'Payments platform',
+    description: 'Services that move money: billing, checkout and the ledger. Editors here own on-call.',
+    member_count: 3, project_count: 2, my_role: 'admin',
+  },
+  {
+    id: 'pg_fixture02', org_id: ORG_ID, slug: 'design-system', name: 'Design system',
+    description: null, member_count: 1, project_count: 0, my_role: 'admin',
+  },
+  {
+    id: 'pg_fixture03', org_id: ORG_ID, slug: 'mobile-apps-and-a-deliberately-long-slug-for-truncation',
+    name: 'Mobile apps (iOS, Android and the shared React Native modules)',
+    description: 'Long names and descriptions should wrap or clamp without pushing the table wider than the page.',
+    member_count: 12, project_count: 7, my_role: 'admin',
+  },
+];
+
+export const projectGroupDetail = {
+  id: GROUP_ID, org_id: ORG_ID, slug: 'payments-platform', name: 'Payments platform',
+  description: 'Services that move money: billing, checkout and the ledger. Editors here own on-call.',
+  my_role: 'admin',
+  members: [
+    { user_id: 'user_fixture02', email: 'peer@example.test', role: 'editor', granted_by_user_id: me.user_id, created_at: EARLIER },
+    { user_id: me.user_id, email: me.email, role: 'admin', granted_by_user_id: me.user_id, created_at: OLD },
+    { user_id: 'user_fixture04', email: 'a-very-long-contractor-address@subsidiary.example.test', role: 'reader', granted_by_user_id: me.user_id, created_at: NOW },
+  ],
+  projects: [PROJECT_ID, 'proj_fixture_hidden'],
+};
+
+export const myGroups = [projectGroups[0], { ...projectGroups[1], my_role: 'reader' }];
+
+// GET /api/v1/orgs — the caller's memberships, wrapped in `orgs` like the
+// server's MyOrgsResponse.
+export const myOrgs = { orgs: [{ org_id: ORG_ID, name: 'Acme Fixtures', role: 'admin' }] };
+
+// GET /api/v1/projects/{id}/compile-status
+export const compileStatus = {
+  last_compile_at: NOW,
+  pending_claims: 2,
+  compile_needed: false,
+  compile_schedule: 'nightly',
+  compile_after_claims: null,
+  last_scheduled_compile_at: NOW,
+  next_scheduled_at: '2026-10-21T02:00:00Z',
+  compile_history: [
+    { id: 12, compiled_at: NOW, trigger: 'scheduled', entries_compiled: 6, context_words_before: 1180, context_words_after: 1240 },
+    { id: 11, compiled_at: EARLIER, trigger: 'manual', entries_compiled: 3, context_words_before: 1100, context_words_after: 1180 },
+  ],
+};
+
+// GET /api/v1/projects/{id}/rules/versions/{n}
+export const rulesVersionDetail = (version: number) => ({
+  id: `rv_fixture${version}`,
+  rules_id: 'rules_fixture01',
+  version,
+  static_rules: rules.rules.static_rules,
+  compiled_outputs: { 'CLAUDE.md': `${rules.rules.static_rules}\n` },
+  knowledge_snapshot: [],
+  context_snapshot: {},
+  compiled_at: NOW,
+  compiled_by: me.email,
+  content_hash: `sha256:${String(version).repeat(4)}aaaa`,
+});
+
+// Built-in template lists, as the server returns them (generated from
+// integrations/trackers/templates.py and integrations/docs/templates.py).
+export const jiraBuiltinTemplates = [
+  {
+    "slug": "agile",
+    "name": "Agile Standard",
+    "description": null,
+    "sections": [
+      {
+        "key": "summary",
+        "heading": "Summary",
+        "mode": "rewrite",
+        "source_fields": [
+          "title",
+          "description",
+          "priority",
+          "kind"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "acceptance_criteria",
+        "heading": "Acceptance Criteria",
+        "mode": "verbatim",
+        "source_fields": [
+          "acceptance_criteria"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "context",
+        "heading": "Context & Prior Work",
+        "mode": "rewrite",
+        "source_fields": [
+          "description",
+          "linked_sessions",
+          "completion_notes"
+        ],
+        "guidance": null
+      }
+    ],
+    "version": null,
+    "builtin": true,
+    "archived_at": null,
+    "created_at": null,
+    "updated_at": null,
+    "created_by_user_id": null,
+    "updated_by_user_id": null
+  },
+  {
+    "slug": "compliance",
+    "name": "Enterprise / Compliance",
+    "description": null,
+    "sections": [
+      {
+        "key": "summary",
+        "heading": "Summary",
+        "mode": "rewrite",
+        "source_fields": [
+          "title",
+          "description"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "acceptance_criteria",
+        "heading": "Acceptance Criteria",
+        "mode": "verbatim",
+        "source_fields": [
+          "acceptance_criteria"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "impact",
+        "heading": "Impact & Risk",
+        "mode": "rewrite",
+        "source_fields": [
+          "description",
+          "priority",
+          "linked_sessions"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "evidence",
+        "heading": "Completion Notes",
+        "mode": "verbatim",
+        "source_fields": [
+          "completion_notes"
+        ],
+        "guidance": null
+      }
+    ],
+    "version": null,
+    "builtin": true,
+    "archived_at": null,
+    "created_at": null,
+    "updated_at": null,
+    "created_by_user_id": null,
+    "updated_by_user_id": null
+  },
+  {
+    "slug": "sre",
+    "name": "Platform / SRE",
+    "description": null,
+    "sections": [
+      {
+        "key": "summary",
+        "heading": "Summary",
+        "mode": "rewrite",
+        "source_fields": [
+          "title",
+          "description"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "acceptance_criteria",
+        "heading": "Acceptance Criteria",
+        "mode": "verbatim",
+        "source_fields": [
+          "acceptance_criteria"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "impact",
+        "heading": "Blast Radius & Impact",
+        "mode": "rewrite",
+        "source_fields": [
+          "description",
+          "priority"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "related_sessions",
+        "heading": "Related Sessions",
+        "mode": "verbatim",
+        "source_fields": [
+          "linked_sessions"
+        ],
+        "guidance": null
+      }
+    ],
+    "version": null,
+    "builtin": true,
+    "archived_at": null,
+    "created_at": null,
+    "updated_at": null,
+    "created_by_user_id": null,
+    "updated_by_user_id": null
+  },
+  {
+    "slug": "bug",
+    "name": "Bug Report",
+    "description": null,
+    "sections": [
+      {
+        "key": "summary",
+        "heading": "Summary",
+        "mode": "rewrite",
+        "source_fields": [
+          "title",
+          "description"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "acceptance_criteria",
+        "heading": "Acceptance Criteria",
+        "mode": "verbatim",
+        "source_fields": [
+          "acceptance_criteria"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "reproduction",
+        "heading": "Reproduction & Observed Behavior",
+        "mode": "rewrite",
+        "source_fields": [
+          "description",
+          "linked_sessions"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "notes",
+        "heading": "Completion Notes",
+        "mode": "verbatim",
+        "source_fields": [
+          "completion_notes"
+        ],
+        "guidance": null
+      }
+    ],
+    "version": null,
+    "builtin": true,
+    "archived_at": null,
+    "created_at": null,
+    "updated_at": null,
+    "created_by_user_id": null,
+    "updated_by_user_id": null
+  },
+  {
+    "slug": "design",
+    "name": "Design / UX",
+    "description": null,
+    "sections": [
+      {
+        "key": "user_journey",
+        "heading": "User Journey",
+        "mode": "rewrite",
+        "source_fields": [
+          "description"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "hypothesis",
+        "heading": "Hypothesis",
+        "mode": "rewrite",
+        "source_fields": [
+          "description"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "success_metric",
+        "heading": "Success Metric",
+        "mode": "verbatim",
+        "source_fields": [
+          "acceptance_criteria"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "context",
+        "heading": "Context",
+        "mode": "rewrite",
+        "source_fields": [
+          "description",
+          "linked_sessions"
+        ],
+        "guidance": null
+      }
+    ],
+    "version": null,
+    "builtin": true,
+    "archived_at": null,
+    "created_at": null,
+    "updated_at": null,
+    "created_by_user_id": null,
+    "updated_by_user_id": null
+  }
+];
+
+export const confluenceBuiltinTemplates = [
+  {
+    "slug": "reference",
+    "name": "Reference",
+    "version": null,
+    "builtin": true,
+    "sections": [
+      {
+        "key": "overview",
+        "heading": "Overview",
+        "mode": "rewrite",
+        "source_fields": [
+          "page_body"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "details",
+        "heading": "Details",
+        "mode": "rewrite",
+        "source_fields": [
+          "page_body",
+          "sections"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "claims",
+        "heading": "Claims",
+        "mode": "verbatim",
+        "source_fields": [
+          "claims_by_type"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "evidence",
+        "heading": "Session Evidence",
+        "mode": "verbatim",
+        "source_fields": [
+          "session_evidence"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "related",
+        "heading": "Related",
+        "mode": "verbatim",
+        "source_fields": [
+          "backlinks"
+        ],
+        "guidance": null
+      }
+    ]
+  },
+  {
+    "slug": "architecture",
+    "name": "Architecture",
+    "version": null,
+    "builtin": true,
+    "sections": [
+      {
+        "key": "overview",
+        "heading": "Overview",
+        "mode": "rewrite",
+        "source_fields": [
+          "page_body",
+          "sections"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "components",
+        "heading": "Components",
+        "mode": "rewrite",
+        "source_fields": [
+          "sections"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "decisions",
+        "heading": "Key Decisions",
+        "mode": "verbatim",
+        "source_fields": [
+          "claims_by_type"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "related",
+        "heading": "Related",
+        "mode": "verbatim",
+        "source_fields": [
+          "backlinks"
+        ],
+        "guidance": null
+      }
+    ]
+  },
+  {
+    "slug": "runbook",
+    "name": "Runbook",
+    "version": null,
+    "builtin": true,
+    "sections": [
+      {
+        "key": "overview",
+        "heading": "Overview",
+        "mode": "rewrite",
+        "source_fields": [
+          "page_body"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "steps",
+        "heading": "Steps",
+        "mode": "verbatim",
+        "source_fields": [
+          "page_body",
+          "sections"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "known_issues",
+        "heading": "Known Issues & Workarounds",
+        "mode": "verbatim",
+        "source_fields": [
+          "claims_by_type"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "evidence",
+        "heading": "Session Evidence",
+        "mode": "verbatim",
+        "source_fields": [
+          "session_evidence"
+        ],
+        "guidance": null
+      }
+    ]
+  },
+  {
+    "slug": "onboarding",
+    "name": "Onboarding",
+    "version": null,
+    "builtin": true,
+    "sections": [
+      {
+        "key": "overview",
+        "heading": "Overview",
+        "mode": "rewrite",
+        "source_fields": [
+          "page_body",
+          "sections"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "conventions",
+        "heading": "Coding Conventions",
+        "mode": "verbatim",
+        "source_fields": [
+          "claims_by_type"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "evidence",
+        "heading": "Session Evidence",
+        "mode": "verbatim",
+        "source_fields": [
+          "session_evidence"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "related",
+        "heading": "Related",
+        "mode": "verbatim",
+        "source_fields": [
+          "backlinks"
+        ],
+        "guidance": null
+      }
+    ]
+  },
+  {
+    "slug": "concept",
+    "name": "Concept",
+    "version": null,
+    "builtin": true,
+    "sections": [
+      {
+        "key": "overview",
+        "heading": "Overview",
+        "mode": "rewrite",
+        "source_fields": [
+          "page_body"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "context",
+        "heading": "Context",
+        "mode": "rewrite",
+        "source_fields": [
+          "sections",
+          "compile_metadata"
+        ],
+        "guidance": null
+      },
+      {
+        "key": "related",
+        "heading": "Related",
+        "mode": "verbatim",
+        "source_fields": [
+          "backlinks"
+        ],
+        "guidance": null
+      }
+    ]
+  }
+];
+// ── marketplace detail, managed library, publishers, moderation ──
+
+export const marketplaceWorksIn = {
+  version_id: 'skv_fixture1',
+  content_hash: 'sha256:11111111',
+  vendor_docs_checked: '2026-10-01',
+  tools: {
+    'claude-code': {
+      badge: 'verified',
+      levels: { L1: { status: 'pass', tool_version: '2.1.240', run_at: NOW, reason: 'ok', projection_hash: null } },
+    },
+    codex: {
+      badge: 'format-valid',
+      levels: { L0: { status: 'pass', tool_version: 'docs-2026-10-01', run_at: NOW, reason: 'ok', projection_hash: null } },
+    },
+  },
+  expected_only: { gemini: { badge: 'expected', omitted_components: ['hooks'] } },
+};
+
+export const marketplaceDisclosure = {
+  version_id: 'skv_fixture1',
+  content_hash: 'sha256:11111111',
+  capability_digest: 'sha256:cap0001',
+  capabilities: ['instructions', 'scripts', 'hooks'],
+  provenance: { publisher_verified: true, attested: false },
+  scan: { ruleset: '2026.10.6', max_severity: 'low', finding_count: 1, counts: { low: 1 } },
+  unicode: { flagged_files: 0, findings: [], counts: {} },
+  shell_commands: [{ path: 'skills/migration-reviewer/SKILL.md', line: 12, command: 'git', commands: ['git'], text: 'git diff --stat origin/main' }],
+  network_endpoints: [],
+  env_names: [],
+  mcp_servers: { local: [], remote: [], declared: false },
+  allowed_tools: ['allowed-tools:Bash(git diff:*)'],
+  persistence_targets: [],
+  executable_extensions: [],
+  tools: {
+    'claude-code': {
+      delivery: 'native', scope: 'project', summary: 'Installs 1 skill with 1 script and 1 hook.',
+      writes: ['.claude/skills/migration-reviewer/SKILL.md', '.claude/skills/migration-reviewer/scripts/check.sh'], writes_total: 2,
+      runs: { scripts: 1, hooks: [{ skill: 'migration-reviewer', event: 'PreToolUse', matcher: 'Bash' }], mcp_local: 0 },
+      connects_to: [], auto_allowed: ['Bash(git diff:*)'], omitted: [], consent_required: ['skill-scripts', 'skill-hooks'],
+    },
+  },
+  consent_required: ['instructions', 'skill-scripts', 'skill-hooks'],
+  consent_rule_version: 2,
+  card_version: 2,
+  scope: 'project',
+  disclosure_digest: 'sha256:disc0001',
+};
+
+export const skillRegistries = {
+  items: [
+    {
+      id: 'reg_fixture1', owner_type: 'org', owner_id: ORG_ID, org_id: ORG_ID, alias: 'acme-skills',
+      source_url: 'https://example.test/acme/skills.git', refresh_commit: null, policy_state: 'approved',
+      server_fetch_enabled: true, created_at: OLD, updated_at: NOW, poll_interval_seconds: 3600, tag_pattern: 'v*',
+      branch_only_mode: false, last_poll_at: '2026-10-20T11:00:00Z', last_poll_status: 'ok', consecutive_failures: 0,
+      next_poll_at: '2026-10-20T13:00:00Z', backoff: false,
+    },
+    {
+      id: 'reg_fixture2', owner_type: 'org', owner_id: ORG_ID, org_id: ORG_ID, alias: 'platform-team',
+      source_url: 'https://example.test/acme/platform-skills.git', refresh_commit: null, policy_state: 'review',
+      server_fetch_enabled: true, created_at: OLD, updated_at: NOW, poll_interval_seconds: 3600, tag_pattern: 'release-*',
+      branch_only_mode: false, last_poll_at: '2026-10-20T10:00:00Z', last_poll_status: 'partial',
+      last_poll_error_summary: 'release-2.3: package refused (scanner found a critical issue)', consecutive_failures: 0, backoff: false,
+    },
+  ],
+};
+
+export const effectiveAssignments = {
+  items: [
+    { id: 'asg_fixture1', org_id: ORG_ID, version_id: 'skv_fixture0', content_hash: 'sha256:00000000', target_type: 'org', target_id: ORG_ID, target_user_id: null, mode: 'required', target_tools: ['claude-code', 'codex'], policy: {}, created_at: OLD },
+    { id: 'asg_fixture2', org_id: ORG_ID, version_id: 'skv_fixture5', content_hash: 'sha256:55555555', target_type: 'user', target_id: 'user_fixture01', target_user_id: 'user_fixture01', mode: 'optional', target_tools: [], policy: {}, created_at: OLD },
+  ],
+  count: 2,
+};
+
+export const myPublishers = {
+  items: [
+    {
+      id: 'pub_fixture01', namespace: 'acme', display_name: 'Acme', owner_type: 'org', status: 'active', verified: true,
+      badges: ['verified: acme.example.test'], org_id: ORG_ID, created_at: OLD, public_publishing: true,
+      verifications: [
+        { id: 'pv_1', method: 'dns_txt', subject: 'acme.example.test', subject_display: 'acme.example.test', status: 'verified', status_reason: null, badge: 'verified: acme.example.test', verified_at: OLD, last_checked_at: NOW, last_success_at: NOW, consecutive_failures: 0, github_installation_id: null, reused_org_domain_verification: false },
+        { id: 'pv_2', method: 'dns_txt', subject: 'acme-tools.example.test', subject_display: 'acme-tools.example.test', status: 'pending', status_reason: null, badge: null, verified_at: null, last_checked_at: null, last_success_at: null, consecutive_failures: 0, github_installation_id: null, reused_org_domain_verification: false, txt_record: 'sessionfs-verification=fixture0123456789abcdef', txt_host: '_sessionfs.acme-tools.example.test' },
+      ],
+      trusted_publishers: [
+        { id: 'tp_1', provider: 'github', repository: 'acme/skills', repository_id: 101, repository_owner_id: 7, workflow: 'release.yml', reusable_workflow: null, allow_workflow_run: false, environment: 'release', ref_pattern: 'refs/tags/v*', package_name: null, created_at: OLD, revoked_at: null },
+      ],
+    },
+  ],
+  count: 1,
+};
+
+export const publisherListings = {
+  items: [
+    { ...pkg(0), moderation_state: 'approved' },
+    { ...pkg(1), visibility: 'public', moderation_state: 'pending_review', moderation_reason: null },
+  ],
+  count: 2,
+};
+
+export const marketplaceReports = {
+  items: [
+    { id: 'spr_fixture1', package_id: 'spk_fixture1', version_id: 'skv_fixture1', reason: 'malicious', details: 'The hook runs git push on every tool call, which is not mentioned in the description.', status: 'open', created_at: EARLIER, resolved_at: null, reporter_user_id: 'user_fixture02', scope_kind: 'platform', scope_org_id: null },
+    { id: 'spr_fixture2', package_id: 'spk_fixture4', version_id: null, reason: 'spam', details: '', status: 'open', created_at: OLD, resolved_at: null, reporter_user_id: 'user_fixture03', scope_kind: 'org', scope_org_id: ORG_ID },
+  ],
+  count: 2,
+  has_more: false,
+  next_cursor: null,
+};
+
+// GET /api/v1/me/ticket-notifications — the inbox list (TicketNotificationList).
+export const ticketNotifications = {
+  items: [
+    {
+      id: 104, ticket_id: tickets[4].id, project_id: PROJECT_ID, ticket_title: tickets[4].title,
+      kind: 'your_turn', summary: 'Ready for your review', actor_type: 'user', actor_user_id: 'usr_peer01',
+      service_key_name: null, event_count: 1, created_at: NOW, updated_at: NOW, read_at: null,
+    },
+    {
+      id: 103, ticket_id: tickets[1].id, project_id: PROJECT_ID, ticket_title: tickets[1].title,
+      kind: 'review_verdict', summary: 'Reviewer posted VERIFIED-CLEAN', actor_type: 'service_key', actor_user_id: null,
+      service_key_name: 'ci-reviewer', event_count: 2, created_at: EARLIER, updated_at: NOW, read_at: null,
+    },
+    {
+      id: 102, ticket_id: tickets[2].id, project_id: PROJECT_ID, ticket_title: tickets[2].title,
+      kind: 'comment', summary: '3 new comments', actor_type: 'user', actor_user_id: 'usr_peer01',
+      service_key_name: null, event_count: 3, created_at: EARLIER, updated_at: EARLIER, read_at: null,
+    },
+    {
+      id: 101, ticket_id: tickets[3].id, project_id: PROJECT_ID, ticket_title: tickets[3].title,
+      kind: 'dependency_unblocked', summary: 'A dependency was completed', actor_type: 'user', actor_user_id: me.user_id,
+      service_key_name: null, event_count: 1, created_at: EARLIER, updated_at: EARLIER, read_at: EARLIER,
+    },
+  ],
+  next_before: null,
+};
+
+// GET /api/v1/orgs/{id}/integrations/jira/sync-events — recent two-way sync
+// deliveries (JiraSyncEventsPage).
+export const jiraSyncEvents = {
+  events: [
+    {
+      id: 'jse_fixture03', ticket_id: tickets[1].id, issue_key: 'WID-42', direction: 'outbound', kind: 'status',
+      payload: { to_status: 'in_progress', transition: 'Start Progress' }, jira_event_id: null, applied: true, error: null, created_at: NOW,
+      state: 'done', retry_count: 0, next_attempt_at: null, updated_at: NOW,
+    },
+    {
+      id: 'jse_fixture02', ticket_id: tickets[2].id, issue_key: 'WID-43', direction: 'inbound', kind: 'comment',
+      payload: { author: 'Jira user' }, jira_event_id: '10093', applied: true, error: null, created_at: EARLIER,
+      state: 'done', retry_count: 0, next_attempt_at: null, updated_at: EARLIER,
+    },
+    {
+      id: 'jse_fixture01', ticket_id: tickets[3].id, issue_key: 'WID-44', direction: 'outbound', kind: 'status',
+      payload: { to_status: 'blocked', transition: 'Block' }, jira_event_id: null, applied: false, error: 'Jira returned 503',
+      created_at: EARLIER, state: 'pending', retry_count: 2, next_attempt_at: NOW, updated_at: EARLIER,
+    },
+  ],
+};
+
+// ── Ticket detail: a Jira-linked ticket with a review thread ──
+// tickets[2] (tk_fixture3, in progress) is promoted to Jira as WID-43 and has
+// two review rounds from a trusted reviewer, a mirrored Jira comment and a
+// system edit note.
+export const LINKED_TICKET_ID = tickets[2].id;
+export const linkedTicketJira = {
+  issue_key: 'WID-43',
+  issue_url: 'https://acme.atlassian.net/browse/WID-43',
+  last_known_status: 'In Progress',
+};
+export const linkedTicket = {
+  ...tickets[2],
+  jira: linkedTicketJira,
+  description:
+    'ProjectDetail renders every tab inline, so a change to one section re-renders the whole page. Split it into one component per section and keep the URL contract (?tab=…&sub=…) unchanged.',
+  acceptance_criteria: [
+    'Each section is its own component',
+    'Deep links keep working',
+    'No new network requests on tab switch',
+  ],
+  depends_on: [tickets[1].id],
+  created_by_persona: 'compass',
+  created_at: '2026-10-17T08:00:00Z',
+};
+export const linkedTicketJiraLink = {
+  ticket_id: LINKED_TICKET_ID,
+  provider: 'jira',
+  issue_key: 'WID-43',
+  issue_url: 'https://acme.atlassian.net/browse/WID-43',
+  last_pushed_at: '2026-10-19T10:05:00Z',
+  last_known_status: 'In Progress',
+  last_status_checked_at: NOW,
+  payload_hash: null,
+  comment_sync_outbound: true,
+  can_send_to_jira: true,
+};
+export const linkedTicketComments = [
+  {
+    id: 'tc_fixture1', ticket_id: LINKED_TICKET_ID, author_user_id: me.user_id, author_persona: 'prism',
+    content: 'Started on this. Pulling Overview and Knowledge out first since they share the compile banner.',
+    session_id: 'ses_fixture01', created_at: '2026-10-18T09:40:00Z', source: 'sessionfs',
+  },
+  {
+    id: 'tc_fixture2', ticket_id: LINKED_TICKET_ID, author_user_id: me.user_id, author_persona: 'system',
+    content: 'Edited by prism: priority medium → high',
+    session_id: null, created_at: '2026-10-18T09:42:00Z', source: 'sessionfs',
+  },
+  {
+    id: 'tc_fixture3', ticket_id: LINKED_TICKET_ID, author_user_id: 'user_fixture02', author_persona: null,
+    content: 'Priya Shah (Jira): Please keep the Settings tab last, support links to it.',
+    session_id: null, created_at: '2026-10-18T14:05:00Z', source: 'jira',
+  },
+  {
+    id: 'tc_fixture4', ticket_id: LINKED_TICKET_ID, author_user_id: 'user_fixture03', author_persona: 'codex-reviewer',
+    content:
+      'Codex R1 review on tk_fixture3: CHANGES_REQUESTED\n\n- [MEDIUM] KnowledgeSection refetches entries on every tab switch.\n- [LOW] The Settings panel lost its heading id.',
+    session_id: null, created_at: '2026-10-19T08:10:00Z', source: 'sessionfs',
+  },
+  {
+    id: 'tc_fixture5', ticket_id: LINKED_TICKET_ID, author_user_id: me.user_id, author_persona: 'prism',
+    content: 'Both fixed: entries are cached per project, and the heading id is back.',
+    session_id: 'ses_fixture02', created_at: '2026-10-19T09:55:00Z', source: 'sessionfs',
+  },
+  {
+    id: 'tc_fixture6', ticket_id: LINKED_TICKET_ID, author_user_id: 'user_fixture03', author_persona: 'codex-reviewer',
+    content: 'Codex R2 review on tk_fixture3: VERIFIED-CLEAN\n\nNo open findings.',
+    session_id: null, created_at: '2026-10-19T11:20:00Z', source: 'sessionfs',
+  },
+];
+export const linkedTicketReviewState = {
+  ticket_id: LINKED_TICKET_ID,
+  review_state: {
+    open_findings: [],
+    closed_findings: [
+      { severity: 'MEDIUM', text: 'KnowledgeSection refetches entries on every tab switch.', round: 1, raised_at: '2026-10-19T08:10:00Z', raised_comment_id: 'tc_fixture4', status: 'closed', closed_round: 2 },
+      { severity: 'LOW', text: 'The Settings panel lost its heading id.', round: 1, raised_at: '2026-10-19T08:10:00Z', raised_comment_id: 'tc_fixture4', status: 'closed', closed_round: 2 },
+    ],
+    last_verdict: 'VERIFIED-CLEAN',
+    last_raw_verdict: 'VERIFIED-CLEAN',
+    last_verdict_is_strict_verified_clean: true,
+    severity_counts: { MEDIUM: 1, LOW: 1 },
+    last_review_comment_id: 'tc_fixture6',
+    last_implementer_comment_id: 'tc_fixture5',
+    updated_at: '2026-10-19T11:20:00Z',
+    rounds: [
+      { round: 1, verdict: 'CHANGES_REQUESTED', raw_verdict: 'CHANGES_REQUESTED', is_strict_verified_clean: false, comment_id: 'tc_fixture4', timestamp: '2026-10-19T08:10:00Z', findings_raised: 2 },
+      { round: 2, verdict: 'VERIFIED-CLEAN', raw_verdict: 'VERIFIED-CLEAN', is_strict_verified_clean: true, comment_id: 'tc_fixture6', timestamp: '2026-10-19T11:20:00Z', findings_raised: 0 },
+    ],
+  },
+};
+// Newest first, as the API returns them.
+export const linkedTicketSyncEvents = {
+  events: [
+    {
+      // The trusted verdict forwarded to Jira; folds onto its comment.
+      id: 'tse_fixture4', ticket_id: LINKED_TICKET_ID, issue_key: 'WID-43', direction: 'outbound', kind: 'comment',
+      payload: { comment_id: 'tc_fixture6', reason: 'verdict' }, jira_event_id: null, applied: false, error: 'Jira returned 503',
+      created_at: '2026-10-19T11:21:00Z', state: 'pending', retry_count: 1, next_attempt_at: NOW, updated_at: '2026-10-19T11:30:00Z',
+    },
+    {
+      id: 'tse_fixture3', ticket_id: LINKED_TICKET_ID, issue_key: 'WID-43', direction: 'inbound', kind: 'status',
+      payload: { category: 'indeterminate', action: 'start', jira_status: 'In Progress', outcome: 'echo' }, jira_event_id: 'issue:20511',
+      applied: false, error: null, created_at: '2026-10-18T09:41:30Z', state: 'skipped', retry_count: 0, next_attempt_at: null, updated_at: '2026-10-18T09:41:30Z',
+    },
+    {
+      // Mirrors tc_fixture3, so the timeline shows the comment only.
+      id: 'tse_fixture2', ticket_id: LINKED_TICKET_ID, issue_key: 'WID-43', direction: 'inbound', kind: 'comment',
+      payload: { author: 'Priya Shah', comment_id: '10211' }, jira_event_id: 'comment:10211', applied: true, error: null,
+      created_at: '2026-10-18T14:05:00Z', state: 'done', retry_count: 0, next_attempt_at: null, updated_at: '2026-10-18T14:05:00Z',
+    },
+    {
+      id: 'tse_fixture1', ticket_id: LINKED_TICKET_ID, issue_key: 'WID-43', direction: 'outbound', kind: 'status',
+      payload: { to_status: 'in_progress', transition: 'Start Progress' }, jira_event_id: null, applied: true, error: null,
+      created_at: '2026-10-18T09:41:00Z', state: 'done', retry_count: 0, next_attempt_at: null, updated_at: '2026-10-18T09:41:00Z',
+    },
+  ],
+};
+export const linkedTicketWatchers = [
+  { user_id: me.user_id, persona_name: null, source: 'explicit', muted: false, created_at: '2026-10-18T09:40:00Z' },
+];
+// The open ticket (tk_fixture2): one comment, nobody following.
+export const openTicketComments = [
+  {
+    id: 'tc_fixture7', ticket_id: tickets[1].id, author_user_id: me.user_id, author_persona: 'atlas',
+    content: 'Budget should be per destination, not global. Proposal in the linked session.',
+    session_id: 'ses_fixture03', created_at: EARLIER, source: 'sessionfs',
+  },
+];

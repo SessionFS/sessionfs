@@ -17,14 +17,43 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.25.0 -->
+      <!-- v0.26.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.26.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 27, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Project Groups &middot; Two-Way Jira Sync &middot; Confluence Publishing &middot; Helper Ticket Actions &middot; Sessions by Model</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Project groups (Team and Enterprise).</strong> Org admins can group projects (for example &ldquo;Payments platform&rdquo;) and grant people reader, editor or admin access to the whole group. An org can turn on <strong>restricted project visibility</strong> so members see only the projects they own, created, or reach through a group. Groups offer knowledge search and a list of wiki pages across their projects, and an optional overview document compiled from them, always filtered to the projects each person can read. CLI: <span class="font-mono text-accent text-sm">sfs project group</span>, <span class="font-mono text-accent text-sm">sfs project list --group</span>. 15 new MCP tools.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Two-way Jira sync (Enterprise).</strong> A linked ticket&rsquo;s status changes move the Jira issue through your status map, and moving the issue to Done in Jira resolves the ticket. Comments can be mirrored in either direction: a <strong>Send to Jira</strong> checkbox posts a comment to the issue, and trusted VERIFIED-CLEAN review verdicts are forwarded automatically. When a ticket completes, one evidence comment goes to the issue with the verdict, changed files and promoted knowledge. Inbound changes arrive on a webhook signed with a per-org secret, outgoing changes are queued and retried with backoff, and your own changes echoing back are ignored.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Custom Jira story templates.</strong> Org admins can define story templates with verbatim and rewritten sections and pick one per mapping or per ticket. Every published issue is pinned to the template version it used, with a footer linking back to SessionFS. The mapping dialog now searches your Jira projects instead of loading them all. CLI: <span class="font-mono text-accent text-sm">sfs org jira templates list|show</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Confluence publishing (Enterprise).</strong> Publish wiki pages and the compiled project context to a Confluence Cloud space chosen by an org admin, with a preview showing citations and anything dropped. A page someone edited in Confluence is never overwritten: publishing shows the drift as a diff and lets a project admin overwrite or unlink. An optional scheduled publish keeps opted-in pages current and skips unchanged ones. CLI: <span class="font-mono text-accent text-sm">sfs org confluence</span>, <span class="font-mono text-accent text-sm">sfs project confluence publish</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>The session helper reads more of your project.</strong> It can look up tickets, wiki pages, agent runs and personas, with the date each answer is as of, and cite them.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>The helper drafts tickets, assigns them and comments.</strong> You review and edit every field before pressing <strong>Confirm</strong>, and nothing changes until you do. It follows the same permissions as the ticket pages, never posts a trusted review verdict, and records which conversation the change came from.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>The helper finds sessions by model.</strong> Ask &ldquo;which sessions used DeepSeek?&rdquo; and it lists the models you&rsquo;ve used with counts, filters by model or provider family, pages through results, and can propose moving every match to Trash (100 per proposal).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Changed: a calmer marketplace.</strong> A compact header with most filters behind a <strong>Filters</strong> button that shows removable chips, install commands in an <strong>Install in your tool</strong> dialog, simpler cards, and package detail in tabs with scan results and safety alerts always on the first tab.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Changed: Organization &rarr; Integrations</strong> starts with one summary row per integration that names only real problems; each integration&rsquo;s settings sit in their own sections (overview, connection, mappings, templates, sync and activity).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Changed: ticket detail</strong> has a clear header and one timeline of comments, review verdicts, Jira activity and edits. <strong>Project settings</strong> are grouped into General, Knowledge, Repositories, Access &amp; ownership and Danger zone.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Changed:</strong> the top bar no longer overlaps its icons at tablet widths, and headings, landmarks and scrollable tables are labelled for screen readers.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed:</strong> merging two projects that both had knowledge entries no longer fails with a server error; the project Transfer panel only appears for people allowed to start a transfer; session search with a date range no longer fails on PostgreSQL; text from consecutive helper steps no longer runs together.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security:</strong> two-way Jira sync stops for a project that leaves the linked org; the Confluence Markdown converter can&rsquo;t be made to stall the server; Confluence pages and new-project knowledge backfill only use sessions that belong to the project or its creator.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;100 (096&ndash;100 add project groups, custom Jira templates, group context, Confluence and Jira sync; all additive). Self-hosted: run migrations 096&ndash;100, and schedule <span class="font-mono text-sm">POST /api/v1/admin/sweeps/jira-sync</span> and <span class="font-mono text-sm">POST /api/v1/admin/sweeps/confluence-publish</span> to keep Jira retries and Confluence auto-publishing running (see <a href="/self-hosted/#upgrading" class="text-brand hover:underline">Self-Hosted</a>). 9672 backend tests + 1493 dashboard UI tests passing. 100 MCP tools (+15 project group tools).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.25.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.25.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 26, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Helper Actions &middot; Helper Docs Answers &middot; Configurable Helper &middot; Sessions by Model &middot; Project Edit Access</h2>
         <ul class="space-y-2 text-base text-muted">

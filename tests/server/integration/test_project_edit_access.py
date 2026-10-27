@@ -1013,6 +1013,65 @@ async def test_agent_run_start_on_others_run_needs_editor(
 
 
 @pytest.mark.asyncio
+async def test_can_admin_flag_on_project_responses(
+    client: AsyncClient, db_session: AsyncSession, org_project
+):
+    """can_admin mirrors user_is_project_admin on list and detail: the owner
+    and org admins/owners, never plain members or captured-session readers."""
+    pid = org_project["project"].id
+    org_id = org_project["project"].org_id
+    admin, admin_h = await _user(db_session, "org-admin", tier="pro")
+    db_session.add(OrgMember(org_id=org_id, user_id=admin.id, role="admin"))
+    await db_session.commit()
+
+    expected = {
+        "owner_h": True,
+        "member_h": False,
+        "reader_h": False,
+    }
+    cases = [(org_project[k], v) for k, v in expected.items()] + [(admin_h, True)]
+    for headers, want in cases:
+        detail = await client.get(f"/api/v1/projects/{pid}", headers=headers)
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["can_admin"] is want
+        rows = (await client.get("/api/v1/projects/", headers=headers)).json()
+        assert next(p for p in rows if p["id"] == pid)["can_admin"] is want
+
+
+@pytest.mark.asyncio
+async def test_can_delete_flag_matches_delete_rule(
+    client: AsyncClient, db_session: AsyncSession, org_project
+):
+    """can_delete mirrors delete_project: the owner or a platform admin.
+    An org admin who is not the owner can neither see it nor delete."""
+    pid = org_project["project"].id
+    org_id = org_project["project"].org_id
+    org_admin, org_admin_h = await _user(db_session, "org-admin-del", tier="pro")
+    db_session.add(OrgMember(org_id=org_id, user_id=org_admin.id, role="admin"))
+    platform, platform_h = await _user(db_session, "platform-admin", tier="admin")
+    db_session.add(OrgMember(org_id=org_id, user_id=platform.id, role="member"))
+    await db_session.commit()
+
+    cases = [
+        (org_project["owner_h"], True),
+        (org_project["member_h"], False),
+        (org_project["reader_h"], False),
+        (org_admin_h, False),
+        (platform_h, True),
+    ]
+    for headers, want in cases:
+        detail = await client.get(f"/api/v1/projects/{pid}", headers=headers)
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["can_delete"] is want
+        rows = (await client.get("/api/v1/projects/", headers=headers)).json()
+        assert next(p for p in rows if p["id"] == pid)["can_delete"] is want
+
+    # The flag predicts the route: the non-owner org admin is refused.
+    refused = await client.delete(f"/api/v1/projects/{pid}", headers=org_admin_h)
+    assert refused.status_code == 403, refused.text
+
+
+@pytest.mark.asyncio
 async def test_can_edit_true_for_org_member_on_list(client: AsyncClient, org_project):
     pid = org_project["project"].id
     rows = (await client.get("/api/v1/projects/", headers=org_project["member_h"])).json()
@@ -1676,3 +1735,49 @@ async def test_fresh_claim_hold_keeps_waiting_status(
     await db_session.refresh(item)
     assert item.item_status == "waiting"
     assert item.open_directive_run_id is None
+
+
+@pytest.mark.asyncio
+async def test_can_transfer_flag_matches_transfer_rule(
+    client: AsyncClient, db_session: AsyncSession, org_project, personal
+):
+    """can_transfer mirrors initiate_transfer: the owner of a personal
+    project, or an admin of the project's org. A plain member who owns an
+    org project has project-admin standing but cannot start a transfer."""
+    project = org_project["project"]
+    pid = project.id
+    org_admin, org_admin_h = await _user(db_session, "org-admin-xfer", tier="pro")
+    db_session.add(OrgMember(org_id=project.org_id, user_id=org_admin.id, role="admin"))
+    await db_session.commit()
+
+    cases = [
+        (org_project["owner_h"], True),  # org owner role
+        (org_admin_h, True),
+        (org_project["member_h"], False),
+        (org_project["reader_h"], False),
+    ]
+    for headers, want in cases:
+        detail = await client.get(f"/api/v1/projects/{pid}", headers=headers)
+        assert detail.status_code == 200, detail.text
+        assert detail.json()["can_transfer"] is want
+        rows = (await client.get("/api/v1/projects/", headers=headers)).json()
+        assert next(p for p in rows if p["id"] == pid)["can_transfer"] is want
+
+    # A plain member who owns an org project: admin standing, no transfer.
+    project.owner_id = org_project["member"].id
+    await db_session.commit()
+    member_h = org_project["member_h"]
+    detail = (await client.get(f"/api/v1/projects/{pid}", headers=member_h)).json()
+    assert detail["can_admin"] is True
+    assert detail["can_transfer"] is False
+    refused = await client.post(
+        f"/api/v1/projects/{pid}/transfer", headers=member_h, json={"to": "personal"}
+    )
+    assert refused.status_code == 403, refused.text
+
+    # Personal project: only the owner.
+    ppid = personal["project"].id
+    owner = (await client.get(f"/api/v1/projects/{ppid}", headers=personal["owner_h"])).json()
+    assert owner["can_transfer"] is True
+    reader = (await client.get(f"/api/v1/projects/{ppid}", headers=personal["reader_h"])).json()
+    assert reader["can_transfer"] is False

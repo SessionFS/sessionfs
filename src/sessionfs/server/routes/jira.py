@@ -3,8 +3,11 @@
 Org-scoped connection + mapping + health under
 ``/api/v1/orgs/{org_id}/integrations/jira``; ticket promotion under
 ``/api/v1/projects/{pid}/tickets/{tid}/jira``. Enterprise-only (feature flag
-``jira_integration``). One-way: SessionFS creates/updates the Jira story and
-reads its status on demand; Jira edits never write back.
+``jira_integration``). Two-way sync (GitHub #98 part B): outbound status/
+comment/evidence pushes through ``services.jira_sync``, and an inbound webhook
+(``/webhooks/jira/{org_id}``) mirrors Jira edits back — status transitions are
+applied through the same atomic FSM the ticket routes use, field edits become
+system comments, and Jira comments become ``source='jira'`` ticket comments.
 
 The Jira router must be registered before ``projects.router`` in ``app.py``
 because the latter is a ``/{git_remote_normalized:path}`` catch-all.
@@ -14,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import difflib
+import hashlib
 import json
 import logging
 import re
@@ -21,9 +25,9 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,6 +38,8 @@ from sessionfs.server.auth.dependencies import (
 )
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
+    JiraTemplate,
+    JiraTemplateVersion,
     OrgAuditEvent,
     OrgMember,
     OrgTrackerConnection,
@@ -43,19 +49,42 @@ from sessionfs.server.db.models import (
     TicketComment,
     TicketTrackerLink,
     TrackerProjectMapping,
+    TrackerSyncEvent,
     User,
 )
 from sessionfs.server.integrations.trackers import (
     DEFAULT_TEMPLATE,
     JiraClient,
+    Template,
     get_template,
+    is_builtin_slug,
+    list_templates,
 )
 from sessionfs.server.integrations.trackers.base import TrackerError, TrackerIssue
-from sessionfs.server.integrations.trackers.jira import sessionfs_label, validate_site_url
+from sessionfs.server.integrations.trackers.custom_templates import (
+    MAX_TEMPLATES_PER_ORG,
+    ResolvedTemplate,
+    TemplateValidationError,
+    builtin_resolved,
+    sections_to_template,
+    validate_description,
+    validate_name,
+    validate_sections,
+    validate_slug,
+)
+from sessionfs.server.config import dashboard_link_base
+from sessionfs.server.integrations.trackers.jira import (
+    adf_to_text,
+    sessionfs_label,
+    validate_site_url,
+)
+from sessionfs.server.services import jira_sync
 from sessionfs.server.integrations.trackers.promote import (
     ContentTooLarge,
     adf_text_length,
+    build_deterministic_sections,
     build_preview,
+    collect_sources,
     payload_hash,
     sections_to_adf,
 )
@@ -71,6 +100,11 @@ from sessionfs.server.tiers import get_features_for_tier, get_minimum_tier_for_f
 
 router = APIRouter(prefix="/api/v1/projects", tags=["jira"])
 org_router = APIRouter(prefix="/api/v1/orgs", tags=["jira"])
+# Inbound webhook (authenticated by the org's per-connection secret, not a user
+# token). Mounted under ``/api/v1`` — not the bare ``/webhooks`` GitHub/GitLab
+# use — so it is reachable through the Helm dashboard nginx, which proxies only
+# /api, /mcp and /health to the API, and on the hosted API alike.
+webhook_router = APIRouter(prefix="/api/v1/webhooks", tags=["jira"])
 
 logger = logging.getLogger("sessionfs.api")
 
@@ -78,6 +112,13 @@ _ORG_NOT_FOUND = "Organization not found"
 
 # Jira project keys are all-uppercase (``ACME``, ``ACME_1``) — 2 to 10 chars.
 _JIRA_PROJECT_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,9}$")
+
+# Jira project picker: a search term is at most 100 characters, a page at
+# most 100 projects (default 50). The legacy unpaged list stops at 500.
+_PROJECT_SEARCH_MAX_CHARS = 100
+_PROJECT_SEARCH_DEFAULT_LIMIT = 50
+_PROJECT_SEARCH_MAX_LIMIT = 100
+_PROJECT_LIST_CAP = 500
 
 # A pending publish claim older than this is treated as abandoned and can be
 # reclaimed (the worker that made it is presumed dead).
@@ -116,6 +157,39 @@ class JiraConnectionPut(BaseModel):
     account_email: str = Field(max_length=255)
     api_token: str = Field(max_length=2048)
     default_template: str = Field(max_length=50)
+    # Two-way sync settings (GitHub #98 part B). Optional and MERGED: an
+    # omitted field keeps its stored value, so reconnecting / rotating the
+    # token never resets sync. ``PATCH .../integrations/jira/sync`` changes
+    # them without re-entering the token.
+    sync_status: bool | None = None
+    sync_comments: str | None = None
+    status_map: dict | None = None
+
+
+class JiraSyncPatch(BaseModel):
+    """Partial update of the two-way sync settings (merge semantics)."""
+
+    sync_status: bool | None = None
+    sync_comments: str | None = None
+    status_map: dict | None = None
+
+
+def _apply_sync_settings(conn: OrgTrackerConnection, body: BaseModel) -> None:
+    """Merge the sync fields the caller actually sent (``model_fields_set``).
+
+    An explicit ``status_map: null`` resets the map to the built-in default;
+    ``sync_status`` / ``sync_comments`` ignore an explicit null.
+    """
+    fields = body.model_fields_set
+    sync_status = getattr(body, "sync_status", None)
+    if "sync_status" in fields and sync_status is not None:
+        conn.sync_status = bool(sync_status)
+    sync_comments = getattr(body, "sync_comments", None)
+    if "sync_comments" in fields and sync_comments is not None:
+        conn.sync_comments = jira_sync.validate_sync_comments(sync_comments)
+    if "status_map" in fields:
+        normalized = jira_sync.validate_status_map(getattr(body, "status_map", None))
+        conn.status_map = json.dumps(normalized, separators=(",", ":"))
 
 
 class JiraMappingPut(BaseModel):
@@ -155,6 +229,49 @@ class JiraPublishBody(BaseModel):
     summary: str = Field(min_length=1, max_length=255)
     sections: list[JiraSection] = Field(min_length=1, max_length=20)
     confirm: bool
+    # Per-ticket template override (optional). When omitted the template falls
+    # back to the mapping override, then the org's connection default. An
+    # unknown/archived slug is a strict 422 — the caller picked it explicitly.
+    template: str | None = Field(None, max_length=50)
+    # The template version the draft was previewed with (``preview.template``
+    # echoed back). When ``template`` or ``template_version`` is sent and the
+    # current resolution differs, publish refuses with 409 template_changed so
+    # a story is never rendered with a version nobody previewed.
+    template_version: int | None = None
+
+
+class JiraPreviewBody(BaseModel):
+    template: str | None = Field(None, max_length=50)
+
+
+# ── Custom template request bodies ──
+
+
+class JiraTemplateSectionBody(BaseModel):
+    key: str = Field(max_length=64)
+    heading: str = Field(max_length=80)
+    mode: str
+    source_fields: list[str] = Field(min_length=1)
+    guidance: str | None = Field(None, max_length=500)
+
+
+class JiraTemplateBody(BaseModel):
+    slug: str = Field(max_length=50)
+    name: str = Field(max_length=120)
+    description: str | None = Field(None, max_length=1000)
+    sections: list[JiraTemplateSectionBody] = Field(min_length=1, max_length=12)
+    # PUT only: the version the editor loaded. A mismatch (someone else saved
+    # in between) is a 409 template_version_conflict instead of a lost update.
+    expected_version: int | None = None
+
+
+class JiraTemplatePreviewBody(BaseModel):
+    project_id: str = Field(max_length=64)
+    ticket_id: str = Field(max_length=64)
+    # Optional unsaved draft sections: the editor previews what it is about to
+    # save. When omitted the stored template (by slug) is rendered.
+    sections: list[JiraTemplateSectionBody] | None = Field(None, min_length=1, max_length=12)
+    name: str | None = Field(None, max_length=120)
 
 
 # ── Org-scoped authorization ──
@@ -354,6 +471,52 @@ def _connection_response(conn: OrgTrackerConnection) -> dict:
         "enabled": conn.enabled,
         "last_verified_at": conn.last_verified_at.isoformat() if conn.last_verified_at else None,
         "connected_by_user_id": conn.connected_by_user_id,
+        "sync_status": conn.sync_status,
+        "sync_comments": conn.sync_comments or "off",
+        "status_map": jira_sync.parse_status_map(conn.status_map),
+        # The secret is stored Fernet-encrypted (the server must recompute the
+        # HMAC); only the last 4 characters are ever returned.
+        "has_webhook_secret": bool(conn.encrypted_webhook_secret),
+        "webhook_secret_last4": conn.webhook_secret_last4,
+    }
+
+
+def _jira_webhook_url(request: Request, org_id: str) -> str:
+    """Canonical public inbound webhook URL for this org.
+
+    Prefers ``config.public_api_url`` (the operator-declared public origin) and
+    falls back to the request's own base URL so a self-hosted install still gets
+    a usable value. The path matches ``webhook_router``'s ``/api/v1/webhooks``
+    mount.
+    """
+    config = getattr(request.app.state, "config", None)
+    base = str(getattr(config, "public_api_url", "") or "").strip().rstrip("/")
+    if not base:
+        base = str(request.base_url).rstrip("/")
+    return f"{base}/api/v1/webhooks/jira/{org_id}"
+
+
+def _sync_event_response(event: TrackerSyncEvent, issue_key: str | None) -> dict:
+    """One ledger row for the admin sync-events list and the ticket timeline."""
+    try:
+        payload = json.loads(event.payload) if event.payload else {}
+    except ValueError:
+        payload = {}
+    return {
+        "id": event.id,
+        "ticket_id": event.ticket_id,
+        "issue_key": issue_key,
+        "direction": event.direction,
+        "kind": event.kind,
+        "payload": payload,
+        "jira_event_id": event.jira_event_id,
+        "applied": event.applied,
+        "error": event.error,
+        "state": event.state,
+        "retry_count": event.retry_count,
+        "next_attempt_at": event.next_attempt_at.isoformat() if event.next_attempt_at else None,
+        "updated_at": event.updated_at.isoformat() if event.updated_at else None,
+        "created_at": event.created_at.isoformat() if event.created_at else None,
     }
 
 
@@ -363,6 +526,7 @@ def _connection_response(conn: OrgTrackerConnection) -> dict:
 @org_router.get("/{org_id}/integrations/jira")
 async def get_jira_connection(
     org_id: str,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -370,13 +534,14 @@ async def get_jira_connection(
     conn = await _get_connection(org_id, db)
     if conn is None:
         return {"connected": False, "has_token": False}
-    return _connection_response(conn)
+    return {**_connection_response(conn), "webhook_url": _jira_webhook_url(request, org_id)}
 
 
 @org_router.put("/{org_id}/integrations/jira")
 async def put_jira_connection(
     org_id: str,
     body: JiraConnectionPut,
+    request: Request,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -386,8 +551,26 @@ async def put_jira_connection(
         raise HTTPException(422, "account_email is required")
     if not body.api_token.strip():
         raise HTTPException(422, "api_token is required")
-    if get_template(body.default_template) is None:
-        raise HTTPException(422, f"unknown template: {body.default_template}")
+    # Validate the sync fields up front (422) before any outbound call.
+    if body.sync_comments is not None:
+        jira_sync.validate_sync_comments(body.sync_comments)
+    if "status_map" in body.model_fields_set:
+        jira_sync.validate_status_map(body.status_map)
+    # The default may be a built-in slug or an active org-custom template; an
+    # unknown or archived slug is rejected with a 422. Re-saving the connection
+    # with its unchanged (possibly since-archived) default is accepted, so
+    # rotating a token never silently switches the org default.
+    existing_conn = await _get_connection(org_id, db)
+    await _resolve_template(
+        db,
+        org_id,
+        body.default_template,
+        strict=True,
+        allow_archived=(
+            existing_conn is not None
+            and existing_conn.default_template == body.default_template
+        ),
+    )
 
     try:
         site_url = validate_site_url(body.site_url)
@@ -397,10 +580,10 @@ async def put_jira_connection(
             detail={"error": "jira_connection_failed", "message": str(exc)},
         ) from exc
 
-    conn = await _get_connection(org_id, db)
+    conn = existing_conn
     client = JiraClient(site_url, body.account_email, body.api_token)
     try:
-        await client.validate_connection()
+        identity = await client.validate_connection()
     except TrackerError as exc:
         raise HTTPException(
             status_code=422,
@@ -422,6 +605,8 @@ async def put_jira_connection(
             enabled=True,
             connected_by_user_id=user.id,
             last_verified_at=now,
+            sync_status=False,
+            sync_comments="off",
         )
         db.add(conn)
     else:
@@ -432,6 +617,9 @@ async def put_jira_connection(
         conn.enabled = True
         conn.connected_by_user_id = user.id
         conn.last_verified_at = now
+    _apply_sync_settings(conn, body)
+    account_id = identity.get("account_id") if isinstance(identity, dict) else None
+    conn.jira_account_id = str(account_id)[:128] if account_id else None
 
     _org_audit(
         db,
@@ -448,7 +636,7 @@ async def put_jira_connection(
     # The account may have changed (or been created); drop the cached
     # accountId so the next adoption check refetches it.
     _account_id_cache.pop(org_id, None)
-    return _connection_response(conn)
+    return {**_connection_response(conn), "webhook_url": _jira_webhook_url(request, org_id)}
 
 
 @org_router.delete("/{org_id}/integrations/jira", status_code=204)
@@ -477,32 +665,666 @@ async def delete_jira_connection(
     _account_id_cache.pop(org_id, None)
 
 
-# ── Projects (mapping UI) ──
+@org_router.patch("/{org_id}/integrations/jira/sync")
+async def patch_jira_sync(
+    org_id: str,
+    body: JiraSyncPatch,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Change the two-way sync settings without re-entering the API token.
+
+    Merge semantics: only the fields sent change (``status_map: null`` resets
+    the map to the default). Org owner/admin, Enterprise.
+    """
+    org, role = await _authorize_org_jira(db, user, org_id)
+    conn = await _get_connection(org_id, db)
+    if conn is None:
+        raise HTTPException(404, "No Jira connection")
+    before = _connection_response(conn)
+    _apply_sync_settings(conn, body)
+    _org_audit(
+        db,
+        org=org,
+        actor=user,
+        actor_role=role,
+        event_type="jira_sync_settings_updated",
+        target_type="jira_connection",
+        target_id=org_id,
+        before=before,
+        after=_connection_response(conn),
+    )
+    await db.commit()
+    return {**_connection_response(conn), "webhook_url": _jira_webhook_url(request, org_id)}
 
 
-@org_router.get("/{org_id}/integrations/jira/projects")
-async def list_jira_projects(
+# ── Inbound webhook secret (generate / rotate) ──
+
+
+@org_router.post("/{org_id}/integrations/jira/webhook-secret")
+async def rotate_jira_webhook_secret(
     org_id: str,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> list[dict]:
+) -> dict:
+    """Generate (or rotate) the org's inbound Jira webhook secret.
+
+    Returns the secret ONCE in the response. It is stored Fernet-encrypted
+    (the server must recompute the HMAC to verify a delivery) alongside a
+    sha256 fingerprint; only the last 4 characters are ever shown again. The
+    webhook is authenticated by ``X-Hub-Signature: sha256=<hex>`` over the raw
+    body. Rotating invalidates every prior delivery.
+    """
+    org, role = await _authorize_org_jira(db, user, org_id)
+    conn = await _get_connection(org_id, db)
+    if conn is None:
+        raise HTTPException(404, "No Jira connection")
+
+    secret = jira_sync.generate_webhook_secret()
+    conn.encrypted_webhook_secret = encrypt_secret(secret)
+    conn.webhook_secret_hash = jira_sync.hash_webhook_secret(secret)
+    conn.webhook_secret_last4 = jira_sync.webhook_secret_last4(secret)
+
+    _org_audit(
+        db,
+        org=org,
+        actor=user,
+        actor_role=role,
+        event_type="jira_webhook_secret_rotated",
+        target_type="jira_connection",
+        target_id=org_id,
+    )
+    await db.commit()
+    return {"webhook_secret": secret, "webhook_secret_last4": conn.webhook_secret_last4}
+
+
+# ── Inbound webhook ──
+
+# Rejected deliveries are counted on the connection in a rolling 24 h window;
+# at most one audit row per org per hour records that rejections happened.
+_AUTH_FAILURE_WINDOW = timedelta(hours=24)
+_AUTH_FAILURE_AUDIT_EVERY = timedelta(hours=1)
+_WEBHOOK_ID_HEADER = "x-atlassian-webhook-identifier"
+
+
+def _webhook_actor(payload: dict) -> tuple[str, str | None]:
+    """(display name, accountId) of the Jira user behind a delivery."""
+    user = payload.get("user") if isinstance(payload.get("user"), dict) else None
+    display = "a Jira user"
+    account_id: str | None = None
+    if isinstance(user, dict):
+        for key in ("displayName", "name", "key"):
+            value = user.get(key)
+            if isinstance(value, str) and value.strip():
+                display = value.strip()
+                break
+        if isinstance(user.get("accountId"), str):
+            account_id = user["accountId"]
+    return display, account_id
+
+
+def _own_account_id(conn: OrgTrackerConnection) -> str | None:
+    """The connection's own Atlassian accountId, when known."""
+    return conn.jira_account_id or _account_id_cache.get(conn.org_id) or None
+
+
+def _field_change_excerpt(item: dict) -> str:
+    """A short ``from → to`` excerpt for one changelog item (capped later)."""
+    parts: list[str] = []
+    for key in ("fromString", "toString"):
+        value = item.get(key)
+        if isinstance(value, str) and value:
+            parts.append(value)
+    if not parts:
+        for key in ("from", "to"):
+            value = item.get(key)
+            if value not in (None, "") and not isinstance(value, (dict, list)):
+                parts.append(str(value))
+    return " → ".join(parts)
+
+
+def _jira_event_id(payload: dict, event_type: str, delivery_id: str | None) -> str:
+    """A deterministic per-delivery idempotency key (stable across retries).
+
+    Jira's ``X-Atlassian-Webhook-Identifier`` header is the primary key: it is
+    unique per webhook event and repeated on retries. Without it, the key falls
+    back to Jira's own ids — namespaced by event type, so a ``comment_created``
+    delivery is never deduplicated against the ``jira:issue_updated``
+    (issue_commented) delivery Jira sends for the same comment — and finally to
+    a hash of the canonical payload.
+    """
+    if delivery_id:
+        return f"wh:{delivery_id.strip()[:100]}"
+    ns = event_type[:40]
+    comment = payload.get("comment")
+    if isinstance(comment, dict) and comment.get("id"):
+        return f"{ns}:comment:{str(comment['id'])[:60]}"
+    changelog = payload.get("changelog")
+    if isinstance(changelog, dict) and changelog.get("id"):
+        return f"{ns}:changelog:{str(changelog['id'])[:60]}"
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()[:32]
+    return f"{ns}:{digest}"
+
+
+async def _resolve_inbound_link(
+    db: AsyncSession, conn: OrgTrackerConnection, payload: dict
+) -> TicketTrackerLink | None:
+    """The linked ticket for the delivery's issue, on the connection's site.
+
+    Duplicate rows (which the schema does not forbid across tickets) resolve
+    to the most recently pushed link instead of raising.
+    """
+    issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else None
+    issue_key = issue.get("key") if issue else None
+    issue_id = issue.get("id") if issue else None
+    conditions = [
+        TicketTrackerLink.org_id == conn.org_id,
+        TicketTrackerLink.status == "linked",
+        TicketTrackerLink.site_url == conn.site_url,
+    ]
+    for column, value in (
+        (TicketTrackerLink.issue_key, issue_key),
+        (TicketTrackerLink.issue_id, issue_id),
+    ):
+        if not isinstance(value, (str, int)) or value == "":
+            continue
+        link = (
+            await db.execute(
+                select(TicketTrackerLink)
+                .where(*conditions, column == str(value))
+                .order_by(
+                    TicketTrackerLink.last_pushed_at.desc().nullslast(),
+                    TicketTrackerLink.ticket_id,
+                )
+                .limit(1)
+            )
+        ).scalars().first()
+        if link is not None:
+            return link
+    return None
+
+
+async def _record_webhook_auth_failure(
+    db: AsyncSession, conn: OrgTrackerConnection, reason: str
+) -> None:
+    """Count a rejected delivery without one write per request into the audit log.
+
+    The connection carries a rolling 24 h counter (reset when the window is
+    older than 24 h) that health reports; an audit row is added at most once
+    per org per hour so the rejection is still on the record.
+    """
+    now = datetime.now(timezone.utc)
+    window_cut = now - _AUTH_FAILURE_WINDOW
+    fresh_window = or_(
+        OrgTrackerConnection.webhook_auth_failure_window_start.is_(None),
+        OrgTrackerConnection.webhook_auth_failure_window_start < window_cut,
+    )
+    await db.execute(
+        update(OrgTrackerConnection)
+        .where(OrgTrackerConnection.org_id == conn.org_id)
+        .values(
+            webhook_auth_failure_count=case(
+                (fresh_window, 1),
+                else_=OrgTrackerConnection.webhook_auth_failure_count + 1,
+            ),
+            webhook_auth_failure_window_start=case(
+                (fresh_window, now),
+                else_=OrgTrackerConnection.webhook_auth_failure_window_start,
+            ),
+            last_webhook_auth_failure_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    recent = (
+        await db.execute(
+            select(OrgAuditEvent.id)
+            .where(
+                OrgAuditEvent.org_id == conn.org_id,
+                OrgAuditEvent.event_type == "jira_webhook_auth_failure",
+                OrgAuditEvent.created_at >= now - _AUTH_FAILURE_AUDIT_EVERY,
+            )
+            .limit(1)
+        )
+    ).first()
+    if recent is not None:
+        return
+    org = await db.get(Organization, conn.org_id)
+    db.add(
+        OrgAuditEvent(
+            id=f"oae_{uuid.uuid4().hex[:24]}",
+            org_id=conn.org_id,
+            org_name_snapshot=org.name if org is not None else conn.org_id,
+            event_type="jira_webhook_auth_failure",
+            actor_user_id=None,
+            actor_email_snapshot="jira",
+            actor_role_at_time="jira_webhook",
+            target_type="jira_webhook",
+            target_id=conn.org_id,
+            after=json.dumps({"reason": reason}, separators=(",", ":")),
+            created_at=now,
+        )
+    )
+
+
+def _webhook_auth_failures_24h(conn: OrgTrackerConnection) -> int:
+    start = conn.webhook_auth_failure_window_start
+    if start is None:
+        return 0
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if start < datetime.now(timezone.utc) - _AUTH_FAILURE_WINDOW:
+        return 0
+    return int(conn.webhook_auth_failure_count or 0)
+
+
+def _inbound_audit(db: AsyncSession, org: Organization, ticket_id: str, event_type: str, details: dict) -> None:
+    db.add(
+        OrgAuditEvent(
+            id=f"oae_{uuid.uuid4().hex[:24]}",
+            org_id=org.id,
+            org_name_snapshot=org.name,
+            event_type=event_type,
+            actor_user_id=None,
+            actor_email_snapshot="jira",
+            actor_role_at_time="jira_webhook",
+            target_type="ticket",
+            target_id=ticket_id,
+            after=json.dumps(details, separators=(",", ":")),
+        )
+    )
+
+
+async def _read_webhook_body(request: Request) -> bytes:
+    """Stream the body, refusing (413) as soon as it passes the cap — a chunked
+    request without Content-Length is never buffered beyond 1 MiB."""
+    cap = jira_sync.MAX_INBOUND_BODY_BYTES
+    length = request.headers.get("content-length")
+    if length is not None:
+        try:
+            if int(length) > cap:
+                raise HTTPException(413, "Payload too large")
+        except ValueError:
+            pass
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > cap:
+            raise HTTPException(413, "Payload too large")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _system_comment(db: AsyncSession, ticket: Ticket, content: str) -> None:
+    db.add(
+        TicketComment(
+            id=f"tc_{uuid.uuid4().hex[:16]}",
+            ticket_id=ticket.id,
+            author_user_id="jira-sync",
+            author_persona="system",
+            content=content[: jira_sync.INBOUND_COMMENT_MAX_CHARS],
+            source="jira",
+            verdict_trusted=False,
+        )
+    )
+
+
+def _changelog_items(payload: dict) -> list[dict]:
+    changelog = payload.get("changelog") if isinstance(payload.get("changelog"), dict) else None
+    items = changelog.get("items") if changelog else None
+    if not isinstance(items, list):
+        return []
+    return [item for item in items if isinstance(item, dict)]
+
+
+def _item_field(item: dict) -> str:
+    for key in ("fieldId", "field"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().lower()
+    return ""
+
+
+async def _handle_issue_updated(
+    db: AsyncSession,
+    conn: OrgTrackerConnection,
+    org: Organization,
+    project: Project,
+    link: TicketTrackerLink,
+    ticket: Ticket,
+    payload: dict,
+    base_event_id: str,
+) -> list[str]:
+    """Field edits → system comments; a status change → the mapped action.
+
+    Only changelog items count: an ``issue_updated`` without a status item
+    never touches the ticket's status (the issue's *current* status is in
+    every delivery, so reading it would re-apply state on unrelated edits).
+    Returns outbox ids to drain after commit (completion evidence).
+    """
+    user_display, actor_account_id = _webhook_actor(payload)
+    own_account = _own_account_id(conn)
+    seq = 0
+
+    def next_event_id() -> str:
+        nonlocal seq
+        seq += 1
+        return base_event_id if seq == 1 else f"{base_event_id}#{seq}"
+
+    items = _changelog_items(payload)
+    # SessionFS never pushes summary/description/priority changes, so a field
+    # edit is never our echo — even from the connection's own account (admins
+    # often connect with their personal token).
+    for item in items:
+        field = _item_field(item)
+        if field not in jira_sync.SYSTEM_COMMENT_FIELDS:
+            continue
+        excerpt = jira_sync.redact_then_cap(
+            _field_change_excerpt(item), org, jira_sync.FIELD_EXCERPT_MAX_CHARS
+        )
+        who = jira_sync.redact_then_cap(user_display, org, 120)
+        text = f"Edited in Jira by {who}: {field} changed"
+        if excerpt:
+            text += f" ({excerpt})"
+        _system_comment(db, ticket, text)
+        jira_sync.record_sync_event(
+            db,
+            org_id=link.org_id,
+            link_id=link.ticket_id,
+            ticket_id=ticket.id,
+            direction="inbound",
+            kind="field_edit",
+            payload={"field": field, "excerpt": excerpt},
+            jira_event_id=next_event_id(),
+            applied=True,
+        )
+
+    status_item = next((i for i in items if _item_field(i) == "status"), None)
+    if status_item is None or not conn.sync_status:
+        return []
+    issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else None
+    fields = issue.get("fields") if issue else None
+    status = fields.get("status") if isinstance(fields, dict) else None
+    category = status.get("statusCategory") if isinstance(status, dict) else None
+    category_key = category.get("key") if isinstance(category, dict) else None
+    action = jira_sync.mapped_action(
+        jira_sync.parse_status_map(conn.status_map),
+        category_key if isinstance(category_key, str) else None,
+    )
+    if action is None:
+        return []
+    to_name = status_item.get("toString") if isinstance(status_item.get("toString"), str) else None
+    base_payload = {"category": category_key, "action": action, "jira_status": to_name}
+
+    # An echo is a delivery that matches something we actually pushed: a
+    # recent outbound transition with the same name for the same target
+    # status. The connection's accountId is only a hint — it can rule an echo
+    # out (a different actor), never in.
+    actor_differs = bool(own_account and actor_account_id and actor_account_id != own_account)
+    echo = not actor_differs and await jira_sync.recent_outbound_transition(
+        db,
+        link.ticket_id,
+        to_name=to_name,
+        to_status=jira_sync.action_target(action, ticket.kind),
+    )
+    if echo:
+        # Our own outbound transition coming back: record it for the timeline
+        # but never act on it.
+        jira_sync.record_sync_event(
+            db,
+            org_id=link.org_id,
+            link_id=link.ticket_id,
+            ticket_id=ticket.id,
+            direction="inbound",
+            kind="status",
+            payload={**base_payload, "outcome": "echo"},
+            jira_event_id=next_event_id(),
+            state=jira_sync.STATE_SKIPPED,
+        )
+        return []
+
+    before = ticket.status
+    outcome, error = await jira_sync.apply_inbound_action(db, project, ticket, action)
+    await db.refresh(ticket)
+    jira_sync.record_sync_event(
+        db,
+        org_id=link.org_id,
+        link_id=link.ticket_id,
+        ticket_id=ticket.id,
+        direction="inbound",
+        kind="status",
+        payload={**base_payload, "from_status": before, "to_status": ticket.status, "outcome": outcome},
+        jira_event_id=next_event_id(),
+        applied=outcome == "applied",
+        error=error,
+    )
+    if outcome == "applied":
+        link.last_known_status = (to_name or "")[:_LAST_STATUS_MAX] or link.last_known_status
+        if jira_sync.is_terminal_status(ticket.status, ticket.kind):
+            evidence_id = await jira_sync.enqueue_evidence(db, ticket, link)
+            return [evidence_id] if evidence_id else []
+    return []
+
+
+async def _handle_comment_created(
+    db: AsyncSession,
+    conn: OrgTrackerConnection,
+    org: Organization,
+    link: TicketTrackerLink,
+    ticket: Ticket,
+    payload: dict,
+    event_id: str,
+) -> None:
+    if (conn.sync_comments or "off") not in jira_sync.INBOUND_COMMENT_MODES:
+        return
+    comment = payload.get("comment") if isinstance(payload.get("comment"), dict) else None
+    if comment is None:
+        return
+    author = comment.get("author") if isinstance(comment.get("author"), dict) else {}
+    body = comment.get("body")
+    raw_text = adf_to_text(body) if isinstance(body, dict) else (str(body) if body else "")
+    raw_id = comment.get("id")
+    jira_comment_id = str(raw_id) if isinstance(raw_id, (str, int)) and raw_id != "" else None
+    # Our own outbound comments come back as comment_created. Drop only those
+    # we can tie to a post we made (recorded comment id or our outbox
+    # reference); a human comment from the connection's account is mirrored.
+    author_account = author.get("accountId") if isinstance(author.get("accountId"), str) else None
+    if await jira_sync.is_pushed_comment(
+        db,
+        link.ticket_id,
+        jira_comment_id,
+        raw_text,
+        author_account_id=author_account,
+        own_account_id=_own_account_id(conn),
+    ):
+        return
+    display = author.get("displayName") or author.get("name") or "a Jira user"
+    if not isinstance(display, str):
+        display = "a Jira user"
+    text = jira_sync.redact_then_cap(raw_text, org, jira_sync.INBOUND_COMMENT_MAX_CHARS)
+    if not text.strip():
+        text = "(empty Jira comment)"
+    label = jira_sync.jira_author_label(display, org)
+    db.add(
+        TicketComment(
+            id=f"tc_{uuid.uuid4().hex[:16]}",
+            ticket_id=ticket.id,
+            author_user_id="jira-sync",
+            author_persona=label,
+            content=text,
+            source="jira",
+            verdict_trusted=False,
+        )
+    )
+    comment_id = comment.get("id")
+    jira_sync.record_sync_event(
+        db,
+        org_id=link.org_id,
+        link_id=link.ticket_id,
+        ticket_id=ticket.id,
+        direction="inbound",
+        kind="comment",
+        payload={
+            "author": label,
+            "comment_id": str(comment_id)[:60] if isinstance(comment_id, (str, int)) else None,
+        },
+        jira_event_id=event_id,
+        applied=True,
+    )
+
+
+@webhook_router.post("/jira/{org_id}")
+async def jira_inbound_webhook(
+    org_id: str,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Inbound Jira webhook (HMAC-authenticated by the per-connection secret).
+
+    Fails closed: no connection → 404, no secret → 503, missing/invalid
+    signature → 401. An unknown issue is 200-ignored (Jira keeps retrying
+    otherwise). Idempotent per (link, delivery id). The response never carries
+    ticket data.
+    """
+    conn = await _get_connection(org_id, db)
+    if conn is None or not conn.enabled:
+        raise HTTPException(404, _ORG_NOT_FOUND)
+    secret = None
+    if conn.encrypted_webhook_secret:
+        try:
+            secret = decrypt_secret(conn.encrypted_webhook_secret)
+        except Exception:
+            secret = None
+    if not secret:
+        raise HTTPException(503, "Jira webhooks are not configured for this org")
+    body = await _read_webhook_body(request)
+    signature = request.headers.get("x-hub-signature")
+    if not jira_sync.verify_webhook_signature(secret, body, signature):
+        await _record_webhook_auth_failure(db, conn, "invalid_signature")
+        await db.commit()
+        raise HTTPException(401, "Invalid webhook signature")
+    try:
+        payload = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(400, "Invalid JSON body")
+    if not isinstance(payload, dict):
+        raise HTTPException(400, "Invalid webhook body")
+
+    event_type = payload.get("webhookEvent") or ""
+    if event_type not in {"jira:issue_updated", "comment_created"}:
+        return {"status": "ignored", "reason": "unsupported_event"}
+
+    link = await _resolve_inbound_link(db, conn, payload)
+    if link is None:
+        return {"status": "ignored", "reason": "unknown_issue"}
+    ticket = await db.get(Ticket, link.ticket_id)
+    project = await db.get(Project, ticket.project_id) if ticket is not None else None
+    if ticket is None or project is None:
+        return {"status": "ignored", "reason": "missing_ticket"}
+    if project.org_id != org_id or link.org_id != org_id:
+        # The project moved to another org (or to personal); its old link is
+        # stale and the former org's Jira must not drive it.
+        return {"status": "ignored", "reason": "stale_link"}
+
+    base_event_id = _jira_event_id(
+        payload, event_type, request.headers.get(_WEBHOOK_ID_HEADER)
+    )
+    if await jira_sync.inbound_event_exists(db, link.ticket_id, base_event_id):
+        return {"status": "duplicate"}
+
+    if not await jira_sync.org_has_jira(db, org_id):
+        # The plan lost the integration: record why nothing happened and stop.
+        jira_sync.record_sync_event(
+            db,
+            org_id=link.org_id,
+            link_id=link.ticket_id,
+            ticket_id=ticket.id,
+            direction="inbound",
+            kind="error",
+            payload={"event": event_type},
+            jira_event_id=base_event_id,
+            error="The org's plan no longer includes the Jira integration.",
+        )
+        await db.commit()
+        return {"status": "ignored", "reason": "not_entitled"}
+
+    org = await db.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(404, _ORG_NOT_FOUND)
+    link.last_inbound_at = datetime.now(timezone.utc)
+
+    outbox: list[str] = []
+    if event_type == "jira:issue_updated":
+        outbox = await _handle_issue_updated(
+            db, conn, org, project, link, ticket, payload, base_event_id
+        )
+    else:
+        await _handle_comment_created(db, conn, org, link, ticket, payload, base_event_id)
+
+    _inbound_audit(db, org, ticket.id, "jira_inbound_webhook", {"event": event_type})
+    try:
+        await db.commit()
+    except IntegrityError:
+        # A concurrent delivery of the same event won the unique slot.
+        await db.rollback()
+        return {"status": "duplicate"}
+    jira_sync.schedule_drain(outbox)
+    return {"status": "ok"}
+
+
+# ── Projects (mapping UI) ──
+
+
+@org_router.get("/{org_id}/integrations/jira/projects", response_model=None)
+async def list_jira_projects(
+    org_id: str,
+    response: Response,
+    q: str | None = Query(None, max_length=_PROJECT_SEARCH_MAX_CHARS),
+    limit: int | None = Query(None, ge=1, le=_PROJECT_SEARCH_MAX_LIMIT),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict] | dict:
+    """Jira projects for the mapping picker.
+
+    With ``q`` and/or ``limit`` (the paged form the dashboard uses) the
+    response is ``{"projects": [...], "has_more": bool, "query", "limit"}``:
+    one page of at most ``limit`` projects (default 50, max 100), filtered by
+    Jira itself on key and name when ``q`` is given. Without either
+    parameter the original bare list is returned (first 500 projects) and an
+    ``X-Jira-Projects-Truncated: true`` header says when the site has more.
+    """
     await _authorize_org_jira(db, user, org_id)
+    query = (q or "").strip() or None
+    paged = q is not None or limit is not None
+    page_limit = (limit or _PROJECT_SEARCH_DEFAULT_LIMIT) if paged else _PROJECT_LIST_CAP
     conn = await _get_connection(org_id, db)
     if conn is None:
         raise HTTPException(404, "No Jira connection")
     client = JiraClient(conn.site_url, conn.account_email, decrypt_secret(conn.encrypted_api_token))
     try:
-        projects = await client.list_projects()
-        # Issue types are fetched lazily via the per-project endpoint below, so
-        # listing a large account doesn't issue one createmeta call per project.
-        return [
-            {"key": project.key, "name": project.name, "issue_types": []}
-            for project in projects
-        ]
+        page = await client.search_projects(query, page_limit)
     except TrackerError as exc:
         raise HTTPException(502, {"error": "jira_upstream_error", "message": str(exc)}) from exc
     finally:
         await client.aclose()
+    # Issue types are fetched lazily via the per-project endpoint below, so
+    # listing a large account doesn't issue one createmeta call per project.
+    projects = [
+        {"key": project.key, "name": project.name, "issue_types": []}
+        for project in page.projects
+    ]
+    if not paged:
+        response.headers["X-Jira-Projects-Truncated"] = "true" if page.has_more else "false"
+        return projects
+    return {
+        "projects": projects,
+        "has_more": page.has_more,
+        "query": query,
+        "limit": page_limit,
+    }
 
 
 @org_router.get("/{org_id}/integrations/jira/projects/{project_key}/issue-types")
@@ -594,8 +1416,21 @@ async def put_jira_mapping(
     org, role = await _authorize_org_jira(db, user, org_id)
     if not body.jira_project_key.strip():
         raise HTTPException(422, "jira_project_key is required")
-    if body.template is not None and get_template(body.template) is None:
-        raise HTTPException(422, f"unknown template: {body.template}")
+    existing_mapping = await _get_mapping(project_id, org_id, db)
+    if body.template is not None:
+        # A mapping override may be a built-in slug or an active org-custom
+        # template; an unknown or archived slug is rejected with a 422. Keeping
+        # the mapping's unchanged (since-archived) override is accepted.
+        await _resolve_template(
+            db,
+            org_id,
+            body.template,
+            strict=True,
+            allow_archived=(
+                existing_mapping is not None
+                and existing_mapping.template == body.template
+            ),
+        )
 
     project = (
         await db.execute(
@@ -605,7 +1440,7 @@ async def put_jira_mapping(
     if project is None:
         raise HTTPException(404, "Project not found")
 
-    mapping = await _get_mapping(project_id, org_id, db)
+    mapping = existing_mapping
     before = _mapping_response(mapping) if mapping else None
     if mapping is None:
         mapping = TrackerProjectMapping(
@@ -736,6 +1571,105 @@ async def jira_health(
         )
     ).scalars().all()
 
+    # Two-way sync health: most-recent inbound/outbound link timestamps, failed
+    # outbound events in the last 24h, and rejected webhook signatures in the
+    # last 24h (both appended-only ledgers, so a count is all we need).
+    day_ago = datetime.now(timezone.utc) - timedelta(days=1)
+    last_inbound = (
+        await db.execute(
+            select(func.max(TicketTrackerLink.last_inbound_at)).where(
+                TicketTrackerLink.org_id == org_id,
+                TicketTrackerLink.status == "linked",
+            )
+        )
+    ).scalar()
+    last_synced = (
+        await db.execute(
+            select(func.max(TicketTrackerLink.last_synced_at)).where(
+                TicketTrackerLink.org_id == org_id,
+                TicketTrackerLink.status == "linked",
+            )
+        )
+    ).scalar()
+    # Failed outbound pushes (pending retry or exhausted), refused inbound
+    # transitions, and events skipped for a lost entitlement all carry an
+    # ``error``; a retried push that later succeeds clears it.
+    failed_sync_events_24h = (
+        await db.execute(
+            select(func.count(TrackerSyncEvent.id)).where(
+                TrackerSyncEvent.org_id == org_id,
+                TrackerSyncEvent.error.is_not(None),
+                or_(
+                    TrackerSyncEvent.created_at >= day_ago,
+                    TrackerSyncEvent.updated_at >= day_ago,
+                ),
+            )
+        )
+    ).scalar() or 0
+    pending_sync_events = (
+        await db.execute(
+            select(func.count(TrackerSyncEvent.id)).where(
+                TrackerSyncEvent.org_id == org_id,
+                TrackerSyncEvent.state == jira_sync.STATE_PENDING,
+            )
+        )
+    ).scalar() or 0
+    sync_conn = await _get_connection(org_id, db)
+    webhook_auth_failures_24h = (
+        _webhook_auth_failures_24h(sync_conn) if sync_conn is not None else 0
+    )
+
+    # Links, mappings and the connection default pinned to a custom template
+    # that has since been archived keep working, but the admin should know
+    # they're on a template that can no longer be newly selected.
+    archived_slugs = set(
+        (
+            await db.execute(
+                select(JiraTemplate.slug).where(
+                    JiraTemplate.org_id == org_id,
+                    JiraTemplate.archived_at.is_not(None),
+                )
+            )
+        ).scalars().all()
+    )
+    archived_template_references: list[dict] = []
+    mappings_on_archived_templates: list[dict] = []
+    connection_default_archived = False
+    if archived_slugs:
+        pinned_rows = (
+            await db.execute(
+                select(TicketTrackerLink).where(
+                    TicketTrackerLink.org_id == org_id,
+                    TicketTrackerLink.status == "linked",
+                    TicketTrackerLink.template_slug.in_(archived_slugs),
+                )
+            )
+        ).scalars().all()
+        archived_template_references = [
+            {
+                "ticket_id": r.ticket_id,
+                "template_slug": r.template_slug,
+                "template_version": r.template_version,
+            }
+            for r in pinned_rows
+        ]
+        mapping_rows = (
+            await db.execute(
+                select(TrackerProjectMapping).where(
+                    TrackerProjectMapping.org_id == org_id,
+                    TrackerProjectMapping.template.in_(archived_slugs),
+                )
+            )
+        ).scalars().all()
+        mappings_on_archived_templates = [
+            {"project_id": m.project_id, "template_slug": m.template}
+            for m in mapping_rows
+        ]
+        conn = await _get_connection(org_id, db)
+        connection_default_archived = (
+            conn is not None and conn.default_template in archived_slugs
+        )
+
     return {
         "unmapped_project_count": len(unmapped_count),
         "last_push_failures": [
@@ -781,6 +1715,575 @@ async def jira_health(
             }
             for link in unknown_rows
         ],
+        "archived_template_references": archived_template_references,
+        "mappings_on_archived_templates": mappings_on_archived_templates,
+        "connection_default_archived": connection_default_archived,
+        "last_inbound_at": last_inbound.isoformat() if last_inbound else None,
+        "last_synced_at": last_synced.isoformat() if last_synced else None,
+        "failed_sync_events_24h": failed_sync_events_24h,
+        "pending_sync_events": pending_sync_events,
+        "webhook_auth_failures_24h": webhook_auth_failures_24h,
+    }
+
+
+@org_router.get("/{org_id}/integrations/jira/sync-events")
+async def list_jira_sync_events(
+    org_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(50, ge=1, le=200),
+    direction: str | None = Query(None, pattern="^(inbound|outbound)$"),
+) -> dict:
+    """Recent two-way sync ledger rows for the admin (most-recent first).
+
+    ``issue_key`` is resolved from the ticket's link so the list is readable
+    without a second call; rows for links that were since unlinked simply have
+    ``issue_key: null``.
+    """
+    await _authorize_org_jira(db, user, org_id)
+
+    conditions = [TrackerSyncEvent.org_id == org_id]
+    if direction:
+        conditions.append(TrackerSyncEvent.direction == direction)
+    rows = (
+        await db.execute(
+            select(TrackerSyncEvent, TicketTrackerLink.issue_key)
+            .outerjoin(
+                TicketTrackerLink,
+                TicketTrackerLink.ticket_id == TrackerSyncEvent.link_id,
+            )
+            .where(*conditions)
+            .order_by(TrackerSyncEvent.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    return {
+        "events": [
+            _sync_event_response(event, issue_key) for event, issue_key in rows
+        ]
+    }
+
+
+# ── Custom templates ──
+
+
+def _template_response(t: JiraTemplate) -> dict:
+    return {
+        "slug": t.slug,
+        "name": t.name,
+        "description": t.description,
+        "sections": json.loads(t.sections),
+        "version": t.version,
+        "builtin": False,
+        "archived_at": t.archived_at.isoformat() if t.archived_at else None,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+        "updated_at": t.updated_at.isoformat() if t.updated_at else None,
+        "created_by_user_id": t.created_by_user_id,
+        "updated_by_user_id": t.updated_by_user_id,
+    }
+
+
+def _builtin_template_response(t: Template) -> dict:
+    return {
+        "slug": t.slug,
+        "name": t.name,
+        "description": None,
+        "sections": [
+            {
+                "key": s.key,
+                "heading": s.heading,
+                "mode": s.mode,
+                "source_fields": list(s.source_fields),
+                "guidance": s.guidance,
+            }
+            for s in t.sections
+        ],
+        "version": None,
+        "builtin": True,
+        "archived_at": None,
+        "created_at": None,
+        "updated_at": None,
+        "created_by_user_id": None,
+        "updated_by_user_id": None,
+    }
+
+
+async def _get_template(
+    org_id: str, slug: str, db: AsyncSession
+) -> JiraTemplate | None:
+    return (
+        await db.execute(
+            select(JiraTemplate).where(
+                JiraTemplate.org_id == org_id,
+                JiraTemplate.slug == slug,
+            )
+        )
+    ).scalar_one_or_none()
+
+
+def _template_validation_error(exc: TemplateValidationError) -> HTTPException:
+    return HTTPException(
+        422,
+        {"error": "template_validation", "field": exc.field, "message": exc.message},
+    )
+
+
+def _template_conflict(message: str, current_version: int | None = None) -> HTTPException:
+    detail: dict = {"error": "template_version_conflict", "message": message}
+    if current_version is not None:
+        detail["current_version"] = current_version
+    return HTTPException(409, detail)
+
+
+async def _active_template_count(org_id: str, db: AsyncSession) -> int:
+    return len(
+        (
+            await db.execute(
+                select(JiraTemplate.id).where(
+                    JiraTemplate.org_id == org_id,
+                    JiraTemplate.archived_at.is_(None),
+                )
+            )
+        ).scalars().all()
+    )
+
+
+def _template_limit_error() -> HTTPException:
+    return HTTPException(
+        422,
+        {
+            "error": "template_limit",
+            "message": (
+                f"an org can have at most {MAX_TEMPLATES_PER_ORG} active custom "
+                "templates; archive one first"
+            ),
+        },
+    )
+
+
+@org_router.get("/{org_id}/integrations/jira/templates")
+async def list_jira_templates(
+    org_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    await _authorize_org_jira(db, user, org_id)
+    customs = (
+        await db.execute(
+            select(JiraTemplate)
+            .where(JiraTemplate.org_id == org_id)
+            .order_by(JiraTemplate.created_at)
+        )
+    ).scalars().all()
+    # An org custom template wins over a built-in that later gained the same
+    # slug, so the shadowed built-in is not listed for this org.
+    custom_slugs = {t.slug for t in customs}
+    builtins = [
+        _builtin_template_response(t)
+        for t in list_templates()
+        if t.slug not in custom_slugs
+    ]
+    return builtins + [_template_response(t) for t in customs]
+
+
+@org_router.post("/{org_id}/integrations/jira/templates", status_code=201)
+async def create_jira_template(
+    org_id: str,
+    body: JiraTemplateBody,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    org, role = await _authorize_org_jira(db, user, org_id)
+    try:
+        slug = validate_slug(body.slug)
+        name = validate_name(body.name)
+        description = validate_description(body.description)
+        sections = validate_sections(
+            [s.model_dump(exclude_none=True) for s in body.sections]
+        )
+    except TemplateValidationError as exc:
+        raise _template_validation_error(exc) from exc
+
+    taken = (
+        await db.execute(
+            select(JiraTemplate.id).where(
+                JiraTemplate.org_id == org_id, JiraTemplate.slug == slug
+            )
+        )
+    ).first()
+    if taken is not None:
+        # Archived templates keep their slug reserved: links and versions pin
+        # it, so reusing it would make old provenance point at new content.
+        raise HTTPException(
+            422,
+            {
+                "error": "template_slug_taken",
+                "field": "slug",
+                "message": f"template slug {slug!r} is already in use in this org",
+            },
+        )
+    if await _active_template_count(org_id, db) >= MAX_TEMPLATES_PER_ORG:
+        raise _template_limit_error()
+
+    now = datetime.now(timezone.utc)
+    template = JiraTemplate(
+        id=f"jt_{uuid.uuid4().hex[:24]}",
+        org_id=org_id,
+        slug=slug,
+        name=name,
+        description=description,
+        sections=json.dumps(sections),
+        version=1,
+        created_by_user_id=user.id,
+        updated_by_user_id=user.id,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(template)
+    db.add(
+        JiraTemplateVersion(
+            id=f"jtv_{uuid.uuid4().hex[:24]}",
+            template_id=template.id,
+            version=1,
+            sections=json.dumps(sections),
+            created_by_user_id=user.id,
+            created_at=now,
+        )
+    )
+    _org_audit(
+        db,
+        org=org,
+        actor=user,
+        actor_role=role,
+        event_type="jira_template_created",
+        target_type="jira_template",
+        target_id=template.id,
+        after=_template_response(template),
+    )
+    response = _template_response(template)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # A concurrent create took the slug between our check and the insert.
+        await db.rollback()
+        raise HTTPException(
+            409,
+            {
+                "error": "template_slug_taken",
+                "field": "slug",
+                "message": f"template slug {slug!r} was just created by someone else",
+            },
+        ) from exc
+    return response
+
+
+@org_router.get("/{org_id}/integrations/jira/templates/{slug}")
+async def get_jira_template(
+    org_id: str,
+    slug: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _authorize_org_jira(db, user, org_id)
+    row = await _get_template(org_id, slug, db)
+    if row is not None:
+        return _template_response(row)
+    builtin = get_template(slug)
+    if builtin is not None:
+        return _builtin_template_response(builtin)
+    raise HTTPException(404, "Template not found")
+
+
+def _builtin_readonly(action: str) -> HTTPException:
+    return HTTPException(
+        422,
+        {"error": "builtin_readonly", "message": f"Built-in templates can't be {action}."},
+    )
+
+
+@org_router.put("/{org_id}/integrations/jira/templates/{slug}")
+async def put_jira_template(
+    org_id: str,
+    slug: str,
+    body: JiraTemplateBody,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    org, role = await _authorize_org_jira(db, user, org_id)
+    row = await _get_template(org_id, slug, db)
+    if row is None:
+        if is_builtin_slug(slug):
+            raise _builtin_readonly("edited")
+        raise HTTPException(404, "Template not found")
+    if row.archived_at is not None:
+        raise HTTPException(
+            422,
+            {"error": "template_archived", "message": "An archived template can't be edited."},
+        )
+    try:
+        new_slug = (body.slug or "").strip()
+        if new_slug != slug:
+            # The slug is the pinned identity on existing links; renaming
+            # would orphan them, so it's immutable.
+            raise HTTPException(
+                422,
+                {
+                    "error": "slug_immutable",
+                    "field": "slug",
+                    "message": "template slug is immutable",
+                },
+            )
+        name = validate_name(body.name)
+        description = validate_description(body.description)
+        sections = validate_sections(
+            [s.model_dump(exclude_none=True) for s in body.sections]
+        )
+    except TemplateValidationError as exc:
+        raise _template_validation_error(exc) from exc
+
+    expected = body.expected_version if body.expected_version is not None else row.version
+    if expected != row.version:
+        raise _template_conflict(
+            f"This template was changed by someone else (now v{row.version}); "
+            "reload it and re-apply your edits.",
+            row.version,
+        )
+
+    before = _template_response(row)
+    now = datetime.now(timezone.utc)
+    new_version = expected + 1
+    # Conditional bump: only the writer that still sees ``expected`` wins, so a
+    # concurrent PUT can never silently overwrite another admin's edit.
+    res = await db.execute(
+        update(JiraTemplate)
+        .where(
+            JiraTemplate.id == row.id,
+            JiraTemplate.version == expected,
+            JiraTemplate.archived_at.is_(None),
+        )
+        .values(
+            name=name,
+            description=description,
+            sections=json.dumps(sections),
+            version=new_version,
+            updated_by_user_id=user.id,
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if res.rowcount != 1:  # type: ignore[attr-defined]
+        await db.rollback()
+        raise _template_conflict(
+            "This template was changed by someone else while saving; reload it "
+            "and re-apply your edits."
+        )
+    # The UPDATE bypassed the ORM (synchronize_session=False), so ``row`` still
+    # holds the pre-update values; reload it so nothing below reads a stale
+    # version. The response is built from ``after`` either way.
+    await db.refresh(row)
+    db.add(
+        JiraTemplateVersion(
+            id=f"jtv_{uuid.uuid4().hex[:24]}",
+            template_id=row.id,
+            version=new_version,
+            sections=json.dumps(sections),
+            created_by_user_id=user.id,
+            created_at=now,
+        )
+    )
+    after = {
+        **before,
+        "name": name,
+        "description": description,
+        "sections": sections,
+        "version": new_version,
+        "updated_at": now.isoformat(),
+        "updated_by_user_id": user.id,
+    }
+    _org_audit(
+        db,
+        org=org,
+        actor=user,
+        actor_role=role,
+        event_type="jira_template_updated",
+        target_type="jira_template",
+        target_id=row.id,
+        before=before,
+        after=after,
+    )
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        # The (template_id, version) snapshot already exists: a concurrent PUT
+        # bumped to the same version first.
+        await db.rollback()
+        raise _template_conflict(
+            "This template was changed by someone else while saving; reload it "
+            "and re-apply your edits."
+        ) from exc
+    return after
+
+
+@org_router.delete("/{org_id}/integrations/jira/templates/{slug}", status_code=204)
+async def delete_jira_template(
+    org_id: str,
+    slug: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    org, role = await _authorize_org_jira(db, user, org_id)
+    row = await _get_template(org_id, slug, db)
+    if row is None:
+        if is_builtin_slug(slug):
+            raise _builtin_readonly("archived")
+        raise HTTPException(404, "Template not found")
+    if row.archived_at is None:
+        before = _template_response(row)
+        now = datetime.now(timezone.utc)
+        row.archived_at = now
+        row.updated_by_user_id = user.id
+        row.updated_at = now
+        _org_audit(
+            db,
+            org=org,
+            actor=user,
+            actor_role=role,
+            event_type="jira_template_archived",
+            target_type="jira_template",
+            target_id=row.id,
+            before=before,
+            after=_template_response(row),
+        )
+        await db.commit()
+
+
+@org_router.post("/{org_id}/integrations/jira/templates/{slug}/unarchive")
+async def unarchive_jira_template(
+    org_id: str,
+    slug: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    org, role = await _authorize_org_jira(db, user, org_id)
+    row = await _get_template(org_id, slug, db)
+    if row is None:
+        if is_builtin_slug(slug):
+            raise _builtin_readonly("unarchived")
+        raise HTTPException(404, "Template not found")
+    if row.archived_at is None:
+        return _template_response(row)
+    if await _active_template_count(org_id, db) >= MAX_TEMPLATES_PER_ORG:
+        raise _template_limit_error()
+    before = _template_response(row)
+    now = datetime.now(timezone.utc)
+    # Unarchiving restores the template as-is: same slug, same version, so
+    # links pinned to it keep pointing at the content they were published with.
+    row.archived_at = None
+    row.updated_by_user_id = user.id
+    row.updated_at = now
+    _org_audit(
+        db,
+        org=org,
+        actor=user,
+        actor_role=role,
+        event_type="jira_template_unarchived",
+        target_type="jira_template",
+        target_id=row.id,
+        before=before,
+        after=_template_response(row),
+    )
+    await db.commit()
+    return _template_response(row)
+
+
+@org_router.get("/{org_id}/integrations/jira/templates/{slug}/versions")
+async def list_jira_template_versions(
+    org_id: str,
+    slug: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    await _authorize_org_jira(db, user, org_id)
+    row = await _get_template(org_id, slug, db)
+    if row is None:
+        if is_builtin_slug(slug):
+            raise HTTPException(404, "Built-in templates have no versions")
+        raise HTTPException(404, "Template not found")
+    versions = (
+        await db.execute(
+            select(JiraTemplateVersion)
+            .where(JiraTemplateVersion.template_id == row.id)
+            .order_by(JiraTemplateVersion.version.desc())
+        )
+    ).scalars().all()
+    return [
+        {
+            "version": v.version,
+            "sections": json.loads(v.sections),
+            "created_by_user_id": v.created_by_user_id,
+            "created_at": v.created_at.isoformat() if v.created_at else None,
+        }
+        for v in versions
+    ]
+
+
+@org_router.post("/{org_id}/integrations/jira/templates/{slug}/preview")
+async def preview_jira_template(
+    org_id: str,
+    slug: str,
+    body: JiraTemplatePreviewBody,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _authorize_org_jira(db, user, org_id)
+    if body.sections is not None:
+        # An unsaved draft from the editor: validate it exactly like a save,
+        # then render it deterministically. Nothing is stored.
+        try:
+            sections = validate_sections(
+                [s.model_dump(exclude_none=True) for s in body.sections]
+            )
+            name = validate_name(body.name or slug)
+        except TemplateValidationError as exc:
+            raise _template_validation_error(exc) from exc
+        resolved = ResolvedTemplate(
+            slug=slug,
+            name=name,
+            version=None,
+            builtin=False,
+            template=sections_to_template(slug, name, sections),
+        )
+    else:
+        resolved = await _resolve_template(
+            db, org_id, slug, strict=True, allow_archived=True
+        )
+    project = await db.get(Project, body.project_id)
+    if project is None or project.org_id != org_id:
+        raise HTTPException(404, "Project not found")
+    mapping = await _get_mapping(project.id, org_id, db)
+    if mapping is None:
+        raise HTTPException(
+            409,
+            {"error": "jira_project_unmapped", "message": "This project is not mapped."},
+        )
+    ticket = await db.get(Ticket, body.ticket_id)
+    if ticket is None or ticket.project_id != project.id:
+        raise HTTPException(404, "Ticket not found")
+    sources = await collect_sources(ticket, db)
+    try:
+        rendered = build_deterministic_sections(resolved.template, sources)
+    except ContentTooLarge as exc:
+        raise _content_too_large(exc.section) from exc
+    return {
+        "ticket_id": ticket.id,
+        "project_id": project.id,
+        "template": {
+            "slug": resolved.slug,
+            "name": resolved.name,
+            "version": resolved.version,
+        },
+        "summary": sources.title,
+        "sections": rendered,
     }
 
 
@@ -795,6 +2298,7 @@ async def _authorize_ticket_jira(
     ticket_id: str,
     *,
     project_admin: bool = False,
+    require_editor: bool = False,
 ) -> tuple[Project, Ticket, OrgTrackerConnection, TrackerProjectMapping]:
     from sessionfs.server.auth.dependencies import assert_service_key_can_access_project
     from sessionfs.server.auth.project_access import user_is_project_admin
@@ -854,6 +2358,20 @@ async def _authorize_ticket_jira(
                     "message": "Only members of this project's organization can use its Jira connection.",
                 },
             )
+        # GitHub #101 — in an org that restricts project visibility, writing
+        # to Jira through the org's credential (preview / publish) needs edit
+        # standing on the project, not just read standing.
+        if require_editor:
+            from sessionfs.server.auth.project_access import (
+                project_edit_forbidden,
+                project_restricts_visibility,
+                user_can_edit_project,
+            )
+
+            if await project_restricts_visibility(
+                db, project
+            ) and not await user_can_edit_project(db, auth.user.id, project):
+                raise project_edit_forbidden()
     conn = await _get_connection(project.org_id, db)
     if conn is None or not conn.enabled:
         raise HTTPException(
@@ -872,9 +2390,123 @@ async def _authorize_ticket_jira(
     return project, ticket, conn, mapping
 
 
-def _template_for(mapping: TrackerProjectMapping, conn: OrgTrackerConnection):
-    slug = mapping.template or conn.default_template
-    return get_template(slug) or get_template(DEFAULT_TEMPLATE)
+async def _resolve_template(
+    db: AsyncSession,
+    org_id: str,
+    slug: str | None,
+    *,
+    strict: bool = False,
+    allow_archived: bool = False,
+) -> ResolvedTemplate:
+    """Resolve a template slug (org-custom or built-in) to its current version.
+
+    An org custom template wins over a built-in with the same slug (a built-in
+    added later must not silently shadow a template an org already uses).
+
+    * Inherited (non-strict) resolution — mapping override / connection
+      default — resolves archived custom templates normally: archiving stops
+      NEW selections, it never switches existing configuration. Only a slug
+      that no longer exists at all falls back to ``DEFAULT_TEMPLATE``.
+    * ``strict`` (a NEW selection) refuses an unknown slug with a 422, and an
+      archived one too unless ``allow_archived`` (the caller is keeping a value
+      it already had, e.g. re-saving a mapping or re-publishing a pinned link).
+    """
+    if slug is None:
+        if strict:
+            raise HTTPException(422, "unknown template: None")
+        return builtin_resolved(DEFAULT_TEMPLATE)
+    row = await _get_template(org_id, slug, db)
+    if row is None:
+        if is_builtin_slug(slug):
+            return builtin_resolved(slug)
+        if strict:
+            raise HTTPException(422, f"unknown template: {slug}")
+        return builtin_resolved(DEFAULT_TEMPLATE)
+    if row.archived_at is not None and strict and not allow_archived:
+        raise HTTPException(
+            422,
+            {
+                "error": "template_archived",
+                "message": (
+                    f"template {slug!r} is archived and can't be newly selected"
+                ),
+            },
+        )
+    return ResolvedTemplate(
+        slug=row.slug,
+        name=row.name,
+        version=row.version,
+        builtin=False,
+        template=sections_to_template(row.slug, row.name, json.loads(row.sections)),
+    )
+
+
+async def _resolve_ticket_template(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    mapping: TrackerProjectMapping,
+    conn: OrgTrackerConnection,
+    link: TicketTrackerLink | None,
+    override: str | None,
+) -> ResolvedTemplate:
+    """Inheritance: per-ticket override → mapping override → connection default.
+
+    Neither echoing the inherited slug back nor re-choosing the template this
+    ticket's link is pinned to is a new selection, so both resolve even when
+    that template has since been archived (a published ticket keeps its
+    template). Any other override is a new selection and must be selectable
+    (built-in or active custom).
+    """
+    inherited = mapping.template or conn.default_template
+    if override is None or override == inherited:
+        return await _resolve_template(db, org_id, inherited)
+    pinned = (
+        link.template_slug
+        if link is not None and link.status == "linked"
+        else None
+    )
+    return await _resolve_template(
+        db, org_id, override, strict=True, allow_archived=override == pinned
+    )
+
+
+def _ticket_url(dashboard_url: str, project_id: str, ticket_id: str) -> str:
+    if not dashboard_url:
+        return ""
+    return f"{dashboard_url}/projects/{project_id}?tab=work&sub=tickets&ticket={ticket_id}"
+
+
+def _template_label(resolved: ResolvedTemplate) -> str:
+    if resolved.version is not None:
+        return f"{resolved.name} v{resolved.version}"
+    return resolved.name
+
+
+def _footer_adf(resolved: ResolvedTemplate, ticket_url: str) -> list[dict]:
+    """The provenance footer appended to every published description.
+
+    Always ``Generated by SessionFS · template: <name> v<n>`` (built-ins have
+    no version, so just ``<name>``). When the dashboard origin is configured
+    it continues `` · source ticket <url>`` with the URL as an ADF link; a
+    self-hosted install without one never links to the hosted dashboard.
+    """
+    content: list[dict] = [
+        {
+            "type": "text",
+            "text": f"Generated by SessionFS · template: {_template_label(resolved)}",
+        }
+    ]
+    if ticket_url:
+        content.append({"type": "text", "text": " · source ticket "})
+        content.append(
+            {
+                "type": "text",
+                "text": ticket_url,
+                "marks": [{"type": "link", "attrs": {"href": ticket_url}}],
+            }
+        )
+    return [{"type": "paragraph", "content": content}]
 
 
 async def _get_link(ticket_id: str, db: AsyncSession) -> TicketTrackerLink | None:
@@ -883,6 +2515,27 @@ async def _get_link(ticket_id: str, db: AsyncSession) -> TicketTrackerLink | Non
             select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket_id)
         )
     ).scalar_one_or_none()
+
+
+def _can_send_to_jira(
+    link: TicketTrackerLink,
+    conn: OrgTrackerConnection,
+    project: Project,
+    *,
+    can_edit: bool,
+) -> bool:
+    """Whether the comment composer may offer "send to Jira": an editor, a
+    live link on the connection's own org and site (never a stale link), and
+    outbound comment sync on."""
+    return (
+        can_edit
+        and link.status == "linked"
+        and bool(link.issue_key)
+        and link.org_id == project.org_id
+        and link.site_url == conn.site_url
+        and conn.enabled
+        and (conn.sync_comments or "off") in jira_sync.OUTBOUND_COMMENT_MODES
+    )
 
 
 def _assert_link_current(link: TicketTrackerLink, org_id: str, site_url: str) -> None:
@@ -1103,6 +2756,8 @@ async def _fenced_mark_linked(
     user_id: str,
     digest: str,
     published_text: str,
+    template_slug: str,
+    template_version: int | None,
 ) -> bool:
     """Flip a pending claim to ``linked``, fenced on ``claim_token``.
 
@@ -1128,6 +2783,8 @@ async def _fenced_mark_linked(
             last_status_checked_at=None,
             payload_hash=digest,
             last_published_text=published_text,
+            template_slug=template_slug,
+            template_version=template_version,
             last_push_failed_at=None,
             last_push_failure=None,
         )
@@ -1185,6 +2842,8 @@ async def _fenced_mark_updated(
     user_id: str,
     digest: str,
     published_text: str,
+    template_slug: str,
+    template_version: int | None,
 ) -> bool:
     """Update an already-linked row, fenced on status + issue_key.
 
@@ -1209,6 +2868,8 @@ async def _fenced_mark_updated(
             last_status_checked_at=None,
             payload_hash=digest,
             last_published_text=published_text,
+            template_slug=template_slug,
+            template_version=template_version,
             last_push_failed_at=None,
             last_push_failure=None,
         )
@@ -1217,22 +2878,114 @@ async def _fenced_mark_updated(
     return res.rowcount == 1  # type: ignore[attr-defined]
 
 
-@router.post("/{project_id}/tickets/{ticket_id}/jira/preview")
-async def preview_jira(
+@router.get("/{project_id}/tickets/{ticket_id}/jira/templates")
+async def list_ticket_jira_templates(
     project_id: str,
     ticket_id: str,
     auth: AuthContext = Depends(require_scope("tickets:write")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    """Templates a member may pick for this ticket in the promotion dialog.
+
+    Gated exactly like preview/publish. Returns only the selectable set as
+    ``{slug, name, version, builtin, archived}`` — never section definitions
+    or guidance: the built-ins, the org's active custom templates and, if
+    archived, this ticket's own pinned template (the only ``archived: true``
+    entry). Also the inherited default and the link's pinned slug/version.
+    """
     project, ticket, conn, mapping = await _authorize_ticket_jira(
         db, auth, ctx, project_id, ticket_id
     )
-    template = _template_for(mapping, conn)
+    org_id = project.org_id
+    customs = (
+        await db.execute(
+            select(JiraTemplate)
+            .where(JiraTemplate.org_id == org_id, JiraTemplate.archived_at.is_(None))
+            .order_by(JiraTemplate.created_at)
+        )
+    ).scalars().all()
+    all_custom_slugs = set(
+        (
+            await db.execute(
+                select(JiraTemplate.slug).where(JiraTemplate.org_id == org_id)
+            )
+        ).scalars().all()
+    )
+    templates = [
+        {"slug": t.slug, "name": t.name, "version": None, "builtin": True, "archived": False}
+        for t in list_templates()
+        if t.slug not in all_custom_slugs
+    ] + [
+        {
+            "slug": t.slug,
+            "name": t.name,
+            "version": t.version,
+            "builtin": False,
+            "archived": False,
+        }
+        for t in customs
+    ]
+    inherited = await _resolve_template(
+        db, org_id, mapping.template or conn.default_template
+    )
+    link = await _get_link(ticket.id, db)
+    pinned = None
+    if link is not None and link.status == "linked" and link.template_slug:
+        pinned = {"slug": link.template_slug, "version": link.template_version}
+        # A published ticket keeps its template even after it is archived: the
+        # pinned archived template stays selectable for THIS ticket only.
+        if not any(t["slug"] == link.template_slug for t in templates):
+            row = await _get_template(org_id, link.template_slug, db)
+            if row is not None and row.archived_at is not None:
+                templates.append(
+                    {
+                        "slug": row.slug,
+                        "name": row.name,
+                        "version": row.version,
+                        "builtin": False,
+                        "archived": True,
+                    }
+                )
+    return {
+        "templates": templates,
+        "inherited_default": {
+            "slug": inherited.slug,
+            "name": inherited.name,
+            "version": inherited.version,
+        },
+        "pinned": pinned,
+    }
+
+
+@router.post("/{project_id}/tickets/{ticket_id}/jira/preview")
+async def preview_jira(
+    project_id: str,
+    ticket_id: str,
+    body: JiraPreviewBody | None = None,
+    auth: AuthContext = Depends(require_scope("tickets:write")),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    project, ticket, conn, mapping = await _authorize_ticket_jira(
+        db, auth, ctx, project_id, ticket_id, require_editor=True
+    )
+    # Inheritance: per-ticket override (strict) → mapping override → connection
+    # default. The resolved slug/version is returned so the dialog can report
+    # "Published with <name> v<n>; current is v<m>", and publish echoes it.
+    link = await _get_link(ticket.id, db)
+    resolved = await _resolve_ticket_template(
+        db,
+        org_id=project.org_id,
+        mapping=mapping,
+        conn=conn,
+        link=link,
+        override=body.template if body is not None else None,
+    )
     try:
         preview = await build_preview(
             ticket=ticket,
-            template=template,
+            template=resolved.template,
             issue_type=mapping.issue_type,
             jira_project_key=mapping.jira_project_key,
             org=(await db.get(Organization, project.org_id)),  # type: ignore[arg-type]
@@ -1250,13 +3003,19 @@ async def preview_jira(
     # ``publish --from`` refuse a file generated for a different ticket.
     response["ticket_id"] = ticket.id
     response["project_id"] = project.id
-    link = await _get_link(ticket.id, db)
+    response["template"] = {
+        "slug": resolved.slug,
+        "name": resolved.name,
+        "version": resolved.version,
+    }
     if link is not None and link.status == "linked":
         _assert_link_current(link, project.org_id, conn.site_url)
         response["existing"] = {
             "issue_key": link.issue_key,
             "issue_url": link.issue_url,
             "last_known_status": link.last_known_status,
+            "template_slug": link.template_slug,
+            "template_version": link.template_version,
         }
         if link.last_published_text:
             response["diff"] = _unified_diff(
@@ -1271,12 +3030,13 @@ async def publish_jira(
     project_id: str,
     ticket_id: str,
     body: JiraPublishBody,
+    request: Request,
     auth: AuthContext = Depends(require_scope("tickets:write")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     project, ticket, conn, mapping = await _authorize_ticket_jira(
-        db, auth, ctx, project_id, ticket_id
+        db, auth, ctx, project_id, ticket_id, require_editor=True
     )
     if not body.confirm:
         raise HTTPException(400, "Set confirm=true to publish to Jira")
@@ -1287,11 +3047,43 @@ async def publish_jira(
     if existing_link is not None and existing_link.status == "linked":
         _assert_link_current(existing_link, project.org_id, conn.site_url)
 
+    # Inheritance: per-ticket override (strict) → mapping override → connection
+    # default. The resolved slug/version is stored on the link at publish.
+    resolved = await _resolve_ticket_template(
+        db,
+        org_id=project.org_id,
+        mapping=mapping,
+        conn=conn,
+        link=existing_link,
+        override=body.template,
+    )
+    # The draft was previewed against a specific template version; if the
+    # resolution moved since (template edited, mapping/default changed), refuse
+    # rather than render or pin a version nobody previewed.
+    if body.template is not None or "template_version" in body.model_fields_set:
+        expected_slug = body.template if body.template is not None else resolved.slug
+        if expected_slug != resolved.slug or body.template_version != resolved.version:
+            raise HTTPException(
+                409,
+                {
+                    "error": "template_changed",
+                    "message": (
+                        "The story template changed since this draft was "
+                        f"previewed (now {_template_label(resolved)}); preview "
+                        "again before publishing."
+                    ),
+                    "template": {
+                        "slug": resolved.slug,
+                        "name": resolved.name,
+                        "version": resolved.version,
+                    },
+                },
+            )
+
     # The client never chooses section rendering: mode is resolved from the
     # ticket's template by section key, and an unknown key is rejected before
     # any outbound call.
-    template = _template_for(mapping, conn)
-    mode_by_key = {s.key: s.mode for s in template.sections}
+    mode_by_key = {s.key: s.mode for s in resolved.template.sections}
     unknown = [s.key for s in body.sections if s.key not in mode_by_key]
     if unknown:
         raise HTTPException(422, f"unknown section key(s): {', '.join(unknown)}")
@@ -1310,6 +3102,19 @@ async def publish_jira(
         adf = sections_to_adf(sections, mode_by_key)
     except ContentTooLarge as exc:
         raise _content_too_large(exc.section) from exc
+
+    # Append the provenance footer (the source-ticket link only when the
+    # dashboard origin is configured) BEFORE the size guard so the footer
+    # counts toward Jira's description cap.
+    footer = _footer_adf(
+        resolved,
+        _ticket_url(
+            dashboard_link_base(getattr(request.app.state, "config", None)),
+            project.id,
+            ticket.id,
+        ),
+    )
+    adf["content"] = list(adf["content"]) + footer
 
     # Pre-flight size guard before any outbound call: Jira Cloud caps a
     # description near 32,767 characters, so refuse a description that would
@@ -1468,6 +3273,8 @@ async def publish_jira(
             user_id=auth.user.id,
             digest=digest,
             published_text=published_text,
+            template_slug=resolved.slug,
+            template_version=resolved.version,
         )
         if not marked:
             await db.rollback()
@@ -1494,6 +3301,8 @@ async def publish_jira(
             user_id=auth.user.id,
             digest=digest,
             published_text=published_text,
+            template_slug=resolved.slug,
+            template_version=resolved.version,
         )
         if not marked:
             await db.rollback()
@@ -1558,6 +3367,45 @@ async def publish_jira(
         "last_known_status": None,
         "last_status_checked_at": None,
         "payload_hash": digest,
+        "template": {
+            "slug": resolved.slug,
+            "name": resolved.name,
+            "version": resolved.version,
+        },
+    }
+
+
+@router.get("/{project_id}/tickets/{ticket_id}/jira-sync-events")
+async def get_ticket_jira_sync_events(
+    project_id: str,
+    ticket_id: str,
+    auth: AuthContext = Depends(require_scope("tickets:read")),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Sync ledger rows for one linked ticket, most-recent first.
+
+    A project reader may see these (they're the same Jira activity the ticket's
+    comments/timeline already surface); the org-wide admin list stays on
+    ``/integrations/jira/sync-events``.
+    """
+    project, ticket, _conn, _mapping = await _authorize_ticket_jira(
+        db, auth, ctx, project_id, ticket_id
+    )
+    link = await _get_link(ticket.id, db)
+    if link is None:
+        return {"events": []}
+    rows = (
+        await db.execute(
+            select(TrackerSyncEvent)
+            .where(TrackerSyncEvent.link_id == ticket.id)
+            .order_by(TrackerSyncEvent.created_at.desc())
+        )
+    ).scalars().all()
+    return {
+        "events": [
+            _sync_event_response(event, link.issue_key) for event in rows
+        ]
     }
 
 
@@ -1614,6 +3462,15 @@ async def get_jira_link(
         link.last_status_checked_at = now
         await db.commit()
 
+    # Two-way sync: whether this caller may tick "send to Jira" on a comment
+    # (editor standing or a service key, and outbound comment sync on).
+    from sessionfs.server.auth.project_access import user_can_edit_project
+
+    comment_sync_outbound = (conn.sync_comments or "off") in jira_sync.OUTBOUND_COMMENT_MODES
+    can_edit = auth.key_kind == "service" or await user_can_edit_project(
+        db, auth.user.id, project
+    )
+    can_send = _can_send_to_jira(link, conn, project, can_edit=can_edit)
     return {
         "ticket_id": ticket.id,
         "provider": link.provider,
@@ -1625,6 +3482,8 @@ async def get_jira_link(
             link.last_status_checked_at.isoformat() if link.last_status_checked_at else None
         ),
         "payload_hash": link.payload_hash,
+        "comment_sync_outbound": comment_sync_outbound,
+        "can_send_to_jira": can_send,
     }
 
 

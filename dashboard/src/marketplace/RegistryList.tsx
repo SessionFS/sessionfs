@@ -71,7 +71,7 @@ function RegistryRow({ registry, orgId, canAdmin }: { registry: SkillRegistry; o
     });
 
   return (
-    <li className="rounded-md border border-border bg-bg-primary/40 p-3 text-sm">
+    <li className="py-3 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="min-w-0 truncate font-mono text-text-secondary" title={registry.source_url}>{registry.alias}</span>
         <span className="flex flex-wrap items-center gap-1.5">
@@ -108,7 +108,7 @@ function RegistryRow({ registry, orgId, canAdmin }: { registry: SkillRegistry; o
 
 export function RegistryList({ registries, orgId, canAdmin }: { registries: SkillRegistry[]; orgId: string; canAdmin: boolean }) {
   return (
-    <ul className="mt-3 space-y-2">
+    <ul className="mt-2 divide-y divide-border border-y border-border">
       {registries.map((registry) => (
         <RegistryRow key={registry.id} registry={registry} orgId={orgId} canAdmin={canAdmin} />
       ))}

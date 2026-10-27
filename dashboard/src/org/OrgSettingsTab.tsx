@@ -37,11 +37,14 @@ import { useDomains } from './useSso';
 import { Button, Input } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
 import { useOrgDigestPrefs, useUpdateOrgDigestPrefs } from './useOrgDigestPrefs';
+import RestrictVisibilitySetting from './groups/RestrictVisibilitySetting';
 
 interface OrgSettingsTabProps {
   orgId: string;
   /** Set to false when the viewer is a plain member; disables edits. */
   canEdit: boolean;
+  /** The org's plan tier, when known (gates restricted project visibility). */
+  tier?: string | null;
 }
 
 type FormState = {
@@ -69,7 +72,7 @@ function parseIntOrNull(v: string): number | null {
   return Number.isFinite(n) && Number.isInteger(n) ? n : NaN;
 }
 
-export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) {
+export default function OrgSettingsTab({ orgId, canEdit, tier }: OrgSettingsTabProps) {
   const { data, isLoading, error } = useOrgSettings(orgId);
   // The domain list is admin-only; members never request it.
   const domains = useDomains(canEdit ? orgId : undefined);
@@ -158,7 +161,7 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
   return (
     <>
     <section aria-labelledby="org-settings-heading">
-      <h3 id="org-settings-heading">Org defaults</h3>
+      <h2 id="org-settings-heading">Org defaults</h2>
       <p className="text-sm text-text-secondary">
         Creation defaults for new projects added to this org. Existing
         projects keep their current values; change a project's own KB
@@ -265,6 +268,13 @@ export default function OrgSettingsTab({ orgId, canEdit }: OrgSettingsTabProps) 
         </Button>
       </form>
     </section>
+
+    <RestrictVisibilitySetting
+      orgId={orgId}
+      restricted={!!data?.restrict_project_visibility}
+      canEdit={canEdit}
+      tier={tier}
+    />
 
     <section aria-labelledby="org-notifications-heading" className="mt-8">
       <h3 id="org-notifications-heading">Notifications</h3>

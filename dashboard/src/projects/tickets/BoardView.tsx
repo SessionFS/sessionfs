@@ -76,6 +76,7 @@ export function BoardView({ tickets, projectId, selected, onSelect, onNavigate, 
               orgId={jira?.orgId}
               isProjectAdmin={jira?.isProjectAdmin}
               isEnterprise={jira?.isEnterprise}
+              bare
             />
           </div>
         )}

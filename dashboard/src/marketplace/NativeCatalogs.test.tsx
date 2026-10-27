@@ -3,14 +3,17 @@ import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api/client';
 import type { NativeCatalogList, WorksIn } from '../api/client';
-import { UseInYourTool, WorksInMatrix } from './NativeCatalogs';
+import { InstallInYourTool, UseInYourTool, WorksInMatrix } from './NativeCatalogs';
 
 const { hooks } = vi.hoisted(() => ({
   hooks: {
     useNativeCatalogs: vi.fn(),
     useWorksIn: vi.fn(),
+    addToast: vi.fn(),
   },
 }));
+
+vi.mock('../hooks/useToast', () => ({ useToast: () => ({ addToast: hooks.addToast }) }));
 
 vi.mock('../hooks/useNativeCatalogs', () => ({
   useNativeCatalogs: () => hooks.useNativeCatalogs(),
@@ -65,14 +68,84 @@ describe('UseInYourTool', () => {
     hooks.useNativeCatalogs.mockReturnValue({ data: catalogs, isLoading: false, error: null });
   });
 
-  it("shows each tool's own add command and switches scope", async () => {
+  it("shows each tool's own add command and switches tool and scope", async () => {
+    const user = userEvent.setup();
     render(<UseInYourTool />);
     expect(screen.getByTestId('use-in-claude-code')).toHaveTextContent(`/plugin marketplace add ${clone}`);
+    await user.click(screen.getByRole('tab', { name: 'Gemini CLI' }));
     expect(screen.getByTestId('use-in-gemini')).toHaveTextContent('gemini extensions install');
-    await userEvent.click(screen.getByRole('tab', { name: 'Org org_1' }));
+    expect(screen.queryByTestId('use-in-claude-code')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Catalog/ }));
+    await user.click(screen.getByRole('option', { name: 'Org org_1' }));
     expect(screen.getByTestId('catalog-clone-url')).toHaveTextContent('sessionfs-org-org-1');
-    expect(screen.queryByTestId('use-in-gemini')).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Gemini CLI' })).not.toBeInTheDocument();
     expect(screen.getByTestId('use-in-copilot')).toHaveTextContent('copilot plugin marketplace add');
+  });
+
+  it('keeps long commands on one line in a scrolling well with a Copy button that toasts', async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    render(<UseInYourTool />);
+    // The command is one untouched preformatted text the keyboard can reach
+    // (so a long one scrolls inside its well instead of being broken up).
+    const well = screen.getByRole('group', { name: 'Claude Code Add the catalog' });
+    expect(well.tagName).toBe('PRE');
+    expect(well).toHaveAttribute('tabindex', '0');
+    expect(well.textContent).toBe(`/plugin marketplace add ${clone}`);
+    expect(well.childNodes).toHaveLength(1);
+    await user.click(screen.getByRole('button', { name: 'Copy: Claude Code Add the catalog' }));
+    expect(writeText).toHaveBeenCalledWith(`/plugin marketplace add ${clone}`);
+    expect(hooks.addToast).toHaveBeenCalledWith('success', 'Command copied');
+    // The sign-in command follows the selected tool.
+    expect(screen.getByRole('group', { name: 'Sign-in command' })).toHaveTextContent('sfs catalog add --for claude-code');
+  });
+
+  it('renders instruction sentences as prose without a Copy button', async () => {
+    const user = userEvent.setup();
+    hooks.useNativeCatalogs.mockReturnValue({
+      data: {
+        ...catalogs,
+        items: [{
+          ...catalogs.items[0],
+          tools: {
+            codex: { install: 'Open Codex, run /plugins and choose the sessionfs marketplace.' },
+            cursor: { add: 'In Cursor Settings → Plugins, add the marketplace URL above.' },
+            antigravity: { add: 'Add the clone URL in Antigravity → Extensions → Sources.' },
+          },
+        }],
+      },
+      isLoading: false,
+      error: null,
+    });
+    render(<UseInYourTool />);
+    expect(screen.getByTestId('step-prose-install')).toHaveTextContent('Open Codex, run /plugins');
+    expect(screen.queryByRole('button', { name: /^Copy: Codex/ })).toBeNull();
+    await user.click(screen.getByRole('tab', { name: 'Cursor' }));
+    expect(screen.getByTestId('step-prose-add')).toHaveTextContent('In Cursor Settings');
+    expect(screen.queryByRole('button', { name: /^Copy: Cursor/ })).toBeNull();
+    await user.click(screen.getByRole('tab', { name: 'Antigravity' }));
+    expect(screen.getByTestId('step-prose-add').tagName).toBe('P');
+    expect(screen.queryByRole('button', { name: /^Copy: Antigravity/ })).toBeNull();
+    // The sign-in command is still a real command.
+    expect(screen.getByRole('button', { name: 'Copy: Sign-in command' })).toBeInTheDocument();
+  });
+
+  it('opens from a header button into a dialog', async () => {
+    const user = userEvent.setup();
+    render(<InstallInYourTool />);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Install in your tool' }));
+    const dialog = screen.getByRole('dialog', { name: 'Install in your tool' });
+    expect(dialog).toContainElement(screen.getByTestId('use-in-claude-code'));
+    await user.click(screen.getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('shows no install button when no catalog is available', () => {
+    hooks.useNativeCatalogs.mockReturnValue({ data: { ...catalogs, items: [] }, isLoading: false, error: null });
+    const { container } = render(<InstallInYourTool />);
+    expect(container).toBeEmptyDOMElement();
   });
 
   it('leads with the keyless GitHub mirror and keeps the hosted command', () => {

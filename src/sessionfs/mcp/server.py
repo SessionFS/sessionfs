@@ -2613,6 +2613,349 @@ _TOOLS = [
             "required": ["question"],
         },
     ),
+    Tool(
+        name="list_project_groups",
+        description=(
+            "List an org's project groups. Returns each group's id, slug, "
+            "name, description, member/project counts and the caller's role. "
+            "`org_id` defaults to the server-side default org.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project group list` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "org_id": {
+                    "type": "string",
+                    "description": "Org id. Omit to use the default org.",
+                },
+            },
+        },
+    ),
+    Tool(
+        name="get_project_group",
+        description=(
+            "Show a project group's members and member projects. Returns the "
+            "group's id, slug, name, description, the caller's role, the "
+            "member list (user_id, email, role) and the member project ids. "
+            "`org_id` defaults to the server-side default org.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project group show` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "Group slug."},
+                "org_id": {
+                    "type": "string",
+                    "description": "Org id. Omit to use the default org.",
+                },
+            },
+            "required": ["slug"],
+        },
+    ),
+    Tool(
+        name="create_project_group",
+        description=(
+            "Create a project group in an org (org admin/owner only). Returns "
+            "the created group. `org_id` defaults to the server-side default "
+            "org.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project group create` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Group name (1-255 chars)."},
+                "slug": {
+                    "type": "string",
+                    "description": "URL-safe slug; derived from name if omitted.",
+                },
+                "description": {"type": "string", "description": "Optional description."},
+                "org_id": {
+                    "type": "string",
+                    "description": "Org id. Omit to use the default org.",
+                },
+            },
+            "required": ["name"],
+        },
+    ),
+    Tool(
+        name="delete_project_group",
+        description=(
+            "Soft-delete a project group (org admin/owner only). "
+            "`org_id` defaults to the server-side default org.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project group delete` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "Group slug."},
+                "org_id": {
+                    "type": "string",
+                    "description": "Org id. Omit to use the default org.",
+                },
+            },
+            "required": ["slug"],
+        },
+    ),
+    Tool(
+        name="update_project_group",
+        description=(
+            "Update a project group: rename it, change its slug or "
+            "description, or turn its knowledge-context compile on or off "
+            "(`compile_enabled`). Group admin or org admin/owner only; turning "
+            "`compile_enabled` on needs the Team plan or above. Omitted fields "
+            "are left unchanged. `org_id` defaults to the server-side default "
+            "org.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project group set` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "Current group slug."},
+                "name": {"type": "string", "description": "New group name."},
+                "new_slug": {"type": "string", "description": "New group slug."},
+                "description": {
+                    "type": "string",
+                    "description": "New description (empty string clears it).",
+                },
+                "compile_enabled": {
+                    "type": "boolean",
+                    "description": "Opt the group into (true) or out of (false) the group knowledge-context compile.",
+                },
+                "org_id": {
+                    "type": "string",
+                    "description": "Org id. Omit to use the default org.",
+                },
+            },
+            "required": ["slug"],
+        },
+    ),
+    Tool(
+        name="add_project_to_group",
+        description=(
+            "Add a project to a group (group admin with edit standing on the "
+            "project, or org admin/owner). `org_id` defaults to the default "
+            "org.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project group add` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "Group slug."},
+                "project_id": {"type": "string", "description": "Project id to add."},
+                "org_id": {
+                    "type": "string",
+                    "description": "Org id. Omit to use the default org.",
+                },
+            },
+            "required": ["slug", "project_id"],
+        },
+    ),
+    Tool(
+        name="remove_project_from_group",
+        description=(
+            "Remove a project from a group (group admin only). `org_id` "
+            "defaults to the server-side default org.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project group remove` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "Group slug."},
+                "project_id": {"type": "string", "description": "Project id to remove."},
+                "org_id": {
+                    "type": "string",
+                    "description": "Org id. Omit to use the default org.",
+                },
+            },
+            "required": ["slug", "project_id"],
+        },
+    ),
+    Tool(
+        name="list_group_members",
+        description=(
+            "List a group's members and their roles (reader/editor/admin). "
+            "`org_id` defaults to the server-side default org.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project group members` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "Group slug."},
+                "org_id": {
+                    "type": "string",
+                    "description": "Org id. Omit to use the default org.",
+                },
+            },
+            "required": ["slug"],
+        },
+    ),
+    Tool(
+        name="grant_group_access",
+        description=(
+            "Grant (or update) a member's role in a group (group admin only). "
+            "The grantee must be a current member of the group's org. `role` "
+            "is one of reader, editor, admin. `org_id` defaults to the "
+            "default org.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project group grant` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "Group slug."},
+                "user_id": {"type": "string", "description": "Org member's user id."},
+                "role": {
+                    "type": "string",
+                    "enum": ["reader", "editor", "admin"],
+                    "description": "Group role to grant.",
+                },
+                "org_id": {
+                    "type": "string",
+                    "description": "Org id. Omit to use the default org.",
+                },
+            },
+            "required": ["slug", "user_id", "role"],
+        },
+    ),
+    Tool(
+        name="revoke_group_access",
+        description=(
+            "Revoke a member's grant from a group (group admin only). "
+            "`org_id` defaults to the server-side default org.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project group revoke` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "Group slug."},
+                "user_id": {"type": "string", "description": "Org member's user id."},
+                "org_id": {
+                    "type": "string",
+                    "description": "Org id. Omit to use the default org.",
+                },
+            },
+            "required": ["slug", "user_id"],
+        },
+    ),
+    Tool(
+        name="list_group_access",
+        description=(
+            "List every project group the caller has standing on across their "
+            "orgs (an explicit grant in an org they still belong to, or any "
+            "group of an org they administer).\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project group access` or any other sfs CLI command."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="search_group_knowledge",
+        description=(
+            "Search active knowledge-base claims across a group's readable "
+            "member projects. Each hit carries the source project id/name, "
+            "entry id, type, confidence, freshness and content. `entry_type` "
+            "is one of decision, pattern, discovery, convention, bug, "
+            "dependency; `limit` caps at 100. `org_id` defaults to the "
+            "default org.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project group search` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "Group slug."},
+                "q": {"type": "string", "description": "Full-text filter on claim content."},
+                "entry_type": {
+                    "type": "string",
+                    "enum": ["decision", "pattern", "discovery", "convention", "bug", "dependency"],
+                    "description": "Filter by claim type.",
+                },
+                "limit": {"type": "integer", "description": "Max hits (<= 100). Default 100."},
+                "org_id": {
+                    "type": "string",
+                    "description": "Org id. Omit to use the default org.",
+                },
+            },
+            "required": ["slug"],
+        },
+    ),
+    Tool(
+        name="get_group_context",
+        description=(
+            "Return a group's compiled knowledge overview (a deterministic "
+            "markdown document built from the group's active claims). Only "
+            "returned to a caller who can still read every contributing "
+            "project. `org_id` defaults to the default org.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project group context` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "Group slug."},
+                "org_id": {
+                    "type": "string",
+                    "description": "Org id. Omit to use the default org.",
+                },
+            },
+            "required": ["slug"],
+        },
+    ),
+    Tool(
+        name="compile_group_knowledge",
+        description=(
+            "Compile a group's deterministic knowledge overview from its "
+            "member projects' active claims (group editor/admin or org admin "
+            "only). The group must have opted in: set compile_enabled with "
+            "update_project_group first. `org_id` defaults to the default "
+            "org.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project group compile` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "Group slug."},
+                "org_id": {
+                    "type": "string",
+                    "description": "Org id. Omit to use the default org.",
+                },
+            },
+            "required": ["slug"],
+        },
+    ),
+    Tool(
+        name="ask_group",
+        description=(
+            "Research a question using a group's compiled context and the "
+            "active knowledge-base claims across its readable member projects. "
+            "Returns assembled research markdown plus cited sources. "
+            "`org_id` defaults to the default org.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs project group search` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "slug": {"type": "string", "description": "Group slug."},
+                "question": {"type": "string", "description": "The question to research."},
+                "org_id": {
+                    "type": "string",
+                    "description": "Org id. Omit to use the default org.",
+                },
+            },
+            "required": ["slug", "question"],
+        },
+    ),
 ]
 
 
@@ -2829,6 +3172,36 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_ask_session_helper(arguments)
             if not _result_is_error(result):
                 _emit_first_magic()
+        elif name == "list_project_groups":
+            result = await _handle_list_project_groups(arguments)
+        elif name == "get_project_group":
+            result = await _handle_get_project_group(arguments)
+        elif name == "create_project_group":
+            result = await _handle_create_project_group(arguments)
+        elif name == "delete_project_group":
+            result = await _handle_delete_project_group(arguments)
+        elif name == "update_project_group":
+            result = await _handle_update_project_group(arguments)
+        elif name == "add_project_to_group":
+            result = await _handle_add_project_to_group(arguments)
+        elif name == "remove_project_from_group":
+            result = await _handle_remove_project_from_group(arguments)
+        elif name == "list_group_members":
+            result = await _handle_list_group_members(arguments)
+        elif name == "grant_group_access":
+            result = await _handle_grant_group_access(arguments)
+        elif name == "revoke_group_access":
+            result = await _handle_revoke_group_access(arguments)
+        elif name == "list_group_access":
+            result = await _handle_list_group_access(arguments)
+        elif name == "search_group_knowledge":
+            result = await _handle_search_group_knowledge(arguments)
+        elif name == "get_group_context":
+            result = await _handle_get_group_context(arguments)
+        elif name == "compile_group_knowledge":
+            result = await _handle_compile_group_knowledge(arguments)
+        elif name == "ask_group":
+            result = await _handle_ask_group(arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
     except Exception as exc:
@@ -4610,6 +4983,443 @@ async def _handle_list_personas(args: dict) -> dict:
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return {"personas": resp.json()}
+
+
+def _group_api_config() -> tuple[str, str]:
+    """(api_url, api_key) for the project-group routes; no org needed."""
+    config = load_config()
+    if not config.sync.api_key:
+        raise Exception("Not authenticated. Run 'sfs auth login' first.")
+    return config.sync.api_url.rstrip("/"), config.sync.api_key
+
+
+async def _group_config(args: dict) -> tuple[str, str, str]:
+    """Resolve (api_url, api_key, org_id) for the org-scoped group routes.
+
+    ``org_id`` comes from the tool arg; when absent it falls back to the
+    server-side default org (``sfs config default-org``), mirroring the CLI's
+    ``--org`` resolution.
+    """
+    api_url, api_key = _group_api_config()
+
+    org_id = _org_id_arg(args)
+    if not org_id:
+        import httpx
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(
+                f"{api_url}/api/v1/auth/me",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+        if resp.status_code >= 400:
+            raise Exception(_helper_error_message(resp))
+        org_id = (resp.json() or {}).get("default_org_id")
+        if not org_id:
+            raise Exception(
+                "No org specified. Pass org_id, or set a default org with "
+                "'sfs config default-org'."
+            )
+    return api_url, api_key, org_id
+
+
+async def _group_slug_to_id(
+    api_url: str, api_key: str, org_id: str, slug: str
+) -> str:
+    """Resolve a group's org-scoped slug to its id via the group list."""
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        raise Exception(_helper_error_message(resp))
+    groups = resp.json()
+    if isinstance(groups, dict):
+        raise Exception("Unexpected API response listing project groups.")
+    for group in groups or []:
+        if group.get("slug") == slug:
+            return group["id"]
+    raise Exception(f"No project group with slug '{slug}' found in this org.")
+
+
+async def _handle_list_project_groups(args: dict) -> dict:
+    try:
+        api_url, api_key, org_id = await _group_config(args)
+    except Exception as exc:
+        return {"error": str(exc)}
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
+    return {"groups": resp.json()}
+
+
+async def _handle_get_project_group(args: dict) -> dict:
+    slug = (args.get("slug") or "").strip()
+    if not slug:
+        return {"error": "slug is required."}
+    try:
+        api_url, api_key, org_id = await _group_config(args)
+        group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
+    except Exception as exc:
+        return {"error": str(exc)}
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
+    return {"group": resp.json()}
+
+
+async def _handle_create_project_group(args: dict) -> dict:
+    name = (args.get("name") or "").strip()
+    if not name:
+        return {"error": "name is required."}
+    try:
+        api_url, api_key, org_id = await _group_config(args)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict = {"name": name}
+    slug = args.get("slug")
+    if isinstance(slug, str) and slug.strip():
+        body["slug"] = slug.strip()
+    description = args.get("description")
+    if isinstance(description, str) and description.strip():
+        body["description"] = description.strip()
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
+    return {"group": resp.json()}
+
+
+async def _handle_delete_project_group(args: dict) -> dict:
+    slug = (args.get("slug") or "").strip()
+    if not slug:
+        return {"error": "slug is required."}
+    try:
+        api_url, api_key, org_id = await _group_config(args)
+        group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
+    except Exception as exc:
+        return {"error": str(exc)}
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.delete(
+            f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
+    return {"deleted": True, "group_id": group_id}
+
+
+async def _handle_update_project_group(args: dict) -> dict:
+    slug = (args.get("slug") or "").strip()
+    if not slug:
+        return {"error": "slug is required."}
+    body: dict = {}
+    for arg_name, field in (("name", "name"), ("new_slug", "slug")):
+        value = args.get(arg_name)
+        if value is not None:
+            if not isinstance(value, str) or not value.strip():
+                return {"error": f"{arg_name} must be a non-empty string."}
+            body[field] = value.strip()
+    if "description" in args and args["description"] is not None:
+        if not isinstance(args["description"], str):
+            return {"error": "description must be a string."}
+        body["description"] = args["description"].strip() or None
+    if "compile_enabled" in args and args["compile_enabled"] is not None:
+        if not isinstance(args["compile_enabled"], bool):
+            return {"error": "compile_enabled must be true or false."}
+        body["compile_enabled"] = args["compile_enabled"]
+    if not body:
+        return {
+            "error": "Nothing to update: pass name, new_slug, description or compile_enabled."
+        }
+    try:
+        api_url, api_key, org_id = await _group_config(args)
+        group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
+    except Exception as exc:
+        return {"error": str(exc)}
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.patch(
+            f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
+    return {"group": resp.json()}
+
+
+async def _handle_add_project_to_group(args: dict) -> dict:
+    slug = (args.get("slug") or "").strip()
+    project_id = (args.get("project_id") or "").strip()
+    if not slug or not project_id:
+        return {"error": "slug and project_id are required."}
+    try:
+        api_url, api_key, org_id = await _group_config(args)
+        group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
+    except Exception as exc:
+        return {"error": str(exc)}
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.put(
+            f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}/projects/{_path_segment(project_id)}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
+    return {"group": resp.json()}
+
+
+async def _handle_remove_project_from_group(args: dict) -> dict:
+    slug = (args.get("slug") or "").strip()
+    project_id = (args.get("project_id") or "").strip()
+    if not slug or not project_id:
+        return {"error": "slug and project_id are required."}
+    try:
+        api_url, api_key, org_id = await _group_config(args)
+        group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
+    except Exception as exc:
+        return {"error": str(exc)}
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.delete(
+            f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}/projects/{_path_segment(project_id)}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
+    return {"group": resp.json()}
+
+
+async def _handle_list_group_members(args: dict) -> dict:
+    slug = (args.get("slug") or "").strip()
+    if not slug:
+        return {"error": "slug is required."}
+    try:
+        api_url, api_key, org_id = await _group_config(args)
+        group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
+    except Exception as exc:
+        return {"error": str(exc)}
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
+    detail = resp.json()
+    return {
+        "group_id": detail.get("id", group_id),
+        "slug": detail.get("slug", slug),
+        "members": detail.get("members", []),
+    }
+
+
+async def _handle_grant_group_access(args: dict) -> dict:
+    slug = (args.get("slug") or "").strip()
+    user_id = (args.get("user_id") or "").strip()
+    role = args.get("role")
+    if not slug or not user_id:
+        return {"error": "slug and user_id are required."}
+    if role not in ("reader", "editor", "admin"):
+        return {"error": "role must be one of reader, editor, admin."}
+    try:
+        api_url, api_key, org_id = await _group_config(args)
+        group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
+    except Exception as exc:
+        return {"error": str(exc)}
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.put(
+            f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}/members/{_path_segment(user_id)}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"role": role},
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
+    return {"group": resp.json()}
+
+
+async def _handle_revoke_group_access(args: dict) -> dict:
+    slug = (args.get("slug") or "").strip()
+    user_id = (args.get("user_id") or "").strip()
+    if not slug or not user_id:
+        return {"error": "slug and user_id are required."}
+    try:
+        api_url, api_key, org_id = await _group_config(args)
+        group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
+    except Exception as exc:
+        return {"error": str(exc)}
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.delete(
+            f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}/members/{_path_segment(user_id)}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
+    return {"group": resp.json()}
+
+
+async def _handle_list_group_access(args: dict) -> dict:
+    # Cross-org (GET /me/groups): never needs an org, so no default-org lookup.
+    try:
+        api_url, api_key = _group_api_config()
+    except Exception as exc:
+        return {"error": str(exc)}
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/me/groups",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
+    return {"groups": resp.json()}
+
+
+async def _handle_search_group_knowledge(args: dict) -> dict:
+    slug = (args.get("slug") or "").strip()
+    if not slug:
+        return {"error": "slug is required."}
+    try:
+        api_url, api_key, org_id = await _group_config(args)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    params: dict = {}
+    q = args.get("q")
+    if isinstance(q, str) and q.strip():
+        params["q"] = q.strip()
+    entry_type = args.get("entry_type")
+    if isinstance(entry_type, str) and entry_type.strip():
+        params["entry_type"] = entry_type.strip()
+    limit = args.get("limit")
+    if isinstance(limit, int):
+        params["limit"] = str(max(1, min(int(limit), 100)))
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(slug)}/knowledge/search",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params or None,
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
+    return {"hits": resp.json()}
+
+
+async def _handle_get_group_context(args: dict) -> dict:
+    slug = (args.get("slug") or "").strip()
+    if not slug:
+        return {"error": "slug is required."}
+    try:
+        api_url, api_key, org_id = await _group_config(args)
+    except Exception as exc:
+        return {"error": str(exc)}
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(slug)}/context",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
+    return {"context": resp.json()}
+
+
+async def _handle_compile_group_knowledge(args: dict) -> dict:
+    slug = (args.get("slug") or "").strip()
+    if not slug:
+        return {"error": "slug is required."}
+    try:
+        api_url, api_key, org_id = await _group_config(args)
+    except Exception as exc:
+        return {"error": str(exc)}
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(slug)}/compile",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
+    return {"context": resp.json()}
+
+
+async def _handle_ask_group(args: dict) -> dict:
+    slug = (args.get("slug") or "").strip()
+    question = (args.get("question") or "").strip()
+    if not slug:
+        return {"markdown": "Please provide a group slug.", "sources_cited": []}
+    if not question:
+        return {"markdown": "Please provide a question.", "sources_cited": []}
+
+    org_arg = _org_id_arg(args)
+    base_args: dict = {"slug": slug}
+    if org_arg:
+        base_args["org_id"] = org_arg
+
+    context_result = await _handle_get_group_context(dict(base_args))
+    if isinstance(context_result, dict) and "error" in context_result:
+        context_md = f"_(no compiled group context available: {context_result['error']})_"
+    else:
+        context_md = json.dumps(context_result, indent=2, default=str)
+
+    # The search route takes a 3–200 character substring; a longer question
+    # is clipped rather than rejected.
+    search_args: dict = {"slug": slug, "q": question[:200], "limit": 15}
+    if org_arg:
+        search_args["org_id"] = org_arg
+    search_result = await _handle_search_group_knowledge(search_args)
+    hits: list[dict] = []
+    if isinstance(search_result, dict) and "hits" in search_result:
+        hits = search_result["hits"]
+        search_md = json.dumps(hits, indent=2, default=str)
+    else:
+        search_md = json.dumps(search_result, indent=2, default=str)
+
+    sources_cited: list[dict] = []
+    for hit in hits:
+        entry_id = hit.get("entry_id")
+        if isinstance(entry_id, int):
+            cite: dict = {"type": "kb", "id": entry_id}
+            if hit.get("project_id"):
+                cite["project_id"] = hit["project_id"]
+            sources_cited.append(cite)
+
+    lines = [
+        f"# Research: {question}\n",
+        "## Group Context",
+        context_md,
+        "\n## Group Knowledge Base Matches",
+        search_md,
+        "\n---\n"
+        "*This is research material gathered from the group's compiled context "
+        "and its readable member projects' knowledge bases. Check the cited "
+        "sources for more detail.*",
+    ]
+    return {"markdown": "\n".join(lines), "sources_cited": sources_cited}
 
 
 async def _handle_get_persona(args: dict) -> dict:

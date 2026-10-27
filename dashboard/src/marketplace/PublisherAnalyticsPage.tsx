@@ -4,7 +4,7 @@ import MarketplaceNav from './MarketplaceNav';
 import type { FlooredCount, PublisherAnalytics, PublisherAnalyticsPackage } from '../api/client';
 import { Badge } from '../components/Badge';
 import EmptyState from '../components/EmptyState';
-import { Button, Card, Dialog, DialogFooter, DialogHeader, Input, Select, TableShell } from '../components/ui';
+import { Button, Card, Dialog, DialogFooter, DialogHeader, Input, PageContainer, PageHeader, Select, TableShell } from '../components/ui';
 import { useMarketplaceCategories, usePublisherAnalytics, useUpdatePackageSettings } from '../hooks/useMarketplace';
 import { useToast } from '../hooks/useToast';
 import { isTierGate } from './MarketplacePage';
@@ -227,21 +227,15 @@ export default function PublisherAnalyticsPage() {
   const analytics = usePublisherAnalytics(publisherId, days);
   const data = analytics.data;
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-5 px-4 py-7 sm:px-6">
+    <PageContainer width="wide">
       <MarketplaceNav />
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <Link to="/marketplace/publishers" className="text-xs text-text-tertiary hover:text-text-primary">Publishers</Link>
-          <h1 className="mt-1 text-2xl font-semibold tracking-tight text-text-primary">
-            {data ? <span className="font-mono">{data.namespace}</span> : 'Publisher'} analytics
-          </h1>
-          <p className="mt-1 max-w-3xl text-sm text-text-secondary">
-            Aggregates only. Counts under {data?.k_floor ?? 10} show as "&lt;{data?.k_floor ?? 10}", and the organizations
-            your installs come from are never shown.
-          </p>
-        </div>
-        <Select aria-label="Window" value={String(days)} onValueChange={(value) => setDays(Number(value))} options={DAY_OPTIONS} />
-      </header>
+      <PageHeader
+        breadcrumb={<Link to="/marketplace/publishers" className="hover:text-text-primary">Publishers</Link>}
+        title={<>{data ? <span className="font-mono">{data.namespace}</span> : 'Publisher'} analytics</>}
+        description={`Aggregates only. Counts under ${data?.k_floor ?? 10} show as "<${data?.k_floor ?? 10}", and the organizations your installs come from are never shown.`}
+        actions={<Select aria-label="Window" value={String(days)} onValueChange={(value) => setDays(Number(value))} options={DAY_OPTIONS} />}
+      />
+      <div className="space-y-5">
       {analytics.isLoading && <p className="text-sm text-text-tertiary">Loading analytics…</p>}
       {analytics.error && (isTierGate(analytics.error) ? (
         <Card className="p-4" role="status">
@@ -298,6 +292,7 @@ export default function PublisherAnalyticsPage() {
       {editing && publisherId && data && (
         <SettingsDialog publisherId={publisherId} item={editing} siblings={data.packages} onClose={() => setEditing(null)} />
       )}
-    </div>
+      </div>
+    </PageContainer>
   );
 }

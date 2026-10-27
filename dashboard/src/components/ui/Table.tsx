@@ -21,6 +21,8 @@ interface TableProps<T> {
   minWidth?: number;
   /** Shown in place of the rows when data is empty. Defaults to "No data". */
   emptyState?: ReactNode;
+  /** Accessible name for the scroll container; same behaviour as TableShell's `label`. */
+  label?: string;
 }
 
 interface TableShellProps {
@@ -33,6 +35,9 @@ interface TableShellProps {
   className?: string;
   /** Wrapper classes (e.g. spacing). */
   wrapperClassName?: string;
+  /** Accessible name for the scroll container. When set, the container is a
+   *  focusable region so keyboard users can scroll a table wider than it. */
+  label?: string;
 }
 
 /**
@@ -40,9 +45,12 @@ interface TableShellProps {
  * (expandable rows, bespoke cells). Keeps wide tables from overflowing the
  * page at narrow widths.
  */
-export function TableShell({ children, minWidth, bordered = false, className = '', wrapperClassName = '' }: TableShellProps) {
+export function TableShell({ children, minWidth, bordered = false, className = '', wrapperClassName = '', label }: TableShellProps) {
   return (
-    <div className={`overflow-x-auto ${bordered ? 'rounded-lg border border-border' : ''} ${wrapperClassName}`.trim()}>
+    <div
+      className={`overflow-x-auto outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${bordered ? 'rounded-lg border border-border' : ''} ${wrapperClassName}`.trim()}
+      {...(label ? { role: 'region', 'aria-label': label, tabIndex: 0 } : {})}
+    >
       <table
         className={`w-full text-left text-sm ${className}`.trim()}
         style={minWidth ? { minWidth: `${minWidth}px` } : undefined}
@@ -53,9 +61,12 @@ export function TableShell({ children, minWidth, bordered = false, className = '
   );
 }
 
-export function Table<T>({ columns, data, onRowClick, rowKey, minWidth, emptyState }: TableProps<T>) {
+export function Table<T>({ columns, data, onRowClick, rowKey, minWidth, emptyState, label }: TableProps<T>) {
   return (
-    <div className="overflow-x-auto">
+    <div
+      className="overflow-x-auto outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+      {...(label ? { role: 'region', 'aria-label': label, tabIndex: 0 } : {})}
+    >
       <table
         className="w-full border-separate border-spacing-0"
         style={minWidth ? { minWidth: `${minWidth}px` } : undefined}

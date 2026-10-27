@@ -114,7 +114,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     label: 'Manage',
     items: [
-      { to: '/settings/organization', label: 'Organization', icon: orgIcon, match: (p: string) => p === '/settings/organization', orgOnly: true },
+      { to: '/settings/organization', label: 'Organization', icon: orgIcon, match: (p: string) => p === '/settings/organization' || p.startsWith('/settings/organization/'), orgOnly: true },
       { to: '/settings/billing', label: 'Billing', icon: billingIcon, match: (p: string) => p === '/settings/billing' },
     ],
   },
@@ -125,7 +125,8 @@ const BOTTOM_ITEMS: NavItem[] = [
     to: '/settings',
     label: 'Settings',
     icon: settingsIcon,
-    match: (p: string) => p.startsWith('/settings') && p !== '/settings/billing' && p !== '/settings/organization',
+    match: (p: string) =>
+      p.startsWith('/settings') && p !== '/settings/billing' && p !== '/settings/organization' && !p.startsWith('/settings/organization/'),
   },
   { to: '/help', label: 'Help', icon: helpIcon, match: (p: string) => p === '/help' },
   { to: '/admin', label: 'Admin', icon: adminIcon, match: (p: string) => p === '/admin', adminOnly: true },
@@ -165,6 +166,11 @@ function SidebarLink({
           : 'border border-transparent text-text-secondary hover:text-text-primary hover:bg-surface-hover'
       }`}
       aria-current={active ? 'page' : undefined}
+      // Collapsed links show only an icon, and the tooltip only describes the
+      // link while it is open, so name the link here.
+      aria-label={
+        collapsed ? (badgeCount ? `${item.label} (${badgeCount} pending)` : item.label) : undefined
+      }
     >
       <span className="shrink-0 flex items-center justify-center w-4 h-4">{item.icon}</span>
       {!collapsed && (
@@ -354,6 +360,7 @@ export default function Layout() {
     <div className="flex">
       {/* ── Sidebar (desktop ≥md) ── */}
       <aside
+        aria-label="Sidebar"
         className="hidden md:flex flex-col shrink-0 h-screen sticky top-0"
         style={{
           width: collapsed ? 56 : 240,
@@ -437,19 +444,18 @@ export default function Layout() {
       {/* ── Content area ── */}
       <div className="flex-1 flex flex-col min-h-screen min-w-0">
         {/* ── Header (slim) ── */}
+        {/* Three grid tracks: the side tracks share the free space equally so
+            the tagline sits centred when there is room, and the middle track
+            can shrink to nothing, so the tagline can never run under the
+            actions. The tagline is hidden outright when the header (not the
+            viewport: the sidebar takes part of it) is too narrow to hold it
+            centred beside the actions. */}
         <header
-          className="relative flex items-center justify-between px-5 shrink-0 h-14 border-b border-border bg-bg-secondary"
+          className="@container/header relative grid grid-cols-[1fr_minmax(0,auto)_1fr] items-center gap-3 px-5 shrink-0 h-14 border-b border-border bg-bg-secondary"
         >
           <div className="shell-divider pointer-events-none absolute inset-x-10 top-0 h-px" />
-          {/* Center: brand tagline (the pre-redesign header treatment) */}
-          <span
-            className="hidden md:block absolute left-1/2 -translate-x-1/2 text-2xs font-semibold uppercase tracking-[0.18em] text-text-tertiary pointer-events-none select-none whitespace-nowrap"
-            aria-hidden="true"
-          >
-            Memory Layer For AI Agents
-          </span>
           {/* Left: Hamburger (mobile) + page area */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="col-start-1 row-start-1 flex items-center gap-2 min-w-0">
             <button
               className="md:hidden flex items-center justify-center w-8 h-8 rounded-md transition-colors hover:bg-surface-hover"
               onClick={() => setDrawerOpen(true)}
@@ -463,8 +469,16 @@ export default function Layout() {
             </button>
           </div>
 
+          {/* Center: brand tagline (the pre-redesign header treatment) */}
+          <span
+            className="col-start-2 row-start-1 hidden @min-[44rem]/header:block min-w-0 truncate text-center text-2xs font-semibold uppercase tracking-[0.18em] text-text-tertiary pointer-events-none select-none"
+            aria-hidden="true"
+          >
+            Memory Layer For AI Agents
+          </span>
+
           {/* Right: notification bell + ThemeToggle + Account menu */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="col-start-3 row-start-1 flex items-center justify-end gap-2">
             <IconButton
               label={`Inbox${notificationsUnread > 0 ? ` (${notificationsUnread} unread)` : ''}`}
               variant="ghost"

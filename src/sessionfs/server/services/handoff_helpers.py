@@ -33,9 +33,7 @@ from sessionfs.server.db.models import (
     HandoffEvent,
     KnowledgeEntry,
     KnowledgePage,
-    OrgMember,
     Project,
-    ProjectRepo,
     Session as SessionModel,
     TeamMember,
     Ticket,
@@ -91,89 +89,24 @@ async def write_event(
 
 
 async def _accessible_project_ids(db: AsyncSession, user_id: str) -> set[str]:
-    """Project IDs the user can read. Three access paths:
+    """Project IDs the user can read — the shared read predicate
+    (``auth.project_access.accessible_project_ids_subquery``):
 
     1. Owner — `Project.owner_id == user_id`
-    2. Org member — `Project.org_id IN (orgs the user belongs to)`
+    2. Org member — every project of an org the user belongs to
        (Codex R2 MEDIUM #2 — without this, a user added to an org but
        without a synced session for the org's repo would falsely lose
        access to org-project attachments at handoff claim time. Exactly
-       the Team handoff use case.)
-    3. Via shared git remote — `Project.git_remote_normalized ==
-       Session.git_remote_normalized` for some Session owned by the user
-       (matches existing wiki `_get_project_or_404` fallback).
+       the Team handoff use case.) When the org restricts visibility
+       (GitHub #101) only org admins/owners and group grantees qualify.
+    3. Captured session — a session the user owns is linked to the
+       project or sits on one of its repositories. Never in an org that
+       restricts visibility.
     """
-    owner_ids = (
-        await db.execute(
-            select(Project.id).where(Project.owner_id == user_id)
-        )
-    ).scalars().all()
-    org_member_ids = (
-        await db.execute(
-            select(Project.id)
-            .join(OrgMember, OrgMember.org_id == Project.org_id)
-            .where(OrgMember.user_id == user_id)
-        )
-    ).scalars().all()
-    # P2 (§3.3 B2): primary path — collect distinct project_ids from
-    # the user's sessions (session.project_id, not remote-based join).
-    # After multi-repo, project.git_remote_normalized is only the primary
-    # remote — the old join-by-remote would miss projects where the
-    # user has sessions only on non-primary repos.
-    via_session_project_ids = (
-        await db.execute(
-            select(SessionModel.project_id)
-            .where(
-                SessionModel.user_id == user_id,
-                SessionModel.project_id.isnot(None),
-            )
-            .distinct()
-        )
-    ).scalars().all()
-    # Legacy fallback: sessions with NULL project_id (pre-dating
-    # session→project linking, migration 036) matched by git_remote.
-    via_legacy_remote_ids = (
-        await db.execute(
-            select(Project.id)
-            .join(
-                SessionModel,
-                SessionModel.git_remote_normalized == Project.git_remote_normalized,
-            )
-            # A repo-reclaimed project never matches by its former remote.
-            # A NULL legacy remote (structural reclaimed state, or a remote
-            # nulled by migration 073 after losing a conflict) must not
-            # join either: `== None` would render IS NULL and match every
-            # session that has no remote.
-            .where(
-                SessionModel.user_id == user_id,
-                Project.repo_reclaimed_at.is_(None),
-                Project.git_remote_normalized.isnot(None),
-            )
-            .distinct()
-        )
-    ).scalars().all()
-    # P2-fix: also match legacy sessions through project_repos (non-primary
-    # repos).  The legacy path above only joins on the primary remote; a
-    # session on a linked non-primary repo with NULL project_id would be
-    # missed otherwise.
-    via_repo_remote_ids = (
-        await db.execute(
-            select(ProjectRepo.project_id)
-            .join(
-                SessionModel,
-                SessionModel.git_remote_normalized == ProjectRepo.git_remote_normalized,
-            )
-            .where(SessionModel.user_id == user_id)
-            .distinct()
-        )
-    ).scalars().all()
-    return (
-        set(owner_ids)
-        | set(org_member_ids)
-        | set(via_session_project_ids)
-        | set(via_legacy_remote_ids)
-        | set(via_repo_remote_ids)
-    )
+    from sessionfs.server.auth.project_access import accessible_project_ids_subquery
+
+    sub = await accessible_project_ids_subquery(db, user_id)
+    return set((await db.execute(sub)).scalars().all())
 
 
 async def resolve_handoff_source_project(

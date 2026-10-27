@@ -3,8 +3,9 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, type JiraPreview, type Ticket } from '../../api/client';
+import { ApiError, type JiraPreview, type JiraTicketTemplates, type Ticket } from '../../api/client';
 import { axe } from '../../test/axe';
+import { defaultJiraTemplateChoice as defaultTemplateChoice } from '../../utils/jira';
 import { JiraTicketSection, PromoteToJiraDialog } from './JiraPromote';
 
 /**
@@ -19,6 +20,7 @@ const mockUseJiraLink = vi.fn();
 const mockUseJiraPreview = vi.fn();
 const mockUsePublishJira = vi.fn();
 const mockUseUnlinkJira = vi.fn();
+const mockUseTicketJiraTemplates = vi.fn();
 const addToast = vi.fn();
 
 vi.mock('../../hooks/useJiraTickets', () => ({
@@ -26,6 +28,7 @@ vi.mock('../../hooks/useJiraTickets', () => ({
   useJiraPreview: (...args: unknown[]) => mockUseJiraPreview(...args),
   usePublishJira: (...args: unknown[]) => mockUsePublishJira(...args),
   useUnlinkJira: (...args: unknown[]) => mockUseUnlinkJira(...args),
+  useTicketJiraTemplates: (...args: unknown[]) => mockUseTicketJiraTemplates(...args),
 }));
 vi.mock('../../hooks/useToast', () => ({ useToast: () => ({ addToast }) }));
 
@@ -100,9 +103,26 @@ const PREVIEW: JiraPreview = {
   key_source: 'claude',
   ticket_id: 't_1',
   project_id: 'proj_1',
+  template: { slug: 'agile', name: 'Agile Standard', version: null },
 };
 
+const CHOICES: JiraTicketTemplates = {
+  templates: [
+    { slug: 'agile', name: 'Agile Standard', version: null, builtin: true },
+    { slug: 'bug', name: 'Bug Report', version: null, builtin: true },
+    { slug: 'design-lite', name: 'Design Lite', version: 3, builtin: false },
+  ],
+  inherited_default: { slug: 'agile', name: 'Agile Standard', version: null },
+  pinned: null,
+};
+
+function choicesResult(data: JiraTicketTemplates | null = CHOICES) {
+  return { data, isSuccess: !!data, isError: !data, refetch: vi.fn() };
+}
+
 beforeEach(() => {
+  mockUseTicketJiraTemplates.mockReset();
+  mockUseTicketJiraTemplates.mockReturnValue(choicesResult());
   mockUseJiraLink.mockReset();
   mockUseJiraPreview.mockReset();
   mockUsePublishJira.mockReset();
@@ -254,6 +274,8 @@ describe('PromoteToJiraDialog', () => {
             },
           ],
           confirm: true,
+          template: 'agile',
+          template_version: null,
         },
       });
     });
@@ -324,5 +346,129 @@ describe('PromoteToJiraDialog', () => {
 
     await screen.findByRole('textbox', { name: 'Summary' });
     expect(screen.getByRole('button', { name: 'Publish' })).toBeDisabled();
+  });
+
+  it('defaults the template picker to the inherited template and previews with it', async () => {
+    mockUseJiraPreview.mockReturnValue({ data: PREVIEW, isLoading: false, isError: false, error: null });
+    const { container } = renderNode(
+      <PromoteToJiraDialog projectId="proj_1" ticketId="t_1" onClose={() => {}} />,
+    );
+    await screen.findByRole('textbox', { name: 'Summary' });
+    expect(screen.getByRole('button', { name: /Template/ })).toHaveTextContent('Agile Standard');
+    expect(mockUseJiraPreview).toHaveBeenLastCalledWith('proj_1', 't_1', true, 'agile');
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('re-previews with the picked template and publishes its slug and version', async () => {
+    mockUseJiraPreview.mockImplementation(
+      (_p: string, _t: string, _enabled: boolean, template?: string) => ({
+        data:
+          template === 'design-lite'
+            ? { ...PREVIEW, template: { slug: 'design-lite', name: 'Design Lite', version: 3 } }
+            : PREVIEW,
+        dataUpdatedAt: template === 'design-lite' ? 2 : 1,
+        isLoading: false,
+        isError: false,
+        error: null,
+      }),
+    );
+    const mutateAsync = vi.fn().mockResolvedValue({ issue_key: 'KEY-1' });
+    mockUsePublishJira.mockReturnValue({ mutateAsync, isPending: false });
+    renderNode(<PromoteToJiraDialog projectId="proj_1" ticketId="t_1" onClose={() => {}} />);
+    const user = userEvent.setup();
+
+    await screen.findByRole('textbox', { name: 'Summary' });
+    await user.click(screen.getByRole('button', { name: /Template/ }));
+    await user.click(screen.getByRole('option', { name: 'Design Lite v3' }));
+    expect(mockUseJiraPreview).toHaveBeenLastCalledWith('proj_1', 't_1', true, 'design-lite');
+
+    await user.click(screen.getByRole('button', { name: 'Publish' }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    expect(mutateAsync.mock.calls[0][0].body).toMatchObject({
+      template: 'design-lite',
+      template_version: 3,
+    });
+  });
+
+  it('shows a rebuild notice instead of an error when the template changed before publish', async () => {
+    const refetch = vi.fn();
+    mockUseJiraPreview.mockReturnValue({
+      data: PREVIEW, isLoading: false, isError: false, error: null, refetch,
+    });
+    mockUsePublishJira.mockReturnValue({
+      mutateAsync: vi.fn().mockRejectedValue(apiError('template_changed')),
+      isPending: false,
+    });
+    renderNode(<PromoteToJiraDialog projectId="proj_1" ticketId="t_1" onClose={() => {}} />);
+    const user = userEvent.setup();
+
+    await screen.findByRole('textbox', { name: 'Summary' });
+    await user.click(screen.getByRole('button', { name: 'Publish' }));
+    expect(await screen.findByText(/The story template changed since this draft was built/)).toBeInTheDocument();
+    expect(refetch).toHaveBeenCalled();
+  });
+
+  it('defaults to the pinned archived template, labelled, and publishes with it', async () => {
+    mockUseTicketJiraTemplates.mockReturnValue(
+      choicesResult({
+        ...CHOICES,
+        templates: [
+          ...CHOICES.templates,
+          { slug: 'old-tpl', name: 'Old', version: 2, builtin: false, archived: true },
+        ],
+        pinned: { slug: 'old-tpl', version: 2 },
+      }),
+    );
+    mockUseJiraPreview.mockReturnValue({
+      data: { ...PREVIEW, template: { slug: 'old-tpl', name: 'Old', version: 2 } },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    const mutateAsync = vi.fn().mockResolvedValue({ issue_key: 'KEY-1' });
+    mockUsePublishJira.mockReturnValue({ mutateAsync, isPending: false });
+    renderNode(<PromoteToJiraDialog projectId="proj_1" ticketId="t_1" onClose={() => {}} />);
+    const user = userEvent.setup();
+
+    await screen.findByRole('textbox', { name: 'Summary' });
+    expect(screen.getByRole('button', { name: /Template/ })).toHaveTextContent('Old v2 (archived)');
+    expect(mockUseJiraPreview).toHaveBeenLastCalledWith('proj_1', 't_1', true, 'old-tpl');
+    await user.click(screen.getByRole('button', { name: 'Publish' }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    expect(mutateAsync.mock.calls[0][0].body).toMatchObject({ template: 'old-tpl', template_version: 2 });
+  });
+
+  it('falls back to the inherited draft when the template list is unavailable', async () => {
+    mockUseTicketJiraTemplates.mockReturnValue(choicesResult(null));
+    mockUseJiraPreview.mockReturnValue({ data: PREVIEW, isLoading: false, isError: false, error: null });
+    renderNode(<PromoteToJiraDialog projectId="proj_1" ticketId="t_1" onClose={() => {}} />);
+    await screen.findByRole('textbox', { name: 'Summary' });
+    expect(screen.queryByRole('button', { name: /Template/ })).not.toBeInTheDocument();
+    expect(mockUseJiraPreview).toHaveBeenLastCalledWith('proj_1', 't_1', true, undefined);
+  });
+});
+
+describe('defaultTemplateChoice', () => {
+  it('prefers the pinned template while it is still selectable', () => {
+    expect(defaultTemplateChoice({ ...CHOICES, pinned: { slug: 'design-lite', version: 2 } })).toBe(
+      'design-lite',
+    );
+  });
+
+  it('keeps an archived pinned template the server still lists for this ticket', () => {
+    const choices = {
+      ...CHOICES,
+      templates: [
+        ...CHOICES.templates,
+        { slug: 'old-tpl', name: 'Old', version: 2, builtin: false, archived: true },
+      ],
+      pinned: { slug: 'old-tpl', version: 2 },
+    };
+    expect(defaultTemplateChoice(choices)).toBe('old-tpl');
+  });
+
+  it('falls back to the inherited default when the pin is no longer listed', () => {
+    expect(defaultTemplateChoice({ ...CHOICES, pinned: { slug: 'gone', version: 1 } })).toBe('agile');
+    expect(defaultTemplateChoice(CHOICES)).toBe('agile');
   });
 });

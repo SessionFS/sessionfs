@@ -292,12 +292,17 @@ estimate the budget from their own total and the percentage.
 
 ## Actions
 
-Besides answering, the helper can propose two changes for you:
+Besides answering, the helper can propose five changes for you:
 
 - **Turn Auto Narrative on or off** for one or more projects (for example
   "turn on narratives for all my projects").
 - **Move sessions to Trash** (for example "clean up my scratch sessions from
-  last month").
+  last month" or "trash every session that used DeepSeek").
+- **Create a ticket** with a title, description, acceptance criteria, priority
+  and optional assignee (for example "file a task for the webhook retry").
+- **Assign a ticket** to a persona (for example "assign tk_… to Atlas").
+- **Comment on a ticket** with a plain user comment (for example "note on
+  tk_… that the fix is verified").
 
 The helper never makes a change itself. Each proposal appears in the answer as
 a card listing every target and what will happen to it — *will change*,
@@ -320,6 +325,38 @@ Proposals follow the org's helper retention window
 once the decision is older than the window, and unconfirmed ones once they
 have expired and the expiry is older than the window.
 
+Ticket cards are editable before you confirm: the create form's title,
+description, acceptance criteria, priority and assignee are pre-filled from the
+helper's draft and can be changed, and the comment form's body can be edited
+the same way. Confirm creates the ticket or comment under your own name, with
+a provenance line appended to the description or comment, and links the new
+ticket from the card. A ticket a captured-session reader creates starts
+*suggested* so a project editor can approve it; a helper comment is always a
+plain comment (`verdict_trusted` is always false), never a trusted review
+verdict — a body with any line that starts with a review verdict marker is
+refused. Assignment follows the ticket route's rules: only the ticket's creator
+or a project admin can reassign, and someone who can read but not edit the
+project can't reassign a ticket that is in progress or held by a work queue
+(reassigning an approved, not-yet-started ticket sends it back to
+*suggested*). A draft longer than the ticket limits is refused rather than
+cut short, and confirm is refused if the ticket moved to another project
+after the proposal.
+
+`trash_sessions` takes either `session_ids` the read tools returned, or
+filters — `model`, `provider`, `project_id`, `source_tool`, `days`, `since`,
+`until` — that the server resolves to the caller's own, non-deleted sessions
+inside the conversation's scope (never both). Whether filters were given is
+decided after parsing, so blank values (`" "`, `[""]`, an empty date) don't
+count and a call with nothing else is refused. The resolved ids are ordered by
+last activity, newest first (id breaks ties), so the same filters always
+propose the same batch. At most 100 are proposed; when more match, the result
+says "N sessions match …; this proposal covers the first 100" and the card
+summary reads "Move 100 session(s) to Trash (first 100 of N matching)". The
+filters are stored on the proposal as `params.match` (with the `matched` count)
+for the audit trail; confirm acts on `params.session_ids` exactly, re-checking
+ownership per target. The helper never trashes sessions it picked from text
+mentions of a model.
+
 Cleanup is reversible: sessions go to **Trash**, not away. Restore them from
 **Sessions → Trash** within 30 days; after that they can be purged for good.
 
@@ -329,6 +366,99 @@ returns the current status (`pending`, `confirmed`, `failed`, `cancelled` or
 `expired`). Confirming an expired action returns 409 `action_expired`, a
 cancelled one 409 `action_cancelled`; confirming or cancelling an action that
 was already decided otherwise returns its stored state unchanged.
+
+## What it can read
+
+### Sessions by model
+
+`Session.model_id` / `model_provider` come from the capture manifest, so the
+model is the one the capturing tool reported (a Claude Code session pointed at
+DeepSeek shows a DeepSeek model). The unknown-bucket rules and the filters
+live in `services/session_models.py`, shared with `GET /api/v1/sessions` and
+`GET /api/v1/sessions/models`.
+
+- `list_session_models` (`project_id`, `source_tool`, `days`, `since`,
+  `until`) — model buckets across the caller's in-scope sessions, grouped by
+  model id and provider, with session counts, capturing tools and first/last
+  dates. NULL, `""`, `"unknown"` and `"<synthetic>"` model ids are one
+  "unknown" bucket (whatever their provider), as in the dashboard menu.
+- `search_sessions`, `list_recent_sessions`, `sessions_touching_path` and
+  `trash_sessions` accept `model` and `provider` (a list; a bare string is
+  accepted too, at most 20 values of 100 characters). Matching is a
+  case-insensitive substring (`ILIKE '%value%' ESCAPE '\'`, wildcards in the
+  value escaped), so `deepseek` matches `deepseek-v4-pro` and
+  `DeepSeek-Flash`; values OR together. `unknown` selects the unknown bucket
+  (for `provider`: no recorded provider); a family value never matches an
+  unknown-bucket row.
+- `days` / `since` / `until` (`YYYY-MM-DD`, UTC) bound `updated_at`; `until`
+  is inclusive of that day.
+- `search_sessions` needs `query` only when no metadata filter is given;
+  without one it lists every matching session. `list_recent_sessions` and
+  `search_sessions` take `offset` and allow up to 100 per page (a `limit`
+  above 20 with a text query is refused). Their result starts with
+  `Showing 21–40 of 57 sessions (model ~ deepseek). Next page: offset=40.`
+  Titles are clipped to 120 characters, and a page stops early rather than
+  run past the 40,000-character result cap; the note and the audit refs count
+  only the lines returned. Text-search pages order by rank, then recency, then
+  id, so tied rows never repeat or skip across pages.
+- In a project-scoped conversation, a `project_id` for another project is
+  refused ("This conversation is limited to project A; start an unscoped
+  conversation to work with project B.") by every session tool and the trash
+  proposal, instead of being swapped for the scope project.
+
+Every session line carries the model next to the tool:
+`[session:ses_…] Title [claude-code] model: deepseek-v4-pro …` (the provider
+is added in parentheses when the id doesn't name it; control characters and
+brackets in the client-supplied values are blanked).
+
+The provider's unknown bucket (NULL, `""`, `unknown`) is compared after
+trimming and lower-casing, in SQL and in Python alike.
+
+The system prompt (v7) tells the model to call `list_session_models` first for
+any question about models or LLMs, to filter by model or provider rather than
+text-search for model names, that the capturing tool reports the model, and
+to mention unknown-model sessions when they matter, and which tools page
+(`list_recent_sessions`, `search_sessions`) and how.
+
+### Project work items
+
+Beyond sessions and project knowledge, the helper reads the project's own work
+items and people — still only what you can already see:
+
+- **Tickets** — `list_tickets` / `get_ticket`. Work items (ids like `tk_…`),
+  with status, priority, assignee, project, acceptance criteria, dependencies
+  and the last 10 comments.
+- **Wiki pages** — `list_wiki_pages` / `get_wiki_page`. A project's knowledge
+  pages, with the body capped at 20k characters.
+- **Agent runs** — `list_agent_runs` / `get_agent_run`. CI review runs, with
+  persona, status, severity and findings.
+- **Personas** — `list_personas`. The project's own personas and the org
+  personas visible from it, with role and active state.
+
+The tools apply the same plan gates as the routes (`check_project_feature`):
+tickets need `agent_tickets`, agent runs `agent_runs`, personas
+`agent_personas`; a gated project yields "not available on this project's
+plan" (or not-found for a single ticket) instead of data. The wiki read routes
+have no plan gate, so neither do the wiki tools. Ticket descriptions, each
+acceptance criterion, run summaries and finding messages are capped with
+"…[truncated]", and `execute` caps any one tool result at 40,000 characters
+after redaction.
+
+In a project-scoped conversation nothing from another project comes back. The
+session tools use `project_session_clause(project, legacy_only=True)`: sessions
+attributed to the project, plus sessions with NO project on one of its remotes.
+A session attributed to project B on project A's remote stays out of A's
+scope. (The access predicate keeps the wider form.)
+
+`[ticket:…]` / `[wiki:…]` citations are accepted only for ids a tool returned
+this turn, and only in projects the caller can read inside the turn's scope.
+A ticket id becomes citable only after the tool resolved it to a readable,
+in-scope ticket: parent, dependency and agent-run ticket ids that don't
+resolve are not shown as citable markers.
+
+Every line a tool returns carries a source date as `YYYY-MM-DD (Nd ago)`. When
+the newest source for a claim is more than 7 days old, the helper says so with
+"As of \<date\>, ..." so you can see the information may be stale.
 
 ## API
 
@@ -479,7 +609,12 @@ or messages never deletes ledger rows.
 
 Every transcript excerpt, summary, and KB text sent to the provider is redacted
 with the org's DLP policy (default policy for personal scope). Each turn writes
-one retrieval-audit context and one event per tool call (`source="helper"`) with
-sanitized arguments and returned refs, so an org can answer "what did the helper
-send to the model". Logs carry only ids, token counts, durations, and stop
+one retrieval-audit context and, per tool call, one event per project the call
+read from (`source="helper"`), each with the sanitized arguments and returned
+refs, so an org can answer "what did the helper send to the model". The
+per-project fan-out is deliberate: each project's audit trail lists what was
+read from it. Tools name a project only when it returned rows, so an unscoped
+`list_tickets` over five projects where two have matches writes two events. An
+identical repeated call in the same turn is answered from the turn's cache and
+writes no event. Logs carry only ids, token counts, durations, and stop
 reasons — never the key, prompt text, or excerpt text.

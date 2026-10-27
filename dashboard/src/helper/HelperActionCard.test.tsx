@@ -22,7 +22,7 @@ const TRASH: TurnAction = {
   summary: 'Move 2 session(s) to Trash',
   expires_at: inMinutes(14),
   targets: [
-    { id: 'ses_a', name: 'Fix webhook retry', change: 'will_change', before: 'active', after: 'trashed', tool: 'claude-code', created_at: '2026-10-01T10:00:00Z' },
+    { id: 'ses_a', name: 'Fix webhook retry', change: 'will_change', before: 'active', after: 'trashed', tool: 'claude-code', model: 'deepseek-v4-pro', created_at: '2026-10-01T10:00:00Z' },
     { id: 'ses_b', name: 'Scratch notes', change: 'will_change', before: 'active', after: 'trashed' },
     { id: 'ses_c', name: 'Old spike', change: 'skipped', reason: 'already_trashed' },
   ],
@@ -37,6 +37,44 @@ const NARRATIVE: TurnAction = {
     { id: 'proj_1', name: 'Acme', change: 'will_change', before: false, after: true },
     { id: 'proj_2', name: 'Docs', change: 'unchanged', before: true, after: true },
   ],
+};
+
+const CREATE_TICKET: TurnAction = {
+  id: ID,
+  kind: 'create_ticket',
+  summary: 'Create a task ticket in Acme',
+  expires_at: inMinutes(14),
+  targets: [{ id: 'proj_1', name: 'Acme', change: 'will_change' }],
+  params: {
+    project_id: 'proj_1',
+    kind: 'task',
+    title: 'Fix webhook retry',
+    description: 'Retry with backoff.',
+    acceptance_criteria: ['Retries 3 times', 'Logs failures'],
+    priority: 'high',
+    assigned_to: 'Atlas',
+  },
+};
+
+const ASSIGN_TICKET: TurnAction = {
+  id: ID,
+  kind: 'assign_ticket',
+  summary: 'Assign Fix webhook retry to Atlas',
+  expires_at: inMinutes(14),
+  targets: [
+    { id: 'tk_1', name: 'Fix webhook retry', change: 'will_change', before: null, after: 'Atlas' },
+    { id: 'tk_2', name: 'Scratch notes', change: 'unchanged', before: 'Atlas', after: 'Atlas' },
+  ],
+  params: { ticket_id: 'tk_1', assigned_to: 'Atlas' },
+};
+
+const COMMENT_TICKET: TurnAction = {
+  id: ID,
+  kind: 'comment_ticket',
+  summary: 'Comment on Fix webhook retry',
+  expires_at: inMinutes(14),
+  targets: [{ id: 'tk_1', name: 'Fix webhook retry', change: 'will_change' }],
+  params: { ticket_id: 'tk_1', body: 'Looks good to me.' },
 };
 
 function record(a: TurnAction, patch: Partial<HelperAction>): HelperAction {
@@ -85,7 +123,7 @@ describe('HelperActionCard', () => {
     expect(screen.getByText('2 will change · 1 skipped')).toBeInTheDocument();
     const list = screen.getByRole('list', { name: /Targets of/ });
     expect(within(list).getAllByRole('listitem')).toHaveLength(3);
-    expect(within(list).getByText(/claude-code · Oct 1, 2026/)).toBeInTheDocument();
+    expect(within(list).getByText(/claude-code · deepseek-v4-pro · Oct 1, 2026/)).toBeInTheDocument();
     expect(within(list).getByText(/Already in Trash/)).toBeInTheDocument();
     expect(screen.getByText(/Expires in 1[34] min/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Move to Trash' })).toBeInTheDocument();
@@ -102,7 +140,7 @@ describe('HelperActionCard', () => {
     const { qc } = renderCard(TRASH);
     const invalidate = vi.spyOn(qc, 'invalidateQueries');
     await userEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
-    expect(client.confirmHelperAction).toHaveBeenCalledWith(ID);
+    expect(client.confirmHelperAction).toHaveBeenCalledWith(ID, undefined);
     expect(await screen.findByText('Partly applied')).toBeInTheDocument();
     expect(screen.getByText('In Trash')).toBeInTheDocument();
     expect(screen.getByText('Failed')).toBeInTheDocument();
@@ -175,6 +213,112 @@ describe('HelperActionCard', () => {
     expect(await axe(container)).toHaveNoViolations();
     await userEvent.click(screen.getByRole('button', { name: 'Move to Trash' }));
     await waitFor(() => expect(screen.getByText('Done')).toBeInTheDocument());
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('seeds the create-ticket editor from the stored draft', () => {
+    renderCard(CREATE_TICKET);
+    expect(screen.getByRole('heading', { name: 'Create a task ticket' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Title')).toHaveValue('Fix webhook retry');
+    expect(screen.getByLabelText('Description')).toHaveValue('Retry with backoff.');
+    expect(screen.getByLabelText('Acceptance criteria')).toHaveValue('Retries 3 times\nLogs failures');
+    expect(screen.getByLabelText('Assignee')).toHaveValue('Atlas');
+    expect(screen.getByText('high')).toBeInTheDocument();
+  });
+
+  it('confirm sends the edited create-ticket body and links the new ticket', async () => {
+    client.confirmHelperAction.mockResolvedValue(
+      record(CREATE_TICKET, {
+        status: 'confirmed',
+        result: { targets: [{ id: 'proj_1', ok: true, error: null, ticket_id: 'tk_0123456789abcdef' }] },
+      }),
+    );
+    renderCard(CREATE_TICKET);
+    const title = screen.getByLabelText('Title');
+    await userEvent.clear(title);
+    await userEvent.type(title, 'Add retry with exponential backoff');
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(client.confirmHelperAction).toHaveBeenCalledWith(ID, {
+      title: 'Add retry with exponential backoff',
+      description: 'Retry with backoff.',
+      acceptance_criteria: ['Retries 3 times', 'Logs failures'],
+      priority: 'high',
+    });
+    expect(await screen.findByText('Created')).toBeInTheDocument();
+    expect(screen.getByText(/tk_0123456789abcdef/)).toBeInTheDocument();
+  });
+
+  it('sends null when the drafted assignee is cleared', async () => {
+    client.confirmHelperAction.mockResolvedValue(record(CREATE_TICKET, { status: 'confirmed' }));
+    renderCard(CREATE_TICKET);
+    await userEvent.clear(screen.getByLabelText('Assignee'));
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(client.confirmHelperAction).toHaveBeenCalledWith(ID, expect.objectContaining({ assigned_to: null }));
+  });
+
+  it('sends a changed assignee and omits a blank one with no draft', async () => {
+    client.confirmHelperAction.mockResolvedValue(record(CREATE_TICKET, { status: 'confirmed' }));
+    const { unmount } = renderCard(CREATE_TICKET);
+    const assignee = screen.getByLabelText('Assignee');
+    await userEvent.clear(assignee);
+    await userEvent.type(assignee, '  Scribe ');
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(client.confirmHelperAction).toHaveBeenLastCalledWith(ID, expect.objectContaining({ assigned_to: 'Scribe' }));
+    unmount();
+
+    renderCard({ ...CREATE_TICKET, params: { ...CREATE_TICKET.params, assigned_to: null } });
+    await userEvent.type(screen.getByLabelText('Assignee'), '   ');
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(client.confirmHelperAction.mock.lastCall?.[1]).not.toHaveProperty('assigned_to');
+  });
+
+  it('uses "an" before a kind that starts with a vowel', () => {
+    renderCard({ ...CREATE_TICKET, params: { ...CREATE_TICKET.params, kind: 'issue' } });
+    expect(screen.getByRole('heading', { name: 'Create an issue ticket' })).toBeInTheDocument();
+  });
+
+  it('shows the assign persona without an editor', () => {
+    renderCard(ASSIGN_TICKET);
+    expect(screen.getByRole('heading', { name: 'Assign to Atlas' })).toBeInTheDocument();
+    const list = screen.getByRole('list', { name: /Targets of/ });
+    expect(within(list).getByText(/unassigned → Atlas/)).toBeInTheDocument();
+    expect(within(list).getByText(/Already Atlas/)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Title')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Comment')).not.toBeInTheDocument();
+  });
+
+  it('edits and posts the comment body', async () => {
+    client.confirmHelperAction.mockResolvedValue(
+      record(COMMENT_TICKET, {
+        status: 'confirmed',
+        result: { targets: [{ id: 'tk_1', ok: true, error: null, comment_id: 'tc_1' }] },
+      }),
+    );
+    renderCard(COMMENT_TICKET);
+    expect(screen.getByRole('heading', { name: 'Comment on Fix webhook retry' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Comment')).toHaveValue('Looks good to me.');
+    const body = screen.getByLabelText('Comment');
+    await userEvent.clear(body);
+    await userEvent.type(body, 'Tested and it works.');
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(client.confirmHelperAction).toHaveBeenCalledWith(ID, { body: 'Tested and it works.' });
+    expect(await screen.findByText('Commented')).toBeInTheDocument();
+  });
+
+  it('explains a comment refused because the ticket moved', async () => {
+    client.confirmHelperAction.mockResolvedValue(
+      record(COMMENT_TICKET, {
+        status: 'failed',
+        result: { targets: [{ id: 'tk_1', ok: false, error: 'ticket_moved' }] },
+      }),
+    );
+    renderCard(COMMENT_TICKET);
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(await screen.findByText(/The ticket moved to another project/)).toBeInTheDocument();
+  });
+
+  it('has no axe violations for the create-ticket editor', async () => {
+    const { container } = renderCard(CREATE_TICKET);
     expect(await axe(container)).toHaveNoViolations();
   });
 });

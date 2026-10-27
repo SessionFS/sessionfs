@@ -368,6 +368,11 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 - **Project editing is limited to the owner and org members.** People who only synced a session from a project's repository can still read it and add knowledge entries, tickets, comments and agent runs, but changing the project returns `403 project_edit_forbidden`. See [Project Context](/project-context/).
 - **Review collaborator contributions.** Tickets and knowledge notes created by people outside your org now wait for an owner or org member to approve or promote them, and work queues with auto-adopt skip open tickets from non-members until they are approved.
 
+**Upgrading to v0.26.0** runs migrations 096–100 (project groups, custom Jira templates, group context, Confluence, and two-way Jira sync); all are additive. Also:
+
+- **Schedule the Jira sync and Confluence publish sweeps** if you use them, so outbound Jira changes are retried and opted-in Confluence pages stay current; see [Scheduled sweeps](#scheduled-sweeps).
+- **Restricted project visibility is off by default.** Turning it on for an org limits members to projects they own, created, or reach through a [project group](/project-groups/).
+
 ## Troubleshooting
 
 ### Check pod status
@@ -635,6 +640,8 @@ SessionFS has no scheduler of its own. These features run only when a scheduled 
 | Org digest | `POST /api/v1/admin/sweeps/org-digest` | Sends the weekly activity digest to owners and admins of Team and Enterprise orgs. Sends once per org per week however often it runs, and always covers the last completed week, so run it daily |
 | Helper retention | `POST /api/v1/admin/sweeps/helper-retention` | Deletes session helper messages older than the org's `helper_retention_days` (default 90), then removes empty threads |
 | Ticket digest | `POST /api/v1/admin/sweeps/ticket-notifications` | Emails each user one digest of their pending ticket notifications, following their preference (`off`, `your_turn` by default, or `all`). Access is re-checked before anything is sent (v0.24.0) |
+| Jira sync | `POST /api/v1/admin/sweeps/jira-sync` | Delivers queued outbound Jira changes (status moves, comments, completion evidence) with retry and backoff, and expires old ones. Body `{"limit": N}` (default 100, max 1000) (v0.26.0). See [Jira Cloud](/integrations/jira/) |
+| Confluence publish | `POST /api/v1/admin/sweeps/confluence-publish` | Republishes opted-in wiki pages and, where the mapping allows it, the context document; unchanged pages are skipped and pages edited in Confluence are never overwritten (v0.26.0). See [Confluence Cloud](/integrations/confluence/) |
 
 Example CronJob for the KB compile sweep, every 15 minutes:
 

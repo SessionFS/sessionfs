@@ -11,8 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import ColumnElement, func, literal, literal_column, null, or_, select
 from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from sessionfs.server.db.models import Session
 
 SOURCE_TOOL_ALIASES: dict[str, tuple[str, ...]] = {
     "gemini": ("gemini", "gemini-cli"),
@@ -46,6 +49,7 @@ class SessionSearchHit:
     snippet: str
     project_id: str | None = None
     messages_text: str | None = None
+    model_provider: str | None = None
 
 
 async def search_sessions(
@@ -59,14 +63,18 @@ async def search_sessions(
     offset: int = 0,
     project_id: str | None = None,
     session_ids: tuple[str, ...] | None = None,
+    session_clause: ColumnElement[bool] | None = None,
     include_text: bool = False,
 ) -> tuple[list[SessionSearchHit], int]:
     """Full-text search across the caller's own sessions.
 
     Uses PostgreSQL ``ts_vector`` in production and a LIKE fallback on SQLite.
-    ``project_id`` / ``session_ids`` are optional hard filters (the helper's
-    scope); when supplied they narrow the search, never widen it.  Returns
-    ``(hits, total)`` where ``total`` ignores the page window.
+    ``project_id`` / ``session_ids`` / ``session_clause`` are optional hard
+    filters (the helper's scope); when supplied they narrow the search, never
+    widen it.  ``session_clause`` is any SQL predicate over ``Session`` (the
+    helper passes ``project_session_clause`` so a project filter never has to
+    be materialized into a list of ids).  Returns ``(hits, total)`` where
+    ``total`` ignores the page window.
 
     ``include_text`` controls whether the full ``messages_text`` column is
     selected into each hit.  The public search route only needs the SQL-side
@@ -75,115 +83,94 @@ async def search_sessions(
     the full text.
     """
     dialect = db.bind.dialect.name if db.bind else "sqlite"
-    text_select = "messages_text" if include_text else "NULL"
-    tool_values = source_tool_filter_values(tool) if tool else ()
-    tool_params = {f"tool_{i}": value for i, value in enumerate(tool_values)}
-    if len(tool_values) == 1:
-        tool_clause = "AND source_tool = :tool_0"
-    elif len(tool_values) > 1:
-        placeholders = ", ".join(f":tool_{i}" for i in range(len(tool_values)))
-        tool_clause = f"AND source_tool IN ({placeholders})"
-    else:
-        tool_clause = ""
 
-    sid_params: dict[str, str] = {}
-    sid_clause = ""
+    conditions: list[ColumnElement[bool]] = [
+        Session.user_id == user_id,
+        Session.is_deleted == False,  # noqa: E712
+    ]
+    if tool:
+        conditions.append(Session.source_tool.in_(source_tool_filter_values(tool)))
     if session_ids:
-        placeholders = ", ".join(f":sid_{i}" for i in range(len(session_ids)))
-        sid_params = {f"sid_{i}": value for i, value in enumerate(session_ids)}
-        sid_clause = f"AND id IN ({placeholders})"
-
-    project_clause = "AND project_id = :project_id" if project_id is not None else ""
-
-    if dialect == "postgresql":
-        cutoff_clause = "AND updated_at >= CAST(:cutoff AS timestamptz)" if days else ""
-
-        search_sql = sa_text(f"""
-            SELECT id, title, alias, source_tool, model_id, message_count, updated_at,
-                   project_id, {text_select} AS messages_text,
-                   ts_headline('english', messages_text, query,
-                               'MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>') as snippet
-            FROM sessions, plainto_tsquery('english', :q) query
-            WHERE user_id = :user_id
-              AND search_vector @@ query
-              AND is_deleted = false
-              {project_clause}
-              {sid_clause}
-              {tool_clause}
-              {cutoff_clause}
-            ORDER BY ts_rank(search_vector, query) DESC
-            LIMIT :limit OFFSET :offset
-        """)
-        count_sql = sa_text(f"""
-            SELECT count(*)
-            FROM sessions, plainto_tsquery('english', :q) query
-            WHERE user_id = :user_id
-              AND search_vector @@ query
-              AND is_deleted = false
-              {project_clause}
-              {sid_clause}
-              {tool_clause}
-              {cutoff_clause}
-        """)
-    else:
-        cutoff_clause = "AND updated_at >= :cutoff" if days else ""
-
-        search_sql = sa_text(f"""
-            SELECT id, title, alias, source_tool, model_id, message_count, updated_at,
-                   project_id, {text_select} AS messages_text,
-                   substr(messages_text, max(1, instr(lower(messages_text), lower(:q)) - 40), 100) as snippet
-            FROM sessions
-            WHERE user_id = :user_id
-              AND (lower(title) LIKE '%' || lower(:q) || '%'
-                   OR lower(messages_text) LIKE '%' || lower(:q) || '%')
-              AND is_deleted = 0
-              {project_clause}
-              {sid_clause}
-              {tool_clause}
-              {cutoff_clause}
-            ORDER BY updated_at DESC
-            LIMIT :limit OFFSET :offset
-        """)
-        count_sql = sa_text(f"""
-            SELECT count(*)
-            FROM sessions
-            WHERE user_id = :user_id
-              AND (lower(title) LIKE '%' || lower(:q) || '%'
-                   OR lower(messages_text) LIKE '%' || lower(:q) || '%')
-              AND is_deleted = 0
-              {project_clause}
-              {sid_clause}
-              {tool_clause}
-              {cutoff_clause}
-        """)
-
-    cutoff = None
-    if days is not None:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-
-    params: dict = {
-        "q": query,
-        "user_id": user_id,
-        "limit": limit,
-        "offset": offset,
-    }
-    count_params: dict = {"q": query, "user_id": user_id}
-    params.update(tool_params)
-    count_params.update(tool_params)
-    params.update(sid_params)
-    count_params.update(sid_params)
+        conditions.append(Session.id.in_(session_ids))
+    if session_clause is not None:
+        conditions.append(session_clause)
     if project_id is not None:
-        params["project_id"] = project_id
-        count_params["project_id"] = project_id
-    if cutoff:
-        params["cutoff"] = cutoff
-        count_params["cutoff"] = cutoff
+        conditions.append(Session.project_id == project_id)
+    if days is not None:
+        # Kept as a string comparison bound exactly as before (an ISO cutoff,
+        # cast to timestamptz on PostgreSQL).
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        if dialect == "postgresql":
+            conditions.append(
+                sa_text("sessions.updated_at >= CAST(:cutoff AS timestamptz)").bindparams(
+                    cutoff=cutoff
+                )
+            )
+        else:
+            conditions.append(sa_text("sessions.updated_at >= :cutoff").bindparams(cutoff=cutoff))
 
-    result = await db.execute(search_sql, params)
-    rows = result.fetchall()
+    text_col = Session.messages_text if include_text else null()
+    if dialect == "postgresql":
+        search_vector = literal_column("sessions.search_vector")
 
-    count_result = await db.execute(count_sql, count_params)
-    total = count_result.scalar() or 0
+        def tsquery() -> ColumnElement:
+            return func.plainto_tsquery(literal_column("'english'"), query)
+
+        conditions.append(search_vector.op("@@")(tsquery()))
+        snippet = func.ts_headline(
+            literal_column("'english'"),
+            Session.messages_text,
+            tsquery(),
+            "MaxWords=30, MinWords=15, StartSel=<mark>, StopSel=</mark>",
+        )
+        order_by: list[ColumnElement] = [
+            func.ts_rank(search_vector, tsquery()).desc(),
+            Session.updated_at.desc(),
+            Session.id.asc(),
+        ]
+    else:
+        pattern = literal("%") + func.lower(literal(query)) + literal("%")
+        conditions.append(
+            or_(
+                func.lower(Session.title).like(pattern),
+                func.lower(Session.messages_text).like(pattern),
+            )
+        )
+        snippet = func.substr(
+            Session.messages_text,
+            func.max(
+                1,
+                func.instr(func.lower(Session.messages_text), func.lower(literal(query))) - 40,
+            ),
+            100,
+        )
+        order_by = [Session.updated_at.desc(), Session.id.asc()]
+
+    search_stmt = (
+        select(
+            Session.id,
+            Session.title,
+            Session.alias,
+            Session.source_tool,
+            Session.model_id,
+            Session.model_provider,
+            Session.message_count,
+            Session.updated_at,
+            Session.project_id,
+            text_col.label("messages_text"),
+            snippet.label("snippet"),
+        )
+        .where(*conditions)
+        # Rank (PG) then recency, with the id as a final tiebreaker so pages
+        # never repeat or skip rows that tie.
+        .order_by(*order_by)
+        .limit(limit)
+        .offset(offset)
+    )
+    count_stmt = select(func.count()).select_from(Session).where(*conditions)
+
+    rows = (await db.execute(search_stmt)).fetchall()
+    total = (await db.execute(count_stmt)).scalar() or 0
 
     hits = [
         SessionSearchHit(
@@ -197,6 +184,7 @@ async def search_sessions(
             snippet=row.snippet or "",
             project_id=row.project_id,
             messages_text=row.messages_text,
+            model_provider=row.model_provider,
         )
         for row in rows
     ]

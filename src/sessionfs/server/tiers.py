@@ -99,6 +99,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "oidc_sso",
             "marketplace_access",
             "team_skill_library",
+            "project_groups",
         },
         "storage_bytes": 1024 * 1024 * 1024,  # 1 GB per user
         "description": "Pro + team management",
@@ -144,6 +145,8 @@ TIER_FEATURES: dict[Tier, dict] = {
             "skills_policy",
             "session_helper",
             "jira_integration",
+            "confluence_integration",
+            "project_groups",
         },
         "storage_bytes": 0,  # Unlimited (self-hosted)
         "description": "Self-hosted + HIPAA + governance",

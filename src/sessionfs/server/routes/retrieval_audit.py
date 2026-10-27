@@ -14,14 +14,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
-    OrgMember,
-    Project,
     RetrievalAuditContext,
     RetrievalAuditEvent,
     Session,
@@ -166,14 +164,14 @@ def _json_capped(value: dict[str, Any]) -> str:
     return json.dumps(marker, sort_keys=True)
 
 
-def _accessible_project_ids_subquery(user_id: str):
-    org_ids = select(OrgMember.org_id).where(OrgMember.user_id == user_id)
-    return select(Project.id).where(
-        or_(
-            Project.owner_id == user_id,
-            Project.org_id.in_(org_ids),
-        )
-    )
+async def _accessible_project_ids_subquery(db: AsyncSession, user_id: str):
+    """Projects whose retrieval audit the user may read: owner or org
+    member — restriction-aware (GitHub #101: in an org that restricts
+    visibility, org admins/owners and group grantees only). Captured-session
+    readers were never admitted here and still are not."""
+    from sessionfs.server.auth.project_access import accessible_project_ids_subquery
+
+    return await accessible_project_ids_subquery(db, user_id, include_captured=False)
 
 
 async def _get_context_or_404(
@@ -339,7 +337,7 @@ async def get_retrieval_audit_context_events(
             select(RetrievalAuditContext).where(
                 RetrievalAuditContext.id == context_id,
                 RetrievalAuditContext.project_id.in_(
-                    _accessible_project_ids_subquery(user.id)
+                    await _accessible_project_ids_subquery(db, user.id)
                 ),
             )
         )

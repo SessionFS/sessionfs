@@ -110,12 +110,12 @@ export default function ContextDocument({ markdown }: { markdown: string }) {
         </div>
       </div>
       {showToc && (
-        <aside className="hidden lg:block">
+        <div className="hidden lg:block">
           <nav aria-label="Context sections" className="sticky top-6 max-h-[calc(100vh-3rem)] overflow-y-auto">
             <p className="px-3 mb-2 text-2xs font-semibold uppercase tracking-wider text-text-tertiary">On this page</p>
             {tocList}
           </nav>
-        </aside>
+        </div>
       )}
     </div>
   );
