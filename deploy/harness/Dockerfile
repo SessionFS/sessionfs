@@ -34,7 +34,7 @@ COPY deploy/harness/tools/${TOOL}/ /opt/sfs-harness/tool/
 RUN node /opt/sfs-harness/install_tool.mjs
 
 # ---- sessionfs CLI ----
-FROM python:3.12.15-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 AS sfs
+FROM python:3.15.0-slim-bookworm@sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d AS sfs
 WORKDIR /build
 COPY pyproject.toml README.md ./
 COPY src/sessionfs/ src/sessionfs/
@@ -42,7 +42,7 @@ RUN pip install --no-cache-dir --upgrade "pip>=26.1.2" "setuptools>=80.10" "whee
     && pip install --no-cache-dir .
 
 # ---- runtime ----
-FROM python:3.12.15-slim-bookworm@sha256:6a0e06f5ba0b373d051aabd3fffb9b873f27f9a2a3a14bcbe37dee6f0e3bbc70 AS runtime
+FROM python:3.15.0-slim-bookworm@sha256:0e019bbdfb5d9874cb2389f1c2884b64aa2ac97c99960b5bc521cef978c0617d AS runtime
 ARG TOOL
 
 # git + CA roots only: some installers resolve a local marketplace through
