@@ -38,6 +38,22 @@ async def db_engine():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
     yield engine
+    # Background jobs spawned after a request commits (Jira outbox drains,
+    # GitHub webhook work) may still hold this engine; let them finish so
+    # dispose doesn't race their connection.
+    import asyncio
+
+    from sessionfs.server.routes import webhooks
+    from sessionfs.server.services import jira_sync
+
+    loop = asyncio.get_running_loop()
+    pending = [
+        t
+        for t in (*jira_sync._background_tasks, *webhooks._background_tasks)
+        if not t.done() and t.get_loop() is loop
+    ]
+    if pending:
+        await asyncio.wait(pending, timeout=10)
     await engine.dispose()
 
 
