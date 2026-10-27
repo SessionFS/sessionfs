@@ -3,6 +3,6 @@
   "private": true,
   "description": "Pinned tool CLI for the works-in harness image (pinned in deploy/harness/tools.json)",
   "dependencies": {
-    "@github/copilot": "1.0.101"
+    "@github/copilot": "1.0.103"
   }
 }
