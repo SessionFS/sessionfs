@@ -2022,7 +2022,7 @@ async def test_confirm_create_ticket_publish_deadline_bounds_slow_create(
         params=_create_publish_params(project),
         conversation=conv,
     )
-    state = _fake_publish_client(monkeypatch, slow_create_seconds=5.0)
+    state = _fake_publish_client(monkeypatch, slow_create_seconds=60.0)
     monkeypatch.setattr("sessionfs.server.routes.jira._JIRA_DEADLINE_SECONDS", 0.1)
 
     started = asyncio.get_running_loop().time()
@@ -2036,8 +2036,9 @@ async def test_confirm_create_ticket_publish_deadline_bounds_slow_create(
     assert target["jira_published"] is False
     assert target["jira_error"] == "jira_timeout"
     assert state["create_issue"] == 1
-    # The 5s hang is cut short by the 0.1s deadline (generous upper bound).
-    assert elapsed < 2.0
+    # The 60 s hang is cut short by the 0.1 s deadline. The bound is loose so
+    # a busy CI runner can't fail it; only a missing deadline would reach it.
+    assert elapsed < 30.0
 
 
 @pytest.mark.asyncio
