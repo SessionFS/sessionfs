@@ -4,6 +4,7 @@ import { BOARD_STATUSES, PRIORITY_TONE, type ViewProps } from './constants';
 import { KindBadge } from './KindBadge';
 import { AssigneeLabel } from './AssigneeLabel';
 import { TicketDetail } from './TicketDetail';
+import { DueChip } from './DueChip';
 
 /* ── Board view ──
  *
@@ -139,6 +140,12 @@ function BoardCard({
           <>
             <span className="opacity-40">·</span>
             <span className="tabular-nums">{t.depends_on.length} dep</span>
+          </>
+        )}
+        {t.due_date && (
+          <>
+            <span className="opacity-40">·</span>
+            <DueChip ticket={t} />
           </>
         )}
       </div>

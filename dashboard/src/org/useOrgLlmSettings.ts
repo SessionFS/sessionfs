@@ -68,3 +68,13 @@ export function useOrgLlmConnectionTester(orgId: string | undefined) {
     [auth, orgId],
   );
 }
+
+/** "Fetch models" for the org helper key form (POST .../llm-settings/models). */
+export function useOrgModelDiscovery(orgId: string | undefined) {
+  const { auth } = useAuth();
+  return useCallback(
+    (baseUrl: string, apiKey: string | undefined, provider: string | undefined) =>
+      auth!.client.discoverOrgModels(orgId!, baseUrl, apiKey, provider),
+    [auth, orgId],
+  );
+}

@@ -20,7 +20,13 @@ import { useProjects } from '../hooks/useProjects';
 import { useToast } from '../hooks/useToast';
 import RelativeDate from '../components/RelativeDate';
 import { errorMessage } from '../utils/errorMessage';
-import { jiraSyncEventLabel, jiraSyncStateLabel, jiraTemplateLabel, jiraTemplateOptions } from '../utils/jira';
+import {
+  JIRA_CUSTOM_FIELD_ID_RE,
+  jiraSyncEventLabel,
+  jiraSyncStateLabel,
+  jiraTemplateLabel,
+  jiraTemplateOptions,
+} from '../utils/jira';
 import { TemplatesSection } from './JiraTemplates';
 import {
   ConnectionState,
@@ -34,6 +40,7 @@ import { jiraProblems, type JiraSection } from './integrations/health';
 import {
   useDeleteJiraConnection,
   useDeleteJiraMapping,
+  useDetectJiraFields,
   useJiraConnection,
   useJiraHealth,
   useJiraIssueTypes,
@@ -140,7 +147,14 @@ function EnterpriseJiraCard({
 
   const content: Record<JiraSection, ReactNode> = {
     overview: <OverviewSection orgId={orgId} go={(next) => go(next, true)} />,
-    connection: <ConnectionSection orgId={orgId} />,
+    connection: connected ? (
+      <SectionStack>
+        <ConnectionSection orgId={orgId} />
+        <AgileFieldsSection orgId={orgId} />
+      </SectionStack>
+    ) : (
+      <ConnectionSection orgId={orgId} />
+    ),
     mappings: <MappingsSection orgId={orgId} />,
     templates: <TemplatesSection orgId={orgId} />,
     sync: (
@@ -474,6 +488,196 @@ function ConnectionForm({
         {onCancel && (
           <Button type="button" variant="ghost" onClick={onCancel}>
             Cancel
+          </Button>
+        )}
+      </div>
+    </form>
+  );
+}
+
+/* ── Agile fields (sprint / epic link) ── */
+
+const FIELD_ID_ERROR = 'Use a Jira custom field id like customfield_10020.';
+
+/** Client copy of the server's field-id check: blank (clears) or customfield_<n>. */
+function fieldIdError(value: string): string | undefined {
+  const v = value.trim();
+  return v === '' || JIRA_CUSTOM_FIELD_ID_RE.test(v) ? undefined : FIELD_ID_ERROR;
+}
+
+/**
+ * The sprint and epic-link custom fields, saved through the sync PATCH so the
+ * API token is never asked for again. Only a changed field is sent (a cleared
+ * one as null), so an untouched override is never rewritten.
+ */
+function AgileFieldsSection({ orgId }: { orgId: string }) {
+  const { data } = useJiraConnection(orgId);
+  const stored = { sprint: data?.sprint_field_id ?? '', epic: data?.epic_link_field_id ?? '' };
+  const site = data?.site_url ?? '';
+  // Notice a reconnect to a different site while this section is open: ids
+  // kept from the old site may not exist on the new one. (Adjusting state
+  // while rendering, the documented way to react to a changed value.)
+  const [seenSite, setSeenSite] = useState(site);
+  const [siteChanged, setSiteChanged] = useState(false);
+  if (site !== seenSite) {
+    setSeenSite(site);
+    if (seenSite && site) setSiteChanged(true);
+  }
+  const showSiteNotice = siteChanged && (stored.sprint !== '' || stored.epic !== '');
+  return (
+    <IntegrationSection
+      title="Agile fields"
+      label="Jira agile fields"
+      description="Custom fields SessionFS uses to put issues in a sprint and under an epic. They are detected when the site is first connected; Detect fields asks the site again, and you can set one by hand if detection picked the wrong field."
+    >
+      {showSiteNotice && (
+        <Alert variant="warning" title="Site changed — run Detect fields" className="mb-3 max-w-md">
+          These field ids were set for the previous Jira site and may not exist on{' '}
+          <span className="font-mono">{site}</span>. Run Detect fields and save what it finds.
+        </Alert>
+      )}
+      {/* Remount with the stored values after every save or refetch, and on a
+          reconnect (new site or re-verified), so a detection result or edit
+          from the old site can never be saved onto the new one. */}
+      <AgileFieldsForm
+        key={`${site}:${data?.last_verified_at ?? ''}:${stored.sprint}:${stored.epic}`}
+        orgId={orgId}
+        stored={stored}
+        onConfirmed={() => setSiteChanged(false)}
+      />
+    </IntegrationSection>
+  );
+}
+
+function AgileFieldsForm({
+  orgId,
+  stored,
+  onConfirmed,
+}: {
+  orgId: string;
+  stored: { sprint: string; epic: string };
+  /** Detection ran or the fields were saved for the current site. */
+  onConfirmed: () => void;
+}) {
+  const save = useUpdateJiraSync(orgId);
+  const detect = useDetectJiraFields(orgId);
+  const { addToast } = useToast();
+  const [sprint, setSprint] = useState(stored.sprint);
+  const [epic, setEpic] = useState(stored.epic);
+  const [showErrors, setShowErrors] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [detected, setDetected] = useState<string | null>(null);
+  const [detectError, setDetectError] = useState<string | null>(null);
+  // A reconnect remounts this form; a detection still in flight for the old
+  // site must not then mark the new site as checked.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+
+  const sprintError = fieldIdError(sprint);
+  const epicError = fieldIdError(epic);
+  const changes: { sprint_field_id?: string | null; epic_link_field_id?: string | null } = {};
+  if (sprint.trim() !== stored.sprint) changes.sprint_field_id = sprint.trim() || null;
+  if (epic.trim() !== stored.epic) changes.epic_link_field_id = epic.trim() || null;
+  const dirty = Object.keys(changes).length > 0;
+
+  // Detection fills the fields for review rather than saving straight away:
+  // an admin may have overridden a field on purpose, and a wrong guess would
+  // silently undo that. Saving is one more click.
+  async function handleDetect() {
+    setDetectError(null);
+    setDetected(null);
+    setSaveError(null);
+    try {
+      const found = await detect.mutateAsync();
+      if (!alive.current) return;
+      const nextSprint = found.sprint_field_id ?? '';
+      const nextEpic = found.epic_link_field_id ?? '';
+      setSprint(nextSprint);
+      setEpic(nextEpic);
+      onConfirmed();
+      const sprintText = found.sprint_field_id ? `sprint field ${found.sprint_field_id}` : 'no sprint field';
+      const epicText = found.epic_link_field_id ? `epic-link field ${found.epic_link_field_id}` : 'no epic-link field';
+      const same = nextSprint === stored.sprint && nextEpic === stored.epic;
+      setDetected(
+        same
+          ? `Found ${sprintText} and ${epicText}, which is what is saved.`
+          : `Found ${sprintText} and ${epicText}. Review them and save to use them.`,
+      );
+    } catch (err: unknown) {
+      setDetectError(errorMessage(err, 'Could not detect the Jira fields'));
+    }
+  }
+
+  async function handleSave(e: FormEvent) {
+    e.preventDefault();
+    setSaveError(null);
+    if (sprintError || epicError) {
+      setShowErrors(true);
+      return;
+    }
+    if (!dirty) return;
+    try {
+      await save.mutateAsync(changes);
+      onConfirmed();
+      addToast('success', 'Jira agile fields saved');
+    } catch (err: unknown) {
+      setSaveError(errorMessage(err, 'Could not save the Jira agile fields'));
+    }
+  }
+
+  return (
+    <form onSubmit={handleSave} className="space-y-3 max-w-md" autoComplete="off" noValidate>
+      <Input
+        title="Sprint field ID"
+        value={sprint}
+        onChange={(e) => setSprint(e.target.value)}
+        onBlur={() => setShowErrors(true)}
+        placeholder="customfield_10020"
+        spellCheck={false}
+        className="font-mono"
+        error={showErrors ? sprintError : undefined}
+        hint={stored.sprint ? 'Clear it to stop putting issues in sprints.' : 'Not set: publishing can’t put an issue in a sprint.'}
+      />
+      <Input
+        title="Epic-link field ID"
+        value={epic}
+        onChange={(e) => setEpic(e.target.value)}
+        onBlur={() => setShowErrors(true)}
+        placeholder="customfield_10014"
+        spellCheck={false}
+        className="font-mono"
+        error={showErrors ? epicError : undefined}
+        hint="Older company-managed projects only. Jira Cloud usually has none and sets the parent directly."
+      />
+      <p role="status" className="text-xs text-text-secondary empty:hidden">
+        {detect.isPending ? 'Asking Jira which fields this site has…' : detected ?? ''}
+      </p>
+      {detectError && <Alert variant="danger">{detectError}</Alert>}
+      {saveError && <Alert variant="danger">{saveError}</Alert>}
+      <div className="flex flex-wrap items-center gap-3 pt-1">
+        <Button type="submit" disabled={!dirty} loading={save.isPending}>
+          Save fields
+        </Button>
+        <Button type="button" variant="secondary" loading={detect.isPending} onClick={() => void handleDetect()}>
+          Detect fields
+        </Button>
+        {dirty && (
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => {
+              setSprint(stored.sprint);
+              setEpic(stored.epic);
+              setShowErrors(false);
+              setDetected(null);
+            }}
+          >
+            Reset
           </Button>
         )}
       </div>

@@ -4,7 +4,7 @@
  * focused on the form, the key-hint placeholder, and the delete gate.
  */
 
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -20,6 +20,7 @@ const { hooks, toastHook, toastApi, llmProvidersHook } = vi.hoisted(() => {
       useSaveOrgLlmSettings: vi.fn(),
       useDeleteOrgLlmSettings: vi.fn(),
       useOrgLlmConnectionTester: vi.fn(),
+      useOrgModelDiscovery: vi.fn(),
     },
     toastHook: { useToast: vi.fn() },
     toastApi,
@@ -32,6 +33,7 @@ vi.mock('../hooks/useToast', () => toastHook);
 vi.mock('../hooks/useLlmProviders', () => llmProvidersHook);
 
 const testConnection = vi.fn();
+const discoverModels = vi.fn();
 
 function makeMutation(extra: Record<string, unknown> = {}) {
   return {
@@ -63,6 +65,9 @@ beforeEach(() => {
   hooks.useSaveOrgLlmSettings.mockReturnValue(makeMutation());
   hooks.useDeleteOrgLlmSettings.mockReturnValue(makeMutation());
   hooks.useOrgLlmConnectionTester.mockReturnValue(testConnection);
+  discoverModels.mockReset();
+  discoverModels.mockResolvedValue({ models: [] });
+  hooks.useOrgModelDiscovery.mockReturnValue(discoverModels);
   toastHook.useToast.mockReturnValue(toastApi);
   llmProvidersHook.useLlmProviders.mockReturnValue({
     data: {
@@ -320,5 +325,140 @@ describe('OrgHelperKeyCard', () => {
     await user.click(screen.getByRole('button', { name: /^save$/i }));
     expect(await screen.findByText(/Saved, but the connection check didn't pass/)).toBeInTheDocument();
     expect(screen.getByText('The provider is rate limiting this key.')).toBeInTheDocument();
+  });
+
+  describe('model picker', () => {
+    it('fetches models for the selected provider and picks one from the list', async () => {
+      hooks.useOrgLlmSettings.mockReturnValue({
+        data: { ...DEFAULTS, provider: 'openai', model: '', has_api_key: true, key_hint: 'abcd' },
+        isLoading: false,
+      });
+      discoverModels.mockResolvedValue({
+        models: [
+          { id: 'gpt-6-luna', owned_by: 'openai' },
+          { id: 'gpt-6-astra', owned_by: 'openai' },
+        ],
+        provider: 'openai',
+      });
+      const save = makeMutation();
+      hooks.useSaveOrgLlmSettings.mockReturnValue(save);
+      const user = userEvent.setup();
+      render(<OrgHelperKeyCard orgId="org_x" />);
+
+      await user.click(screen.getByRole('button', { name: /fetch models/i }));
+      // No typed key: the server decides whether the stored key may be used.
+      expect(discoverModels).toHaveBeenCalledWith('', undefined, 'openai');
+
+      await screen.findByRole('button', { name: /model id not in list/i });
+      await user.click(screen.getByLabelText(/^Model$/));
+      await user.click(screen.getByRole('option', { name: 'gpt-6-astra (openai)' }));
+      await user.click(screen.getByRole('button', { name: /^save$/i }));
+      expect(save.mutate.mock.calls[0][0].model).toBe('gpt-6-astra');
+    });
+
+    it('falls back to a typed model id', async () => {
+      hooks.useOrgLlmSettings.mockReturnValue({
+        data: { ...DEFAULTS, provider: 'openai', model: '' },
+        isLoading: false,
+      });
+      discoverModels.mockResolvedValue({ models: [{ id: 'gpt-6-luna', owned_by: '' }] });
+      const save = makeMutation();
+      hooks.useSaveOrgLlmSettings.mockReturnValue(save);
+      const user = userEvent.setup();
+      render(<OrgHelperKeyCard orgId="org_x" />);
+
+      await user.type(screen.getByLabelText(/^API Key$/), 'sk-typed-key');
+      await user.click(screen.getByRole('button', { name: /fetch models/i }));
+      expect(discoverModels).toHaveBeenCalledWith('', 'sk-typed-key', 'openai');
+      await user.click(await screen.findByRole('button', { name: /model id not in list/i }));
+      await user.type(screen.getByLabelText(/^Model$/), 'gpt-6-preview');
+      await user.click(screen.getByRole('button', { name: /^save$/i }));
+      expect(save.mutate.mock.calls[0][0].model).toBe('gpt-6-preview');
+    });
+
+    it('drops a fetch that answers after the provider changed, and leaves manual mode on a switch', async () => {
+      hooks.useOrgLlmSettings.mockReturnValue({
+        data: { ...DEFAULTS, provider: 'openai', model: '' },
+        isLoading: false,
+      });
+      let resolve!: (v: unknown) => void;
+      discoverModels.mockReturnValueOnce(new Promise((r) => (resolve = r)));
+      const user = userEvent.setup();
+      render(<OrgHelperKeyCard orgId="org_x" />);
+
+      await user.click(screen.getByRole('button', { name: /fetch models/i }));
+      await user.click(screen.getByLabelText(/^Provider$/));
+      await user.click(screen.getByRole('option', { name: 'OpenRouter' }));
+      resolve({ models: [{ id: 'gpt-6-luna', owned_by: 'openai' }] });
+      await waitFor(() => expect(screen.getByRole('button', { name: /fetch models/i })).not.toBeDisabled());
+      // OpenRouter's model field stays a text box; OpenAI's list never shows.
+      expect(screen.getByLabelText(/^Model$/).tagName).toBe('INPUT');
+      expect(screen.queryByRole('button', { name: /choose from the list/i })).toBeNull();
+    });
+
+    it('shows a rate-limit message when model lookups are throttled', async () => {
+      hooks.useOrgLlmSettings.mockReturnValue({ data: { ...DEFAULTS, provider: 'openai', model: '' }, isLoading: false });
+      discoverModels.mockRejectedValue(
+        new ApiError(429, JSON.stringify({ error: { code: 'models_rate_limited', message: 'Too many model lookups.' } })),
+      );
+      const user = userEvent.setup();
+      render(<OrgHelperKeyCard orgId="org_x" />);
+      await user.click(screen.getByRole('button', { name: /fetch models/i }));
+      expect(await screen.findByText(/Too many model lookups/)).toBeInTheDocument();
+    });
+
+    it('says when a Base URL lookup is throttled and keeps the earlier list for that URL', async () => {
+      hooks.useOrgLlmSettings.mockReturnValue({
+        data: { ...DEFAULTS, provider: 'openai', model: '', base_url: 'https://llm.example.com/v1' },
+        isLoading: false,
+      });
+      discoverModels
+        .mockResolvedValueOnce({ models: [{ id: 'llama3', owned_by: '' }] })
+        .mockRejectedValueOnce(
+          new ApiError(429, JSON.stringify({ error: { code: 'models_rate_limited', message: 'Too many model lookups.' } })),
+        );
+      const user = userEvent.setup();
+      render(<OrgHelperKeyCard orgId="org_x" />);
+      await screen.findByRole('button', { name: /model id not in list/i }, { timeout: 2000 });
+
+      // A new key re-runs the lookup for the same URL once the field is
+      // left (never per keystroke); this one is throttled.
+      await user.type(screen.getByLabelText(/^API Key$/), 'sk-new-key');
+      await new Promise((r) => setTimeout(r, 600));
+      expect(discoverModels).toHaveBeenCalledTimes(1);
+      await user.tab();
+      expect(await screen.findByText(/Too many model lookups/, {}, { timeout: 2000 })).toBeInTheDocument();
+      // The failure is not cached as "no models": the list is still offered.
+      expect(screen.getByRole('button', { name: /model id not in list/i })).toBeInTheDocument();
+      expect(discoverModels).toHaveBeenCalledTimes(2);
+      expect(discoverModels).toHaveBeenLastCalledWith('https://llm.example.com/v1', 'sk-new-key', undefined);
+    });
+
+    it('looks up a custom endpoint on Fetch models', async () => {
+      hooks.useOrgLlmSettings.mockReturnValue({
+        data: { ...DEFAULTS, provider: 'openai', model: '', base_url: 'https://llm.example.com/v1' },
+        isLoading: false,
+      });
+      discoverModels.mockResolvedValue({ models: [{ id: 'llama3', owned_by: '' }] });
+      const user = userEvent.setup();
+      render(<OrgHelperKeyCard orgId="org_x" />);
+      await screen.findByRole('button', { name: /model id not in list/i }, { timeout: 2000 });
+      await user.click(screen.getByRole('button', { name: /fetch models/i }));
+      await waitFor(() => expect(discoverModels).toHaveBeenCalledTimes(2));
+      expect(discoverModels).toHaveBeenLastCalledWith('https://llm.example.com/v1', undefined, undefined);
+    });
+
+    it('keeps a saved model the fetched list does not contain', async () => {
+      hooks.useOrgLlmSettings.mockReturnValue({
+        data: { ...DEFAULTS, provider: 'openai', model: 'my-finetune' },
+        isLoading: false,
+      });
+      discoverModels.mockResolvedValue({ models: [{ id: 'gpt-6-luna', owned_by: '' }] });
+      const user = userEvent.setup();
+      render(<OrgHelperKeyCard orgId="org_x" />);
+      await user.click(screen.getByRole('button', { name: /fetch models/i }));
+      expect(await screen.findByRole('button', { name: /choose from the list/i })).toBeInTheDocument();
+      expect(screen.getByLabelText(/^Model$/)).toHaveValue('my-finetune');
+    });
   });
 });

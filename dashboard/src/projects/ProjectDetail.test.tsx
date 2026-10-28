@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -25,7 +25,7 @@ import { ApiError } from '../api/client';
 
 // vi.mock is hoisted above imports, so any referenced variables must be
 // created inside vi.hoisted() which runs before the mock factory.
-const { hooks, mockAddToast, meData, jiraSurface, myOrgsData, confluenceLinks } = vi.hoisted(() => ({
+const { hooks, mockAddToast, meData, jiraSurface, ticketViewer, myOrgsData, confluenceLinks } = vi.hoisted(() => ({
   hooks: {
     useProject: vi.fn(),
     useProjects: vi.fn(),
@@ -58,6 +58,7 @@ const { hooks, mockAddToast, meData, jiraSurface, myOrgsData, confluenceLinks } 
   mockAddToast: vi.fn(),
   meData: { value: { user_id: 'u_1', tier: 'enterprise', effective_tier: 'enterprise' } },
   jiraSurface: { value: null as { isEnterprise?: boolean } | null },
+  ticketViewer: { value: null as { isProjectAdmin?: boolean } | null },
   myOrgsData: { value: [{ org_id: 'org_x', name: 'X', role: 'member' }] as { org_id: string; name: string; role: string }[] },
   confluenceLinks: {
     value: undefined as { links: unknown[]; mapping: { publish_context: boolean } } | undefined,
@@ -113,13 +114,20 @@ vi.mock('./TicketsTab', () => ({
     jira?: { isEnterprise?: boolean };
     assignedToMe?: boolean;
     onAssignedToMeChange?: (next: boolean) => void;
+    overdue?: boolean;
+    onOverdueChange?: (next: boolean) => void;
+    viewer?: { isProjectAdmin?: boolean };
   }) => {
     jiraSurface.value = props.jira ?? null;
+    ticketViewer.value = props.viewer ?? null;
     return (
       <div>
         tickets body
         <button onClick={() => props.onAssignedToMeChange?.(!props.assignedToMe)}>
           mine: {String(props.assignedToMe)}
+        </button>
+        <button onClick={() => props.onOverdueChange?.(!props.overdue)}>
+          overdue: {String(props.overdue)}
         </button>
       </div>
     );
@@ -535,6 +543,34 @@ describe('ProjectDetail', () => {
     fireEvent.click(screen.getByRole('button', { name: 'mine: false' }));
     expect(screen.getByTestId('loc').textContent).toMatch(/assignee=me/);
     expect(screen.getByTestId('loc').textContent).toMatch(/sub=tickets/);
+  });
+
+  it('gives the tickets tab admin standing from the project, with an owner fallback', async () => {
+    setProjectData({ owner_id: 'someone_else', can_admin: true });
+    renderPage('/projects/proj_abc?tab=work&sub=tickets');
+    await screen.findByText('tickets body');
+    expect(ticketViewer.value?.isProjectAdmin).toBe(true);
+    cleanup();
+    setProjectData({ owner_id: 'someone_else', can_admin: false });
+    renderPage('/projects/proj_abc?tab=work&sub=tickets');
+    await screen.findByText('tickets body');
+    expect(ticketViewer.value?.isProjectAdmin).toBe(false);
+    cleanup();
+    // An older server without can_admin: the owner still counts.
+    setProjectData({ owner_id: meData.value.user_id });
+    renderPage('/projects/proj_abc?tab=work&sub=tickets');
+    await screen.findByText('tickets body');
+    expect(ticketViewer.value?.isProjectAdmin).toBe(true);
+  });
+
+  it('keeps the tickets "Overdue" filter in the URL', async () => {
+    setProjectData();
+    renderPage('/projects/proj_abc?tab=work&sub=tickets&due=overdue');
+    await screen.findByText('tickets body');
+    fireEvent.click(screen.getByRole('button', { name: 'overdue: true' }));
+    expect(screen.getByTestId('loc').textContent).not.toMatch(/due=/);
+    fireEvent.click(screen.getByRole('button', { name: 'overdue: false' }));
+    expect(screen.getByTestId('loc').textContent).toMatch(/due=overdue/);
   });
 
   describe('Jira enterprise gate (tk_792504a140604e62)', () => {

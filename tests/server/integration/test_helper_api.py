@@ -455,8 +455,17 @@ async def test_json_turn_returns_document(
     user, key = await _make_user(db_session)
     session = await _make_session(db_session, user, title="Notes")
 
+    async def _fake(*, execute_tool, **kwargs):
+        call = ToolCall(id="call_1", name="list_recent_sessions", arguments={})
+        yield ToolCallEvent(call)
+        result = await execute_tool(call)
+        yield ToolResultEvent(call, result)
+        yield Usage(input_tokens=7, output_tokens=2)
+        yield TextDelta(f"See [session:{session.id}].")
+        yield Done("stop")
+
     monkeypatch.setattr(helper_mod, "resolve_helper_llm", _fake_resolve())
-    monkeypatch.setattr(helper_mod, "run_agent", _fake_run_agent_text_only(session.id))
+    monkeypatch.setattr(helper_mod, "run_agent", _fake)
 
     resp = await client.post(
         "/api/v1/helper/turns",
@@ -477,7 +486,7 @@ async def test_json_turn_returns_document(
         }
     ]
     assert datetime.fromisoformat(body["citations"][0]["at"]).date() == session.updated_at.date()
-    assert body["tool_calls"] == []
+    assert body["tool_calls"] == [{"id": "call_1", "name": "list_recent_sessions", "args": {}}]
     assert body["usage"] == {"input_tokens": 7, "output_tokens": 2}
     assert body["stop_reason"] == "stop"
     assert body["key_source"] == "user"
@@ -1541,7 +1550,12 @@ async def test_resume_scoped_conversation_without_scope_recovers_org(
         f"/api/v1/helper/conversations/{conversation_id}", headers=_hdrs(key)
     )
     assert got.status_code == 200, got.text
-    assert got.json()["scope"] == {"project_id": project.id, "session_ids": []}
+    assert got.json()["scope"] == {
+        "project_id": project.id,
+        "group_id": None,
+        "session_ids": [],
+        "label": "Repo",
+    }
 
 
 @pytest.mark.asyncio
@@ -1872,7 +1886,7 @@ def test_system_prompt_assembles_answer_style_and_instructions():
     fixed_end = full.index("Today's date is")
     assert fixed_end < full.index("<org-instructions>") < full.index("<personal-instructions>")
     # The sections are clearly delimited so the fixed prompt stays attributable.
-    assert helper_mod._HELPER_SYSTEM_PROMPT_VERSION == "v11"
+    assert helper_mod._HELPER_SYSTEM_PROMPT_VERSION == "v13"
 
 
 # ---------------------------------------------------------------------------

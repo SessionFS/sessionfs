@@ -51,6 +51,30 @@ class TrackerProjectPage:
 
 
 @dataclass
+class TrackerBoard:
+    """One Agile board (used to list its sprints)."""
+
+    id: str
+    name: str
+
+
+@dataclass
+class TrackerSprint:
+    """One sprint surfaced by ``list_sprints``.
+
+    ``board_name`` is the board this sprint was first seen on; the route dedupes
+    across boards by ``id`` and keeps the first board's name.
+    """
+
+    id: str
+    name: str
+    state: str
+    board_name: str
+    start_date: str | None = None
+    end_date: str | None = None
+
+
+@dataclass
 class TrackerIssue:
     """A lightweight view of a remote issue (enough to fill the link row).
 
@@ -58,6 +82,10 @@ class TrackerIssue:
     ``created_at`` are only populated by the label search used for adoptions;
     they let the route refuse to adopt an issue that wasn't created by this
     connection in the mapped project after the unknown publish began.
+
+    ``sprint_*`` and ``parent_key`` are only populated when the caller asks for
+    them (``get_issue`` with the sprint/epic-link field ids); they feed the
+    link's sprint + parent cache and are never written back to the ticket.
     """
 
     key: str
@@ -71,6 +99,14 @@ class TrackerIssue:
     creator_account_id: str | None = None
     reporter_account_id: str | None = None
     created_at: str | None = None
+    sprint_id: str | None = None
+    sprint_name: str | None = None
+    sprint_state: str | None = None
+    parent_key: str | None = None
+    # Scheduling fields (GitHub #113). ``due_date`` is "YYYY-MM-DD" or None;
+    # ``original_estimate`` is the Jira-duration string ("2d 4h", "30m").
+    due_date: str | None = None
+    original_estimate: str | None = None
 
 
 @runtime_checkable
@@ -95,6 +131,31 @@ class TrackerProvider(Protocol):
         """Issue types creatable in ``project_key``."""
         ...
 
+    async def detect_fields(self) -> dict[str, str | None]:
+        """Return ``{"sprint_field_id", "epic_link_field_id"}`` for the site.
+
+        Both are custom-field ids discovered from the site's field list; either
+        may be None when the field does not exist (epic-link in particular is
+        absent on Jira Cloud, which uses ``parent`` instead).
+        """
+        ...
+
+    async def list_boards(self, project_key: str, *, limit: int = 10) -> list[TrackerBoard]:
+        """The first page of Agile boards scoped to ``project_key``."""
+        ...
+
+    async def list_sprints(self, board: TrackerBoard) -> list[TrackerSprint]:
+        """Active and future sprints on ``board``."""
+        ...
+
+    async def move_issue_to_sprint(self, issue_key: str, sprint_id: int) -> None:
+        """Move ``issue_key`` into the Agile sprint ``sprint_id``."""
+        ...
+
+    async def get_sprint(self, sprint_id: int) -> TrackerSprint:
+        """Read one Agile sprint's name/state by id."""
+        ...
+
     async def create_issue(
         self,
         project_key: str,
@@ -103,6 +164,7 @@ class TrackerProvider(Protocol):
         description_adf: dict,
         *,
         labels: list[str] | None = None,
+        extra_fields: dict[str, object] | None = None,
     ) -> TrackerIssue:
         ...
 
@@ -117,9 +179,22 @@ class TrackerProvider(Protocol):
         issue_key: str,
         summary: str,
         description_adf: dict,
+        *,
+        extra_fields: dict[str, object] | None = None,
     ) -> TrackerIssue:
-        """Replace summary/description only; never status/assignee/sprint."""
+        """Replace summary/description only; never status/assignee/sprint.
+
+        ``extra_fields`` are arbitrary custom-field values merged into the
+        update (e.g. the sprint field id or epic-link parent).
+        """
         ...
 
-    async def get_issue(self, issue_key: str) -> TrackerIssue:
+    async def get_issue(
+        self,
+        issue_key: str,
+        *,
+        sprint_field_id: str | None = None,
+        epic_link_field_id: str | None = None,
+    ) -> TrackerIssue:
+        """Read one issue, including sprint/parent when the field ids are set."""
         ...

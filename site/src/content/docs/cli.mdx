@@ -1815,6 +1815,20 @@ sfs admin audit-log [--target-type TYPE] [--target-id ID] [--action NAME] [--sou
 | `--limit` | 50 | Entries per page (1-200) |
 | `--json` | off | Print the raw JSON, including the full before/after state |
 
+## `sfs admin service-keys`
+
+Org-scoped service keys for CI runners, agents and scheduled jobs (org owner or admin, Team or above). See [API keys](/api/#service-keys-v01010).
+
+```
+sfs admin service-keys list --org ORG_ID
+sfs admin service-keys create --org ORG_ID --name NAME --scope SCOPE [--scope SCOPE]... [--expires-days N] [--project PID]... [--output-key]
+sfs admin service-keys rotate KEY_ID --org ORG_ID [--output-key]
+sfs admin service-keys revoke KEY_ID --org ORG_ID --reason "..."
+sfs admin service-keys scopes
+```
+
+The raw key is printed once on `create` and `rotate`; `--output-key` prints only the key, for capturing in scripts. Platform scopes such as `platform_sweeps:run` (used by scheduled sweeps) can only be minted by a platform admin, and the key works only while the admin who minted or last rotated it and the user it runs as are both still platform admins. Since v0.28.0, `create` and `rotate` print a warning about this to stderr, `scopes` marks those scopes as tier-coupled, and `list` has a **Coupling** column that reads `ok`, or `inactive: …` with the reason once the key has stopped working. A request with such a key gets a `403` that names the cause and the fix.
+
 ## `sfs admin override`
 
 Audited operator overrides (platform admin only).
@@ -1902,9 +1916,10 @@ Manage tickets with a server-enforced FSM (`suggested → open → in_progress �
 | Command | Description |
 |---------|-------------|
 | `sfs ticket list [--status STATE]` | List tickets, optionally filtered by FSM state |
-| `sfs ticket show <id>` | Show ticket detail + dependencies + recent comments |
-| `sfs ticket create --title T --description D [--accept "..." --depends-on tkt_…] [--assigned-to PERSONA \| --user EMAIL]` | Open a ticket (agent source requires ≥1 acceptance criterion + ≥20-char description). `--user/-u` assigns it directly to a teammate (email or user id), who gets a "Your turn" notification; it can't be combined with `--assigned-to` (v0.27.0) |
-| `sfs ticket update <id> [--title T] [--description D] [--priority P] [--user EMAIL]` | Change a ticket's editable fields; `--user/-u` reassigns it directly to a teammate (v0.27.0) |
+| `sfs ticket show <id>` | Show ticket detail + dependencies + recent comments, with the creator, due date and estimate |
+| `sfs ticket history <id> [--limit N]` | The ticket's change history, newest first: each status change, assignment and field edit with its before and after values and who made it (default 50, up to 200; v0.28.0) |
+| `sfs ticket create --title T --description D [--accept "..." --depends-on tkt_…] [--assigned-to PERSONA \| --user EMAIL] [--due YYYY-MM-DD] [--estimate DURATION]` | Open a ticket (agent source requires ≥1 acceptance criterion + ≥20-char description). `--user/-u` assigns it directly to a teammate (email or user id), who gets a "Your turn" notification; it can't be combined with `--assigned-to` (v0.27.0). `--due` sets a due date and `--estimate` an estimate in Jira duration syntax such as `2d 4h` (v0.28.0) |
+| `sfs ticket update <id> [--title T] [--description D] [--priority P] [--user EMAIL] [--due YYYY-MM-DD\|none] [--estimate DURATION\|none]` | Change a ticket's editable fields; `--user/-u` reassigns it directly to a teammate (v0.27.0). `--due` and `--estimate` set the due date and estimate; `none` clears them (v0.28.0) |
 | `sfs ticket start <id> [--tool T] [--force] [--no-print-context]` | Atomic claim; writes the active-ticket bundle and prints compiled persona + ticket context with tool-aware token budget |
 | `sfs ticket complete <id>` | Move from `in_progress` to `review`; clears owned bundle |
 | `sfs ticket comment <id> "body" [--as PERSONA]` | Slack-like comment (non-idempotent) |
@@ -1990,7 +2005,7 @@ Ask the session helper a question over the sessions and project knowledge you ca
 
 | Command | Description |
 |---|---|
-| `sfs helper ask "QUESTION" [--project ID] [--session ID ...] [--conversation ID] [--no-stream] [--json]` | Ask a question. Streams the answer to the terminal and lists citations at the end. `--project` / `--session` scope the question; `--conversation` continues a thread; `--no-stream` fetches the whole answer in one request; `--json` prints the raw JSON |
+| `sfs helper ask "QUESTION" [--project ID \| --group ID_OR_SLUG \| --session ID ...] [--conversation ID] [--no-stream] [--json]` | Ask a question. Streams the answer to the terminal and lists citations at the end. `--project`, `--group` (a project group id `pg_…` or its slug; v0.28.0) or `--session` scope the question, one at a time; `--conversation` continues a thread; `--no-stream` fetches the whole answer in one request; `--json` prints the raw JSON |
 | `sfs helper conversations list` | Your helper threads, newest first |
 | `sfs helper conversations show <id>` | One thread with its messages and citations |
 | `sfs helper conversations delete <id> [--yes]` | Permanently delete a thread |

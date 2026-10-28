@@ -28,7 +28,7 @@ import re
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
 from fastapi import HTTPException
@@ -53,10 +53,13 @@ from sessionfs.server.db.models import (
     Organization,
     OrgTrackerConnection,
     Project,
+    ProjectGroup,
+    ProjectGroupAccess,
     Session,
     Ticket,
     TicketComment,
     TicketDependency,
+    TicketEvent,
     TicketTrackerLink,
     TrackerProjectMapping,
     User,
@@ -76,6 +79,9 @@ from sessionfs.server.services.helper_ticket_actions import (
     check_comment_body,
     check_reassignment_allowed,
     check_ticket_draft,
+    jira_project_key_override_error,
+    jira_template_override_error,
+    jira_template_override_version,
     resolve_assignee,
 )
 from sessionfs.server.helper.context import HelperContext
@@ -95,6 +101,7 @@ from sessionfs.server.helper.excerpts import (
 from sessionfs.server.helper.redaction import RedactionError, redact
 from sessionfs.server.integrations.trackers.base import TrackerError
 from sessionfs.server.services import jira_sync
+from sessionfs.server.services.ticket_events import decode_event_value
 from sessionfs.server.services.jira_links import JiraLinkError, normalize_link_issue_key
 from sessionfs.server.services.session_archive import extract_archive
 from sessionfs.server.services.session_models import (
@@ -267,6 +274,15 @@ def _capped_int(
     return max(minimum, min(maximum, value))
 
 
+def _optional_int(args: dict[str, Any], key: str) -> int | None:
+    value = args.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ToolArgumentError(f"'{key}' must be an integer")
+    return value
+
+
 def _display_name(ctx: HelperContext) -> str:
     return ctx.user.display_name or ctx.user.email or ctx.user.id
 
@@ -406,6 +422,11 @@ async def _owned_session(ctx: HelperContext, session_id: str) -> Session | None:
         # a session attributed to ANOTHER project never belongs to this one,
         # even when it sits on one of this project's remotes.
         stmt = stmt.where(project_session_clause(project, legacy_only=True))
+    elif ctx.scope.group_id is not None:
+        clause = await _group_session_clause(ctx)
+        if clause is None:
+            return None
+        stmt = stmt.where(clause)
     return (await ctx.db.execute(stmt)).scalar_one_or_none()
 
 
@@ -413,6 +434,12 @@ async def _accessible_project(ctx: HelperContext, project_id: str) -> Project | 
     """A project the caller can read, inside ``ctx.scope``.  None = "not found"."""
     if ctx.scope.project_id is not None and project_id != ctx.scope.project_id:
         return None
+    # When the scope is a group, a project is reachable only if it is still a
+    # readable member of that group (recomputed per call).
+    if ctx.scope.group_id is not None:
+        allowed = await group_effective_project_ids(ctx.db, ctx.user.id, ctx.scope.group_id)
+        if project_id not in allowed:
+            return None
     # When the scope is a set of sessions without a single project, KB tools
     # may only reach the projects those sessions belong to.
     if ctx.scope.session_ids and ctx.scope.project_id is None:
@@ -448,6 +475,26 @@ async def _scoped_session_project_ids(ctx: HelperContext) -> set[str]:
     return await _session_project_ids(ctx.db, ctx.user.id, ctx.scope.session_ids)
 
 
+async def group_effective_project_ids(db: Any, user_id: str, group_id: str) -> set[str]:
+    """The projects a group-scoped turn may read: the group's member projects
+    intersected with the projects the caller can already read.
+
+    Recomputed from the tables on every call — never cached — so a membership
+    change between turns is reflected immediately (GitHub #113).
+    """
+    readable = await accessible_project_ids_subquery(db, user_id)
+    rows = await db.execute(
+        select(ProjectGroupAccess.project_id)
+        .join(ProjectGroup, ProjectGroup.id == ProjectGroupAccess.group_id)
+        .where(
+            ProjectGroupAccess.group_id == group_id,
+            ProjectGroup.deleted_at.is_(None),
+            ProjectGroupAccess.project_id.in_(readable),
+        )
+    )
+    return {pid for (pid,) in rows.all()}
+
+
 async def scope_project_ids(db: Any, user_id: str, scope: Any) -> set[str]:
     """Every project id a turn with ``scope`` may read — the id-set form of
     :func:`_accessible_projects` (same access predicate, same scope rules).
@@ -462,6 +509,8 @@ async def scope_project_ids(db: Any, user_id: str, scope: Any) -> set[str]:
         if project is None or not await user_can_access_project(db, user_id, project):
             return set()
         return {project.id}
+    if scope.group_id is not None:
+        return await group_effective_project_ids(db, user_id, scope.group_id)
     ids = set(
         (await db.execute(await accessible_project_ids_subquery(db, user_id))).scalars().all()
     )
@@ -481,6 +530,14 @@ async def _accessible_projects(ctx: HelperContext) -> list[Project]:
         if project is None or project.merged_into_project_id is not None:
             return []
         return [project]
+    if ctx.scope.group_id is not None:
+        allowed = await group_effective_project_ids(ctx.db, ctx.user.id, ctx.scope.group_id)
+        if not allowed:
+            return []
+        return [
+            p for p in await list_accessible_projects(ctx.db, ctx.user.id)
+            if p.id in allowed
+        ]
     if ctx.scope.session_ids:
         allowed = await _scoped_session_project_ids(ctx)
         return [
@@ -526,12 +583,14 @@ class _SessionFilter:
     empty: bool = False
 
 
-def _check_scope_project(ctx: HelperContext, requested: str | None) -> None:
+async def _check_scope_project(ctx: HelperContext, requested: str | None) -> None:
     """Refuse a project the conversation's scope doesn't cover.
 
     The session tools used to swap a different requested project for the
     scope project silently, so "trash project B's sessions" in a project-A
-    conversation proposed A's sessions.  Say so instead.
+    conversation proposed A's sessions.  Say so instead.  A group-scoped
+    conversation applies the same rule against the group's effective project
+    set (recomputed per call).
     """
     scope_project = ctx.scope.project_id
     if scope_project is not None and requested is not None and requested != scope_project:
@@ -539,6 +598,37 @@ def _check_scope_project(ctx: HelperContext, requested: str | None) -> None:
             f"This conversation is limited to project {scope_project}; start an "
             f"unscoped conversation to work with project {requested}."
         )
+    if ctx.scope.group_id is not None and requested is not None:
+        allowed = await group_effective_project_ids(ctx.db, ctx.user.id, ctx.scope.group_id)
+        if requested not in allowed:
+            raise ToolArgumentError(
+                f"This conversation is limited to project group {ctx.scope.group_id}; "
+                f"project {requested} is not a readable member of it."
+            )
+
+
+async def group_session_clause(
+    db: Any, user_id: str, group_id: str
+) -> ColumnElement[bool] | None:
+    """Sessions belonging to any readable member project of the scope's group.
+
+    Reuses ``project_session_clause`` (``legacy_only``) per project — the same
+    attribution a project-scoped turn uses — so a group-scoped turn never reads
+    a session outside its effective project set.  None = the group has no
+    effective projects, so nothing may match.
+    """
+    allowed = await group_effective_project_ids(db, user_id, group_id)
+    if not allowed:
+        return None
+    projects = list(
+        (await db.execute(select(Project).where(Project.id.in_(allowed)))).scalars().all()
+    )
+    return or_(*[project_session_clause(p, legacy_only=True) for p in projects])
+
+
+async def _group_session_clause(ctx: HelperContext) -> ColumnElement[bool] | None:
+    """``group_session_clause`` bound to the turn's context."""
+    return await group_session_clause(ctx.db, ctx.user.id, ctx.scope.group_id)
 
 
 async def _project_session_filter(
@@ -552,12 +642,21 @@ async def _project_session_filter(
     clause, never a materialized id list, so a project with thousands of
     sessions costs one subquery rather than thousands of bind parameters.
     """
-    _check_scope_project(ctx, project_id)
+    await _check_scope_project(ctx, project_id)
     effective = _scope_project(ctx, project_id)
     scope_clause = (
         Session.id.in_(ctx.scope.session_ids) if ctx.scope.session_ids else None
     )
     if effective is None:
+        # A group-scoped turn with no requested project still narrows to the
+        # group's effective project set (recomputed per call).
+        if ctx.scope.group_id is not None:
+            clause = await _group_session_clause(ctx)
+            if clause is None:
+                return _SessionFilter(empty=True)
+            if scope_clause is not None:
+                clause = and_(clause, scope_clause)
+            return _SessionFilter(clause=clause)
         return _SessionFilter(clause=scope_clause)
 
     project = await _accessible_project(ctx, effective)
@@ -1888,12 +1987,15 @@ async def _trash_sessions(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
             )
             continue
         # Same scope rule as every read tool (``_owned_session``: scope
-        # session ids, and the scope project's sessions incl. unattributed
-        # legacy ones on its remotes).  An out-of-scope session is named by
-        # id only — nothing from outside the scope reaches the model.
-        if (ctx.scope.session_ids or ctx.scope.project_id is not None) and (
-            await _owned_session(ctx, sid)
-        ) is None:
+        # session ids, the scope project's sessions incl. unattributed legacy
+        # ones on its remotes, or a scope group's member-project sessions).
+        # An out-of-scope session is named by id only — nothing from outside
+        # the scope reaches the model.
+        if (
+            ctx.scope.session_ids
+            or ctx.scope.project_id is not None
+            or ctx.scope.group_id is not None
+        ) and (await _owned_session(ctx, sid)) is None:
             targets.append(
                 {"id": sid, "name": sid, "change": "skipped", "reason": "not_in_scope"}
             )
@@ -2068,6 +2170,8 @@ async def _propose_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
         raise ToolArgumentError("'title' is required")
     assignee = _optional_str(args, "assignee_persona")
     publish_to_jira = _optional_bool(args, "publish_to_jira")
+    due_date = _optional_str(args, "due_date")
+    estimated_effort = _optional_str(args, "estimated_effort")
     # Same shape rules as the tickets route (``TicketCreate``) plus the
     # helper's write limits; an over-length draft is refused, not truncated.
     try:
@@ -2078,6 +2182,8 @@ async def _propose_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
             priority=args.get("priority") or "medium",
             kind=args.get("kind") or "task",
             assigned_to=assignee,
+            due_date=due_date,
+            estimated_effort=estimated_effort,
         )
     except HelperDraftError as exc:
         raise ToolArgumentError(str(exc)) from None
@@ -2099,6 +2205,11 @@ async def _propose_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
     # caller asks for it do we gate on the same preconditions the confirm will
     # re-check.  Any refusal here returns no proposal row.
     jira_project_key: str | None = None
+    jira_project_key_override: str | None = None
+    jira_template: str | None = None
+    jira_template_version: int | None = None
+    jira_template_builtin: bool | None = None
+    jira_sprint_id: int | None = None
     if publish_to_jira:
         if not await user_can_edit_project(ctx.db, ctx.user.id, project):
             return ToolOutput(
@@ -2146,6 +2257,57 @@ async def _propose_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
             )
         jira_project_key = mapping.jira_project_key
 
+        # Optional publish overrides (GitHub #113 C).  A project-key override
+        # must name a Jira project some SessionFS project in this org maps to,
+        # AND the caller must be able to edit at least one such project.  An
+        # invalid override refuses with no proposal row.
+        override_key = _optional_str(args, "jira_project_key")
+        if override_key is not None and override_key.upper() != jira_project_key.upper():
+            err = await jira_project_key_override_error(
+                ctx.db,
+                org_id=project.org_id,
+                jira_project_key=override_key,
+                user_id=ctx.user.id,
+            )
+            if err is not None:
+                return ToolOutput(
+                    f"Cannot publish to Jira: {err}",
+                    refs=_refs(project_ids=[project_id]),
+                )
+            jira_project_key_override = override_key.strip().upper()
+            jira_project_key = jira_project_key_override
+
+        template_slug = _optional_str(args, "jira_template")
+        if template_slug is not None:
+            err = await jira_template_override_error(
+                ctx.db, org_id=project.org_id, slug=template_slug
+            )
+            if err is not None:
+                return ToolOutput(
+                    f"Cannot publish to Jira: {err}",
+                    refs=_refs(project_ids=[project_id]),
+                )
+            jira_template = template_slug
+            jira_template_version = await jira_template_override_version(
+                ctx.db, org_id=project.org_id, slug=template_slug
+            )
+            # Record whether the slug resolved to a built-in (no org custom row,
+            # hence no version) so confirm can keep publishing the built-in even
+            # if a custom template later shadows it — and, conversely, a pinned
+            # custom template never falls back to a same-slug built-in (L-c).
+            jira_template_builtin = jira_template_version is None
+
+        jira_sprint_id = _optional_int(args, "jira_sprint_id")
+        if jira_sprint_id is not None and jira_sprint_id <= 0:
+            raise ToolArgumentError("'jira_sprint_id' must be a positive integer")
+        if jira_sprint_id is not None and not conn.sprint_field_id:
+            return ToolOutput(
+                "Cannot publish to Jira: this connection has no sprint field "
+                "discovered; ask an org admin to save the connection or set a "
+                "sprint field id.",
+                refs=_refs(project_ids=[project_id]),
+            )
+
     # A drafted assignee resolves exactly like propose_assignment: a persona
     # name, or a human org member to the persona representing them, or a
     # teammate email/id to a direct-to-person assignment (GitHub #96).
@@ -2177,19 +2339,34 @@ async def _propose_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
         "assigned_to": assigned_to,
         "assigned_user_id": assigned_user_id,
         "assignee_name": assignee_name,
+        "due_date": draft.due_date.isoformat() if draft.due_date else None,
+        "estimated_effort": draft.estimated_effort,
         "sources": sources,
     }
     if publish_to_jira:
         params["publish_to_jira"] = True
         params["jira_project_key"] = jira_project_key
+        if jira_project_key_override is not None:
+            params["jira_project_key_override"] = jira_project_key_override
+        if jira_template is not None:
+            params["jira_template"] = jira_template
+            params["jira_template_version"] = jira_template_version
+            params["jira_template_builtin"] = jira_template_builtin
+        if jira_sprint_id is not None:
+            params["jira_sprint_id"] = jira_sprint_id
     summary = redact(
         f"Create {_article(draft.kind)} {draft.kind} ticket in {project.name}",
         ctx.dlp_policy,
     )
     if publish_to_jira:
+        parts = [f"and publish it to Jira {jira_project_key}"]
+        if jira_template is not None:
+            parts.append(f"with template {jira_template}")
+        if jira_sprint_id is not None:
+            parts.append(f"into sprint {jira_sprint_id}")
         summary = redact(
             f"Create {_article(draft.kind)} {draft.kind} ticket in {project.name} "
-            f"and publish it to Jira {jira_project_key}",
+            + " ".join(parts),
             ctx.dlp_policy,
         )
     return _propose_action(
@@ -2666,6 +2843,123 @@ def _assignee_label(
     return t.assigned_to or "unassigned"
 
 
+def _user_reference_label(
+    user: User | None,
+    user_id: str | None,
+    *,
+    show_email: bool,
+    persona: str | None = None,
+) -> str:
+    """Readable creator/resolver label for ``get_ticket`` (GitHub #113).
+
+    Follows the assignee email rule: full address only when the caller has
+    read standing on the project (``show_email``); a captured-session reader
+    sees the masked address. Display names are user-controlled, so brackets
+    and control characters are neutralised before they reach the model. A
+    deleted user keeps their id; a missing id reads "a former user".
+    """
+    from sessionfs.server.email import mask_address
+
+    if user is not None and user.display_name:
+        label = _clean_meta(user.display_name) or _clean_meta(user_id or "")
+    elif user is not None:
+        label = _clean_meta(user.email if show_email else mask_address(user.email))
+    else:
+        label = _clean_meta(user_id) if user_id else "a former user"
+    if user is not None and user.email and user.display_name:
+        label += f" ({user.email if show_email else mask_address(user.email)})"
+    if persona:
+        label += f" (persona: {_clean_meta(persona)})"
+    return label
+
+
+def _event_value_text(value: object) -> str:
+    """A short, neutralised rendering of a decoded before/after value."""
+    if value is None:
+        return "—"
+    if isinstance(value, dict):
+        if "changed" in value and "length" in value:
+            return f"changed ({value['length']} chars)"
+        if "persona" in value:
+            return _clean_meta(str(value["persona"]))
+        if "user_id" in value:
+            return _clean_meta(str(value["user_id"]))
+        if "issue_key" in value:
+            return _clean_meta(str(value["issue_key"]))
+        return ", ".join(_event_value_text(v) for v in value.values())
+    return _clean_meta(str(value), 60)
+
+
+def _event_actor_name(
+    event: TicketEvent, users: dict[str, User], *, show_email: bool = False
+) -> str:
+    """The actor for one timeline line, neutralised like other metadata.
+
+    A user actor without a display name falls back to their address, masked
+    unless the caller has read standing (``show_email``) — same rule as the
+    assignee/creator/resolver labels, so a captured-session reader never
+    learns a teammate's address from the timeline.
+    """
+    if event.actor_type == "jira":
+        return "Jira"
+    if event.actor_type == "system":
+        return "system"
+    if event.actor_type == "service":
+        return _clean_meta(event.actor_label) or "a service key"
+    if event.actor_persona:
+        return _clean_meta(event.actor_persona)
+    uid = event.actor_user_id
+    user = users.get(uid) if uid else None
+    if user is not None and user.display_name:
+        return _clean_meta(user.display_name)
+    if user is not None:
+        if user.email:
+            from sessionfs.server.email import mask_address
+
+            return _clean_meta(user.email if show_email else mask_address(user.email))
+        return _clean_meta(uid or "")
+    return _clean_meta(uid) if uid else "a user"
+
+
+def _event_subject(event: TicketEvent, users: dict[str, User]) -> str:
+    """Short description of what one timeline event did (actor excluded)."""
+    after = decode_event_value(event.after_value)
+    before = decode_event_value(event.before_value)
+    if event.action == "created":
+        return "created the ticket"
+    if event.action == "status_changed":
+        return f"changed status {_event_value_text(before)} → {_event_value_text(after)}"
+    if event.action == "assigned":
+        if isinstance(after, dict) and "persona" in after:
+            return f"assigned to {_clean_meta(str(after['persona']))}"
+        if isinstance(after, dict) and "user_id" in after:
+            return "assigned to " + _user_reference_label(
+                users.get(str(after["user_id"])), str(after["user_id"]), show_email=False
+            )
+        return "assigned"
+    if event.action == "unassigned":
+        return "unassigned"
+    if event.action == "due_date_set":
+        return f"set due date to {_event_value_text(after)}" if after else "cleared due date"
+    if event.action == "estimate_set":
+        return f"set estimate to {_event_value_text(after)}" if after else "cleared estimate"
+    if event.action == "field_edited":
+        return f"edited {_clean_meta(event.field) or 'a field'}"
+    if event.action == "jira_linked":
+        return "linked to Jira"
+    if event.action == "jira_published":
+        return "published to Jira"
+    if event.action == "jira_unlinked":
+        return "unlinked from Jira"
+    if event.action == "jira_pulled":
+        return "pulled from Jira"
+    if event.action == "approved":
+        return "approved"
+    if event.action == "dismissed":
+        return "dismissed"
+    return _clean_meta(event.action)
+
+
 def _format_ticket_line(t: Ticket, project_name: str, assignee: str | None = None) -> str:
     if assignee is None:
         assignee = t.assigned_to or "unassigned"
@@ -2743,6 +3037,7 @@ async def _list_tickets(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
     kind = _optional_str(args, "kind")
     assignee = _optional_str(args, "assignee")
     assigned_to_me = args.get("assigned_to_me") is True
+    overdue = args.get("overdue") is True
     query = _optional_str(args, "query")
     limit = _capped_int(args, "limit", 50, 1, MAX_LIST_TICKETS)
 
@@ -2790,6 +3085,13 @@ async def _list_tickets(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
                 Ticket.title.ilike(f"%{_escape_like(query)}%", escape="\\"),
                 Ticket.description.ilike(f"%{_escape_like(query)}%", escape="\\"),
             )
+        )
+    if overdue:
+        # GitHub #113 — past-due, non-terminal tickets only.
+        stmt = stmt.where(
+            Ticket.due_date.is_not(None),
+            Ticket.due_date < date.today(),
+            Ticket.status.notin_(("done", "closed", "cancelled")),
         )
     stmt = stmt.order_by(Ticket.updated_at.desc()).limit(limit + 1)
     tickets = (await ctx.db.execute(stmt)).scalars().all()
@@ -2903,16 +3205,53 @@ async def _get_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
         f"kind: {ticket.kind} | status: {ticket.status} | "
         f"priority: {ticket.priority or '—'}"
     )
-    assigned_user = (
-        await ctx.db.get(User, ticket.assigned_user_id)
-        if ticket.assigned_user_id
-        else None
+    # Batch-load the assignee, creator and resolver users (one query for the
+    # provenance trio) so the new creator/resolver lines don't N+1.
+    provenance_ids = {
+        uid for uid in (
+            ticket.assigned_user_id, ticket.created_by_user_id, ticket.resolver_user_id
+        ) if uid
+    }
+    provenance_users = (
+        {
+            u.id: u
+            for u in (
+                await ctx.db.execute(
+                    select(User).where(User.id.in_(sorted(provenance_ids)))
+                )
+            ).scalars().all()
+        }
+        if provenance_ids
+        else {}
     )
+    assigned_user = provenance_users.get(ticket.assigned_user_id)
     users = {ticket.assigned_user_id: assigned_user} if assigned_user is not None else {}
-    show_email = bool(users) and await user_has_read_standing(
-        ctx.db, ctx.user.id, project
-    )
+    # GitHub #113 — read standing decides email visibility for creator/resolver
+    # (and timeline actors) whether or not the ticket currently has an assignee.
+    show_email = await user_has_read_standing(ctx.db, ctx.user.id, project)
     lines.append(f"assignee: {_assignee_label(ticket, users, show_email=show_email)}")
+    # GitHub #113 — creator/resolver provenance (masked emails without read
+    # standing), scheduling fields, then the most recent events.
+    lines.append(
+        "creator: "
+        + _user_reference_label(
+            provenance_users.get(ticket.created_by_user_id),
+            ticket.created_by_user_id,
+            show_email=show_email,
+            persona=ticket.created_by_persona,
+        )
+    )
+    if ticket.resolver_user_id:
+        lines.append(
+            "resolver: "
+            + _user_reference_label(
+                provenance_users.get(ticket.resolver_user_id),
+                ticket.resolver_user_id,
+                show_email=show_email,
+            )
+        )
+    lines.append(f"due: {ticket.due_date.isoformat() if ticket.due_date else '—'}")
+    lines.append(f"estimate: {ticket.estimated_effort or '—'}")
     # A live Jira link is shown up top so the model knows the issue key/url
     # (and can cite them); a stale/removed link is simply absent.
     jira_target = await jira_sync._sync_target(ctx.db, ticket.id)
@@ -2931,6 +3270,42 @@ async def _get_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
     if len(deps) > len(shown_deps):
         deps_text += f" +{len(deps) - len(shown_deps)} more"
     lines.append("depends on: " + deps_text)
+
+    # GitHub #113 — the last 10 timeline events as short lines ("assigned to
+    # Alice by Bob"), newest first. Actor users are batch-loaded so the list
+    # never hits the user table once per event.
+    events = list(
+        (
+            await ctx.db.execute(
+                select(TicketEvent)
+                .where(TicketEvent.ticket_id == ticket.id)
+                .order_by(TicketEvent.seq.desc())
+                .limit(10)
+            )
+        ).scalars().all()
+    )
+    if events:
+        actor_ids = {e.actor_user_id for e in events if e.actor_user_id}
+        actor_users = (
+            {
+                u.id: u
+                for u in (
+                    await ctx.db.execute(
+                        select(User).where(User.id.in_(sorted(actor_ids)))
+                    )
+                ).scalars().all()
+            }
+            if actor_ids
+            else {}
+        )
+        lines.append("events (last %d):" % len(events))
+        for e in events:
+            lines.append(
+                f"- {_fmt_dt(e.created_at)} {_event_subject(e, actor_users)} "
+                f"by {_event_actor_name(e, actor_users, show_email=show_email)}"
+            )
+    else:
+        lines.append("events: none")
 
     criteria = _loads_json_list(ticket.acceptance_criteria)
     if criteria:
@@ -3696,7 +4071,8 @@ TOOLS: dict[str, HelperTool] = {
             description=(
                 "List sessionfs tickets (tk_…) across the caller's accessible "
                 "projects. These are the project's own work items — NOT Jira "
-                "issues (KEY-123). Newest-updated first, capped at 50."
+                "issues (KEY-123). Newest-updated first, capped at 50. "
+                "Pass overdue=true for only past-due, non-terminal tickets."
             ),
             input_schema={
                 "type": "object",
@@ -3706,6 +4082,7 @@ TOOLS: dict[str, HelperTool] = {
                     "kind": {"type": "string", "enum": ["issue", "task"]},
                     "assignee": {"type": "string"},
                     "assigned_to_me": {"type": "boolean"},
+                    "overdue": {"type": "boolean"},
                     "query": {"type": "string"},
                     "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIST_TICKETS},
                 },
@@ -3718,7 +4095,8 @@ TOOLS: dict[str, HelperTool] = {
             description=(
                 "Full detail for one sessionfs ticket (tk_…): description, "
                 "acceptance criteria, status, assignee, dependencies, parent, "
-                "timestamps and the last 10 comments."
+                "creator/resolver, timestamps, due date, estimate, the last "
+                "10 timeline events and the last 10 comments."
             ),
             input_schema={
                 "type": "object",
@@ -3870,7 +4248,12 @@ TOOLS: dict[str, HelperTool] = {
                     "priority": {"type": "string", "enum": sorted(_VALID_PRIORITIES)},
                     "kind": {"type": "string", "enum": sorted(_VALID_TICKET_KINDS)},
                     "assignee_persona": {"type": "string", "description": "Persona name, or a teammate email/user id (direct assignment), or a display name (their represented persona when one exists, else the person)."},
+                    "due_date": {"type": "string", "description": "Optional due date as YYYY-MM-DD."},
+                    "estimated_effort": {"type": "string", "description": "Optional Jira-duration estimate like '3d', '2d 4h' or '30m'."},
                     "publish_to_jira": {"type": "boolean"},
+                    "jira_project_key": {"type": "string", "description": "With publish_to_jira=true, publish into this Jira project key instead of the target project's mapping. Must be a key some project in the org maps to."},
+                    "jira_template": {"type": "string", "description": "With publish_to_jira=true, publish with this built-in or org-custom Jira template slug instead of the inherited template."},
+                    "jira_sprint_id": {"type": "integer", "description": "With publish_to_jira=true, place the issue into this Agile sprint id."},
                     "sources": {
                         "type": "object",
                         "properties": {

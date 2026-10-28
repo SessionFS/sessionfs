@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.28.0] - 2026-10-28
+
+**Ask the session helper about a whole project group, due dates, estimates and a full history on tickets, Jira sprints and parent epics, and sweep keys that explain themselves.** Server migrations 102 and 103.
+
+### Added
+- **Scope the session helper to a project group.** Pick a group in the scope menu, use `sfs helper ask --group <slug|id>`, or pass `group_id` to the MCP `ask_session_helper` tool.
+  - Answers stay inside the group's projects that you can read, checked again on every step.
+  - The group's compiled context is part of the helper's instructions, DLP-redacted and protected against injected tags.
+- **Due dates and estimates on tickets.** Set them in the dashboard, with `sfs ticket create|update --due YYYY-MM-DD --estimate 2d4h`, or through MCP `due_date` / `estimated_effort`.
+  - Ticket lists accept `?overdue=true`, and the dashboard has an **Overdue** filter.
+  - Estimates use Jira's duration syntax.
+- **Ticket history.** Every change to a ticket is recorded: status, assignment, field edits, due dates and Jira links.
+  - Read it with `GET /api/v1/projects/{id}/tickets/{tid}/events` or `sfs ticket history`, or in the ticket's Activity timeline.
+  - Tickets now show who created and who resolved them. Emails follow the existing masking rules.
+- **Jira sprints and parents.**
+  - Sprint and epic-link fields are detected automatically. Org admins can review or override them under Org → Integrations → Jira → Agile fields without re-entering the API token.
+  - Publishing can put the issue in an active or future sprint.
+  - A ticket's parent is published as the Jira parent or epic.
+  - Sprint and parent are shown on the ticket.
+- **Due dates and estimates in Jira.** They are published as `duedate` and `originalEstimate` and pulled back. Inbound due-date changes apply when sync is on. If a project's screens hide a field, the publish still succeeds and says which field was skipped.
+- **The helper's create-and-publish can choose the Jira project** (one mapped to a project you can edit), **the template** (version pinned when proposed) **and the sprint**.
+- **Fetch models on the org AI-key form**, with a manual fallback, like the personal form. Model lookups are rate-limited per user.
+- **Opt-in Helm CronJobs for every scheduled sweep:**
+  - ticket notifications, every 10 minutes;
+  - org digest, daily;
+  - knowledge base compile, every 15 minutes;
+  - Jira sync, every minute;
+  - Confluence publish, every 15 minutes.
+
+  The CronJob pods can reach only DNS and the API, and they mount no service account token.
+
+### Changed
+- **Jira publishing never creates a duplicate issue.**
+  - Only a rejected field (HTTP 400 naming it) is retried, and only that field is dropped.
+  - After a timeout, a server error or a crashed publish, the next publish looks for the existing issue by label in the original project and adopts it.
+  - Warnings explain in plain language anything that couldn't be set.
+- **Sweep service keys explain their admin rule.**
+  - **Creating or rotating a key:** a `platform_sweeps:run` key gets a warning that it only works while the person who created it stays a platform admin.
+  - **When it's refused:** the 403 names the cause and the fix.
+  - **CLI:** `sfs admin service-keys list` marks keys that no longer work, and `scopes` flags the scopes with this rule.
+- **The helper remembers your last scope** per signed-in account and tab, and restores a conversation's own scope.
+- **The Jira template editor** has explanations for each mode and source field, a preview beside the sections, **Copy from…**, and a searchable project picker.
+
+### Fixed
+- Ticket and wiki citations in a helper answer link correctly as soon as the answer finishes, instead of showing "source not available" until the conversation was reopened.
+
+### Upgrading
+- Run migrations 102 and 103 (both additive).
+- **Existing Jira connections:** an org admin should open Org → Integrations → Jira → Agile fields, click **Detect fields** and save once. Until then, sprints and epic links aren't available on connections made before 0.28.0.
+- **Self-hosted:** check your sweep keys with `sfs admin service-keys list`, and consider the new opt-in CronJobs in the Helm chart.
+
 ## [0.27.0] - 2026-10-27
 
 **Assign tickets to people, link tickets to existing Jira issues and choose which side wins, a Jira-aware session helper, and a review loop that works with any reviewer.** Server migration 101.

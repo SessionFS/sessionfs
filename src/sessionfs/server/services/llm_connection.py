@@ -42,6 +42,10 @@ TESTS_PER_MINUTE = 10
 # fast 404 from a slow one. Tests patch it to 0.
 PRIVATE_FAILURE_MIN_SECONDS = 15.0
 _limiter = SlidingWindowRateLimiter(max_requests=TESTS_PER_MINUTE, window_seconds=60)
+# Model discovery ("Fetch models", Base URL lookups) makes the same kind of
+# outbound call, so it gets the same per-user limit in its own bucket: typing
+# a Base URL must not use up the connection tests, nor the reverse.
+_discovery_limiter = SlidingWindowRateLimiter(max_requests=TESTS_PER_MINUTE, window_seconds=60)
 
 KEY_REQUIRED = {
     "code": "key_required",
@@ -51,15 +55,24 @@ RATE_LIMITED = {
     "code": "test_rate_limited",
     "message": "Too many connection tests. Wait a minute and try again.",
 }
+DISCOVERY_RATE_LIMITED = {
+    "code": "models_rate_limited",
+    "message": "Too many model lookups. Wait a minute and try again.",
+}
 
 
 def reset_rate_limiter() -> None:
     """Forget recorded tests (used by tests)."""
     _limiter._requests.clear()
+    _discovery_limiter._requests.clear()
 
 
 def take_test_slot(user_id: str) -> bool:
     return _limiter.is_allowed(user_id)
+
+
+def take_discovery_slot(user_id: str) -> bool:
+    return _discovery_limiter.is_allowed(user_id)
 
 
 def normalise_base_url(base_url: str | None) -> str:

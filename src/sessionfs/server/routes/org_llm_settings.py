@@ -1,6 +1,7 @@
 """Org-wide LLM key for the session helper (migration 084).
 
-GET / PUT / DELETE ``/api/v1/orgs/{org_id}/llm-settings`` — org owner/admin
+GET / PUT / DELETE ``/api/v1/orgs/{org_id}/llm-settings`` (plus POST
+``.../test`` and ``.../models``) — org owner/admin
 only, Enterprise only (feature ``session_helper``). The stored API key is
 Fernet-encrypted with the same derivation as ``UserJudgeSettings``
 (``server/llm_keys.py``) and is never returned; ``GET`` reports
@@ -39,10 +40,14 @@ from sessionfs.server.llm_keys import decrypt_llm_key, encrypt_llm_key
 from sessionfs.server.roles import has_minimum_role
 from sessionfs.server.routes.llm_providers import validate_provider_or_422
 from sessionfs.server.routes.settings import (
+    DiscoverModelsRequest,
     LlmConnectionTestRequest,
     LlmConnectionTestResponse,
     SaveWarning,
+    SavedKeyLoader,
     _check_llm_base_url_or_400,
+    discover_models_for_request,
+    discovery_before_fetch,
     release_transaction,
     resolve_test_target,
 )
@@ -331,6 +336,57 @@ async def test_org_llm_connection(
         provider=provider, model=model, api_key=api_key, base_url=base_url
     )
     return result.to_dict()
+
+
+def _org_key_loader(db: AsyncSession, org_id: str) -> SavedKeyLoader:
+    """Saved-key loader for model discovery: the stored org key, but only for
+    exactly the provider/endpoint it was saved with (strict binding, as the
+    connection test uses) — never sent to a host the caller picks."""
+
+    async def load(provider: str | None, base_url: str | None) -> str:
+        row = (
+            await db.execute(
+                select(OrgLlmSettings).where(OrgLlmSettings.org_id == org_id)
+            )
+        ).scalar_one_or_none()
+        if row is None or not row.encrypted_api_key:
+            return ""
+        if not llm_connection.saved_key_bound_to(
+            row.provider, row.base_url, provider=provider, base_url=base_url
+        ):
+            return ""
+        try:
+            return decrypt_llm_key(row.encrypted_api_key)
+        except Exception:
+            return ""
+
+    return load
+
+
+@router.post("/{org_id}/llm-settings/models")
+async def discover_org_llm_models(
+    org_id: str,
+    body: DiscoverModelsRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """List models for the org helper key form ("Fetch models").
+
+    Owner/admin only, Enterprise only. Same request/response shape as
+    POST /api/v1/settings/judge/models (shared implementation): a registry
+    ``provider`` uses its fixed /models endpoint, a custom ``base_url`` goes
+    through the LLM endpoint SSRF guard. Without ``api_key`` the stored org
+    key is used only when it is bound to that same provider/endpoint.
+    """
+    await _authorize_role(db, user, org_id)
+    plan = await resolve_org_plan_tier(org_id, db)
+    if _FEATURE not in get_features_for_tier(plan):
+        _require_enterprise(plan)
+    # The stored key is read first; the rate-limit slot is taken and the
+    # transaction released only right before the outbound /models request.
+    return await discover_models_for_request(
+        body, _org_key_loader(db, org_id), discovery_before_fetch(user, db)
+    )
 
 
 @router.put("/{org_id}/llm-settings", response_model=OrgLlmSettingsSaveResponse)

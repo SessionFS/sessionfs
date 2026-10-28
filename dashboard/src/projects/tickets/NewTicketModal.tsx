@@ -13,6 +13,7 @@ import {
 } from '../../components/ui';
 import { AssigneePicker } from './AssigneePicker';
 import { UNASSIGNED, assigneeErrorFrom, assigneePayload, type Assignee } from './assignee';
+import { estimateError, scheduleErrorMessage, scheduleFieldErrors } from './schedule';
 
 /* ── New ticket modal ── */
 
@@ -35,6 +36,10 @@ export function NewTicketModal({ projectId, onClose }: NewModalProps) {
   const [assigneeError, setAssigneeError] = useState<string | undefined>();
   const [kind, setKind] = useState<'task' | 'issue'>('task');
   const [parentTicketId, setParentTicketId] = useState<string>('');
+  const [dueDate, setDueDate] = useState('');
+  const [estimate, setEstimate] = useState('');
+  const [estimateProblem, setEstimateProblem] = useState<string | undefined>();
+  const [dueDateProblem, setDueDateProblem] = useState<string | undefined>();
   const [submitting, setSubmitting] = useState(false);
 
   // Open + in_progress Issues are valid parents.
@@ -54,8 +59,17 @@ export function NewTicketModal({ projectId, onClose }: NewModalProps) {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    // Both scheduling fields are optional; a typed estimate must parse.
+    const estimateValue = estimate.trim();
+    const problem = estimateValue ? estimateError(estimateValue) : null;
+    if (problem) {
+      setEstimateProblem(problem);
+      return;
+    }
     setSubmitting(true);
     setAssigneeError(undefined);
+    setEstimateProblem(undefined);
+    setDueDateProblem(undefined);
     try {
       const acceptanceCriteria = criteria
         .split('\n')
@@ -70,13 +84,20 @@ export function NewTicketModal({ projectId, onClose }: NewModalProps) {
         kind,
         parent_ticket_id:
           kind === 'task' && parentTicketId ? parentTicketId : null,
+        ...(dueDate ? { due_date: dueDate } : {}),
+        ...(estimateValue ? { estimated_effort: estimateValue } : {}),
       });
       addToast('success', `Created ${kind} "${title.trim()}"`);
       onClose();
     } catch (exc) {
       const assigneeProblem = assigneeErrorFrom(exc);
       if (assigneeProblem) setAssigneeError(assigneeProblem);
-      addToast('error', `Create failed: ${assigneeProblem ?? errorMessage(exc)}`);
+      // A 422 on the estimate or date names the field; show it there too.
+      const fieldProblem = assigneeProblem ? null : scheduleErrorMessage(exc);
+      const perField = scheduleFieldErrors(exc);
+      if (perField.estimated_effort) setEstimateProblem(perField.estimated_effort);
+      if (perField.due_date) setDueDateProblem(perField.due_date);
+      addToast('error', `Create failed: ${assigneeProblem ?? fieldProblem ?? errorMessage(exc)}`);
     } finally {
       setSubmitting(false);
     }
@@ -183,6 +204,33 @@ export function NewTicketModal({ projectId, onClose }: NewModalProps) {
               setAssigneeError(undefined);
             }}
             error={assigneeError}
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 items-start">
+          <Input
+            id="field-due-date"
+            type="date"
+            value={dueDate}
+            onChange={(e) => {
+              setDueDate(e.target.value);
+              setDueDateProblem(undefined);
+            }}
+            title="Due date (optional)"
+            error={dueDateProblem}
+          />
+          <Input
+            id="field-estimate"
+            type="text"
+            value={estimate}
+            onChange={(e) => {
+              setEstimate(e.target.value);
+              setEstimateProblem(undefined);
+            }}
+            title="Estimate (optional)"
+            placeholder="2d 4h"
+            hint="Jira durations: w, d, h, m"
+            error={estimateProblem}
           />
         </div>
 

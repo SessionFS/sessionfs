@@ -264,11 +264,11 @@ Owners and admins of Team and Enterprise orgs get a weekly email covering the pr
 
 ## Session helper AI key (Enterprise, v0.23.0)
 
-Owners and admins can set one provider, model, API key and optional base URL that the [session helper](/session-helper/) uses for members without a key of their own: **Organization → Policies → AI key for the session helper**, or `GET/PUT/DELETE /api/v1/orgs/{org_id}/llm-settings`. The key is encrypted at rest and never shown again after saving (only its last four characters). It can be switched off without deleting it, and a custom base URL passes the same address checks as other user-supplied LLM endpoints. A member's own key always takes precedence.
+Owners and admins can set one provider, model, API key and optional base URL that the [session helper](/session-helper/) uses for members without a key of their own: **Organization → Policies → AI key for the session helper**, or `GET/PUT/DELETE /api/v1/orgs/{org_id}/llm-settings`. The key is encrypted at rest and never shown again after saving (only its last four characters). It can be switched off without deleting it, and a custom base URL passes the same address checks as other user-supplied LLM endpoints. A member's own key always takes precedence. Since v0.28.0, **Fetch models** lists the models the key can use, as on the personal form, and you can still type a model id when the provider can't list them.
 
 ## Jira Cloud (Enterprise, v0.23.0)
 
-Owners and admins connect the org to Jira Cloud from the **Integrations** tab (or `sfs org jira connect`), map projects to Jira projects and check the integration's health. Members then promote tickets to Jira issues from the ticket panel. Since v0.26.0, status changes and comments can sync both ways and admins can define custom story templates. Since v0.27.0, a ticket can also be linked to an issue that already exists in Jira. See [Jira Cloud](/integrations/jira/).
+Owners and admins connect the org to Jira Cloud from the **Integrations** tab (or `sfs org jira connect`), map projects to Jira projects and check the integration's health. Members then promote tickets to Jira issues from the ticket panel. Since v0.26.0, status changes and comments can sync both ways and admins can define custom story templates. Since v0.27.0, a ticket can also be linked to an issue that already exists in Jira. Since v0.28.0, a publish can place the issue in a sprint, set its parent from the ticket's parent and carry the due date and estimate; admins review the detected sprint and epic-link fields under **Connection → Agile fields**. See [Jira Cloud](/integrations/jira/).
 
 ## Confluence Cloud (Enterprise, v0.26.0)
 

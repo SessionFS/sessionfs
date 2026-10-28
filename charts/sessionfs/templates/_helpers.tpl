@@ -72,6 +72,46 @@ app.kubernetes.io/component: {{ $component }}
 {{- end }}
 
 {{/*
+Scheduled platform sweeps (GitHub #115). One entry per sweep drives both the
+shared sweep-cronjob template and the NetworkPolicy ingress rules so the five
+sweeps stay in lock-step. `key` names the api.<key> values section; `component`
+is the k8s component label; `path` is the admin sweep endpoint; `schedule` and
+`secretKey` are the cron defaults (override via api.<key>.cronJob).
+*/}}
+{{- define "sessionfs.sweepDefs" -}}
+- key: ticketNotifications
+  component: ticket-notifications
+  path: /api/v1/admin/sweeps/ticket-notifications
+  schedule: '*/10 * * * *'
+  envVar: SFS_TICKET_NOTIFICATIONS_API_KEY
+  secretKey: ticket-notifications-api-key
+- key: orgDigest
+  component: org-digest
+  path: /api/v1/admin/sweeps/org-digest
+  schedule: '0 4 * * *'
+  envVar: SFS_ORG_DIGEST_API_KEY
+  secretKey: org-digest-api-key
+- key: kbCompile
+  component: kb-compile
+  path: /api/v1/admin/sweeps/kb-compile
+  schedule: '*/15 * * * *'
+  envVar: SFS_KB_COMPILE_API_KEY
+  secretKey: kb-compile-api-key
+- key: jiraSync
+  component: jira-sync
+  path: /api/v1/admin/sweeps/jira-sync
+  schedule: '* * * * *'
+  envVar: SFS_JIRA_SYNC_API_KEY
+  secretKey: jira-sync-api-key
+- key: confluencePublish
+  component: confluence-publish
+  path: /api/v1/admin/sweeps/confluence-publish
+  schedule: '*/15 * * * *'
+  envVar: SFS_CONFLUENCE_PUBLISH_API_KEY
+  secretKey: confluence-publish-api-key
+{{- end }}
+
+{{/*
 API image
 */}}
 {{- define "sessionfs.api.image" -}}

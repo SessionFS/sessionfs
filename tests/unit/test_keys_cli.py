@@ -34,6 +34,12 @@ def _combined(result) -> str:
     return _plain("\n".join(parts))
 
 
+def _flat(s: str) -> str:
+    """Collapse rich's terminal line-wrapping to single spaces so tests can
+    assert on phrases that would otherwise be broken across 80-col lines."""
+    return " ".join(_plain(s).split())
+
+
 class _FakeRequest:
     """Async-callable replacement for `_api_request` that records the
     last call. Pass via `patch(..., new=fake)` (NOT `side_effect=...`)
@@ -366,6 +372,158 @@ def test_service_keys_list_empty_message():
         result = runner.invoke(service_keys_app, ["list", "--org", "org_x"])
     assert result.exit_code == 0, result.output
     assert "no service keys" in _combined(result).lower()
+
+
+# ── minter tier-coupling visibility (GitHub #115) ────────────────────
+
+
+def _create_body_with_warning(scope: str, raw: str = "sk_sfs_FULL_RAW_KEY_HERE"):
+    return {
+        "id": "key_abc",
+        "name": "ci",
+        "org_id": "org_x",
+        "service_key_name": "ci",
+        "scopes": [scope],
+        "project_ids": None,
+        "key_prefix": "sk_sfs_xxxxx",
+        "created_at": "2026-01-01T00:00:00Z",
+        "created_by_user_id": "user_1",
+        "expires_at": None,
+        "revoked_at": None,
+        "revoke_reason": None,
+        "last_used_at": None,
+        "last_used_ip": None,
+        "is_active": True,
+        "coupling_ok": True,
+        "coupling_reason": None,
+        "key": raw,
+        "warnings": [
+            {
+                "code": "minter_tier_coupling",
+                "message": (
+                    "platform_sweeps:run is coupled to platform-admin tier: "
+                    "this key stops working the moment the user who minted it "
+                    "or the key's owner is no longer an active platform admin."
+                ),
+            }
+        ],
+    }
+
+
+def test_service_keys_create_prints_tier_coupling_warning():
+    """A mint with a tier-coupled scope surfaces the minter_tier_coupling
+    warning (plain text, no ANSI in the combined output)."""
+    body = _create_body_with_warning("platform_sweeps:run")
+    with patch(
+        "sessionfs.cli.cmd_keys._get_api_config",
+        return_value=("http://api.test", "k"),
+    ), patch(
+        "sessionfs.cli.cmd_keys._api_request",
+        new=_fake_request(201, body),
+    ):
+        result = runner.invoke(
+            service_keys_app,
+            [
+                "create",
+                "--org",
+                "org_x",
+                "--name",
+                "ci",
+                "--scope",
+                "platform_sweeps:run",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    out = _flat(_combined(result))
+    assert "minter_tier_coupling" in out
+    assert "coupled to platform-admin tier" in out
+
+
+def test_service_keys_create_output_key_puts_warning_on_stderr():
+    """Under --output-key stdout is ONLY the raw key; the coupling warning
+    goes to stderr so `KEY=$(...)` capture is not polluted."""
+    body = _create_body_with_warning("platform_sweeps:run")
+    with patch(
+        "sessionfs.cli.cmd_keys._get_api_config",
+        return_value=("http://api.test", "k"),
+    ), patch(
+        "sessionfs.cli.cmd_keys._api_request",
+        new=_fake_request(201, body),
+    ):
+        result = runner.invoke(
+            service_keys_app,
+            [
+                "create",
+                "--org",
+                "org_x",
+                "--name",
+                "ci",
+                "--scope",
+                "platform_sweeps:run",
+                "--output-key",
+            ],
+        )
+    assert result.exit_code == 0, result.output
+    assert _plain(result.stdout).strip() == "sk_sfs_FULL_RAW_KEY_HERE"
+    err = _plain(result.stderr)
+    assert "minter_tier_coupling" in err
+    assert "sk_sfs_FULL_RAW_KEY_HERE" not in err
+
+
+def test_service_keys_rotate_prints_tier_coupling_warning():
+    """Rotation re-mints the coupled scope, so the warning is shown again."""
+    body = _create_body_with_warning("platform_sweeps:run")
+    with patch(
+        "sessionfs.cli.cmd_keys._get_api_config",
+        return_value=("http://api.test", "k"),
+    ), patch(
+        "sessionfs.cli.cmd_keys._api_request",
+        new=_fake_request(200, body),
+    ):
+        result = runner.invoke(
+            service_keys_app, ["rotate", "key_old", "--org", "org_x"]
+        )
+    assert result.exit_code == 0, result.output
+    out = _flat(_combined(result))
+    assert "minter_tier_coupling" in out
+    assert "coupled to platform-admin tier" in out
+
+
+def test_service_keys_list_shows_inactive_coupling_marker():
+    """A demoted minter renders `inactive: minter no longer admin` in the
+    list's Coupling column."""
+    row = {
+        "id": "key_abc",
+        "name": "ci",
+        "key_prefix": "sk_sfs_xxxxx",
+        "scopes": ["platform_sweeps:run"],
+        "project_ids": None,
+        "expires_at": None,
+        "is_active": True,
+        "coupling_ok": False,
+        "coupling_reason": "minter no longer admin",
+    }
+    with patch(
+        "sessionfs.cli.cmd_keys._get_api_config",
+        return_value=("http://api.test", "k"),
+    ), patch(
+        "sessionfs.cli.cmd_keys._api_request",
+        new=_fake_request(200, [row]),
+    ):
+        result = runner.invoke(service_keys_app, ["list", "--org", "org_x"])
+    assert result.exit_code == 0, result.output
+    out = _flat(_combined(result))
+    assert "inactive: minter no longer admin" in out
+
+
+def test_service_keys_scopes_flags_tier_coupled_scopes():
+    """`scopes` marks platform-admin-tier-coupled scopes so operators can
+    spot keys that break after an elevate/mint/revert cycle."""
+    result = runner.invoke(service_keys_app, ["scopes"])
+    assert result.exit_code == 0, result.output
+    out = _combined(result)
+    assert "platform_sweeps:run" in out
+    assert "platform-admin tier-coupled" in out
 
 
 # ── sfs auth keys (personal) ─────────────────────────────────────────

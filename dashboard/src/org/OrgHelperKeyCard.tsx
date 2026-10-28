@@ -18,7 +18,10 @@ import {
   useSaveOrgLlmSettings,
   useDeleteOrgLlmSettings,
   useOrgLlmConnectionTester,
+  useOrgModelDiscovery,
 } from './useOrgLlmSettings';
+import ModelPicker from '../settings/ModelPicker';
+import { useKeyCommit } from '../settings/useKeyCommit';
 import { Button, Input, Select, Switch } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
 import type { SaveWarning } from '../api/client';
@@ -50,12 +53,14 @@ export default function OrgHelperKeyCard({ orgId }: OrgHelperKeyCardProps) {
   const [provider, setProvider] = useState('openrouter');
   const [model, setModel] = useState('');
   const [apiKey, setApiKey] = useState('');
+  const [keyCommit, onKeyBlur] = useKeyCommit(apiKey);
   const [baseUrl, setBaseUrl] = useState('');
   const [enabled, setEnabled] = useState(true);
   const [fieldErrors, setFieldErrors] = useState<{ apiKey?: string; baseUrl?: string }>({});
   const [saveWarnings, setSaveWarnings] = useState<SaveWarning[]>([]);
 
   const connection = useLlmConnectionTest(useOrgLlmConnectionTester(orgId));
+  const discoverModels = useOrgModelDiscovery(orgId);
   const resetConnection = connection.reset;
 
   // A result describes the values it was run with; editing them clears it.
@@ -223,23 +228,35 @@ export default function OrgHelperKeyCard({ orgId }: OrgHelperKeyCardProps) {
 
         <Select
           value={provider}
-          onValueChange={setProvider}
+          onValueChange={(next) => {
+            setProvider(next);
+            // Keep a saved model only while it belongs to the provider.
+            if (next !== data?.provider) {
+              const p = providers.find((x) => x.id === next);
+              setModel(p?.suggested_models[0] ?? '');
+            } else {
+              setModel(data?.model ?? '');
+            }
+          }}
           options={providerOptions}
           title="Provider"
           aria-label="Provider"
         />
 
-        <Input
-          type="text"
-          value={model}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setModel(e.target.value)}
-          placeholder="claude-sonnet-5-5"
-          title="Model"
-          className="font-mono"
+        <ModelPicker
+          providerId={provider}
+          provider={currentProvider}
+          model={model}
+          onModelChange={setModel}
+          baseUrl={baseUrl}
+          apiKey={apiKey}
+          keyCommit={keyCommit}
+          discover={discoverModels}
         />
 
         <Input
           type="password"
+          onBlur={onKeyBlur}
           value={apiKey}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
             setApiKey(e.target.value);

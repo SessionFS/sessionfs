@@ -401,3 +401,123 @@ async def test_platform_scoped_key_without_recorded_minter_is_refused(
     refused = await client.post(path, headers=headers, json=body)
     assert refused.status_code == 403, refused.text
     assert refused.json()["error"]["details"]["error"] == "platform_key_minter_not_admin", refused.text
+
+
+# ---------------------------------------------------------------------------
+# Mint-time coupling visibility (GitHub #115)
+# ---------------------------------------------------------------------------
+
+
+async def test_mint_with_coupled_scope_warns_and_without_does_not(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    admin, admin_headers = await _platform_admin_headers(db_session)
+    org_id = await _admin_org(db_session, admin)
+
+    coupled = await client.post(
+        f"/api/v1/orgs/{org_id}/service-keys", headers=admin_headers,
+        json={"name": "sweeper", "scopes": [SCOPE]},
+    )
+    assert coupled.status_code == 201, coupled.text
+    warnings = coupled.json()["warnings"]
+    assert len(warnings) == 1, coupled.text
+    assert warnings[0]["code"] == "minter_tier_coupling"
+    assert "platform_sweeps:run" in warnings[0]["message"]
+    assert "platform admin" in warnings[0]["message"]
+    # A freshly minted key still couples cleanly right now.
+    assert coupled.json()["coupling_ok"] is True
+    assert coupled.json()["coupling_reason"] is None
+
+    plain = await client.post(
+        f"/api/v1/orgs/{org_id}/service-keys", headers=admin_headers,
+        json={"name": "plain", "scopes": ["tickets:read"]},
+    )
+    assert plain.status_code == 201, plain.text
+    assert plain.json()["warnings"] == []
+    assert plain.json()["coupling_ok"] is None
+    assert plain.json()["coupling_reason"] is None
+
+
+async def test_rotate_with_coupled_scope_warns(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    admin, admin_headers = await _platform_admin_headers(db_session)
+    org_id = await _admin_org(db_session, admin)
+    minted = await client.post(
+        f"/api/v1/orgs/{org_id}/service-keys", headers=admin_headers,
+        json={"name": "sweeper", "scopes": [SCOPE]},
+    )
+    assert minted.status_code == 201, minted.text
+    rotated = await client.post(
+        f"/api/v1/orgs/{org_id}/service-keys/{minted.json()['id']}/rotate",
+        headers=admin_headers,
+    )
+    assert rotated.status_code == 200, rotated.text
+    warnings = rotated.json()["warnings"]
+    assert len(warnings) == 1, rotated.text
+    assert warnings[0]["code"] == "minter_tier_coupling"
+
+
+@pytest.mark.parametrize("change", ["demoted", "deactivated"])
+async def test_denied_details_report_minter_state(
+    client: AsyncClient, db_session: AsyncSession, change: str
+) -> None:
+    # Use a distinct minter (the rotator) so the key's owner stays an active
+    # platform admin and the request reaches the minter-coupling check. When
+    # owner == minter and the account is deactivated, auth rejects earlier
+    # with the generic "User account is inactive" (no minter details).
+    owner, _ = await _platform_admin_headers(db_session)
+    minter, _ = await _platform_admin_headers(db_session)
+    org_id = await _admin_org(db_session, owner)
+    _, headers = await _service_key(
+        db_session, owner=owner, org_id=org_id, scopes=[SCOPE], minter=minter
+    )
+    if change == "demoted":
+        minter.tier = "pro"
+        expected_tier = "pro"
+    else:
+        minter.is_active = False
+        expected_tier = "deactivated"
+    await db_session.commit()
+
+    refused = await client.post(
+        "/api/v1/admin/marketplace/freshness/sweep", headers=headers, json={}
+    )
+    assert refused.status_code == 403, refused.text
+    details = refused.json()["error"]["details"]
+    assert details["error"] == "platform_sweeper_denied"
+    assert details["minter_user_id"] == minter.id
+    assert details["minter_current_tier"] == expected_tier
+    assert details["required_minter_tier"] == "admin"
+    assert details["resolution"]
+    # The minter's email must never leak to the key holder.
+    assert minter.email not in refused.text
+
+
+async def test_list_reports_coupling_ok_false_after_demotion(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    admin, admin_headers = await _platform_admin_headers(db_session)
+    org_id = await _admin_org(db_session, admin)
+    minted = await client.post(
+        f"/api/v1/orgs/{org_id}/service-keys", headers=admin_headers,
+        json={"name": "sweeper", "scopes": [SCOPE]},
+    )
+    assert minted.status_code == 201, minted.text
+    key_id = minted.json()["id"]
+
+    def _row(listing_body: list) -> dict:
+        return [r for r in listing_body if r["id"] == key_id][0]
+
+    before = await client.get(f"/api/v1/orgs/{org_id}/service-keys", headers=admin_headers)
+    assert before.status_code == 200, before.text
+    assert _row(before.json())["coupling_ok"] is True
+    assert _row(before.json())["coupling_reason"] is None
+
+    admin.tier = "pro"
+    await db_session.commit()
+
+    after = await client.get(f"/api/v1/orgs/{org_id}/service-keys", headers=admin_headers)
+    assert after.status_code == 200, after.text
+    assert _row(after.json())["coupling_ok"] is False
+    assert _row(after.json())["coupling_reason"] == "minter no longer admin"

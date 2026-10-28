@@ -14,6 +14,7 @@ import type {
   Ticket,
   JiraPreview,
   JiraPublishRequest,
+  JiraSprintList,
   JiraTicketTemplates,
 } from '../api/client';
 import { jiraErrorCode } from '../utils/jira';
@@ -57,6 +58,7 @@ export function usePublishJira(projectId: string | undefined) {
     }) => auth!.client.publishJira(projectId!, ticketId, body),
     onSuccess: (_data, { ticketId }) => {
       void queryClient.invalidateQueries({ queryKey: ['ticket', projectId, ticketId] });
+      void queryClient.invalidateQueries({ queryKey: ['ticketEvents', projectId, ticketId] });
       void queryClient.invalidateQueries({ queryKey: ['tickets', projectId] });
       void queryClient.invalidateQueries({ queryKey: ['jiraLink', projectId, ticketId] });
       void queryClient.removeQueries({ queryKey: ['jiraPreview', projectId, ticketId] });
@@ -77,6 +79,22 @@ export function useJiraLink(
     queryFn: () => auth!.client.getJiraLink(projectId!, ticketId!),
     enabled: !!auth && !!projectId && !!ticketId && enabled,
     staleTime: 30_000,
+  });
+}
+
+/**
+ * Active + future sprints of the project's mapped Jira project, for the
+ * publish dialog's sprint picker. Editors only; a refusal (or a Jira outage)
+ * just leaves the picker out, since a sprint is never required to publish.
+ */
+export function useJiraSprints(projectId: string | undefined, enabled: boolean) {
+  const { auth } = useAuth();
+  return useQuery<JiraSprintList>({
+    queryKey: ['jiraSprints', projectId],
+    queryFn: () => auth!.client.listJiraSprints(projectId!),
+    enabled: !!auth && !!projectId && enabled,
+    staleTime: 60_000,
+    retry: false,
   });
 }
 
@@ -107,6 +125,7 @@ export function useLinkJiraIssue(projectId: string | undefined) {
           : prev,
       );
       void queryClient.invalidateQueries({ queryKey: ['ticket', projectId, ticketId] });
+      void queryClient.invalidateQueries({ queryKey: ['ticketEvents', projectId, ticketId] });
       void queryClient.invalidateQueries({ queryKey: ['tickets', projectId] });
       void queryClient.invalidateQueries({ queryKey: ['jiraLink', projectId, ticketId] });
       // The timeline may gain a sync note or event for the new link.
@@ -117,6 +136,7 @@ export function useLinkJiraIssue(projectId: string | undefined) {
       // Someone else linked or published it meanwhile: show the real state.
       if (jiraErrorCode(err) === 'jira_already_linked') {
         void queryClient.invalidateQueries({ queryKey: ['ticket', projectId, ticketId] });
+        void queryClient.invalidateQueries({ queryKey: ['ticketEvents', projectId, ticketId] });
         void queryClient.invalidateQueries({ queryKey: ['tickets', projectId] });
       }
     },
@@ -151,6 +171,7 @@ export function usePullJira(projectId: string | undefined) {
       );
       queryClient.setQueryData<JiraLink>(['jiraLink', projectId, ticketId], result.jira);
       void queryClient.invalidateQueries({ queryKey: ['ticket', projectId, ticketId] });
+      void queryClient.invalidateQueries({ queryKey: ['ticketEvents', projectId, ticketId] });
       void queryClient.invalidateQueries({ queryKey: ['tickets', projectId] });
       void queryClient.invalidateQueries({ queryKey: ['jiraLink', projectId, ticketId] });
       void queryClient.invalidateQueries({ queryKey: ['ticketComments', projectId, ticketId] });
@@ -168,6 +189,7 @@ export function useUnlinkJira(projectId: string | undefined) {
     mutationFn: (ticketId: string) => auth!.client.unlinkJira(projectId!, ticketId),
     onSuccess: (_data, ticketId) => {
       void queryClient.invalidateQueries({ queryKey: ['ticket', projectId, ticketId] });
+      void queryClient.invalidateQueries({ queryKey: ['ticketEvents', projectId, ticketId] });
       void queryClient.invalidateQueries({ queryKey: ['tickets', projectId] });
       void queryClient.invalidateQueries({ queryKey: ['jiraLink', projectId, ticketId] });
     },

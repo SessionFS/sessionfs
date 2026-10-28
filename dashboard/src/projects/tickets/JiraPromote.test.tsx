@@ -2,10 +2,16 @@ import type { ReactNode } from 'react';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, type JiraPreview, type JiraTicketTemplates, type Ticket } from '../../api/client';
 import { axe } from '../../test/axe';
-import { defaultJiraTemplateChoice as defaultTemplateChoice } from '../../utils/jira';
+import {
+  defaultJiraTemplateChoice as defaultTemplateChoice,
+  jiraPublishWarningMessage,
+  jiraSiblingIssueUrl,
+  jiraSprintDateLabel,
+} from '../../utils/jira';
 import { JiraTicketSection, PromoteToJiraDialog } from './JiraPromote';
 import { TicketViewerContext } from './viewer';
 
@@ -24,6 +30,8 @@ const mockUseUnlinkJira = vi.fn();
 const mockUseTicketJiraTemplates = vi.fn();
 const mockUseLinkJiraIssue = vi.fn();
 const mockUsePullJira = vi.fn();
+const mockUseJiraSprints = vi.fn();
+const mockUseTicketPreview = vi.fn();
 const addToast = vi.fn();
 
 vi.mock('../../hooks/useJiraTickets', () => ({
@@ -34,6 +42,10 @@ vi.mock('../../hooks/useJiraTickets', () => ({
   useTicketJiraTemplates: (...args: unknown[]) => mockUseTicketJiraTemplates(...args),
   useLinkJiraIssue: (...args: unknown[]) => mockUseLinkJiraIssue(...args),
   usePullJira: (...args: unknown[]) => mockUsePullJira(...args),
+  useJiraSprints: (...args: unknown[]) => mockUseJiraSprints(...args),
+}));
+vi.mock('../../hooks/useTickets', () => ({
+  useTicketPreview: (...args: unknown[]) => mockUseTicketPreview(...args),
 }));
 vi.mock('../../hooks/useToast', () => ({ useToast: () => ({ addToast }) }));
 
@@ -45,7 +57,11 @@ function makeQueryClient() {
 
 function renderNode(node: ReactNode) {
   const qc = makeQueryClient();
-  return render(<QueryClientProvider client={qc}>{node}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={qc}>
+      <MemoryRouter>{node}</MemoryRouter>
+    </QueryClientProvider>,
+  );
 }
 
 /** The re-enveloped error shape the Jira routes produce on failure. */
@@ -142,6 +158,10 @@ beforeEach(() => {
   mockUseLinkJiraIssue.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
   mockUsePullJira.mockReset();
   mockUsePullJira.mockReturnValue({ mutateAsync: vi.fn(), isPending: false });
+  mockUseJiraSprints.mockReset();
+  mockUseJiraSprints.mockReturnValue({ data: { sprints: [] }, isLoading: false, isError: false, error: null });
+  mockUseTicketPreview.mockReset();
+  mockUseTicketPreview.mockReturnValue({ data: undefined });
 });
 
 describe('JiraTicketSection', () => {
@@ -946,5 +966,378 @@ describe('defaultTemplateChoice', () => {
   it('falls back to the inherited default when the pin is no longer listed', () => {
     expect(defaultTemplateChoice({ ...CHOICES, pinned: { slug: 'gone', version: 1 } })).toBe('agile');
     expect(defaultTemplateChoice(CHOICES)).toBe('agile');
+  });
+});
+
+describe('Jira sprint and parent on the ticket', () => {
+  const linkedTicket: Ticket = {
+    ...baseTicket,
+    kind: 'task',
+    parent_ticket_id: 't_parent',
+    jira: { issue_key: 'KEY-2', issue_url: 'https://acme.atlassian.net/browse/KEY-2', last_known_status: 'To Do' },
+  };
+  const LINK = {
+    ticket_id: 't_1',
+    provider: 'jira',
+    issue_key: 'KEY-2',
+    issue_url: 'https://acme.atlassian.net/browse/KEY-2',
+    last_pushed_at: null,
+    last_known_status: 'To Do',
+    last_status_checked_at: null,
+    payload_hash: 'h',
+  };
+
+  function renderWith(link: Record<string, unknown>, onNavigateTicket = vi.fn()) {
+    mockUseJiraLink.mockReturnValue({ data: { ...LINK, ...link }, isLoading: false });
+    const view = renderNode(
+      <JiraTicketSection
+        projectId="proj_1"
+        ticket={linkedTicket}
+        orgId="org_x"
+        isProjectAdmin={false}
+        isEnterprise
+        onNavigateTicket={onNavigateTicket}
+      />,
+    );
+    return { ...view, onNavigateTicket };
+  }
+
+  it('shows the sprint with its state, and the parent issue and ticket', async () => {
+    const { onNavigateTicket, container } = renderWith({
+      sprint: { id: 7, name: 'Sprint 14', state: 'active' },
+      parent: { key: 'KEY-1', ticket_id: 't_parent' },
+    });
+    const planning = screen.getByRole('group', { name: 'Jira planning' });
+    expect(within(planning).getByText('Sprint 14')).toBeInTheDocument();
+    expect(within(planning).getByText('Active')).toBeInTheDocument();
+    const parentLink = within(planning).getByRole('link', { name: /KEY-1/ });
+    expect(parentLink).toHaveAttribute('href', 'https://acme.atlassian.net/browse/KEY-1');
+    expect(parentLink).toHaveAttribute('target', '_blank');
+
+    await userEvent.setup().click(within(planning).getByRole('button', { name: /t_parent/ }));
+    expect(onNavigateTicket).toHaveBeenCalledWith('t_parent');
+    // Only the in-project ticket was opened in place; nothing was looked up.
+    expect(mockUseTicketPreview).not.toHaveBeenCalled();
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('names a sprint known only by id and leaves out an unknown state', () => {
+    renderWith({ sprint: { id: 42, name: null, state: null }, parent: null });
+    expect(screen.getByText('Sprint 42')).toBeInTheDocument();
+    expect(screen.queryByText('Active')).not.toBeInTheDocument();
+    expect(screen.queryByText('Parent')).not.toBeInTheDocument();
+  });
+
+  it('shows only the Jira key when the parent ticket is not readable', () => {
+    renderWith({ sprint: null, parent: { key: 'KEY-1', ticket_id: null } });
+    expect(screen.getByRole('link', { name: /KEY-1/ })).toBeInTheDocument();
+    expect(screen.queryByText('Sprint')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /open the parent ticket/ })).not.toBeInTheDocument();
+  });
+
+  it('links a parent ticket in another project once its project is known', () => {
+    mockUseTicketPreview.mockReturnValue({ data: { project_id: 'proj_2', title: 'Epic' } });
+    renderWith({ sprint: null, parent: { key: 'OTHER-9', ticket_id: 't_other' } });
+    expect(mockUseTicketPreview).toHaveBeenCalledWith('t_other');
+    expect(screen.getByRole('link', { name: /t_other/ })).toHaveAttribute(
+      'href',
+      '/projects/proj_2?tab=work&sub=tickets&ticket=t_other',
+    );
+  });
+
+  it('opens a looked-up parent in place when it turns out to be in this project', async () => {
+    mockUseTicketPreview.mockReturnValue({ data: { project_id: 'proj_1', title: 'Epic' } });
+    const { onNavigateTicket } = renderWith({ sprint: null, parent: { key: 'KEY-9', ticket_id: 't_epic' } });
+    expect(screen.queryByRole('link', { name: /t_epic/ })).not.toBeInTheDocument();
+    await userEvent.setup().click(screen.getByRole('button', { name: /t_epic/ }));
+    expect(onNavigateTicket).toHaveBeenCalledWith('t_epic');
+  });
+
+  it('stays quiet without a sprint or parent', () => {
+    renderWith({ sprint: null, parent: null });
+    expect(screen.queryByRole('group', { name: 'Jira planning' })).not.toBeInTheDocument();
+  });
+});
+
+describe('Publishing with a sprint', () => {
+  const SPRINTS = {
+    sprints: [
+      { id: 12, name: 'Sprint 15', state: 'future', board_name: 'WID board', start_date: '2026-11-03T09:00:00Z', end_date: '2026-11-17T09:00:00Z' },
+      { id: 11, name: 'Sprint 14', state: 'active', board_name: 'WID board', start_date: '2026-10-20T09:00:00Z', end_date: '2026-11-03T09:00:00Z' },
+    ],
+  };
+
+  function openDialog(onClose = vi.fn(), orgId?: string) {
+    mockUseJiraPreview.mockReturnValue({ data: PREVIEW, isLoading: false, isError: false, error: null });
+    const view = renderNode(<PromoteToJiraDialog projectId="proj_1" ticketId="t_1" orgId={orgId} onClose={onClose} />);
+    return { ...view, onClose };
+  }
+
+  it('lists No sprint first, then active sprints before future ones, and sends the pick', async () => {
+    mockUseJiraSprints.mockReturnValue({ data: SPRINTS, isLoading: false, isError: false, error: null });
+    const mutateAsync = vi.fn().mockResolvedValue({ issue_key: 'KEY-1', warnings: [] });
+    mockUsePublishJira.mockReturnValue({ mutateAsync, isPending: false });
+    const { container } = openDialog();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: 'Sprint' }));
+    const options = screen.getAllByRole('option').map((o) => o.textContent ?? '');
+    expect(options[0]).toMatch(/^No sprint/);
+    expect(options[1]).toMatch(/^Sprint 14/);
+    expect(options[2]).toMatch(/^Sprint 15/);
+    expect(screen.getByRole('group', { name: 'Active sprints' })).toBeInTheDocument();
+    expect(await axe(container)).toHaveNoViolations();
+
+    // Searchable by name.
+    await user.type(screen.getByRole('combobox'), '15');
+    expect(screen.getAllByRole('option')).toHaveLength(1);
+    await user.click(screen.getByRole('option', { name: /Sprint 15/ }));
+
+    await user.click(screen.getByRole('button', { name: 'Publish' }));
+    await waitFor(() => expect(mutateAsync.mock.calls[0][0].body).toMatchObject({ sprint_id: 12 }));
+  });
+
+  it('sends no sprint_id when No sprint is kept', async () => {
+    mockUseJiraSprints.mockReturnValue({ data: SPRINTS, isLoading: false, isError: false, error: null });
+    const mutateAsync = vi.fn().mockResolvedValue({ issue_key: 'KEY-1' });
+    mockUsePublishJira.mockReturnValue({ mutateAsync, isPending: false });
+    openDialog();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Publish' }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    expect(mutateAsync.mock.calls[0][0].body).not.toHaveProperty('sprint_id');
+  });
+
+  it('says to leave the sprint alone when updating an existing issue', () => {
+    mockUseJiraSprints.mockReturnValue({ data: SPRINTS, isLoading: false, isError: false, error: null });
+    mockUseJiraPreview.mockReturnValue({
+      data: { ...PREVIEW, existing: { issue_key: 'KEY-1', issue_url: 'https://acme.atlassian.net/browse/KEY-1', last_known_status: null, template_slug: 'agile', template_version: null } },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    renderNode(<PromoteToJiraDialog projectId="proj_1" ticketId="t_1" onClose={vi.fn()} />);
+    expect(screen.getByRole('button', { name: 'Sprint' })).toHaveTextContent('Don’t change the sprint');
+  });
+
+  it('explains when the site has no Jira Software', () => {
+    mockUseJiraSprints.mockReturnValue({
+      data: { sprints: [], unavailable: 'jira_software_not_available' },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    openDialog();
+    expect(screen.queryByRole('button', { name: 'Sprint' })).not.toBeInTheDocument();
+    expect(screen.getByText(/doesn’t have Jira Software boards/)).toBeInTheDocument();
+  });
+
+  it('explains a connection without a sprint field and offers no picker', async () => {
+    mockUseJiraSprints.mockReturnValue({
+      data: { sprints: [], unavailable: 'jira_sprint_field_unknown' },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    const { container } = openDialog();
+    expect(screen.queryByRole('button', { name: 'Sprint' })).not.toBeInTheDocument();
+    expect(screen.getByText(/doesn’t know the site’s sprint field/)).toHaveTextContent(/Ask an org admin to run Detect fields/);
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('leaves the picker out for someone the sprints list refuses', () => {
+    mockUseJiraSprints.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      isError: true,
+      error: new ApiError(403, JSON.stringify({ error: { code: '403', message: 'Forbidden' } })),
+    });
+    openDialog();
+    expect(screen.queryByText('Sprint')).not.toBeInTheDocument();
+  });
+
+  it('shows every publish warning as a sentence and stays open until Done', async () => {
+    mockUseJiraSprints.mockReturnValue({ data: SPRINTS, isLoading: false, isError: false, error: null });
+    const mutateAsync = vi.fn().mockResolvedValue({
+      issue_key: 'KEY-1',
+      issue_url: 'https://acme.atlassian.net/browse/KEY-1',
+      warnings: ['jira_sprint_not_set:move_failed', 'jira_parent_not_linked', 'jira_field_not_on_screen:duedate', 'jira_brand_new_thing'],
+    });
+    mockUsePublishJira.mockReturnValue({ mutateAsync, isPending: false });
+    const { onClose, container } = openDialog();
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole('button', { name: 'Publish' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Published KEY-1, with notes' });
+    expect(within(dialog).getByText(/didn’t move it into the chosen sprint/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/parent isn’t linked to a Jira issue yet/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/due date wasn’t set: the field isn’t on this issue type’s screen/)).toBeInTheDocument();
+    // An unknown code is shown as is rather than dropped.
+    expect(within(dialog).getByText('jira_brand_new_thing')).toBeInTheDocument();
+    expect(addToast).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(await axe(container)).toHaveNoViolations();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Done' }));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('points at the connection settings when the org has no sprint field', async () => {
+    mockUseJiraSprints.mockReturnValue({ data: SPRINTS, isLoading: false, isError: false, error: null });
+    const err = new ApiError(
+      422,
+      JSON.stringify({ error: { code: '422', message: 'Unprocessable', details: { error: 'jira_sprint_field_unknown' } } }),
+    );
+    mockUsePublishJira.mockReturnValue({ mutateAsync: vi.fn().mockRejectedValue(err), isPending: false });
+    const invalidate = vi.spyOn(QueryClient.prototype, 'invalidateQueries');
+    openDialog(vi.fn(), 'org_x');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Sprint' }));
+    await user.click(screen.getByRole('option', { name: /Sprint 14/ }));
+    await user.click(screen.getByRole('button', { name: 'Publish' }));
+
+    expect(await screen.findByText('Jira sprint field unknown')).toBeInTheDocument();
+    // Neutral wording: on a re-publish the option is "Don't change the sprint".
+    expect(screen.getByText(/Clear the sprint to publish now/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Integrations → Jira → Connection/ })).toHaveAttribute(
+      'href',
+      '/settings/organization?tab=integrations&integration=jira&section=connection&org=org_x',
+    );
+    // The sprints list is refetched so the picker gives way to its note.
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['jiraSprints', 'proj_1'] });
+    invalidate.mockRestore();
+  });
+
+  it('links the org settings without an org when none is known', () => {
+    mockUseJiraSprints.mockReturnValue({
+      data: { sprints: [], unavailable: 'jira_sprint_field_unknown' },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    openDialog();
+    expect(screen.getByRole('link', { name: 'Open the Jira connection settings' })).toHaveAttribute(
+      'href',
+      '/settings/organization?tab=integrations&integration=jira&section=connection',
+    );
+  });
+
+  it('leaves non-numeric sprint ids out of the picker and the request', async () => {
+    mockUseJiraSprints.mockReturnValue({
+      data: {
+        sprints: [
+          { id: 'abc', name: 'Odd sprint', state: 'active', board_name: null, start_date: null, end_date: null },
+          { id: '12a', name: 'Mixed id', state: 'future', board_name: null, start_date: null, end_date: null },
+          ...SPRINTS.sprints,
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    const mutateAsync = vi.fn().mockResolvedValue({ issue_key: 'KEY-1' });
+    mockUsePublishJira.mockReturnValue({ mutateAsync, isPending: false });
+    openDialog();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Sprint' }));
+    expect(screen.queryByRole('option', { name: /Odd sprint/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: /Mixed id/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('option')).toHaveLength(3);
+    await user.keyboard('{Escape}');
+    await user.click(screen.getByRole('button', { name: 'Publish' }));
+    await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    expect(mutateAsync.mock.calls[0][0].body).not.toHaveProperty('sprint_id');
+  });
+
+  it('shows sprint dates as Jira calendar dates', async () => {
+    mockUseJiraSprints.mockReturnValue({
+      data: {
+        sprints: [
+          { id: 5, name: 'Late start', state: 'active', board_name: 'B', start_date: '2026-10-20T00:30:00.000Z', end_date: '2026-11-02T23:30:00.000Z' },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    openDialog();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Sprint' }));
+    const label = `${jiraSprintDateLabel('2026-10-20T00:30:00.000Z')} – ${jiraSprintDateLabel('2026-11-02T23:30:00.000Z')}`;
+    expect(screen.getByRole('option', { name: /Late start/ })).toHaveTextContent(label);
+  });
+});
+
+describe('jiraPublishWarningMessage', () => {
+  it.each([
+    ['jira_sprint_not_set:field_rejected', /refused the sprint field/],
+    ['jira_sprint_not_set:move_failed', /didn’t move it into the chosen sprint/],
+    ['jira_sprint_not_set:other', /didn’t put it in the chosen sprint/],
+    ['jira_parent_not_set', /didn’t accept the parent/],
+    ['jira_parent_not_linked', /parent isn’t linked/],
+    ['jira_field_not_on_screen:timetracking', /original estimate wasn’t set: the field isn’t on/],
+    ['jira_invalid_value:duedate', /due date wasn’t set: Jira rejected its value/],
+    ['jira_invalid_value:constructor', /constructor wasn’t set/],
+  ])('%s', (code, expected) => {
+    expect(jiraPublishWarningMessage(code)).toMatch(expected);
+  });
+
+  it('falls back to the raw code', () => {
+    expect(jiraPublishWarningMessage('something_else:x')).toBe('something_else:x');
+  });
+});
+
+describe('jiraSprintDateLabel', () => {
+  it('formats the instant in the viewer’s local zone', () => {
+    const local = (iso: string) =>
+      new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    expect(jiraSprintDateLabel('2026-10-20T00:30:00Z')).toBe(local('2026-10-20T00:30:00Z'));
+    expect(jiraSprintDateLabel('2026-11-02T23:30:00Z')).toBe(local('2026-11-02T23:30:00Z'));
+    expect(jiraSprintDateLabel(null)).toBeNull();
+    expect(jiraSprintDateLabel('not a date')).toBeNull();
+  });
+});
+
+describe('jiraSiblingIssueUrl', () => {
+  it('builds the browse URL on the linked issue’s site', () => {
+    expect(jiraSiblingIssueUrl('https://acme.atlassian.net/browse/KEY-2', 'KEY-1')).toBe(
+      'https://acme.atlassian.net/browse/KEY-1',
+    );
+  });
+
+  it.each([
+    ['javascript:alert(1)', 'KEY-1'],
+    ['data:text/html,hi', 'KEY-1'],
+    ['not a url', 'KEY-1'],
+    ['', 'KEY-1'],
+    ['https://acme.atlassian.net/browse/KEY-2', 'key-1'],
+    ['https://acme.atlassian.net/browse/KEY-2', 'KEY-1/../../x'],
+    ['https://acme.atlassian.net/browse/KEY-2', 'KEY'],
+    ['https://acme.atlassian.net/browse/KEY-2', '"><script>'],
+  ])('refuses %s with key %s', (url, key) => {
+    expect(jiraSiblingIssueUrl(url, key)).toBeNull();
+  });
+
+  it('renders a parent with a bad issue URL as plain text', () => {
+    mockUseJiraLink.mockReturnValue({
+      data: {
+        issue_key: 'KEY-2',
+        issue_url: 'javascript:alert(1)',
+        last_known_status: null,
+        parent: { key: 'KEY-1', ticket_id: null },
+        sprint: null,
+      },
+      isLoading: false,
+    });
+    renderNode(
+      <JiraTicketSection
+        projectId="proj_1"
+        ticket={{ ...baseTicket, jira: { issue_key: 'KEY-2', issue_url: 'javascript:alert(1)', last_known_status: null } }}
+        orgId="org_x"
+        isProjectAdmin={false}
+        isEnterprise
+      />,
+    );
+    const planning = screen.getByRole('group', { name: 'Jira planning' });
+    expect(within(planning).getByText('KEY-1')).toBeInTheDocument();
+    expect(within(planning).queryByRole('link')).not.toBeInTheDocument();
   });
 });

@@ -35,6 +35,8 @@ from sessionfs.server.db.models import (
     ApiKey,
     HelperAction,
     HelperConversation,
+    JiraTemplate,
+    JiraTemplateVersion,
     OrgAuditEvent,
     OrgMember,
     OrgTrackerConnection,
@@ -44,6 +46,7 @@ from sessionfs.server.db.models import (
     Session,
     Ticket,
     TicketComment,
+    TicketEvent,
     TicketTrackerLink,
     TrackerProjectMapping,
     TrackerSyncEvent,
@@ -51,7 +54,7 @@ from sessionfs.server.db.models import (
 )
 from sessionfs.server.helper.context import HelperContext, HelperScope, RetrievalBudget
 from sessionfs.server.helper.tools import TOOLS, ToolArgumentError
-from sessionfs.server.integrations.trackers.base import TrackerError, TrackerIssue
+from sessionfs.server.integrations.trackers.base import TrackerError, TrackerIssue, TrackerSprint
 from sessionfs.server.integrations.trackers.jira import JiraIssueComment, JiraIssueDetail
 from sessionfs.server.llm_keys import encrypt_secret
 from sessionfs.server.services import jira_sync
@@ -230,6 +233,53 @@ async def _make_mapping(
     db.add(mapping)
     await db.commit()
     return mapping
+
+
+async def _make_template(
+    db: AsyncSession,
+    org: Organization,
+    user: User,
+    *,
+    slug: str = "custom-release",
+    version: int = 1,
+) -> JiraTemplate:
+    """An active org-custom Jira template (Deliverable C override pinning)."""
+    template = JiraTemplate(
+        id=f"jtm_{uuid.uuid4().hex[:16]}",
+        org_id=org.id,
+        slug=slug,
+        name=slug.replace("-", " ").title(),
+        description=None,
+        sections=json.dumps(
+            [
+                {
+                    "key": "summary",
+                    "heading": "Summary",
+                    "mode": "rewrite",
+                    "source_fields": ["title", "description"],
+                    "guidance": "Summarize the ticket.",
+                }
+            ]
+        ),
+        version=version,
+        created_by_user_id=user.id,
+        updated_by_user_id=user.id,
+    )
+    db.add(template)
+    # Mirror the create/update route: every version has an immutable snapshot so
+    # the helper can publish a pinned (older) version after a later edit (L1).
+    db.add(
+        JiraTemplateVersion(
+            id=f"jtv_{uuid.uuid4().hex[:16]}",
+            template_id=template.id,
+            version=version,
+            sections=template.sections,
+            created_by_user_id=user.id,
+        )
+    )
+    await db.commit()
+    await db.refresh(template)
+    return template
 
 
 async def _make_session(
@@ -614,7 +664,7 @@ def _fake_link_client(
         async def aclose(self) -> None:
             pass
 
-        async def get_issue(self, issue_key):
+        async def get_issue(self, issue_key, sprint_field_id=None, epic_link_field_id=None):
             calls.append(issue_key)
             if timeout:
                 raise asyncio.TimeoutError
@@ -1315,6 +1365,16 @@ async def test_confirm_jira_link_creates_link_without_push(
     assert audit.event_type == "jira_linked"
     assert audit.target_type == "ticket"
 
+    # The event is recorded inside the service, not at the route, so the helper
+    # confirm path emits exactly one ticket event too.
+    events = (await db_session.execute(
+        select(TicketEvent).where(TicketEvent.ticket_id == ticket.id)
+    )).scalars().all()
+    assert [e.action for e in events] == ["jira_linked"]
+    assert events[0].actor_type == "user"
+    assert events[0].actor_user_id == user.id
+    assert json.loads(events[0].after_value) == {"issue_key": "ACME-7"}
+
 
 @pytest.mark.asyncio
 async def test_confirm_jira_link_issue_linked_elsewhere_fails_without_link(
@@ -1592,6 +1652,159 @@ async def test_propose_ticket_publish_proposes_with_key(db_session: AsyncSession
     assert "Proposed action" in output.text
 
 
+@pytest.mark.asyncio
+async def test_propose_ticket_publish_overrides_pin_key_template_and_sprint(
+    db_session: AsyncSession,
+):
+    user, _ = await _make_user(db_session)
+    org = await _make_org(db_session, user)
+    project = await _make_project(db_session, user, org)
+    other = await _make_project(db_session, user, org, name="Backend")
+    conn = await _make_connection(db_session, org, user)
+    conn.sprint_field_id = "customfield_10010"
+    await db_session.commit()
+    await _make_mapping(db_session, org, project, user, jira_project_key="ACME")
+    # The override key must name a Jira project some org project maps to.
+    await _make_mapping(db_session, org, other, user, jira_project_key="BETA")
+    await _make_template(db_session, org, user, slug="custom-release")
+    ctx = _ctx(db_session, user)
+
+    output = await TOOLS["propose_ticket"].handler(
+        ctx,
+        {
+            **_publish_ticket_args(project),
+            "jira_project_key": "BETA",
+            "jira_template": "custom-release",
+            "jira_sprint_id": 5,
+        },
+    )
+
+    assert len(ctx.pending_actions) == 1
+    prop = ctx.pending_actions[0]
+    assert prop["params"]["jira_project_key"] == "BETA"
+    assert prop["params"]["jira_project_key_override"] == "BETA"
+    assert prop["params"]["jira_template"] == "custom-release"
+    assert prop["params"]["jira_template_version"] == 1
+    assert prop["params"]["jira_sprint_id"] == 5
+    assert "publish it to Jira BETA with template custom-release into sprint 5" in prop[
+        "preview"
+    ]["summary"]
+    assert "Proposed action" in output.text
+
+
+@pytest.mark.asyncio
+async def test_propose_ticket_publish_unmapped_key_override_is_refused(
+    db_session: AsyncSession,
+):
+    user, _ = await _make_user(db_session)
+    org = await _make_org(db_session, user)
+    project = await _make_project(db_session, user, org)
+    await _make_connection(db_session, org, user)
+    await _make_mapping(db_session, org, project, user, jira_project_key="ACME")
+    ctx = _ctx(db_session, user)
+
+    output = await TOOLS["propose_ticket"].handler(
+        ctx, {**_publish_ticket_args(project), "jira_project_key": "UNMAPPED"}
+    )
+
+    assert ctx.pending_actions == []
+    assert "is not a Jira project you can publish to" in output.text
+
+
+@pytest.mark.asyncio
+async def test_propose_ticket_publish_key_override_requires_edit_standing(
+    db_session: AsyncSession,
+):
+    """M1 — an override key that is mapped in the org but to a project the
+    caller can't edit is refused."""
+    admin, _ = await _make_user(db_session, name="admin")
+    member, _ = await _make_user(db_session, name="member")
+    # Restricted visibility makes a plain member an editor only of projects they
+    # own (or have a group grant for), so ``other`` (owned by admin) is off-limits.
+    org = await _make_org(db_session, admin, member=member)
+    org.settings = json.dumps({"general": {"restrict_project_visibility": True}})
+    await db_session.commit()
+    project = await _make_project(db_session, member, org)
+    other = await _make_project(db_session, admin, org, name="Backend")
+    await _make_connection(db_session, org, admin)
+    await _make_mapping(db_session, org, project, member, jira_project_key="ACME")
+    await _make_mapping(db_session, org, other, admin, jira_project_key="BETA")
+    ctx = _ctx(db_session, member)
+
+    output = await TOOLS["propose_ticket"].handler(
+        ctx, {**_publish_ticket_args(project), "jira_project_key": "BETA"}
+    )
+
+    assert ctx.pending_actions == []
+    # The same generic refusal as an unmapped key, so it never confirms which
+    # keys restricted projects use.
+    assert "is not a Jira project you can publish to" in output.text
+
+
+@pytest.mark.asyncio
+async def test_propose_ticket_publish_unknown_template_is_refused(db_session: AsyncSession):
+    user, _ = await _make_user(db_session)
+    org = await _make_org(db_session, user)
+    project = await _make_project(db_session, user, org)
+    await _make_connection(db_session, org, user)
+    await _make_mapping(db_session, org, project, user, jira_project_key="ACME")
+    ctx = _ctx(db_session, user)
+
+    output = await TOOLS["propose_ticket"].handler(
+        ctx, {**_publish_ticket_args(project), "jira_template": "no-such-template"}
+    )
+
+    assert ctx.pending_actions == []
+    assert "unknown Jira template" in output.text
+
+
+@pytest.mark.asyncio
+async def test_propose_ticket_publish_sprint_without_field_is_refused(
+    db_session: AsyncSession,
+):
+    user, _ = await _make_user(db_session)
+    org = await _make_org(db_session, user)
+    project = await _make_project(db_session, user, org)
+    await _make_connection(db_session, org, user)  # sprint_field_id stays None
+    await _make_mapping(db_session, org, project, user, jira_project_key="ACME")
+    ctx = _ctx(db_session, user)
+
+    output = await TOOLS["propose_ticket"].handler(
+        ctx, {**_publish_ticket_args(project), "jira_sprint_id": 5}
+    )
+
+    assert ctx.pending_actions == []
+    assert "no sprint field" in output.text
+
+
+@pytest.mark.asyncio
+async def test_propose_ticket_publish_custom_shadowing_builtin_is_pinned(
+    db_session: AsyncSession,
+):
+    user, _ = await _make_user(db_session)
+    org = await _make_org(db_session, user)
+    project = await _make_project(db_session, user, org)
+    await _make_connection(db_session, org, user)
+    await _make_mapping(db_session, org, project, user, jira_project_key="ACME")
+    # "agile" is a built-in slug, but this org shadows it with a custom template,
+    # which must be pinned like any custom template (not treated as a builtin).
+    await _make_template(db_session, org, user, slug="agile")
+    ctx = _ctx(db_session, user)
+
+    output = await TOOLS["propose_ticket"].handler(
+        ctx, {**_publish_ticket_args(project), "jira_template": "agile"}
+    )
+
+    assert len(ctx.pending_actions) == 1
+    prop = ctx.pending_actions[0]
+    assert prop["params"]["jira_template"] == "agile"
+    assert prop["params"]["jira_template_version"] == 1
+    # Recorded as a custom pin (not a built-in), so confirm refuses instead of
+    # falling back to the same-slug built-in once the custom template is gone.
+    assert prop["params"]["jira_template_builtin"] is False
+    assert "Proposed action" in output.text
+
+
 # ── confirm: create-ticket-and-publish ──
 
 
@@ -1601,6 +1814,7 @@ def _fake_publish_client(
     issue_key: str = "ACME-1",
     timeout: bool = False,
     error: str | None = None,
+    slow_create_seconds: float | None = None,
 ) -> dict:
     """Replace ``routes.jira.JiraClient`` with a canned publish client."""
     state: dict = {
@@ -1616,8 +1830,13 @@ def _fake_publish_client(
         async def aclose(self) -> None:
             pass
 
-        async def create_issue(self, project_key, issue_type, summary, adf, *, labels=None):
+        async def create_issue(self, project_key, issue_type, summary, adf, *, labels=None, extra_fields=None):
             state["create_issue"] += 1
+            state.setdefault("create_project_keys", []).append(project_key)
+            state.setdefault("create_extra_fields", []).append(extra_fields)
+            state.setdefault("create_adf", []).append(adf)
+            if slow_create_seconds is not None:
+                await asyncio.sleep(slow_create_seconds)
             if timeout:
                 raise asyncio.TimeoutError
             if error is not None:
@@ -1629,8 +1848,9 @@ def _fake_publish_client(
                 status="Open",
             )
 
-        async def update_issue(self, issue_key_, summary, adf):
+        async def update_issue(self, issue_key_, summary, adf, extra_fields=None):
             state["update_issue"] += 1
+            state.setdefault("update_extra_fields", []).append(extra_fields)
             if timeout:
                 raise asyncio.TimeoutError
             if error is not None:
@@ -1645,6 +1865,12 @@ def _fake_publish_client(
         async def search_issue_by_label(self, project_key, label):
             state["search_issue_by_label"] += 1
             return None
+
+        async def move_issue_to_sprint(self, issue_key, sprint_id) -> None:
+            state.setdefault("sprint_moves", []).append((issue_key, sprint_id))
+
+        async def get_sprint(self, sprint_id) -> TrackerSprint:
+            return TrackerSprint(id=str(sprint_id), name="Sprint 1", state="active", board_name="")
 
     monkeypatch.setattr("sessionfs.server.routes.jira.JiraClient", Fake)
     return state
@@ -1777,6 +2003,44 @@ async def test_confirm_create_ticket_publish_timeout_leaves_ticket_and_unknown_l
 
 
 @pytest.mark.asyncio
+async def test_confirm_create_ticket_publish_deadline_bounds_slow_create(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    # L5 — one shared deadline bounds the whole outbound phase. With a tiny
+    # deadline and a create call that would otherwise hang for seconds, the
+    # publish must give up quickly (jira_timeout) instead of waiting it out.
+    user, key = await _make_user(db_session)
+    org = await _make_org(db_session, user)
+    project = await _make_project(db_session, user, org)
+    await _make_connection(db_session, org, user)
+    await _make_mapping(db_session, org, project, user, jira_project_key="ACME")
+    conv = await _make_conversation(db_session, user)
+    action = await _make_action(
+        db_session,
+        user,
+        kind="create_ticket",
+        params=_create_publish_params(project),
+        conversation=conv,
+    )
+    state = _fake_publish_client(monkeypatch, slow_create_seconds=5.0)
+    monkeypatch.setattr("sessionfs.server.routes.jira._JIRA_DEADLINE_SECONDS", 0.1)
+
+    started = asyncio.get_running_loop().time()
+    resp = await client.post(
+        f"/api/v1/helper/actions/{action.id}/confirm", headers=_hdrs(key)
+    )
+    elapsed = asyncio.get_running_loop().time() - started
+
+    assert resp.status_code == 200, resp.text
+    target = resp.json()["result"]["targets"][0]
+    assert target["jira_published"] is False
+    assert target["jira_error"] == "jira_timeout"
+    assert state["create_issue"] == 1
+    # The 5s hang is cut short by the 0.1s deadline (generous upper bound).
+    assert elapsed < 2.0
+
+
+@pytest.mark.asyncio
 async def test_confirm_create_ticket_publish_upstream_error_leaves_ticket_only(
     client: AsyncClient, db_session: AsyncSession, monkeypatch
 ):
@@ -1807,12 +2071,14 @@ async def test_confirm_create_ticket_publish_upstream_error_leaves_ticket_only(
     ticket = await db_session.get(Ticket, target["ticket_id"])
     assert ticket is not None
 
-    # A definitive create failure releases the pending claim: no link row.
-    assert (
+    # A 5xx (or an error with no status) may have written the issue, so the
+    # claim stays ``unknown`` and the next publish adopts by label.
+    links = (
         await db_session.execute(
             select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
         )
-    ).scalars().all() == []
+    ).scalars().all()
+    assert [link.status for link in links] == ["unknown"]
     assert state["create_issue"] == 1
 
 
@@ -1856,6 +2122,492 @@ async def test_confirm_create_ticket_publish_mapping_removed_creates_nothing(
         await db_session.execute(select(TicketTrackerLink))
     ).scalars().all() == []
     assert state["create_issue"] == 0
+
+
+@pytest.mark.asyncio
+async def test_confirm_create_ticket_publish_with_key_template_and_sprint_overrides(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    user, key = await _make_user(db_session)
+    org = await _make_org(db_session, user)
+    project = await _make_project(db_session, user, org)
+    other = await _make_project(db_session, user, org, name="Backend")
+    conn = await _make_connection(db_session, org, user)
+    conn.sprint_field_id = "customfield_10010"
+    await db_session.commit()
+    await _make_mapping(db_session, org, project, user, jira_project_key="ACME")
+    await _make_mapping(db_session, org, other, user, jira_project_key="BETA")
+    await _make_template(db_session, org, user, slug="custom-release")
+    conv = await _make_conversation(db_session, user)
+    action = await _make_action(
+        db_session,
+        user,
+        kind="create_ticket",
+        params={
+            **_create_publish_params(project),
+            "jira_project_key_override": "BETA",
+            "jira_template": "custom-release",
+            "jira_template_version": 1,
+            "jira_sprint_id": 5,
+        },
+        conversation=conv,
+    )
+
+    state = _fake_publish_client(monkeypatch, issue_key="BETA-9")
+
+    resp = await client.post(
+        f"/api/v1/helper/actions/{action.id}/confirm", headers=_hdrs(key)
+    )
+    assert resp.status_code == 200, resp.text
+    target = resp.json()["result"]["targets"][0]
+    assert target["ok"] is True
+    assert target["jira_published"] is True
+    assert target["jira"] == {
+        "issue_key": "BETA-9",
+        "issue_url": f"{_SITE}/browse/BETA-9",
+    }
+
+    # The destination key and the inline sprint field both reach create_issue.
+    assert state["create_project_keys"] == ["BETA"]
+    assert state["create_extra_fields"] == [{"customfield_10010": 5}]
+
+
+@pytest.mark.asyncio
+async def test_confirm_create_ticket_publish_key_override_rechecked_at_confirm(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """M1 — a restricted project's key override is re-checked at confirm.
+
+    Between propose and confirm the caller's standing can't improve, so an
+    override to a project they can't edit is refused with the same generic
+    message, before the ticket is created and without any outbound call.
+    """
+    admin, _ = await _make_user(db_session, name="admin")
+    member, member_key = await _make_user(db_session, name="member")
+    org = await _make_org(db_session, admin, member=member)
+    org.settings = json.dumps({"general": {"restrict_project_visibility": True}})
+    await db_session.commit()
+    project = await _make_project(db_session, member, org)
+    other = await _make_project(db_session, admin, org, name="Backend")
+    await _make_connection(db_session, org, admin)
+    await _make_mapping(db_session, org, project, member, jira_project_key="ACME")
+    await _make_mapping(db_session, org, other, admin, jira_project_key="BETA")
+    conv = await _make_conversation(db_session, member)
+    action = await _make_action(
+        db_session,
+        member,
+        kind="create_ticket",
+        params={
+            **_create_publish_params(project),
+            "jira_project_key_override": "BETA",
+        },
+        conversation=conv,
+    )
+
+    state = _fake_publish_client(monkeypatch)
+
+    resp = await client.post(
+        f"/api/v1/helper/actions/{action.id}/confirm", headers=_hdrs(member_key)
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "failed"
+    target = body["result"]["targets"][0]
+    assert target["ok"] is False
+    assert target["error"] == "jira_project_key_invalid"
+
+    # The refusal happens before the ticket is created and with no outbound call.
+    assert (await db_session.execute(select(Ticket))).scalars().all() == []
+    assert state["create_issue"] == 0
+
+
+@pytest.mark.asyncio
+async def test_confirm_create_ticket_publish_sprint_without_field_is_refused(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    user, key = await _make_user(db_session)
+    org = await _make_org(db_session, user)
+    project = await _make_project(db_session, user, org)
+    await _make_connection(db_session, org, user)  # sprint_field_id stays None
+    await _make_mapping(db_session, org, project, user, jira_project_key="ACME")
+    conv = await _make_conversation(db_session, user)
+    action = await _make_action(
+        db_session,
+        user,
+        kind="create_ticket",
+        params={
+            **_create_publish_params(project),
+            "jira_sprint_id": 5,
+        },
+        conversation=conv,
+    )
+
+    state = _fake_publish_client(monkeypatch)
+
+    resp = await client.post(
+        f"/api/v1/helper/actions/{action.id}/confirm", headers=_hdrs(key)
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "failed"
+    target = body["result"]["targets"][0]
+    assert target["ok"] is False
+    assert target["error"] == "jira_sprint_field_unknown"
+
+    # The refusal happens before the ticket is created and with no outbound call.
+    assert (await db_session.execute(select(Ticket))).scalars().all() == []
+    assert state["create_issue"] == 0
+
+
+@pytest.mark.asyncio
+async def test_confirm_create_ticket_publish_uses_pinned_template_snapshot(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    user, key = await _make_user(db_session)
+    org = await _make_org(db_session, user)
+    project = await _make_project(db_session, user, org)
+    await _make_connection(db_session, org, user)
+    await _make_mapping(db_session, org, project, user, jira_project_key="ACME")
+    template = await _make_template(db_session, org, user, slug="custom-release")
+    conv = await _make_conversation(db_session, user)
+    action = await _make_action(
+        db_session,
+        user,
+        kind="create_ticket",
+        params={
+            **_create_publish_params(project),
+            "jira_template": "custom-release",
+            "jira_template_version": 1,
+        },
+        conversation=conv,
+    )
+
+    # The custom template moves to v2 (new heading) after the proposal pinned
+    # v1.  L1: the pinned v1 snapshot still exists, so confirm publishes v1.
+    v2_sections = json.dumps(
+        [
+            {
+                "key": "summary",
+                "heading": "Summary v2",
+                "mode": "rewrite",
+                "source_fields": ["title", "description"],
+                "guidance": "Summarize the ticket.",
+            }
+        ]
+    )
+    template.version = 2
+    template.sections = v2_sections
+    db_session.add(
+        JiraTemplateVersion(
+            id=f"jtv_{uuid.uuid4().hex[:16]}",
+            template_id=template.id,
+            version=2,
+            sections=v2_sections,
+            created_by_user_id=user.id,
+        )
+    )
+    await db_session.commit()
+
+    state = _fake_publish_client(monkeypatch, issue_key="ACME-7")
+
+    resp = await client.post(
+        f"/api/v1/helper/actions/{action.id}/confirm", headers=_hdrs(key)
+    )
+    assert resp.status_code == 200, resp.text
+    target = resp.json()["result"]["targets"][0]
+    assert target["ok"] is True
+    assert target["jira_published"] is True
+    assert state["create_issue"] == 1
+
+    # The published description renders the pinned v1 heading, not v2, and the
+    # link records the pinned version.
+    adf = state["create_adf"][0]
+    headings = [
+        block.get("content", [{}])[0].get("text")
+        for block in adf["content"]
+        if block.get("type") == "heading"
+    ]
+    assert "Summary" in headings
+    assert "Summary v2" not in headings
+    link = (
+        await db_session.execute(select(TicketTrackerLink))
+    ).scalar_one()
+    assert link.template_slug == "custom-release"
+    assert link.template_version == 1
+
+
+@pytest.mark.asyncio
+async def test_confirm_create_ticket_publish_template_version_gone_is_refused(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    user, key = await _make_user(db_session)
+    org = await _make_org(db_session, user)
+    project = await _make_project(db_session, user, org)
+    await _make_connection(db_session, org, user)
+    await _make_mapping(db_session, org, project, user, jira_project_key="ACME")
+    template = await _make_template(db_session, org, user, slug="custom-release")
+    conv = await _make_conversation(db_session, user)
+    action = await _make_action(
+        db_session,
+        user,
+        kind="create_ticket",
+        params={
+            **_create_publish_params(project),
+            "jira_template": "custom-release",
+            "jira_template_version": 1,
+        },
+        conversation=conv,
+    )
+
+    # The pinned v1 snapshot disappears (here: the whole template is replaced),
+    # so the confirm refuses jira_template_changed before creating anything.
+    snapshot = (
+        await db_session.execute(
+            select(JiraTemplateVersion).where(
+                JiraTemplateVersion.template_id == template.id,
+                JiraTemplateVersion.version == 1,
+            )
+        )
+    ).scalar_one()
+    await db_session.delete(snapshot)
+    await db_session.commit()
+
+    state = _fake_publish_client(monkeypatch)
+
+    resp = await client.post(
+        f"/api/v1/helper/actions/{action.id}/confirm", headers=_hdrs(key)
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "failed"
+    target = body["result"]["targets"][0]
+    assert target["ok"] is False
+    assert target["error"] == "jira_template_changed"
+
+    assert (await db_session.execute(select(Ticket))).scalars().all() == []
+    assert state["create_issue"] == 0
+
+
+@pytest.mark.asyncio
+async def test_confirm_create_ticket_publish_archived_template_is_refused(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    user, key = await _make_user(db_session)
+    org = await _make_org(db_session, user)
+    project = await _make_project(db_session, user, org)
+    await _make_connection(db_session, org, user)
+    await _make_mapping(db_session, org, project, user, jira_project_key="ACME")
+    template = await _make_template(db_session, org, user, slug="custom-release")
+    conv = await _make_conversation(db_session, user)
+    action = await _make_action(
+        db_session,
+        user,
+        kind="create_ticket",
+        params={
+            **_create_publish_params(project),
+            "jira_template": "custom-release",
+            "jira_template_version": 1,
+        },
+        conversation=conv,
+    )
+
+    # The template is archived after the proposal (its v1 snapshot still exists).
+    template.archived_at = datetime.now(timezone.utc)
+    await db_session.commit()
+
+    state = _fake_publish_client(monkeypatch)
+
+    resp = await client.post(
+        f"/api/v1/helper/actions/{action.id}/confirm", headers=_hdrs(key)
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "failed"
+    target = body["result"]["targets"][0]
+    assert target["ok"] is False
+    assert target["error"] == "jira_template_changed"
+
+    assert (await db_session.execute(select(Ticket))).scalars().all() == []
+    assert state["create_issue"] == 0
+
+
+@pytest.mark.asyncio
+async def test_confirm_create_ticket_publish_custom_shadowing_builtin_is_pinned(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    user, key = await _make_user(db_session)
+    org = await _make_org(db_session, user)
+    project = await _make_project(db_session, user, org)
+    await _make_connection(db_session, org, user)
+    await _make_mapping(db_session, org, project, user, jira_project_key="ACME")
+    # A custom "agile" shadows the built-in of the same slug. It is pinned like
+    # any custom template, so a later v2 edit still publishes the pinned v1.
+    template = await _make_template(db_session, org, user, slug="agile")
+    conv = await _make_conversation(db_session, user)
+    action = await _make_action(
+        db_session,
+        user,
+        kind="create_ticket",
+        params={
+            **_create_publish_params(project),
+            "jira_template": "agile",
+            "jira_template_version": 1,
+        },
+        conversation=conv,
+    )
+
+    v2_sections = json.dumps(
+        [
+            {
+                "key": "summary",
+                "heading": "Summary v2",
+                "mode": "rewrite",
+                "source_fields": ["title", "description"],
+                "guidance": "Summarize the ticket.",
+            }
+        ]
+    )
+    template.version = 2
+    template.sections = v2_sections
+    db_session.add(
+        JiraTemplateVersion(
+            id=f"jtv_{uuid.uuid4().hex[:16]}",
+            template_id=template.id,
+            version=2,
+            sections=v2_sections,
+            created_by_user_id=user.id,
+        )
+    )
+    await db_session.commit()
+
+    state = _fake_publish_client(monkeypatch, issue_key="ACME-8")
+
+    resp = await client.post(
+        f"/api/v1/helper/actions/{action.id}/confirm", headers=_hdrs(key)
+    )
+    assert resp.status_code == 200, resp.text
+    target = resp.json()["result"]["targets"][0]
+    assert target["ok"] is True
+    assert target["jira_published"] is True
+    assert state["create_issue"] == 1
+
+    # The pinned custom v1 renders only its own "Summary" section, not the
+    # built-in "agile" sections nor the v2 heading.
+    adf = state["create_adf"][0]
+    headings = [
+        block.get("content", [{}])[0].get("text")
+        for block in adf["content"]
+        if block.get("type") == "heading"
+    ]
+    assert headings == ["Summary"]
+    link = (
+        await db_session.execute(select(TicketTrackerLink))
+    ).scalar_one()
+    assert link.template_slug == "agile"
+    assert link.template_version == 1
+
+
+@pytest.mark.asyncio
+async def test_confirm_create_ticket_publish_pinned_custom_gone_refuses_not_fallback(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    user, key = await _make_user(db_session)
+    org = await _make_org(db_session, user)
+    project = await _make_project(db_session, user, org)
+    await _make_connection(db_session, org, user)
+    await _make_mapping(db_session, org, project, user, jira_project_key="ACME")
+    # A custom "agile" shadows the built-in of the same slug. The proposal pins
+    # it as a custom version, so once the custom template is gone the confirm
+    # refuses jira_template_changed — it must not fall back to the built-in
+    # that happens to share the slug.
+    template = await _make_template(db_session, org, user, slug="agile")
+    conv = await _make_conversation(db_session, user)
+    action = await _make_action(
+        db_session,
+        user,
+        kind="create_ticket",
+        params={
+            **_create_publish_params(project),
+            "jira_template": "agile",
+            "jira_template_version": 1,
+            "jira_template_builtin": False,
+        },
+        conversation=conv,
+    )
+
+    await db_session.delete(template)
+    await db_session.commit()
+
+    state = _fake_publish_client(monkeypatch)
+
+    resp = await client.post(
+        f"/api/v1/helper/actions/{action.id}/confirm", headers=_hdrs(key)
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "failed"
+    target = body["result"]["targets"][0]
+    assert target["ok"] is False
+    assert target["error"] == "jira_template_changed"
+
+    assert (await db_session.execute(select(Ticket))).scalars().all() == []
+    assert state["create_issue"] == 0
+
+
+@pytest.mark.asyncio
+async def test_confirm_create_ticket_publish_builtin_shadowed_later_stays_builtin(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    user, key = await _make_user(db_session)
+    org = await _make_org(db_session, user)
+    project = await _make_project(db_session, user, org)
+    await _make_connection(db_session, org, user)
+    await _make_mapping(db_session, org, project, user, jira_project_key="ACME")
+    conv = await _make_conversation(db_session, user)
+    # The proposal pinned the built-in "agile" (no custom row, hence no version).
+    action = await _make_action(
+        db_session,
+        user,
+        kind="create_ticket",
+        params={
+            **_create_publish_params(project),
+            "jira_template": "agile",
+            "jira_template_version": None,
+            "jira_template_builtin": True,
+        },
+        conversation=conv,
+    )
+
+    # A custom template later takes the slug, but the pin says "built-in", so
+    # confirm still publishes the built-in instead of the shadowing custom.
+    await _make_template(db_session, org, user, slug="agile")
+
+    state = _fake_publish_client(monkeypatch, issue_key="ACME-9")
+
+    resp = await client.post(
+        f"/api/v1/helper/actions/{action.id}/confirm", headers=_hdrs(key)
+    )
+    assert resp.status_code == 200, resp.text
+    target = resp.json()["result"]["targets"][0]
+    assert target["ok"] is True
+    assert target["jira_published"] is True
+    assert state["create_issue"] == 1
+
+    # The built-in renders all three "agile" headings; the custom would have
+    # rendered only its single "Summary" section.
+    adf = state["create_adf"][0]
+    headings = [
+        block.get("content", [{}])[0].get("text")
+        for block in adf["content"]
+        if block.get("type") == "heading"
+    ]
+    assert headings == ["Summary", "Acceptance Criteria", "Context & Prior Work"]
+
+    link = (
+        await db_session.execute(select(TicketTrackerLink))
+    ).scalar_one()
+    assert link.template_slug == "agile"
+    assert link.template_version is None
 
 
 # ── propose_jira_overwrite: overwrite one side of a linked pair ──
@@ -2007,6 +2759,8 @@ def _fake_pull_client(
     description_adf: dict | None = None,
     error: str | None = None,
     timeout: bool = False,
+    due_date: str | None = None,
+    original_estimate: str | None = None,
 ) -> dict:
     """Replace ``routes.jira.JiraClient`` with a canned pull read."""
     if description_adf is None:
@@ -2017,7 +2771,7 @@ def _fake_pull_client(
                 {"type": "paragraph", "content": [{"type": "text", "text": "all done"}]}
             ],
         }
-    state: dict = {"get_issue_summary_and_description": 0}
+    state: dict = {"get_issue_summary_and_description": 0, "get_issue": 0}
 
     class Fake:
         def __init__(self, site_url, account_email, api_token, *, transport=None):
@@ -2033,6 +2787,21 @@ def _fake_pull_client(
             if error is not None:
                 raise TrackerError(error, status_code=404)
             return summary, description_adf
+
+        async def get_issue(self, issue_key, sprint_field_id=None, epic_link_field_id=None):
+            state["get_issue"] += 1
+            if timeout:
+                raise asyncio.TimeoutError
+            if error is not None:
+                raise TrackerError(error, status_code=404)
+            return TrackerIssue(
+                key=issue_key,
+                url=f"{_SITE}/browse/{issue_key}",
+                status="Done",
+                id="10001",
+                due_date=due_date,
+                original_estimate=original_estimate,
+            )
 
     monkeypatch.setattr("sessionfs.server.routes.jira.JiraClient", Fake)
     return state

@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { JiraConnection, JiraHealth, JiraMapping, ProjectContext } from '../api/client';
+import { ApiError, type JiraConnection, type JiraHealth, type JiraMapping, type ProjectContext } from '../api/client';
 import { axe } from '../test/axe';
 import { JiraCard, type JiraSection } from './JiraCard';
 
@@ -28,6 +28,7 @@ const mockGetSyncEvents = vi.fn();
 const mockListTemplates = vi.fn();
 const mockRotateSecret = vi.fn();
 const mockUpdateSync = vi.fn();
+const mockDetectFields = vi.fn();
 const addToast = vi.fn();
 
 vi.mock('../auth/AuthContext', () => ({ useAuth: () => mockAuth() }));
@@ -130,6 +131,7 @@ beforeEach(() => {
   mockListTemplates.mockReset();
   mockRotateSecret.mockReset();
   mockUpdateSync.mockReset();
+  mockDetectFields.mockReset();
   addToast.mockReset();
 
   mockAuth.mockReturnValue({
@@ -151,6 +153,7 @@ beforeEach(() => {
         listJiraTemplates: mockListTemplates,
         rotateJiraWebhookSecret: mockRotateSecret,
         updateJiraSync: mockUpdateSync,
+        detectJiraFields: mockDetectFields,
       },
     },
   });
@@ -1001,5 +1004,203 @@ describe('JiraCard', () => {
       expect(screen.getByText('Last inbound Jira event')).toBeInTheDocument();
       expect(screen.getByText('Last outbound sync')).toBeInTheDocument();
     });
+  });
+});
+
+describe('Jira agile fields (sprint / epic link)', () => {
+  const WITH_FIELDS: JiraConnection = { ...CONNECTED, sprint_field_id: 'customfield_10020', epic_link_field_id: null };
+
+  function region() {
+    return screen.findByRole('region', { name: 'Jira agile fields' });
+  }
+
+  it('shows the stored ids in their own section, apart from the token form', async () => {
+    mockGetConnection.mockResolvedValue(WITH_FIELDS);
+    const { container } = renderCard('enterprise', 'connection');
+    const section = await region();
+    expect(within(section).getByLabelText('Sprint field ID')).toHaveValue('customfield_10020');
+    expect(within(section).getByLabelText('Epic-link field ID')).toHaveValue('');
+    expect(within(section).getByRole('button', { name: 'Save fields' })).toBeDisabled();
+    expect(screen.queryByLabelText('API token')).not.toBeInTheDocument();
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('is not offered before the site is connected', async () => {
+    renderCard('enterprise', 'connection');
+    await screen.findByText('Not connected');
+    expect(screen.queryByRole('region', { name: 'Jira agile fields' })).not.toBeInTheDocument();
+  });
+
+  it('detects the fields for review, then saves only what changed through the sync PATCH', async () => {
+    mockGetConnection.mockResolvedValue(WITH_FIELDS);
+    mockDetectFields.mockResolvedValue({ sprint_field_id: 'customfield_10020', epic_link_field_id: 'customfield_10014' });
+    mockUpdateSync.mockResolvedValue({ ...WITH_FIELDS, epic_link_field_id: 'customfield_10014' });
+    renderCard('enterprise', 'connection');
+    const user = userEvent.setup();
+    const section = await region();
+
+    await user.click(within(section).getByRole('button', { name: 'Detect fields' }));
+    expect(mockDetectFields).toHaveBeenCalledWith('org_x');
+    await waitFor(() => expect(within(section).getByLabelText('Epic-link field ID')).toHaveValue('customfield_10014'));
+    expect(within(section).getByRole('status')).toHaveTextContent(
+      'Found sprint field customfield_10020 and epic-link field customfield_10014. Review them and save to use them.',
+    );
+    // Nothing is saved until the admin says so.
+    expect(mockUpdateSync).not.toHaveBeenCalled();
+
+    await user.click(within(section).getByRole('button', { name: 'Save fields' }));
+    await waitFor(() => expect(mockUpdateSync).toHaveBeenCalledWith('org_x', { epic_link_field_id: 'customfield_10014' }));
+    expect(mockSaveConnection).not.toHaveBeenCalled();
+    await waitFor(() => expect(addToast).toHaveBeenCalledWith('success', 'Jira agile fields saved'));
+  });
+
+  it('says when detection matches what is saved', async () => {
+    mockGetConnection.mockResolvedValue(WITH_FIELDS);
+    mockDetectFields.mockResolvedValue({ sprint_field_id: 'customfield_10020', epic_link_field_id: null });
+    renderCard('enterprise', 'connection');
+    const user = userEvent.setup();
+    const section = await region();
+    await user.click(within(section).getByRole('button', { name: 'Detect fields' }));
+    expect(await within(section).findByText(/which is what is saved/)).toBeInTheDocument();
+    expect(within(section).getByRole('button', { name: 'Save fields' })).toBeDisabled();
+  });
+
+  it('shows a detection failure and keeps the stored value', async () => {
+    mockGetConnection.mockResolvedValue(WITH_FIELDS);
+    mockDetectFields.mockRejectedValue(new ApiError(502, JSON.stringify({ error: { code: '502', message: 'Jira said no' } })));
+    renderCard('enterprise', 'connection');
+    const user = userEvent.setup();
+    const section = await region();
+    await user.click(within(section).getByRole('button', { name: 'Detect fields' }));
+    expect(await within(section).findByText(/Jira said no/)).toBeInTheDocument();
+    expect(within(section).getByLabelText('Sprint field ID')).toHaveValue('customfield_10020');
+  });
+
+  it('checks a typed id before saving and sends null for a cleared one', async () => {
+    mockGetConnection.mockResolvedValue({ ...WITH_FIELDS, epic_link_field_id: 'customfield_10014' });
+    mockUpdateSync.mockResolvedValue(CONNECTED);
+    renderCard('enterprise', 'connection');
+    const user = userEvent.setup();
+    const section = await region();
+
+    const sprint = within(section).getByLabelText('Sprint field ID');
+    await user.clear(sprint);
+    await user.type(sprint, 'Sprint');
+    await user.click(within(section).getByRole('button', { name: 'Save fields' }));
+    expect(await within(section).findByText('Use a Jira custom field id like customfield_10020.')).toBeInTheDocument();
+    expect(sprint).toHaveAttribute('aria-invalid', 'true');
+    expect(mockUpdateSync).not.toHaveBeenCalled();
+
+    await user.clear(sprint);
+    await user.type(sprint, ' customfield_10030 ');
+    await user.clear(within(section).getByLabelText('Epic-link field ID'));
+    await user.click(within(section).getByRole('button', { name: 'Save fields' }));
+    await waitFor(() =>
+      expect(mockUpdateSync).toHaveBeenCalledWith('org_x', {
+        sprint_field_id: 'customfield_10030',
+        epic_link_field_id: null,
+      }),
+    );
+  });
+
+  it('shows the server’s reason when saving fails', async () => {
+    mockGetConnection.mockResolvedValue(WITH_FIELDS);
+    mockUpdateSync.mockRejectedValue(
+      new ApiError(422, JSON.stringify({ error: { code: '422', message: 'custom field id must look like customfield_10010' } })),
+    );
+    renderCard('enterprise', 'connection');
+    const user = userEvent.setup();
+    const section = await region();
+    await user.clear(within(section).getByLabelText('Sprint field ID'));
+    await user.click(within(section).getByRole('button', { name: 'Save fields' }));
+    expect(await within(section).findByText(/custom field id must look like/)).toBeInTheDocument();
+  });
+
+  /** Reconnect to another site through the token form; the refetch returns `next`. */
+  async function reconnect(user: ReturnType<typeof userEvent.setup>, next: JiraConnection) {
+    mockSaveConnection.mockResolvedValue(next);
+    mockGetConnection.mockResolvedValue(next);
+    await user.click(screen.getByRole('button', { name: 'Edit connection' }));
+    const site = screen.getByLabelText('Site URL');
+    await user.clear(site);
+    await user.type(site, next.site_url!);
+    await user.type(screen.getByLabelText('API token'), 'tok');
+    await user.click(screen.getByRole('button', { name: 'Save connection' }));
+  }
+
+  const SITE_B: JiraConnection = {
+    ...WITH_FIELDS,
+    site_url: 'https://beta.atlassian.net',
+    last_verified_at: '2026-10-28T09:00:00Z',
+  };
+
+  it('resets the fields on a reconnect to another site and asks for detection', async () => {
+    mockGetConnection.mockResolvedValue(WITH_FIELDS);
+    mockDetectFields.mockResolvedValue({ sprint_field_id: 'customfield_20001', epic_link_field_id: null });
+    const { container } = renderCard('enterprise', 'connection');
+    const user = userEvent.setup();
+    let section = await region();
+    // An unsaved edit made for site A…
+    const sprint = within(section).getByLabelText('Sprint field ID');
+    await user.clear(sprint);
+    await user.type(sprint, 'customfield_99999');
+
+    await reconnect(user, SITE_B);
+
+    // …is gone once site B is connected, and the kept ids are flagged.
+    expect(await screen.findByText('Site changed — run Detect fields')).toBeInTheDocument();
+    section = await region();
+    expect(within(section).getByLabelText('Sprint field ID')).toHaveValue('customfield_10020');
+    expect(within(section).getByRole('button', { name: 'Save fields' })).toBeDisabled();
+    expect(await axe(container)).toHaveNoViolations();
+
+    await user.click(within(section).getByRole('button', { name: 'Detect fields' }));
+    await waitFor(() => expect(within(section).getByLabelText('Sprint field ID')).toHaveValue('customfield_20001'));
+    expect(screen.queryByText('Site changed — run Detect fields')).not.toBeInTheDocument();
+  });
+
+  it('drops a detection still running for the old site when the site changes', async () => {
+    mockGetConnection.mockResolvedValue(WITH_FIELDS);
+    let finish: (v: { sprint_field_id: string | null; epic_link_field_id: string | null }) => void = () => {};
+    mockDetectFields.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    renderCard('enterprise', 'connection');
+    const user = userEvent.setup();
+    const section = await region();
+    await user.click(within(section).getByRole('button', { name: 'Detect fields' }));
+
+    await reconnect(user, SITE_B);
+    expect(await screen.findByText('Site changed — run Detect fields')).toBeInTheDocument();
+
+    finish({ sprint_field_id: 'customfield_55555', epic_link_field_id: 'customfield_55556' });
+    await new Promise((r) => setTimeout(r, 0));
+    const fresh = await region();
+    expect(within(fresh).getByLabelText('Sprint field ID')).toHaveValue('customfield_10020');
+    expect(within(fresh).getByRole('button', { name: 'Save fields' })).toBeDisabled();
+    // Site A's answer doesn't count as checking site B.
+    expect(screen.getByText('Site changed — run Detect fields')).toBeInTheDocument();
+    expect(mockUpdateSync).not.toHaveBeenCalled();
+  });
+
+  it('shows no site notice when the new site has no kept ids', async () => {
+    mockGetConnection.mockResolvedValue(WITH_FIELDS);
+    renderCard('enterprise', 'connection');
+    const user = userEvent.setup();
+    await region();
+    await reconnect(user, { ...SITE_B, sprint_field_id: null, epic_link_field_id: null });
+    await waitFor(() => expect(screen.getAllByText('https://beta.atlassian.net').length).toBeGreaterThan(0));
+    expect(screen.queryByText('Site changed — run Detect fields')).not.toBeInTheDocument();
+  });
+
+  it('never sends field ids with the token form', async () => {
+    mockGetConnection.mockResolvedValue(WITH_FIELDS);
+    mockSaveConnection.mockResolvedValue(WITH_FIELDS);
+    renderCard('enterprise', 'connection');
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Edit connection' }));
+    await user.type(screen.getByLabelText('API token'), 'tok');
+    await user.click(screen.getByRole('button', { name: 'Save connection' }));
+    await waitFor(() => expect(mockSaveConnection).toHaveBeenCalled());
+    expect(mockSaveConnection.mock.calls[0][1]).not.toHaveProperty('sprint_field_id');
+    expect(mockSaveConnection.mock.calls[0][1]).not.toHaveProperty('epic_link_field_id');
   });
 });

@@ -40,6 +40,7 @@ from sessionfs.server.schemas.api_keys import (
     ServiceKeyCreateRequest,
     ServiceKeyCreateResponse,
     ServiceKeyResponse,
+    ServiceKeyWarning,
 )
 from sessionfs.server.tier_gate import (
     UserContext,
@@ -63,7 +64,10 @@ def _key_prefix(raw_key: str) -> str:
 
 
 def _service_key_to_response(
-    row: ApiKey, project_ids_list: list[str] | None
+    row: ApiKey,
+    project_ids_list: list[str] | None,
+    coupling_ok: bool | None = None,
+    coupling_reason: str | None = None,
 ) -> ServiceKeyResponse:
     return ServiceKeyResponse(
         id=row.id,
@@ -84,6 +88,8 @@ def _service_key_to_response(
         last_used_at=row.last_used_at,
         last_used_ip=row.last_used_ip,
         is_active=bool(row.is_active),
+        coupling_ok=coupling_ok,
+        coupling_reason=coupling_reason,
     )
 
 
@@ -122,6 +128,56 @@ def _check_platform_scopes(scopes: list[str], user: User) -> None:
                 f"{sorted(PLATFORM_ADMIN_SCOPES.intersection(scopes))}.",
             },
         )
+
+
+# Non-fatal warning code for keys that carry a tier-coupled (platform-admin
+# mint only) scope. The set is PLATFORM_ADMIN_SCOPES above — one source of
+# truth shared by the mint-time check and this warning.
+TIER_COUPLING_WARNING_CODE = "minter_tier_coupling"
+
+
+def _tier_coupling_warnings(scopes: list[str]) -> list[ServiceKeyWarning]:
+    """Warn when a key carries a scope whose lifetime is coupled to the
+    minter's (and owner's) platform-admin tier. The security rule is kept;
+    this just makes the coupling visible at mint/rotate time."""
+    coupled = sorted(PLATFORM_ADMIN_SCOPES.intersection(scopes))
+    if not coupled:
+        return []
+    joined = ", ".join(coupled)
+    return [
+        ServiceKeyWarning(
+            code=TIER_COUPLING_WARNING_CODE,
+            message=(
+                f"{joined} is coupled to platform-admin tier: this key stops "
+                "working the moment the user who minted it or the key's owner "
+                "(the user it runs as) is no longer an active platform admin. "
+                "Elevating to admin, minting, then reverting the elevation "
+                "will not yield a working key."
+            ),
+        )
+    ]
+
+
+async def _coupling_status(
+    db: AsyncSession,
+    owner_id: str,
+    minter_id: str | None,
+    scopes: list[str],
+) -> tuple[bool | None, str | None]:
+    """Whether a key's tier coupling currently holds (both owner and minter
+    are active platform admins). ``(None, None)`` when the key carries no
+    tier-coupled scope."""
+    if not PLATFORM_ADMIN_SCOPES.intersection(scopes):
+        return None, None
+    if minter_id is None:
+        return False, "minter record missing"
+    owner = await db.get(User, owner_id)
+    minter = owner if minter_id == owner_id else await db.get(User, minter_id)
+    if minter is None or not minter.is_active or minter.tier != "admin":
+        return False, "minter no longer admin"
+    if owner is None or not owner.is_active or owner.tier != "admin":
+        return False, "owner no longer admin"
+    return True, None
 
 
 @service_key_router.post(
@@ -178,8 +234,15 @@ async def create_service_key(
         api_key.id, org_id, user.id, body.scopes,
     )
 
-    base = _service_key_to_response(api_key, body.project_ids)
-    return ServiceKeyCreateResponse(**base.model_dump(), key=raw_key)
+    coupling_ok, coupling_reason = await _coupling_status(
+        db, api_key.user_id, api_key.created_by_user_id, body.scopes
+    )
+    base = _service_key_to_response(
+        api_key, body.project_ids, coupling_ok=coupling_ok, coupling_reason=coupling_reason
+    )
+    return ServiceKeyCreateResponse(
+        **base.model_dump(), key=raw_key, warnings=_tier_coupling_warnings(body.scopes)
+    )
 
 
 @service_key_router.get(
@@ -203,7 +266,15 @@ async def list_service_keys(
     out: list[ServiceKeyResponse] = []
     for r in rows:
         project_ids = json.loads(r.project_ids) if r.project_ids else None
-        out.append(_service_key_to_response(r, project_ids))
+        scopes = json.loads(r.scopes) if r.scopes else []
+        coupling_ok, coupling_reason = await _coupling_status(
+            db, r.user_id, r.created_by_user_id, scopes
+        )
+        out.append(
+            _service_key_to_response(
+                r, project_ids, coupling_ok=coupling_ok, coupling_reason=coupling_reason
+            )
+        )
     return out
 
 
@@ -382,8 +453,16 @@ async def rotate_service_key(
     )
 
     project_ids = json.loads(new_key.project_ids) if new_key.project_ids else None
-    base = _service_key_to_response(new_key, project_ids)
-    return ServiceKeyCreateResponse(**base.model_dump(), key=raw_key)
+    new_scopes = json.loads(new_key.scopes) if new_key.scopes else []
+    coupling_ok, coupling_reason = await _coupling_status(
+        db, new_key.user_id, new_key.created_by_user_id, new_scopes
+    )
+    base = _service_key_to_response(
+        new_key, project_ids, coupling_ok=coupling_ok, coupling_reason=coupling_reason
+    )
+    return ServiceKeyCreateResponse(
+        **base.model_dump(), key=raw_key, warnings=_tier_coupling_warnings(new_scopes)
+    )
 
 
 # ── Personal user-key surface ────────────────────────────────────────

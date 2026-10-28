@@ -22,7 +22,12 @@ import {
   projectGroupDetail,
   projects,
   skillRegistries,
+  tickets,
 } from './fixtures/data';
+
+const overdueTickets = tickets.filter(
+  (t) => t.due_date && t.due_date < '2026-10-20' && !['done', 'closed', 'cancelled'].includes(t.status),
+);
 
 const require = createRequire(import.meta.url);
 const AXE_PATH = require.resolve('axe-core/axe.min.js');
@@ -385,6 +390,26 @@ const INTEGRATION_SCENARIOS: Scenario[] = [
     prepare: async (page) => {
       await page.getByRole('button', { name: 'Edit connection' }).click();
       await page.getByLabel('API token').waitFor();
+    },
+  },
+  {
+    // "Detect fields": the agile-field inputs filled with what the site has, for review.
+    name: 'org-jira-connection-detect',
+    path: `${JIRA_DETAIL}&section=connection`,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Detect fields' }).click();
+      await page.getByText(/Found sprint field customfield_10020/).waitFor();
+    },
+  },
+  {
+    // A hand-typed field id that fails the customfield_<n> check.
+    name: 'org-jira-connection-field-error',
+    path: `${JIRA_DETAIL}&section=connection`,
+    prepare: async (page) => {
+      const field = page.getByLabel('Sprint field ID');
+      await field.fill('sprint');
+      await field.blur();
+      await page.getByText(/Use a Jira custom field id/).waitFor();
     },
   },
   {
@@ -770,6 +795,10 @@ const attachedLink = async (page: Page) => {
     (route) => route.fulfill(fulfillJson(200, { ...linkedTicketJiraLink, attached_not_published: true })),
   );
 };
+const openPromoteDialog = async (page: Page) => {
+  await page.getByRole('button', { name: 'Promote to Jira' }).click();
+  await page.getByRole('dialog', { name: 'Promote to Jira' }).getByRole('textbox', { name: 'Summary', exact: true }).waitFor();
+};
 const TICKET_SCENARIOS: Scenario[] = [
   { name: 'ticket-open', path: TICKET_PATH('tk_fixture2') },
   // Project → Settings grouped into sections, at the same three widths.
@@ -794,6 +823,90 @@ const TICKET_SCENARIOS: Scenario[] = [
       await page.getByRole('button', { name: 'Sync with Jira…' }).click();
       await page.getByRole('menuitem', { name: 'Overwrite this ticket from WID-43…' }).click();
       await page.getByRole('dialog', { name: /Overwrite this ticket from WID-43/ }).waitFor();
+    },
+  },
+  // Publishing an unlinked ticket: the sprint picker open, the explanation
+  // when the site has no Jira Software, a publish Jira accepted with
+  // warnings, and the 422 for a connection without a sprint field.
+  {
+    name: 'ticket-jira-publish-sprint-picker',
+    path: TICKET_PATH('tk_fixture2'),
+    mock: enterpriseProject,
+    prepare: async (page) => {
+      await openPromoteDialog(page);
+      await page.getByRole('button', { name: 'Sprint' }).click();
+      await page.getByRole('listbox', { name: 'Sprint' }).waitFor();
+    },
+  },
+  {
+    name: 'ticket-jira-publish-sprints-unavailable',
+    path: TICKET_PATH('tk_fixture2'),
+    mock: async (page) => {
+      await enterpriseProject(page);
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/jira/sprints`,
+        (route) => route.fulfill(fulfillJson(200, { sprints: [], unavailable: 'jira_software_not_available' })),
+      );
+    },
+    prepare: async (page) => {
+      await openPromoteDialog(page);
+      await page.getByText(/Sprints aren’t available/).waitFor();
+    },
+  },
+  {
+    // The connection has no sprint field: members get the explanation, no picker.
+    name: 'ticket-jira-publish-sprint-field-missing',
+    path: TICKET_PATH('tk_fixture2'),
+    mock: async (page) => {
+      await enterpriseProject(page);
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/jira/sprints`,
+        (route) => route.fulfill(fulfillJson(200, { sprints: [], unavailable: 'jira_sprint_field_unknown' })),
+      );
+    },
+    prepare: async (page) => {
+      await openPromoteDialog(page);
+      await page.getByText(/doesn’t know the site’s sprint field/).waitFor();
+    },
+  },
+  {
+    name: 'ticket-jira-publish-warnings',
+    path: TICKET_PATH('tk_fixture2'),
+    mock: enterpriseProject,
+    prepare: async (page) => {
+      await openPromoteDialog(page);
+      await page.getByRole('button', { name: 'Sprint' }).click();
+      await page.getByRole('option', { name: /WID Sprint 15/ }).click();
+      await page.getByRole('dialog').getByRole('button', { name: 'Publish', exact: true }).click();
+      await page.getByRole('dialog', { name: 'Published WID-57, with notes' }).waitFor();
+    },
+  },
+  {
+    name: 'ticket-jira-publish-sprint-field-unknown',
+    path: TICKET_PATH('tk_fixture2'),
+    mock: async (page) => {
+      await enterpriseProject(page);
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/tickets/tk_fixture2/jira/publish`,
+        (route) =>
+          route.fulfill(
+            // The server's re-enveloped HTTPException shape.
+            fulfillJson(422, {
+              error: {
+                code: '422',
+                message: 'This Jira connection has no sprint field discovered.',
+                details: { error: 'jira_sprint_field_unknown' },
+              },
+            }),
+          ),
+      );
+    },
+    prepare: async (page) => {
+      await openPromoteDialog(page);
+      await page.getByRole('button', { name: 'Sprint' }).click();
+      await page.getByRole('option', { name: /WID Sprint 14/ }).click();
+      await page.getByRole('dialog').getByRole('button', { name: 'Publish', exact: true }).click();
+      await page.getByText('Jira sprint field unknown').waitFor();
     },
   },
   // "Link existing issue" open on an unlinked ticket, showing the key check.
@@ -852,6 +965,35 @@ const TICKET_SCENARIOS: Scenario[] = [
     },
     prepare: async (page) => {
       await page.getByRole('dialog', { name: /Split ProjectDetail/ }).waitFor();
+    },
+  },
+];
+
+// Ticket history (GitHub #113): provenance, due date + estimate, the event
+// log merged into the activity timeline, the estimate editor refusing a bad
+// value, and the Overdue list filter.
+const TIMELINE_SCENARIOS: Scenario[] = [
+  { name: 'ticket-history', path: TICKET_PATH(LINKED_TICKET_ID), mock: enterpriseProject },
+  {
+    name: 'ticket-history-estimate-edit',
+    path: TICKET_PATH(LINKED_TICKET_ID),
+    mock: enterpriseProject,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Edit estimate' }).click();
+      const field = page.getByRole('textbox', { name: 'Estimate' });
+      await field.fill('two days');
+      await field.press('Enter');
+      await page.getByText(/Use Jira durations/).waitFor();
+    },
+  },
+  {
+    name: 'tickets-overdue',
+    path: `/projects/${PROJECT_ID}?tab=work&sub=tickets&due=overdue`,
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/tickets` && u.searchParams.get('overdue') === 'true',
+        (route) => route.fulfill(fulfillJson(200, overdueTickets)),
+      );
     },
   },
 ];
@@ -974,6 +1116,139 @@ const MARKETPLACE_SCENARIOS: Scenario[] = [
   },
 ];
 
+// Org → Policies → AI key for the session helper: "Fetch models" (GitHub #114).
+const orgKeyModelsMock = async (page: Page) => {
+  await page.route(
+    (u) => /\/orgs\/[^/]+\/llm-settings$/.test(u.pathname),
+    (route) =>
+      route.request().method() === 'GET'
+        ? route.fulfill(
+            fulfillJson(200, {
+              provider: 'deepseek',
+              model: 'deepseek-v4-pro',
+              has_api_key: true,
+              key_hint: '7f3a',
+              base_url: null,
+              enabled: true,
+              plan_includes_helper: true,
+            }),
+          )
+        : route.fallback(),
+  );
+  await page.route(
+    (u) => /\/orgs\/[^/]+\/llm-settings\/models$/.test(u.pathname),
+    (route) =>
+      route.fulfill(
+        fulfillJson(200, {
+          provider: 'deepseek',
+          base_url: 'https://api.deepseek.com/models',
+          models: [
+            { id: 'deepseek-v4-pro', owned_by: 'deepseek' },
+            { id: 'deepseek-flash', owned_by: 'deepseek' },
+            { id: 'deepseek-v4-reasoner', owned_by: 'deepseek' },
+          ],
+        }),
+      ),
+  );
+};
+const ORG_KEY_SCENARIOS: Scenario[] = [
+  {
+    name: 'org-helper-key-models',
+    path: '/settings/organization?tab=policies',
+    mock: orgKeyModelsMock,
+    prepare: async (page) => {
+      const card = page.getByRole('region', { name: 'AI key for the session helper' });
+      await card.getByRole('button', { name: 'Fetch models' }).click();
+      await card.getByRole('button', { name: /Model id not in list/ }).waitFor();
+      await card.getByRole('button', { name: 'Model', exact: true }).click();
+      await card.getByRole('listbox').waitFor();
+    },
+  },
+  {
+    name: 'org-helper-key-manual-model',
+    path: '/settings/organization?tab=policies',
+    mock: orgKeyModelsMock,
+    prepare: async (page) => {
+      const card = page.getByRole('region', { name: 'AI key for the session helper' });
+      await card.getByRole('button', { name: 'Fetch models' }).click();
+      await card.getByRole('button', { name: /Model id not in list/ }).click();
+      await card.getByRole('textbox', { name: 'Model', exact: true }).fill('deepseek-v4-pro-0925');
+    },
+  },
+];
+
+// Org → Integrations → Jira → Templates → New template (GitHub #113 D9).
+const templateEditorMocks = async (page: Page) => {
+  await jiraMappingMocks(page);
+  await page.route(
+    (u) => u.pathname.endsWith('/integrations/jira/mappings'),
+    (route) =>
+      route.fulfill(
+        fulfillJson(
+          200,
+          manyOrgProjects.slice(0, 12).map((p, i) => ({
+            project_id: p.id,
+            jira_project_key: `K${String(i).padStart(2, '0')}`,
+            issue_type: 'Story',
+            template: null,
+            done_status_name: null,
+          })),
+        ),
+      ),
+  );
+};
+const openNewTemplate = async (page: Page) => {
+  await page.getByRole('region', { name: 'Jira story templates' }).getByRole('button', { name: 'New template' }).click();
+  await page.getByRole('dialog', { name: 'New template' }).waitFor();
+};
+const TEMPLATE_EDITOR_SCENARIOS: Scenario[] = [
+  {
+    name: 'jira-template-editor',
+    path: `${JIRA_DETAIL}&section=templates`,
+    mock: templateEditorMocks,
+    prepare: async (page) => {
+      await openNewTemplate(page);
+      const dlg = page.getByRole('dialog', { name: 'New template' });
+      await dlg.getByRole('button', { name: 'Copy sections from a template' }).click();
+      await dlg.getByRole('option', { name: /Agile Standard/ }).click();
+      await dlg.getByRole('status').waitFor();
+    },
+  },
+  {
+    name: 'jira-template-editor-mode-help',
+    path: `${JIRA_DETAIL}&section=templates`,
+    mock: templateEditorMocks,
+    prepare: async (page) => {
+      await openNewTemplate(page);
+      const dlg = page.getByRole('dialog', { name: 'New template' });
+      await dlg.getByRole('button', { name: 'About Mode' }).first().click();
+      await page.getByRole('tooltip').waitFor();
+    },
+  },
+  {
+    name: 'jira-template-editor-field-help',
+    path: `${JIRA_DETAIL}&section=templates`,
+    mock: templateEditorMocks,
+    prepare: async (page) => {
+      await openNewTemplate(page);
+      const dlg = page.getByRole('dialog', { name: 'New template' });
+      await dlg.getByRole('button', { name: 'About Linked sessions' }).first().click();
+      await page.getByRole('tooltip').waitFor();
+    },
+  },
+  {
+    name: 'jira-template-editor-project-picker',
+    path: `${JIRA_DETAIL}&section=templates`,
+    mock: templateEditorMocks,
+    prepare: async (page) => {
+      await openNewTemplate(page);
+      const dlg = page.getByRole('dialog', { name: 'New template' });
+      await dlg.getByRole('button', { name: 'Mapped project' }).click();
+      await dlg.getByRole('listbox', { name: 'Mapped project' }).waitFor();
+    },
+  },
+];
+
 const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...WIDTHS.map((width) => ({ width, scenarios: PAGES })),
   ...SHELL_WIDTHS.map((width) => ({ width, scenarios: SHELL_SCENARIOS })),
@@ -986,6 +1261,9 @@ const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...OVERLAY_WIDTHS.map((width) => ({ width, scenarios: MARKETPLACE_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: INTEGRATION_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: TICKET_SCENARIOS })),
+  ...OVERLAY_WIDTHS.map((width) => ({ width, scenarios: TIMELINE_SCENARIOS })),
+  ...OVERLAY_WIDTHS.map((width) => ({ width, scenarios: ORG_KEY_SCENARIOS })),
+  ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: TEMPLATE_EDITOR_SCENARIOS })),
 ];
 
 for (const theme of THEMES) {

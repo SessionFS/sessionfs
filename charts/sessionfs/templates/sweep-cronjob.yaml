@@ -1,0 +1,89 @@
+{{- $sweeps := include "sessionfs.sweepDefs" . | fromYamlArray }}
+{{- range $s := $sweeps }}
+{{- $cfg := index $.Values.api $s.key | default dict }}
+{{- $cron := $cfg.cronJob | default dict }}
+{{- if and $cfg.enabled $cron.enabled }}
+{{- $secret := required (printf "api.%s.cronJob.existingSecret is required when the %s CronJob is enabled" $s.key $s.component) $cron.existingSecret }}
+---
+# Calls the API's {{ $s.component }} sweep on a schedule. The work runs in
+# the API pods (with their egress policy); this pod only sends one
+# authenticated request with a platform_sweeps:run service key. Overlapping
+# runs are Forbidden because the sweep itself is idempotent and bounded.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "sessionfs.fullname" $ }}-{{ $s.component }}
+  labels:
+    {{- include "sessionfs.componentLabels" (list $ $s.component) | nindent 4 }}
+spec:
+  schedule: {{ $cron.schedule | default $s.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ $cron.successfulJobsHistoryLimit | default 1 }}
+  failedJobsHistoryLimit: {{ $cron.failedJobsHistoryLimit | default 3 }}
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            {{- include "sessionfs.componentSelectorLabels" (list $ $s.component) | nindent 12 }}
+        spec:
+          restartPolicy: Never
+          # The pod only posts one request with an injected service key; it never
+          # talks to the Kubernetes API, so no service-account token is mounted.
+          automountServiceAccountToken: false
+          {{- include "sessionfs.imagePullSecrets" $ | nindent 10 }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: sweep
+              image: {{ $cron.image | default "curlimages/curl:8.12.1" }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 10001
+                capabilities:
+                  drop:
+                    - ALL
+              env:
+                {{- if $cron.body }}
+                # Passed through the environment so a quote in the configured
+                # body can't break out of the shell command below.
+                - name: SWEEP_BODY
+                  value: {{ $cron.body | quote }}
+                {{- end }}
+                - name: {{ $s.envVar }}
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $secret }}
+                      key: {{ $cron.secretKey | default $s.secretKey }}
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  # The key is sent as a header read from the environment;
+                  # it never appears in the job's output.
+                  curl --fail-with-body --silent --show-error \
+                    --max-time 1500 \
+                    -H "Authorization: Bearer ${{ $s.envVar }}" \
+                    -H "Content-Type: application/json" \
+                    -X POST \
+                    {{- if $cron.body }}
+                    -d "$SWEEP_BODY" \
+                    {{- end }}
+                    "http://{{ include "sessionfs.fullname" $ }}-api:{{ $.Values.api.service.port }}{{ $s.path }}"
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 16Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+{{- end }}
+{{- end }}

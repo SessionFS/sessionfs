@@ -84,6 +84,7 @@ REASSIGN_COLUMNS: tuple[tuple[str, str], ...] = (
     ("tickets", "assigned_user_id"),
     ("ticket_comments", "author_user_id"),
     ("ticket_edits", "edited_by_user_id"),
+    ("ticket_events", "actor_user_id"),
     ("ticket_notifications", "user_id"),
     ("wiki_page_revisions", "user_id"),
     ("work_queues", "created_by_user_id"),

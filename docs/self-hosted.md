@@ -469,6 +469,84 @@ api:
       secretKey: helper-retention-api-key
 ```
 
+## Sweep keys
+
+The five scheduled sweeps — KB compile, helper retention, the weekly org
+digest, ticket notifications, and the Jira/Confluence syncs — all accept the
+same credential: a `platform_sweeps:run` service key minted by a platform
+admin. That key is **tier-coupled** (see
+[API keys](./api-keys.md#service-keys)): it works only while the admin who
+minted or last rotated it *and* the user the key runs as are both still
+active platform admins. Demoting or deactivating either one stops the key
+with a `403` that names the minter's current tier and the fix.
+
+The coupling is visible, not silent:
+
+- **Mint warning** — creating or rotating a key with a tier-coupled scope
+  returns a `warnings` array with a `minter_tier_coupling` entry. `sfs admin
+  service-keys create` / `rotate` print it in yellow to stderr, so `--output-key`
+  still prints only the key on stdout.
+- **Status** — `service-keys list` returns `coupling_ok`
+  (`true` / `false` / `null`) and `coupling_reason`, so a key that quietly
+  stopped working shows up in `sfs admin service-keys list` with an
+  `inactive: minter no longer admin` marker. `coupling_ok` is `null` for keys
+  with no tier-coupled scope.
+- **Actionable 403** — a dead key's `403 platform_sweeper_denied` carries
+  `minter_user_id`, `minter_current_tier`, `required_minter_tier` and a
+  `resolution` string, so the operator can see the rule without a support
+  ticket.
+
+Elevate → mint → revert does **not** produce a working key: the minted key is
+still coupled to the account that minted it. Keep the minter a platform admin
+for the life of the key, or re-mint as a user who stays a platform admin.
+
+The chart can create the CronJobs for all five sweeps. They are off by
+default and each needs a Secret holding a `platform_sweeps:run` service key
+(`existingSecret` is required when enabled). Enable the ones you run:
+
+```yaml
+api:
+  ticketNotifications:
+    enabled: true
+    cronJob:
+      schedule: "*/10 * * * *"        # every 10 minutes
+      existingSecret: sessionfs-sweep-key
+      secretKey: ticket-notifications-api-key
+  orgDigest:
+    enabled: true
+    cronJob:
+      schedule: "0 4 * * *"           # daily
+      existingSecret: sessionfs-sweep-key
+      secretKey: org-digest-api-key
+  kbCompile:
+    enabled: true
+    cronJob:
+      schedule: "*/15 * * * *"        # every 15 minutes
+      existingSecret: sessionfs-sweep-key
+      secretKey: kb-compile-api-key
+  jiraSync:
+    enabled: true
+    cronJob:
+      schedule: "* * * * *"           # every minute
+      existingSecret: sessionfs-sweep-key
+      secretKey: jira-sync-api-key
+  confluencePublish:
+    enabled: true
+    cronJob:
+      schedule: "*/15 * * * *"        # every 15 minutes
+      existingSecret: sessionfs-sweep-key
+      secretKey: confluence-publish-api-key
+```
+
+The CronJob pod sends one authenticated request to the API sweep endpoint and
+exits; the work itself runs in the API pods, so it inherits the API's egress
+policy. Each job sends its body inline (`jira-sync` sends
+`{"limit":100,"budget_seconds":50}`), reads the key from the Secret into an
+environment variable, and never prints it. Overlapping runs are `Forbid`den
+because every sweep is idempotent and bounded. When network policies are
+enabled, the chart adds an ingress rule so each enabled sweep CronJob can
+reach the API.
+
 ## LLM connection tests against private hosts
 
 The judge / helper key forms have a **Test connection** button

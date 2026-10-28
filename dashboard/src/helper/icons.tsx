@@ -87,6 +87,12 @@ export const FolderIcon = (p: P) => (
     <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
   </Icon>
 );
+export const FoldersIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="M7 9a2 2 0 0 1 2-2h3l2 2h5a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2z" />
+    <path d="M3 13V7a2 2 0 0 1 2-2h3l2 2" />
+  </Icon>
+);
 export const SessionIcon = (p: P) => (
   <Icon {...p}>
     <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />

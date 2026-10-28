@@ -13,13 +13,21 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Link } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
-import { ApiError, type HelperCitation, type HelperConversationSummary, type HelperDocCitation } from '../api/client';
+import {
+  ApiError,
+  type HelperCitation,
+  type HelperConversationSummary,
+  type HelperDocCitation,
+  type HelperStoredScope,
+  type HelperTicketCitation,
+  type HelperWikiCitation,
+} from '../api/client';
 import { useMe } from '../hooks/useMe';
 import { useToast } from '../hooks/useToast';
 import { errorMessage } from '../utils/errorMessage';
 import { Button, Dialog, DialogFooter, DialogHeader, Drawer } from '../components/ui';
 import type { HelperScope } from './HelperProvider';
-import { useDeleteHelperConversation, useHelperConversations, useHelperStatus } from './useHelper';
+import { useDeleteHelperConversation, useHelperConversations, useHelperGroups, useHelperStatus } from './useHelper';
 import { SseParser, parseActionProposed, type SseEvent } from './sse';
 import { actionKindForTool, proposedActionId, type TurnAction } from './actions';
 import {
@@ -33,7 +41,8 @@ import {
   type ToolStep,
   type Turn,
 } from './format';
-import { activeOption, hasScope, scopeKey, scopeOptions, type ScopeOption } from './scope';
+import { activeOption, apiScope, hasScope, scopeKey, scopeOptions, withLabel, type ScopeOption } from './scope';
+import { clearRememberedScope, readRememberedScope, rememberScope, scopeOwner } from './scopeMemory';
 import HelperHeader from './HelperHeader';
 import HelperComposer from './HelperComposer';
 import HelperEmptyState from './HelperEmptyState';
@@ -64,6 +73,15 @@ function classifyStatusError(err: unknown): { message: string } | null {
   return null;
 }
 
+/** A thread's stored scope (GET /helper/conversations/{id}) as a drawer scope. */
+function storedScope(stored: HelperStoredScope | null | undefined): HelperScope | undefined {
+  if (!stored) return undefined;
+  const label = stored.label ?? undefined;
+  if (stored.group_id) return { group_id: stored.group_id, label };
+  if (!stored.project_id && !(stored.session_ids?.length)) return undefined;
+  return { project_id: stored.project_id ?? undefined, session_ids: stored.session_ids, ...(label ? { label } : {}) };
+}
+
 export default function HelperPanel({
   open,
   onClose,
@@ -83,6 +101,8 @@ export default function HelperPanel({
   const [activeScope, setActiveScope] = useState<HelperScope | undefined>(undefined);
   const status = useHelperStatus(open, activeScope);
   const conversations = useHelperConversations(open);
+  const groupsQuery = useHelperGroups(open);
+  const groups = useMemo(() => groupsQuery.data ?? [], [groupsQuery.data]);
   const deleteConversation = useDeleteHelperConversation();
 
   const [conversationId, setConversationId] = useState<string | null>(null);
@@ -107,7 +127,30 @@ export default function HelperPanel({
   // A scope that turns out to be unavailable replaces the body; announce it
   // through the panel's status region so screen-reader users hear why.
   // Adjusted during render (like the reset below) so it lands in the same pass.
-  const scopeErrorMessage = status.isError ? classifyStatusError(status.error)?.message : undefined;
+
+  // The scope the user last chose, kept across closes and navigation. A new
+  // conversation opened without an entry scope (header button, help page)
+  // starts from it instead of reverting to "All my sessions".
+  // Keyed by who is signed in, so another sign-in in this tab never starts
+  // from (or sees the name of) the previous user's project or group.
+  const owner = auth ? scopeOwner(auth.baseUrl, auth.apiKey) : '';
+  const [remembered, setRemembered] = useState<HelperScope | undefined>(() => readRememberedScope(owner));
+  const chooseScope = useCallback(
+    (next: HelperScope | undefined) => {
+      rememberScope(owner, next);
+      setRemembered(readRememberedScope(owner));
+    },
+    [owner],
+  );
+  // True while the active scope came from that memory rather than from an
+  // entry point, a restored thread or a pick in the menu.
+  const [fromMemory, setFromMemory] = useState(false);
+
+  const scopeErrorMessage = status.isError
+    ? fromMemory && !conversationId && classifyStatusError(status.error)
+      ? 'The scope you used last is no longer available to you.'
+      : classifyStatusError(status.error)?.message
+    : undefined;
   const [announcedScopeError, setAnnouncedScopeError] = useState<string | undefined>(undefined);
   if (scopeErrorMessage !== announcedScopeError) {
     setAnnouncedScopeError(scopeErrorMessage);
@@ -122,9 +165,15 @@ export default function HelperPanel({
   if (resetFor.open !== open || resetFor.scope !== scope) {
     setResetFor({ open, scope });
     if (open) {
+      const last = readRememberedScope(owner);
+      setRemembered(last);
       setConversationId(null);
       setActiveTitle(null);
-      setActiveScope(scope);
+      // An entry point (project page, session page) wins; otherwise the
+      // user's last choice.
+      const useLast = !hasScope(scope) && hasScope(last);
+      setFromMemory(useLast);
+      setActiveScope(hasScope(scope) ? scope : useLast ? last : undefined);
       setTurns([]);
       setInput('');
       setStreaming(false);
@@ -184,6 +233,7 @@ export default function HelperPanel({
   /** Start a fresh thread; keeps the current scope unless one is given. */
   function newConversation(opts?: { scope: HelperScope | undefined }) {
     const nextScope = opts ? opts.scope : activeScope;
+    if (opts) setFromMemory(false);
     abortRef.current?.abort();
     abortRef.current = null;
     // The aborted turn's finally skips state updates (it no longer owns
@@ -263,11 +313,9 @@ export default function HelperPanel({
       }
       setConversationId(id);
       setActiveTitle(conv.title);
-      setActiveScope(
-        conv.scope
-          ? { project_id: conv.scope.project_id ?? undefined, session_ids: conv.scope.session_ids }
-          : undefined,
-      );
+      // The thread's stored scope is what the selector shows from now on.
+      setActiveScope(storedScope(conv.scope));
+      setFromMemory(false);
       setTurns(loaded);
       setView('chat');
       stickRef.current = true;
@@ -304,9 +352,10 @@ export default function HelperPanel({
     const body: Record<string, unknown> = { message: question, stream: true };
     if (conversationId) body.conversation_id = conversationId;
     if (opts.retry && conversationId) body.retry = true;
-    if (hasScope(sentScope)) {
-      body.scope = { project_id: sentScope?.project_id, session_ids: sentScope?.session_ids };
-    }
+    const wireScope = apiScope(sentScope);
+    if (wireScope) body.scope = wireScope;
+    // The scope a question was asked in is the one to start from next time.
+    if (!conversationId) chooseScope(withLabel(sentScope, [scope, remembered], groups));
 
     const assistantId = nextId();
     setTurns((prev) => [
@@ -378,7 +427,35 @@ export default function HelperPanel({
           citationCount += 1;
           patchAssistant((t) => ({
             ...t,
-            citations: [...t.citations, { session_id: c.session_id, message_index: c.message_index ?? null, title: c.title }],
+            citations: [
+              ...t.citations,
+              { session_id: c.session_id, message_index: c.message_index ?? null, title: c.title, at: c.at ?? null },
+            ],
+          }));
+        } else if (ev.event === 'ticket_citation') {
+          // Without these the settled answer marked every [ticket:…] chip
+          // "not available" until the thread was reopened from history
+          // (where the stored citations include them). GitHub #113 A3.
+          const c = JSON.parse(ev.data) as HelperTicketCitation;
+          if (!c.ticket_id) return;
+          citationCount += 1;
+          patchAssistant((t) => ({
+            ...t,
+            citations: [
+              ...t.citations,
+              { kind: 'ticket', ticket_id: c.ticket_id, project_id: c.project_id, title: c.title, at: c.at ?? null },
+            ],
+          }));
+        } else if (ev.event === 'wiki_citation') {
+          const c = JSON.parse(ev.data) as HelperWikiCitation;
+          if (!c.project_id || !c.slug) return;
+          citationCount += 1;
+          patchAssistant((t) => ({
+            ...t,
+            citations: [
+              ...t.citations,
+              { kind: 'wiki', project_id: c.project_id, slug: c.slug, title: c.title, at: c.at ?? null },
+            ],
           }));
         } else if (ev.event === 'doc_citation') {
           const c = JSON.parse(ev.data) as HelperDocCitation;
@@ -494,6 +571,8 @@ export default function HelperPanel({
   }
 
   function changeScope(option: ScopeOption) {
+    chooseScope(option.scope);
+    setFromMemory(false);
     if (turns.length > 0 || conversationId) newConversation({ scope: option.scope });
     else setActiveScope(option.scope);
     inputRef.current?.focus();
@@ -501,8 +580,14 @@ export default function HelperPanel({
 
   // ── Derived display state ──
 
-  const options = useMemo(() => scopeOptions(scope, activeScope), [scope, activeScope]);
-  const current = useMemo(() => activeOption(scope, activeScope), [scope, activeScope]);
+  const options = useMemo(
+    () => scopeOptions(scope, activeScope, { remembered, groups }),
+    [scope, activeScope, remembered, groups],
+  );
+  const current = useMemo(
+    () => activeOption(scope, activeScope, { remembered, groups }),
+    [scope, activeScope, remembered, groups],
+  );
   const isOrgMember = !!me.data?.org_id && me.data?.org_role === 'member';
   const isOrgAdmin = !!me.data?.org_id && (me.data?.org_role === 'admin' || me.data?.org_role === 'owner');
 
@@ -517,8 +602,8 @@ export default function HelperPanel({
   }, [status.data]);
 
   const placeholder =
-    current.kind === 'project'
-      ? `Ask about ${current.label === 'This project' ? 'this project' : current.label}…`
+    current.kind === 'project' || current.kind === 'group'
+      ? `Ask about ${current.label === 'This project' ? 'this project' : current.label === 'This project group' ? 'this project group' : current.label}…`
       : current.kind === 'session'
         ? 'Ask about this session…'
         : 'Ask about your sessions…';
@@ -526,6 +611,14 @@ export default function HelperPanel({
   // ── Body ──
 
   const statusScopeError = status.isError ? classifyStatusError(status.error) : null;
+  // The remembered scope itself is gone (access revoked, project merged,
+  // group removed): forget it so the next open doesn't land here again.
+  const rememberedScopeFailed = !!statusScopeError && fromMemory && !conversationId;
+  useEffect(() => {
+    if (rememberedScopeFailed) clearRememberedScope();
+  }, [rememberedScopeFailed]);
+  // ...and stop offering it in the scope menu (adjusted during render).
+  if (rememberedScopeFailed && remembered !== undefined) setRemembered(undefined);
 
   let body: ReactNode;
   if (status.isLoading && !status.data) {
@@ -536,6 +629,29 @@ export default function HelperPanel({
         <div className="h-3 w-full animate-skeleton-pulse rounded bg-surface-hover" />
         <div className="h-3 w-5/6 animate-skeleton-pulse rounded bg-surface-hover" />
       </div>
+    );
+  } else if (statusScopeError && rememberedScopeFailed) {
+    body = (
+      <HelperNotice
+        tone="warning"
+        icon={<AlertIcon size={20} />}
+        title="Your last scope is unavailable"
+        actions={
+          <Button
+            onClick={() => {
+              chooseScope(undefined);
+              newConversation({ scope: undefined });
+            }}
+          >
+            Ask about all my sessions
+          </Button>
+        }
+      >
+        <p>
+          {current.label && current.kind !== 'all' ? `“${current.label}”` : 'The scope you used last'} is no longer
+          available to you, so the helper won’t start from it again.
+        </p>
+      </HelperNotice>
     );
   } else if (statusScopeError) {
     body = (

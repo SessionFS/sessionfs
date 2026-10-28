@@ -34,6 +34,7 @@ from sessionfs.server.db.models import (
 from sessionfs.server.integrations.trackers import JiraClient
 from sessionfs.server.integrations.trackers.base import TrackerError, TrackerIssue
 from sessionfs.server.llm_keys import decrypt_secret
+from sessionfs.server.services.ticket_events import record_ticket_event
 
 # Stricter than the client's generic key regex: a real, fully-qualified key the
 # caller intends to link, with no leading zero and a bounded project/number
@@ -132,6 +133,7 @@ async def link_ticket_to_jira(
     issue_key: str,
     actor_user_id: str,
     actor_type: str = "user",
+    actor_label: str | None = None,
 ) -> TicketTrackerLink:
     """Link ``ticket`` to the existing Jira issue named by ``issue_key``.
 
@@ -142,6 +144,11 @@ async def link_ticket_to_jira(
     re-check before inserting. Does not commit — the caller owns the
     transaction so the helper can commit the ticket create + link + audit
     together.
+
+    ``actor_type`` uses the AuthContext vocabulary (``user`` | ``service_key``)
+    and ``actor_label`` names a service key; the ticket event recorded here maps
+    ``service_key`` onto the timeline's ``service`` actor type, exactly like the
+    route's ``_timeline_actor`` helper.
     """
     normalized = normalize_link_issue_key(issue_key)
 
@@ -161,7 +168,12 @@ async def link_ticket_to_jira(
     try:
         try:
             issue = await asyncio.wait_for(
-                client.get_issue(normalized), timeout=_LINK_FETCH_TIMEOUT_SECONDS
+                client.get_issue(
+                    normalized,
+                    sprint_field_id=conn.sprint_field_id,
+                    epic_link_field_id=conn.epic_link_field_id,
+                ),
+                timeout=_LINK_FETCH_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError as exc:
             raise JiraLinkError(
@@ -259,6 +271,10 @@ async def link_ticket_to_jira(
         last_push_failure=None,
         template_slug=None,
         template_version=None,
+        jira_sprint_id=issue.sprint_id,
+        jira_sprint_name=issue.sprint_name,
+        jira_sprint_state=issue.sprint_state,
+        jira_parent_key=issue.parent_key,
     )
     try:
         async with db.begin_nested():
@@ -293,5 +309,17 @@ async def link_ticket_to_jira(
                 {"issue_key": link.issue_key, "issue_url": link.issue_url}
             ),
         )
+    )
+
+    # 7. Ticket timeline: record the link in the same transaction so the
+    #    route and the helper both emit exactly one ``jira_linked`` event.
+    await record_ticket_event(
+        db,
+        ticket,
+        "jira_linked",
+        after={"issue_key": link.issue_key},
+        actor_type="service" if actor_type == "service_key" else actor_type,
+        actor_user_id=None if actor_type == "service_key" else actor_user_id,
+        actor_label=actor_label if actor_type == "service_key" else None,
     )
     return link

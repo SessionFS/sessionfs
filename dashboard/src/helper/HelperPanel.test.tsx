@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api/client';
 import HelperPanel from './HelperPanel';
 import type { HelperScope } from './HelperProvider';
+import { clearRememberedScope } from './scopeMemory';
 
 /**
  * Coverage for the session-helper drawer. The panel streams answers with raw
@@ -17,6 +18,7 @@ import type { HelperScope } from './HelperProvider';
  */
 
 const {
+  useHelperGroupsMock,
   useAuthMock,
   useMeMock,
   useHelperStatusMock,
@@ -27,6 +29,7 @@ const {
   conversationsRefetchMock,
   statusRefetchMock,
 } = vi.hoisted(() => ({
+  useHelperGroupsMock: vi.fn(),
   useAuthMock: vi.fn(),
   useMeMock: vi.fn(),
   useHelperStatusMock: vi.fn(),
@@ -46,6 +49,7 @@ vi.mock('./useHelper', () => ({
   useHelperStatus: useHelperStatusMock,
   useHelperConversations: useHelperConversationsMock,
   useHelperConversation: () => ({ data: null, isLoading: false }),
+  useHelperGroups: useHelperGroupsMock,
   useDeleteHelperConversation: useDeleteHelperConversationMock,
 }));
 
@@ -173,6 +177,8 @@ function setConversations(data: Array<{ id: string; title: string | null; org_id
 }
 
 beforeEach(() => {
+  clearRememberedScope();
+  useHelperGroupsMock.mockReturnValue({ data: [] });
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
 
@@ -396,6 +402,31 @@ describe('HelperPanel — streaming', () => {
     expect(screen.getByRole('link', { name: 'Source 1: Refactor, messages 3, 14' })).toHaveAttribute('href', '/sessions/ses_9');
     const sources = screen.getByRole('list', { name: 'Sources' });
     expect(within(sources).getByRole('link', { name: /Refactor/ })).toHaveAttribute('href', '/sessions/ses_9?msg=3');
+  });
+
+  it('links ticket and wiki citations confirmed during the stream (GitHub #113 A3)', async () => {
+    const TK = 'tk_1234567890abcdef';
+    const PJ = 'proj_1234567890abcdef';
+    fetchMock.mockResolvedValue(
+      okResponse([
+        ['text', { delta: `Tracked in [ticket:${TK}], see [wiki:${PJ}/architecture].` }],
+        ['ticket_citation', { ticket_id: TK, project_id: PJ, title: 'Retry uploads', at: null }],
+        ['wiki_citation', { project_id: PJ, slug: 'architecture', title: 'Architecture', at: null }],
+        DONE,
+      ]),
+    );
+    renderPanel();
+    await ask(userEvent.setup(), 'q');
+    expect(await screen.findByRole('link', { name: 'Source 1: Retry uploads' })).toHaveAttribute(
+      'href',
+      `/projects/${PJ}?tab=work&sub=tickets&ticket=${TK}`,
+    );
+    expect(screen.getByRole('link', { name: 'Source 2: Architecture' })).toHaveAttribute(
+      'href',
+      `/projects/${PJ}?tab=knowledge&sub=pages&page=architecture`,
+    );
+    expect(screen.queryByTitle('Source not available to you')).toBeNull();
+    expect(screen.getByRole('status')).toHaveTextContent('Answer complete, with 2 sources.');
   });
 
   it('renders a marker the server did not confirm as an inert chip', async () => {
@@ -819,6 +850,203 @@ describe('HelperPanel — scope', () => {
     const body = sentBody(1);
     expect(body.conversation_id).toBeUndefined();
     expect(body.scope).toEqual({ project_id: 'proj_1' });
+  });
+});
+
+describe('HelperPanel — remembered scope and project groups (GitHub #113)', () => {
+  function reopen(
+    rerender: (ui: React.ReactElement) => void,
+    scope: HelperScope | undefined,
+  ) {
+    rerender(
+      <MemoryRouter>
+        <HelperPanel open={false} onClose={vi.fn()} scope={scope} />
+      </MemoryRouter>,
+    );
+    rerender(
+      <MemoryRouter>
+        <HelperPanel open onClose={vi.fn()} scope={scope} />
+      </MemoryRouter>,
+    );
+  }
+
+  it('starts the next unscoped conversation from the last scope used, after the drawer closes', async () => {
+    fetchMock.mockResolvedValue(okResponse([['text', { delta: 'hi' }], DONE]));
+    const { rerender } = render(
+      <MemoryRouter>
+        <HelperPanel open onClose={vi.fn()} scope={{ project_id: 'proj_1', label: 'Acme Widgets' }} />
+      </MemoryRouter>,
+    );
+    const user = userEvent.setup();
+    await ask(user, 'one');
+    await screen.findByText('hi');
+
+    // Navigate elsewhere and reopen from the header (no entry scope).
+    reopen(rerender, undefined);
+    expect(screen.getByRole('button', { name: 'Scope: Acme Widgets. Change scope' })).toBeInTheDocument();
+    expect(useHelperStatusMock).toHaveBeenLastCalledWith(true, { project_id: 'proj_1', label: 'Acme Widgets' });
+    await ask(user, 'two');
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(sentBody(1).scope).toEqual({ project_id: 'proj_1' });
+    expect(sentBody(1).conversation_id).toBeUndefined();
+  });
+
+  it('remembers a scope picked from the menu, including All my sessions', async () => {
+    const { rerender } = render(
+      <MemoryRouter>
+        <HelperPanel open onClose={vi.fn()} scope={{ session_ids: ['ses_1'], label: 'Fix the login bug' }} />
+      </MemoryRouter>,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Change scope/ }));
+    await user.click(within(screen.getByRole('menu')).getByRole('menuitemradio', { name: /All my sessions/ }));
+    useHelperStatusMock.mockClear();
+    reopen(rerender, undefined);
+    // Only one scope is left to offer, so the chip is static text.
+    expect(screen.queryByRole('button', { name: /Change scope/ })).toBeNull();
+    expect(screen.getAllByText('All my sessions').length).toBeGreaterThan(0);
+    expect(useHelperStatusMock).toHaveBeenLastCalledWith(true, undefined);
+  });
+
+  it('lets an entry point override the remembered scope', async () => {
+    fetchMock.mockResolvedValue(okResponse([['text', { delta: 'hi' }], DONE]));
+    const { rerender } = render(
+      <MemoryRouter>
+        <HelperPanel open onClose={vi.fn()} scope={{ project_id: 'proj_1', label: 'Acme Widgets' }} />
+      </MemoryRouter>,
+    );
+    await ask(userEvent.setup(), 'one');
+    await screen.findByText('hi');
+    reopen(rerender, { session_ids: ['ses_9'], label: 'Other session' });
+    expect(screen.getByRole('button', { name: 'Scope: Other session. Change scope' })).toBeInTheDocument();
+    // The remembered project stays one click away.
+    await userEvent.setup().click(screen.getByRole('button', { name: /Change scope/ }));
+    expect(within(screen.getByRole('menu')).getByRole('menuitemradio', { name: /Acme Widgets/ })).toBeInTheDocument();
+  });
+
+  it('does not start another sign-in from the previous user\'s remembered scope', async () => {
+    fetchMock.mockResolvedValue(okResponse([['text', { delta: 'hi' }], DONE]));
+    const { rerender } = render(
+      <MemoryRouter>
+        <HelperPanel open onClose={vi.fn()} scope={{ project_id: 'proj_a', label: 'User A secret project' }} />
+      </MemoryRouter>,
+    );
+    await ask(userEvent.setup(), 'one');
+    await screen.findByText('hi');
+
+    // Same tab, different identity.
+    useAuthMock.mockReturnValue({
+      auth: { apiKey: 'sk_other_user', baseUrl: 'http://test.api', client: { getHelperConversation: getHelperConversationMock } },
+    });
+    useHelperStatusMock.mockClear();
+    reopen(rerender, undefined);
+    expect(screen.queryByText('User A secret project')).toBeNull();
+    expect(useHelperStatusMock).toHaveBeenLastCalledWith(true, undefined);
+  });
+
+  it('forgets a remembered scope that is no longer accessible', async () => {
+    fetchMock.mockResolvedValue(okResponse([['text', { delta: 'hi' }], DONE]));
+    const { rerender } = render(
+      <MemoryRouter>
+        <HelperPanel open onClose={vi.fn()} scope={{ project_id: 'proj_gone', label: 'Merged project' }} />
+      </MemoryRouter>,
+    );
+    const user = userEvent.setup();
+    await ask(user, 'one');
+    await screen.findByText('hi');
+
+    // Access is revoked; the header button reopens from the remembered scope.
+    useHelperStatusMock.mockImplementation((_open: boolean, sc?: HelperScope) =>
+      sc?.project_id === 'proj_gone'
+        ? statusResult(undefined, { isError: true, error: new ApiError(404, JSON.stringify({ detail: 'Project not found' })) })
+        : statusResult({ enabled: true, key_source: 'user' }),
+    );
+    reopen(rerender, undefined);
+    expect(await screen.findByRole('heading', { name: 'Your last scope is unavailable' })).toBeInTheDocument();
+    expect(screen.getByText(/“Merged project” is no longer available to you/)).toBeInTheDocument();
+    expect(screen.queryByText(/this conversation's scope/)).toBeNull();
+
+    // Already forgotten: the next open starts on all sessions.
+    reopen(rerender, undefined);
+    expect(screen.queryByRole('heading', { name: 'Your last scope is unavailable' })).toBeNull();
+    expect(useHelperStatusMock).toHaveBeenLastCalledWith(true, undefined);
+    expect(composer()).toHaveAttribute('placeholder', 'Ask about your sessions…');
+  });
+
+  it('stops offering a dead remembered scope in the menu', async () => {
+    useHelperGroupsMock.mockReturnValue({ data: [{ id: 'grp_1', name: 'Payments', project_count: 3 }] });
+    fetchMock.mockResolvedValue(okResponse([['text', { delta: 'hi' }], DONE]));
+    const { rerender } = render(
+      <MemoryRouter>
+        <HelperPanel open onClose={vi.fn()} scope={{ project_id: 'proj_gone', label: 'Merged project' }} />
+      </MemoryRouter>,
+    );
+    const user = userEvent.setup();
+    await ask(user, 'one');
+    await screen.findByText('hi');
+    useHelperStatusMock.mockImplementation((_open: boolean, sc?: HelperScope) =>
+      sc?.project_id === 'proj_gone'
+        ? statusResult(undefined, { isError: true, error: new ApiError(404, JSON.stringify({ detail: 'Project not found' })) })
+        : statusResult({ enabled: true, key_source: 'user' }),
+    );
+    reopen(rerender, undefined);
+    await screen.findByRole('heading', { name: 'Your last scope is unavailable' });
+
+    // Move on from the menu: the dead scope is not offered any more.
+    await user.click(screen.getByRole('button', { name: /Change scope/ }));
+    await user.click(within(screen.getByRole('menu')).getByRole('menuitemradio', { name: /All my sessions/ }));
+    await user.click(screen.getByRole('button', { name: /Change scope/ }));
+    const menu = screen.getByRole('menu', { name: 'Ask about' });
+    expect(within(menu).queryByRole('menuitemradio', { name: /Merged project/ })).toBeNull();
+  });
+
+  it('offers project groups and sends a group scope on the first turn', async () => {
+    useHelperGroupsMock.mockReturnValue({
+      data: [
+        { id: 'grp_1', name: 'Payments', project_count: 3 },
+        { id: 'grp_2', name: 'Platform', project_count: 1 },
+      ],
+    });
+    fetchMock.mockResolvedValue(okResponse([['text', { delta: 'grouped' }], DONE]));
+    renderPanel();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Change scope/ }));
+    const menu = screen.getByRole('menu', { name: 'Ask about' });
+    const section = within(menu).getByRole('group', { name: 'Project groups' });
+    expect(within(section).getByRole('menuitemradio', { name: /Platform/ })).toHaveTextContent('1 project');
+    await user.click(within(section).getByRole('menuitemradio', { name: /Payments/ }));
+
+    expect(screen.getByRole('button', { name: 'Scope: Payments. Change scope' })).toBeInTheDocument();
+    expect(useHelperStatusMock).toHaveBeenLastCalledWith(true, { group_id: 'grp_1', label: 'Payments' });
+    expect(composer()).toHaveAttribute('placeholder', 'Ask about Payments…');
+    await ask(user, 'what changed?');
+    await screen.findByText('grouped');
+    expect(sentBody().scope).toEqual({ group_id: 'grp_1' });
+  });
+
+  it('shows a restored thread’s stored scope, with its label, and keeps sending it', async () => {
+    setConversations([{ id: 'c9', title: 'Group thread' }]);
+    getHelperConversationMock.mockResolvedValue({
+      id: 'c9',
+      org_id: 'org_1',
+      title: 'Group thread',
+      created_at: '',
+      updated_at: '',
+      scope: { project_id: null, group_id: 'grp_1', session_ids: [], label: 'Payments' },
+      messages: [
+        { id: 'm1', role: 'user', content: 'q?' },
+        { id: 'm2', role: 'assistant', content: 'stored answer' },
+      ],
+    });
+    fetchMock.mockResolvedValue(okResponse([['text', { delta: 'more' }], DONE]));
+    renderPanel({ project_id: 'proj_1', label: 'Acme Widgets' });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Group thread/ }));
+    await screen.findByText('stored answer');
+    expect(screen.getByRole('button', { name: 'Scope: Payments. Change scope' })).toBeInTheDocument();
+    await ask(user, 'and?');
+    await screen.findByText('more');
+    expect(sentBody()).toMatchObject({ conversation_id: 'c9', scope: { group_id: 'grp_1' } });
   });
 });
 

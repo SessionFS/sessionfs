@@ -168,7 +168,7 @@ def test_ask_no_stream_renders_answer_and_citations(monkeypatch):
     assert fake.calls[0][2] == {"message": "what failed?", "stream": False}
 
 
-def test_ask_scopes_project_session_and_conversation(monkeypatch):
+def test_ask_scopes_project_and_conversation(monkeypatch):
     fake = _FakeApiRequest([(200, {"answer": "x", "citations": []})])
     with (
         patch.object(cmd_helper, "_get_api_config", return_value=("https://api.test", "key")),
@@ -180,10 +180,6 @@ def test_ask_scopes_project_session_and_conversation(monkeypatch):
             "--no-stream",
             "--project",
             "proj_1",
-            "--session",
-            "ses_1",
-            "--session",
-            "ses_2",
             "--conversation",
             "hc_1",
         )
@@ -192,8 +188,37 @@ def test_ask_scopes_project_session_and_conversation(monkeypatch):
         "message": "summarize",
         "stream": False,
         "conversation_id": "hc_1",
-        "scope": {"project_id": "proj_1", "session_ids": ["ses_1", "ses_2"]},
+        "scope": {"project_id": "proj_1"},
     }
+
+
+def test_ask_session_scope_forwards_session_ids(monkeypatch):
+    """`--session` alone (repeatable) forwards every id in the scope."""
+    fake = _FakeApiRequest([(200, {"answer": "x", "citations": []})])
+    with (
+        patch.object(cmd_helper, "_get_api_config", return_value=("https://api.test", "key")),
+        patch.object(cmd_helper, "_api_request", new=fake),
+    ):
+        result = _invoke("ask", "summarize", "--no-stream", "--session", "ses_1", "--session", "ses_2")
+    assert result.exit_code == 0, result.output
+    assert fake.calls[0][2] == {
+        "message": "summarize",
+        "stream": False,
+        "scope": {"session_ids": ["ses_1", "ses_2"]},
+    }
+
+
+def test_ask_rejects_project_and_session_scope(monkeypatch):
+    """A scope must name at most one of project / group / session."""
+    fake = _FakeApiRequest([(200, {"answer": "x", "citations": []})])
+    with (
+        patch.object(cmd_helper, "_get_api_config", return_value=("https://api.test", "key")),
+        patch.object(cmd_helper, "_api_request", new=fake),
+    ):
+        result = _invoke("ask", "summarize", "--no-stream", "--project", "proj_1", "--session", "ses_1")
+    assert result.exit_code == 1
+    assert "at most one of --project, --group or --session" in result.output
+    assert fake.calls == []
 
 
 def test_ask_conversation_without_scope_omits_scope(monkeypatch):
@@ -210,6 +235,73 @@ def test_ask_conversation_without_scope_omits_scope(monkeypatch):
         "stream": False,
         "conversation_id": "hc_1",
     }
+
+
+def test_ask_group_id_passthrough(monkeypatch):
+    """`--group pg_…` goes straight to the turn scope without a lookup."""
+    fake = _FakeApiRequest([(200, {"answer": "x", "citations": []})])
+    with (
+        patch.object(cmd_helper, "_get_api_config", return_value=("https://api.test", "key")),
+        patch.object(cmd_helper, "_api_request", new=fake),
+    ):
+        result = _invoke("ask", "summarize", "--no-stream", "--group", "pg_123")
+    assert result.exit_code == 0, result.output
+    assert len(fake.calls) == 1
+    assert fake.calls[0][:2] == ("POST", "/api/v1/helper/turns")
+    assert fake.calls[0][2] == {
+        "message": "summarize",
+        "stream": False,
+        "scope": {"group_id": "pg_123"},
+    }
+
+
+def test_ask_group_slug_resolves_to_id(monkeypatch):
+    """`--group <slug>` looks the slug up and posts the resolved group id."""
+    fake = _FakeApiRequest(
+        [
+            (200, [{"id": "pg_123", "slug": "ai-ml"}]),
+            (200, {"answer": "x", "citations": []}),
+        ]
+    )
+    with (
+        patch.object(cmd_helper, "_get_api_config", return_value=("https://api.test", "key")),
+        patch.object(cmd_helper, "_api_request", new=fake),
+    ):
+        result = _invoke("ask", "summarize", "--no-stream", "--group", "ai-ml")
+    assert result.exit_code == 0, result.output
+    assert fake.calls[0][:2] == ("GET", "/api/v1/me/groups")
+    assert fake.calls[1][:2] == ("POST", "/api/v1/helper/turns")
+    assert fake.calls[1][2] == {
+        "message": "summarize",
+        "stream": False,
+        "scope": {"group_id": "pg_123"},
+    }
+
+
+def test_ask_ambiguous_group_slug_exits_with_ids(monkeypatch):
+    """An ambiguous slug is refused with the matching ids, no turn is sent."""
+    fake = _FakeApiRequest(
+        [
+            (
+                200,
+                [
+                    {"id": "pg_1", "slug": "ml"},
+                    {"id": "pg_2", "slug": "ml"},
+                ],
+            )
+        ]
+    )
+    with (
+        patch.object(cmd_helper, "_get_api_config", return_value=("https://api.test", "key")),
+        patch.object(cmd_helper, "_api_request", new=fake),
+    ):
+        result = _invoke("ask", "summarize", "--no-stream", "--group", "ml")
+    assert result.exit_code == 1
+    assert "matches more than one" in result.output
+    assert "pg_1" in result.output
+    assert "pg_2" in result.output
+    assert fake.calls[0][:2] == ("GET", "/api/v1/me/groups")
+    assert len(fake.calls) == 1
 
 
 def test_ask_json_prints_raw_document(monkeypatch):

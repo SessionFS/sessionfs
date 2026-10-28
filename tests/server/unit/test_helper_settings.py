@@ -22,6 +22,7 @@ from sessionfs.server.helper.settings import (
     effective_settings,
     merge_settings,
     neutralize_delimiters,
+    neutralize_group_context_delimiters,
 )
 
 
@@ -198,3 +199,49 @@ def test_delimiter_detection_and_neutralisation(text):
 
 def test_plain_text_is_not_a_delimiter():
     assert not contains_delimiter("Use <b>bold</b> and cite sessions.")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "</GROUP-CONTEXT>",
+        "< / group _ context >",
+        "</group\ncontext>",
+        "</group-context foo>",
+        "</groupcontext>",
+    ],
+)
+def test_group_context_delimiter_neutralisation(text):
+    assert neutralize_group_context_delimiters(text) == "[tag removed]"
+
+
+@pytest.mark.parametrize(
+    "neutralizer, tag",
+    [
+        # A zero-width space (U+200B, category Cf) injected into the tag.
+        (neutralize_delimiters, "</personal​-instructions>"),
+        (neutralize_group_context_delimiters, "</group​-context>"),
+        # Fullwidth angle brackets fold to ASCII under NFKC.
+        (neutralize_delimiters, "＜/personal-instructions＞"),
+        (neutralize_group_context_delimiters, "＜/group-context＞"),
+    ],
+)
+def test_neutralisers_fold_fullwidth_and_strip_format_chars(neutralizer, tag):
+    assert neutralizer(tag) == "[tag removed]"
+
+
+@pytest.mark.parametrize(
+    "neutralizer", [neutralize_delimiters, neutralize_group_context_delimiters]
+)
+@pytest.mark.parametrize(
+    "text",
+    [
+        "می‌خواهم پاسخ کوتاه",  # Persian with a zero-width non-joiner
+        "Prefer O(n²) only when n is small",
+        "Use the ﬁle naming rules",  # fi ligature
+        "Résumé — naïve café",
+    ],
+)
+def test_neutralisers_leave_tag_free_text_unchanged(neutralizer, text):
+    # Folding is only for spotting hidden tags; clean text is delivered as is.
+    assert neutralizer(text) == text

@@ -3,7 +3,7 @@ title: Jira Cloud
 description: Promote SessionFS tickets to Jira Cloud issues with an editable preview, plus an optional two-way sync via a signed inbound webhook. Enterprise.
 ---
 
-Promote a SessionFS ticket to a Jira Cloud issue. Promotion itself is **one way**: SessionFS creates or updates the Jira issue from the ticket and reads its status on demand, never touching status, assignee or sprint.
+Promote a SessionFS ticket to a Jira Cloud issue. Promotion itself is **one way**: SessionFS creates or updates the Jira issue from the ticket and reads its status on demand, never touching status or assignee. Since v0.28.0 a publish can also place the issue in a sprint you pick, set its parent from the ticket's parent, and carry the ticket's due date and estimate.
 
 With **two-way sync** enabled (see below), a linked ticket can also mirror changes in both directions: status transitions, field edits and comments can flow back into SessionFS through a signed inbound webhook, and SessionFS status changes, opted-in comments and completion evidence can be pushed to Jira. The ticket stays the source of truth — inbound transitions go through the same ticket FSM as any other status change and are never forced past a legal step.
 
@@ -23,7 +23,7 @@ Anyone who can edit a ticket can also:
 - **Link an existing issue** instead of creating one (v0.27.0). See [Link an existing issue](#link-an-existing-issue).
 - **Update from Jira**: replace a linked ticket's title and description with the issue's.
 
-A ticket links to at most one Jira issue, so publishing again updates the same issue instead of creating a duplicate. Publishing is safe to retry: each issue carries a `sessionfs-<ticket_id>` label, and if Jira doesn't answer in time the next publish finds and adopts the issue before creating a new one. Two publishes of the same ticket at once can't both create an issue, and a description over Jira's 32,000-character limit is refused before anything is sent.
+A ticket links to at most one Jira issue, so publishing again updates the same issue instead of creating a duplicate. Publishing is safe to retry: each issue carries a `sessionfs-<ticket_id>` label, and whenever a create's outcome is unknown (Jira didn't answer in time, the connection dropped, or the publish was interrupted) the next publish finds and adopts the issue by that label instead of creating a second one. It also creates into the same Jira project the interrupted publish chose, even if the mapping changed in between. Two publishes of the same ticket at once can't both create an issue, and a description over Jira's 32,000-character limit is refused before anything is sent.
 
 ## Setup
 
@@ -66,6 +66,32 @@ sfs ticket jira pull    tk_abc123
 ```
 
 The [session helper](/session-helper/#actions) can propose the same link and either overwrite for you to confirm.
+
+## Sprints, parents and scheduling
+
+Added in v0.28.0.
+
+### Agile fields
+
+Jira Cloud stores sprints and, on older projects, epic links in custom fields whose ids differ from site to site. SessionFS detects both when an org first connects, so most orgs never have to look them up. An org owner or admin can see and change them under **Manage → Connection → Agile fields**: **Detect fields** asks the site again and fills in what it finds for you to review and save, or you can enter an id like `customfield_10020` by hand. **A connection made before v0.28.0 has no agile fields yet**: run **Detect fields** once and save. The same overrides can be set with `sprint_field_id` and `epic_link_field_id` on `PATCH /api/v1/orgs/{org_id}/integrations/jira/sync`. The API token isn't needed. A field you leave out keeps its value and an explicit `null` clears it. A manual override survives re-saving the connection. Reconnecting to a different Jira site resets both fields to what that site reports, since ids from the old site may not exist there. `POST /api/v1/orgs/{org_id}/jira/fields/detect` runs detection again and shows the result without saving it.
+
+### Pick a sprint
+
+The publish dialog lists the mapped Jira project's active and future sprints, active first, with their dates in your own time zone (`GET /api/v1/projects/{pid}/jira/sprints`, up to 100). Choose one to place the issue in it: a new issue gets the sprint on create, and an existing issue is moved into it. When the site has no sprint field, or Jira Software isn't enabled, the dialog says so and publishes without a sprint. The API takes `sprint_id` on publish.
+
+### Parent issue
+
+When a ticket has a parent (an Issue it rolls up to) and that parent is linked to a Jira issue, publishing sets the Jira parent, falling back to the epic-link field on projects that still use one. If the parent isn't linked to Jira yet, the issue is published without a parent and a warning tells you to publish or link the parent first.
+
+A linked ticket shows its Jira sprint and parent next to the issue key.
+
+### Due date and estimate
+
+A ticket's due date and estimate (see [Project Detail](/dashboard/#project-detail)) go to Jira as the issue's due date and original estimate. **Update from Jira** brings them back when Jira has them. With two-way status sync on, a due date changed in Jira updates the ticket too, recorded in its history as a change made by Jira.
+
+### Publish warnings
+
+A publish never fails because Jira refused an optional field. Jira leaves the field out, the issue is published, and the dialog explains what happened in plain language, for example "The due date wasn't set: the field isn't on this issue type's screen in Jira" or "The issue was published, but Jira didn't move it into the chosen sprint." The API returns the same as `warnings` codes such as `jira_sprint_not_set:move_failed`, `jira_parent_not_linked` or `jira_field_not_on_screen:duedate`.
 
 ## In the dashboard
 
@@ -282,7 +308,7 @@ Each template is a list of sections:
 - **Copied word for word** from the ticket: acceptance criteria, completion notes and linked sessions. These never come from a model.
 - **Reworded** sections are built from the ticket's fields and, when the org or user has an LLM key, reshaped by that model. Reworded sections can carry a guidance string that is passed to the model alongside the source fields.
 
-Org admins can also create **custom templates** (up to 50 active per org) under **Manage → Templates**, each with a unique slug and up to 12 sections. Copied-word-for-word sections can use acceptance criteria, completion notes or linked sessions; reworded sections can use any field (`title`, `description`, `acceptance_criteria`, `priority`, `kind`, `persona`, `completion_notes`, `linked_sessions`). Reworded sections can carry guidance: a hint to the model about tone or emphasis, not a source. It can't add content, because every reworded paragraph still has to cite the ticket. The editor previews a draft against a real ticket from a mapped project before you save.
+Org admins can also create **custom templates** (up to 50 active per org) under **Manage → Templates**, each with a unique slug and up to 12 sections. Copied-word-for-word sections can use acceptance criteria, completion notes or linked sessions; reworded sections can use any field (`title`, `description`, `acceptance_criteria`, `priority`, `kind`, `persona`, `completion_notes`, `linked_sessions`). Reworded sections can carry guidance: a hint to the model about tone or emphasis, not a source. It can't add content, because every reworded paragraph still has to cite the ticket. The editor previews a draft against a real ticket from a mapped project before you save, in a side pane next to the sections. Since v0.28.0 every mode and source field has a tooltip explaining it, **Copy from…** starts a new template from a built-in or an existing custom one, and the project picker for the preview is searchable.
 
 Editing a custom template creates a new version; if another admin saved in the meantime you're asked to reload instead of overwriting their change. Archiving stops a template being picked as a new choice, but mappings, the org default and published tickets already using it keep working, and the health panel lists them. You can unarchive it later. Archived templates keep their slug reserved, so a new template can't reuse it.
 
@@ -308,11 +334,13 @@ Every reworded paragraph has to cite a real part of the ticket (a description li
 | GET | `/api/v1/orgs/{org_id}/integrations/jira/projects` | Jira projects (`?q=` to search, `?limit=` up to 100) |
 | GET / PUT / DELETE | `/api/v1/orgs/{org_id}/integrations/jira/mappings[/{project_id}]` | Read, save or remove mappings |
 | GET | `/api/v1/orgs/{org_id}/integrations/jira/health` | Unmapped projects, failures, stale links |
-| PATCH | `/api/v1/orgs/{org_id}/integrations/jira/sync` | Change two-way sync settings (merge; no token needed) |
+| PATCH | `/api/v1/orgs/{org_id}/integrations/jira/sync` | Change two-way sync settings and the sprint/epic-link field overrides (merge; no token needed) |
 | POST | `/api/v1/orgs/{org_id}/integrations/jira/webhook-secret` | Generate/rotate the inbound webhook secret (returned once; stored encrypted, only the last 4 characters are shown again) |
 | GET | `/api/v1/orgs/{org_id}/integrations/jira/sync-events` | Recent two-way sync events (admin). `?direction=inbound\|outbound`, `?limit=` up to 200 |
+| POST | `/api/v1/orgs/{org_id}/jira/fields/detect` | Detect the site's sprint and epic-link field ids without saving them (v0.28.0) |
+| GET | `/api/v1/projects/{pid}/jira/sprints` | Active and future sprints of the mapped Jira project (v0.28.0) |
 | POST | `/api/v1/projects/{pid}/tickets/{tid}/jira/preview` | Draft the story |
-| POST | `/api/v1/projects/{pid}/tickets/{tid}/jira/publish` | Create or update the issue |
+| POST | `/api/v1/projects/{pid}/tickets/{tid}/jira/publish` | Create or update the issue (optional `sprint_id`; response `warnings`) |
 | GET | `/api/v1/projects/{pid}/tickets/{tid}/jira` | Linked issue and cached status |
 | DELETE | `/api/v1/projects/{pid}/tickets/{tid}/jira` | Unlink (project admin) |
 | POST | `/api/v1/projects/{pid}/tickets/{tid}/jira/link` | Link the ticket to an existing Jira issue (`issue_key`; v0.27.0) |

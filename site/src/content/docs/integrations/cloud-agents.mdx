@@ -140,7 +140,7 @@ curl -X POST "$SESSIONFS_API_URL/api/v1/orgs/$ORG_ID/service-keys" \
   }'
 ```
 
-The response includes the raw key **exactly once** — copy it into AWS Secrets Manager (Bedrock Lambda) or Google Secret Manager (Vertex). The list/detail endpoints only return the `key_prefix` going forward.
+The response includes the raw key **exactly once** — copy it into AWS Secrets Manager (Bedrock Lambda) or Google Secret Manager (Vertex). The list endpoint only returns the `key_prefix` going forward.
 
 Service keys are deny-by-default at the route layer: `get_current_user` rejects them with `403 service_key_not_allowed`, and a key only reaches a handler via `require_scope("tickets:write")` style dependencies. Cross-org access is blocked at the project boundary. Audit rows (HandoffEvent, AgentRun, TicketComment, KnowledgeEntry, RetrievalAuditEvent) record `actor_type="service_key"` + `service_key_id` + `service_key_name` so service-key activity is distinguishable from human activity.
 

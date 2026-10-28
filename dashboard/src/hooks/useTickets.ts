@@ -1,6 +1,6 @@
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
-import { ApiError, type AssignableUser, type JiraSyncEventsPage, type Ticket, type TicketComment, type TicketCreate, type TicketPreview, type TicketReviewState, type TicketUpdate, type TicketWatcher } from '../api/client';
+import { ApiError, type AssignableUser, type JiraSyncEventsPage, type Ticket, type TicketComment, type TicketCreate, type TicketEventsPage, type TicketPreview, type TicketReviewState, type TicketUpdate, type TicketWatcher } from '../api/client';
 
 /**
  * React-Query hooks for v0.10.1 Tickets (Team+).
@@ -24,6 +24,8 @@ export function useTickets(
     assigned_user?: string;
     priority?: string;
     kind?: string;
+    /** Past due and not terminal. */
+    overdue?: boolean;
   } = {},
 ) {
   const { auth } = useAuth();
@@ -81,6 +83,31 @@ export function useTicketComments(
   });
 }
 
+export const TICKET_EVENTS_PAGE_SIZE = 50;
+
+/** A ticket's event log (who created, moved, assigned, scheduled or linked
+ *  it), newest first, one page at a time via the `next_before` cursor. */
+export function useTicketEvents(
+  projectId: string | undefined,
+  ticketId: string | undefined,
+) {
+  const { auth } = useAuth();
+  return useInfiniteQuery({
+    queryKey: ['ticketEvents', projectId, ticketId],
+    queryFn: ({ pageParam }): Promise<TicketEventsPage> =>
+      auth!.client.listTicketEvents(projectId!, ticketId!, {
+        limit: TICKET_EVENTS_PAGE_SIZE,
+        before: pageParam || undefined,
+      }),
+    initialPageParam: '' as string,
+    getNextPageParam: (last) => last.next_before ?? undefined,
+    enabled: !!auth && !!projectId && !!ticketId,
+    staleTime: 10_000,
+    // Older servers have no event log (404): show the rest of the timeline.
+    retry: (count, err) => !(err instanceof ApiError && err.status < 500) && count < 2,
+  });
+}
+
 /** Trusted review rounds for a ticket: which comments are verdicts. */
 export function useTicketReviewState(
   projectId: string | undefined,
@@ -132,6 +159,7 @@ export function useUpdateTicket(projectId: string | undefined) {
     onSuccess: (_data, { ticketId }) => {
       void qc.invalidateQueries({ queryKey: ['tickets', projectId] });
       void qc.invalidateQueries({ queryKey: ['ticket', projectId, ticketId] });
+      void qc.invalidateQueries({ queryKey: ['ticketEvents', projectId, ticketId] });
       // The server posts a system diff comment for every edit.
       void qc.invalidateQueries({ queryKey: ['ticketComments', projectId, ticketId] });
     },
@@ -160,6 +188,7 @@ export function useApproveTicket(projectId: string | undefined) {
     onSuccess: (_data, ticketId) => {
       void qc.invalidateQueries({ queryKey: ['tickets', projectId] });
       void qc.invalidateQueries({ queryKey: ['ticket', projectId, ticketId] });
+      void qc.invalidateQueries({ queryKey: ['ticketEvents', projectId, ticketId] });
     },
   });
 }
@@ -173,6 +202,7 @@ export function useDismissTicket(projectId: string | undefined) {
     onSuccess: (_data, ticketId) => {
       void qc.invalidateQueries({ queryKey: ['tickets', projectId] });
       void qc.invalidateQueries({ queryKey: ['ticket', projectId, ticketId] });
+      void qc.invalidateQueries({ queryKey: ['ticketEvents', projectId, ticketId] });
     },
   });
 }
@@ -186,6 +216,7 @@ export function useCloseTicket(projectId: string | undefined) {
     onSuccess: (_data, ticketId) => {
       void qc.invalidateQueries({ queryKey: ['tickets', projectId] });
       void qc.invalidateQueries({ queryKey: ['ticket', projectId, ticketId] });
+      void qc.invalidateQueries({ queryKey: ['ticketEvents', projectId, ticketId] });
     },
   });
 }
@@ -262,7 +293,8 @@ export function useUnwatchTicket(projectId: string | undefined) {
 
 /**
  * A ticket by id alone (for link previews). A 404 means "missing or not
- * readable" and won't change on a retry.
+ * readable" and won't change on an immediate retry, but it is re-checked
+ * every time the preview opens again.
  */
 export function useTicketPreview(ticketId: string | null | undefined) {
   const { auth } = useAuth();
@@ -273,5 +305,9 @@ export function useTicketPreview(ticketId: string | null | undefined) {
     staleTime: 30_000,
     gcTime: 5 * 60_000,
     retry: (count, err) => !(err instanceof ApiError && err.status < 500) && count < 1,
+    // A failed lookup is never served from cache on the next open: a ticket
+    // created by the helper moments ago, or access granted since, must show
+    // up as soon as the preview is opened again.
+    refetchOnMount: (query) => (query.state.status === 'error' ? 'always' : true),
   });
 }

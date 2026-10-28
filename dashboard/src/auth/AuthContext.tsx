@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback, type ReactNode } from 'react';
+import { clearRememberedScope } from '../helper/scopeMemory';
 import { useQueryClient } from '@tanstack/react-query';
 import { createApiClient, type ApiClient } from '../api/client';
 
@@ -39,8 +40,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const client = createApiClient(baseUrl, apiKey);
     await client.health();
     sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ apiKey, baseUrl }));
-    // A new identity must never inherit the previous one's cached queries.
+    // A new identity must never inherit the previous one's cached queries,
+    // nor the helper scope the previous one last used in this tab.
     queryClient.clear();
+    clearRememberedScope();
     setAuth({ apiKey, baseUrl, client });
   }, [queryClient]);
 
@@ -50,6 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Drop every cached query so the next identity on this browser never sees
     // the previous user's private data inside a staleTime window.
     queryClient.clear();
+    clearRememberedScope();
   }, [queryClient]);
 
   return (

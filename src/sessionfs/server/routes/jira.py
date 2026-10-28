@@ -23,7 +23,7 @@ import logging
 import re
 import secrets
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field, field_validator
@@ -60,7 +60,7 @@ from sessionfs.server.integrations.trackers import (
     is_builtin_slug,
     list_templates,
 )
-from sessionfs.server.integrations.trackers.base import TrackerError, TrackerIssue
+from sessionfs.server.integrations.trackers.base import TrackerError, TrackerIssue, TrackerSprint
 from sessionfs.server.integrations.trackers.custom_templates import (
     MAX_TEMPLATES_PER_ORG,
     ResolvedTemplate,
@@ -75,6 +75,7 @@ from sessionfs.server.integrations.trackers.custom_templates import (
 from sessionfs.server.config import dashboard_link_base
 from sessionfs.server.integrations.trackers.jira import (
     adf_to_text,
+    extract_sprint,
     sessionfs_label,
     validate_site_url,
 )
@@ -84,6 +85,7 @@ from sessionfs.server.services.jira_links import (
     _assert_issue_not_linked_elsewhere,
     link_ticket_to_jira,
 )
+from sessionfs.server.services.ticket_events import record_ticket_event
 from sessionfs.server.integrations.trackers.promote import (
     ContentTooLarge,
     adf_text_length,
@@ -117,6 +119,11 @@ _ORG_NOT_FOUND = "Organization not found"
 
 # Jira project keys are all-uppercase (``ACME``, ``ACME_1``) — 2 to 10 chars.
 _JIRA_PROJECT_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,9}$")
+
+# A discovered/overridden custom field id (sprint, epic-link) is always the
+# ``customfield_<n>`` shape; the connection PUT validates an explicit override
+# against this and rejects anything else with a 422 before it can be stored.
+_CUSTOM_FIELD_ID_RE = re.compile(r"^customfield_[0-9]{1,10}$")
 
 # Jira project picker: a search term is at most 100 characters, a page at
 # most 100 projects (default 50). The legacy unpaged list stops at 500.
@@ -158,12 +165,59 @@ _PULL_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 # (a just-created issue is adopted instead of duplicated). Injectable for tests.
 _ADOPT_RETRY_DELAY_SECONDS = 2.0
 
+# One overall deadline for the sprints listing and for the publish outbound
+# phase: every individual call below gets the REMAINING time, so the whole
+# burst can never outlive the 300 s claim window (GitHub #113 L5).
+_JIRA_DEADLINE_SECONDS = 240.0
+
+
+def _monotonic_deadline(seconds: float) -> float:
+    """A monotonic timestamp ``seconds`` from now, shared by a burst of calls."""
+    return asyncio.get_running_loop().time() + seconds
+
+
+def _remaining_timeout(deadline: float) -> float:
+    """Seconds left until ``deadline``, raising ``asyncio.TimeoutError`` at 0."""
+    remaining = deadline - asyncio.get_running_loop().time()
+    if remaining <= 0:
+        raise asyncio.TimeoutError
+    return remaining
+
 
 def _aware(dt: datetime | None) -> datetime | None:
     """Normalize a stored timestamp to aware UTC (SQLite drops tzinfo)."""
     if dt is None:
         return None
     return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+
+
+def _detected_custom_field_id(value: object) -> str | None:
+    """Validate a discovered custom-field id, falling back to ``None``.
+
+    Jira's field list can return a non-standard id (or a malformed one); only
+    the ``customfield_<n>`` shape is safe to store and send back to the API, so
+    anything else is treated as "no field on this site" (GitHub #113 L3).
+    """
+    if isinstance(value, str) and _CUSTOM_FIELD_ID_RE.match(value):
+        return value
+    return None
+
+
+def _clean_custom_field_id(value: str | None) -> str | None:
+    """Normalize a caller-supplied custom-field id override.
+
+    Blank input is treated as "no field" (an explicit ``null``/``""`` clears the
+    override); anything not shaped like ``customfield_<n>`` is rejected by the
+    validator that wraps this so it becomes a 422 before it can be stored.
+    """
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    if not _CUSTOM_FIELD_ID_RE.match(value):
+        raise ValueError("custom field id must look like customfield_10010")
+    return value
 
 
 # ── Request bodies ──
@@ -184,6 +238,17 @@ class JiraConnectionPut(BaseModel):
     sync_status: bool | None = None
     sync_comments: str | None = None
     status_map: dict | None = None
+    # Sprint/epic-link custom-field overrides (GitHub #113 C7/C8). Optional and
+    # MERGED: an omitted field keeps the existing override, an explicit value
+    # overrides it, and an explicit ``null`` clears it. Detection only fills a
+    # fresh connection (L3).
+    sprint_field_id: str | None = None
+    epic_link_field_id: str | None = None
+
+    @field_validator("sprint_field_id", "epic_link_field_id")
+    @classmethod
+    def _valid_custom_field_id(cls, value: str | None) -> str | None:
+        return _clean_custom_field_id(value)
 
 
 class JiraSyncPatch(BaseModel):
@@ -192,6 +257,17 @@ class JiraSyncPatch(BaseModel):
     sync_status: bool | None = None
     sync_comments: str | None = None
     status_map: dict | None = None
+    # Sprint/epic-link custom-field overrides (GitHub #113 C7/C8). Same merge
+    # semantics as the connection PUT: an explicit value overrides, an explicit
+    # ``null`` clears it, and an omitted field keeps the stored value — without
+    # re-entering the API token.
+    sprint_field_id: str | None = None
+    epic_link_field_id: str | None = None
+
+    @field_validator("sprint_field_id", "epic_link_field_id")
+    @classmethod
+    def _valid_custom_field_id(cls, value: str | None) -> str | None:
+        return _clean_custom_field_id(value)
 
 
 def _apply_sync_settings(conn: OrgTrackerConnection, body: BaseModel) -> None:
@@ -210,6 +286,20 @@ def _apply_sync_settings(conn: OrgTrackerConnection, body: BaseModel) -> None:
     if "status_map" in fields:
         normalized = jira_sync.validate_status_map(getattr(body, "status_map", None))
         conn.status_map = json.dumps(normalized, separators=(",", ":"))
+
+
+def _apply_custom_field_ids(conn: OrgTrackerConnection, body: BaseModel) -> None:
+    """Merge the sprint/epic-link custom-field overrides (``model_fields_set``).
+
+    An explicit value overrides, an explicit ``null`` clears the override, and
+    an omitted field keeps the stored value. Only the sync-settings PATCH calls
+    this (the connection PUT resolves the same merge against fresh detection).
+    """
+    fields = body.model_fields_set
+    if "sprint_field_id" in fields:
+        conn.sprint_field_id = getattr(body, "sprint_field_id", None)
+    if "epic_link_field_id" in fields:
+        conn.epic_link_field_id = getattr(body, "epic_link_field_id", None)
 
 
 class JiraMappingPut(BaseModel):
@@ -263,6 +353,10 @@ class JiraPublishBody(BaseModel):
     # and description. The caller must opt in explicitly; without it, publish
     # refuses with 409 jira_overwrite_required before any outbound call.
     overwrite_existing: bool = False
+    # Optional Agile sprint to place the issue in (GitHub #113 C7). On create
+    # the sprint is set inline via the connection's sprint field; on update the
+    # issue is moved via the Agile API. A failed move never fails the publish.
+    sprint_id: int | None = None
 
 
 class JiraPreviewBody(BaseModel):
@@ -457,23 +551,24 @@ def _parse_jira_timestamp(value: str | None) -> datetime | None:
 
 def _adoption_block(
     adopted: TrackerIssue,
-    mapping: TrackerProjectMapping,
+    expected_project_key: str,
     account_id: str,
     unknown_since: datetime | None,
 ) -> str | None:
     """Reason the label-found issue may NOT be adopted, or None if adoptable.
 
-    Adoption requires the issue to be in the mapped Jira project, created by
-    the connection's own account (creator or reporter), and created after the
+    Adoption requires the issue to be in the expected Jira project (the
+    mapping's key, or the helper's project-key override), created by the
+    connection's own account (creator or reporter), and created after the
     unknown publish began.  We fail closed: a missing project / creator /
     reporter / created timestamp is a rejection, not a pass.
     """
     if not adopted.project_key:
         return f"found Jira issue {adopted.key} without a project"
-    if adopted.project_key != mapping.jira_project_key:
+    if adopted.project_key.upper() != expected_project_key.upper():
         return (
             f"found Jira issue {adopted.key} in project {adopted.project_key}, "
-            f"not the mapped project {mapping.jira_project_key}"
+            f"not the mapped project {expected_project_key}"
         )
     owners = {a for a in (adopted.creator_account_id, adopted.reporter_account_id) if a}
     if not account_id or account_id not in owners:
@@ -511,6 +606,8 @@ def _connection_response(conn: OrgTrackerConnection) -> dict:
         "sync_status": conn.sync_status,
         "sync_comments": conn.sync_comments or "off",
         "status_map": jira_sync.parse_status_map(conn.status_map),
+        "sprint_field_id": conn.sprint_field_id,
+        "epic_link_field_id": conn.epic_link_field_id,
         # The secret is stored Fernet-encrypted (the server must recompute the
         # HMAC); only the last 4 characters are ever returned.
         "has_webhook_secret": bool(conn.encrypted_webhook_secret),
@@ -626,8 +723,35 @@ async def put_jira_connection(
             status_code=422,
             detail={"error": "jira_connection_failed", "message": str(exc)},
         ) from exc
+    try:
+        detected = await client.detect_fields()
+    except TrackerError:
+        # Field discovery is best-effort: a detection failure must not fail the
+        # save (the existing overrides — or None on a fresh connection — stay).
+        detected = {}
     finally:
         await client.aclose()
+
+    detected_sprint = _detected_custom_field_id(detected.get("sprint_field_id"))
+    detected_epic = _detected_custom_field_id(detected.get("epic_link_field_id"))
+
+    # Merge semantics: an explicit value overrides; an explicit null clears it
+    # (no field on the site); an omitted field keeps the existing override.
+    # Detection fills a fresh connection, and also a connection moved to a
+    # different site: custom field ids belong to one Jira site, so the old
+    # site's ids would set the wrong field. Re-saving the same site (or
+    # rotating the token) never silently discards a manually set field id.
+    keep_stored = conn is not None and conn.site_url == client.site_url
+    sprint_field_id = (
+        body.sprint_field_id
+        if "sprint_field_id" in body.model_fields_set
+        else (conn.sprint_field_id if keep_stored and conn is not None else detected_sprint)
+    )
+    epic_link_field_id = (
+        body.epic_link_field_id
+        if "epic_link_field_id" in body.model_fields_set
+        else (conn.epic_link_field_id if keep_stored and conn is not None else detected_epic)
+    )
 
     now = datetime.now(timezone.utc)
     before = _connection_response(conn) if conn else None
@@ -644,6 +768,8 @@ async def put_jira_connection(
             last_verified_at=now,
             sync_status=False,
             sync_comments="off",
+            sprint_field_id=sprint_field_id,
+            epic_link_field_id=epic_link_field_id,
         )
         db.add(conn)
     else:
@@ -654,6 +780,8 @@ async def put_jira_connection(
         conn.enabled = True
         conn.connected_by_user_id = user.id
         conn.last_verified_at = now
+        conn.sprint_field_id = sprint_field_id
+        conn.epic_link_field_id = epic_link_field_id
     _apply_sync_settings(conn, body)
     account_id = identity.get("account_id") if isinstance(identity, dict) else None
     conn.jira_account_id = str(account_id)[:128] if account_id else None
@@ -721,6 +849,7 @@ async def patch_jira_sync(
         raise HTTPException(404, "No Jira connection")
     before = _connection_response(conn)
     _apply_sync_settings(conn, body)
+    _apply_custom_field_ids(conn, body)
     _org_audit(
         db,
         org=org,
@@ -734,6 +863,37 @@ async def patch_jira_sync(
     )
     await db.commit()
     return {**_connection_response(conn), "webhook_url": _jira_webhook_url(request, org_id)}
+
+
+@org_router.post("/{org_id}/jira/fields/detect")
+async def detect_jira_fields(
+    org_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Discover the site's sprint and epic-link custom-field ids on demand.
+
+    Org owner/admin (the connection credential is an org-level secret, so only
+    user keys may touch it). Returns ``{sprint_field_id, epic_link_field_id}``;
+    either may be null when the field does not exist on the site (epic-link in
+    particular is absent on Jira Cloud). Re-runs ``GET /rest/api/3/field``; it
+    does not mutate the stored connection.
+    """
+    await _authorize_org_jira(db, user, org_id)
+    conn = await _get_connection(org_id, db)
+    if conn is None:
+        raise HTTPException(404, "No Jira connection")
+    client = JiraClient(conn.site_url, conn.account_email, decrypt_secret(conn.encrypted_api_token))
+    try:
+        detected = await client.detect_fields()
+    except TrackerError as exc:
+        raise HTTPException(502, {"error": "jira_upstream_error", "message": str(exc)}) from exc
+    finally:
+        await client.aclose()
+    return {
+        "sprint_field_id": _detected_custom_field_id(detected.get("sprint_field_id")),
+        "epic_link_field_id": _detected_custom_field_id(detected.get("epic_link_field_id")),
+    }
 
 
 # ── Inbound webhook secret (generate / rotate) ──
@@ -1025,6 +1185,77 @@ def _item_field(item: dict) -> str:
     return ""
 
 
+def _is_sprint_changelog_item(item: dict, sprint_field_id: str) -> bool:
+    """Whether a changelog item names the sprint field (L6).
+
+    Prefer the stable ``fieldId`` (the custom-field id); fall back to
+    ``field == "Sprint"`` for sites that only emit the display name.
+    """
+    field_id = item.get("fieldId")
+    if isinstance(field_id, str) and field_id.strip():
+        return field_id.strip().lower() == sprint_field_id.lower()
+    return str(item.get("field") or "").strip().lower() == "sprint"
+
+
+def _changelog_item_to(item: dict) -> str:
+    """The changelog item's destination value (``toString``, else ``to``)."""
+    for key in ("toString", "to"):
+        value = item.get(key)
+        if isinstance(value, str):
+            return value.strip()
+    return ""
+
+
+def _refresh_cached_sprint(
+    conn: OrgTrackerConnection,
+    link: TicketTrackerLink,
+    payload: dict,
+    sprint_items: list[dict],
+) -> bool:
+    """Refresh the link's cached sprint from a sprint changelog delivery (C7).
+
+    Returns True when the cache actually changed. Never mutates the ticket —
+    the sprint is only cached on the link row, so an inbound sprint change
+    doesn't touch ticket state. The cache is cleared only when the sprint field
+    is present-and-empty or a changelog item's ``to`` is empty; an absent field
+    in the delivery is not a removal signal and leaves the cache alone (L-b).
+    """
+    if not conn.sprint_field_id:
+        return False
+    issue = payload.get("issue") if isinstance(payload.get("issue"), dict) else None
+    fields = issue.get("fields") if issue else None
+    field_present = isinstance(fields, dict) and conn.sprint_field_id in fields
+    sprint_id = sprint_name = sprint_state = None
+    if field_present:
+        sprint_id, sprint_name, sprint_state = extract_sprint(fields, conn.sprint_field_id)
+    if sprint_id is None:
+        to_empty = any(not _changelog_item_to(item) for item in sprint_items)
+        if not (field_present or to_empty):
+            # The field is merely absent from this delivery (Jira can omit the
+            # unchanged field), not emptied: keep the cached sprint.
+            return False
+        if (
+            link.jira_sprint_id is None
+            and link.jira_sprint_name is None
+            and link.jira_sprint_state is None
+        ):
+            return False
+        link.jira_sprint_id = None
+        link.jira_sprint_name = None
+        link.jira_sprint_state = None
+        return True
+    if (
+        link.jira_sprint_id == sprint_id
+        and link.jira_sprint_name == sprint_name
+        and link.jira_sprint_state == sprint_state
+    ):
+        return False
+    link.jira_sprint_id = sprint_id
+    link.jira_sprint_name = sprint_name
+    link.jira_sprint_state = sprint_state
+    return True
+
+
 async def _handle_issue_updated(
     db: AsyncSession,
     conn: OrgTrackerConnection,
@@ -1052,6 +1283,13 @@ async def _handle_issue_updated(
         return base_event_id if seq == 1 else f"{base_event_id}#{seq}"
 
     items = _changelog_items(payload)
+    # A sprint changelog refreshes the cached sprint on the link (no ticket
+    # mutation); the webhook's issue payload already carries the current value.
+    sprint_items = [
+        item for item in items if _is_sprint_changelog_item(item, conn.sprint_field_id)
+    ] if conn.sprint_field_id else []
+    if sprint_items:
+        _refresh_cached_sprint(conn, link, payload, sprint_items)
     # SessionFS never pushes summary/description/priority changes, so a field
     # edit is never our echo — even from the connection's own account (admins
     # often connect with their personal token).
@@ -1078,6 +1316,54 @@ async def _handle_issue_updated(
             jira_event_id=next_event_id(),
             applied=True,
         )
+
+    # GitHub #113 — a due-date changelog item is applied like a status change:
+    # only when two-way sync is on, and attributed to Jira. Real Jira sends
+    # ``"to": "2026-11-25"`` (and ``"toString": "2026-11-25 00:00:00.0"``), so
+    # ``to`` is read first; an older payload without it falls back to the first
+    # 10 chars of ``toString``. An empty/null ``to`` clears the due date; an
+    # unparseable value leaves it unchanged.
+    due_item = next((i for i in items if _item_field(i) == "duedate"), None)
+    if due_item is not None and conn.sync_status:
+        raw_to = due_item.get("to")
+        if not isinstance(raw_to, str):
+            raw_to_string = due_item.get("toString")
+            raw_to = (
+                raw_to_string[:10]
+                if isinstance(raw_to_string, str) and len(raw_to_string) >= 10
+                else ""
+            )
+        to_due = raw_to.strip()
+        new_due: date | None = None
+        if to_due:
+            try:
+                new_due = date.fromisoformat(to_due)
+            except ValueError:
+                new_due = ticket.due_date
+        if new_due != ticket.due_date:
+            before_due = ticket.due_date
+            ticket.due_date = new_due
+            ticket.updated_at = datetime.now(timezone.utc)
+            await record_ticket_event(
+                db,
+                ticket,
+                "due_date_set",
+                field="due_date",
+                before=before_due,
+                after=new_due,
+                actor_type="jira",
+            )
+            jira_sync.record_sync_event(
+                db,
+                org_id=link.org_id,
+                link_id=link.ticket_id,
+                ticket_id=ticket.id,
+                direction="inbound",
+                kind="field_edit",
+                payload={"field": "duedate", "to": to_due},
+                jira_event_id=next_event_id(),
+                applied=True,
+            )
 
     status_item = next((i for i in items if _item_field(i) == "status"), None)
     if status_item is None or not conn.sync_status:
@@ -2344,6 +2630,7 @@ async def _authorize_ticket_jira(
     from sessionfs.server.routes.knowledge import _get_project_for_auth
     from sessionfs.server.routes.tickets import _get_ticket_or_404
 
+
     project = await _get_project_for_auth(project_id, db, auth)
     await assert_service_key_can_access_project(db, auth, project)
     await check_project_feature(ctx, "jira_integration", project, db)
@@ -2429,6 +2716,170 @@ async def _authorize_ticket_jira(
     return project, ticket, conn, mapping
 
 
+async def _authorize_project_jira(
+    db: AsyncSession,
+    auth: AuthContext,
+    ctx: UserContext,
+    project_id: str,
+    *,
+    require_editor: bool = False,
+) -> tuple[Project, OrgTrackerConnection, TrackerProjectMapping]:
+    """Authorize a project-level (no ticket) Jira action and return the rows.
+
+    The same gates as ``_authorize_ticket_jira`` minus the ticket lookup:
+    project read access + service-key org/allowlist check, the Enterprise
+    ``jira_integration`` feature gate, org membership for user keys, editor
+    standing when ``require_editor``, a live connection and a project mapping.
+    """
+    from sessionfs.server.auth.dependencies import assert_service_key_can_access_project
+    from sessionfs.server.routes.knowledge import _get_project_for_auth
+
+    project = await _get_project_for_auth(project_id, db, auth)
+    await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "jira_integration", project, db)
+
+    if project.org_id is None:
+        raise HTTPException(
+            409,
+            {"error": "jira_not_connected", "message": "This project is not org-scoped."},
+        )
+    if auth.key_kind != "service":
+        is_member = (
+            await db.execute(
+                select(OrgMember.id).where(
+                    OrgMember.org_id == project.org_id,
+                    OrgMember.user_id == auth.user.id,
+                )
+            )
+        ).first()
+        if is_member is None:
+            raise HTTPException(
+                403,
+                {
+                    "error": "org_membership_required",
+                    "message": "Only members of this project's organization can use its Jira connection.",
+                },
+            )
+        if require_editor:
+            from sessionfs.server.auth.project_access import (
+                project_edit_forbidden,
+                project_restricts_visibility,
+                user_can_edit_project,
+            )
+
+            if await project_restricts_visibility(
+                db, project
+            ) and not await user_can_edit_project(db, auth.user.id, project):
+                raise project_edit_forbidden()
+    conn = await _get_connection(project.org_id, db)
+    if conn is None or not conn.enabled:
+        raise HTTPException(
+            409,
+            {"error": "jira_not_connected", "message": "This organization has not connected Jira."},
+        )
+    mapping = await _get_mapping(project.id, project.org_id, db)
+    if mapping is None:
+        raise HTTPException(
+            409,
+            {
+                "error": "jira_project_unmapped",
+                "message": "Ask your admin to add a mapping",
+            },
+        )
+    return project, conn, mapping
+
+
+def _sprint_response(sprint: TrackerSprint) -> dict:
+    raw_id = str(sprint.id)
+    return {
+        # Jira sprint ids are numeric; keep them int so the picker round-trips
+        # straight into the publish body's ``sprint_id``. Fall back to the raw
+        # string only for a malformed id (never expected from Jira).
+        "id": int(raw_id) if raw_id.isdigit() else sprint.id,
+        "name": sprint.name,
+        "state": sprint.state,
+        "board_name": sprint.board_name,
+        "start_date": sprint.start_date,
+        "end_date": sprint.end_date,
+    }
+
+
+def _sprint_sort_key(item: dict) -> tuple[int, bool, str, str]:
+    """Active sprints first, then by start date (missing sorts last), then id."""
+    return (
+        0 if str(item.get("state") or "").lower() == "active" else 1,
+        item.get("start_date") is None,
+        item.get("start_date") or "",
+        str(item.get("id")),
+    )
+
+
+@router.get("/{project_id}/jira/sprints")
+async def list_jira_sprints(
+    project_id: str,
+    auth: AuthContext = Depends(require_scope("tickets:write")),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Active + future Agile sprints for the mapped Jira project (GitHub #113 C7).
+
+    Project editors pick a sprint for a publish. Board listing (first page, up
+    to 10 boards) then per-board active/future sprints, deduped by sprint id,
+    sorted active-first then by start date, capped at 100. When Jira Software
+    isn't enabled on the site the Agile endpoints 404/403, surfaced as
+    ``unavailable`` rather than an error.
+    """
+    _project, conn, mapping = await _authorize_project_jira(
+        db, auth, ctx, project_id, require_editor=True
+    )
+    if not conn.sprint_field_id:
+        # Without a sprint field there is no sprint value to write, so listing
+        # sprints can't help the picker — return the same "unavailable" shape as
+        # a missing Jira Software install rather than calling Jira at all.
+        return {"sprints": [], "unavailable": "jira_sprint_field_unknown"}
+    client = JiraClient(
+        conn.site_url, conn.account_email, decrypt_secret(conn.encrypted_api_token)
+    )
+    deadline = _monotonic_deadline(_JIRA_DEADLINE_SECONDS)
+    try:
+        try:
+            boards = await asyncio.wait_for(
+                client.list_boards(mapping.jira_project_key, limit=10),
+                timeout=_remaining_timeout(deadline),
+            )
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(
+                504,
+                {"error": "jira_timeout", "message": "Jira did not respond in time."},
+            ) from exc
+        except TrackerError as exc:
+            if exc.status_code in (403, 404):
+                return {"sprints": [], "unavailable": "jira_software_not_available"}
+            raise HTTPException(
+                502, {"error": "jira_upstream_error", "message": str(exc)}
+            ) from exc
+
+        by_id: dict[str, dict] = {}
+        for board in boards:
+            try:
+                sprints = await asyncio.wait_for(
+                    client.list_sprints(board), timeout=_remaining_timeout(deadline)
+                )
+            except (asyncio.TimeoutError, TrackerError):
+                # A single board that vanished or timed out must not fail the
+                # whole list; collect what the remaining boards expose.
+                continue
+            for sprint in sprints:
+                if sprint.id not in by_id:
+                    by_id[sprint.id] = _sprint_response(sprint)
+    finally:
+        await client.aclose()
+
+    values = list(by_id.values())
+    values.sort(key=_sprint_sort_key)
+    return {"sprints": values[:100]}
+
+
 async def _resolve_template(
     db: AsyncSession,
     org_id: str,
@@ -2436,8 +2887,10 @@ async def _resolve_template(
     *,
     strict: bool = False,
     allow_archived: bool = False,
+    version: int | None = None,
+    builtin: bool | None = None,
 ) -> ResolvedTemplate:
-    """Resolve a template slug (org-custom or built-in) to its current version.
+    """Resolve a template slug (org-custom or built-in) to a version.
 
     An org custom template wins over a built-in with the same slug (a built-in
     added later must not silently shadow a template an org already uses).
@@ -2449,13 +2902,46 @@ async def _resolve_template(
     * ``strict`` (a NEW selection) refuses an unknown slug with a 422, and an
       archived one too unless ``allow_archived`` (the caller is keeping a value
       it already had, e.g. re-saving a mapping or re-publishing a pinned link).
+    * ``version`` resolves a custom template to that immutable snapshot instead
+      of the current version; a missing snapshot refuses ``jira_template_changed``.
+    * ``builtin`` (True/False) records what a helper proposal pinned at
+      propose time. ``True`` always resolves the built-in, even if a custom
+      template has since taken the slug (L-c); ``False`` pins the custom
+      snapshot and never falls back to a same-slug built-in.
     """
     if slug is None:
         if strict:
             raise HTTPException(422, "unknown template: None")
         return builtin_resolved(DEFAULT_TEMPLATE)
+    if builtin is True:
+        if not is_builtin_slug(slug):
+            raise HTTPException(
+                422,
+                {
+                    "error": "jira_template_changed",
+                    "message": (
+                        f"Jira template {slug!r} changed since it was proposed; "
+                        "propose again to publish with the new version."
+                    ),
+                },
+            )
+        return builtin_resolved(slug)
     row = await _get_template(org_id, slug, db)
     if row is None:
+        if version is not None:
+            # A custom template was pinned to a snapshot that no longer exists
+            # (the template was deleted or the version pruned). Never fall back
+            # to a built-in that happens to share the slug (L-c).
+            raise HTTPException(
+                422,
+                {
+                    "error": "jira_template_changed",
+                    "message": (
+                        f"Jira template {slug!r} changed since it was proposed; "
+                        "propose again to publish with the new version."
+                    ),
+                },
+            )
         if is_builtin_slug(slug):
             return builtin_resolved(slug)
         if strict:
@@ -2470,6 +2956,35 @@ async def _resolve_template(
                     f"template {slug!r} is archived and can't be newly selected"
                 ),
             },
+        )
+    if version is not None:
+        snap = (
+            await db.execute(
+                select(JiraTemplateVersion).where(
+                    JiraTemplateVersion.template_id == row.id,
+                    JiraTemplateVersion.version == version,
+                )
+            )
+        ).scalar_one_or_none()
+        if snap is None:
+            raise HTTPException(
+                422,
+                {
+                    "error": "jira_template_changed",
+                    "message": (
+                        f"Jira template {slug!r} changed since it was proposed; "
+                        "propose again to publish with the new version."
+                    ),
+                },
+            )
+        return ResolvedTemplate(
+            slug=row.slug,
+            name=row.name,
+            version=snap.version,
+            builtin=False,
+            template=sections_to_template(
+                row.slug, row.name, json.loads(snap.sections)
+            ),
         )
     return ResolvedTemplate(
         slug=row.slug,
@@ -2488,6 +3003,8 @@ async def _resolve_ticket_template(
     conn: OrgTrackerConnection,
     link: TicketTrackerLink | None,
     override: str | None,
+    version: int | None = None,
+    builtin: bool | None = None,
 ) -> ResolvedTemplate:
     """Inheritance: per-ticket override → mapping override → connection default.
 
@@ -2495,10 +3012,12 @@ async def _resolve_ticket_template(
     ticket's link is pinned to is a new selection, so both resolve even when
     that template has since been archived (a published ticket keeps its
     template). Any other override is a new selection and must be selectable
-    (built-in or active custom).
+    (built-in or active custom). ``version`` resolves a custom override to a
+    specific immutable snapshot (the helper's proposal-time pin, L1), and
+    ``builtin`` records whether that proposal pinned a built-in slug (L-c).
     """
     inherited = mapping.template or conn.default_template
-    if override is None or override == inherited:
+    if override is None or (override == inherited and version is None and builtin is None):
         return await _resolve_template(db, org_id, inherited)
     pinned = (
         link.template_slug
@@ -2506,7 +3025,13 @@ async def _resolve_ticket_template(
         else None
     )
     return await _resolve_template(
-        db, org_id, override, strict=True, allow_archived=override == pinned
+        db,
+        org_id,
+        override,
+        strict=True,
+        allow_archived=override == pinned,
+        version=version,
+        builtin=builtin,
     )
 
 
@@ -2677,13 +3202,25 @@ def _unified_diff(old: str, new: str) -> list[str]:
 
 
 async def _acquire_publish_claim(
-    db: AsyncSession, *, ticket_id: str, org_id: str, site_url: str
-) -> tuple[TicketTrackerLink, str, str | None]:
-    """Claim the publish slot for a ticket; return ``(link, action, token)``.
+    db: AsyncSession,
+    *,
+    ticket_id: str,
+    org_id: str,
+    site_url: str,
+    jira_project_key: str | None = None,
+) -> tuple[TicketTrackerLink, str, str | None, datetime | None]:
+    """Claim the publish slot; return ``(link, action, token, unknown_since)``.
 
-    ``action`` is ``"update"`` (linked row), ``"create"`` (no row, or a stale
-    pending claim we reclaimed) or ``"adopt"`` (a timed-out create left the row
-    in ``unknown`` — the caller searches Jira by label and adopts-or-creates).
+    ``action`` is ``"update"`` (linked row), ``"create"`` (no row yet) or
+    ``"adopt"`` (a timed-out create left the row in ``unknown``, or a stale
+    pending claim from a dead worker — the caller searches Jira by label and
+    adopts-or-creates). ``unknown_since`` is the time the original uncertain
+    publish began; it is only set for the adopt action and lets the caller
+    refuse issues that predate that original attempt, even though the reclaimed
+    claim refreshes ``last_pushed_at`` for its own staleness check (L-f). It is
+    read from the durable ``unknown_since`` column (or, for a stale pending row,
+    the original ``last_pushed_at``) so a failed retry never erases it.
+
     A linked row is the update path (after the stale-org/site check) and has no
     claim token — its writes are PK-fenced by the 1:1 row. With no row we insert
     a *pending* row first and commit it, writing a fresh ``claim_token``. A
@@ -2704,6 +3241,7 @@ async def _acquire_publish_claim(
                 status="pending",
                 site_url=site_url,
                 claim_token=token,
+                jira_project_key=jira_project_key,
                 last_pushed_at=now,  # doubles as the claim timestamp while pending
             )
         )
@@ -2719,6 +3257,7 @@ async def _acquire_publish_claim(
                 await db.get(TicketTrackerLink, ticket_id, populate_existing=True),
                 "create",
                 token,
+                None,
             )
 
     if row.status == "linked":
@@ -2727,15 +3266,21 @@ async def _acquire_publish_claim(
         # an unlink during the call is seen by the fenced UPDATE below, and we
         # never sit idle-in-transaction on a 60 s HTTP round-trip.
         await db.commit()
-        return row, "update", None
+        return row, "update", None, None
 
     if row.status == "unknown":
         # A prior publish timed out mid-create; the issue may exist remotely.
         # Reclaim the row as a fresh pending claim (fenced on status='unknown')
         # so the caller searches Jira by label and adopts-or-creates exactly once.
-        # ``last_pushed_at`` is deliberately left alone: it records when the
-        # original (unknown) publish began, which the adopt check uses to refuse
-        # issues that predate it.
+        # The adopt check uses the durable ``unknown_since`` (the ORIGINAL
+        # unknown publish's begin time, persisted at the first mark-unknown),
+        # NOT the refreshed ``last_pushed_at``: refreshing that here keeps a
+        # concurrent publish from treating this fresh claim as stale (L-f), but
+        # must not shift the cut-off that refuses issues predating the original
+        # attempt (L-h).
+        # Rows left unknown before ``unknown_since`` existed fall back to the
+        # claim time recorded then, and persist it so later retries keep it.
+        unknown_since = _aware(row.unknown_since) or _aware(row.last_pushed_at)
         token = secrets.token_hex(16)
         res = await db.execute(
             update(TicketTrackerLink)
@@ -2746,8 +3291,12 @@ async def _acquire_publish_claim(
             .values(
                 status="pending",
                 claim_token=token,
+                last_pushed_at=now,
                 site_url=site_url,
                 org_id=org_id,
+                unknown_since=func.coalesce(
+                    TicketTrackerLink.unknown_since, row.last_pushed_at
+                ),
             )
             .execution_options(synchronize_session=False)
         )
@@ -2759,6 +3308,7 @@ async def _acquire_publish_claim(
             await db.get(TicketTrackerLink, ticket_id, populate_existing=True),
             "adopt",
             token,
+            unknown_since,
         )
 
     # A pending row exists: either another request holds a fresh claim, or a
@@ -2767,10 +3317,17 @@ async def _acquire_publish_claim(
     age = (now - pushed_at).total_seconds() if pushed_at is not None else 0.0
     if age < _CLAIM_STALE_SECONDS:
         raise HTTPException(409, _publish_in_progress())
+    # The dead worker's create may have reached Jira: reclaim as an *adopt*
+    # (search by label first) instead of a blind create, so a survived issue is
+    # adopted rather than duplicated. The cut-off for the adopt check is the
+    # durable ``unknown_since`` if a prior retry already recorded one, else the
+    # ORIGINAL claim time (``last_pushed_at`` before we refresh it below).
+    unknown_since = _aware(row.unknown_since) or pushed_at
     token = secrets.token_hex(16)
     # Compare-and-swap: the reclaim only wins if the row still carries the
     # token this request read. If another worker reclaimed first, rowcount is
-    # 0 and this request backs off.
+    # 0 and this request backs off. ``unknown_since`` is recorded once (kept if
+    # already set) so a later retry keeps the original cut-off.
     res = await db.execute(
         update(TicketTrackerLink)
         .where(
@@ -2783,6 +3340,13 @@ async def _acquire_publish_claim(
             last_pushed_at=now,
             site_url=site_url,
             org_id=org_id,
+            # Keep the dead worker's destination: its create may have landed
+            # there, so the adopt must search (and, if needed, create) in that
+            # project, not the new caller's.
+            jira_project_key=func.coalesce(
+                TicketTrackerLink.jira_project_key, jira_project_key
+            ),
+            unknown_since=func.coalesce(TicketTrackerLink.unknown_since, pushed_at),
         )
         .execution_options(synchronize_session=False)
     )
@@ -2792,8 +3356,9 @@ async def _acquire_publish_claim(
     await db.commit()
     return (
         await db.get(TicketTrackerLink, ticket_id, populate_existing=True),
-        "create",
+        "adopt",
         token,
+        unknown_since,
     )
 
 
@@ -2809,6 +3374,7 @@ async def _fenced_mark_linked(
     published_text: str,
     template_slug: str,
     template_version: int | None,
+    jira_project_key: str | None = None,
 ) -> bool:
     """Flip a pending claim to ``linked``, fenced on ``claim_token``.
 
@@ -2828,6 +3394,8 @@ async def _fenced_mark_linked(
             issue_key=issue.key,
             issue_url=issue.url,
             issue_id=issue.id,
+            jira_project_key=jira_project_key,
+            unknown_since=None,
             last_pushed_at=now,
             last_pushed_by_user_id=user_id,
             last_known_status=None,
@@ -2862,14 +3430,23 @@ async def _fenced_release_claim(
 
 
 async def _fenced_mark_unknown(
-    db: AsyncSession, *, ticket_id: str, claim_token: str
+    db: AsyncSession, *, ticket_id: str, claim_token: str, since: datetime | None = None
 ) -> bool:
     """Flip a pending claim to ``unknown`` (timed-out create), fenced on token.
 
     Returns True only when this request still owned the claim. Unlike
     ``_fenced_release_claim`` this keeps the row so the next publish can search
     Jira by label and adopt the possibly-created issue instead of duplicating it.
+
+    ``since``, when given, is recorded as ``unknown_since`` — the durable time
+    the original (possibly-created) publish began — but only if the row has no
+    ``unknown_since`` yet. A retry that already carries one keeps it, so the
+    adopt check keeps refusing issues predating the FIRST uncertain publish
+    instead of a later retry's refreshed claim time (L-h).
     """
+    values: dict[str, object] = {"status": "unknown", "claim_token": None}
+    if since is not None:
+        values["unknown_since"] = func.coalesce(TicketTrackerLink.unknown_since, since)
     res = await db.execute(
         update(TicketTrackerLink)
         .where(
@@ -2877,7 +3454,7 @@ async def _fenced_mark_unknown(
             TicketTrackerLink.status == "pending",
             TicketTrackerLink.claim_token == claim_token,
         )
-        .values(status="unknown", claim_token=None)
+        .values(**values)
         .execution_options(synchronize_session=False)
     )
     return res.rowcount == 1  # type: ignore[attr-defined]
@@ -2902,6 +3479,10 @@ async def _fenced_mark_updated(
     ``issue_key`` — i.e. the link wasn't unlinked or re-pointed while we were
     outbound. A False return means the caller must 409 ``link_changed`` instead
     of raising StaleDataError/500.
+
+    The stored ``jira_project_key`` is left alone: an update never moves the
+    issue, so the link must keep recording where the issue actually lives even
+    if the mapping drifted since (L-a).
     """
     res = await db.execute(
         update(TicketTrackerLink)
@@ -3077,6 +3658,86 @@ async def preview_jira(
     return response
 
 
+async def _resolve_publish_parent(
+    db: AsyncSession,
+    *,
+    ticket: Ticket,
+    conn: OrgTrackerConnection,
+) -> tuple[str | None, str | None]:
+    """Resolve the ticket's parent to its Jira issue key for a publish (C8).
+
+    Returns ``(parent_key, warning)``. ``parent_key`` is the parent ticket's
+    linked issue key on the same org/site, or ``None``; ``warning`` is
+    ``jira_parent_not_linked`` when the ticket names a parent that has no link
+    (or a link on a different org/site), else ``None``.
+    """
+    if not ticket.parent_ticket_id:
+        return None, None
+    parent_link = (
+        await db.execute(
+            select(TicketTrackerLink).where(
+                TicketTrackerLink.ticket_id == ticket.parent_ticket_id,
+                TicketTrackerLink.status == "linked",
+            )
+        )
+    ).scalar_one_or_none()
+    if (
+        parent_link is None
+        or not parent_link.issue_key
+        or parent_link.org_id != conn.org_id
+        or parent_link.site_url != conn.site_url
+    ):
+        return None, "jira_parent_not_linked"
+    return parent_link.issue_key.upper(), None
+
+
+def _timeline_actor(
+    actor_type: str,
+    actor_user_id: str | None,
+    service_key_name: str | None = None,
+) -> dict[str, str | None]:
+    """Map the AuthContext actor onto the ticket_events vocabulary.
+
+    ``AuthContext.actor_type`` returns ``service_key`` for service keys; the
+    timeline uses ``service`` (with ``actor_label`` = the key's name) instead.
+    """
+    if actor_type == "service_key":
+        return {
+            "actor_type": "service",
+            "actor_user_id": None,
+            "actor_label": service_key_name,
+        }
+    return {"actor_type": actor_type, "actor_user_id": actor_user_id}
+
+
+def _jira_scheduling_warnings(
+    *, due_date: str | None, original_estimate: str | None, exc: TrackerError
+) -> list[str]:
+    """Warnings for the scheduling fields dropped from a publish retry.
+
+    Jira's 400 body names exactly the field it refused (``errors`` map), so
+    only that field gets a warning. A value Jira rejected for being invalid
+    (as opposed to a field it doesn't expose on the screen) is not labelled
+    ``not_on_screen``.
+    """
+    message = str(exc).lower()
+    off_screen = "not on the appropriate screen" in message
+    warnings: list[str] = []
+    if due_date and "duedate" in message:
+        warnings.append(
+            "jira_field_not_on_screen:duedate"
+            if off_screen
+            else "jira_invalid_value:duedate"
+        )
+    if original_estimate and "timetracking" in message:
+        warnings.append(
+            "jira_field_not_on_screen:timetracking"
+            if off_screen
+            else "jira_invalid_value:timetracking"
+        )
+    return warnings
+
+
 async def publish_ticket_draft(
     db: AsyncSession,
     *,
@@ -3093,6 +3754,9 @@ async def publish_ticket_draft(
     service_key_name: str | None,
     dashboard_url: str,
     overwrite_existing: bool = False,
+    sprint_id: int | None = None,
+    jira_project_key: str | None = None,
+    auth: AuthContext | None = None,
 ) -> dict:
     """Publish an already-rendered draft to Jira (shared publish path).
 
@@ -3103,10 +3767,45 @@ async def publish_ticket_draft(
     the caller has already authorized the action and resolved ``resolved``.
     Commits its own claim + link writes and returns the publish response, or
     raises ``HTTPException`` with the route's error envelopes on failure.
+
+    ``sprint_id`` is an optional Agile sprint to place the issue in (C7); it is
+    never a hard requirement — a failed sprint set/move is reported in
+    ``warnings`` and the publish still succeeds.  ``jira_project_key`` is the
+    helper's optional destination override (C); when None the mapping's key is
+    used, and the caller has already validated any override belongs to this org.
     """
     # Pin the ticket id up front: a rollback on the superseded path expires the
     # ORM object, so ``ticket.id`` must not be read again after one.
     ticket_id = ticket.id
+    # The helper's confirm path has no AuthContext on hand; synthesize a
+    # user-keyed one so the response's parent readability check can run.
+    if auth is None:
+        auth = AuthContext(user=actor, api_key_id="", key_kind="user")
+    effective_project_key = (jira_project_key or mapping.jira_project_key).strip().upper()
+    # The project a create lands in. An adopt re-points this to the persisted
+    # destination so the search, the no-match create and the mark-linked write
+    # all agree on one key (M2) — otherwise a drifted override/mapping would
+    # create into one project while recording another.
+    create_project_key = effective_project_key
+    # A requested sprint needs the connection's sprint field (or an override);
+    # refuse before claiming the ticket rather than fail after an outbound call.
+    if sprint_id is not None and not conn.sprint_field_id:
+        raise HTTPException(
+            422,
+            {
+                "error": "jira_sprint_field_unknown",
+                "message": (
+                    "This Jira connection has no sprint field discovered; ask "
+                    "an org admin to save the connection or set a sprint field id."
+                ),
+            },
+        )
+    # Resolve the parent issue key (and its "not linked" warning) before any
+    # outbound call; it is folded into a create, or an update whose cached
+    # parent differs.
+    parent_key, parent_warning = await _resolve_publish_parent(
+        db, ticket=ticket, conn=conn
+    )
     # The client never chooses section rendering: mode is resolved from the
     # ticket's template by section key, and an unknown key is rejected before
     # any outbound call.
@@ -3143,8 +3842,12 @@ async def publish_ticket_draft(
 
     # Claim BEFORE any outbound call so two concurrent publishes can't create
     # two Jira issues for the same ticket.
-    link, action, claim_token = await _acquire_publish_claim(
-        db, ticket_id=ticket_id, org_id=project.org_id, site_url=conn.site_url
+    link, action, claim_token, unknown_since = await _acquire_publish_claim(
+        db,
+        ticket_id=ticket_id,
+        org_id=project.org_id,
+        site_url=conn.site_url,
+        jira_project_key=effective_project_key,
     )
 
     # A ticket that was merely attached to an existing Jira issue (never
@@ -3170,26 +3873,171 @@ async def publish_ticket_draft(
     now = datetime.now(timezone.utc)
     digest = payload_hash(summary, sections)
     published_text = _published_text(summary, sections)
+    # GitHub #113 — carry the ticket's due date / estimate into the remote
+    # issue, plus the inline sprint + parent fields. Jira rejects fields its
+    # project screens hide with a 400; the outbound ladder below drops exactly
+    # the field(s) named and retries, rather than failing the publish.
+    due_date = ticket.due_date.isoformat() if ticket.due_date else None
+    original_estimate = ticket.estimated_effort
+    warnings: list[str] = []
+    if parent_warning:
+        warnings.append(parent_warning)
+    adopted: TrackerIssue | None = None
+    sprint_detail: TrackerSprint | None = None
+    # One deadline bounds the whole outbound burst (create/update + sprint move
+    # + adopt search): every individual wait_for gets the time remaining, so a
+    # slow Jira can't hold the claim past the 300 s reclaim window (L5).
+    deadline = _monotonic_deadline(_JIRA_DEADLINE_SECONDS)
+
+    # The parent object is only sent when the ticket names a linked parent and
+    # (for updates) the cached parent differs; otherwise the outbound call leaves
+    # the issue's existing parent alone.
+    set_parent = parent_key is not None and (
+        action != "update" or (link.jira_parent_key or "").upper() != parent_key
+    )
+
+    def _scheduling_kwargs(fields: frozenset[str]) -> dict:
+        kwargs: dict = {}
+        if "duedate" in fields and due_date:
+            kwargs["due_date"] = due_date
+        if "timetracking" in fields and original_estimate:
+            kwargs["original_estimate"] = original_estimate
+        return kwargs
+
+    def _parent_extra(fields: frozenset[str]) -> dict[str, object]:
+        if not set_parent:
+            return {}
+        if "parent" in fields:
+            return {"parent": {"key": parent_key}}
+        if "epic_parent" in fields and conn.epic_link_field_id:
+            return {conn.epic_link_field_id: parent_key}
+        return {}
+
+    def _sprint_extra(fields: frozenset[str]) -> dict[str, object]:
+        if "sprint" in fields and sprint_id is not None and conn.sprint_field_id:
+            return {conn.sprint_field_id: sprint_id}
+        return {}
+
+    def _named(token: str, message: str) -> bool:
+        """Whether a 400 message names the field behind ``token``."""
+        if token == "duedate":
+            return "duedate" in message
+        if token == "timetracking":
+            return "timetracking" in message
+        if token == "parent":
+            return "parent" in message
+        if token == "epic_parent":
+            return conn.epic_link_field_id is not None and conn.epic_link_field_id.lower() in message
+        if token == "sprint":
+            return conn.sprint_field_id is not None and conn.sprint_field_id.lower() in message
+        return False
+
+    def _initial_fields(*, include_sprint: bool) -> frozenset[str]:
+        tokens: set[str] = set()
+        if due_date:
+            tokens.add("duedate")
+        if original_estimate:
+            tokens.add("timetracking")
+        if include_sprint and sprint_id is not None and conn.sprint_field_id:
+            tokens.add("sprint")
+        if set_parent:
+            tokens.add("parent")
+        return frozenset(tokens)
+
+    async def _issue_call(fields: frozenset[str]) -> TrackerIssue:
+        kwargs = _scheduling_kwargs(fields)
+        if action == "update":
+            extra = _parent_extra(fields)
+            return await client.update_issue(
+                link.issue_key, summary, adf, extra_fields=extra or None, **kwargs
+            )
+        if adopted is not None:
+            extra = _parent_extra(fields)
+            return await client.update_issue(
+                adopted.key, summary, adf, extra_fields=extra or None, **kwargs
+            )
+        extra = {**_sprint_extra(fields), **_parent_extra(fields)}
+        return await client.create_issue(
+            create_project_key,
+            mapping.issue_type,
+            summary,
+            adf,
+            labels=[sessionfs_label(ticket_id)],
+            extra_fields=extra or None,
+            **kwargs,
+        )
+
+    async def _issue_call_with_retry(fields: frozenset[str]) -> TrackerIssue:
+        # Retry only on a 400 that names a field we can drop, and drop exactly
+        # the named field(s). ``parent`` falls back to the epic-link field once
+        # before being dropped. Any non-400, transport error or timeout re-raises
+        # so the claim/unknown/adopt handling below still runs.
+        while True:
+            try:
+                return await asyncio.wait_for(
+                    _issue_call(fields), timeout=_remaining_timeout(deadline)
+                )
+            except TrackerError as exc:
+                if exc.status_code != 400 or not fields:
+                    raise
+                message = str(exc).lower()
+                rejected = {token for token in fields if _named(token, message)}
+                if not rejected:
+                    raise
+                next_fields = set(fields)
+                for token in sorted(rejected):
+                    if token == "parent" and conn.epic_link_field_id:
+                        next_fields.discard("parent")
+                        next_fields.add("epic_parent")
+                    elif token in ("parent", "epic_parent"):
+                        next_fields.discard(token)
+                        warnings.append("jira_parent_not_set")
+                    elif token == "sprint":
+                        next_fields.discard(token)
+                        warnings.append("jira_sprint_not_set:field_rejected")
+                    elif token in ("duedate", "timetracking"):
+                        next_fields.discard(token)
+                        warnings.extend(
+                            _jira_scheduling_warnings(
+                                due_date=due_date if token == "duedate" else None,
+                                original_estimate=(
+                                    original_estimate if token == "timetracking" else None
+                                ),
+                                exc=exc,
+                            )
+                        )
+                if frozenset(next_fields) == fields:
+                    raise
+                fields = frozenset(next_fields)
     try:
-        # Bound each outbound call well below the 5-minute reclaim window so a
+        # Bound the whole outbound burst below the 5-minute reclaim window so a
         # hung request can't hold the claim (and, on timeout, we mark the claim
         # unknown instead of deleting it).
         if action == "update":
-            issue = await asyncio.wait_for(
-                client.update_issue(link.issue_key, summary, adf),
-                timeout=60,
-            )
+            issue = await _issue_call_with_retry(_initial_fields(include_sprint=False))
             event_type = "jira_issue_updated"
+            if sprint_id is not None:
+                try:
+                    await asyncio.wait_for(
+                        client.move_issue_to_sprint(link.issue_key, sprint_id),
+                        timeout=_remaining_timeout(deadline),
+                    )
+                except (asyncio.TimeoutError, TrackerError):
+                    warnings.append("jira_sprint_not_set:move_failed")
         else:
             # create/adopt: a fresh create (its label lets a later retry adopt
             # it) or a timed-out retry that searches for its prior issue first.
-            adopted = None
             if action == "adopt":
+                # Adopt in the SAME project the original (timed-out) create
+                # chose — persisted on the link — so a retry with a drifted
+                # override never duplicates the issue into a different project.
+                search_project_key = link.jira_project_key or effective_project_key
+                create_project_key = search_project_key
                 adopted = await asyncio.wait_for(
                     client.search_issue_by_label(
-                        mapping.jira_project_key, sessionfs_label(ticket_id)
+                        search_project_key, sessionfs_label(ticket_id)
                     ),
-                    timeout=60,
+                    timeout=_remaining_timeout(deadline),
                 )
                 if adopted is None:
                     # Jira's search index can lag a just-created issue; wait a
@@ -3198,9 +4046,9 @@ async def publish_ticket_draft(
                     await asyncio.sleep(_ADOPT_RETRY_DELAY_SECONDS)
                     adopted = await asyncio.wait_for(
                         client.search_issue_by_label(
-                            mapping.jira_project_key, sessionfs_label(ticket_id)
+                            search_project_key, sessionfs_label(ticket_id)
                         ),
-                        timeout=60,
+                        timeout=_remaining_timeout(deadline),
                     )
             if adopted is not None:
                 if action == "adopt":
@@ -3211,10 +4059,10 @@ async def publish_ticket_draft(
                     # 'unknown' and is refused with a clear 409.
                     account_id = await asyncio.wait_for(
                         _connection_account_id(client, org_id=project.org_id),
-                        timeout=60,
+                        timeout=_remaining_timeout(deadline),
                     )
                     block = _adoption_block(
-                        adopted, mapping, account_id, _aware(link.last_pushed_at)
+                        adopted, search_project_key, account_id, unknown_since
                     )
                     if block is not None:
                         marked_unknown = await _fenced_mark_unknown(
@@ -3249,30 +4097,41 @@ async def publish_ticket_draft(
                             409,
                             {"error": exc.code, "message": exc.message},
                         ) from exc
-                issue = await asyncio.wait_for(
-                    client.update_issue(adopted.key, summary, adf),
-                    timeout=60,
-                )
+                issue = await _issue_call_with_retry(_initial_fields(include_sprint=False))
                 event_type = "jira_issue_updated"
+                if sprint_id is not None:
+                    try:
+                        await asyncio.wait_for(
+                            client.move_issue_to_sprint(adopted.key, sprint_id),
+                            timeout=_remaining_timeout(deadline),
+                        )
+                    except (asyncio.TimeoutError, TrackerError):
+                        warnings.append("jira_sprint_not_set:move_failed")
             else:
-                issue = await asyncio.wait_for(
-                    client.create_issue(
-                        mapping.jira_project_key,
-                        mapping.issue_type,
-                        summary,
-                        adf,
-                        labels=[sessionfs_label(ticket_id)],
-                    ),
-                    timeout=60,
-                )
+                issue = await _issue_call_with_retry(_initial_fields(include_sprint=True))
                 event_type = "jira_issue_created"
+
+        # Fill the sprint name/state cache right away instead of leaving it null
+        # until a pull. Best-effort and bounded by the same deadline: a failure
+        # (or the deadline expiring) leaves name/state null with no warning.
+        if sprint_id is not None and not any(
+            w.startswith("jira_sprint_not_set") for w in warnings
+        ):
+            try:
+                sprint_detail = await asyncio.wait_for(
+                    client.get_sprint(sprint_id), timeout=_remaining_timeout(deadline)
+                )
+            except (asyncio.TimeoutError, TrackerError):
+                sprint_detail = None
     except asyncio.TimeoutError as exc:
         if action != "update":
             # Keep the claim row as ``unknown`` (fenced) so the next publish
             # searches by label and adopts-or-creates once; a 504 tells the
-            # caller the remote outcome is unknown.
+            # caller the remote outcome is unknown. Record the ORIGINAL publish
+            # begin time as ``unknown_since`` (only on the first transition) so
+            # a later adopt refuses issues predating this attempt.
             marked_unknown = await _fenced_mark_unknown(
-                db, ticket_id=ticket_id, claim_token=claim_token
+                db, ticket_id=ticket_id, claim_token=claim_token, since=now
             )
             if marked_unknown:
                 await db.commit()
@@ -3283,14 +4142,36 @@ async def publish_ticket_draft(
             {
                 "error": "jira_timeout",
                 "message": (
-                    "Jira did not respond within 60 s; the issue may or may not "
-                    "have been created."
+                    f"Jira did not respond within {int(_JIRA_DEADLINE_SECONDS)} s; "
+                    "the issue may or may not have been created."
                 ),
             },
         ) from exc
     except TrackerError as exc:
-        if action != "update":
-            # Release the pending claim (fenced) so a later publish can retry.
+        if action == "adopt":
+            # The adopt search (or the create/update of a just-adopted issue)
+            # failed upstream, so the remote state is still unknown. Keep the
+            # row as ``unknown`` (fenced) instead of releasing the claim so the
+            # next publish searches by label again and can't duplicate the
+            # issue into a second ticket (L-f).
+            marked_unknown = await _fenced_mark_unknown(
+                db, ticket_id=ticket_id, claim_token=claim_token
+            )
+            await db.commit()
+        elif action != "update" and not (
+            exc.status_code is not None and 400 <= exc.status_code < 500
+        ):
+            # A 5xx or a transport error after the request went out leaves the
+            # remote outcome unknown: Jira may have written the issue before the
+            # error. Keep the row ``unknown`` (fenced) so the next publish
+            # searches by label and adopts instead of creating a duplicate.
+            marked_unknown = await _fenced_mark_unknown(
+                db, ticket_id=ticket_id, claim_token=claim_token, since=now
+            )
+            await db.commit()
+        elif action != "update":
+            # A 4xx proves nothing was created: release the pending claim
+            # (fenced) so a later publish can retry from scratch.
             released = await _fenced_release_claim(
                 db, ticket_id=ticket_id, claim_token=claim_token
             )
@@ -3316,6 +4197,31 @@ async def publish_ticket_draft(
         raise HTTPException(502, {"error": "jira_upstream_error", "message": str(exc)}) from exc
     finally:
         await client.aclose()
+
+    # Cache the sprint + parent the issue now has (C7/C8). The create/update
+    # response doesn't echo these fields, so record the values we just applied:
+    # the resolved parent when it was sent and accepted (a dropped parent keeps
+    # the issue's existing parent), and the sprint id when the move/set field
+    # wasn't rejected. The Agile read above fills name/state right away; a
+    # changed sprint clears them first so a failed read never pairs a stale name
+    # with the new id.
+    parent_cache = link.jira_parent_key
+    if set_parent and "jira_parent_not_set" not in warnings:
+        parent_cache = parent_key
+    sprint_cache_id = link.jira_sprint_id
+    sprint_cache_name = link.jira_sprint_name
+    sprint_cache_state = link.jira_sprint_state
+    if sprint_id is not None and not any(
+        w.startswith("jira_sprint_not_set") for w in warnings
+    ):
+        new_sprint_id = str(sprint_id)
+        if sprint_cache_id != new_sprint_id:
+            sprint_cache_id = new_sprint_id
+            sprint_cache_name = None
+            sprint_cache_state = None
+        if sprint_detail is not None:
+            sprint_cache_name = sprint_detail.name or None
+            sprint_cache_state = sprint_detail.state or None
 
     if action == "update":
         # Fenced UPDATE on status='linked' AND issue_key=<expected>. rowcount 0
@@ -3360,6 +4266,7 @@ async def publish_ticket_draft(
             published_text=published_text,
             template_slug=resolved.slug,
             template_version=resolved.version,
+            jira_project_key=create_project_key,
         )
         if not marked:
             await db.rollback()
@@ -3380,6 +4287,14 @@ async def publish_ticket_draft(
                     "issue_url": issue.url,
                 },
             )
+
+    # Reflect the cache on the in-memory link so the response builders below
+    # read the values we just persisted (the fenced writes use
+    # ``synchronize_session=False`` and don't refresh the ORM object).
+    link.jira_parent_key = parent_cache
+    link.jira_sprint_id = sprint_cache_id
+    link.jira_sprint_name = sprint_cache_name
+    link.jira_sprint_state = sprint_cache_state
 
     db.add(
         TicketComment(
@@ -3413,6 +4328,13 @@ async def publish_ticket_draft(
         target_id=ticket_id,
         after={"issue_key": issue.key, "issue_url": issue.url},
     )
+    await record_ticket_event(
+        db,
+        ticket,
+        "jira_published",
+        after={"issue_key": issue.key},
+        **_timeline_actor(actor_type, actor.id, service_key_name),
+    )
     await db.commit()
 
     return {
@@ -3424,6 +4346,9 @@ async def publish_ticket_draft(
         "last_known_status": None,
         "last_status_checked_at": None,
         "payload_hash": digest,
+        "warnings": warnings,
+        "sprint": _cached_sprint_response(link),
+        "parent": await _parent_response(db, conn=conn, link=link, auth=auth),
         "template": {
             "slug": resolved.slug,
             "name": resolved.name,
@@ -3504,9 +4429,23 @@ async def pull_ticket_from_jira(
     )
     try:
         try:
-            summary, description_adf = await asyncio.wait_for(
-                client.get_issue_summary_and_description(link.issue_key),
-                timeout=_PULL_FETCH_TIMEOUT_SECONDS,
+            # Fetch the editable fields, the scheduling fields and the cached
+            # sprint/parent in one gather: summary/description come from the
+            # narrow ADF projection, everything else from a single ``get_issue``
+            # (GitHub #113) that also requests the sprint/epic-link custom ids.
+            (summary, description_adf), issue = await asyncio.gather(
+                asyncio.wait_for(
+                    client.get_issue_summary_and_description(link.issue_key),
+                    timeout=_PULL_FETCH_TIMEOUT_SECONDS,
+                ),
+                asyncio.wait_for(
+                    client.get_issue(
+                        link.issue_key,
+                        sprint_field_id=conn.sprint_field_id,
+                        epic_link_field_id=conn.epic_link_field_id,
+                    ),
+                    timeout=_PULL_FETCH_TIMEOUT_SECONDS,
+                ),
             )
         except asyncio.TimeoutError as exc:
             raise JiraLinkError(
@@ -3526,6 +4465,12 @@ async def pull_ticket_from_jira(
                 str(exc),
                 status_code=502,
             ) from exc
+        # Cache the sprint + parent read from ``get_issue`` (C7/C8) — no
+        # separate outbound call.
+        link.jira_sprint_id = issue.sprint_id
+        link.jira_sprint_name = issue.sprint_name
+        link.jira_sprint_state = issue.sprint_state
+        link.jira_parent_key = issue.parent_key
     finally:
         await client.aclose()
 
@@ -3546,6 +4491,59 @@ async def pull_ticket_from_jira(
         _PULL_DESCRIPTION_MAX_CHARS,
     )
 
+    # GitHub #113 — import the remote due date / estimate when Jira has them.
+    # These land directly on the ticket (not through apply_ticket_update) so
+    # the timeline attributes them to Jira, with the clicking user kept as
+    # provenance in actor_user_id. An empty/unparseable remote value leaves
+    # the ticket unchanged.
+    jira_scheduling_fields: list[str] = []
+    if issue.due_date:
+        try:
+            parsed_due = date.fromisoformat(issue.due_date)
+        except ValueError:
+            parsed_due = None
+        if parsed_due is not None and parsed_due != ticket.due_date:
+            before_due = ticket.due_date
+            ticket.due_date = parsed_due
+            await record_ticket_event(
+                db,
+                ticket,
+                "due_date_set",
+                field="due_date",
+                before=before_due,
+                after=parsed_due,
+                actor_type="jira",
+                actor_user_id=actor.id,
+            )
+            jira_scheduling_fields.append("due_date")
+    if issue.original_estimate:
+        from sessionfs.server.routes.tickets import _normalize_estimate
+
+        try:
+            normalized_estimate = _normalize_estimate(issue.original_estimate)
+        except ValueError:
+            normalized_estimate = None
+        if normalized_estimate is not None and normalized_estimate != ticket.estimated_effort:
+            before_estimate = ticket.estimated_effort
+            ticket.estimated_effort = normalized_estimate
+            await record_ticket_event(
+                db,
+                ticket,
+                "estimate_set",
+                field="estimated_effort",
+                before=before_estimate,
+                after=normalized_estimate,
+                actor_type="jira",
+                actor_user_id=actor.id,
+            )
+            jira_scheduling_fields.append("estimated_effort")
+
+    # A scheduling-only pull (no title/description change) mutates the ticket
+    # directly and returns no edits from apply_ticket_update, so bump the
+    # row's updated_at here rather than relying on a field edit doing it.
+    if jira_scheduling_fields:
+        ticket.updated_at = datetime.now(timezone.utc)
+
     body = TicketUpdate(title=title or None, description=description or None)
     outcome = await apply_ticket_update(
         db,
@@ -3554,11 +4552,21 @@ async def pull_ticket_from_jira(
         user_id=actor.id,
         ctx=None,
         body=body,
+        actor_type="jira",
     )
-    updated_fields = [field_name for field_name, _old, _new in outcome.edits]
+    updated_fields = [
+        field_name for field_name, _old, _new in outcome.edits
+    ] + jira_scheduling_fields
 
     if updated_fields:
         _system_comment(db, ticket, f"Updated from Jira {link.issue_key}")
+        await record_ticket_event(
+            db,
+            ticket,
+            "jira_pulled",
+            after={"issue_key": link.issue_key},
+            actor_type="jira",
+        )
         if org is not None:
             _org_audit(
                 db,
@@ -3650,6 +4658,8 @@ async def publish_jira(
         service_key_name=auth.service_key_name,
         dashboard_url=dashboard_link_base(getattr(request.app.state, "config", None)),
         overwrite_existing=body.overwrite_existing,
+        sprint_id=body.sprint_id,
+        auth=auth,
     )
 
 
@@ -3687,21 +4697,89 @@ async def get_ticket_jira_sync_events(
     }
 
 
-def _link_response(
+def _cached_sprint_response(link: TicketTrackerLink) -> dict | None:
+    """The link's cached Jira sprint as ``{id, name, state}`` (or ``None``)."""
+    if not link.jira_sprint_id:
+        return None
+    raw_id = link.jira_sprint_id
+    return {
+        "id": int(raw_id) if raw_id.isdigit() else raw_id,
+        "name": link.jira_sprint_name,
+        "state": link.jira_sprint_state,
+    }
+
+
+async def _parent_response(
+    db: AsyncSession,
+    *,
+    conn: OrgTrackerConnection,
+    link: TicketTrackerLink,
+    auth: AuthContext,
+) -> dict | None:
+    """The link's cached Jira parent as ``{key, ticket_id}`` (or ``None``).
+
+    ``ticket_id`` is only ever populated when the caller can read the SessionFS
+    ticket linked to that parent key on this org/site — a reader who can't see
+    the parent's project still gets the key but a null id (never a leak).
+    """
+    parent_key = link.jira_parent_key
+    if not parent_key:
+        return None
+    result: dict = {"key": parent_key, "ticket_id": None}
+    parent_link = (
+        await db.execute(
+            select(TicketTrackerLink).where(
+                TicketTrackerLink.issue_key == parent_key.upper(),
+                TicketTrackerLink.org_id == conn.org_id,
+                TicketTrackerLink.site_url == conn.site_url,
+                TicketTrackerLink.status == "linked",
+                TicketTrackerLink.ticket_id != link.ticket_id,
+            )
+        )
+    ).scalars().first()
+    if parent_link is None or not parent_link.ticket_id:
+        return result
+    parent_ticket = await db.get(Ticket, parent_link.ticket_id)
+    if parent_ticket is None:
+        return result
+    parent_project = await db.get(Project, parent_ticket.project_id)
+    if parent_project is None:
+        return result
+    if auth.key_kind == "service":
+        # Manual service-key check: same org and within the key's project
+        # allowlist (when one is set).
+        if auth.org_id is None or parent_project.org_id != auth.org_id:
+            return result
+        if auth.project_ids is not None and parent_project.id not in auth.project_ids:
+            return result
+    else:
+        from sessionfs.server.auth.project_access import user_can_access_project
+
+        if not await user_can_access_project(db, auth.user.id, parent_project):
+            return result
+    result["ticket_id"] = parent_link.ticket_id
+    return result
+
+
+async def _link_response(
     ticket: Ticket,
     link: TicketTrackerLink,
     conn: OrgTrackerConnection,
     project: Project,
     *,
     can_edit: bool,
+    db: AsyncSession,
+    auth: AuthContext,
 ) -> dict:
     """The single link response body shared by GET and POST /jira/link.
 
     ``last_pushed_at`` stays None for a freshly linked (not yet published) issue;
-    the other fields read straight off the row.
+    the other fields read straight off the row. ``sprint``/``parent`` are the
+    cached Jira sprint + parent/epic (C7/C8), never written back to the ticket.
     """
     comment_sync_outbound = (conn.sync_comments or "off") in jira_sync.OUTBOUND_COMMENT_MODES
     can_send = _can_send_to_jira(link, conn, project, can_edit=can_edit)
+    sprint = _cached_sprint_response(link)
     return {
         "ticket_id": ticket.id,
         "provider": link.provider,
@@ -3716,6 +4794,8 @@ def _link_response(
         "comment_sync_outbound": comment_sync_outbound,
         "can_send_to_jira": can_send,
         "attached_not_published": link_is_attached_only(link),
+        "sprint": sprint,
+        "parent": await _parent_response(db, conn=conn, link=link, auth=auth),
     }
 
 
@@ -3760,7 +4840,18 @@ async def get_jira_link(
             conn.site_url, conn.account_email, decrypt_secret(conn.encrypted_api_token)
         )
         try:
-            issue = await client.get_issue(link.issue_key)
+            issue = await asyncio.wait_for(
+                client.get_issue(
+                    link.issue_key,
+                    sprint_field_id=conn.sprint_field_id,
+                    epic_link_field_id=conn.epic_link_field_id,
+                ),
+                timeout=60,
+            )
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(
+                504, {"error": "jira_timeout", "message": "Jira did not respond in time."}
+            ) from exc
         except TrackerError as exc:
             raise HTTPException(502, {"error": "jira_upstream_error", "message": str(exc)}) from exc
         finally:
@@ -3770,6 +4861,11 @@ async def get_jira_link(
         status = (issue.status or "")[:_LAST_STATUS_MAX]
         link.last_known_status = status or None
         link.last_status_checked_at = now
+        # Refresh the cached sprint + parent on the same read (C7/C8).
+        link.jira_sprint_id = issue.sprint_id
+        link.jira_sprint_name = issue.sprint_name
+        link.jira_sprint_state = issue.sprint_state
+        link.jira_parent_key = issue.parent_key
         await db.commit()
 
     # Two-way sync: whether this caller may tick "send to Jira" on a comment
@@ -3779,7 +4875,9 @@ async def get_jira_link(
     can_edit = auth.key_kind == "service" or await user_can_edit_project(
         db, auth.user.id, project
     )
-    return _link_response(ticket, link, conn, project, can_edit=can_edit)
+    return await _link_response(
+        ticket, link, conn, project, can_edit=can_edit, db=db, auth=auth
+    )
 
 
 @router.delete("/{project_id}/tickets/{ticket_id}/jira", status_code=204)
@@ -3809,6 +4907,13 @@ async def unlink_jira(
         target_id=ticket.id,
         before={"issue_key": link.issue_key, "issue_url": link.issue_url},
         after=None,
+    )
+    await record_ticket_event(
+        db,
+        ticket,
+        "jira_unlinked",
+        before={"issue_key": link.issue_key},
+        **_timeline_actor(auth.actor_type, auth.user.id, auth.service_key_name),
     )
     await db.delete(link)
     await db.commit()
@@ -3842,6 +4947,7 @@ async def link_jira(
             issue_key=body.issue_key,
             actor_user_id=auth.user.id,
             actor_type=auth.actor_type,
+            actor_label=auth.service_key_name,
         )
     except JiraLinkError as exc:
         raise HTTPException(
@@ -3854,7 +4960,9 @@ async def link_jira(
     can_edit = auth.key_kind == "service" or await user_can_edit_project(
         db, auth.user.id, project
     )
-    return _link_response(ticket, link, conn, project, can_edit=can_edit)
+    return await _link_response(
+        ticket, link, conn, project, can_edit=can_edit, db=db, auth=auth
+    )
 
 
 @router.post("/{project_id}/tickets/{ticket_id}/jira/pull")
@@ -3929,6 +5037,8 @@ async def pull_jira(
         "ticket": await _ticket_detail_response(
             ticket, db, show_email=await _viewer_sees_emails(db, auth, project)
         ),
-        "jira": _link_response(ticket, link, conn, project, can_edit=can_edit),
+        "jira": await _link_response(
+            ticket, link, conn, project, can_edit=can_edit, db=db, auth=auth
+        ),
         "updated_fields": updated_fields,
     }

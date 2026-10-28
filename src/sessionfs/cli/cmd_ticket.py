@@ -3,7 +3,8 @@
 Commands:
 - sfs ticket list [--assigned-to ...] [--status ...] [--priority ...]
 - sfs ticket show <id>
-- sfs ticket create --title T [--assigned-to ... | --user EMAIL|ID] [--criteria ...]
+- sfs ticket history <id> [--limit N]
+- sfs ticket create --title T [--assigned-to ... | --user EMAIL|ID] [--criteria ...] [--due YYYY-MM-DD] [--estimate 3d]
 - sfs ticket start <id> [--force] [--tool ...]
 - sfs ticket complete <id> --notes N [--files ...]
 - sfs ticket comment <id> --content C [--as PERSONA]
@@ -187,6 +188,21 @@ def show_ticket(
         f"assignee: {body.get('assigned_to') or '—'}",
         expand=False,
     ))
+    # GitHub #113 — creator, due date and estimate.
+    creator = body.get("created_by")
+    if isinstance(creator, dict):
+        creator_name = creator.get("display_name") or creator.get("email") or "—"
+        creator_persona = creator.get("persona")
+        creator_label = (
+            f"{creator_name} (persona: {creator_persona})" if creator_persona else creator_name
+        )
+        console.print(f"[dim]creator:[/dim] {creator_label}")
+    due = body.get("due_date")
+    estimate = body.get("estimated_effort")
+    if due or estimate:
+        console.print(
+            f"[dim]due:[/dim] {due or '—'}  [dim]estimate:[/dim] {estimate or '—'}"
+        )
     parent_id = body.get("parent_ticket_id")
     if parent_id:
         console.print(f"[dim]Parent Issue:[/dim] [magenta]{parent_id}[/magenta]")
@@ -216,6 +232,73 @@ def show_ticket(
         console.print(Markdown(body["completion_notes"]))
 
 
+def _event_value(v) -> str:
+    """Render a timeline before/after value for the history table."""
+    if v is None:
+        return "—"
+    if isinstance(v, (dict, list)):
+        try:
+            return json.dumps(v)
+        except TypeError:
+            return str(v)
+    return str(v)
+
+
+@ticket_app.command("history")
+@handle_errors
+def ticket_history(
+    ticket_id: str = typer.Argument(..., help="Ticket id (e.g. tk_...)"),
+    limit: int = typer.Option(
+        50, "--limit", "-n", help="Max events to show (1-200)."
+    ),
+) -> None:
+    """Print a ticket's event timeline, newest first."""
+    api_url, api_key, project_id = _resolve_project()
+    clamped = max(1, min(limit, 200))
+    s, body, _ = asyncio.run(
+        _api_request(
+            "GET",
+            f"/api/v1/projects/{project_id}/tickets/{ticket_id}/events?limit={clamped}",
+            api_url, api_key,
+        )
+    )
+    if s == 404:
+        err_console.print(f"[red]Ticket '{ticket_id}' not found.[/red]")
+        raise typer.Exit(1)
+    if s >= 400 or not isinstance(body, dict):
+        err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
+        raise typer.Exit(1)
+    events = body.get("events") or []
+    if not events:
+        console.print("[dim]No events.[/dim]")
+        return
+    table = Table(title=f"Timeline — {ticket_id}")
+    table.add_column("When")
+    table.add_column("Action")
+    table.add_column("Field")
+    table.add_column("Before")
+    table.add_column("After")
+    table.add_column("Actor", style="dim")
+    for e in events:
+        actor = e.get("actor") or {}
+        actor_label = (
+            actor.get("display_name")
+            or actor.get("persona")
+            or actor.get("label")
+            or actor.get("type")
+            or "—"
+        )
+        table.add_row(
+            str(e.get("created_at") or ""),
+            e.get("action") or "",
+            e.get("field") or "",
+            _event_value(e.get("before")),
+            _event_value(e.get("after")),
+            actor_label,
+        )
+    console.print(table)
+
+
 @ticket_app.command("create")
 @handle_errors
 def create_ticket(
@@ -238,6 +321,14 @@ def create_ticket(
     parent: str | None = typer.Option(
         None, "--parent",
         help="Optional parent Issue id (only valid when --kind task). Parent must be kind='issue' in this project.",
+    ),
+    due: str | None = typer.Option(
+        None, "--due",
+        help="Optional due date as YYYY-MM-DD.",
+    ),
+    estimate: str | None = typer.Option(
+        None, "--estimate",
+        help="Optional Jira-duration estimate like '3d', '2d 4h' or '30m'.",
     ),
     output_id: bool = typer.Option(
         False, "--output-id",
@@ -262,6 +353,10 @@ def create_ticket(
         payload["assigned_user"] = user
     if parent:
         payload["parent_ticket_id"] = parent
+    if due:
+        payload["due_date"] = due
+    if estimate:
+        payload["estimated_effort"] = estimate
     s, body, _ = asyncio.run(
         _api_request(
             "POST", f"/api/v1/projects/{project_id}/tickets", api_url, api_key,
@@ -441,6 +536,15 @@ def update_ticket_cmd(
         help="Teammate email or user id for direct-to-person assignment "
              "(mutually exclusive with `sfs ticket assign`)",
     ),
+    due: str | None = typer.Option(
+        None, "--due",
+        help="Due date as YYYY-MM-DD. Pass `none` to clear the due date.",
+    ),
+    estimate: str | None = typer.Option(
+        None, "--estimate",
+        help="Jira-duration estimate like '3d', '2d 4h' or '30m'. "
+             "Pass `none` to clear the estimate.",
+    ),
     lease_epoch: int | None = typer.Option(
         None, "--lease-epoch",
         help="Fence stale ticket workers (read from `sfs ticket show`); 409 if stale",
@@ -478,6 +582,10 @@ def update_ticket_cmd(
         payload["priority"] = priority
     if user is not None:
         payload["assigned_user"] = user
+    if due is not None:
+        payload["due_date"] = None if due.lower() == "none" else due
+    if estimate is not None:
+        payload["estimated_effort"] = None if estimate.lower() == "none" else estimate
     if acceptance_criteria_file is not None:
         try:
             with open(acceptance_criteria_file, encoding="utf-8") as f:
@@ -512,7 +620,8 @@ def update_ticket_cmd(
         err_console.print(
             "[red]At least one mutable field is required "
             "(--title / --description[-file] / --priority / "
-            "--acceptance-criteria-file / --user). lease_epoch alone is a fence, "
+            "--acceptance-criteria-file / --user / --due / --estimate). "
+            "lease_epoch alone is a fence, "
             "not a mutation. Use `sfs ticket assign` for persona "
             "reassignment.[/red]"
         )

@@ -10,6 +10,9 @@ import type { Ticket } from '../../api/client';
 export interface TicketViewer {
   canEdit: boolean;
   userId: string | null;
+  /** Project-admin standing (the project's `can_admin`): with the creator,
+   *  the only callers update_ticket admits. Unknown is treated as no. */
+  isProjectAdmin?: boolean;
 }
 
 export const TicketViewerContext = createContext<TicketViewer>({ canEdit: true, userId: null });

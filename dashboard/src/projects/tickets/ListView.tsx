@@ -3,6 +3,7 @@ import { PRIORITY_TONE, type ViewProps } from './constants';
 import { KindBadge } from './KindBadge';
 import { AssigneeLabel } from './AssigneeLabel';
 import { StatusCell } from './StatusCell';
+import { DueChip } from './DueChip';
 import { TicketDetail } from './TicketDetail';
 
 export function ListView({ tickets, projectId, selected, onSelect, onNavigate, jira }: ViewProps) {
@@ -37,6 +38,7 @@ export function ListView({ tickets, projectId, selected, onSelect, onNavigate, j
                     → <AssigneeLabel ticket={t} />
                   </span>
                 )}
+                <DueChip ticket={t} className="text-xs" />
               </div>
               <div className="font-medium truncate text-text-primary">
                 {t.title}

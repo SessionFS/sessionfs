@@ -58,6 +58,36 @@ def _valid_scopes() -> frozenset[str]:
     return VALID_SCOPES
 
 
+def _tier_coupled_scopes() -> frozenset[str]:
+    """Scopes whose lifetime is coupled to the minter's platform-admin tier
+    (same constant the server uses for the mint-time check + warning)."""
+    from sessionfs.server.routes.api_keys import PLATFORM_ADMIN_SCOPES
+    return PLATFORM_ADMIN_SCOPES
+
+
+def _print_warnings(body: dict) -> None:
+    """Print create/rotate warnings (e.g. minter tier coupling) to stderr in
+    yellow. Always stderr so stdout stays only the raw key under
+    ``--output-key``."""
+    for warning in body.get("warnings") or []:
+        if not isinstance(warning, dict):
+            continue
+        code = warning.get("code") or "warning"
+        message = warning.get("message") or code
+        err_console.print(f"[yellow]warning ({code}):[/yellow] {message}")
+
+
+def _coupling_cell(row: dict) -> str:
+    """Render the coupling column for `service-keys list`."""
+    coupling_ok = row.get("coupling_ok")
+    if coupling_ok is None:
+        return "[dim]-[/dim]"
+    if coupling_ok:
+        return "[green]ok[/green]"
+    reason = row.get("coupling_reason") or "minter no longer admin"
+    return f"[red]inactive: {reason}[/red]"
+
+
 def _print_raw_key(raw: str, output_key: bool) -> None:
     """Surface the raw key per the v0.10.10 secret-handling rules.
 
@@ -175,6 +205,7 @@ def service_keys_list(
     table.add_column("Project IDs")
     table.add_column("Expires")
     table.add_column("Active")
+    table.add_column("Coupling", no_wrap=True)
     for row in body:
         if not isinstance(row, dict):
             continue
@@ -192,6 +223,7 @@ def service_keys_list(
             projects,
             str(expires),
             active,
+            _coupling_cell(row),
         )
     console.print(table)
 
@@ -290,6 +322,7 @@ def service_keys_create(
             f"prefix={body.get('key_prefix')}"
         )
     _print_raw_key(raw, output_key)
+    _print_warnings(body)
 
 
 @service_keys_app.command("revoke")
@@ -377,14 +410,21 @@ def service_keys_rotate(
             f"prefix={body.get('key_prefix')} (old key revoked)"
         )
     _print_raw_key(raw, output_key)
+    _print_warnings(body)
 
 
 @service_keys_app.command("scopes")
 def service_keys_scopes() -> None:
-    """Print the scope vocabulary."""
+    """Print the scope vocabulary. Tier-coupled (platform-admin mint only)
+    scopes are flagged because they stop working when the minter/owner is no
+    longer an active platform admin."""
     valid = sorted(_valid_scopes())
+    coupled = _tier_coupled_scopes()
     for s in valid:
-        console.print(s)
+        if s in coupled:
+            console.print(f"{s}  [yellow](platform-admin tier-coupled)[/yellow]")
+        else:
+            console.print(s)
 
 
 # ── sfs auth keys (personal user keys) ───────────────────────────────

@@ -16,7 +16,7 @@ import hashlib
 import hmac
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
@@ -33,17 +33,20 @@ from sessionfs.server.db.models import (
     Project,
     Ticket,
     TicketComment,
+    TicketEvent,
     TicketTrackerLink,
     TrackerProjectMapping,
     TrackerSyncEvent,
     User,
 )
 from sessionfs.server.integrations.trackers.base import (
+    TrackerBoard,
     TrackerError,
     TrackerIssue,
     TrackerIssueType,
     TrackerProject,
     TrackerProjectPage,
+    TrackerSprint,
 )
 from sessionfs.server.integrations.trackers.jira import validate_site_url
 
@@ -284,16 +287,64 @@ def fake_jira(monkeypatch):
 
         async def create_issue(self, *a, **k) -> TrackerIssue:
             self.calls["create_issue"] += 1
-            return TrackerIssue(key="ACME-1", url=f"{self.site_url}/browse/ACME-1", status="", id="10001")
+            self.state.setdefault("create_extra_fields", []).append(k.get("extra_fields"))
+            self.state.setdefault("create_scheduling", []).append(
+                {key: k.get(key) for key in ("due_date", "original_estimate")}
+            )
+            # A per-call script lets a test fail one attempt then succeed the
+            # next (sprint field rejected / parent rejected → retry without it).
+            script = self.state.get("create_script") or []
+            if script:
+                step = script.pop(0)
+                if "error" in step:
+                    raise TrackerError(step["error"][1], status_code=step["error"][0])
+            err = self.state.get("create_error")
+            if err is not None:
+                status_code, message = err
+                raise TrackerError(message, status_code=status_code)
+            if self.state.get("scheduling_400"):
+                self.state["scheduling_400"] = False
+                raise TrackerError(
+                    self.state.get(
+                        "scheduling_400_message",
+                        "Field 'duedate' cannot be set. It is not on the appropriate screen, or unknown.",
+                    ),
+                    status_code=400,
+                )
+            key = self.state.get("create_issue_key", "ACME-1")
+            return TrackerIssue(key=key, url=f"{self.site_url}/browse/{key}", status="", id="10001")
 
         async def update_issue(self, issue_key, *a, **k) -> TrackerIssue:
             self.calls["update_issue"] += 1
+            self.state.setdefault("update_extra_fields", []).append(k.get("extra_fields"))
+            self.state.setdefault("update_scheduling", []).append(
+                {key: k.get(key) for key in ("due_date", "original_estimate")}
+            )
+            # A per-call script (parallel to ``create_script``) lets a test fail
+            # one attempt then succeed the next (parent rejected → retry).
+            script = self.state.get("update_script") or []
+            if script:
+                step = script.pop(0)
+                if "error" in step:
+                    raise TrackerError(step["error"][1], status_code=step["error"][0])
             if self.state["fail_update"]:
                 raise TrackerError("Jira API 500: boom")
+            if self.state.get("scheduling_400"):
+                self.state["scheduling_400"] = False
+                raise TrackerError(
+                    self.state.get(
+                        "scheduling_400_message",
+                        "Field 'timetracking' cannot be set. It is not on the appropriate screen, or unknown.",
+                    ),
+                    status_code=400,
+                )
             return TrackerIssue(key=issue_key, url=f"{self.site_url}/browse/{issue_key}", status="")
 
-        async def get_issue(self, issue_key) -> TrackerIssue:
+        async def get_issue(self, issue_key, sprint_field_id=None, epic_link_field_id=None) -> TrackerIssue:
             self.calls["get_issue"] += 1
+            self.state.setdefault("get_issue_fields", []).append(
+                (sprint_field_id, epic_link_field_id)
+            )
             if self.state.get("get_issue_timeout"):
                 raise asyncio.TimeoutError()
             err = self.state.get("get_issue_error")
@@ -306,6 +357,66 @@ def fake_jira(monkeypatch):
                 status=self.state.get("status", "Done"),
                 id=self.state.get("issue_id", "10001"),
                 project_key=self.state.get("issue_project_key", "ACME"),
+                sprint_id=self.state.get("issue_sprint_id"),
+                sprint_name=self.state.get("issue_sprint_name"),
+                sprint_state=self.state.get("issue_sprint_state"),
+                parent_key=self.state.get("issue_parent_key"),
+                due_date=self.state.get("due_date"),
+                original_estimate=self.state.get("original_estimate"),
+            )
+
+        async def detect_fields(self) -> dict:
+            err = self.state.get("detect_fields_error")
+            if err is not None:
+                status_code, message = err
+                raise TrackerError(message, status_code=status_code)
+            return self.state.get(
+                "detected_fields",
+                {"sprint_field_id": None, "epic_link_field_id": None},
+            )
+
+        async def list_boards(self, project_key, *, limit=10) -> list[TrackerBoard]:
+            if self.state.get("list_boards_timeout"):
+                raise asyncio.TimeoutError()
+            err = self.state.get("list_boards_error")
+            if err is not None:
+                status_code, message = err
+                raise TrackerError(message, status_code=status_code)
+            return list(self.state.get("boards", [TrackerBoard(id="1", name="Board 1")]))
+
+        async def list_sprints(self, board) -> list[TrackerSprint]:
+            if self.state.get("list_sprints_timeout"):
+                raise asyncio.TimeoutError()
+            err = self.state.get("list_sprints_error")
+            if err is not None:
+                status_code, message = err
+                raise TrackerError(message, status_code=status_code)
+            sprints = self.state.get("sprints", [])
+            if isinstance(sprints, dict):
+                # Keyed by board id, so different boards expose different sets.
+                sprints = sprints.get(board.id, [])
+            return list(sprints)
+
+        async def move_issue_to_sprint(self, issue_key, sprint_id) -> None:
+            self.state.setdefault("sprint_moves", []).append((issue_key, sprint_id))
+            err = self.state.get("move_sprint_error")
+            if err is not None:
+                status_code, message = err
+                raise TrackerError(message, status_code=status_code)
+
+        async def get_sprint(self, sprint_id) -> TrackerSprint:
+            self.state.setdefault("get_sprint_calls", []).append(sprint_id)
+            if self.state.get("get_sprint_timeout"):
+                raise asyncio.TimeoutError()
+            err = self.state.get("get_sprint_error")
+            if err is not None:
+                status_code, message = err
+                raise TrackerError(message, status_code=status_code)
+            return TrackerSprint(
+                id=str(sprint_id),
+                name=self.state.get("sprint_name", "Sprint 42"),
+                state=self.state.get("sprint_state", "active"),
+                board_name="",
             )
 
         async def get_issue_summary_and_description(self, issue_key):
@@ -553,6 +664,243 @@ async def test_connection_delete_removes_and_audits(client: AsyncClient, db_sess
     assert _TOKEN not in (events[-1].before or "")
 
 
+async def _put_connection(client: AsyncClient, org: Organization, key: str, **overrides) -> dict:
+    base = {"site_url": "https://acme.atlassian.net", "account_email": "jira@acme.com",
+            "api_token": _TOKEN, "default_template": "agile"}
+    resp = await client.put(
+        f"/api/v1/orgs/{org.id}/integrations/jira", headers=_hdrs(key), json={**base, **overrides}
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+@pytest.mark.asyncio
+async def test_connection_put_detects_and_overrides_sprint_and_epic_fields(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """Save discovers the custom fields; an explicit override wins over detection."""
+    org = await _org(db_session)
+    _, key = await _member(db_session, org, "admin")
+    fake_jira.state["detected_fields"] = {
+        "sprint_field_id": "customfield_10010",
+        "epic_link_field_id": "customfield_10011",
+    }
+
+    body = await _put_connection(client, org, key)
+    assert body["sprint_field_id"] == "customfield_10010"
+    assert body["epic_link_field_id"] == "customfield_10011"
+
+    # Override the sprint field (epic-link stays detected on the re-save).
+    body = await _put_connection(client, org, key, sprint_field_id="customfield_99999")
+    assert body["sprint_field_id"] == "customfield_99999"
+    assert body["epic_link_field_id"] == "customfield_10011"
+
+    conn = (await db_session.execute(
+        select(OrgTrackerConnection).where(OrgTrackerConnection.org_id == org.id)
+    )).scalar_one()
+    assert conn.sprint_field_id == "customfield_99999"
+    assert conn.epic_link_field_id == "customfield_10011"
+
+
+@pytest.mark.asyncio
+async def test_connection_put_explicit_null_clears_sprint_field(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """An explicit ``null`` clears a detected field (no field on the site)."""
+    org = await _org(db_session)
+    _, key = await _member(db_session, org, "admin")
+    fake_jira.state["detected_fields"] = {
+        "sprint_field_id": "customfield_10010",
+        "epic_link_field_id": None,
+    }
+
+    body = await _put_connection(client, org, key)
+    assert body["sprint_field_id"] == "customfield_10010"
+
+    body = await _put_connection(client, org, key, sprint_field_id=None)
+    assert body["sprint_field_id"] is None
+    conn = (await db_session.execute(
+        select(OrgTrackerConnection).where(OrgTrackerConnection.org_id == org.id)
+    )).scalar_one()
+    assert conn.sprint_field_id is None
+
+
+@pytest.mark.asyncio
+async def test_connection_put_omitted_override_keeps_existing_override(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """L3 — re-saving with the override omitted keeps the stored value, even
+    when detection would now report a different id."""
+    org = await _org(db_session)
+    _, key = await _member(db_session, org, "admin")
+    fake_jira.state["detected_fields"] = {
+        "sprint_field_id": "customfield_10010",
+        "epic_link_field_id": "customfield_10011",
+    }
+
+    body = await _put_connection(client, org, key)
+    assert body["sprint_field_id"] == "customfield_10010"
+    assert body["epic_link_field_id"] == "customfield_10011"
+
+    # Manually override the sprint field.
+    await _put_connection(client, org, key, sprint_field_id="customfield_99999")
+
+    # Detection now reports different ids; an omitted override must keep the
+    # manual value rather than silently reverting to the detected id.
+    fake_jira.state["detected_fields"] = {
+        "sprint_field_id": "customfield_20020",
+        "epic_link_field_id": "customfield_20021",
+    }
+    body = await _put_connection(client, org, key)
+    assert body["sprint_field_id"] == "customfield_99999"
+    assert body["epic_link_field_id"] == "customfield_10011"
+
+    conn = (await db_session.execute(
+        select(OrgTrackerConnection).where(OrgTrackerConnection.org_id == org.id)
+    )).scalar_one()
+    assert conn.sprint_field_id == "customfield_99999"
+    assert conn.epic_link_field_id == "customfield_10011"
+
+
+@pytest.mark.asyncio
+async def test_connection_put_site_change_redetects_field_ids(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """Custom field ids belong to one Jira site: moving the connection to a
+    different site re-detects them instead of keeping the old site's ids."""
+    org = await _org(db_session)
+    _, key = await _member(db_session, org, "admin")
+    fake_jira.state["detected_fields"] = {
+        "sprint_field_id": "customfield_10010",
+        "epic_link_field_id": "customfield_10011",
+    }
+    await _put_connection(client, org, key, sprint_field_id="customfield_99999")
+
+    fake_jira.state["detected_fields"] = {
+        "sprint_field_id": "customfield_20020",
+        "epic_link_field_id": None,
+    }
+    body = await _put_connection(client, org, key, site_url="https://other.atlassian.net")
+    assert body["sprint_field_id"] == "customfield_20020"
+    assert body["epic_link_field_id"] is None
+
+    # An explicit value on the same request still wins on a site change.
+    body = await _put_connection(
+        client, org, key, site_url="https://third.atlassian.net",
+        sprint_field_id="customfield_30030",
+    )
+    assert body["sprint_field_id"] == "customfield_30030"
+
+
+@pytest.mark.asyncio
+async def test_connection_put_rejects_bad_detected_field_id(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """L3 — a detected id that isn't ``customfield_<n>`` falls back to None."""
+    org = await _org(db_session)
+    _, key = await _member(db_session, org, "admin")
+    fake_jira.state["detected_fields"] = {
+        "sprint_field_id": "not_a_customfield",
+        "epic_link_field_id": "customfield_10011",
+    }
+
+    body = await _put_connection(client, org, key)
+    assert body["sprint_field_id"] is None
+    assert body["epic_link_field_id"] == "customfield_10011"
+
+    conn = (await db_session.execute(
+        select(OrgTrackerConnection).where(OrgTrackerConnection.org_id == org.id)
+    )).scalar_one()
+    assert conn.sprint_field_id is None
+
+
+@pytest.mark.asyncio
+async def test_connection_put_detection_failure_does_not_fail_save(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """L3 — field detection is best-effort; a detection failure must not fail
+    the connection save."""
+    org = await _org(db_session)
+    _, key = await _member(db_session, org, "admin")
+    fake_jira.state["detect_fields_error"] = (500, "upstream boom")
+
+    body = await _put_connection(client, org, key)
+    assert body["sprint_field_id"] is None
+    assert body["epic_link_field_id"] is None
+
+    conn = (await db_session.execute(
+        select(OrgTrackerConnection).where(OrgTrackerConnection.org_id == org.id)
+    )).scalar_one()
+    assert conn.sprint_field_id is None
+    assert conn.epic_link_field_id is None
+
+
+@pytest.mark.asyncio
+async def test_connection_put_rejects_bad_sprint_field_id(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org = await _org(db_session)
+    _, key = await _member(db_session, org, "admin")
+    resp = await client.put(
+        f"/api/v1/orgs/{org.id}/integrations/jira", headers=_hdrs(key),
+        json={"site_url": "https://acme.atlassian.net", "account_email": "jira@acme.com",
+              "api_token": _TOKEN, "default_template": "agile", "sprint_field_id": "not_a_field"},
+    )
+    assert resp.status_code == 422, resp.text
+
+
+@pytest.mark.asyncio
+async def test_detect_fields_endpoint_returns_both_fields(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org = await _org(db_session)
+    user, key = await _member(db_session, org, "admin")
+    await _insert_connection(db_session, org, user)
+    fake_jira.state["detected_fields"] = {
+        "sprint_field_id": "customfield_10010",
+        "epic_link_field_id": "customfield_10011",
+    }
+    resp = await client.post(f"/api/v1/orgs/{org.id}/jira/fields/detect", headers=_hdrs(key))
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "sprint_field_id": "customfield_10010",
+        "epic_link_field_id": "customfield_10011",
+    }
+
+
+@pytest.mark.asyncio
+async def test_detect_fields_endpoint_epic_missing(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org = await _org(db_session)
+    user, key = await _member(db_session, org, "admin")
+    await _insert_connection(db_session, org, user)
+    fake_jira.state["detected_fields"] = {
+        "sprint_field_id": "customfield_10010",
+        "epic_link_field_id": None,
+    }
+    resp = await client.post(f"/api/v1/orgs/{org.id}/jira/fields/detect", headers=_hdrs(key))
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"sprint_field_id": "customfield_10010", "epic_link_field_id": None}
+
+
+@pytest.mark.asyncio
+async def test_detect_fields_endpoint_validates_ids(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """L3 — the on-demand detect endpoint falls back to None for a non-standard id."""
+    org = await _org(db_session)
+    user, key = await _member(db_session, org, "admin")
+    await _insert_connection(db_session, org, user)
+    fake_jira.state["detected_fields"] = {
+        "sprint_field_id": "gh-sprint",
+        "epic_link_field_id": "customfield_10011",
+    }
+    resp = await client.post(f"/api/v1/orgs/{org.id}/jira/fields/detect", headers=_hdrs(key))
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"sprint_field_id": None, "epic_link_field_id": "customfield_10011"}
+
+
 # ── mappings + projects + health ──
 
 
@@ -798,6 +1146,925 @@ async def test_ticket_route_gates_on_project_org_tier(
     assert resp.json()["error"]["details"]["plan_scope"] == "project"
 
 
+# ── sprints (GitHub #113 C7) ──
+
+
+@pytest.mark.asyncio
+async def test_list_sprints_dedupes_and_sorts_active_first(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, _user, key, project, _ticket = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint="customfield_10010", epic=None)
+    fake_jira.state["boards"] = [
+        TrackerBoard(id="1", name="Board A"),
+        TrackerBoard(id="2", name="Board B"),
+    ]
+    fake_jira.state["sprints"] = {
+        "1": [
+            TrackerSprint(id="10", name="Active", state="active", board_name="Board A",
+                          start_date="2026-01-01", end_date="2026-01-14"),
+            TrackerSprint(id="11", name="Future B", state="future", board_name="Board A",
+                          start_date="2026-02-01", end_date="2026-02-14"),
+        ],
+        "2": [
+            # Same sprint id on a second board: keep the first board's name.
+            TrackerSprint(id="10", name="Active (dup)", state="active", board_name="Board B",
+                          start_date="2026-01-01", end_date="2026-01-14"),
+            TrackerSprint(id="12", name="Future A", state="future", board_name="Board B",
+                          start_date="2026-01-15", end_date="2026-01-28"),
+        ],
+    }
+    resp = await client.get(f"/api/v1/projects/{project.id}/jira/sprints", headers=_hdrs(key))
+    assert resp.status_code == 200, resp.text
+    sprints = resp.json()["sprints"]
+    assert [s["id"] for s in sprints] == [10, 12, 11]
+    assert sprints[0]["name"] == "Active"
+    assert sprints[0]["board_name"] == "Board A"
+    assert sprints[1]["state"] == "future"
+
+
+@pytest.mark.asyncio
+async def test_list_sprints_unavailable_when_jira_software_missing(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, _user, key, project, _ticket = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint="customfield_10010", epic=None)
+    fake_jira.state["list_boards_error"] = (404, "no agile boards")
+    resp = await client.get(f"/api/v1/projects/{project.id}/jira/sprints", headers=_hdrs(key))
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"sprints": [], "unavailable": "jira_software_not_available"}
+
+
+@pytest.mark.asyncio
+async def test_list_sprints_unavailable_when_sprint_field_unknown(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, _user, key, project, _ticket = await _ready(db_session)
+    # The connection has no sprint field, so the endpoint must short-circuit
+    # without calling Jira — a Jira call would trip the scripted timeout below.
+    fake_jira.state["list_boards_timeout"] = True
+    resp = await client.get(f"/api/v1/projects/{project.id}/jira/sprints", headers=_hdrs(key))
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"sprints": [], "unavailable": "jira_sprint_field_unknown"}
+
+
+@pytest.mark.asyncio
+async def test_list_sprints_timeout_and_upstream_error_map_to_504_and_502(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, _user, key, project, _ticket = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint="customfield_10010", epic=None)
+    fake_jira.state["list_boards_timeout"] = True
+    resp = await client.get(f"/api/v1/projects/{project.id}/jira/sprints", headers=_hdrs(key))
+    assert resp.status_code == 504
+    assert resp.json()["error"]["details"]["error"] == "jira_timeout"
+
+    del fake_jira.state["list_boards_timeout"]
+    fake_jira.state["list_boards_error"] = (500, "upstream boom")
+    resp = await client.get(f"/api/v1/projects/{project.id}/jira/sprints", headers=_hdrs(key))
+    assert resp.status_code == 502
+    assert resp.json()["error"]["details"]["error"] == "jira_upstream_error"
+
+
+@pytest.mark.asyncio
+async def test_list_sprints_reader_403_in_restricted_org(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    from sessionfs.server.db.models import (
+        ProjectGroup,
+        ProjectGroupAccess,
+        ProjectGroupMember,
+    )
+
+    org, _user, _key, project, _ticket = await _ready(db_session)
+    reader, reader_key = await _member(db_session, org, "member")
+    group = ProjectGroup(
+        id=f"pg_{uuid.uuid4().hex[:12]}", org_id=org.id, slug="g", name="G",
+        created_at=datetime.now(timezone.utc), updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(group)
+    await db_session.flush()
+    db_session.add(ProjectGroupAccess(group_id=group.id, project_id=project.id))
+    db_session.add(ProjectGroupMember(group_id=group.id, user_id=reader.id, role="reader"))
+    org.settings = json.dumps({"general": {"restrict_project_visibility": True}})
+    await db_session.commit()
+    resp = await client.get(f"/api/v1/projects/{project.id}/jira/sprints", headers=_hdrs(reader_key))
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["error"]["code"] == "project_edit_forbidden"
+
+
+@pytest.mark.asyncio
+async def test_list_sprints_gated_on_enterprise(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, _user, key, project, _ticket = await _ready(db_session, tier="free")
+    resp = await client.get(f"/api/v1/projects/{project.id}/jira/sprints", headers=_hdrs(key))
+    assert resp.status_code == 403
+    assert resp.json()["error"]["details"]["error"] == "upgrade_required"
+
+
+@pytest.mark.asyncio
+async def test_list_sprints_unmapped_409(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org = await _org(db_session)
+    user, key = await _member(db_session, org, "admin")
+    await _insert_connection(db_session, org, user)
+    project = await _project(db_session, user, org)
+    resp = await client.get(f"/api/v1/projects/{project.id}/jira/sprints", headers=_hdrs(key))
+    assert resp.status_code == 409
+    assert resp.json()["error"]["details"]["error"] == "jira_project_unmapped"
+
+
+# ── publish sprint + parent/epic (GitHub #113 C7/C8) ──
+
+
+async def _set_conn_fields(
+    db: AsyncSession, org: Organization, *, sprint: str | None, epic: str | None
+) -> None:
+    conn = (await db.execute(
+        select(OrgTrackerConnection).where(OrgTrackerConnection.org_id == org.id)
+    )).scalar_one()
+    conn.sprint_field_id = sprint
+    conn.epic_link_field_id = epic
+    await db.commit()
+
+
+async def _preview_publish_body(
+    client: AsyncClient, project: Project, ticket: Ticket, key: str, **extra: object
+) -> dict:
+    preview = (await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/preview", headers=_hdrs(key)
+    )).json()
+    body: dict = {
+        "summary": preview["summary"],
+        "sections": preview["sections"],
+        "confirm": True,
+    }
+    body.update(extra)
+    return body
+
+
+async def _link_parent(
+    db: AsyncSession,
+    org: Organization,
+    project: Project,
+    user: User,
+    *,
+    parent_key: str,
+    parent_project: Project | None = None,
+) -> tuple[Ticket, Ticket]:
+    """Create a parent ticket (linked to ``parent_key``) + a child referencing it."""
+    parent = await _ticket(db, parent_project or project, user)
+    db.add(TicketTrackerLink(
+        ticket_id=parent.id, org_id=org.id, provider="jira",
+        status="linked", site_url="https://acme.atlassian.net",
+        issue_key=parent_key, issue_url=f"https://acme.atlassian.net/browse/{parent_key}",
+    ))
+    await db.commit()
+    child = await _ticket(db, project, user)
+    child.parent_ticket_id = parent.id
+    await db.commit()
+    return child, parent
+
+
+@pytest.mark.asyncio
+async def test_publish_create_sets_sprint_field_inline(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint="customfield_10010", epic=None)
+
+    body = await _preview_publish_body(client, project, ticket, key, sprint_id=42)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=body,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["warnings"] == []
+    # The create path sets the sprint inline via the discovered field.
+    assert fake_jira.state["create_extra_fields"][0] == {"customfield_10010": 42}
+    assert fake_jira.state.get("sprint_moves", []) == []
+
+
+@pytest.mark.asyncio
+async def test_publish_update_moves_issue_to_sprint(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint="customfield_10010", epic=None)
+
+    body = await _preview_publish_body(client, project, ticket, key)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json={**body, "sprint_id": 42},
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp2 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json={**body, "sprint_id": 43},
+    )
+    assert resp2.status_code == 200, resp2.text
+    assert resp2.json()["warnings"] == []
+    # The update path uses the Agile move API, not the inline sprint field.
+    assert fake_jira.state["sprint_moves"] == [("ACME-1", 43)]
+
+
+@pytest.mark.asyncio
+async def test_publish_update_sprint_move_failure_warns(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint="customfield_10010", epic=None)
+
+    body = await _preview_publish_body(client, project, ticket, key)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json={**body, "sprint_id": 42},
+    )
+    assert resp.status_code == 200, resp.text
+
+    fake_jira.state["move_sprint_error"] = (500, "boom")
+    resp2 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json={**body, "sprint_id": 43},
+    )
+    assert resp2.status_code == 200, resp2.text
+    assert "jira_sprint_not_set:move_failed" in resp2.json()["warnings"]
+
+
+@pytest.mark.asyncio
+async def test_publish_with_sprint_requires_sprint_field(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    body = await _preview_publish_body(client, project, ticket, key, sprint_id=42)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=body,
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["details"]["error"] == "jira_sprint_field_unknown"
+
+
+@pytest.mark.asyncio
+async def test_publish_create_sends_linked_parent(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    ticket, parent = await _link_parent(db_session, org, project, user, parent_key="PARENT-1")
+
+    body = await _preview_publish_body(client, project, ticket, key)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=body,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["warnings"] == []
+    assert fake_jira.state["create_extra_fields"][0] == {"parent": {"key": "PARENT-1"}}
+
+
+@pytest.mark.asyncio
+async def test_publish_create_retries_parent_via_epic_link_field(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint=None, epic="customfield_10011")
+    ticket, parent = await _link_parent(db_session, org, project, user, parent_key="PARENT-1")
+
+    fake_jira.state["create_script"] = [
+        {"error": (400, "parent field is not available on this issue type")},
+    ]
+
+    body = await _preview_publish_body(client, project, ticket, key)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=body,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["warnings"] == []
+    # The standard parent was rejected; the retry used the epic-link field with
+    # the bare key.
+    assert fake_jira.state["create_extra_fields"] == [
+        {"parent": {"key": "PARENT-1"}},
+        {"customfield_10011": "PARENT-1"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_publish_create_parent_both_attempts_fail_warns(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint=None, epic="customfield_10011")
+    ticket, parent = await _link_parent(db_session, org, project, user, parent_key="PARENT-1")
+
+    fake_jira.state["create_script"] = [
+        {"error": (400, "parent field is not available on this issue type")},
+        {"error": (400, "Field 'customfield_10011' cannot be set. It is not on the appropriate screen, or unknown.")},
+    ]
+
+    body = await _preview_publish_body(client, project, ticket, key)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=body,
+    )
+    assert resp.status_code == 200, resp.text
+    assert "jira_parent_not_set" in resp.json()["warnings"]
+
+
+@pytest.mark.asyncio
+async def test_publish_update_retries_parent_via_epic_link_then_drops(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """M3 — the update path uses the same parent → epic-link → drop ladder and
+    warns ``jira_parent_not_set`` when both are refused."""
+    org, user, key, project, child = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint=None, epic="customfield_10011")
+    child, parent = await _link_parent(db_session, org, project, user, parent_key="PARENT-1")
+    # Link the child so the publish takes the update path; its cached parent is
+    # None, so the (changed) parent is sent.
+    db_session.add(TicketTrackerLink(
+        ticket_id=child.id, org_id=org.id, provider="jira",
+        status="linked", site_url="https://acme.atlassian.net",
+        issue_key="CHILD-1", issue_url="https://acme.atlassian.net/browse/CHILD-1",
+    ))
+    await db_session.commit()
+
+    fake_jira.state["update_script"] = [
+        {"error": (400, "parent field is not available on this issue type")},
+        {"error": (400, "Field 'customfield_10011' cannot be set. It is not on the appropriate screen, or unknown.")},
+    ]
+
+    body = await _preview_publish_body(client, project, child, key)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{child.id}/jira/publish",
+        headers=_hdrs(key), json={**body, "overwrite_existing": True},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "jira_parent_not_set" in resp.json()["warnings"]
+    # parent → epic-link → drop, matching the create-path ladder.
+    assert fake_jira.state["update_extra_fields"] == [
+        {"parent": {"key": "PARENT-1"}},
+        {"customfield_10011": "PARENT-1"},
+        None,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_publish_create_500_with_sprint_and_parent_is_not_retried(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """H1 — a non-400 failure is never retried, even when droppable fields
+    (sprint + parent) are set on the create."""
+    org, user, key, project, ticket = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint="customfield_10010", epic="customfield_10011")
+    ticket, parent = await _link_parent(db_session, org, project, user, parent_key="PARENT-1")
+
+    fake_jira.state["create_error"] = (500, "upstream boom")
+
+    body = await _preview_publish_body(client, project, ticket, key, sprint_id=42)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=body,
+    )
+    assert resp.status_code == 502
+    assert resp.json()["error"]["details"]["error"] == "jira_upstream_error"
+    assert fake_jira[0].calls["create_issue"] == 1
+
+
+@pytest.mark.asyncio
+async def test_publish_create_transport_error_with_sprint_and_parent_is_not_retried(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """H1 — a transport error (status None) is also not retried."""
+    org, user, key, project, ticket = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint="customfield_10010", epic="customfield_10011")
+    ticket, parent = await _link_parent(db_session, org, project, user, parent_key="PARENT-1")
+
+    fake_jira.state["create_error"] = (None, "connection reset")
+
+    body = await _preview_publish_body(client, project, ticket, key, sprint_id=42)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=body,
+    )
+    assert resp.status_code == 502
+    assert resp.json()["error"]["details"]["error"] == "jira_upstream_error"
+    assert fake_jira[0].calls["create_issue"] == 1
+
+
+@pytest.mark.asyncio
+async def test_publish_create_400_parent_then_502_fails_after_one_retry(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """H1 — a 400 naming parent falls back to the epic-link field exactly once;
+    the follow-up 502 is a non-400, so it re-raises and the publish fails."""
+    org, user, key, project, ticket = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint=None, epic="customfield_10011")
+    ticket, parent = await _link_parent(db_session, org, project, user, parent_key="PARENT-1")
+
+    fake_jira.state["create_script"] = [
+        {"error": (400, "parent field is not available on this issue type")},
+        {"error": (502, "bad gateway")},
+    ]
+
+    body = await _preview_publish_body(client, project, ticket, key)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=body,
+    )
+    assert resp.status_code == 502
+    assert resp.json()["error"]["details"]["error"] == "jira_upstream_error"
+    # parent → epic-link fallback, then the non-400 stops the ladder.
+    assert fake_jira[0].calls["create_issue"] == 2
+    assert fake_jira.state["create_extra_fields"] == [
+        {"parent": {"key": "PARENT-1"}},
+        {"customfield_10011": "PARENT-1"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_publish_create_400_naming_non_droppable_field_is_not_retried(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """H1 — a 400 that names no droppable field raises without any retry."""
+    org, user, key, project, ticket = await _ready(db_session)
+    ticket.due_date = date(2026, 11, 15)
+    await db_session.commit()
+
+    fake_jira.state["create_script"] = [
+        {"error": (400, "Field 'labels' cannot be set. It is not on the appropriate screen.")},
+    ]
+
+    body = await _preview_publish_body(client, project, ticket, key)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=body,
+    )
+    assert resp.status_code == 502
+    assert resp.json()["error"]["details"]["error"] == "jira_upstream_error"
+    assert fake_jira[0].calls["create_issue"] == 1
+
+
+@pytest.mark.asyncio
+async def test_publish_create_sequential_scheduling_rejection_drops_both(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """H1 — sequential 400s rejecting each scheduling field in turn drop both."""
+    org, user, key, project, ticket = await _ready(db_session)
+    ticket.due_date = date(2026, 11, 15)
+    ticket.estimated_effort = "2d 4h"
+    await db_session.commit()
+
+    fake_jira.state["create_script"] = [
+        {"error": (400, "Field 'duedate' cannot be set. It is not on the appropriate screen, or unknown.")},
+        {"error": (400, "Field 'timetracking' cannot be set. It is not on the appropriate screen, or unknown.")},
+    ]
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert resp.status_code == 200, resp.text
+    assert set(resp.json()["warnings"]) == {
+        "jira_field_not_on_screen:duedate",
+        "jira_field_not_on_screen:timetracking",
+    }
+    # duedate rejected → dropped; timetracking rejected → dropped; succeeds empty.
+    assert fake_jira.state["create_scheduling"] == [
+        {"due_date": "2026-11-15", "original_estimate": "2d 4h"},
+        {"due_date": None, "original_estimate": "2d 4h"},
+        {"due_date": None, "original_estimate": None},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_publish_update_500_is_not_retried(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """H1 — the update path stops on a non-400 too, without any retry."""
+    org, user, key, project, ticket = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint=None, epic="customfield_10011")
+    ticket, parent = await _link_parent(db_session, org, project, user, parent_key="PARENT-1")
+    db_session.add(TicketTrackerLink(
+        ticket_id=ticket.id, org_id=org.id, provider="jira",
+        status="linked", site_url="https://acme.atlassian.net",
+        issue_key="ACME-1", issue_url="https://acme.atlassian.net/browse/ACME-1",
+    ))
+    await db_session.commit()
+
+    fake_jira.state["update_script"] = [
+        {"error": (500, "upstream boom")},
+    ]
+
+    body = await _preview_publish_body(client, project, ticket, key)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json={**body, "overwrite_existing": True},
+    )
+    assert resp.status_code == 502
+    assert resp.json()["error"]["details"]["error"] == "jira_upstream_error"
+    assert fake_jira[0].calls["update_issue"] == 1
+
+
+@pytest.mark.asyncio
+async def test_adopt_retries_parent_via_epic_link_then_drops(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """M3 — a timed-out create that is later adopted runs the same
+    parent → epic-link → drop ladder on the adopt-path update and warns
+    ``jira_parent_not_set`` when both are refused."""
+    monkeypatch.setattr("sessionfs.server.routes.jira._ADOPT_RETRY_DELAY_SECONDS", 0.0)
+    org, user, key, project, ticket = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint=None, epic="customfield_10011")
+    ticket, parent = await _link_parent(db_session, org, project, user, parent_key="PARENT-1")
+    calls = {"create": 0, "search": 0, "update": 0}
+    update_fields: list[dict | None] = []
+    update_script = [
+        (400, "parent field is not available on this issue type"),
+        (400, "Field 'customfield_10011' cannot be set. It is not on the appropriate screen, or unknown."),
+    ]
+
+    class TimeoutThenFoundFake:
+        def __init__(self, site_url, account_email, api_token, *, transport=None):
+            self.site_url = validate_site_url(site_url)
+
+        async def aclose(self):
+            pass
+
+        async def create_issue(self, *a, **k):
+            calls["create"] += 1
+            raise asyncio.TimeoutError
+
+        async def myself_account_id(self):
+            return "a1"
+
+        async def search_issue_by_label(self, project_key, label):
+            calls["search"] += 1
+            return TrackerIssue(
+                key="ACME-9",
+                url=f"{self.site_url}/browse/ACME-9",
+                status="",
+                id="10009",
+                project_key="ACME",
+                creator_account_id="a1",
+                reporter_account_id="a1",
+                created_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
+            )
+
+        async def update_issue(self, issue_key, *a, **k):
+            calls["update"] += 1
+            update_fields.append(k.get("extra_fields"))
+            if update_script:
+                status_code, message = update_script.pop(0)
+                raise TrackerError(message, status_code=status_code)
+            return TrackerIssue(
+                key=issue_key, url=f"{self.site_url}/browse/{issue_key}", status=""
+            )
+
+    monkeypatch.setattr("sessionfs.server.routes.jira.JiraClient", TimeoutThenFoundFake)
+
+    r1 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish", headers=_hdrs(key),
+        json=_PUBLISH_BODY,
+    )
+    assert r1.status_code == 504
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+    )).scalar_one()
+    assert link.status == "unknown"
+    await db_session.commit()
+
+    r2 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish", headers=_hdrs(key),
+        json=_PUBLISH_BODY,
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["issue_key"] == "ACME-9"
+    assert "jira_parent_not_set" in r2.json()["warnings"]
+    # The first timed-out create, one label search, then parent → epic-link →
+    # drop on the adopt-path update.
+    assert calls == {"create": 1, "search": 1, "update": 3}
+    assert update_fields == [
+        {"parent": {"key": "PARENT-1"}},
+        {"customfield_10011": "PARENT-1"},
+        None,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_publish_response_returns_sprint_and_parent(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """M4 — the publish response carries the cached sprint + parent in the same
+    shape as GET /jira, and the cache is persisted on the link row."""
+    org, user, key, project, ticket = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint="customfield_10010", epic=None)
+    ticket, parent = await _link_parent(db_session, org, project, user, parent_key="PARENT-1")
+
+    body = await _preview_publish_body(client, project, ticket, key, sprint_id=42)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=body,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["warnings"] == []
+    # The sprint name/state are fetched from the Agile API right away, not left
+    # null until a later pull.
+    assert data["sprint"] == {"id": 42, "name": "Sprint 42", "state": "active"}
+    assert data["parent"] == {"key": "PARENT-1", "ticket_id": parent.id}
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink)
+        .where(TicketTrackerLink.ticket_id == ticket.id)
+        .execution_options(populate_existing=True)
+    )).scalar_one()
+    assert link.jira_sprint_id == "42"
+    assert link.jira_sprint_name == "Sprint 42"
+    assert link.jira_sprint_state == "active"
+    assert link.jira_parent_key == "PARENT-1"
+
+
+@pytest.mark.asyncio
+async def test_publish_sprint_detail_failure_leaves_name_state_null(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """M4b — a failed Agile sprint read after a successful sprint set is
+    swallowed: the publish still succeeds, no warning is added, and the cached
+    name/state stay null (they'll be filled by a later pull)."""
+    org, user, key, project, ticket = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint="customfield_10010", epic=None)
+
+    fake_jira.state["get_sprint_error"] = (500, "sprint read boom")
+    body = await _preview_publish_body(client, project, ticket, key, sprint_id=42)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=body,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["warnings"] == []
+    assert data["sprint"] == {"id": 42, "name": None, "state": None}
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink)
+        .where(TicketTrackerLink.ticket_id == ticket.id)
+        .execution_options(populate_existing=True)
+    )).scalar_one()
+    assert link.jira_sprint_id == "42"
+    assert link.jira_sprint_name is None
+    assert link.jira_sprint_state is None
+
+
+@pytest.mark.asyncio
+async def test_publish_create_unlinked_parent_warns(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    parent = await _ticket(db_session, project, user)
+    ticket.parent_ticket_id = parent.id
+    await db_session.commit()
+
+    body = await _preview_publish_body(client, project, ticket, key)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=body,
+    )
+    assert resp.status_code == 200, resp.text
+    assert "jira_parent_not_linked" in resp.json()["warnings"]
+    # No parent was sent to Jira at all.
+    assert fake_jira.state["create_extra_fields"][0] is None
+
+
+@pytest.mark.asyncio
+async def test_get_link_surfaces_parent_key_and_ticket_id_when_readable(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    parent = await _ticket(db_session, project, user)
+    db_session.add(TicketTrackerLink(
+        ticket_id=parent.id, org_id=org.id, provider="jira",
+        status="linked", site_url="https://acme.atlassian.net",
+        issue_key="PARENT-1", issue_url="https://acme.atlassian.net/browse/PARENT-1",
+    ))
+    await db_session.commit()
+
+    fake_jira.state["issue_parent_key"] = "PARENT-1"
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "CHILD-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira", headers=_hdrs(key)
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["parent"] == {"key": "PARENT-1", "ticket_id": parent.id}
+
+
+@pytest.mark.asyncio
+async def test_get_link_parent_ticket_id_null_when_not_readable(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, admin, key, project, ticket = await _ready(db_session)
+    other = await _project(db_session, admin, org)
+    parent = await _ticket(db_session, other, admin)
+    db_session.add(TicketTrackerLink(
+        ticket_id=parent.id, org_id=org.id, provider="jira",
+        status="linked", site_url="https://acme.atlassian.net",
+        issue_key="PARENT-1", issue_url="https://acme.atlassian.net/browse/PARENT-1",
+    ))
+    await db_session.commit()
+
+    fake_jira.state["issue_parent_key"] = "PARENT-1"
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "CHILD-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # A service key scoped to the child project can read the child link but not
+    # the parent's project, so the parent key is surfaced without a ticket id.
+    svc_key = await _service_key(
+        db_session, org, admin, ["tickets:read"], project_ids=[project.id]
+    )
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira", headers=_hdrs(svc_key)
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["parent"] == {"key": "PARENT-1", "ticket_id": None}
+
+
+@pytest.mark.asyncio
+async def test_inbound_webhook_sprint_changelog_refreshes_cache(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    from sessionfs.server.llm_keys import encrypt_secret
+
+    org, user, key, project, ticket = await _ready(db_session)
+    conn = (await db_session.execute(
+        select(OrgTrackerConnection).where(OrgTrackerConnection.org_id == org.id)
+    )).scalar_one()
+    conn.sprint_field_id = "customfield_10010"
+    conn.sync_status = True
+    conn.encrypted_webhook_secret = encrypt_secret(_WEBHOOK_SECRET)
+    conn.webhook_secret_hash = hashlib.sha256(_WEBHOOK_SECRET.encode()).hexdigest()
+    conn.webhook_secret_last4 = _WEBHOOK_SECRET[-4:]
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    payload = _webhook_payload(
+        "jira:issue_updated",
+        user={"displayName": "Bob", "accountId": "acc-bob"},
+        changelog={
+            "id": "20002",
+            "items": [{"field": "Sprint", "fieldId": "customfield_10010",
+                       "fromString": "", "toString": "Sprint 1"}],
+        },
+        issue={
+            "key": "ACME-1",
+            "id": "10001",
+            "fields": {
+                "customfield_10010": [
+                    {"id": "10", "name": "Sprint 1", "state": "active"},
+                ],
+            },
+        },
+    )
+    status, _body = await _post_webhook(client, org.id, payload)
+    assert status == 200
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+    )).scalar_one()
+    assert link.jira_sprint_id == "10"
+    assert link.jira_sprint_name == "Sprint 1"
+    assert link.jira_sprint_state == "active"
+
+
+@pytest.mark.asyncio
+async def test_inbound_webhook_sprint_removal_clears_cache(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """L6 — a sprint changelog removing the issue from all sprints clears the
+    cached sprint on the link."""
+    from sessionfs.server.llm_keys import encrypt_secret
+
+    org, user, key, project, ticket = await _ready(db_session)
+    conn = (await db_session.execute(
+        select(OrgTrackerConnection).where(OrgTrackerConnection.org_id == org.id)
+    )).scalar_one()
+    conn.sprint_field_id = "customfield_10010"
+    conn.sync_status = True
+    conn.encrypted_webhook_secret = encrypt_secret(_WEBHOOK_SECRET)
+    conn.webhook_secret_hash = hashlib.sha256(_WEBHOOK_SECRET.encode()).hexdigest()
+    conn.webhook_secret_last4 = _WEBHOOK_SECRET[-4:]
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+    )).scalar_one()
+    link.jira_sprint_id = "10"
+    link.jira_sprint_name = "Sprint 1"
+    link.jira_sprint_state = "active"
+    await db_session.commit()
+
+    payload = _webhook_payload(
+        "jira:issue_updated",
+        user={"displayName": "Bob", "accountId": "acc-bob"},
+        changelog={
+            "id": "20003",
+            "items": [{"field": "Sprint", "fieldId": "customfield_10010",
+                       "fromString": "Sprint 1", "toString": ""}],
+        },
+        issue={
+            "key": "ACME-1",
+            "id": "10001",
+            "fields": {"customfield_10010": []},
+        },
+    )
+    status, _body = await _post_webhook(client, org.id, payload)
+    assert status == 200
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink)
+        .where(TicketTrackerLink.ticket_id == ticket.id)
+        .execution_options(populate_existing=True)
+    )).scalar_one()
+    assert link.jira_sprint_id is None
+    assert link.jira_sprint_name is None
+    assert link.jira_sprint_state is None
+
+
+@pytest.mark.asyncio
+async def test_inbound_webhook_sprint_changelog_matches_by_field_name(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """L6 — a changelog item carrying only ``field == "Sprint"`` (no fieldId)
+    still refreshes the cached sprint."""
+    from sessionfs.server.llm_keys import encrypt_secret
+
+    org, user, key, project, ticket = await _ready(db_session)
+    conn = (await db_session.execute(
+        select(OrgTrackerConnection).where(OrgTrackerConnection.org_id == org.id)
+    )).scalar_one()
+    conn.sprint_field_id = "customfield_10010"
+    conn.sync_status = True
+    conn.encrypted_webhook_secret = encrypt_secret(_WEBHOOK_SECRET)
+    conn.webhook_secret_hash = hashlib.sha256(_WEBHOOK_SECRET.encode()).hexdigest()
+    conn.webhook_secret_last4 = _WEBHOOK_SECRET[-4:]
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    payload = _webhook_payload(
+        "jira:issue_updated",
+        user={"displayName": "Bob", "accountId": "acc-bob"},
+        changelog={
+            "id": "20004",
+            "items": [{"field": "Sprint", "fromString": "", "toString": "Sprint 2"}],
+        },
+        issue={
+            "key": "ACME-1",
+            "id": "10001",
+            "fields": {
+                "customfield_10010": [
+                    {"id": "20", "name": "Sprint 2", "state": "future"},
+                ],
+            },
+        },
+    )
+    status, _body = await _post_webhook(client, org.id, payload)
+    assert status == 200
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+    )).scalar_one()
+    assert link.jira_sprint_id == "20"
+    assert link.jira_sprint_name == "Sprint 2"
+    assert link.jira_sprint_state == "future"
+
+
 @pytest.mark.asyncio
 async def test_preview_returns_deterministic_draft(client: AsyncClient, db_session: AsyncSession, fake_jira):
     org, user, key, project, ticket = await _ready(db_session)
@@ -861,12 +2128,369 @@ async def test_publish_creates_then_updates_with_1to1_link_and_audit(
         "Promoted to Jira: https://acme.atlassian.net/browse/ACME-1",
         "Updated Jira issue: https://acme.atlassian.net/browse/ACME-1",
     ]
+
+    # Each publish records one timeline event, attributed to the clicking user.
+    published = (await db_session.execute(
+        select(TicketEvent).where(TicketEvent.ticket_id == ticket.id)
+    )).scalars().all()
+    assert [e.action for e in published] == ["jira_published", "jira_published"]
+    assert {e.actor_type for e in published} == {"user"}
+    assert {e.actor_user_id for e in published} == {user.id}
+    assert {json.loads(e.after_value)["issue_key"] for e in published} == {"ACME-1"}
     # Token never leaks into audit.
     for e in (
         await db_session.execute(select(OrgAuditEvent).where(OrgAuditEvent.org_id == org.id))
     ).scalars().all():
         assert _TOKEN not in (e.after or "")
         assert _TOKEN not in (e.before or "")
+
+
+@pytest.mark.asyncio
+async def test_publish_sends_due_date_and_estimate(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    ticket.due_date = date(2026, 11, 15)
+    ticket.estimated_effort = "2d 4h"
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["issue_key"] == "ACME-1"
+
+    # The create pushed the ticket's scheduling fields to Jira.
+    assert fake_jira.state["create_scheduling"] == [
+        {"due_date": "2026-11-15", "original_estimate": "2d 4h"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_publish_retries_without_scheduling_fields_when_off_screen(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    ticket.due_date = date(2026, 11, 15)
+    ticket.estimated_effort = "2d 4h"
+    await db_session.commit()
+
+    # First outbound call is rejected with the classic field-not-on-screen 400
+    # naming only duedate, so only duedate is warned about.
+    fake_jira.state["scheduling_400"] = True
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["warnings"] == ["jira_field_not_on_screen:duedate"]
+
+    # The retry dropped only the refused duedate; the estimate still went out.
+    assert fake_jira.state["create_scheduling"] == [
+        {"due_date": "2026-11-15", "original_estimate": "2d 4h"},
+        {"due_date": None, "original_estimate": "2d 4h"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_publish_scheduling_warning_names_only_rejected_field(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    ticket.due_date = date(2026, 11, 15)
+    ticket.estimated_effort = "2d 4h"
+    await db_session.commit()
+
+    # The 400 names only timetracking, so duedate is not warned about.
+    fake_jira.state["scheduling_400"] = True
+    fake_jira.state["scheduling_400_message"] = (
+        "Field 'timetracking' cannot be set. It is not on the appropriate screen, or unknown."
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["warnings"] == ["jira_field_not_on_screen:timetracking"]
+    # Only the refused estimate is dropped: the due date still reaches Jira.
+    assert fake_jira.state["create_scheduling"] == [
+        {"due_date": "2026-11-15", "original_estimate": "2d 4h"},
+        {"due_date": "2026-11-15", "original_estimate": None},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_publish_scheduling_warning_labels_invalid_value(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    ticket.due_date = date(2026, 11, 15)
+    ticket.estimated_effort = "2d 4h"
+    await db_session.commit()
+
+    # A 400 rejecting the estimate's value (not the field being off-screen)
+    # must not be mislabelled as "not on screen".
+    fake_jira.state["scheduling_400"] = True
+    fake_jira.state["scheduling_400_message"] = (
+        "Jira API 400: timetracking: Operation value must be a number"
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["warnings"] == ["jira_invalid_value:timetracking"]
+
+
+@pytest.mark.asyncio
+async def test_pull_imports_due_date_and_estimate(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    fake_jira.state["due_date"] = "2026-11-20"
+    fake_jira.state["original_estimate"] = "1w 2d"
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/pull",
+        headers=_hdrs(key), json={"confirm": True},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert set(body["updated_fields"]) == {
+        "title", "description", "due_date", "estimated_effort",
+    }
+
+    ticket = await db_session.get(Ticket, ticket.id, populate_existing=True)
+    assert ticket.due_date == date(2026, 11, 20)
+    assert ticket.estimated_effort == "1w 2d"
+
+    audits = (await db_session.execute(
+        select(OrgAuditEvent).where(OrgAuditEvent.org_id == org.id)
+    )).scalars().all()
+    pulled = [e for e in audits if e.event_type == "jira_pulled"]
+    assert len(pulled) == 1
+    assert set(json.loads(pulled[0].after)["updated_fields"]) == {
+        "title", "description", "due_date", "estimated_effort",
+    }
+
+    # The pull attributes every change to Jira, with the clicking user kept as
+    # provenance in actor_user_id (L4).
+    events = (await db_session.execute(
+        select(TicketEvent).where(TicketEvent.ticket_id == ticket.id)
+    )).scalars().all()
+    by_field = {e.field: e for e in events}
+    due = by_field["due_date"]
+    assert due.action == "due_date_set"
+    assert due.actor_type == "jira"
+    assert due.actor_user_id == user.id
+    assert json.loads(due.after_value) == "2026-11-20"
+    estimate = by_field["estimated_effort"]
+    assert estimate.action == "estimate_set"
+    assert estimate.actor_type == "jira"
+    assert estimate.actor_user_id == user.id
+    assert json.loads(estimate.after_value) == "1w 2d"
+    for field in ("title", "description"):
+        edited = by_field[field]
+        assert edited.action == "field_edited"
+        assert edited.actor_type == "jira"
+        assert edited.actor_user_id == user.id
+    pulled_events = [e for e in events if e.action == "jira_pulled"]
+    assert len(pulled_events) == 1
+    assert pulled_events[0].actor_type == "jira"
+    assert json.loads(pulled_events[0].after_value) == {"issue_key": "ACME-1"}
+
+
+@pytest.mark.asyncio
+async def test_pull_scheduling_only_bumps_updated_at(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Match the remote text so the pull changes only the due date. A
+    # scheduling-only pull must still bump updated_at (L4).
+    ticket.title = "Pulled summary"
+    ticket.description = "Pulled body"
+    await db_session.commit()
+    before = (await db_session.get(Ticket, ticket.id, populate_existing=True)).updated_at
+
+    fake_jira.state["due_date"] = "2026-11-20"
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/pull",
+        headers=_hdrs(key), json={"confirm": True},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["updated_fields"] == ["due_date"]
+
+    ticket = await db_session.get(Ticket, ticket.id, populate_existing=True)
+    assert ticket.due_date == date(2026, 11, 20)
+    assert ticket.updated_at >= before
+
+
+@pytest.mark.asyncio
+async def test_webhook_duedate_applies(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    from sessionfs.server.llm_keys import encrypt_secret
+
+    org, user, key, project, ticket = await _ready(db_session)
+    conn = (await db_session.execute(
+        select(OrgTrackerConnection).where(OrgTrackerConnection.org_id == org.id)
+    )).scalar_one()
+    conn.sync_status = True
+    conn.encrypted_webhook_secret = encrypt_secret(_WEBHOOK_SECRET)
+    conn.webhook_secret_hash = hashlib.sha256(_WEBHOOK_SECRET.encode()).hexdigest()
+    conn.webhook_secret_last4 = _WEBHOOK_SECRET[-4:]
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+    before = (await db_session.get(Ticket, ticket.id, populate_existing=True)).updated_at
+
+    payload = _webhook_payload(
+        "jira:issue_updated",
+        user={"displayName": "Bob", "accountId": "acc-bob"},
+        changelog={
+            "id": "20003",
+            "items": [
+                {"field": "duedate", "fieldId": "duedate",
+                 "from": "2026-11-24", "fromString": "2026-11-24 00:00:00.0",
+                 "to": "2026-11-25", "toString": "2026-11-25 00:00:00.0"},
+            ],
+        },
+        issue={"key": "ACME-1", "id": "10001"},
+    )
+    status, _body = await _post_webhook(client, org.id, payload)
+    assert status == 200
+
+    ticket = await db_session.get(Ticket, ticket.id, populate_existing=True)
+    assert ticket.due_date == date(2026, 11, 25)
+    assert ticket.updated_at >= before
+
+    due_events = (await db_session.execute(
+        select(TicketEvent).where(
+            TicketEvent.ticket_id == ticket.id, TicketEvent.field == "due_date"
+        )
+    )).scalars().all()
+    assert len(due_events) == 1
+    assert due_events[0].action == "due_date_set"
+    assert due_events[0].actor_type == "jira"
+    assert due_events[0].actor_user_id is None
+    assert json.loads(due_events[0].after_value) == "2026-11-25"
+
+
+@pytest.mark.asyncio
+async def test_webhook_duedate_null_clears(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    from sessionfs.server.llm_keys import encrypt_secret
+
+    org, user, key, project, ticket = await _ready(db_session)
+    ticket.due_date = date(2026, 11, 25)
+    await db_session.commit()
+    conn = (await db_session.execute(
+        select(OrgTrackerConnection).where(OrgTrackerConnection.org_id == org.id)
+    )).scalar_one()
+    conn.sync_status = True
+    conn.encrypted_webhook_secret = encrypt_secret(_WEBHOOK_SECRET)
+    conn.webhook_secret_hash = hashlib.sha256(_WEBHOOK_SECRET.encode()).hexdigest()
+    conn.webhook_secret_last4 = _WEBHOOK_SECRET[-4:]
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Real Jira clears the field with a null ``to``/``toString``.
+    payload = _webhook_payload(
+        "jira:issue_updated",
+        user={"displayName": "Bob", "accountId": "acc-bob"},
+        changelog={
+            "id": "20004",
+            "items": [
+                {"field": "duedate", "fieldId": "duedate",
+                 "from": "2026-11-25", "fromString": "2026-11-25 00:00:00.0",
+                 "to": None, "toString": None},
+            ],
+        },
+        issue={"key": "ACME-1", "id": "10001"},
+    )
+    status, _body = await _post_webhook(client, org.id, payload)
+    assert status == 200
+
+    ticket = await db_session.get(Ticket, ticket.id, populate_existing=True)
+    assert ticket.due_date is None
+
+
+@pytest.mark.asyncio
+async def test_webhook_duedate_ignored_when_sync_status_off(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    from sessionfs.server.llm_keys import encrypt_secret
+
+    org, user, key, project, ticket = await _ready(db_session)
+    ticket.due_date = date(2026, 11, 24)
+    await db_session.commit()
+    # Webhook auth is configured, but status sync is left off.
+    conn = (await db_session.execute(
+        select(OrgTrackerConnection).where(OrgTrackerConnection.org_id == org.id)
+    )).scalar_one()
+    conn.sync_status = False
+    conn.encrypted_webhook_secret = encrypt_secret(_WEBHOOK_SECRET)
+    conn.webhook_secret_hash = hashlib.sha256(_WEBHOOK_SECRET.encode()).hexdigest()
+    conn.webhook_secret_last4 = _WEBHOOK_SECRET[-4:]
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    payload = _webhook_payload(
+        "jira:issue_updated",
+        user={"displayName": "Bob", "accountId": "acc-bob"},
+        changelog={
+            "id": "20005",
+            "items": [
+                {"field": "duedate", "fieldId": "duedate",
+                 "from": "2026-11-24", "fromString": "2026-11-24 00:00:00.0",
+                 "to": "2026-11-25", "toString": "2026-11-25 00:00:00.0"},
+            ],
+        },
+        issue={"key": "ACME-1", "id": "10001"},
+    )
+    status, _body = await _post_webhook(client, org.id, payload)
+    assert status == 200
+
+    ticket = await db_session.get(Ticket, ticket.id, populate_existing=True)
+    assert ticket.due_date == date(2026, 11, 24)
+    # No timeline event was written for the ignored field.
+    due_events = (await db_session.execute(
+        select(TicketEvent).where(
+            TicketEvent.ticket_id == ticket.id, TicketEvent.field == "due_date"
+        )
+    )).scalars().all()
+    assert due_events == []
 
 
 @pytest.mark.asyncio
@@ -1361,6 +2985,7 @@ async def test_two_concurrent_reclaims_of_stale_claim_create_one_issue(tmp_path,
     from sessionfs.server.integrations.trackers.base import TrackerIssue
     from sessionfs.server.integrations.trackers.jira import validate_site_url
 
+    monkeypatch.setattr("sessionfs.server.routes.jira._ADOPT_RETRY_DELAY_SECONDS", 0.0)
     engine, factory, app, project_id, ticket_id, key = await _file_backed_app(
         tmp_path, monkeypatch, seed_pending=True
     )
@@ -1372,6 +2997,9 @@ async def test_two_concurrent_reclaims_of_stale_claim_create_one_issue(tmp_path,
 
         async def aclose(self):
             pass
+
+        async def search_issue_by_label(self, project_key, label):
+            return None  # nothing survived; fall through to a create
 
         async def create_issue(self, *a, **k):
             created["count"] += 1
@@ -1415,6 +3043,7 @@ async def test_reclaimed_slow_create_cannot_overwrite_new_claim(tmp_path, monkey
     from sessionfs.server.integrations.trackers.base import TrackerIssue
     from sessionfs.server.integrations.trackers.jira import validate_site_url
 
+    monkeypatch.setattr("sessionfs.server.routes.jira._ADOPT_RETRY_DELAY_SECONDS", 0.0)
     engine, factory, app, project_id, ticket_id, key = await _file_backed_app(
         tmp_path, monkeypatch, seed_pending=True
     )
@@ -1427,6 +3056,9 @@ async def test_reclaimed_slow_create_cannot_overwrite_new_claim(tmp_path, monkey
 
         async def aclose(self):
             pass
+
+        async def search_issue_by_label(self, project_key, label):
+            return None  # nothing survived; fall through to a create
 
         async def create_issue(self, *a, **k):
             entered.set()
@@ -1490,6 +3122,7 @@ async def test_reclaimed_slow_failed_create_cannot_delete_new_claim(tmp_path, mo
     from sessionfs.server.integrations.trackers.base import TrackerError
     from sessionfs.server.integrations.trackers.jira import validate_site_url
 
+    monkeypatch.setattr("sessionfs.server.routes.jira._ADOPT_RETRY_DELAY_SECONDS", 0.0)
     engine, factory, app, project_id, ticket_id, key = await _file_backed_app(
         tmp_path, monkeypatch, seed_pending=True
     )
@@ -1502,6 +3135,9 @@ async def test_reclaimed_slow_failed_create_cannot_delete_new_claim(tmp_path, mo
 
         async def aclose(self):
             pass
+
+        async def search_issue_by_label(self, project_key, label):
+            return None  # nothing survived; fall through to a create
 
         async def create_issue(self, *a, **k):
             entered.set()
@@ -1542,14 +3178,17 @@ async def test_reclaimed_slow_failed_create_cannot_delete_new_claim(tmp_path, mo
 
     await engine.dispose()
 
-    assert resp.status_code == 409
-    assert resp.json()["error"]["details"]["error"] == "publish_superseded"
+    # The stale claim is now reclaimed as an *adopt*: A's failed create is an
+    # upstream error (kept as unknown, fenced on its own token), not a claim
+    # release, and B's newer claim is left untouched.
+    assert resp.status_code == 502
+    assert resp.json()["error"]["details"]["error"] == "jira_upstream_error"
 
     async with factory() as db:
         link = (await db.execute(
             select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket_id)
         )).scalar_one()
-        # A's fenced release did not delete B's claim.
+        # A's fenced mark-unknown did not touch B's claim.
         assert link.status == "pending"
         assert link.claim_token == "tokenB"
 
@@ -1827,9 +3466,10 @@ async def test_publish_resolves_mode_from_template_not_body(
         async def aclose(self):
             pass
 
-        async def create_issue(self, project_key, issue_type, summary, description_adf, *, labels=None):
+        async def create_issue(self, project_key, issue_type, summary, description_adf, *, labels=None, extra_fields=None):
             captured["adf"] = description_adf
             captured["labels"] = labels
+            captured["extra_fields"] = extra_fields
             return TrackerIssue(key="ACME-1", url=f"{self.site_url}/browse/ACME-1", status="", id="10001")
 
         async def update_issue(self, issue_key, *a, **k):
@@ -2242,6 +3882,518 @@ async def test_adopt_rejects_unverified_issue(
 
 
 @pytest.mark.asyncio
+async def test_adopt_searches_persisted_project_after_mapping_drift(
+    client, db_session, monkeypatch
+):
+    """M2 — a timed-out create's retry searches the PERSISTED project (stored on
+    the link), not a mapping that drifted since, so it adopts instead of
+    duplicating into a different project."""
+    org, user, key, project, ticket = await _ready(db_session)
+    calls = {"create": 0, "search": [], "update": 0}
+
+    class TimeoutThenFoundFake:
+        def __init__(self, site_url, account_email, api_token, *, transport=None):
+            self.site_url = validate_site_url(site_url)
+
+        async def aclose(self):
+            pass
+
+        async def create_issue(self, *a, **k):
+            calls["create"] += 1
+            raise asyncio.TimeoutError
+
+        async def myself_account_id(self):
+            return "a1"
+
+        async def search_issue_by_label(self, project_key, label):
+            calls["search"].append(project_key)
+            return TrackerIssue(
+                key="ACME-9",
+                url=f"{self.site_url}/browse/ACME-9",
+                status="",
+                id="10009",
+                project_key="ACME",
+                creator_account_id="a1",
+                reporter_account_id="a1",
+                created_at=(datetime.now(timezone.utc) + timedelta(seconds=1)).isoformat(),
+            )
+
+        async def update_issue(self, issue_key, *a, **k):
+            calls["update"] += 1
+            return TrackerIssue(key=issue_key, url=f"{self.site_url}/browse/{issue_key}", status="")
+
+    monkeypatch.setattr("sessionfs.server.routes.jira.JiraClient", TimeoutThenFoundFake)
+
+    r1 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish", headers=_hdrs(key),
+        json=_PUBLISH_BODY,
+    )
+    assert r1.status_code == 504
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+    )).scalar_one()
+    assert link.status == "unknown"
+    assert link.jira_project_key == "ACME"  # persisted at claim time
+    await db_session.commit()  # release the read snapshot
+
+    # Drift the mapping so the retry's *effective* project would differ from the
+    # project the original (timed-out) create actually used.
+    mapping = (await db_session.execute(
+        select(TrackerProjectMapping).where(TrackerProjectMapping.project_id == project.id)
+    )).scalar_one()
+    mapping.jira_project_key = "OTHER"
+    await db_session.commit()
+
+    r2 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish", headers=_hdrs(key),
+        json=_PUBLISH_BODY,
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["issue_key"] == "ACME-9"
+    # The adopt search ran against the original project, not the drifted "OTHER".
+    assert calls == {"create": 1, "search": ["ACME"], "update": 1}
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink)
+        .where(TicketTrackerLink.ticket_id == ticket.id)
+        .execution_options(populate_existing=True)
+    )).scalar_one()
+    assert link.status == "linked"
+    assert link.jira_project_key == "ACME"
+    assert link.issue_key == "ACME-9"
+
+
+@pytest.mark.asyncio
+async def test_unknown_since_survives_failed_adopts_until_linked(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """M1 — the durable ``unknown_since`` (not the refreshed claim clock) is the
+    adopt cut-off. A timed-out create records it; failed adopt retries (timeout,
+    then a 5xx) never overwrite it; the final adopt accepts an issue created at
+    the original time even though minutes have passed; linking clears it."""
+    org, user, key, project, ticket = await _ready(db_session)
+
+    # Freeze the route's clock so the failed retries advance real minutes past
+    # the original publish without waiting, and so the reverted code (which
+    # reads the refreshed ``last_pushed_at`` as the cut-off) must reject the
+    # issue created at the original time.
+    clock = {"now": datetime.now(timezone.utc)}
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock["now"]
+
+    monkeypatch.setattr("sessionfs.server.routes.jira.datetime", _Frozen)
+
+    calls = {"create": 0, "search": 0, "update": 0}
+    phase = {"step": "create_timeout"}
+    created_at = {"value": None}
+
+    class FencingFake:
+        def __init__(self, site_url, account_email, api_token, *, transport=None):
+            self.site_url = validate_site_url(site_url)
+
+        async def aclose(self):
+            pass
+
+        async def create_issue(self, *a, **k):
+            calls["create"] += 1
+            raise asyncio.TimeoutError
+
+        async def myself_account_id(self):
+            return "a1"
+
+        async def search_issue_by_label(self, project_key, label):
+            calls["search"] += 1
+            if phase["step"] == "adopt_timeout":
+                raise asyncio.TimeoutError
+            if phase["step"] == "adopt_5xx":
+                raise TrackerError("Jira API 500: boom", status_code=500)
+            return TrackerIssue(
+                key="ACME-9",
+                url=f"{self.site_url}/browse/ACME-9",
+                status="",
+                id="10009",
+                project_key="ACME",
+                creator_account_id="a1",
+                reporter_account_id="a1",
+                created_at=created_at["value"],
+            )
+
+        async def update_issue(self, issue_key, *a, **k):
+            calls["update"] += 1
+            return TrackerIssue(key=issue_key, url=f"{self.site_url}/browse/{issue_key}", status="")
+
+    monkeypatch.setattr("sessionfs.server.routes.jira.JiraClient", FencingFake)
+
+    async def _link() -> TicketTrackerLink:
+        return (await db_session.execute(
+            select(TicketTrackerLink)
+            .where(TicketTrackerLink.ticket_id == ticket.id)
+            .execution_options(populate_existing=True)
+        )).scalar_one()
+
+    # 1. Fresh create times out: the row becomes unknown and records T1.
+    r1 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert r1.status_code == 504
+    link = await _link()
+    assert link.status == "unknown"
+    assert link.unknown_since is not None
+    t1 = link.unknown_since
+    created_at["value"] = (t1 + timedelta(seconds=1)).isoformat()
+    await db_session.commit()  # release the read snapshot for the next publish
+
+    # 2. Adopt retry times out: unknown_since must stay T1 (the first attempt).
+    clock["now"] += timedelta(minutes=10)
+    phase["step"] = "adopt_timeout"
+    r2 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert r2.status_code == 504
+    link = await _link()
+    assert link.status == "unknown"
+    assert link.unknown_since == t1
+    await db_session.commit()
+
+    # 3. Adopt retry gets a 5xx: unknown_since must still stay T1.
+    clock["now"] += timedelta(minutes=10)
+    phase["step"] = "adopt_5xx"
+    r3 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert r3.status_code == 502
+    link = await _link()
+    assert link.status == "unknown"
+    assert link.unknown_since == t1
+    await db_session.commit()
+
+    # 4. Final adopt accepts the issue created at T1 (the original cut-off, not
+    #    the refreshed claim time) and linking clears unknown_since.
+    clock["now"] += timedelta(minutes=10)
+    phase["step"] = "adopt_ok"
+    r4 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert r4.status_code == 200, r4.text
+    assert r4.json()["issue_key"] == "ACME-9"
+    assert calls == {"create": 1, "search": 3, "update": 1}
+
+    link = await _link()
+    assert link.status == "linked"
+    assert link.unknown_since is None
+
+
+@pytest.mark.asyncio
+async def test_stale_pending_claim_adopts_survived_issue_not_duplicates(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """L2 — a dead worker's stale pending claim whose create reached Jira is
+    reclaimed as an adopt (search by label first), never a blind create."""
+    org, user, key, project, ticket = await _ready(db_session)
+    # A stale (>5 min) pending claim, as if a worker died mid-create.
+    db_session.add(TicketTrackerLink(
+        ticket_id=ticket.id,
+        org_id=org.id,
+        provider="jira",
+        status="pending",
+        claim_token="stale-token",
+        site_url="https://acme.atlassian.net",
+        jira_project_key="ACME",
+        last_pushed_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+    ))
+    await db_session.commit()
+
+    calls = {"create": 0, "search": [], "update": 0}
+
+    class AdoptingFake:
+        def __init__(self, site_url, account_email, api_token, *, transport=None):
+            self.site_url = validate_site_url(site_url)
+
+        async def aclose(self):
+            pass
+
+        async def create_issue(self, *a, **k):
+            calls["create"] += 1
+            raise AssertionError("stale pending claim must adopt, not create")
+
+        async def myself_account_id(self):
+            return "a1"
+
+        async def search_issue_by_label(self, project_key, label):
+            calls["search"].append(project_key)
+            return TrackerIssue(
+                key="ACME-9",
+                url=f"{self.site_url}/browse/ACME-9",
+                status="",
+                id="10009",
+                project_key="ACME",
+                creator_account_id="a1",
+                reporter_account_id="a1",
+                # Created after the original claim began (10 min ago), so it is
+                # the survived issue and not a pre-existing planted one.
+                created_at=(datetime.now(timezone.utc) - timedelta(minutes=9)).isoformat(),
+            )
+
+        async def update_issue(self, issue_key, *a, **k):
+            calls["update"] += 1
+            return TrackerIssue(key=issue_key, url=f"{self.site_url}/browse/{issue_key}", status="")
+
+    monkeypatch.setattr("sessionfs.server.routes.jira.JiraClient", AdoptingFake)
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["issue_key"] == "ACME-9"
+    assert calls == {"create": 0, "search": ["ACME"], "update": 1}
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink)
+        .where(TicketTrackerLink.ticket_id == ticket.id)
+        .execution_options(populate_existing=True)
+    )).scalar_one()
+    assert link.status == "linked"
+    assert link.issue_key == "ACME-9"
+    assert link.unknown_since is None
+
+
+def _adopting_fake(calls: dict, *, project_key: str, issue_key: str, created_minutes_ago: float):
+    """A Jira fake whose label search finds one issue; any create fails the test."""
+
+    class AdoptingFake:
+        def __init__(self, site_url, account_email, api_token, *, transport=None):
+            self.site_url = validate_site_url(site_url)
+
+        async def aclose(self):
+            pass
+
+        async def create_issue(self, *a, **k):
+            calls["create"] += 1
+            raise AssertionError("must adopt, not create")
+
+        async def myself_account_id(self):
+            return "a1"
+
+        async def search_issue_by_label(self, project_key_arg, label):
+            calls["search"].append(project_key_arg)
+            if project_key_arg != project_key:
+                return None
+            return TrackerIssue(
+                key=issue_key,
+                url=f"{self.site_url}/browse/{issue_key}",
+                status="",
+                id="10011",
+                project_key=project_key,
+                creator_account_id="a1",
+                reporter_account_id="a1",
+                created_at=(
+                    datetime.now(timezone.utc) - timedelta(minutes=created_minutes_ago)
+                ).isoformat(),
+            )
+
+        async def update_issue(self, issue_key_arg, *a, **k):
+            calls["update"] += 1
+            return TrackerIssue(
+                key=issue_key_arg, url=f"{self.site_url}/browse/{issue_key_arg}", status=""
+            )
+
+    return AdoptingFake
+
+
+@pytest.mark.asyncio
+async def test_stale_pending_reclaim_keeps_dead_workers_destination_project(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """A dead worker created into OTHER (helper override); a later publish whose
+    mapping is ACME must adopt the OTHER issue, not create a duplicate in ACME."""
+    org, user, key, project, ticket = await _ready(db_session)
+    db_session.add(TicketTrackerLink(
+        ticket_id=ticket.id,
+        org_id=org.id,
+        provider="jira",
+        status="pending",
+        claim_token="stale-token",
+        site_url="https://acme.atlassian.net",
+        jira_project_key="OTHER",
+        last_pushed_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+    ))
+    await db_session.commit()
+
+    calls: dict = {"create": 0, "search": [], "update": 0}
+    monkeypatch.setattr(
+        "sessionfs.server.routes.jira.JiraClient",
+        _adopting_fake(calls, project_key="OTHER", issue_key="OTHER-5", created_minutes_ago=9),
+    )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["issue_key"] == "OTHER-5"
+    assert calls["create"] == 0
+    assert set(calls["search"]) == {"OTHER"}
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink)
+        .where(TicketTrackerLink.ticket_id == ticket.id)
+        .execution_options(populate_existing=True)
+    )).scalar_one()
+    assert link.jira_project_key == "OTHER"
+    assert link.issue_key == "OTHER-5"
+
+
+@pytest.mark.asyncio
+async def test_pre_migration_unknown_row_uses_last_pushed_at_as_cut_off(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """A row left unknown before unknown_since existed still refuses issues that
+    predate the original attempt (cut-off falls back to last_pushed_at)."""
+    org, user, key, project, ticket = await _ready(db_session)
+    db_session.add(TicketTrackerLink(
+        ticket_id=ticket.id,
+        org_id=org.id,
+        provider="jira",
+        status="unknown",
+        site_url="https://acme.atlassian.net",
+        jira_project_key="ACME",
+        unknown_since=None,
+        last_pushed_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+    ))
+    await db_session.commit()
+
+    calls: dict = {"create": 0, "search": [], "update": 0}
+    # An issue created long before the original attempt is not ours.
+    monkeypatch.setattr(
+        "sessionfs.server.routes.jira.JiraClient",
+        _adopting_fake(calls, project_key="ACME", issue_key="ACME-1", created_minutes_ago=60),
+    )
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert resp.status_code == 409, resp.text
+    assert calls["create"] == 0
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink)
+        .where(TicketTrackerLink.ticket_id == ticket.id)
+        .execution_options(populate_existing=True)
+    )).scalar_one()
+    # The fallback cut-off was persisted, so later retries keep it.
+    assert link.unknown_since is not None
+
+
+@pytest.mark.parametrize("status_code", [502, None])
+@pytest.mark.asyncio
+async def test_create_5xx_or_transport_error_keeps_row_unknown_then_adopts(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch, status_code
+):
+    """A create that fails with a 5xx (or a transport error, no status code)
+    may still have written the issue, so the row stays unknown and the next
+    publish adopts it by label instead of creating a duplicate."""
+    org, user, key, project, ticket = await _ready(db_session)
+    calls: dict = {"create": 0, "search": [], "update": 0}
+    created_at = datetime.now(timezone.utc)
+
+    class FlakyCreateFake:
+        def __init__(self, site_url, account_email, api_token, *, transport=None):
+            self.site_url = validate_site_url(site_url)
+
+        async def aclose(self):
+            pass
+
+        async def create_issue(self, *a, **k):
+            calls["create"] += 1
+            # Jira wrote the issue, but the response was lost.
+            raise TrackerError("Jira API error", status_code=status_code)
+
+        async def myself_account_id(self):
+            return "a1"
+
+        async def search_issue_by_label(self, project_key, label):
+            calls["search"].append(project_key)
+            return TrackerIssue(
+                key="ACME-7",
+                url=f"{self.site_url}/browse/ACME-7",
+                status="",
+                id="10007",
+                project_key="ACME",
+                creator_account_id="a1",
+                reporter_account_id="a1",
+                created_at=created_at.isoformat(),
+            )
+
+        async def update_issue(self, issue_key, *a, **k):
+            calls["update"] += 1
+            return TrackerIssue(key=issue_key, url=f"{self.site_url}/browse/{issue_key}", status="")
+
+    monkeypatch.setattr("sessionfs.server.routes.jira.JiraClient", FlakyCreateFake)
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert resp.status_code == 502, resp.text
+    link = (await db_session.execute(
+        select(TicketTrackerLink)
+        .where(TicketTrackerLink.ticket_id == ticket.id)
+        .execution_options(populate_existing=True)
+    )).scalar_one()
+    assert link.status == "unknown"
+    assert link.unknown_since is not None
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["issue_key"] == "ACME-7"
+    assert calls["create"] == 1  # only the first, failed attempt
+    assert calls["search"] == ["ACME"]
+
+
+@pytest.mark.asyncio
+async def test_create_4xx_releases_claim_for_a_fresh_retry(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """A 4xx proves nothing was created, so the claim is released."""
+    org, user, key, project, ticket = await _ready(db_session)
+
+    class RejectingFake:
+        def __init__(self, site_url, account_email, api_token, *, transport=None):
+            self.site_url = validate_site_url(site_url)
+
+        async def aclose(self):
+            pass
+
+        async def create_issue(self, *a, **k):
+            raise TrackerError("Jira API 403: forbidden", status_code=403)
+
+    monkeypatch.setattr("sessionfs.server.routes.jira.JiraClient", RejectingFake)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish",
+        headers=_hdrs(key), json=_PUBLISH_BODY,
+    )
+    assert resp.status_code == 502, resp.text
+    link = (await db_session.execute(
+        select(TicketTrackerLink)
+        .where(TicketTrackerLink.ticket_id == ticket.id)
+        .execution_options(populate_existing=True)
+    )).scalar_one_or_none()
+    assert link is None
+
+
+@pytest.mark.asyncio
 async def test_30k_single_line_preview_and_publish_preserve_every_char(
     client: AsyncClient, db_session: AsyncSession, monkeypatch, fake_jira
 ):
@@ -2278,7 +4430,7 @@ async def test_30k_single_line_preview_and_publish_preserve_every_char(
         async def aclose(self):
             pass
 
-        async def create_issue(self, project_key, issue_type, summary, description_adf, *, labels=None):
+        async def create_issue(self, project_key, issue_type, summary, description_adf, *, labels=None, extra_fields=None):
             captured["adf"] = description_adf
             return TrackerIssue(key="ACME-1", url=f"{self.site_url}/browse/ACME-1", status="", id="10001")
 
@@ -2577,6 +4729,27 @@ async def test_link_existing_issue_links_without_pushing(
 
 
 @pytest.mark.asyncio
+async def test_link_records_exactly_one_ticket_event(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    org, user, key, project, ticket = await _ready(db_session)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    events = (await db_session.execute(
+        select(TicketEvent).where(TicketEvent.ticket_id == ticket.id)
+    )).scalars().all()
+    assert len(events) == 1
+    assert events[0].action == "jira_linked"
+    assert json.loads(events[0].after_value) == {"issue_key": "ACME-1"}
+    assert events[0].actor_type == "user"
+    assert events[0].actor_user_id == user.id
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", ["linked", "pending", "unknown"])
 async def test_link_refuses_each_existing_link_status_with_409(
     client: AsyncClient, db_session: AsyncSession, fake_jira, status: str
@@ -2767,6 +4940,13 @@ async def test_link_then_unlink_works(
     )).scalars().all()]
     assert types == ["jira_linked", "jira_unlinked"]
 
+    events = (await db_session.execute(
+        select(TicketEvent).where(TicketEvent.ticket_id == ticket.id)
+    )).scalars().all()
+    assert [e.action for e in events] == ["jira_linked", "jira_unlinked"]
+    assert [e.actor_type for e in events] == ["user", "user"]
+    assert json.loads(events[1].before_value) == {"issue_key": "ACME-1"}
+
 
 @pytest.mark.asyncio
 async def test_linked_not_published_ticket_receives_inbound_webhook(
@@ -2816,6 +4996,19 @@ async def test_linked_not_published_ticket_receives_inbound_webhook(
 
     ticket = await db_session.get(Ticket, ticket.id, populate_existing=True)
     assert ticket.status == "closed"
+
+    # The inbound transition is attributed to Jira, not any local user.
+    status_events = (await db_session.execute(
+        select(TicketEvent).where(
+            TicketEvent.ticket_id == ticket.id, TicketEvent.field == "status"
+        )
+    )).scalars().all()
+    assert len(status_events) == 1
+    assert status_events[0].action == "status_changed"
+    assert status_events[0].actor_type == "jira"
+    assert status_events[0].actor_user_id is None
+    assert json.loads(status_events[0].before_value) == "in_progress"
+    assert json.loads(status_events[0].after_value) == "closed"
 
 
 # ── attached-only overwrite guard + pull ──
@@ -3278,3 +5471,346 @@ async def test_service_key_cannot_pull(
     assert resp.json()["error"]["details"]["error"] == "service_key_not_allowed"
     await db_session.refresh(ticket)
     assert ticket.title == title_before
+
+
+# ── review round 2: sprint + parent mapping (M2 / L-a..L-f) ──
+
+
+@pytest.mark.asyncio
+async def test_adopt_no_match_creates_into_persisted_project(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """M2 — when the adopt search finds nothing, the re-create lands in the
+    PERSISTED project (where the original timed-out create targeted), never a
+    mapping/override that drifted since."""
+    monkeypatch.setattr("sessionfs.server.routes.jira._ADOPT_RETRY_DELAY_SECONDS", 0.0)
+    org, user, key, project, ticket = await _ready(db_session)
+    calls = {"create_project": [], "search": [], "create": 0}
+
+    class TimeoutThenNoneFake:
+        def __init__(self, site_url, account_email, api_token, *, transport=None):
+            self.site_url = validate_site_url(site_url)
+
+        async def aclose(self):
+            pass
+
+        async def create_issue(self, project_key, *a, **k):
+            calls["create"] += 1
+            calls["create_project"].append(project_key)
+            if calls["create"] == 1:
+                raise asyncio.TimeoutError
+            return TrackerIssue(
+                key="ACME-2", url=f"{self.site_url}/browse/ACME-2", status="", id="10002"
+            )
+
+        async def search_issue_by_label(self, project_key, label):
+            calls["search"].append(project_key)
+            return None
+
+        async def update_issue(self, issue_key, *a, **k):
+            raise AssertionError("no update expected when the search finds nothing")
+
+    monkeypatch.setattr("sessionfs.server.routes.jira.JiraClient", TimeoutThenNoneFake)
+
+    r1 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish", headers=_hdrs(key),
+        json=_PUBLISH_BODY,
+    )
+    assert r1.status_code == 504
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+    )).scalar_one()
+    assert link.status == "unknown"
+    assert link.jira_project_key == "ACME"  # persisted at claim time
+    await db_session.commit()
+
+    # Drift the mapping so the retry's *effective* project differs from the
+    # original create's destination.
+    mapping = (await db_session.execute(
+        select(TrackerProjectMapping).where(TrackerProjectMapping.project_id == project.id)
+    )).scalar_one()
+    mapping.jira_project_key = "OTHER"
+    await db_session.commit()
+
+    r2 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish", headers=_hdrs(key),
+        json=_PUBLISH_BODY,
+    )
+    assert r2.status_code == 200, r2.text
+    assert r2.json()["issue_key"] == "ACME-2"
+    # Search and the no-match re-create both used the persisted project, never
+    # the drifted "OTHER".
+    assert calls == {"create": 2, "search": ["ACME", "ACME"], "create_project": ["ACME", "ACME"]}
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink)
+        .where(TicketTrackerLink.ticket_id == ticket.id)
+        .execution_options(populate_existing=True)
+    )).scalar_one()
+    assert link.status == "linked"
+    assert link.jira_project_key == "ACME"
+    assert link.issue_key == "ACME-2"
+
+
+@pytest.mark.asyncio
+async def test_update_keeps_stored_project_key_after_mapping_drift(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """L-a — an update never rewrites the stored destination: the issue still
+    lives where it was created even after the mapping drifted."""
+    org, user, key, project, ticket = await _ready(db_session)
+
+    r1 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish", headers=_hdrs(key),
+        json=_PUBLISH_BODY,
+    )
+    assert r1.status_code == 200, r1.text
+    assert r1.json()["issue_key"] == "ACME-1"
+
+    mapping = (await db_session.execute(
+        select(TrackerProjectMapping).where(TrackerProjectMapping.project_id == project.id)
+    )).scalar_one()
+    mapping.jira_project_key = "OTHER"
+    await db_session.commit()
+
+    r2 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish", headers=_hdrs(key),
+        json={**_PUBLISH_BODY, "summary": "Ship the auth migration v2"},
+    )
+    assert r2.status_code == 200, r2.text
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink)
+        .where(TicketTrackerLink.ticket_id == ticket.id)
+        .execution_options(populate_existing=True)
+    )).scalar_one()
+    assert link.status == "linked"
+    assert link.issue_key == "ACME-1"
+    # The update left the recorded destination alone.
+    assert link.jira_project_key == "ACME"
+
+
+@pytest.mark.asyncio
+async def test_inbound_webhook_sprint_changelog_absent_field_keeps_cache(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """L-b — a sprint changelog whose issue payload omits the sprint field
+    (Jira can drop unchanged fields) must not clear the cached sprint."""
+    from sessionfs.server.llm_keys import encrypt_secret
+
+    org, user, key, project, ticket = await _ready(db_session)
+    conn = (await db_session.execute(
+        select(OrgTrackerConnection).where(OrgTrackerConnection.org_id == org.id)
+    )).scalar_one()
+    conn.sprint_field_id = "customfield_10010"
+    conn.sync_status = True
+    conn.encrypted_webhook_secret = encrypt_secret(_WEBHOOK_SECRET)
+    conn.webhook_secret_hash = hashlib.sha256(_WEBHOOK_SECRET.encode()).hexdigest()
+    conn.webhook_secret_last4 = _WEBHOOK_SECRET[-4:]
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/link",
+        headers=_hdrs(key), json={"issue_key": "ACME-1"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+    )).scalar_one()
+    link.jira_sprint_id = "10"
+    link.jira_sprint_name = "Sprint 1"
+    link.jira_sprint_state = "active"
+    await db_session.commit()
+
+    # A sprint changelog item with a non-empty destination, but the issue
+    # payload omits the sprint field entirely (an unrelated edit): the field is
+    # merely absent, not emptied, so the cache must survive.
+    payload = _webhook_payload(
+        "jira:issue_updated",
+        user={"displayName": "Bob", "accountId": "acc-bob"},
+        changelog={
+            "id": "20005",
+            "items": [{"field": "Sprint", "fieldId": "customfield_10010",
+                       "fromString": "Sprint 1", "toString": "Sprint 1"}],
+        },
+        issue={"key": "ACME-1", "id": "10001", "fields": {"summary": "unchanged"}},
+    )
+    status, _body = await _post_webhook(client, org.id, payload)
+    assert status == 200
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink)
+        .where(TicketTrackerLink.ticket_id == ticket.id)
+        .execution_options(populate_existing=True)
+    )).scalar_one()
+    assert link.jira_sprint_id == "10"
+    assert link.jira_sprint_name == "Sprint 1"
+    assert link.jira_sprint_state == "active"
+
+
+@pytest.mark.asyncio
+async def test_timeout_message_reports_real_budget(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """L-d — the 504 message states the real 240 s deadline, not a stale figure."""
+    org, user, key, project, ticket = await _ready(db_session)
+
+    class TimeoutFake:
+        def __init__(self, site_url, account_email, api_token, *, transport=None):
+            self.site_url = validate_site_url(site_url)
+
+        async def aclose(self):
+            pass
+
+        async def create_issue(self, *a, **k):
+            raise asyncio.TimeoutError
+
+    monkeypatch.setattr("sessionfs.server.routes.jira.JiraClient", TimeoutFake)
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish", headers=_hdrs(key),
+        json=_PUBLISH_BODY,
+    )
+    assert resp.status_code == 504
+    assert resp.json()["error"]["details"]["error"] == "jira_timeout"
+    assert resp.json()["error"]["message"] == (
+        "Jira did not respond within 240 s; the issue may or may not have been created."
+    )
+
+
+@pytest.mark.asyncio
+async def test_adopt_search_error_keeps_unknown_row(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """L-f — an adopt search that fails upstream leaves the link ``unknown``
+    (never releases the claim), so the next publish can still adopt-or-create."""
+    org, user, key, project, ticket = await _ready(db_session)
+    calls = {"create": 0, "search": 0}
+
+    class TimeoutThenSearchErrorFake:
+        def __init__(self, site_url, account_email, api_token, *, transport=None):
+            self.site_url = validate_site_url(site_url)
+
+        async def aclose(self):
+            pass
+
+        async def create_issue(self, *a, **k):
+            calls["create"] += 1
+            raise asyncio.TimeoutError
+
+        async def search_issue_by_label(self, project_key, label):
+            calls["search"] += 1
+            raise TrackerError("Jira API 500: boom")
+
+        async def update_issue(self, issue_key, *a, **k):
+            raise AssertionError("no update expected on the adopt search path")
+
+    monkeypatch.setattr("sessionfs.server.routes.jira.JiraClient", TimeoutThenSearchErrorFake)
+
+    r1 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish", headers=_hdrs(key),
+        json=_PUBLISH_BODY,
+    )
+    assert r1.status_code == 504
+
+    link = (await db_session.execute(
+        select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+    )).scalar_one()
+    assert link.status == "unknown"
+    await db_session.commit()
+
+    r2 = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/jira/publish", headers=_hdrs(key),
+        json=_PUBLISH_BODY,
+    )
+    assert r2.status_code == 502, r2.text
+    assert r2.json()["error"]["details"]["error"] == "jira_upstream_error"
+    assert calls == {"create": 1, "search": 1}
+
+    # The claim row survives as 'unknown' so a corrected retry can adopt/create.
+    link = (await db_session.execute(
+        select(TicketTrackerLink)
+        .where(TicketTrackerLink.ticket_id == ticket.id)
+        .execution_options(populate_existing=True)
+    )).scalar_one()
+    assert link.status == "unknown"
+    assert link.claim_token is None
+
+
+@pytest.mark.asyncio
+async def test_unknown_reclaim_refreshes_staleness_but_preserves_unknown_since(db_session):
+    """L-f — reclaiming an ``unknown`` row for an adopt refreshes its claim
+    timestamp (so a concurrent publish can't treat it as stale) while still
+    returning the durable ``unknown_since`` for adoption validation."""
+    from sessionfs.server.routes.jira import _acquire_publish_claim
+
+    org, _user, _key, project, ticket = await _ready(db_session)
+    old = datetime.now(timezone.utc) - timedelta(minutes=10)
+    db_session.add(TicketTrackerLink(
+        ticket_id=ticket.id,
+        org_id=org.id,
+        provider="jira",
+        status="unknown",
+        site_url="https://acme.atlassian.net",
+        jira_project_key="ACME",
+        last_pushed_at=old,
+        unknown_since=old,
+    ))
+    await db_session.commit()
+
+    link, action, token, unknown_since = await _acquire_publish_claim(
+        db_session,
+        ticket_id=ticket.id,
+        org_id=org.id,
+        site_url="https://acme.atlassian.net",
+        jira_project_key="ACME",
+    )
+
+    assert action == "adopt"
+    assert token is not None
+    # The durable (pre-reclaim) cut-off is preserved, not the refreshed clock.
+    assert unknown_since == old
+    # The reclaimed claim's staleness clock is refreshed.
+    assert link.status == "pending"
+    assert link.claim_token == token
+    assert link.last_pushed_at is not None
+    assert (datetime.utcnow() - link.last_pushed_at).total_seconds() < 60
+
+
+@pytest.mark.asyncio
+async def test_publish_create_400_error_map_names_sprint_and_parent_drops_both(
+    client: AsyncClient, db_session: AsyncSession, fake_jira
+):
+    """L-e — a 400 whose body carries both ``errorMessages`` and an ``errors``
+    map naming the sprint field and parent is parsed so the outbound ladder
+    drops both fields and the publish still succeeds."""
+    org, user, key, project, child = await _ready(db_session)
+    await _set_conn_fields(db_session, org, sprint="customfield_10010", epic=None)
+    child, _parent = await _link_parent(db_session, org, project, user, parent_key="PARENT-1")
+
+    fake_jira.state["create_script"] = [
+        {"error": (400, (
+            "Jira API 400: One or more fields are invalid; "
+            "customfield_10010: Field 'customfield_10010' cannot be set; "
+            "parent: Field 'parent' cannot be set"
+        ))},
+    ]
+
+    body = await _preview_publish_body(client, project, child, key, sprint_id=42)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{child.id}/jira/publish",
+        headers=_hdrs(key), json=body,
+    )
+    assert resp.status_code == 200, resp.text
+    assert set(resp.json()["warnings"]) == {
+        "jira_parent_not_set",
+        "jira_sprint_not_set:field_rejected",
+    }
+    # Both droppable fields were sent on the first attempt, then dropped in one
+    # retry (no epic-link fallback configured).
+    assert fake_jira.state["create_extra_fields"] == [
+        {"customfield_10010": 42, "parent": {"key": "PARENT-1"}},
+        None,
+    ]

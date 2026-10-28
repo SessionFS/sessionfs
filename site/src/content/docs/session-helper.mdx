@@ -13,7 +13,7 @@ Available on the **Enterprise** plan. Added in v0.23.0.
 
 ## Requirements
 
-- **Enterprise plan.** A project-scoped question uses the plan of the project's org; otherwise your own plan. Other plans get `upgrade_required`.
+- **Enterprise plan.** A project-scoped question uses the plan of the project's org, and a group-scoped question the plan of the group's org; otherwise your own plan. Other plans get `upgrade_required`.
 - **A model key you supply.** SessionFS never supplies one. For each question the helper uses, in order:
   1. your own key, from **Settings → Data protection → Security review model**;
   2. your org's helper key, when an org owner or admin has set one and switched it on;
@@ -29,12 +29,23 @@ Gateways that reject `temperature`, `top_p` or reasoning settings for a reasonin
 
 ## Where to use it
 
-- **Dashboard.** **Ask the helper** in the sidebar or the Cmd+K palette opens a drawer. The same button on a project or session page scopes the question to it. Answers stream in with citations; a citation opens the session at the exact message and highlights it (`/sessions/<id>?msg=<n>`). The composer stays pinned at the bottom, and earlier threads and **New** are always at hand. Retrying a failed answer doesn't save your question twice.
+- **Dashboard.** **Ask the helper** in the sidebar or the Cmd+K palette opens a drawer. The same button on a project or session page scopes the question to it, and the drawer's scope menu also lists the [project groups](#scope-a-question-to-a-project-group) you can see. The drawer remembers the scope you last picked for the rest of the browser tab, so a new conversation starts where you left off. The memory belongs to the account you're signed in with: signing in as someone else in the same tab starts from **All my sessions**. Answers stream in with citations; a citation opens the session at the exact message and highlights it (`/sessions/<id>?msg=<n>`). The composer stays pinned at the bottom, and earlier threads and **New** are always at hand. Retrying a failed answer doesn't save your question twice.
+
+  Ticket and wiki citations become links as soon as the answer finishes, without reloading the conversation.
 
   Ids in an answer are clickable. A ticket id (`tk_…`) opens a preview right over the conversation, with its status, priority, assignee, project, description and latest comments, plus **Open ticket** for the full view. Project (`proj_…`) and session (`ses_…`) ids open their pages, and when the scoped project has a single GitHub-verified repo, `PR #123` and commit SHAs link to GitHub. Ids inside code blocks stay as text.
 
-- **CLI.** `sfs helper ask "Where did we fix the SSO redirect?"` streams the answer to the terminal. `sfs helper conversations list|show|delete` manages threads, and `sfs helper status` shows whether the helper is available and which key it would use. See the [CLI reference](/cli/#sfs-helper-enterprise).
-- **MCP.** The `ask_session_helper` tool returns the whole answer with its citations, so an agent can ask without shelling out. See [MCP Server](/mcp/#ask_session_helper).
+- **CLI.** `sfs helper ask "Where did we fix the SSO redirect?"` streams the answer to the terminal; `--project`, `--group` (a group id `pg_…` or slug) or `--session` scope it. `sfs helper conversations list|show|delete` manages threads, and `sfs helper status` shows whether the helper is available and which key it would use. See the [CLI reference](/cli/#sfs-helper-enterprise).
+- **MCP.** The `ask_session_helper` tool returns the whole answer with its citations, so an agent can ask without shelling out. It takes `project`, `group_id` or `session_ids` to scope the question. See [MCP Server](/mcp/#ask_session_helper).
+
+## Scope a question to a project group
+
+A question can cover a whole [project group](/project-groups/) instead of one project (v0.28.0). Pick the group in the drawer's scope menu, run `sfs helper ask --group SLUG "..."`, or pass `group_id` to `ask_session_helper`. A question takes one scope: a project, a group or a list of sessions.
+
+- **Only what you can read.** The helper searches sessions, knowledge, tickets and wiki pages from the group's member projects that you can read, and nothing else. With [restricted project visibility](/project-groups/#restricted-project-visibility), a member project you can't read stays out.
+- **The group's overview.** When the group has a compiled overview and you can read every project that went into it, that overview is added to the prompt, redacted with your DLP policy like everything else sent to the model. If you can't read one of those projects, the overview is left out rather than sent in part.
+- **Plans.** Project groups need the Team plan or above on the group's org, and the helper needs Enterprise.
+- **Not found.** A group that doesn't exist and a group you can't see both return `404 group_not_found`.
 
 ## Actions
 
@@ -42,7 +53,7 @@ Besides answering, the helper can propose these changes for you:
 
 - **Turn Auto Narrative on or off** for one or more projects.
 - **Move sessions to Trash**, for example to clean up old scratch sessions or "every session that used DeepSeek".
-- **Create a ticket** with a title, description, acceptance criteria, priority and optional assignee. When you ask for it, the same confirmation also publishes the new ticket to Jira (Enterprise, with a Jira mapping for the project).
+- **Create a ticket** with a title, description, acceptance criteria, priority and optional assignee. When you ask for it, the same confirmation also publishes the new ticket to Jira (Enterprise, with a Jira mapping for the project). You can name a different Jira project (one mapped to a SessionFS project you can edit), a story template (pinned to its current version until you confirm) and an active or future sprint (v0.28.0).
 - **Assign a ticket** to a persona or directly to a teammate. You can name a persona, a teammate's email, or a display name; a display name goes to the persona that represents that person when there is one, otherwise to the person.
 - **Comment on a ticket** with a plain user comment, optionally sent to the linked Jira issue too when the org forwards comments to Jira.
 - **Link a ticket to an existing Jira issue** by its key (v0.27.0).
@@ -97,6 +108,7 @@ Enterprise org owners and admins can set one provider, model, API key and option
 - The key is encrypted at rest and never shown again after saving; only its last four characters are displayed.
 - It can be switched off without deleting it.
 - A custom base URL goes through the same address checks as other user-supplied LLM endpoints.
+- **Fetch models** lists the models the key can use, the same way as the personal key form (v0.28.0). When the provider can't list them, type the model id yourself. Model lookups are rate-limited per user (`429 models_rate_limited`). `POST /api/v1/orgs/{org_id}/llm-settings/models` does the same.
 - **Test connection** sends one tiny chat request with the form's values (the stored key only when the provider and base URL are unchanged) and shows the endpoint, model and latency, or why it failed. `POST /api/v1/orgs/{org_id}/llm-settings/test` does the same.
 - Leave the base URL empty to use the provider's own API. It must be an API address, not a console: `https://platform.deepseek.com` is refused with "use https://api.deepseek.com". Saving a new base URL runs the test first; a timeout or rate limit still saves, with a warning.
 
@@ -158,12 +170,12 @@ Request body for `POST /api/v1/helper/turns`:
 {
   "conversation_id": "hc_…",
   "message": "What did we decide about Redis and why?",
-  "scope": { "project_id": "proj_…", "session_ids": ["ses_…"] },
+  "scope": { "project_id": "proj_…" },
   "stream": true
 }
 ```
 
-`conversation_id` and `scope` are optional (`session_ids` takes up to 100 ids). Set `"retry": true` when re-asking after a failed answer: if the thread's last question is still unanswered and identical, it is reused instead of being stored twice. When streaming, the events are `conversation` (always first), `text`, `tool_call`, `tool_result`, `citation`, `doc_citation`, `ticket_citation`, `wiki_citation`, `action_proposed`, `done` and `error`. Every citation carries `kind` (`session`, `doc`, `ticket` or `wiki`); session, ticket and wiki citations also carry `at`, the source's last update as an ISO timestamp. A keep-alive comment is sent every 15 seconds. If the client disconnects, the model call is cancelled and the partial answer is kept.
+`conversation_id` and `scope` are optional. `scope` takes at most one of `project_id`, `group_id` (v0.28.0) or `session_ids` (up to 100 ids). Set `"retry": true` when re-asking after a failed answer: if the thread's last question is still unanswered and identical, it is reused instead of being stored twice. When streaming, the events are `conversation` (always first), `text`, `tool_call`, `tool_result`, `citation`, `doc_citation`, `ticket_citation`, `wiki_citation`, `action_proposed`, `done` and `error`. Every citation carries `kind` (`session`, `doc`, `ticket` or `wiki`); session, ticket and wiki citations also carry `at`, the source's last update as an ISO timestamp. A keep-alive comment is sent every 15 seconds. If the client disconnects, the model call is cancelled and the partial answer is kept.
 
 With `"stream": false` the response is:
 

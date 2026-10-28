@@ -473,11 +473,11 @@ def recording_fake(monkeypatch):
         async def validate_connection(self) -> dict:
             return {"account_id": "a1", "display_name": "N", "email": self.account_email}
 
-        async def create_issue(self, project_key, issue_type, summary, adf, labels=None):
+        async def create_issue(self, project_key, issue_type, summary, adf, labels=None, extra_fields=None):
             created.append({"summary": summary, "adf": adf})
             return TrackerIssue(key="ACME-1", url="https://acme.atlassian.net/browse/ACME-1", status="")
 
-        async def update_issue(self, issue_key, summary, adf):
+        async def update_issue(self, issue_key, summary, adf, extra_fields=None):
             created.append({"summary": summary, "adf": adf})
             return TrackerIssue(key=issue_key, url=f"https://acme.atlassian.net/browse/{issue_key}", status="")
 

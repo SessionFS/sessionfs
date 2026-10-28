@@ -32,6 +32,7 @@ import re
 import unicodedata
 import uuid
 from dataclasses import dataclass
+from datetime import date
 
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -45,6 +46,8 @@ from sessionfs.server.auth.project_access import (
 )
 from sessionfs.server.db.models import (
     AgentPersona,
+    JiraTemplate,
+    JiraTemplateVersion,
     OrgMember,
     OrgTrackerConnection,
     Project,
@@ -53,6 +56,7 @@ from sessionfs.server.db.models import (
     TrackerProjectMapping,
     User,
 )
+from sessionfs.server.integrations.trackers.templates import is_builtin_slug
 from sessionfs.server.services import jira_sync, ticket_watchers
 from sessionfs.server.services.jira_links import JiraLinkError, link_ticket_to_jira
 from sessionfs.server.services.personas import (
@@ -60,6 +64,7 @@ from sessionfs.server.services.personas import (
     visible_persona_org_id,
 )
 from sessionfs.server.services.review_state import REVIEWER_NAME_PATTERN
+from sessionfs.server.services.ticket_events import record_ticket_event
 from sessionfs.server.services.ticket_writes import (
     apply_ticket_update,
     assert_ticket_fields_editable,
@@ -185,6 +190,8 @@ class TicketDraft:
     priority: str
     kind: str
     assigned_to: str | None
+    due_date: date | None
+    estimated_effort: str | None
 
 
 def _first_error(exc: ValidationError) -> str:
@@ -203,6 +210,8 @@ def check_ticket_draft(
     priority: object,
     kind: object,
     assigned_to: object,
+    due_date: object = None,
+    estimated_effort: object = None,
 ) -> TicketDraft:
     """Validate a create-ticket draft through ``TicketCreate`` plus the
     helper's description/criteria limits.  Refuses (never truncates)."""
@@ -237,6 +246,8 @@ def check_ticket_draft(
             kind=kind if kind is not None else "task",
             acceptance_criteria=criteria,
             assigned_to=assigned_to,
+            due_date=due_date,
+            estimated_effort=estimated_effort,
         )
     except ValidationError as exc:
         raise HelperDraftError(_first_error(exc)) from None
@@ -247,6 +258,8 @@ def check_ticket_draft(
         priority=model.priority,
         kind=model.kind,
         assigned_to=model.assigned_to,
+        due_date=model.due_date,
+        estimated_effort=model.estimated_effort,
     )
 
 
@@ -493,6 +506,8 @@ async def create_ticket_action(
     acceptance_criteria: list[str],
     conversation_id: str | None,
     display_name: str,
+    due_date: date | str | None = None,
+    estimated_effort: str | None = None,
 ) -> str:
     """Create a ticket as the confirming user; caller owns the commit.
 
@@ -500,11 +515,16 @@ async def create_ticket_action(
     ticket starts ``suggested``; an editor's ticket starts ``open``.
     ``assigned_user_id`` is a direct-to-person assignment (GitHub #96),
     re-validated here against the project's assignee eligibility.
+    ``due_date`` / ``estimated_effort`` are already validated by
+    ``check_ticket_draft`` at propose and confirm time; ``due_date`` may
+    arrive as its stored ISO string, so it is parsed back to a ``date`` here.
     """
     if kind not in _VALID_KINDS:
         raise HTTPException(400, f"kind must be one of: {sorted(_VALID_KINDS)}")
     if priority not in _VALID_PRIORITIES:
         raise HTTPException(400, f"priority must be one of: {sorted(_VALID_PRIORITIES)}")
+    if isinstance(due_date, str):
+        due_date = date.fromisoformat(due_date)
 
     project = await load_project_for_user(project_id, db, user_id)
     await check_project_feature(ctx, "agent_tickets", project, db)
@@ -563,9 +583,57 @@ async def create_ticket_action(
         service_key_name=None,
         kind=kind,
         parent_ticket_id=None,
+        due_date=due_date,
+        estimated_effort=estimated_effort,
     )
     db.add(ticket)
     await db.flush()
+
+    # The ticket timeline: the same create-time events the ticket route
+    # writes, attributed to the confirming user.
+    await record_ticket_event(
+        db, ticket, "created", actor_type="user", actor_user_id=user_id
+    )
+    if due_date is not None:
+        await record_ticket_event(
+            db,
+            ticket,
+            "due_date_set",
+            field="due_date",
+            after=due_date,
+            actor_type="user",
+            actor_user_id=user_id,
+        )
+    if estimated_effort is not None:
+        await record_ticket_event(
+            db,
+            ticket,
+            "estimate_set",
+            field="estimated_effort",
+            after=estimated_effort,
+            actor_type="user",
+            actor_user_id=user_id,
+        )
+    if resolved_assigned_user is not None:
+        await record_ticket_event(
+            db,
+            ticket,
+            "assigned",
+            field="assigned_user_id",
+            after={"user_id": resolved_assigned_user.id},
+            actor_type="user",
+            actor_user_id=user_id,
+        )
+    elif normalized_assigned_to is not None:
+        await record_ticket_event(
+            db,
+            ticket,
+            "assigned",
+            field="assigned_to",
+            after={"persona": normalized_assigned_to},
+            actor_type="user",
+            actor_user_id=user_id,
+        )
 
     await ticket_watchers.subscribe_guarded(
         db, ticket_id=ticket.id, user_id=user_id, source="creator"
@@ -856,12 +924,138 @@ async def link_jira_action(
     )
 
 
+async def jira_project_key_override_error(
+    db: AsyncSession, *, org_id: str, jira_project_key: str, user_id: str
+) -> str | None:
+    """None when the caller may edit a project mapped to ``jira_project_key``.
+
+    The helper's safe default (GitHub #113 C): an override is allowed only when
+    some SessionFS project mapping in the org uses the key AND the caller has
+    editor standing on at least one such project.  Merely mapping the key is not
+    enough — the caller must be able to publish into the project it maps to.
+    """
+    key = jira_project_key.strip().upper()
+    if not key:
+        return "jira_project_key is empty"
+    # One generic refusal for every disallowed key so probing can never confirm
+    # whether a key is unmapped or merely mapped to a project the caller can't
+    # edit (GitHub #113 M1).
+    generic = f"jira_project_key {jira_project_key!r} is not a Jira project you can publish to"
+    project_ids = (
+        await db.execute(
+            select(TrackerProjectMapping.project_id).where(
+                TrackerProjectMapping.org_id == org_id,
+                func.upper(TrackerProjectMapping.jira_project_key) == key,
+            )
+        )
+    ).scalars().all()
+    if not project_ids:
+        return generic
+    for project_id in project_ids:
+        project = await db.get(Project, project_id)
+        if project is not None and await user_can_edit_project(db, user_id, project):
+            return None
+    return generic
+
+
+async def jira_template_override_error(
+    db: AsyncSession, *, org_id: str, slug: str
+) -> str | None:
+    """None when ``slug`` is a built-in or an active org-custom Jira template.
+
+    An org custom template wins over a built-in that shares its slug, so the
+    custom row is checked first (it is versioned and pinned like any custom).
+    """
+    row = await _get_org_template(db, org_id, slug)
+    if row is None:
+        if is_builtin_slug(slug):
+            return None
+        return f"unknown Jira template {slug!r}"
+    if row.archived_at is not None:
+        return f"Jira template {slug!r} is archived and can't be newly selected"
+    return None
+
+
+async def jira_template_override_version(
+    db: AsyncSession, *, org_id: str, slug: str
+) -> int | None:
+    """The current version of an org-custom template, or None for built-ins."""
+    row = await _get_org_template(db, org_id, slug)
+    if row is None:
+        return None
+    return row.version
+
+
+async def jira_template_changed_error(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    slug: str,
+    version: int | None,
+    builtin: bool | None = None,
+) -> str | None:
+    """None when the proposed template is still publishable at confirm.
+
+    A built-in (no org custom row) has no version and never changes, so it is
+    always publishable.  A custom template publishes with its PINNED version
+    snapshot; ``jira_template_changed`` is refused only when that version no
+    longer exists (including the template being deleted) or the template was
+    archived since it was proposed (GitHub #113 L1).
+
+    ``builtin`` records what the proposal pinned at propose time: ``True`` means
+    the slug was resolved as a built-in and must stay a built-in even if a
+    custom template has since taken the slug; ``False`` (a pinned custom
+    version) must never fall back to a same-slug built-in (L-c).
+    """
+    if builtin is True:
+        if is_builtin_slug(slug):
+            return None
+        return f"Jira template {slug!r} changed since it was proposed"
+    row = await _get_org_template(db, org_id, slug)
+    if row is None:
+        if version is None and is_builtin_slug(slug):
+            return None
+        return f"Jira template {slug!r} changed since it was proposed"
+    if row.archived_at is not None:
+        return f"Jira template {slug!r} was archived since it was proposed"
+    if version is not None:
+        snap = (
+            await db.execute(
+                select(JiraTemplateVersion.id).where(
+                    JiraTemplateVersion.template_id == row.id,
+                    JiraTemplateVersion.version == version,
+                )
+            )
+        ).scalar_one_or_none()
+        if snap is None:
+            return f"Jira template {slug!r} changed since it was proposed"
+    return None
+
+
+async def _get_org_template(
+    db: AsyncSession, org_id: str, slug: str
+) -> JiraTemplate | None:
+    return (
+        await db.execute(
+            select(JiraTemplate).where(
+                JiraTemplate.org_id == org_id,
+                JiraTemplate.slug == slug,
+            )
+        )
+    ).scalar_one_or_none()
+
+
 async def jira_publish_preflight(
     db: AsyncSession,
     *,
     user_id: str,
     ctx: UserContext,
     project_id: str,
+    jira_project_key: str | None = None,
+    jira_template: str | None = None,
+    jira_template_version: int | None = None,
+    jira_template_builtin: bool | None = None,
+    jira_sprint_id: int | None = None,
 ) -> tuple[Project, OrgTrackerConnection, TrackerProjectMapping]:
     """Re-check publish preconditions for a create-ticket-and-publish confirm.
 
@@ -918,6 +1112,54 @@ async def jira_publish_preflight(
                 "detail": "Ask your admin to add a mapping",
             },
         )
+
+    # A requested sprint needs the connection's sprint field; refuse before the
+    # ticket is created rather than fail after an outbound call (L2).
+    if jira_sprint_id is not None and not conn.sprint_field_id:
+        raise HTTPException(
+            422,
+            {
+                "error": "jira_sprint_field_unknown",
+                "message": (
+                    "This Jira connection has no sprint field discovered; ask "
+                    "an org admin to save the connection or set a sprint field id."
+                ),
+            },
+        )
+
+    # The helper's optional publish overrides (GitHub #113 C) are re-checked at
+    # confirm so a lost mapping/template between propose and confirm refuses the
+    # publish before the ticket is created.  The target project's own mapping
+    # key is always acceptable; anything else must be mapped elsewhere in org.
+    if jira_project_key is not None and jira_project_key.strip().upper() != mapping.jira_project_key.strip().upper():
+        err = await jira_project_key_override_error(
+            db, org_id=project.org_id, jira_project_key=jira_project_key, user_id=user_id
+        )
+        if err is not None:
+            raise HTTPException(
+                422, {"error": "jira_project_key_invalid", "message": err}
+            )
+    if jira_template is not None:
+        # L1: a custom template publishes with its PINNED version snapshot, so
+        # a newer current version is fine; refuse ``jira_template_changed`` only
+        # when that snapshot is gone or the template was archived.
+        err = await jira_template_changed_error(
+            db,
+            org_id=project.org_id,
+            slug=jira_template,
+            version=jira_template_version,
+            builtin=jira_template_builtin,
+        )
+        if err is not None:
+            raise HTTPException(
+                422,
+                {
+                    "error": "jira_template_changed",
+                    "message": (
+                        f"{err}; propose again to publish with the new version."
+                    ),
+                },
+            )
     return project, conn, mapping
 
 
@@ -929,14 +1171,20 @@ async def publish_ticket_to_jira(
     actor_user_id: str,
     dashboard_url: str = "",
     overwrite_existing: bool = False,
+    jira_project_key: str | None = None,
+    template_slug: str | None = None,
+    template_version: int | None = None,
+    template_builtin: bool | None = None,
+    sprint_id: int | None = None,
 ) -> dict:
     """Publish a just-created ticket to Jira through the shared publish path.
 
     Loads the project/connection/mapping fresh (the caller committed the ticket
     before this runs), resolves the ticket's template the way the publish route
-    does with no override, then renders the server's own deterministic draft —
-    ``collect_sources`` + ``build_deterministic_sections``, with no LLM rewrite —
-    and hands the rendered ``summary``/``sections`` to ``publish_ticket_draft``.
+    does (with ``template_slug`` as the per-ticket override), then renders the
+    server's own deterministic draft — ``collect_sources`` +
+    ``build_deterministic_sections``, with no LLM rewrite — and hands the
+    rendered ``summary``/``sections`` to ``publish_ticket_draft``.
     That function commits its own claim/link writes and returns the publish
     payload, or raises ``HTTPException`` with the route's error envelope.  The
     caller must have already committed the ticket so a publish failure leaves it
@@ -945,6 +1193,12 @@ async def publish_ticket_to_jira(
     ``dashboard_url`` is the dashboard base resolved from the app config by the
     confirm handler (not a fresh ``ServerConfig``) and ``overwrite_existing``
     opts into replacing an attached-only link's Jira summary/description.
+    ``jira_project_key`` / ``template_slug`` / ``sprint_id`` are the optional
+    helper publish overrides (GitHub #113 C); the confirm handler has already
+    re-checked them before the ticket was created.  ``template_version`` pins a
+    custom template to the proposal-time snapshot (L1); ``template_builtin``
+    records that the proposal pinned a built-in slug so a later custom template
+    with the same slug can't shadow it (L-c).
     """
     from sessionfs.server.integrations.trackers.promote import (
         build_deterministic_sections,
@@ -1002,7 +1256,9 @@ async def publish_ticket_to_jira(
         mapping=mapping,
         conn=conn,
         link=None,
-        override=None,
+        override=template_slug,
+        version=template_version,
+        builtin=template_builtin,
     )
     sources = await collect_sources(ticket, db)
     rendered = build_deterministic_sections(resolved.template, sources)
@@ -1029,6 +1285,8 @@ async def publish_ticket_to_jira(
         service_key_name=None,
         dashboard_url=dashboard_url,
         overwrite_existing=overwrite_existing,
+        jira_project_key=jira_project_key,
+        sprint_id=sprint_id,
     )
 
 

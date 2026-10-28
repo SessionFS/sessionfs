@@ -17,14 +17,40 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.27.0 -->
+      <!-- v0.28.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.28.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 28, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Helper for Project Groups &middot; Ticket Due Dates &amp; History &middot; Jira Sprints &amp; Parents &middot; Sweep CronJobs</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Ask the session helper about a project group.</strong> Pick a project group in the helper&rsquo;s scope menu, run <span class="font-mono text-accent text-sm">sfs helper ask --group</span>, or pass <span class="font-mono text-accent text-sm">group_id</span> to the <span class="font-mono text-accent text-sm">ask_session_helper</span> MCP tool. Answers draw only on the group&rsquo;s member projects you can read, and the group&rsquo;s compiled overview goes into the prompt, redacted with your DLP policy. See <a href="/session-helper/#scope-a-question-to-a-project-group" class="text-brand hover:underline">Session Helper</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>The helper remembers your scope.</strong> The drawer keeps the scope you last picked for the rest of the browser tab, per signed-in account, so a new conversation starts where you left off. Ticket and wiki citations become links as soon as an answer finishes, instead of showing &ldquo;source not available&rdquo;.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Ticket due dates, estimates and history.</strong> Tickets show who created and who resolved them, and take a due date and an estimate in Jira duration syntax such as <span class="font-mono text-accent text-sm">2d 4h</span>. An <strong>Overdue</strong> filter lists unfinished tickets past their due date (<span class="font-mono text-accent text-sm">?overdue=true</span>). Every status change, assignment and edit is recorded with who made it and merged into the ticket&rsquo;s activity timeline. CLI: <span class="font-mono text-accent text-sm">sfs ticket history</span>, <span class="font-mono text-accent text-sm">sfs ticket create|update --due --estimate</span>; MCP: <span class="font-mono text-accent text-sm">due_date</span> and <span class="font-mono text-accent text-sm">estimated_effort</span> on <span class="font-mono text-accent text-sm">create_ticket</span> and <span class="font-mono text-accent text-sm">update_ticket</span>; API: <span class="font-mono text-accent text-sm">GET /api/v1/projects/&#123;id&#125;/tickets/&#123;tid&#125;/events</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Jira sprints and parents (Enterprise).</strong> The publish dialog offers the mapped project&rsquo;s active and future sprints, and a ticket&rsquo;s parent becomes the Jira parent or epic. The sprint and epic-link fields are detected automatically, and admins can review or override them under <strong>Organization &rarr; Integrations &rarr; Jira &rarr; Connection &rarr; Agile fields</strong> without re-entering the API token. A linked ticket shows its sprint and parent. See <a href="/integrations/jira/#sprints-parents-and-scheduling" class="text-brand hover:underline">Jira Cloud</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Due dates and estimates in Jira.</strong> Publishing sends the ticket&rsquo;s due date and estimate as the issue&rsquo;s due date and original estimate, <strong>Update from Jira</strong> brings them back, and with two-way sync on a due date changed in Jira updates the ticket.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Clearer, safer Jira publishing.</strong> When Jira refuses an optional field such as the sprint or due date, the issue is still published and the dialog explains in plain language what was left out. Publishing never creates a duplicate issue after a timeout or error: the next publish adopts the issue it already created.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Helper &ldquo;create ticket and publish to Jira&rdquo; with choices.</strong> You can pick the Jira project (one mapped to a project you can edit), the story template (pinned to the version you saw) and the sprint.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Jira template editor.</strong> Tooltips explain each mode and source field, the preview sits in a side pane, <strong>Copy from&hellip;</strong> starts a template from an existing one, and the preview&rsquo;s project picker is searchable.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Org AI key: Fetch models.</strong> The org helper key form lists the models the key can use, like the personal form, with manual entry as a fallback. Model lookups are rate-limited per user.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Self-hosted: sweep keys and CronJobs.</strong> Creating or rotating a <span class="font-mono text-accent text-sm">platform_sweeps:run</span> key now warns that it works only while the user who minted it stays a platform admin, a key that stopped working gets a <span class="font-mono text-accent text-sm">403</span> naming the cause and the fix, and <span class="font-mono text-accent text-sm">sfs admin service-keys list</span> shows such keys as inactive. The Helm chart has opt-in CronJobs for every sweep (ticket notifications, org digest, KB compile every 15 minutes, Jira sync every minute, Confluence publish every 15 minutes), with no service account token and, when network policies are on, egress limited to DNS and the API. See <a href="/self-hosted/#scheduled-sweeps" class="text-brand hover:underline">Self-Hosted</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;103 (102 adds ticket due dates, estimates and change history; 103 adds Jira sprint and parent fields; both additive). Self-hosted: run migrations 102&ndash;103, then have an org admin run <strong>Detect fields</strong> once on an existing Jira connection (see <a href="/self-hosted/#upgrading" class="text-brand hover:underline">Self-Hosted</a>). 10,040+ backend tests + 1801 dashboard UI tests passing. 100 MCP tools (unchanged).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.27.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.27.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 27, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Link Existing Jira Issues &middot; Assign Tickets to People &middot; Helper Jira Actions &middot; Reviewer-Agnostic Verdicts</h2>
         <ul class="space-y-2 text-base text-muted">

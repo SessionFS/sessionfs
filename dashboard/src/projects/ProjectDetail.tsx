@@ -215,6 +215,16 @@ export default function ProjectDetail() {
     }, { replace: true });
   }, [setSearchParams]);
 
+  // Same for the "Overdue" filter (?due=overdue).
+  const setOverdueFilter = useCallback((on: boolean) => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      if (on) params.set('due', 'overdue');
+      else params.delete('due');
+      return params;
+    }, { replace: true });
+  }, [setSearchParams]);
+
   // Enter edit mode if ?edit=1
   useEffect(() => {
     if (searchParams.get('edit') === '1' && project) {
@@ -298,6 +308,10 @@ export default function ProjectDetail() {
   // Server-provided: false for readers who can view but not change the
   // project (a captured session on its repo). Older servers omit it.
   const canEdit = project.can_edit !== false;
+  // Project-admin standing: the server's `can_admin` (user_is_project_admin,
+  // the rule update_ticket uses beside "creator"); older servers omit it, so
+  // fall back to the same rule from the owner and the caller's org role.
+  const isProjectAdmin = project.can_admin ?? canUnlinkTicket(project, me, myOrgs);
 
   // Jira surface for the tickets tab, resolved here (the page already has the
   // project + user + membership) and threaded down so the ticket detail stays
@@ -309,7 +323,7 @@ export default function ProjectDetail() {
   const jira: TicketJiraSurface | undefined = project.org_id && isJiraOrgMember(project, myOrgs)
     ? {
         orgId: project.org_id,
-        isProjectAdmin: canUnlinkTicket(project, me, myOrgs),
+        isProjectAdmin,
         isEnterprise: hasJiraEnterpriseTier(project, me),
         canEdit,
       }
@@ -509,9 +523,11 @@ export default function ProjectDetail() {
             projectId={project.id}
             jira={jira}
             initialTicketId={searchParams.get('ticket')}
-            viewer={{ canEdit, userId: me?.user_id ?? null }}
+            viewer={{ canEdit, userId: me?.user_id ?? null, isProjectAdmin }}
             assignedToMe={searchParams.get('assignee') === 'me'}
             onAssignedToMeChange={setAssignedToMe}
+            overdue={searchParams.get('due') === 'overdue'}
+            onOverdueChange={setOverdueFilter}
           />
         </Panel>
       )}

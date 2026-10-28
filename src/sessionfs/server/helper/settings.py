@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from dataclasses import dataclass
 from typing import Annotated, Any, Literal
 
@@ -197,13 +198,47 @@ _DELIMITER_RE = re.compile(
 )
 
 
+# The helper's ``<group-context>`` block delimiter.  Kept separate from the
+# instruction delimiters above: instruction text rejects those tags outright,
+# while compiled group context is neutralised in place.
+_GROUP_CONTEXT_DELIMITER_RE = re.compile(
+    r"<\s*/?\s*group[\s_-]*context\b[^>]*>", re.IGNORECASE
+)
+
+
+def _fold_tag_text(text: str) -> str:
+    """NFKC-fold then strip Unicode format (Cf) characters before matching.
+
+    Fullwidth ``＜/group-context＞`` folds to ``</group-context>`` and a
+    zero-width space injected between the words no longer breaks the run, so
+    delimiter tags hidden with either trick are still defanged.
+    """
+    folded = unicodedata.normalize("NFKC", text or "")
+    return "".join(ch for ch in folded if unicodedata.category(ch) != "Cf")
+
+
 def contains_delimiter(text: str) -> bool:
     return bool(_DELIMITER_RE.search(text))
 
 
+def _defang(pattern: re.Pattern[str], text: str) -> str:
+    # Fold only to find hidden tags: text without one is returned exactly as
+    # written, so non-ASCII instructions (ZWNJ, superscripts, ligatures) reach
+    # the model unchanged.
+    folded = _fold_tag_text(text)
+    if not pattern.search(folded):
+        return text or ""
+    return pattern.sub("[tag removed]", folded)
+
+
 def neutralize_delimiters(text: str) -> str:
     """Defang delimiter-like tags so instruction text can't close its block."""
-    return _DELIMITER_RE.sub("[tag removed]", text)
+    return _defang(_DELIMITER_RE, text)
+
+
+def neutralize_group_context_delimiters(text: str) -> str:
+    """Defang ``<group-context>`` tags so compiled text can't close its block."""
+    return _defang(_GROUP_CONTEXT_DELIMITER_RE, text)
 
 
 @dataclass(frozen=True)

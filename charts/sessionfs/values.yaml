@@ -211,6 +211,64 @@ api:
       image: curlimages/curl:8.12.1
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3
+  # Scheduled platform sweeps (GitHub #115). Each is disabled by default and
+  # opts in with a cronJob.existingSecret holding a platform_sweeps:run service
+  # key (sfs admin service-keys create ... --scope platform_sweeps:run). A
+  # single shared template renders one CronJob per entry; the work runs in the
+  # API pods — the CronJob pod only posts one authenticated request.
+  ticketNotifications:
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "*/10 * * * *"
+      existingSecret: ""
+      secretKey: "ticket-notifications-api-key"
+      image: curlimages/curl:8.12.1
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
+  orgDigest:
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "0 4 * * *"
+      existingSecret: ""
+      secretKey: "org-digest-api-key"
+      image: curlimages/curl:8.12.1
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
+  kbCompile:
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "*/15 * * * *"
+      existingSecret: ""
+      secretKey: "kb-compile-api-key"
+      image: curlimages/curl:8.12.1
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
+  jiraSync:
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "* * * * *"
+      # JSON body bounds the run by count and wall clock (endpoint accepts
+      # limit 1-1000 and budget_seconds 1-120; defaults 100 / 50).
+      body: '{"limit":100,"budget_seconds":50}'
+      existingSecret: ""
+      secretKey: "jira-sync-api-key"
+      image: curlimages/curl:8.12.1
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
+  confluencePublish:
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "*/15 * * * *"
+      existingSecret: ""
+      secretKey: "confluence-publish-api-key"
+      image: curlimages/curl:8.12.1
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
 
 ## MCP Server
 mcp:

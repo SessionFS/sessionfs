@@ -28,6 +28,12 @@ export function resolve(method: string, pathname: string): MockResult | null {
   if (!get && /^\/api\/v1\/projects\/[^/]+\/tickets\/[^/]+\/jira\/pull$/.test(path)) {
     return ok({ ticket: d.linkedTicket, jira: d.linkedTicketJiraLink, updated_fields: [] });
   }
+  // The Jira publish dialog: a draft, then a publish Jira accepted with warnings.
+  const jiraPreviewPost = !get && path.match(/^\/api\/v1\/projects\/[^/]+\/tickets\/([^/]+)\/jira\/preview$/);
+  if (jiraPreviewPost) return ok(d.jiraPreview(decodeURIComponent(jiraPreviewPost[1])));
+  const jiraPublishPost = !get && path.match(/^\/api\/v1\/projects\/[^/]+\/tickets\/([^/]+)\/jira\/publish$/);
+  if (jiraPublishPost) return ok(d.jiraPublishWithWarnings(decodeURIComponent(jiraPublishPost[1])));
+  if (!get && /^\/api\/v1\/orgs\/[^/]+\/jira\/fields\/detect$/.test(path)) return ok(d.jiraDetectedFields);
   if (!get) return ok({ status: 'ok' });
 
   // ── account ──
@@ -79,6 +85,8 @@ export function resolve(method: string, pathname: string): MockResult | null {
       if (sub === '/review-state') return ok(linked ? d.linkedTicketReviewState : { ticket_id: tid, review_state: null });
       if (sub === '/jira-sync-events') return ok(linked ? d.linkedTicketSyncEvents : { events: [] });
       if (sub === '/jira') return linked ? ok(d.linkedTicketJiraLink) : notFound();
+      if (sub === '/events') return ok(linked ? d.linkedTicketEvents : { events: [], next_before: null });
+      if (sub === '/jira/templates') return ok(d.jiraTicketTemplates);
       return null;
     }
     if (rest === '/agent-runs') return ok(d.agentRuns);
@@ -91,6 +99,7 @@ export function resolve(method: string, pathname: string): MockResult | null {
     if (rest === '/skill-install-requests') return ok({ items: [], can_approve: true });
     if (rest === '/settings') return ok({ auto_narrative: project.auto_narrative });
     if (rest === '/confluence/links') return ok(d.confluenceLinks);
+    if (rest === '/jira/sprints') return ok(d.jiraSprints);
     return null;
   }
 

@@ -39,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.models import Project, Ticket, TicketComment, TicketDependency
 from sessionfs.server.services import ticket_watchers
+from sessionfs.server.services.ticket_events import record_ticket_event
 
 # Maps current status → set of legal next statuses. Routes consult
 # this table to validate every transition; a missing key means the
@@ -207,6 +208,18 @@ async def enrich_dependents(
             ).scalars().all()
             if len(done_count) == len(upstream) and dependent.status == "blocked":
                 dependent.status = "in_progress"
+                # GitHub #113 — the dependency-driven auto-unblock is a timeline
+                # transition, attributed to the system (it is a consequence of
+                # the upstream ticket resolving, not a direct actor action).
+                await record_ticket_event(
+                    db,
+                    dependent,
+                    "status_changed",
+                    field="status",
+                    before="blocked",
+                    after="in_progress",
+                    actor_type="system",
+                )
                 # Ticket watchers: the dependent became actionable again.
                 await ticket_watchers.emit_notifications(
                     db,
@@ -225,6 +238,7 @@ async def emit_status_notification(
     summary: str,
     actor_user_id: str | None,
     actor_type: str = "user",
+    service_key_name: str | None = None,
     your_turn_assignee: bool = False,
 ) -> None:
     """Emit a plain status notification, optionally handing the current
@@ -255,9 +269,20 @@ async def emit_status_notification(
         summary=summary,
         actor_user_id=actor_user_id,
         actor_type=actor_type,
+        service_key_name=service_key_name,
         your_turn_user_id=your_turn_user_id,
         subscribe_users=subscribe,
     )
+
+
+def _event_actor_type(actor_type: str) -> str:
+    """Map the AuthContext value onto the ticket_events vocabulary.
+
+    ``AuthContext.actor_type`` returns ``"service_key"`` for service keys;
+    the event log uses ``"service"``. Everything else (``user``, ``jira``)
+    passes through unchanged.
+    """
+    return "service" if actor_type == "service_key" else actor_type
 
 
 # ── Transitions ──
@@ -278,6 +303,7 @@ async def start_ticket(
     (two concurrent starts can't both win) and a lease-epoch bump that fences
     any agent still holding the previous lease. Emits the watcher event.
     """
+    old_status = ticket.status
     result = await db.execute(
         update(Ticket)
         .where(
@@ -300,6 +326,17 @@ async def start_ticket(
             f"Pass force=true to recover from 'blocked'.",
         )
     await db.refresh(ticket)
+    await record_ticket_event(
+        db,
+        ticket,
+        "status_changed",
+        field="status",
+        before=old_status,
+        after="in_progress",
+        actor_type=_event_actor_type(actor_type),
+        actor_user_id=actor_user_id,
+        actor_label=service_key_name,
+    )
     # Ticket watchers: moving into in_progress is a status event for
     # followers (the assignee's human owner is already subscribed from
     # create/update, so they hear about it too).
@@ -323,6 +360,7 @@ async def accept_ticket(
     lease_epoch: int | None,
     actor_user_id: str | None,
     actor_type: str = "user",
+    service_key_name: str | None = None,
 ) -> Ticket:
     """review → done (Tasks). Stamps ``resolved_at``, enriches dependents.
 
@@ -374,6 +412,17 @@ async def accept_ticket(
     ticket = await _reload(db, ticket_id, project_id)
     assert ticket is not None
     await enrich_dependents(db, ticket, actor_user_id=actor_user_id)
+    await record_ticket_event(
+        db,
+        ticket,
+        "status_changed",
+        field="status",
+        before="review",
+        after="done",
+        actor_type=_event_actor_type(actor_type),
+        actor_user_id=actor_user_id,
+        actor_label=service_key_name,
+    )
     # Ticket watchers: resolution is a plain status event for followers.
     await ticket_watchers.emit_notifications(
         db,
@@ -382,6 +431,7 @@ async def accept_ticket(
         summary="Resolved",
         actor_user_id=actor_user_id,
         actor_type=actor_type,
+        service_key_name=service_key_name,
     )
     return ticket
 
@@ -393,6 +443,7 @@ async def close_issue(
     ticket: Ticket,
     actor_user_id: str | None,
     actor_type: str = "user",
+    service_key_name: str | None = None,
 ) -> Ticket:
     """in_progress → closed (Issues only). Stamps ``resolved_at``.
 
@@ -408,9 +459,21 @@ async def close_issue(
         )
     check_transition(ticket.status, "closed", ticket.kind)
     now = datetime.now(timezone.utc)
+    old_status = ticket.status
     ticket.status = "closed"
     ticket.resolved_at = now
     ticket.updated_at = now
+    await record_ticket_event(
+        db,
+        ticket,
+        "status_changed",
+        field="status",
+        before=old_status,
+        after="closed",
+        actor_type=_event_actor_type(actor_type),
+        actor_user_id=actor_user_id,
+        actor_label=service_key_name,
+    )
     await emit_status_notification(
         db,
         ticket=ticket,
@@ -418,6 +481,7 @@ async def close_issue(
         summary="Closed",
         actor_user_id=actor_user_id,
         actor_type=actor_type,
+        service_key_name=service_key_name,
     )
     return ticket
 
@@ -429,11 +493,24 @@ async def reopen_ticket(
     ticket: Ticket,
     actor_user_id: str | None,
     actor_type: str = "user",
+    service_key_name: str | None = None,
 ) -> Ticket:
     """review → open (Tasks) / in_progress → open (Issues)."""
     check_transition(ticket.status, "open", ticket.kind)
+    old_status = ticket.status
     ticket.status = "open"
     ticket.updated_at = datetime.now(timezone.utc)
+    await record_ticket_event(
+        db,
+        ticket,
+        "status_changed",
+        field="status",
+        before=old_status,
+        after="open",
+        actor_type=_event_actor_type(actor_type),
+        actor_user_id=actor_user_id,
+        actor_label=service_key_name,
+    )
     await emit_status_notification(
         db,
         ticket=ticket,
@@ -441,6 +518,7 @@ async def reopen_ticket(
         summary="Reopened — changes requested",
         actor_user_id=actor_user_id,
         actor_type=actor_type,
+        service_key_name=service_key_name,
         your_turn_assignee=True,
     )
     return ticket

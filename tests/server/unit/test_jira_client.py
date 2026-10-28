@@ -14,7 +14,7 @@ import json
 import httpx
 import pytest
 
-from sessionfs.server.integrations.trackers.base import TrackerError
+from sessionfs.server.integrations.trackers.base import TrackerBoard, TrackerError
 from sessionfs.server.integrations.trackers.jira import (
     JiraClient,
     _display_name,
@@ -262,6 +262,38 @@ def test_response_detail_uses_errors_dict_values():
     assert detail.startswith("Jira API 400: ")
 
 
+def test_response_detail_carries_errors_keys_alongside_error_messages():
+    """L-e — the ``errors`` map field keys are surfaced (capped at 20) even when
+    ``errorMessages`` is also present, so a 400 naming sprint + parent still
+    exposes those field ids for the outbound ladder to drop."""
+    resp = httpx.Response(400)
+    errors = {f"k{i}": "v" for i in range(25)}
+    body = json.dumps({
+        "errorMessages": ["One or more fields are invalid"],
+        "errors": errors,
+    }).encode()
+    detail = _response_detail(resp, body)
+    assert "One or more fields are invalid" in detail
+    assert "k0: v" in detail
+    assert "k19: v" in detail
+    assert "k20: v" not in detail  # beyond the 20-entry cap
+
+
+def test_response_detail_keeps_errors_keys_before_long_error_messages():
+    """A 300-char cap must never hide the ``errors`` field keys: they are
+    emitted before ``errorMessages`` so the outbound ladder can still name and
+    drop a rejected sprint/parent field even when a 400-char generic message
+    would otherwise fill the whole detail."""
+    resp = httpx.Response(400)
+    body = json.dumps({
+        "errorMessages": ["x" * 400],
+        "errors": {"customfield_10010": "Field 'customfield_10010' cannot be set"},
+    }).encode()
+    detail = _response_detail(resp, body)
+    assert "customfield_10010" in detail
+    assert len(detail) == len("Jira API 400: ") + 300
+
+
 @pytest.mark.asyncio
 async def test_redirect_is_rejected():
     def handler(request: httpx.Request) -> httpx.Response:
@@ -409,10 +441,17 @@ async def test_update_issue_never_sends_status():
 @pytest.mark.asyncio
 async def test_get_issue_reads_status():
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.params["fields"] == "status,updated,project"
+        assert request.url.params["fields"] == (
+            "status,updated,project,parent,duedate,timetracking"
+        )
         return httpx.Response(200, json={
             "key": "ACME-1",
-            "fields": {"status": {"name": "In Progress"}, "updated": "2026-01-01T00:00:00Z"},
+            "fields": {
+                "status": {"name": "In Progress"},
+                "updated": "2026-01-01T00:00:00Z",
+                "duedate": "2026-03-15",
+                "timetracking": {"originalEstimate": "2d 4h"},
+            },
         })
 
     client = _client(handler)
@@ -421,6 +460,8 @@ async def test_get_issue_reads_status():
     assert issue.status == "In Progress"
     assert issue.key == "ACME-1"
     assert issue.url == f"{_SITE}/browse/ACME-1"
+    assert issue.due_date == "2026-03-15"
+    assert issue.original_estimate == "2d 4h"
 
 
 @pytest.mark.asyncio
@@ -716,6 +757,24 @@ async def test_list_projects_caps_at_500_but_site_has_more():
 
 
 @pytest.mark.asyncio
+async def test_list_sprints_quotes_board_id_as_a_single_path_segment():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # The raw path is what goes on the wire; ``.path`` is percent-decoded.
+        captured["raw_path"] = request.url.raw_path.decode("ascii")
+        return httpx.Response(200, json={"values": []})
+
+    client = _client(handler)
+    # A board id must stay one path segment — a slash or traversal sequence can
+    # never escape it into a different board route.
+    await client.list_sprints(TrackerBoard(id="1/../9", name="B"))
+    await client.aclose()
+    assert "/board/1/../9/sprint" not in captured["raw_path"]
+    assert "/board/1%2F..%2F9/sprint" in captured["raw_path"]
+
+
+@pytest.mark.asyncio
 async def test_search_projects_stops_on_malformed_pages():
     calls = {"n": 0}
 
@@ -743,3 +802,215 @@ async def test_search_projects_errors_stay_sanitized():
         await client.search_projects("acme", 50)
     await client.aclose()
     assert _TOKEN not in str(exc.value)
+
+
+# ── sprint + parent (GitHub #113 C7/C8) ──
+
+
+@pytest.mark.asyncio
+async def test_detect_fields_picks_sprint_and_epic_link_ids():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/rest/api/3/field"
+        return httpx.Response(200, json=[
+            {"id": "customfield_10010", "schema": {"custom": "com.pyxis.greenhopper.jira:gh-sprint"}},
+            {"id": "customfield_10011", "schema": {"custom": "com.pyxis.greenhopper.jira:gh-epic-link"}},
+            {"id": "customfield_10012", "schema": {"custom": "com.atlassian.jira:something-else"}},
+        ])
+
+    client = _client(handler)
+    fields = await client.detect_fields()
+    await client.aclose()
+    assert fields == {"sprint_field_id": "customfield_10010", "epic_link_field_id": "customfield_10011"}
+
+
+@pytest.mark.asyncio
+async def test_detect_fields_returns_none_when_absent():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[
+            {"id": "customfield_10012", "schema": {"custom": "com.atlassian.jira:other"}},
+        ])
+
+    client = _client(handler)
+    fields = await client.detect_fields()
+    await client.aclose()
+    assert fields == {"sprint_field_id": None, "epic_link_field_id": None}
+
+
+@pytest.mark.asyncio
+async def test_list_boards_reads_first_page():
+    seen: list[dict] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/rest/agile/1.0/board"
+        seen.update(dict(request.url.params))
+        return httpx.Response(200, json={
+            "values": [{"id": 7, "name": "Board A"}, {"id": 9, "name": "Board B"}],
+        })
+
+    client = _client(handler)
+    boards = await client.list_boards("ACME")
+    await client.aclose()
+    assert [(b.id, b.name) for b in boards] == [("7", "Board A"), ("9", "Board B")]
+    assert seen["projectKeyOrId"] == "ACME"
+    assert seen["maxResults"] == "10"
+
+
+@pytest.mark.asyncio
+async def test_list_sprints_parses_values():
+    from sessionfs.server.integrations.trackers.base import TrackerBoard
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/rest/agile/1.0/board/7/sprint"
+        assert request.url.params["state"] == "active,future"
+        return httpx.Response(200, json={
+            "values": [
+                {"id": 1, "name": "Sprint 1", "state": "active", "startDate": "2026-01-01T00:00:00.000Z"},
+                {"id": 2, "name": "Sprint 2", "state": "future", "endDate": "2026-02-01T00:00:00.000Z"},
+            ],
+        })
+
+    client = _client(handler)
+    sprints = await client.list_sprints(TrackerBoard(id="7", name="Board A"))
+    await client.aclose()
+    assert [(s.id, s.name, s.state, s.board_name) for s in sprints] == [
+        ("1", "Sprint 1", "active", "Board A"),
+        ("2", "Sprint 2", "future", "Board A"),
+    ]
+    assert sprints[0].start_date == "2026-01-01T00:00:00.000Z"
+    assert sprints[1].end_date == "2026-02-01T00:00:00.000Z"
+
+
+@pytest.mark.asyncio
+async def test_move_issue_to_sprint_posts_issue_key():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/rest/agile/1.0/sprint/42/issue"
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(204)
+
+    client = _client(handler)
+    await client.move_issue_to_sprint("ACME-1", 42)
+    await client.aclose()
+    assert captured["body"] == {"issues": ["ACME-1"]}
+
+
+@pytest.mark.asyncio
+async def test_get_sprint_reads_name_and_state():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/rest/agile/1.0/sprint/42"
+        return httpx.Response(200, json={"id": 42, "name": "Sprint 1", "state": "active"})
+
+    client = _client(handler)
+    sprint = await client.get_sprint(42)
+    await client.aclose()
+    assert (sprint.id, sprint.name, sprint.state, sprint.board_name) == (
+        "42", "Sprint 1", "active", "",
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_sprint_truncates_name_and_state_and_rejects_non_object():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "id": 7,
+            "name": "x" * 300,
+            "state": "active" * 20,
+        })
+
+    client = _client(handler)
+    sprint = await client.get_sprint(7)
+    await client.aclose()
+    assert len(sprint.name) == 200
+    assert len(sprint.state) == 20
+
+    client = _client(lambda request: httpx.Response(200, json=["not", "an", "object"]))
+    with pytest.raises(TrackerError):
+        await client.get_sprint(7)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_issue_parses_sprint_and_parent():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["fields"] == (
+            "status,updated,project,parent,duedate,timetracking,"
+            "customfield_10010,customfield_10011"
+        )
+        return httpx.Response(200, json={
+            "key": "ACME-1",
+            "fields": {
+                "status": {"name": "Done"},
+                "parent": {"key": "ACME-10"},
+                "customfield_10010": [
+                    {"id": 5, "name": "Old Sprint", "state": "closed"},
+                    {"id": 6, "name": "Current Sprint", "state": "active"},
+                ],
+                "customfield_10011": "ACME-20",
+            },
+        })
+
+    client = _client(handler)
+    issue = await client.get_issue(
+        "ACME-1", sprint_field_id="customfield_10010", epic_link_field_id="customfield_10011"
+    )
+    await client.aclose()
+    assert issue.sprint_id == "6"
+    assert issue.sprint_name == "Current Sprint"
+    assert issue.sprint_state == "active"
+    # ``parent`` wins over the epic-link field.
+    assert issue.parent_key == "ACME-10"
+
+
+@pytest.mark.asyncio
+async def test_get_issue_picks_active_then_last_future_then_last():
+    from sessionfs.server.integrations.trackers.jira import extract_sprint
+
+    assert extract_sprint(
+        {"cf": [{"id": 1, "name": "s", "state": "future"}]}, "cf"
+    ) == ("1", "s", "future")
+    assert extract_sprint(
+        {"cf": [{"id": 1, "name": "a", "state": "active"}, {"id": 2, "name": "b", "state": "active"}]}, "cf"
+    ) == ("1", "a", "active")
+    assert extract_sprint(
+        {"cf": [{"id": 1, "name": "a", "state": "future"}, {"id": 2, "name": "b", "state": "future"}]}, "cf"
+    ) == ("2", "b", "future")
+    assert extract_sprint({"cf": "not-a-list"}, "cf") == (None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_create_issue_merges_extra_fields():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(201, json={"key": "ACME-1"})
+
+    client = _client(handler)
+    await client.create_issue(
+        "ACME", "Story", "Title", {"type": "doc", "version": 1, "content": []},
+        extra_fields={"customfield_10010": 42, "parent": {"key": "ACME-10"}},
+    )
+    await client.aclose()
+    assert captured["body"]["fields"]["customfield_10010"] == 42
+    assert captured["body"]["fields"]["parent"] == {"key": "ACME-10"}
+
+
+@pytest.mark.asyncio
+async def test_update_issue_merges_extra_fields():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+        return httpx.Response(204)
+
+    client = _client(handler)
+    await client.update_issue(
+        "ACME-1", "Title", {"type": "doc", "version": 1, "content": []},
+        extra_fields={"customfield_10010": 42},
+    )
+    await client.aclose()
+    assert captured["body"]["fields"]["customfield_10010"] == 42
+    assert captured["body"]["fields"]["summary"] == "Title"

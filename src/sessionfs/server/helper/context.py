@@ -27,12 +27,15 @@ MAX_AUDIT_JSON_BYTES = 16 * 1024
 class HelperScope:
     """Hard-filter scope for one turn.
 
-    When ``project_id`` / ``session_ids`` are set, handlers treat them as
-    non-negotiable boundaries — the model can narrow them further but never
-    widen them.
+    When ``project_id`` / ``group_id`` / ``session_ids`` are set, handlers
+    treat them as non-negotiable boundaries — the model can narrow them
+    further but never widen them.  Exactly one of the three is set by the
+    routes layer; the dataclass itself stays permissive so stored scopes can
+    be rehydrated best-effort.
     """
 
     project_id: str | None = None
+    group_id: str | None = None
     session_ids: tuple[str, ...] = ()
 
 

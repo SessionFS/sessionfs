@@ -2177,7 +2177,7 @@ See [API Keys](./api-keys.md) for the conceptual guide, scope vocabulary, and in
 
 ### `sfs admin service-keys list`
 
-List service keys in an org. Shows id, name, key prefix, scopes, project allowlist, expires_at, and active state.
+List service keys in an org. Shows id, name, key prefix, scopes, project allowlist, expires_at, active state, and a `Coupling` column. For keys with a tier-coupled scope, `Coupling` reads `ok` while the key works and `inactive: minter no longer admin` (or `inactive: owner no longer admin`) once the tier coupling has broken it; keys with no tier-coupled scope show `—`.
 
 ```
 sfs admin service-keys list --org ORG_ID
@@ -2189,7 +2189,7 @@ sfs admin service-keys list --org ORG_ID
 
 ### `sfs admin service-keys create`
 
-Mint a new scoped service key. The raw key is printed to stdout exactly once — capture it immediately.
+Mint a new scoped service key. The raw key is printed to stdout exactly once — capture it immediately. When the key includes a tier-coupled scope, a `minter_tier_coupling` warning is printed in yellow to **stderr**, so `--output-key` keeps stdout carrying only the raw key.
 
 ```
 sfs admin service-keys create --org ORG_ID --name NAME --scope SCOPE [--scope SCOPE]... [--expires-days N] [--project PID]... [--output-key]
@@ -2208,7 +2208,7 @@ Local validation: unknown scopes and `*` exit with code 2 before the network cal
 
 ### `sfs admin service-keys rotate`
 
-Issue a new raw secret for an existing service key. The old key is revoked atomically in the same transaction with `revoke_reason="rotated by <user>"`. Scopes, expiry policy, and project allowlist are preserved.
+Issue a new raw secret for an existing service key. The old key is revoked atomically in the same transaction with `revoke_reason="rotated by <user>"`. Scopes, expiry policy, and project allowlist are preserved. When the key has a tier-coupled scope, a `minter_tier_coupling` warning is printed in yellow to **stderr**, so `--output-key` keeps stdout carrying only the new raw key.
 
 ```
 sfs admin service-keys rotate KEY_ID --org ORG_ID [--output-key]
@@ -2246,7 +2246,7 @@ sfs admin service-keys revoke KEY_ID --org ORG_ID --reason "..."
 
 Print the live scope vocabulary (sourced from the server's `VALID_SCOPES` set so it always reflects the running version).
 
-Platform scopes (`skills_verify:run`, `skills_registry:poll`, `platform_sweeps:run`) can only be minted or rotated by a platform admin; anyone else gets `403 platform_admin_scope`. `platform_sweeps:run` is the credential for scheduled sweep jobs (catalog regenerate, verify sweep, freshness sweep, rescan, publisher recheck, GitHub webhook-delivery sweep) and works only while its minter is still a platform admin. It cannot set the rescan's `report_only` / `force` or the webhook sweep's retention overrides (`403 sweep_override_not_allowed`):
+Platform scopes (`skills_verify:run`, `skills_registry:poll`, `platform_sweeps:run`, `admin_metrics:read`) can only be minted or rotated by a platform admin; anyone else gets `403 platform_admin_scope`. They are also **tier-coupled**: each is flagged in the `scopes` output with `(platform-admin tier-coupled)`, and the key keeps working only while the admin who minted or last rotated it and the user it runs as are both still active platform admins. `platform_sweeps:run` is the credential for scheduled sweep jobs (catalog regenerate, verify sweep, freshness sweep, rescan, publisher recheck, GitHub webhook-delivery sweep). It cannot set the rescan's `report_only` / `force` or the webhook sweep's retention overrides (`403 sweep_override_not_allowed`):
 
 ```
 sfs admin service-keys create --org <ORG_ID> --name platform-sweeps --scope platform_sweeps:run --output-key
@@ -2724,10 +2724,19 @@ sfs ticket list --kind task               # only executor work (omit for both)
 
 ### `sfs ticket show`
 
-Print full ticket details: description, acceptance criteria, file refs, dependencies, completion notes.
+Print full ticket details: creator, due date, estimate, description, acceptance criteria, file refs, dependencies, completion notes.
 
 ```bash
 sfs ticket show tk_abc123
+```
+
+### `sfs ticket history`
+
+Print a ticket's event log — who created, moved, assigned, edited, due-dated or Jira-linked it, newest first.
+
+```bash
+sfs ticket history tk_abc123
+sfs ticket history tk_abc123 --limit 25
 ```
 
 ### `sfs ticket create`
@@ -2739,10 +2748,11 @@ sfs ticket create --title "Fix rate limiter" \
   --description "KB search endpoint allows unbounded queries." \
   --assigned-to atlas --priority high \
   --criteria "Per-user limit" --criteria "Tier-aware" \
+  --due 2026-11-15 --estimate 3d \
   --file src/sessionfs/server/routes/knowledge.py
 ```
 
-Options: `--title/-t` (required), `--description/-d`, `--assigned-to/-a`, `--user/-u` (teammate email or user id for direct-to-person assignment; mutually exclusive with `--assigned-to`), `--priority/-p` (critical/high/medium/low), `--criteria` (repeatable), `--file/-f` (repeatable), `--depends-on` (repeatable), `--kind` (`task` (default) or `issue` — PM rollup container; v0.10.24), `--parent` (parent Issue id, only valid when `--kind task`; child task rolls up into the Issue's Children view).
+Options: `--title/-t` (required), `--description/-d`, `--assigned-to/-a`, `--user/-u` (teammate email or user id for direct-to-person assignment; mutually exclusive with `--assigned-to`), `--priority/-p` (critical/high/medium/low), `--due` (due date, `YYYY-MM-DD`), `--estimate` (effort estimate in Jira duration syntax, e.g. `3d`, `2d 4h`), `--criteria` (repeatable), `--file/-f` (repeatable), `--depends-on` (repeatable), `--kind` (`task` (default) or `issue` — PM rollup container; v0.10.24), `--parent` (parent Issue id, only valid when `--kind task`; child task rolls up into the Issue's Children view).
 
 Pass `--kind issue` for high-level PM rollups (no executor; closed manually with `sfs ticket close`). Tasks attached to an Issue via `--parent tk_...` appear under that Issue's Children rollup in CLI + MCP + dashboard.
 
@@ -2777,6 +2787,8 @@ Change a ticket's editable fields. Every change is recorded in the ticket's edit
 sfs ticket update tk_abc123 --title "Rate-limit the export endpoint" --priority high
 sfs ticket update tk_abc123 --description-file notes.md --acceptance-criteria-file ac.txt
 sfs ticket update tk_abc123 --user janedoe@example.com   # assign directly to a teammate
+sfs ticket update tk_abc123 --due 2026-11-15 --estimate 3d
+sfs ticket update tk_abc123 --due none                   # clear the due date
 ```
 
 | Option | Description |
@@ -2784,6 +2796,8 @@ sfs ticket update tk_abc123 --user janedoe@example.com   # assign directly to a 
 | `--title` | New title |
 | `--description` / `--description-file` | New description, inline or read from a file |
 | `--priority` | `low`, `medium`, `high` or `critical` |
+| `--due` | Due date (`YYYY-MM-DD`); pass `none` to clear it |
+| `--estimate` | Effort estimate in Jira duration syntax (e.g. `3d`, `2d 4h`); pass `none` to clear it |
 | `--user/-u` | Teammate email or user id for direct-to-person assignment (mutually exclusive with `sfs ticket assign`) |
 | `--acceptance-criteria-file` | File with one acceptance criterion per line; replaces the whole list |
 | `--lease-epoch` | The lease epoch from `sfs ticket show`; the update is refused (409) if another worker has since started the ticket |
@@ -3108,13 +3122,15 @@ Ask the **session helper** a question over the sessions you can read, with a bri
 
 | Command | Description |
 |---------|-------------|
-| `sfs helper ask "QUESTION" [--project ID] [--session ID ...] [--conversation ID] [--no-stream] [--json]` | Ask a question. Streams the answer to the terminal (Rich live markdown on a TTY, plain text otherwise) and lists citations at the end. `--project` (`-P`) scopes to a project ID (`proj_...`); `--session` (`-s`, repeatable) scopes to specific session IDs (`ses_...`); `--conversation` (`-c`) continues an existing conversation (`hc_...`). `--no-stream` fetches the full JSON answer in one request and renders it the same way; `--json` prints the raw JSON document (non-streaming) for scripting. |
+| `sfs helper ask "QUESTION" [--project ID] [--group ID|SLUG] [--session ID ...] [--conversation ID] [--no-stream] [--json]` | Ask a question. Streams the answer to the terminal (Rich live markdown on a TTY, plain text otherwise) and lists citations at the end. `--project` (`-P`) scopes to a project ID (`proj_...`); `--group` (`-g`) scopes to a project group by id (`pg_...`) or slug (a slug is resolved against your own groups across orgs, and an ambiguous slug fails listing the matching ids); `--session` (`-s`, repeatable) scopes to specific session IDs (`ses_...`); `--conversation` (`-c`) continues an existing conversation (`hc_...`). At most one of `--project`, `--group` or `--session` may be set. `--no-stream` fetches the full JSON answer in one request and renders it the same way; `--json` prints the raw JSON document (non-streaming) for scripting. |
 | `sfs helper conversations list` | List your helper conversations, newest first. |
 | `sfs helper conversations show <id>` | Show one conversation with its user/assistant messages and citations. |
 | `sfs helper conversations delete <id> [--yes]` | Permanently delete a conversation (prompts for confirmation; `--yes` skips). |
 | `sfs helper status` | Show whether the helper is enabled, which key source / provider / model it would use, the effective model settings, and whether org or personal custom instructions are set (the text is never shown). |
 
 The helper is an Enterprise feature and requires a BYOK model key (your own key under **Settings → Data protection → Security review model**, or an org-wide key an org admin sets on the Organization page's Policies tab). `sfs helper status` tells you which of these is missing.
+
+The `--group` scope flag needs a SessionFS server at v0.28.0 or newer. Older servers ignore the group and answer across all of your sessions. Upgrade self-hosted servers before using it.
 
 ## `sfs skill` / `sfs plugin` (v0.16.0)
 

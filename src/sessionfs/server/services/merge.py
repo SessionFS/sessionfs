@@ -38,6 +38,7 @@ from sessionfs.server.db.models import (
     RetrievalAuditEvent,
     Session,
     Ticket,
+    TicketEvent,
     User,
     WikiPageRevision,
 )
@@ -53,6 +54,7 @@ _PERSONA_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,50}$")
 # Tables that get straight reassign (project_id column → target_id).
 _STRAIGHT_REASSIGN_MODELS = [
     Ticket,
+    TicketEvent,
     AgentRun,
     AgentFeedback,
     Session,

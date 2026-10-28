@@ -150,6 +150,8 @@ async def _connection(
     sync_status: bool = False,
     sync_comments: str = "off",
     status_map: str | None = None,
+    sprint_field_id: str | None = None,
+    epic_link_field_id: str | None = None,
 ) -> OrgTrackerConnection:
     conn = OrgTrackerConnection(
         org_id=org.id,
@@ -162,6 +164,8 @@ async def _connection(
         sync_status=sync_status,
         sync_comments=sync_comments,
         status_map=status_map,
+        sprint_field_id=sprint_field_id,
+        epic_link_field_id=epic_link_field_id,
     )
     if with_secret:
         conn.encrypted_webhook_secret = encrypt_secret(_SECRET)
@@ -346,6 +350,9 @@ def fake_sync_jira(monkeypatch):
             calls["validate_connection"].append(True)
             return {"account_id": state["account_id"], "display_name": "N", "email": self.account_email}
 
+        async def detect_fields(self) -> dict:
+            return {"sprint_field_id": None, "epic_link_field_id": None}
+
         async def myself_account_id(self) -> str:
             calls["myself"].append(True)
             return state["account_id"]
@@ -366,7 +373,7 @@ def fake_sync_jira(monkeypatch):
                 await asyncio.sleep(5)
             state["issue_status"] = to_name
 
-        async def get_issue(self, issue_key):
+        async def get_issue(self, issue_key, sprint_field_id=None, epic_link_field_id=None):
             from sessionfs.server.integrations.trackers.base import TrackerIssue
 
             calls["get_issue"].append(issue_key)
@@ -1242,6 +1249,60 @@ async def test_patch_sync_settings_merges_without_token(client: AsyncClient, db_
     bad = await client.patch(url, json={"sync_comments": "sideways"}, headers=headers)
     assert bad.status_code == 422
     forbidden = await client.patch(url, json={"sync_status": False}, headers={"Authorization": f"Bearer {raw_member}"})
+    assert forbidden.status_code == 403
+
+
+async def test_patch_sync_settings_updates_custom_field_ids(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """The sync PATCH also merges sprint/epic-link field ids (no token needed).
+
+    An explicit value overrides, an explicit null clears, an omitted field keeps
+    its stored value, and a malformed id is a 422 — same auth as the sync patch.
+    """
+    org = await _org(db_session)
+    admin, raw = await _member(db_session, org, "admin")
+    member, raw_member = await _member(db_session, org, "member")
+    headers = {"Authorization": f"Bearer {raw}"}
+    url = f"/api/v1/orgs/{org.id}/integrations/jira/sync"
+    await _connection(
+        db_session,
+        org,
+        admin,
+        sprint_field_id="customfield_10010",
+        epic_link_field_id="customfield_10011",
+    )
+
+    # Admin update: both fields come back in the response.
+    resp = await client.patch(
+        url,
+        json={"sprint_field_id": "customfield_20020", "epic_link_field_id": "customfield_20021"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["sprint_field_id"] == "customfield_20020"
+    assert resp.json()["epic_link_field_id"] == "customfield_20021"
+    conn = await db_session.get(OrgTrackerConnection, org.id, populate_existing=True)
+    assert conn.sprint_field_id == "customfield_20020"
+    assert conn.epic_link_field_id == "customfield_20021"
+
+    # Explicit null clears one override; an omitted field keeps the other.
+    resp = await client.patch(url, json={"sprint_field_id": None}, headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["sprint_field_id"] is None
+    assert resp.json()["epic_link_field_id"] == "customfield_20021"
+    conn = await db_session.get(OrgTrackerConnection, org.id, populate_existing=True)
+    assert conn.sprint_field_id is None
+    assert conn.epic_link_field_id == "customfield_20021"
+
+    # A malformed id is rejected up front.
+    bad = await client.patch(url, json={"epic_link_field_id": "not_a_field"}, headers=headers)
+    assert bad.status_code == 422
+
+    # Members are still rejected on the same route.
+    forbidden = await client.patch(
+        url, json={"sprint_field_id": "customfield_30030"}, headers={"Authorization": f"Bearer {raw_member}"}
+    )
     assert forbidden.status_code == 403
 
 

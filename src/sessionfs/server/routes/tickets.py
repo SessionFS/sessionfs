@@ -39,9 +39,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
-from datetime import datetime, timezone
-from typing import Literal
+from datetime import date, datetime, timezone
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, field_validator
@@ -64,6 +65,7 @@ from sessionfs.server.db.models import (
     TicketComment,
     TicketDependency,
     TicketEdit,
+    TicketEvent,
     TicketWatcher,
     TrustedReviewer,
     User,
@@ -72,6 +74,7 @@ from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.routes.wiki import _get_project_or_404
 from sessionfs.server.roles import ADMIN_ROLES
 from sessionfs.server.services import jira_sync, ticket_transitions, ticket_watchers
+from sessionfs.server.services.ticket_events import decode_event_value, record_ticket_event
 from sessionfs.server.services.ticket_transitions import TransitionRefused
 from sessionfs.server.services.ticket_writes import (
     apply_ticket_update,
@@ -115,8 +118,46 @@ _LEGAL_TRANSITIONS = _LEGAL_TRANSITIONS_TASK
 _VALID_KINDS = {"issue", "task"}
 _VALID_PRIORITIES = {"critical", "high", "medium", "low"}
 
+# Jira-duration syntax for estimated_effort: one or more ``<n><unit>``
+# tokens (w|d|h|m), e.g. "2d 4h", "2d4h", "30m", "1w 2d". Whitespace
+# between tokens is optional (spec regex ``^\s*(\d+[wdhm]\s*)+$``). Bounded
+# to 32 chars.
+_ESTIMATE_TOKEN_RE = re.compile(r"(\d+[wdhm])")
+_ESTIMATE_RE = re.compile(r"\s*(\d+[wdhm]\s*)+")
+_ESTIMATE_MAX = 32
+
 _AGENT_TICKET_DESC_MIN = 20
 _AGENT_TICKET_PER_SESSION_CAP = 3
+
+
+def _validate_due_date(v: date | None) -> date | None:
+    if v is None:
+        return None
+    # Pydantic already parsed an ISO date; re-guard the shape so a datetime
+    # string can never slip through a client that sends "2026-10-27T00:00:00".
+    if not isinstance(v, date) or isinstance(v, datetime):
+        raise ValueError("due_date must be an ISO date (YYYY-MM-DD)")
+    return v
+
+
+def _normalize_estimate(v: str | None) -> str | None:
+    """Validate and canonicalize an estimated-effort duration string."""
+    if v is None:
+        return None
+    stripped = v.strip()
+    if not stripped:
+        raise ValueError("estimated_effort cannot be empty")
+    if len(stripped) > _ESTIMATE_MAX:
+        raise ValueError(
+            f"estimated_effort must be {_ESTIMATE_MAX} characters or fewer"
+        )
+    if not _ESTIMATE_RE.fullmatch(stripped):
+        raise ValueError(
+            "estimated_effort must be a Jira duration like '2d 4h', '30m' "
+            "or '1w 2d'"
+        )
+    # Canonical single-space form ("2d  4h" → "2d 4h").
+    return " ".join(_ESTIMATE_TOKEN_RE.findall(stripped))
 
 
 def _legal_next(current: str, kind: str = "task") -> set[str]:
@@ -196,6 +237,10 @@ class TicketCreate(BaseModel):
     # must be kind='task' (no Issue-under-Issue in v1).
     kind: str = "task"
     parent_ticket_id: str | None = None
+    # Scheduling (GitHub #113): an optional calendar due date and a bounded
+    # Jira-duration estimate.
+    due_date: date | None = None
+    estimated_effort: str | None = None
 
     @field_validator("title")
     @classmethod
@@ -232,6 +277,16 @@ class TicketCreate(BaseModel):
             )
         return v
 
+    @field_validator("due_date")
+    @classmethod
+    def _due_date_shape(cls, v: date | None) -> date | None:
+        return _validate_due_date(v)
+
+    @field_validator("estimated_effort")
+    @classmethod
+    def _estimate_shape(cls, v: str | None) -> str | None:
+        return _normalize_estimate(v)
+
 
 class TicketUpdate(BaseModel):
     """Partial update for non-lifecycle fields (re-assign, re-prioritize,
@@ -265,6 +320,10 @@ class TicketUpdate(BaseModel):
     related_sessions: list[str] | None = None
     acceptance_criteria: list[str] | None = None
     depends_on: list[str] | None = None
+    # Scheduling (GitHub #113): an explicit null clears the value (detected
+    # via ``model_fields_set``), matching the assignment-null semantics.
+    due_date: date | None = None
+    estimated_effort: str | None = None
     lease_epoch: int | None = None
 
     @field_validator("title")
@@ -289,6 +348,16 @@ class TicketUpdate(BaseModel):
                 f"priority must be one of: {sorted(_VALID_PRIORITIES)}"
             )
         return v
+
+    @field_validator("due_date")
+    @classmethod
+    def _due_date_shape(cls, v: date | None) -> date | None:
+        return _validate_due_date(v)
+
+    @field_validator("estimated_effort")
+    @classmethod
+    def _estimate_shape(cls, v: str | None) -> str | None:
+        return _normalize_estimate(v)
 
 
 class TicketJiraLink(BaseModel):
@@ -318,6 +387,43 @@ class AssignableUser(BaseModel):
 
 class AssignableUsersResponse(BaseModel):
     users: list[AssignableUser]
+
+
+class TicketUserSummary(BaseModel):
+    """A user referenced by a ticket (creator / resolver).
+
+    ``email`` follows the same masking rule as ``AssignedUser``: captured-
+    session-only readers see ``mask_address``, everyone else the full address.
+    """
+
+    user_id: str
+    display_name: str | None
+    email: str
+    persona: str | None = None
+    session_id: str | None = None
+
+
+class TicketEventActor(BaseModel):
+    type: str
+    user_id: str | None = None
+    display_name: str | None = None
+    persona: str | None = None
+    label: str | None = None
+
+
+class TicketEventResponse(BaseModel):
+    id: str
+    action: str
+    field: str | None = None
+    before: Any | None = None
+    after: Any | None = None
+    actor: TicketEventActor
+    created_at: datetime
+
+
+class TicketEventsResponse(BaseModel):
+    events: list[TicketEventResponse]
+    next_before: str | None = None
 
 
 class TicketResponse(BaseModel):
@@ -355,6 +461,12 @@ class TicketResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     resolved_at: datetime | None
+    # GitHub #113 — scheduling and provenance.
+    due_date: str | None = None
+    estimated_effort: str | None = None
+    created_by: TicketUserSummary | None = None
+    resolved_by: TicketUserSummary | None = None
+    recent_events: list[TicketEventResponse] = []
     # v0.23 — Jira promotion link (present only after `publish_jira`).
     jira: TicketJiraLink | None = None
     # True while a publish is in flight (a pending claim exists but the issue
@@ -505,6 +617,74 @@ async def _batch_assigned_users(
     return {u.id: _assigned_user_model(u, show_email=show_email) for u in rows}
 
 
+def _user_summary(
+    user: User | None,
+    *,
+    user_id: str,
+    show_email: bool,
+    persona: str | None = None,
+    session_id: str | None = None,
+) -> TicketUserSummary:
+    """Creator/resolver summary; a deleted user keeps their id, masked."""
+    from sessionfs.server.email import mask_address
+
+    if user is None:
+        return TicketUserSummary(
+            user_id=user_id,
+            display_name=None,
+            email=mask_address(None),
+            persona=persona,
+            session_id=session_id,
+        )
+    return TicketUserSummary(
+        user_id=user.id,
+        display_name=user.display_name,
+        email=user.email if show_email else mask_address(user.email),
+        persona=persona,
+        session_id=session_id,
+    )
+
+
+async def _batch_users(
+    db: AsyncSession, user_ids: set[str]
+) -> dict[str, User]:
+    """Load many users in one query (list path — no N+1)."""
+    if not user_ids:
+        return {}
+    rows = (
+        await db.execute(select(User).where(User.id.in_(list(user_ids))))
+    ).scalars().all()
+    return {u.id: u for u in rows}
+
+
+async def _load_provenance(
+    db: AsyncSession,
+    ticket: Ticket,
+    *,
+    show_email: bool,
+) -> tuple[TicketUserSummary | None, TicketUserSummary | None]:
+    """Creator + resolver summaries for one ticket (detail-read path)."""
+    created_by: TicketUserSummary | None = None
+    if ticket.created_by_user_id:
+        user = await db.get(User, ticket.created_by_user_id)
+        created_by = _user_summary(
+            user,
+            user_id=ticket.created_by_user_id,
+            show_email=show_email,
+            persona=ticket.created_by_persona,
+            session_id=ticket.created_by_session_id,
+        )
+    resolved_by: TicketUserSummary | None = None
+    if ticket.resolver_user_id:
+        user = await db.get(User, ticket.resolver_user_id)
+        resolved_by = _user_summary(
+            user,
+            user_id=ticket.resolver_user_id,
+            show_email=show_email,
+        )
+    return created_by, resolved_by
+
+
 async def _ticket_response(
     db: AsyncSession,
     ticket: Ticket,
@@ -520,7 +700,17 @@ async def _ticket_response(
     assigned_user = await _load_assigned_user(
         db, ticket.assigned_user_id, show_email=show_email
     )
-    return _to_response(ticket, deps, child_ticket_ids, assigned_user)
+    created_by, resolved_by = await _load_provenance(
+        db, ticket, show_email=show_email
+    )
+    return _to_response(
+        ticket,
+        deps,
+        child_ticket_ids,
+        assigned_user,
+        created_by=created_by,
+        resolved_by=resolved_by,
+    )
 
 
 def _to_response(
@@ -528,6 +718,10 @@ def _to_response(
     deps: list[str],
     child_ticket_ids: list[str] | None = None,
     assigned_user: AssignedUser | None = None,
+    *,
+    created_by: TicketUserSummary | None = None,
+    resolved_by: TicketUserSummary | None = None,
+    recent_events: list[TicketEventResponse] | None = None,
 ) -> TicketResponse:
     return TicketResponse(
         id=t.id,
@@ -559,6 +753,11 @@ def _to_response(
         created_at=t.created_at,
         updated_at=t.updated_at,
         resolved_at=t.resolved_at,
+        due_date=t.due_date.isoformat() if t.due_date else None,
+        estimated_effort=t.estimated_effort,
+        created_by=created_by,
+        resolved_by=resolved_by,
+        recent_events=recent_events or [],
     )
 
 
@@ -911,6 +1110,123 @@ async def _require_ticket_actor_by_id(
         )
 
 
+def _actor_fields(
+    *,
+    key_kind: str = "user",
+    user_id: str | None = None,
+    service_key_name: str | None = None,
+) -> dict[str, str | None]:
+    """Timeline actor provenance, mapped from the auth key kind.
+
+    ``AuthContext.actor_type`` uses ``service_key``; the timeline vocabulary
+    is ``service``, so service keys are re-labelled here.
+    """
+    if key_kind == "service":
+        return {
+            "actor_type": "service",
+            "actor_user_id": None,
+            "actor_label": service_key_name,
+        }
+    return {"actor_type": "user", "actor_user_id": user_id}
+
+
+async def _record_create_events(
+    db: AsyncSession,
+    ticket: Ticket,
+    *,
+    auth: AuthContext,
+    assigned_to: str | None,
+    assigned_user_id: str | None,
+) -> None:
+    """The create-time timeline entries (same transaction as the ticket)."""
+    actor = _actor_fields(
+        key_kind=auth.key_kind,
+        user_id=auth.user.id,
+        service_key_name=auth.service_key_name,
+    )
+    actor["actor_persona"] = ticket.created_by_persona
+    await record_ticket_event(db, ticket, "created", **actor)
+    if ticket.due_date is not None:
+        await record_ticket_event(
+            db, ticket, "due_date_set", field="due_date", after=ticket.due_date, **actor
+        )
+    if ticket.estimated_effort is not None:
+        await record_ticket_event(
+            db,
+            ticket,
+            "estimate_set",
+            field="estimated_effort",
+            after=ticket.estimated_effort,
+            **actor,
+        )
+    if assigned_user_id is not None:
+        await record_ticket_event(
+            db,
+            ticket,
+            "assigned",
+            field="assigned_user_id",
+            after={"user_id": assigned_user_id},
+            **actor,
+        )
+    elif assigned_to is not None:
+        await record_ticket_event(
+            db,
+            ticket,
+            "assigned",
+            field="assigned_to",
+            after={"persona": assigned_to},
+            **actor,
+        )
+
+
+def _event_response(
+    event: TicketEvent, display_names: dict[str, str | None]
+) -> TicketEventResponse:
+    actor_user_id = event.actor_user_id
+    return TicketEventResponse(
+        id=event.id,
+        action=event.action,
+        field=event.field,
+        before=decode_event_value(event.before_value),
+        after=decode_event_value(event.after_value),
+        actor=TicketEventActor(
+            type=event.actor_type,
+            user_id=actor_user_id,
+            display_name=(
+                display_names.get(actor_user_id) if actor_user_id else None
+            ),
+            persona=event.actor_persona,
+            label=event.actor_label,
+        ),
+        created_at=event.created_at,
+    )
+
+
+async def _build_event_responses(
+    db: AsyncSession, events: list[TicketEvent]
+) -> list[TicketEventResponse]:
+    """Resolve actor display names for a page of events in one query."""
+    user_ids = {e.actor_user_id for e in events if e.actor_user_id}
+    users = await _batch_users(db, user_ids)
+    display_names = {uid: users[uid].display_name if uid in users else None for uid in user_ids}
+    return [_event_response(e, display_names) for e in events]
+
+
+async def _load_recent_events(
+    db: AsyncSession, ticket_id: str, *, limit: int = 10
+) -> list[TicketEventResponse]:
+    """Newest ``limit`` events for a ticket, newest first."""
+    events = (
+        await db.execute(
+            select(TicketEvent)
+            .where(TicketEvent.ticket_id == ticket_id)
+            .order_by(TicketEvent.seq.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+    return await _build_event_responses(db, list(events))
+
+
 async def _ticket_detail_response(
     ticket: Ticket, db: AsyncSession, *, show_email: bool = False
 ) -> TicketResponse:
@@ -956,6 +1272,7 @@ async def _ticket_detail_response(
             # A timed-out publish left no confirmed issue; surface it so the
             # caller knows a re-publish will adopt-or-create.
             response.jira_publish_unknown = True
+    response.recent_events = await _load_recent_events(db, ticket.id, limit=10)
     return response
 
 
@@ -1044,6 +1361,8 @@ async def list_tickets(
     status: str | None = None,
     priority: str | None = None,
     kind: str | None = None,
+    due_before: date | None = Query(None, description="Only tickets due before this date."),
+    overdue: bool = Query(False, description="Only tickets past due and not terminal."),
     auth: AuthContext = Depends(require_scope("tickets:read")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
@@ -1090,6 +1409,20 @@ async def list_tickets(
         stmt = stmt.where(Ticket.priority == priority)
     if kind is not None:
         stmt = stmt.where(Ticket.kind == kind)
+    # GitHub #113 — scheduling filters. ``due_before`` is an exclusive upper
+    # bound on a set due date; ``overdue`` selects past-due, non-terminal
+    # tickets. No ``sort`` query param exists on this endpoint, so
+    # ``sort=due_date`` is intentionally not supported.
+    if due_before is not None:
+        stmt = stmt.where(
+            Ticket.due_date.is_not(None), Ticket.due_date < due_before
+        )
+    if overdue:
+        stmt = stmt.where(
+            Ticket.due_date.is_not(None),
+            Ticket.due_date < date.today(),
+            Ticket.status.notin_(("done", "closed", "cancelled")),
+        )
     stmt = stmt.order_by(Ticket.created_at.desc())
     rows = (await db.execute(stmt)).scalars().all()
     # Batch-load dependencies for all tickets in one query.
@@ -1136,12 +1469,35 @@ async def list_tickets(
         assigned_user_ids,
         show_email=await _viewer_sees_emails(db, auth, project),
     )
+    # GitHub #113 — batch-load creator/resolver users so the response carries
+    # provenance without an N+1 on long lists.
+    show_email = await _viewer_sees_emails(db, auth, project)
+    provenance_ids = {
+        t.created_by_user_id for t in rows if t.created_by_user_id
+    } | {t.resolver_user_id for t in rows if t.resolver_user_id}
+    provenance_users = await _batch_users(db, provenance_ids)
     return [
         _to_response(
             t,
             deps_by_ticket[t.id],
             children_by_parent.get(t.id, []),
             assigned_users.get(t.assigned_user_id) if t.assigned_user_id else None,
+            created_by=_user_summary(
+                provenance_users.get(t.created_by_user_id),
+                user_id=t.created_by_user_id,
+                show_email=show_email,
+                persona=t.created_by_persona,
+                session_id=t.created_by_session_id,
+            )
+            if t.created_by_user_id
+            else None,
+            resolved_by=_user_summary(
+                provenance_users.get(t.resolver_user_id),
+                user_id=t.resolver_user_id,
+                show_email=show_email,
+            )
+            if t.resolver_user_id
+            else None,
         )
         for t in rows
     ]
@@ -1270,6 +1626,55 @@ async def get_ticket(
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
     return await _ticket_detail_response(
         ticket, db, show_email=await _viewer_sees_emails(db, auth, project)
+    )
+
+
+@router.get(
+    "/{project_id}/tickets/{ticket_id}/events",
+    response_model=TicketEventsResponse,
+)
+async def list_ticket_events(
+    project_id: str,
+    ticket_id: str,
+    limit: int = Query(50, ge=1, le=200, description="Max events to return (1-200)."),
+    before: str | None = Query(
+        None, description="Event id cursor: return events strictly older than this."
+    ),
+    auth: AuthContext = Depends(require_scope("tickets:read")),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> TicketEventsResponse:
+    """List a ticket's event timeline, newest first.
+
+    GitHub #113 — same authorization as ``GET /tickets/{id}``; a service key
+    needs ``tickets:read`` on the project's allowlist. ``before`` is an event
+    id cursor (older-than), resolved to that event's monotonic ``seq`` so the
+    page never skips or repeats a same-timestamp sibling.
+    """
+    project = await _get_project_for_auth(project_id, db, auth)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_tickets", project, db)
+    await _get_ticket_or_404(project_id, ticket_id, db)  # validates ticket
+
+    stmt = select(TicketEvent).where(TicketEvent.ticket_id == ticket_id)
+    if before is not None:
+        cursor = (
+            await db.execute(select(TicketEvent).where(TicketEvent.id == before))
+        ).scalar_one_or_none()
+        if cursor is None or cursor.ticket_id != ticket_id:
+            return TicketEventsResponse(events=[], next_before=None)
+        stmt = stmt.where(TicketEvent.seq < cursor.seq)
+    stmt = stmt.order_by(TicketEvent.seq.desc()).limit(limit + 1)
+    rows = (await db.execute(stmt)).scalars().all()
+    has_more = len(rows) > limit
+    page = list(rows[:limit])
+    next_before = page[-1].id if has_more and page else None
+    return TicketEventsResponse(
+        events=await _build_event_responses(db, page),
+        next_before=next_before,
     )
 
 
@@ -1550,9 +1955,23 @@ async def create_ticket(
         service_key_name=auth.service_key_name,
         kind=body.kind,
         parent_ticket_id=body.parent_ticket_id,
+        due_date=body.due_date,
+        estimated_effort=body.estimated_effort,
     )
     db.add(ticket)
     await db.flush()
+
+    # GitHub #113 — the create event lands in the same transaction as the
+    # ticket, plus scheduling/assignment events when those were set at create.
+    await _record_create_events(
+        db,
+        ticket,
+        auth=auth,
+        assigned_to=normalized_assigned_to,
+        assigned_user_id=(
+            resolved_assigned_user.id if resolved_assigned_user is not None else None
+        ),
+    )
 
     # Ticket watchers: the creator follows automatically, and so does the
     # assignee's human owner when the assignment maps to a persona that
@@ -1692,6 +2111,12 @@ async def update_ticket(
         or body.related_sessions is not None
         or body.acceptance_criteria is not None
         or body.depends_on is not None
+        or body.due_date is not None
+        or body.estimated_effort is not None
+        # An explicit null clears the due date / estimate, so the
+        # model_fields_set checks widen the gate to nulls here too.
+        or "due_date" in body.model_fields_set
+        or "estimated_effort" in body.model_fields_set
     )
     if not _MUTABLE_FIELDS_PRESENT:
         raise HTTPException(
@@ -1699,8 +2124,8 @@ async def update_ticket(
             "update_ticket requires at least one mutable field "
             "(title, description, priority, assigned_to, assigned_user_id, "
             "assigned_user, context_refs, file_refs, related_sessions, "
-            "acceptance_criteria, depends_on). lease_epoch alone is not a "
-            "mutation — it is the fence for one.",
+            "acceptance_criteria, depends_on, due_date, estimated_effort). "
+            "lease_epoch alone is not a mutation — it is the fence for one.",
         )
 
     # Authorization. The "lease holder" in the design doc lives in the
@@ -1930,6 +2355,21 @@ async def complete_ticket(
         _assert_transition(ticket.status, "review", ticket.kind)
         raise HTTPException(409, "Cannot complete ticket due to concurrent update")
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
+    # GitHub #113 — in_progress → review is a timeline transition, recorded in
+    # the same transaction as the fenced UPDATE above.
+    await record_ticket_event(
+        db,
+        ticket,
+        "status_changed",
+        field="status",
+        before="in_progress",
+        after="review",
+        **_actor_fields(
+            key_kind=auth.key_kind,
+            user_id=user.id,
+            service_key_name=auth.service_key_name,
+        ),
+    )
     # Ticket watchers: entering review hands the reporter a "your turn" to
     # review and accept; every other watcher gets a plain status event.
     await ticket_watchers.emit_notifications(
@@ -2060,8 +2500,18 @@ async def block_ticket(
     await _require_ticket_actor(db, project, ticket, user.id, action="execute")
     _assert_transition(ticket.status, "blocked", ticket.kind)
 
+    old_status = ticket.status
     ticket.status = "blocked"
     ticket.updated_at = datetime.now(timezone.utc)
+    await record_ticket_event(
+        db,
+        ticket,
+        "status_changed",
+        field="status",
+        before=old_status,
+        after="blocked",
+        actor_user_id=user.id,
+    )
     await _emit_status_notification(
         db,
         ticket=ticket,
@@ -2097,8 +2547,18 @@ async def unblock_ticket(
     await _require_ticket_actor(db, project, ticket, user.id, action="execute")
     _assert_transition(ticket.status, "in_progress", ticket.kind)
 
+    old_status = ticket.status
     ticket.status = "in_progress"
     ticket.updated_at = datetime.now(timezone.utc)
+    await record_ticket_event(
+        db,
+        ticket,
+        "status_changed",
+        field="status",
+        before=old_status,
+        after="in_progress",
+        actor_user_id=user.id,
+    )
     await _emit_status_notification(
         db,
         ticket=ticket,
@@ -2135,6 +2595,7 @@ async def approve_ticket(
     _assert_transition(ticket.status, "open", ticket.kind)
 
     now = datetime.now(timezone.utc)
+    old_status = ticket.status
     ticket.status = "open"
     ticket.updated_at = now
     # Record who approved it: work-queue auto-adoption takes a ticket filed
@@ -2151,6 +2612,21 @@ async def approve_ticket(
             edited_at=now,
             lease_epoch=ticket.lease_epoch,
         )
+    )
+    await record_ticket_event(
+        db,
+        ticket,
+        "status_changed",
+        field="status",
+        before=old_status,
+        after="open",
+        actor_user_id=user.id,
+    )
+    await record_ticket_event(
+        db,
+        ticket,
+        "approved",
+        actor_user_id=user.id,
     )
     await _emit_status_notification(
         db,
@@ -2190,8 +2666,24 @@ async def dismiss_ticket(
     await _require_ticket_actor(db, project, ticket, user.id, action="dismiss")
     _assert_transition(ticket.status, "cancelled", ticket.kind)
 
+    old_status = ticket.status
     ticket.status = "cancelled"
     ticket.updated_at = datetime.now(timezone.utc)
+    await record_ticket_event(
+        db,
+        ticket,
+        "status_changed",
+        field="status",
+        before=old_status,
+        after="cancelled",
+        actor_user_id=user.id,
+    )
+    await record_ticket_event(
+        db,
+        ticket,
+        "dismissed",
+        actor_user_id=user.id,
+    )
     await _emit_status_notification(
         db,
         ticket=ticket,

@@ -3,11 +3,13 @@ import { useToast } from '../../hooks/useToast';
 import {
   useAddTicketComment,
   useApproveTicket,
+  useAssignableUsers,
   useCloseTicket,
   useDismissTicket,
   useTicket,
   useTicketChildren,
   useTicketComments,
+  useTicketEvents,
   useTicketJiraSyncEvents,
   useTicketReviewState,
   useTicketWatchers,
@@ -17,7 +19,7 @@ import {
 import { useMe } from '../../hooks/useMe';
 import { useJiraLink } from '../../hooks/useJiraTickets';
 import RelativeDate from '../../components/RelativeDate';
-import type { JiraSyncEvent, Ticket, TicketComment, TicketReviewRound } from '../../api/client';
+import type { JiraSyncEvent, Ticket, TicketComment, TicketEvent, TicketReviewRound } from '../../api/client';
 import { Button, Checkbox, Textarea } from '../../components/ui';
 import { Badge } from '../../components/Badge';
 import { PRIORITY_TONE, STATUS_DOT, STATUS_VARIANT, formatStatusLabel } from './constants';
@@ -26,6 +28,8 @@ import { JiraTicketSection } from './JiraPromote';
 import { AssigneeLabel } from './AssigneeLabel';
 import { ReassignPanel } from './ReassignPanel';
 import { ticketActionAllowed, useTicketViewer } from './viewer';
+import { TicketFacts } from './ScheduleFields';
+import { EDIT_ACTIONS, describeTicketEvent, type UserNames } from './events';
 import { errorMessage } from '../../utils/errorMessage';
 import { jiraErrorCode, jiraSyncEventLabel, jiraSyncStateLabel } from '../../utils/jira';
 
@@ -33,9 +37,12 @@ import { jiraErrorCode, jiraSyncEventLabel, jiraSyncStateLabel } from '../../uti
  *
  * Header (status, assignee, Jira and the actions), the ticket's own content,
  * secondary sections that fold away, then one chronological activity
- * timeline — comments, trusted review verdicts, Jira sync events and
- * lifecycle events — with the comment composer at its end. System events are
- * quiet one-liners so people's comments stand out. */
+ * timeline — comments, trusted review verdicts, Jira sync events and the
+ * ticket's own event log (status moves, assignments, edits, due dates,
+ * estimates, Jira links) — with the comment composer at its end. System
+ * events are quiet one-liners so people's comments stand out. The event log
+ * pages from the newest; "Show earlier history" sits where the loaded events
+ * stop, so the gap it fills is visible in place. */
 
 interface DetailProps {
   projectId: string;
@@ -70,6 +77,11 @@ export function TicketDetail({
   const t = detail ?? fallback;
   const { data: comments } = useTicketComments(projectId, ticketId);
   const { data: reviewState } = useTicketReviewState(projectId, ticketId);
+  const eventsQuery = useTicketEvents(projectId, ticketId);
+  const ticketEvents = useMemo(
+    () => eventsQuery.data?.pages.flatMap((p) => p.events) ?? [],
+    [eventsQuery.data],
+  );
   // Jira sync surfaces only exist for a linked ticket. Gating the queries on
   // the link keeps unlinked tickets (and non-Enterprise projects, which can
   // never be linked) from calling endpoints that would 403/409.
@@ -190,16 +202,49 @@ export function TicketDetail({
     (t.status === 'suggested' || t.status === 'open') && ticketActionAllowed('dismiss', t, viewer);
   const canClose =
     t.kind === 'issue' && t.status === 'in_progress' && ticketActionAllowed('close', t, viewer);
-  // PUT /tickets/{id} admits the ticket's creator or a project admin. The
-  // admin flag only arrives with the Jira surface; without it, editors see
-  // the control and the server has the final say.
+  // PUT /tickets/{id} admits exactly the ticket's creator or a project
+  // admin (services/ticket_writes.authorize_ticket_edit). Admin standing
+  // comes from the viewer (the project's `can_admin`, resolved by the page);
+  // the Jira surface's flag is only a fallback, and unknown means no.
   const isCreator = !!viewer.userId && t.created_by_user_id === viewer.userId;
-  const canReassign = isCreator || (viewer.canEdit && (isProjectAdmin ?? true));
+  const isAdmin = viewer.isProjectAdmin ?? isProjectAdmin ?? false;
+  const canReassign = isCreator || isAdmin;
+  // The due date and estimate go through the same PUT, so the same rule.
+  const canEditFields = canReassign;
+  // A non-editor's change to an approved ticket sends it back to suggested
+  // (ticket_writes.apply_ticket_update), so those saves confirm first.
+  const needsReapproval = !viewer.canEdit && t.status === 'open';
+
+  // Assignment events carry only a user id. Names come from what the page
+  // already has; the assignable-users list is fetched only when an event
+  // names someone none of those cover.
+  const knownNames = useMemo(() => collectNames(t, ticketEvents), [t, ticketEvents]);
+  const needsNames = ticketEvents.some((e) =>
+    [e.before, e.after].some((v) => {
+      const uid = v && typeof v === 'object' ? (v as { user_id?: unknown }).user_id : null;
+      return typeof uid === 'string' && !knownNames.has(uid);
+    }),
+  );
+  // Readers can't list assignable users (403), so they don't ask.
+  const { data: assignable } = useAssignableUsers(projectId, needsNames && viewer.canEdit);
+  const names = useMemo(() => {
+    const m = new Map(knownNames);
+    for (const u of assignable ?? []) if (!m.has(u.id)) m.set(u.id, u.display_name || u.email);
+    return m;
+  }, [knownNames, assignable]);
 
   const timeline = useMemo(
-    () => buildTimeline(t, comments ?? [], syncEvents?.events ?? [], reviewState?.review_state?.rounds ?? []),
-    [t, comments, syncEvents, reviewState],
+    () =>
+      buildTimeline(t, comments ?? [], syncEvents?.events ?? [], reviewState?.review_state?.rounds ?? [], {
+        events: ticketEvents,
+        hasMore: !!eventsQuery.hasNextPage,
+        names,
+      }),
+    [t, comments, syncEvents, reviewState, ticketEvents, eventsQuery.hasNextPage, names],
   );
+  const loadEarlier = () => void eventsQuery.fetchNextPage();
+  const loadingEarlier = eventsQuery.isFetchingNextPage;
+  const loadEarlierFailed = eventsQuery.isFetchNextPageError;
 
   const actions = (canApprove || canDismiss || canClose) && (
     <div className="flex flex-wrap items-center gap-2">
@@ -356,8 +401,15 @@ export function TicketDetail({
         </div>
 
         {reassigning && (
-          <ReassignPanel projectId={projectId} ticket={t} onDone={() => setReassigning(false)} />
+          <ReassignPanel
+            projectId={projectId}
+            ticket={t}
+            onDone={() => setReassigning(false)}
+            needsReapproval={needsReapproval}
+          />
         )}
+
+        <TicketFacts projectId={projectId} ticket={t} canEdit={canEditFields} needsReapproval={needsReapproval} />
 
         {orgId && (
           <JiraTicketSection
@@ -367,6 +419,7 @@ export function TicketDetail({
             isProjectAdmin={isProjectAdmin ?? false}
             isEnterprise={isEnterprise ?? false}
             canEdit={canEdit}
+            onNavigateTicket={onNavigate}
           />
         )}
 
@@ -439,9 +492,38 @@ export function TicketDetail({
         <SectionLabel>Activity</SectionLabel>
         {timeline.length > 0 && (
           <ol className="relative ml-1.5 border-l border-border">
-            {timeline.map((item) => (
-              <TimelineRow key={item.key} item={item} />
-            ))}
+            {timeline.map((item) =>
+              item.kind === 'more' ? (
+                <li key={item.key} className="relative py-1 pl-5">
+                  <Dot />
+                  {loadEarlierFailed && !loadingEarlier ? (
+                    <span className="flex flex-wrap items-baseline gap-x-2 text-xs text-danger" role="alert">
+                      Couldn't load earlier history.
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="!px-1.5 !py-0.5 !text-xs !font-normal !text-brand"
+                        onClick={loadEarlier}
+                      >
+                        Try again
+                      </Button>
+                    </span>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="!-ml-1.5 !px-1.5 !py-0.5 !text-xs !font-normal !text-brand"
+                      loading={loadingEarlier}
+                      onClick={loadEarlier}
+                    >
+                      Show earlier history
+                    </Button>
+                  )}
+                </li>
+              ) : (
+                <TimelineRow key={item.key} item={item} />
+              ),
+            )}
           </ol>
         )}
 
@@ -513,6 +595,8 @@ type JiraDelivery = JiraSyncEvent;
 
 type TimelineItem =
   | { key: string; at: string; kind: 'event'; text: ReactNode }
+  | { key: string; at: string; kind: 'ticketEvent'; event: TicketEvent; names: UserNames }
+  | { key: string; at: string; kind: 'more' }
   | { key: string; at: string; kind: 'comment'; comment: TicketComment; verdict?: TicketReviewRound; delivery?: JiraDelivery }
   | { key: string; at: string; kind: 'sync'; event: JiraSyncEvent };
 
@@ -530,12 +614,100 @@ function outboundCommentId(e: JiraSyncEvent): string | null {
   return typeof id === 'string' && id ? id : null;
 }
 
+/** Names the page already knows, by user id. */
+function collectNames(t: Ticket, events: TicketEvent[]): UserNames {
+  const m: UserNames = new Map();
+  const add = (id: string | null | undefined, name: string | null | undefined) => {
+    if (id && name?.trim() && !m.has(id)) m.set(id, name.trim());
+  };
+  add(t.assigned_user?.id, t.assigned_user?.display_name || t.assigned_user?.email);
+  add(t.created_by?.user_id, t.created_by?.display_name);
+  add(t.resolved_by?.user_id, t.resolved_by?.display_name);
+  for (const e of events) add(e.actor.user_id, e.actor.display_name);
+  return m;
+}
+
+/** Same actor (by user id), within a few seconds: one write's rows. */
+function sameMoment(e: TicketEvent, userId: string | null | undefined, at: string): boolean {
+  return (
+    !!userId && e.actor.user_id === userId && Math.abs(Date.parse(e.created_at) - Date.parse(at)) <= 5_000
+  );
+}
+
+/** Fields whose events say everything the update_ticket diff line says. */
+const DIFF_FIELDS_SHOWN_BY_EVENTS = new Set([
+  'due_date',
+  'estimated_effort',
+  'assigned_to',
+  'assigned_user_id',
+  'priority',
+  'kind',
+  'title',
+]);
+
+/** The diff comment update_ticket posts beside its events
+ *  (services/ticket_writes.format_edit_diff_summary). Hidden only when it
+ *  IS that diff and every field it lists has an event from the same write
+ *  that shows the whole change. Anything else stays: other system notes
+ *  (e.g. "needs approval again"), comments that merely use the "system"
+ *  persona, diffs of description / acceptance criteria / dependencies or a
+ *  long title (the event only says it changed), and diffs carrying the
+ *  unfenced-edit note. */
+function repeatsAnEvent(c: TicketComment, edits: TicketEvent[], names: UserNames): boolean {
+  if (c.author_persona !== 'system' || c.source === 'jira') return false;
+  const text = c.content ?? '';
+  if (!text.startsWith('**Ticket fields updated**')) return false;
+  if (text.includes('_Unfenced edit_')) return false;
+  const fields = [...text.matchAll(/^- `([a-z_]+)`:/gm)].map((m) => m[1]);
+  if (fields.length === 0) return false;
+  return fields.every((field) => {
+    if (!DIFF_FIELDS_SHOWN_BY_EVENTS.has(field)) return false;
+    return edits.some(
+      (e) =>
+        e.field === field &&
+        sameMoment(e, c.author_user_id, c.created_at) &&
+        // A long title arrives as a length stub: the event can't show it.
+        (field !== 'title' || typeof e.after === 'string') &&
+        // The diff names people; the event only has ids. Fold only when
+        // every id resolves, or the reader would lose who it was.
+        (field !== 'assigned_user_id' || [e.before, e.after].every((v) => userIdsResolve(v, names))),
+    );
+  });
+}
+
+function userIdsResolve(v: unknown, names: UserNames): boolean {
+  if (v === null || v === undefined) return true;
+  const uid = typeof v === 'object' ? (v as { user_id?: unknown }).user_id : undefined;
+  return typeof uid === 'string' && names.has(uid);
+}
+
+/** approve / dismiss record a status move and the verdict together; show
+ *  the verdict sentence only. */
+function partOfModeration(e: TicketEvent, log: TicketEvent[]): boolean {
+  if (e.action !== 'status_changed') return false;
+  const verdict = e.after === 'open' ? 'approved' : e.after === 'cancelled' ? 'dismissed' : null;
+  if (!verdict) return false;
+  return log.some(
+    (o) =>
+      o.action === verdict &&
+      (o.actor.user_id ? sameMoment(o, e.actor.user_id, e.created_at) : Math.abs(Date.parse(o.created_at) - Date.parse(e.created_at)) <= 5_000),
+  );
+}
+
+const RESOLVED_STATUSES = new Set(['done', 'closed', 'cancelled']);
+
 function buildTimeline(
   t: Ticket,
   comments: TicketComment[],
   events: JiraSyncEvent[],
   rounds: TicketReviewRound[],
+  log: { events: TicketEvent[]; hasMore: boolean; names: UserNames } = {
+    events: [],
+    hasMore: false,
+    names: new Map(),
+  },
 ): TimelineItem[] {
+  const edits = log.events.filter((e) => EDIT_ACTIONS.has(e.action));
   const verdicts = new Map(rounds.map((r) => [r.comment_id, r]));
   const commentIds = new Set(comments.map((c) => c.id));
   // The ledger is newest-first; walk it oldest-first so events that share a
@@ -549,20 +721,41 @@ function buildTimeline(
 
   const items: TimelineItem[] = [];
   if (t.created_at) {
+    // Always from the ticket itself, so it shows even before the event log
+    // has paged back to the "created" event (which is skipped below).
+    const creator =
+      t.created_by?.display_name?.trim() || t.created_by?.persona?.trim() || t.created_by_persona?.trim();
     items.push({
       key: 'created',
       at: t.created_at,
       kind: 'event',
-      text: t.created_by_persona ? (
+      text: creator ? (
         <>
-          Created by <span className="font-medium text-text-secondary">{t.created_by_persona}</span>
+          Created by <span className="font-medium text-text-secondary">{creator}</span>
         </>
       ) : (
         'Created'
       ),
     });
   }
+  // The event log, oldest first; the "load earlier" marker goes just
+  // before the oldest loaded event.
+  const chronologicalLog = [...log.events].reverse();
+  if (log.hasMore && chronologicalLog.length > 0) {
+    const oldest = Date.parse(chronologicalLog[0].created_at);
+    items.push({
+      key: 'more',
+      at: Number.isNaN(oldest) ? '' : new Date(oldest - 1).toISOString(),
+      kind: 'more',
+    });
+  }
+  for (const e of chronologicalLog) {
+    if (e.action === 'created') continue;
+    if (partOfModeration(e, log.events)) continue;
+    items.push({ key: `te:${e.id}`, at: e.created_at, kind: 'ticketEvent', event: e, names: log.names });
+  }
   for (const c of comments) {
+    if (repeatsAnEvent(c, edits, log.names)) continue;
     items.push({
       key: `c:${c.id}`,
       at: c.created_at,
@@ -578,8 +771,24 @@ function buildTimeline(
     if (cid && commentIds.has(cid)) continue; // shown on its comment
     items.push({ key: `s:${e.id}`, at: e.created_at ?? '', kind: 'sync', event: e });
   }
-  if (t.resolved_at) {
-    items.push({ key: 'resolved', at: t.resolved_at, kind: 'event', text: `Resolved (${formatStatusLabel(t.status)})` });
+  // The ticket's own resolution stamp, unless the log already shows the move.
+  const logShowsResolution = log.events.some(
+    (e) => e.action === 'status_changed' && typeof e.after === 'string' && RESOLVED_STATUSES.has(e.after),
+  );
+  if (t.resolved_at && !logShowsResolution) {
+    const resolver = t.resolved_by?.display_name?.trim();
+    items.push({
+      key: 'resolved',
+      at: t.resolved_at,
+      kind: 'event',
+      text: resolver ? (
+        <>
+          Resolved by <span className="font-medium text-text-secondary">{resolver}</span> ({formatStatusLabel(t.status)})
+        </>
+      ) : (
+        `Resolved (${formatStatusLabel(t.status)})`
+      ),
+    });
   }
   // Stable chronological order; undated rows keep their place at the end.
   return items
@@ -647,6 +856,19 @@ function QuietRow({ children, at, below }: { children: ReactNode; at: string; be
 function TimelineRow({ item }: { item: TimelineItem }) {
   if (item.kind === 'event') {
     return <QuietRow at={item.at}>{item.text}</QuietRow>;
+  }
+
+  if (item.kind === 'more') return null; // rendered by the list owner
+
+  if (item.kind === 'ticketEvent') {
+    const { actor, text } = describeTicketEvent(item.event, item.names);
+    return (
+      <QuietRow at={item.at}>
+        <span>
+          <span className="font-medium text-text-secondary">{actor}</span> {text}
+        </span>
+      </QuietRow>
+    );
   }
 
   if (item.kind === 'sync') {

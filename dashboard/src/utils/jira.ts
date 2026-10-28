@@ -354,3 +354,118 @@ export function urlHost(url: string | null | undefined): string | null {
     return null;
   }
 }
+
+/* ── Sprints, parents and publish warnings (GitHub #113 C7/C8) ── */
+
+/** A sprint / epic-link custom field id, as the server validates it. */
+export const JIRA_CUSTOM_FIELD_ID_RE = /^customfield_[0-9]{1,10}$/;
+
+/** Sprint state as shown on a badge ("active" → "Active"). */
+export function jiraSprintStateLabel(state: string | null | undefined): string | null {
+  const s = (state ?? '').trim().toLowerCase();
+  if (!s) return null;
+  if (s === 'future') return 'Future';
+  if (s === 'active') return 'Active';
+  if (s === 'closed') return 'Closed';
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+/** Badge tone for a sprint state: active stands out, the rest stay quiet. */
+export function jiraSprintStateVariant(state: string | null | undefined): 'success' | 'info' | 'default' {
+  const s = (state ?? '').trim().toLowerCase();
+  if (s === 'active') return 'success';
+  if (s === 'future') return 'info';
+  return 'default';
+}
+
+/** A sprint's display name. Right after a publish only the id is cached. */
+export function jiraSprintName(sprint: { id: number | string; name?: string | null }): string {
+  const name = (sprint.name ?? '').trim();
+  return name || `Sprint ${sprint.id}`;
+}
+
+/** Active sprints first, then future, then anything else; stable within each. */
+export function sortJiraSprints<T extends { state?: string | null }>(sprints: T[]): T[] {
+  const rank = (s: T) => {
+    const state = (s.state ?? '').toLowerCase();
+    return state === 'active' ? 0 : state === 'future' ? 1 : 2;
+  };
+  return sprints
+    .map((s, i) => ({ s, i }))
+    .sort((a, b) => rank(a.s) - rank(b.s) || a.i - b.i)
+    .map(({ s }) => s);
+}
+
+const SPRINT_NOT_SET_REASONS: Record<string, string> = {
+  field_rejected: 'Jira refused the sprint field on this issue, so the issue was published without a sprint.',
+  move_failed: 'The issue was published, but Jira didn’t move it into the chosen sprint.',
+};
+
+const FIELD_LABELS: Record<string, string> = {
+  duedate: 'due date',
+  timetracking: 'original estimate',
+};
+
+/**
+ * A publish warning code as a sentence. The publish itself succeeded; these
+ * say what Jira left out. Unknown codes come back as the raw code so nothing
+ * the server reports is ever hidden.
+ */
+export function jiraPublishWarningMessage(code: string): string {
+  const [kind, detail = ''] = code.split(':', 2);
+  switch (kind) {
+    case 'jira_sprint_not_set':
+      return Object.hasOwn(SPRINT_NOT_SET_REASONS, detail)
+        ? SPRINT_NOT_SET_REASONS[detail]
+        : 'The issue was published, but Jira didn’t put it in the chosen sprint.';
+    case 'jira_parent_not_set':
+      return 'Jira didn’t accept the parent issue, so the issue keeps its current parent.';
+    case 'jira_parent_not_linked':
+      return 'This ticket’s parent isn’t linked to a Jira issue yet, so no Jira parent was set. Publish or link the parent first.';
+    case 'jira_field_not_on_screen': {
+      const field = Object.hasOwn(FIELD_LABELS, detail) ? FIELD_LABELS[detail] : detail || 'a field';
+      return `The ${field} wasn’t set: the field isn’t on this issue type’s screen in Jira.`;
+    }
+    case 'jira_invalid_value': {
+      const field = Object.hasOwn(FIELD_LABELS, detail) ? FIELD_LABELS[detail] : detail || 'a field';
+      return `The ${field} wasn’t set: Jira rejected its value.`;
+    }
+    default:
+      return code;
+  }
+}
+
+/** Org settings → Integrations → Jira → Connection, on the given org when known. */
+export function jiraConnectionSettingsHref(orgId?: string | null): string {
+  const base = '/settings/organization?tab=integrations&integration=jira&section=connection';
+  return orgId ? `${base}&org=${encodeURIComponent(orgId)}` : base;
+}
+
+/**
+ * The browse URL of another issue on the same Jira site as `issueUrl`, or
+ * null when that URL isn't http(s) or the key isn't a Jira issue key.
+ */
+export function jiraSiblingIssueUrl(issueUrl: string | null | undefined, key: string): string | null {
+  if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(key)) return null;
+  if (!issueUrl) return null;
+  let url: URL;
+  try {
+    url = new URL(issueUrl);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
+  return `${url.origin}/browse/${encodeURIComponent(key)}`;
+}
+
+/**
+ * A sprint start/end as a short date ("Oct 19"). Jira sends UTC instants and
+ * shows them in each user's own time zone, so format in the viewer's local
+ * zone, which is the closest match to their Jira profile.
+ */
+export function jiraSprintDateLabel(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}

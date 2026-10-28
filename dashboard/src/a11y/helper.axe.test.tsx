@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { clearRememberedScope } from '../helper/scopeMemory';
 import HelperPanel from '../helper/HelperPanel';
 import { axe } from '../test/axe';
 
@@ -9,7 +10,8 @@ import { axe } from '../test/axe';
 // data hooks stubbed (same approach as helper/HelperPanel.test.tsx) and the
 // answer streamed through a mocked fetch so steps, chips and sources render.
 
-const { useHelperStatusMock, useHelperConversationsMock, useMeMock } = vi.hoisted(() => ({
+const { useHelperStatusMock, useHelperConversationsMock, useMeMock, useHelperGroupsMock } = vi.hoisted(() => ({
+  useHelperGroupsMock: vi.fn(() => ({ data: [] as Array<{ id: string; name: string; project_count?: number }> })),
   useHelperStatusMock: vi.fn(),
   useHelperConversationsMock: vi.fn(),
   useMeMock: vi.fn(),
@@ -25,6 +27,7 @@ vi.mock('../helper/useHelper', () => ({
   useHelperStatus: useHelperStatusMock,
   useHelperConversations: useHelperConversationsMock,
   useHelperConversation: () => ({ data: null, isLoading: false }),
+  useHelperGroups: useHelperGroupsMock,
   useDeleteHelperConversation: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
@@ -57,6 +60,7 @@ function renderPanel() {
 }
 
 beforeEach(() => {
+  clearRememberedScope();
   useHelperStatusMock.mockReturnValue(status({ enabled: true, key_source: 'user' }));
   useHelperConversationsMock.mockReturnValue({
     data: [

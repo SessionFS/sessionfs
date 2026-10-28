@@ -375,6 +375,12 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 
 **Upgrading to v0.27.0** runs migration 101 (direct-to-person ticket assignment; additive). Existing tickets keep their persona assignments. Work-queue completions whose verdict header can't be parsed are now refused with `422 verdict_header_unparseable`; verdict headers may name any reviewer.
 
+**Upgrading to v0.28.0** runs migrations 102 (ticket due dates, estimates and the ticket change history) and 103 (Jira sprint and parent fields); both are additive. Also:
+
+- **Detect the Jira agile fields once.** An existing Jira connection has no sprint or epic-link field until an org admin opens **Organization → Integrations → Jira → Connection → Agile fields**, runs **Detect fields** and saves. Until then the publish dialog offers no sprint. See [Jira Cloud](/integrations/jira/#agile-fields).
+- **Check your sweep keys.** A `platform_sweeps:run` key only works while the admin who minted it and the user it runs as are still platform admins. `sfs admin service-keys list` now shows a key that has stopped working as `inactive`, with the reason. See [Scheduled sweeps](#scheduled-sweeps).
+- **Optional sweep CronJobs.** The chart can now schedule every sweep for you; see [Scheduled sweeps](#scheduled-sweeps).
+
 ## Troubleshooting
 
 ### Check pod status
@@ -636,6 +642,8 @@ sfs admin audit-log --source operator_record --json
 
 SessionFS has no scheduler of its own. These features run only when a scheduled job calls their sweep endpoint. Authenticate with a platform admin key or, better for cron, a `platform_sweeps:run` service key: it works only while the platform admin who minted it and the user it runs as are both still active platform admins.
 
+Since v0.28.0 this is visible up front: minting or rotating such a key returns a `minter_tier_coupling` warning, `sfs admin service-keys list` shows a key that has stopped working as `inactive` with the reason (`coupling_ok` and `coupling_reason` in the API), and a request with that key gets a `403` naming the cause and the fix. Making someone a platform admin just long enough to mint a key doesn't work: the key stops as soon as they're demoted. Mint sweep keys as a user who stays a platform admin. See [API keys](/api/#service-keys-v01010).
+
 | Sweep | Endpoint | What it does |
 |-------|----------|--------------|
 | KB compile | `POST /api/v1/admin/sweeps/kb-compile` | Compiles every project whose schedule (`nightly` / `weekly`) has elapsed or whose waiting-claims threshold is reached. Deterministic compiler only, one transaction per project; body `{"limit": N}` (default 100, max 1000) |
@@ -676,17 +684,49 @@ spec:
                       key: token
 ```
 
-The chart can create the helper retention CronJob for you (off by default, daily at 03:00):
+The chart can create the CronJob for each sweep. They are all off by default and each needs a Secret holding a `platform_sweeps:run` service key (`existingSecret` is required when enabled):
 
 ```yaml
 api:
+  ticketNotifications:
+    enabled: true
+    cronJob:
+      schedule: "*/10 * * * *"        # every 10 minutes
+      existingSecret: sessionfs-sweep-key
+      secretKey: ticket-notifications-api-key
+  orgDigest:
+    enabled: true
+    cronJob:
+      schedule: "0 4 * * *"           # daily
+      existingSecret: sessionfs-sweep-key
+      secretKey: org-digest-api-key
+  kbCompile:
+    enabled: true
+    cronJob:
+      schedule: "*/15 * * * *"        # every 15 minutes
+      existingSecret: sessionfs-sweep-key
+      secretKey: kb-compile-api-key
   helperRetention:
     enabled: true
     cronJob:
-      schedule: "0 3 * * *"
-      existingSecret: sessionfs-sweep-key     # required when enabled
+      schedule: "0 3 * * *"           # daily
+      existingSecret: sessionfs-sweep-key
       secretKey: helper-retention-api-key
+  jiraSync:
+    enabled: true
+    cronJob:
+      schedule: "* * * * *"           # every minute
+      existingSecret: sessionfs-sweep-key
+      secretKey: jira-sync-api-key
+  confluencePublish:
+    enabled: true
+    cronJob:
+      schedule: "*/15 * * * *"        # every 15 minutes
+      existingSecret: sessionfs-sweep-key
+      secretKey: confluence-publish-api-key
 ```
+
+Each CronJob pod sends one authenticated request to the API sweep endpoint and exits; the work itself runs in the API pods. The key is read from the Secret into an environment variable and never printed, and the pods don't mount a Kubernetes service account token. When network policies are enabled, the chart adds an ingress rule so each enabled CronJob can reach the API, and an egress policy that lets the CronJob pods reach only DNS and the API, so the key can't be sent anywhere else.
 
 With `email.provider=none` the digest sweep sends nothing but still records each org's run. Digest links use `SFS_DASHBOARD_URL`, falling back to an explicitly set `SFS_APP_URL`, and are left out when neither is set.
 

@@ -243,7 +243,9 @@ function PreviewBody({
   query: ReturnType<typeof useTicketPreview>;
   onNavigate: () => void;
 }) {
-  if (query.isPending) {
+  // A previous failure is being re-checked: show the loading state, not the
+  // stale "not available" verdict.
+  if (query.isPending || (query.isError && query.isFetching)) {
     return (
       <div aria-busy="true" aria-live="polite" className="space-y-2.5 pt-1">
         <h2 id={titleId} className="sr-only">

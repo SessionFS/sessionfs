@@ -203,6 +203,21 @@ export interface OrgLlmSettings {
   plan_includes_helper: boolean;
 }
 
+/** POST .../judge/models and .../llm-settings/models. */
+export interface DiscoveredModels {
+  models: { id: string; owned_by: string }[];
+  error?: string;
+  base_url?: string | null;
+  provider?: string;
+}
+
+function discoverModelsBody(baseUrl: string, apiKey?: string, provider?: string): string {
+  return JSON.stringify({
+    ...(provider ? { provider } : { base_url: baseUrl }),
+    ...(apiKey ? { api_key: apiKey } : {}),
+  });
+}
+
 export interface LlmProvider {
   id: string;
   label: string;
@@ -324,10 +339,21 @@ export interface OrgHelperSettingsUpdate {
   monthly_token_budget?: number | null;
 }
 
+/** A thread's stored scope. `group_id` and `label` come from servers that
+ *  support group scope; older servers send only project_id/session_ids. */
+export interface HelperStoredScope {
+  project_id: string | null;
+  group_id?: string | null;
+  session_ids: string[];
+  label?: string | null;
+}
+
 export interface HelperConversationSummary {
   id: string;
   org_id: string | null;
   title: string | null;
+  /** The stored scope, on servers that include it in the list. */
+  scope?: HelperStoredScope | null;
   created_at: string;
   updated_at: string;
 }
@@ -395,7 +421,7 @@ export interface HelperMessage {
 
 export interface HelperConversation extends HelperConversationSummary {
   /** The last scope the thread was used with (project_id/session_ids), or null for personal threads. */
-  scope: { project_id: string | null; session_ids: string[] } | null;
+  scope: HelperStoredScope | null;
   messages: HelperMessage[];
 }
 
@@ -581,6 +607,19 @@ export interface JiraConnection {
   /** Canonical inbound webhook URL, `<public API origin>/api/v1/webhooks/jira/{org_id}`
    *  (GitHub #98 part B). Always use this value; never build the path client-side. */
   webhook_url?: string;
+  /** The site's Agile sprint custom field (e.g. `customfield_10020`), detected
+   *  on first connect or set by an admin; null when the site has none. */
+  sprint_field_id?: string | null;
+  /** The company-managed epic-link custom field; usually null on Jira Cloud,
+   *  where the issue `parent` field is used instead. */
+  epic_link_field_id?: string | null;
+}
+
+/** `POST /orgs/{org}/jira/fields/detect` — what the site exposes right now.
+ *  Detection never changes the stored connection. */
+export interface JiraDetectedFields {
+  sprint_field_id: string | null;
+  epic_link_field_id: string | null;
 }
 
 /**
@@ -603,6 +642,10 @@ export interface JiraSyncSettingsRequest {
   sync_status?: boolean;
   sync_comments?: JiraCommentSyncMode;
   status_map?: JiraStatusMap;
+  /** Sprint / epic-link custom field ids: an id overrides, null clears,
+   *  omitted keeps. Must match `^customfield_[0-9]{1,10}$`. */
+  sprint_field_id?: string | null;
+  epic_link_field_id?: string | null;
 }
 
 export interface JiraConnectionRequest {
@@ -610,6 +653,10 @@ export interface JiraConnectionRequest {
   account_email: string;
   api_token: string;
   default_template: string;
+  /** Merged: omitted keeps the stored value, an id overrides it and an
+   *  explicit null clears it. Must match `^customfield_[0-9]{1,10}$`. */
+  sprint_field_id?: string | null;
+  epic_link_field_id?: string | null;
 }
 
 export interface JiraProject {
@@ -857,6 +904,42 @@ export interface JiraPublishRequest {
   /** Required (true) to publish over an issue that was linked from Jira and
    *  never published from SessionFS; else 409 jira_overwrite_required. */
   overwrite_existing?: boolean;
+  /** Optional Agile sprint to place the issue in. A failed sprint set comes
+   *  back as a `warnings` entry; 422 jira_sprint_field_unknown when the org
+   *  connection has no sprint field. */
+  sprint_id?: number;
+}
+
+/** The sprint cached on a ticket's Jira link. `name`/`state` are null until
+ *  a link read or pull learns them (right after a publish only the id is known). */
+export interface JiraLinkSprint {
+  id: number | string;
+  name: string | null;
+  state: string | null;
+}
+
+/** The Jira parent (or epic) of the linked issue. `ticket_id` is set only
+ *  when the viewer can read the SessionFS ticket linked to that issue. */
+export interface JiraLinkParent {
+  key: string;
+  ticket_id: string | null;
+}
+
+/** One Agile sprint from `GET /projects/{p}/jira/sprints`. */
+export interface JiraSprint {
+  id: number | string;
+  name: string;
+  state: string;
+  board_name: string | null;
+  start_date: string | null;
+  end_date: string | null;
+}
+
+/** Active-first sprints for the mapped Jira project (project editors only).
+ *  `unavailable` is set when the site has no Jira Software (no boards). */
+export interface JiraSprintList {
+  sprints: JiraSprint[];
+  unavailable?: string;
 }
 
 export interface JiraLink {
@@ -876,6 +959,13 @@ export interface JiraLink {
   can_send_to_jira?: boolean;
   /** The issue was linked from Jira and never published from SessionFS. */
   attached_not_published?: boolean;
+  /** Cached Jira sprint (null when the issue is in no sprint). */
+  sprint?: JiraLinkSprint | null;
+  /** Cached Jira parent/epic (null when the issue has none). */
+  parent?: JiraLinkParent | null;
+  /** Publish only: what Jira refused while the publish still succeeded,
+   *  e.g. `jira_sprint_not_set:move_failed`, `jira_parent_not_linked`. */
+  warnings?: string[];
 }
 
 /** `POST .../tickets/{tid}/jira/pull`: the ticket after taking the Jira text. */
@@ -1642,6 +1732,56 @@ export interface Ticket {
   jira?: TicketJiraLink | null;
   jira_publish_in_progress?: boolean;
   jira_publish_unknown?: boolean;
+  /** Calendar due date, "YYYY-MM-DD". Absent on older servers. */
+  due_date?: string | null;
+  /** Jira duration syntax, e.g. "2d 4h". Absent on older servers. */
+  estimated_effort?: string | null;
+  /** Who filed the ticket (email masked for captured-session readers). */
+  created_by?: TicketUserSummary | null;
+  /** Who resolved it, once resolved. */
+  resolved_by?: TicketUserSummary | null;
+  /** Newest events (at most 10); only on the single-ticket GET. */
+  recent_events?: TicketEvent[];
+}
+
+/** A user referenced by a ticket (creator / resolver). */
+export interface TicketUserSummary {
+  user_id: string;
+  display_name: string | null;
+  /** As the server sends it: masked for readers without project standing. */
+  email: string;
+  persona?: string | null;
+  session_id?: string | null;
+}
+
+/** Who caused a ticket event. */
+export interface TicketEventActor {
+  type: 'user' | 'service' | 'jira' | 'system' | string;
+  user_id?: string | null;
+  display_name?: string | null;
+  persona?: string | null;
+  /** Service key name, or the Jira-side label. */
+  label?: string | null;
+}
+
+/** One row of a ticket's append-only event log. `before` / `after` are
+ *  bounded values: free text arrives as `{changed, length}` and reference
+ *  lists as `{count, items}`. */
+export interface TicketEvent {
+  id: string;
+  action: string;
+  field?: string | null;
+  before?: unknown;
+  after?: unknown;
+  actor: TicketEventActor;
+  created_at: string;
+}
+
+/** `GET .../tickets/{tid}/events`, newest first. */
+export interface TicketEventsPage {
+  events: TicketEvent[];
+  /** Pass as `before` for the next (older) page; null on the last page. */
+  next_before: string | null;
 }
 
 /** The person a ticket is assigned to (resolved by the server). */
@@ -1671,6 +1811,10 @@ export interface TicketUpdate extends TicketAssigneeFields {
   title?: string;
   description?: string;
   priority?: TicketPriority | string;
+  /** "YYYY-MM-DD"; explicit null clears it. */
+  due_date?: string | null;
+  /** Jira duration ("2d 4h"); explicit null clears it. */
+  estimated_effort?: string | null;
   lease_epoch?: number;
 }
 
@@ -1687,6 +1831,8 @@ export interface TicketCreate {
   depends_on?: string[];
   kind?: TicketKind | string;
   parent_ticket_id?: string | null;
+  due_date?: string | null;
+  estimated_effort?: string | null;
 }
 
 export interface TicketComment {
@@ -2933,6 +3079,11 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     deleteJiraConnection: (orgId: string) =>
       request<void>(`/api/v1/orgs/${orgId}/integrations/jira`, { method: 'DELETE' }),
 
+    // Re-detect the site's sprint / epic-link custom fields (org admin). Read
+    // only: saving the connection is what stores them.
+    detectJiraFields: (orgId: string) =>
+      request<JiraDetectedFields>(`/api/v1/orgs/${orgId}/jira/fields/detect`, { method: 'POST' }),
+
     searchJiraProjects: (orgId: string, params: { q?: string; limit?: number } = {}) => {
       const qs = new URLSearchParams();
       const q = params.q?.trim();
@@ -3128,8 +3279,9 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     // Session helper (Enterprise) — read-only conversation management + status.
     // Turn streaming bypasses request() (raw fetch + ReadableStream) because it
     // needs to read the SSE body incrementally; see helper/HelperPanel.tsx.
-    getHelperStatus: (scope?: { project_id?: string; session_ids?: string[] }) => {
+    getHelperStatus: (scope?: { project_id?: string; group_id?: string; session_ids?: string[] }) => {
       const sp = new URLSearchParams();
+      if (scope?.group_id) sp.set('group_id', scope.group_id);
       if (scope?.project_id) sp.set('project_id', scope.project_id);
       for (const id of scope?.session_ids ?? []) sp.append('session_ids', id);
       const qs = sp.toString();
@@ -3188,21 +3340,19 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     // A registry provider id routes discovery to that provider's fixed
     // /models endpoint; otherwise a custom base_url is queried.
     discoverModels: (baseUrl: string, apiKey?: string, provider?: string) =>
-      request<{
-        models: { id: string; owned_by: string }[];
-        error?: string;
-        base_url?: string | null;
-        provider?: string;
-      }>(
-        '/api/v1/settings/judge/models',
-        {
-          method: 'POST',
-          body: JSON.stringify({
-            ...(provider ? { provider } : { base_url: baseUrl }),
-            ...(apiKey ? { api_key: apiKey } : {}),
-          }),
-        },
-      ),
+      request<DiscoveredModels>('/api/v1/settings/judge/models', {
+        method: 'POST',
+        body: discoverModelsBody(baseUrl, apiKey, provider),
+      }),
+
+    // Same contract for the org helper key form (owner/admin). Without a
+    // typed key the server uses the stored org key only for the exact
+    // provider/endpoint it was saved with.
+    discoverOrgModels: (orgId: string, baseUrl: string, apiKey?: string, provider?: string) =>
+      request<DiscoveredModels>(`/api/v1/orgs/${encodeURIComponent(orgId)}/llm-settings/models`, {
+        method: 'POST',
+        body: discoverModelsBody(baseUrl, apiKey, provider),
+      }),
 
     // Admin endpoints
     adminListUsers: (params: { page?: number; page_size?: number; search?: string } = {}) => {
@@ -3798,11 +3948,17 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         assigned_user?: string;
         priority?: string;
         kind?: string;
+        /** Past due and not done/closed/cancelled. */
+        overdue?: boolean;
+        /** "YYYY-MM-DD": only tickets due before this date. */
+        due_before?: string;
         limit?: number;
       } = {},
     ) => {
       const sp = new URLSearchParams();
       if (params.status) sp.set('status', params.status);
+      if (params.overdue) sp.set('overdue', 'true');
+      if (params.due_before) sp.set('due_before', params.due_before);
       if (params.assigned_to) sp.set('assigned_to', params.assigned_to);
       if (params.assigned_user) sp.set('assigned_user', params.assigned_user);
       if (params.priority) sp.set('priority', params.priority);
@@ -3816,6 +3972,20 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     getTicket: (projectId: string, ticketId: string) =>
       request<Ticket>(`/api/v1/projects/${projectId}/tickets/${ticketId}`),
+
+    listTicketEvents: (
+      projectId: string,
+      ticketId: string,
+      params: { limit?: number; before?: string } = {},
+    ) => {
+      const sp = new URLSearchParams();
+      if (params.limit) sp.set('limit', String(params.limit));
+      if (params.before) sp.set('before', params.before);
+      const qs = sp.toString();
+      return request<TicketEventsPage>(
+        `/api/v1/projects/${projectId}/tickets/${ticketId}/events${qs ? `?${qs}` : ''}`,
+      );
+    },
 
     getTicketById: (ticketId: string) =>
       request<TicketPreview>(`/api/v1/tickets/${encodeURIComponent(ticketId)}`),
@@ -3892,6 +4062,10 @@ export function createApiClient(baseUrl: string, apiKey: string) {
 
     getJiraLink: (projectId: string, ticketId: string) =>
       request<JiraLink>(`/api/v1/projects/${projectId}/tickets/${ticketId}/jira`),
+
+    // Active + future sprints of the project's mapped Jira project (editors).
+    listJiraSprints: (projectId: string) =>
+      request<JiraSprintList>(`/api/v1/projects/${projectId}/jira/sprints`),
 
     // Replace the ticket's title and description with the linked issue's.
     pullJira: (projectId: string, ticketId: string) =>

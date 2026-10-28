@@ -6,6 +6,7 @@ import {
   ChevronDownIcon,
   CloseIcon,
   FolderIcon,
+  FoldersIcon,
   HistoryIcon,
   LayersIcon,
   NewChatIcon,
@@ -17,8 +18,21 @@ import { TITLE_ID } from './format';
 
 export function ScopeIcon({ kind, size = 14 }: { kind: ScopeKind; size?: number }) {
   if (kind === 'project') return <FolderIcon size={size} />;
+  if (kind === 'group') return <FoldersIcon size={size} />;
   if (kind === 'session') return <SessionIcon size={size} />;
   return <LayersIcon size={size} />;
+}
+
+/** Consecutive options sharing a `section` form one labelled block; the flat
+ *  index is kept for roving focus across blocks. */
+function sectionsOf(options: ScopeOption[]) {
+  const blocks: Array<{ section?: string; items: Array<{ option: ScopeOption; index: number }> }> = [];
+  options.forEach((option, index) => {
+    const last = blocks[blocks.length - 1];
+    if (last && last.section === option.section) last.items.push({ option, index });
+    else blocks.push({ section: option.section, items: [{ option, index }] });
+  });
+  return blocks;
 }
 
 /**
@@ -149,40 +163,55 @@ function ScopeMenu({
           <div
             id={menuId}
             role="menu"
+            className="max-h-[min(60vh,22rem)] overflow-y-auto overscroll-contain"
             aria-label="Ask about"
             aria-describedby={hasThread ? `${menuId}-note` : undefined}
           >
-          {options.map((o, i) => {
-            const checked = o.key === active.key;
+          {sectionsOf(options).map((block) => {
+            const items = block.items.map(({ option: o, index: i }) => {
+              const checked = o.key === active.key;
+              return (
+                <button
+                  key={o.key}
+                  ref={(el) => {
+                    itemRefs.current[i] = el;
+                  }}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={checked}
+                  tabIndex={i === focusIdx ? 0 : -1}
+                  onClick={() => {
+                    close();
+                    if (!checked) onChange(o);
+                  }}
+                  className={`flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left outline-none transition-colors hover:bg-surface-hover focus-visible:bg-surface-hover focus-visible:shadow-[0_0_0_2px_var(--brand-glow)] ${
+                    checked ? 'text-text-primary' : 'text-text-secondary'
+                  }`}
+                >
+                  <span className="mt-0.5 text-text-tertiary">
+                    <ScopeIcon kind={o.kind} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium">{o.label}</span>
+                    <span className="block text-xs text-text-tertiary">{o.description}</span>
+                  </span>
+                  <span className={`mt-0.5 text-brand ${checked ? '' : 'invisible'}`}>
+                    <CheckIcon size={14} />
+                  </span>
+                </button>
+              );
+            });
+            if (!block.section) return items;
             return (
-              <button
-                key={o.key}
-                ref={(el) => {
-                  itemRefs.current[i] = el;
-                }}
-                type="button"
-                role="menuitemradio"
-                aria-checked={checked}
-                tabIndex={i === focusIdx ? 0 : -1}
-                onClick={() => {
-                  close();
-                  if (!checked) onChange(o);
-                }}
-                className={`flex w-full items-start gap-2.5 rounded-md px-2.5 py-2 text-left outline-none transition-colors hover:bg-surface-hover focus-visible:bg-surface-hover focus-visible:shadow-[0_0_0_2px_var(--brand-glow)] ${
-                  checked ? 'text-text-primary' : 'text-text-secondary'
-                }`}
-              >
-                <span className="mt-0.5 text-text-tertiary">
-                  <ScopeIcon kind={o.kind} />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium">{o.label}</span>
-                  <span className="block text-xs text-text-tertiary">{o.description}</span>
-                </span>
-                <span className={`mt-0.5 text-brand ${checked ? '' : 'invisible'}`}>
-                  <CheckIcon size={14} />
-                </span>
-              </button>
+              <div key={`section:${block.section}`} role="group" aria-label={block.section}>
+                <p
+                  aria-hidden="true"
+                  className="mt-1 border-t border-border px-2.5 pb-1 pt-2 text-2xs font-semibold uppercase tracking-wide text-text-tertiary"
+                >
+                  {block.section}
+                </p>
+                {items}
+              </div>
             );
           })}
           </div>

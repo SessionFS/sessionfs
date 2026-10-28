@@ -53,6 +53,17 @@ export function useSaveJiraConnection(orgId: string | undefined) {
   });
 }
 
+/**
+ * Ask the site which sprint / epic-link custom fields it has. Read only: the
+ * caller puts the result in the connection form and saving stores it.
+ */
+export function useDetectJiraFields(orgId: string | undefined) {
+  const { auth } = useAuth();
+  return useMutation({
+    mutationFn: () => auth!.client.detectJiraFields(orgId!),
+  });
+}
+
 export function useDeleteJiraConnection(orgId: string | undefined) {
   const { auth } = useAuth();
   const queryClient = useQueryClient();

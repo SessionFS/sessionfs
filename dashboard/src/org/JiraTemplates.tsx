@@ -14,6 +14,7 @@ import {
   Select,
   Table,
   Textarea,
+  Tooltip,
 } from '../components/ui';
 import { useProjects } from '../hooks/useProjects';
 import { useTickets } from '../hooks/useTickets';
@@ -64,6 +65,63 @@ const TEMPLATE_MODE_OPTIONS: { value: JiraTemplateMode; label: string }[] = [
   { value: 'verbatim', label: 'Verbatim' },
 ];
 
+/* Guidance shown in the editor's info tooltips. Mirrors the server rules in
+ * integrations/trackers/templates.py and promote.py. */
+const MODE_HELP =
+  'Rewrite: the section starts as the ticked fields, in the order you ticked them. When a model is ' +
+  'available for Jira drafts it may reshape that into prose, but every paragraph it writes must cite ' +
+  'the ticket field it came from, or the paragraph is dropped. Guidance steers this section only.\n\n' +
+  'Verbatim: copied from the ticket exactly and never written by the model; only acceptance criteria, ' +
+  'completion notes and linked sessions can be verbatim.';
+
+const SOURCE_FIELDS_HELP =
+  'Each ticked field adds its content to this section, in the order you ticked them; a field that is ' +
+  'empty on a ticket adds nothing. For rewrite sections the model is shown the ticket with secrets ' +
+  '(and your DLP categories) redacted first. Verbatim sections are filled from the ticket directly.';
+
+const FIELD_HELP: Record<string, string> = {
+  title: 'The ticket title, as one paragraph.',
+  description: 'The full ticket description (Markdown).',
+  acceptance_criteria: 'Each acceptance criterion, as a list, word for word and in order.',
+  priority: 'A “Priority: …” line (low, medium, high or critical).',
+  kind: 'A “Kind: …” line: task or issue.',
+  persona: 'An “Assigned to: …” line with the assigned persona; empty when unassigned.',
+  completion_notes: 'The notes written when the ticket was completed; empty until then.',
+  linked_sessions:
+    'Title and id of each related session in the ticket’s project. Deleted sessions and sessions from other projects are left out.',
+};
+
+function InfoIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <line x1="12" y1="11" x2="12" y2="16" />
+      <line x1="12" y1="8" x2="12.01" y2="8" />
+    </svg>
+  );
+}
+
+/** A small "i" button with an explanation in a tooltip (hover, focus or tap).
+ *  The text is also the button's description for screen readers. */
+function InfoTip({ label, text, align = 'start' }: { label: string; text: string; align?: 'start' | 'center' | 'end' }) {
+  const id = useId();
+  return (
+    <Tooltip content={text} multiline side="bottom" align={align} toggleOnClick>
+      <button
+        type="button"
+        aria-label={`About ${label}`}
+        aria-describedby={id}
+        className="inline-grid h-5 w-5 place-items-center rounded-full text-text-tertiary transition-colors hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+      >
+        <InfoIcon />
+      </button>
+      <span id={id} className="sr-only">
+        {text}
+      </span>
+    </Tooltip>
+  );
+}
+
 interface SectionDraft {
   /** Stable client-side identity: React key + focus target across reorders. */
   id: string;
@@ -89,6 +147,18 @@ function emptySection(): SectionDraft {
     sourceFields: ['title'],
     guidance: '',
   };
+}
+
+/** The starting section nobody has typed into yet. */
+function isUntouchedSection(s: SectionDraft): boolean {
+  const blank = emptySection();
+  return (
+    s.key.trim() === '' &&
+    s.heading.trim() === '' &&
+    s.guidance.trim() === '' &&
+    s.mode === blank.mode &&
+    s.sourceFields.join(',') === blank.sourceFields.join(',')
+  );
 }
 
 function sourceFieldLabel(value: string): string {
@@ -380,6 +450,7 @@ export function TemplateEditorDialog({
 }: TemplateEditorDialogProps) {
   const create = useCreateJiraTemplate(orgId);
   const update = useUpdateJiraTemplate(orgId);
+  const { data: allTemplates } = useJiraTemplates(orgId);
   const isEdit = initial != null;
   const pending = isEdit ? update.isPending : create.isPending;
 
@@ -390,6 +461,55 @@ export function TemplateEditorDialog({
     initial ? toSectionDrafts(initial.sections) : [emptySection()],
   );
   const [error, setError] = useState<string | null>(null);
+  const [copiedFrom, setCopiedFrom] = useState<string | null>(null);
+
+  // "Copy from…": built-ins, then the org's active custom templates (not the
+  // one being edited). Picking one replaces the sections.
+  const copyChoices = useMemo(() => {
+    const list = (allTemplates ?? []).filter(
+      (t) => t.sections.length > 0 && !t.archived_at && !(isEdit && !t.builtin && t.slug === initial?.slug),
+    );
+    return [...list.filter((t) => t.builtin), ...list.filter((t) => !t.builtin)];
+  }, [allTemplates, isEdit, initial?.slug]);
+  const copyOptions = useMemo(
+    () =>
+      copyChoices.map((t) => ({
+        value: `${t.builtin ? 'builtin' : 'custom'}:${t.slug}`,
+        label: `${t.builtin ? 'Built-in · ' : ''}${t.name} (${t.sections.length} section${t.sections.length === 1 ? '' : 's'})`,
+      })),
+    [copyChoices],
+  );
+
+  // Copying replaces the sections; ask first unless nothing was written yet
+  // (only the untouched starting section).
+  const [pendingCopy, setPendingCopy] = useState<JiraTemplate | null>(null);
+  // The confirm opens from the select's popup, which is gone by the time it
+  // closes, so focus is handed back to the "Copy from…" trigger explicitly.
+  const copyTriggerRef = useRef<HTMLDivElement>(null);
+  const refocusCopyRef = useRef(false);
+  function closeCopyConfirm() {
+    refocusCopyRef.current = true;
+    setPendingCopy(null);
+  }
+  useEffect(() => {
+    if (pendingCopy || !refocusCopyRef.current) return;
+    refocusCopyRef.current = false;
+    copyTriggerRef.current?.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')?.focus();
+  }, [pendingCopy]);
+  const sectionsEdited = !(sections.length === 1 && isUntouchedSection(sections[0]));
+
+  function applyCopy(t: JiraTemplate) {
+    setSections(toSectionDrafts(t.sections));
+    setCopiedFrom(t.name);
+    setError(null);
+  }
+
+  function copySectionsFrom(value: string) {
+    const t = copyChoices.find((x) => `${x.builtin ? 'builtin' : 'custom'}:${x.slug}` === value);
+    if (!t) return;
+    if (sectionsEdited) setPendingCopy(t);
+    else applyCopy(t);
+  }
 
   // Focus follows a moved section: after a reorder, focus the same arrow on
   // the section's new position (or the other arrow if it hit an edge).
@@ -520,11 +640,24 @@ export function TemplateEditorDialog({
   }
 
   return (
-    <Dialog open onClose={onClose} titleId="jira-template-editor-title" className="max-w-2xl">
+    <>
+    <Dialog
+      open
+      onClose={onClose}
+      titleId="jira-template-editor-title"
+      // Wide screens get a side-by-side preview; the dialog never outgrows
+      // the viewport and scrolls inside instead.
+      className="max-w-2xl lg:max-w-6xl max-h-[calc(100dvh-2rem)] flex flex-col !p-4 sm:!p-6"
+    >
       <DialogHeader titleId="jira-template-editor-title">
         {isEdit ? 'Edit template' : 'New template'}
       </DialogHeader>
-      <form onSubmit={handleSubmit} className="space-y-4" autoComplete="off">
+      <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col" autoComplete="off">
+        <div
+          data-testid="template-editor-body"
+          className="-mx-1 min-h-0 flex-1 overflow-y-auto overscroll-contain px-1 lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(0,26rem)] lg:grid-rows-[minmax(0,1fr)] lg:gap-6 lg:overflow-hidden"
+        >
+        <div className="space-y-4 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain lg:pr-2 lg:-mr-1 pb-1">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Input
             title="Slug"
@@ -554,18 +687,36 @@ export function TemplateEditorDialog({
         />
 
         <div className="space-y-3">
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-end justify-between gap-2">
             <span className="text-sm font-semibold text-text-primary">Sections</span>
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              onClick={addSection}
-              disabled={sections.length >= TEMPLATE_MAX_SECTIONS}
-            >
-              Add section
-            </Button>
+            <div className="flex flex-wrap items-center gap-2">
+              {copyOptions.length > 0 && (
+                <div ref={copyTriggerRef} className="w-56 max-w-full">
+                  <Select
+                    aria-label="Copy sections from a template"
+                    value=""
+                    onValueChange={copySectionsFrom}
+                    options={copyOptions}
+                    placeholder="Copy from…"
+                  />
+                </div>
+              )}
+              <Button
+                type="button"
+                size="sm"
+                variant="secondary"
+                onClick={addSection}
+                disabled={sections.length >= TEMPLATE_MAX_SECTIONS}
+              >
+                Add section
+              </Button>
+            </div>
           </div>
+          {copiedFrom && (
+            <p role="status" className="text-xs text-text-tertiary">
+              Sections copied from {copiedFrom}. Edit them freely; the original isn’t changed.
+            </p>
+          )}
 
           {sections.map((s, i) => {
             const label = s.heading.trim() || `section ${i + 1}`;
@@ -630,8 +781,13 @@ export function TemplateEditorDialog({
                   />
                 </div>
 
+                <div className="space-y-1">
+                <div className="flex items-center gap-1">
+                  <span className="text-sm font-medium text-text-secondary" aria-hidden="true">Mode</span>
+                  <InfoTip label="Mode" text={MODE_HELP} />
+                </div>
                 <Select
-                  title="Mode"
+                  aria-label="Mode"
                   value={s.mode}
                   onValueChange={(v) => setSectionMode(s.id, v as JiraTemplateMode)}
                   options={TEMPLATE_MODE_OPTIONS}
@@ -641,17 +797,26 @@ export function TemplateEditorDialog({
                       : 'Rewrite may be reshaped by the model into prose; every paragraph must cite the ticket.'
                   }
                 />
+                </div>
 
                 <fieldset className="space-y-1">
-                  <legend className="text-sm font-medium text-text-secondary">Source fields</legend>
+                  <legend className="flex items-center gap-1 text-sm font-medium text-text-secondary">
+                    Source fields
+                    <InfoTip label="source fields" text={SOURCE_FIELDS_HELP} />
+                  </legend>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1.5">
                     {jiraSourceFieldsForMode(s.mode).map((f) => (
-                      <Checkbox
-                        key={f.value}
-                        label={f.label}
-                        checked={s.sourceFields.includes(f.value)}
-                        onChange={() => toggleSourceField(s.id, f.value)}
-                      />
+                      <div key={f.value} className="flex items-center gap-1">
+                        <Checkbox
+                          label={f.label}
+                          checked={s.sourceFields.includes(f.value)}
+                          onChange={() => toggleSourceField(s.id, f.value)}
+                        />
+                        {FIELD_HELP[f.value] && (
+                          // Centred on the icon: fits beside either column, and on phones.
+                          <InfoTip label={f.label} text={FIELD_HELP[f.value]} align="center" />
+                        )}
+                      </div>
                     ))}
                   </div>
                 </fieldset>
@@ -671,16 +836,23 @@ export function TemplateEditorDialog({
           })}
         </div>
 
-        <TemplateDraftPreview
-          orgId={orgId}
-          slug={slug.trim() || 'draft'}
-          name={name.trim()}
-          sections={sections}
-          ready={ready}
-        />
+        </div>
 
-        {error && <Alert variant="danger">{error}</Alert>}
-        {!ready && <p className="text-xs text-text-tertiary">{validationError}</p>}
+        <div className="mt-4 lg:mt-0 lg:min-h-0 lg:overflow-y-auto lg:overscroll-contain">
+          <TemplateDraftPreview
+            orgId={orgId}
+            slug={slug.trim() || 'draft'}
+            name={name.trim()}
+            sections={sections}
+            ready={ready}
+          />
+        </div>
+        </div>
+
+        <div className="shrink-0 space-y-2 pt-3">
+          {error && <Alert variant="danger">{error}</Alert>}
+          {!ready && <p className="text-xs text-text-tertiary">{validationError}</p>}
+        </div>
 
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={onClose}>
@@ -692,6 +864,33 @@ export function TemplateEditorDialog({
         </DialogFooter>
       </form>
     </Dialog>
+    {pendingCopy && (
+      // A sibling of the editor (not nested in it) so each keeps its own
+      // focus trap; Escape closes only this one.
+      <Dialog open onClose={closeCopyConfirm} titleId="jira-template-copy-title">
+        <DialogHeader titleId="jira-template-copy-title">Replace your sections?</DialogHeader>
+        <p className="text-sm text-text-secondary">
+          Copying from {pendingCopy.name} replaces the {sections.length} section
+          {sections.length === 1 ? '' : 's'} in this editor with its {pendingCopy.sections.length}. Your current
+          sections aren’t saved anywhere else.
+        </p>
+        <DialogFooter>
+          <Button type="button" variant="ghost" onClick={closeCopyConfirm}>
+            Keep my sections
+          </Button>
+          <Button
+            type="button"
+            onClick={() => {
+              applyCopy(pendingCopy);
+              closeCopyConfirm();
+            }}
+          >
+            Replace sections
+          </Button>
+        </DialogFooter>
+      </Dialog>
+    )}
+    </>
   );
 }
 
@@ -719,12 +918,18 @@ function TemplateDraftPreview({
   const [result, setResult] = useState<JiraTemplatePreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
 
+  // Same searchable picker as the mapping dialog (GitHub #103): a long list of
+  // mapped projects is searched by name or id, sorted by name.
   const projectOptions = useMemo(() => {
     const names = new Map((projects ?? []).map((p) => [p.id, p.name] as const));
-    return (mappings ?? []).map((m) => ({
-      value: m.project_id,
-      label: names.get(m.project_id) ?? m.project_id,
-    }));
+    return (mappings ?? [])
+      .map((m) => ({
+        value: m.project_id,
+        label: names.get(m.project_id) ?? m.project_id,
+        description: m.jira_project_key ? `Jira ${m.jira_project_key}` : undefined,
+        searchText: `${names.get(m.project_id) ?? ''} ${m.project_id} ${m.jira_project_key ?? ''}`,
+      }))
+      .sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }));
   }, [mappings, projects]);
 
   const ticketOptions = useMemo(
@@ -753,14 +958,19 @@ function TemplateDraftPreview({
 
   return (
     <div className="rounded-lg border border-border p-3 space-y-3 bg-surface" role="region" aria-label="Template preview">
-      <span className="text-xs font-semibold text-text-tertiary uppercase tracking-[0.04em]">Preview</span>
+      <div>
+        <span className="text-xs font-semibold text-text-tertiary uppercase tracking-[0.04em]">Preview</span>
+        <p className="mt-0.5 text-xs text-text-tertiary">
+          Renders the unsaved draft against a real ticket, without the model and without saving.
+        </p>
+      </div>
       {projectOptions.length === 0 ? (
         <p className="text-sm text-text-tertiary">
           Map a project to Jira to preview this template against one of its tickets.
         </p>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-3 items-end">
-          <Select
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] lg:grid-cols-1 gap-3 items-end">
+          <Combobox
             title="Mapped project"
             value={projectId}
             onValueChange={(v) => {
@@ -769,7 +979,9 @@ function TemplateDraftPreview({
               setResult(null);
             }}
             options={projectOptions}
-            placeholder="Select a project"
+            placeholder="Pick a project"
+            searchPlaceholder="Search by name or ID"
+            noMatchesMessage={(q) => `No mapped projects match “${q}”`}
           />
           <Combobox
             title="Ticket"

@@ -30,6 +30,7 @@ import { BoardView } from './tickets/BoardView';
 import { EmptyState } from './tickets/EmptyState';
 import { NewTicketModal } from './tickets/NewTicketModal';
 import { errorMessage } from '../utils/errorMessage';
+import { isOverdue } from './tickets/schedule';
 
 const DEFAULT_VIEWER: TicketViewer = { canEdit: true, userId: null };
 
@@ -44,6 +45,10 @@ interface TicketsTabProps {
    *  provided; local state otherwise. */
   assignedToMe?: boolean;
   onAssignedToMeChange?: (next: boolean) => void;
+  /** "Overdue" filter, owned by the page URL (?due=overdue) when provided;
+   *  local state otherwise. */
+  overdue?: boolean;
+  onOverdueChange?: (next: boolean) => void;
 }
 
 export default function TicketsTab({
@@ -53,6 +58,8 @@ export default function TicketsTab({
   viewer,
   assignedToMe: assignedToMeProp,
   onAssignedToMeChange,
+  overdue: overdueProp,
+  onOverdueChange,
 }: TicketsTabProps) {
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [kindFilter, setKindFilter] = useState<string>('');
@@ -62,10 +69,17 @@ export default function TicketsTab({
     if (onAssignedToMeChange) onAssignedToMeChange(next);
     else setAssignedToMeLocal(next);
   };
+  const [overdueLocal, setOverdueLocal] = useState(false);
+  const overdue = overdueProp ?? overdueLocal;
+  const setOverdue = (next: boolean) => {
+    if (onOverdueChange) onOverdueChange(next);
+    else setOverdueLocal(next);
+  };
   const { data, isLoading, error } = useTickets(projectId, {
     status: statusFilter || undefined,
     kind: kindFilter || undefined,
     assigned_user: assignedToMe ? 'me' : undefined,
+    overdue: overdue || undefined,
   });
   const [creating, setCreating] = useState(false);
   const [selected, setSelected] = useState<string | null>(initialTicketId ?? null);
@@ -96,6 +110,7 @@ export default function TicketsTab({
     setStatusFilter('');
     setKindFilter('');
     if (assignedToMe) setAssignedToMe(false);
+    if (overdue) setOverdue(false);
     setSelected(targetId);
   }
 
@@ -103,7 +118,8 @@ export default function TicketsTab({
   if (error) return <p role="alert">Failed to load tickets: {errorMessage(error)}</p>;
   if (!data) return null;
 
-  const tickets = data;
+  // Older servers ignore ?overdue, so apply the same rule here too.
+  const tickets = overdue ? data.filter((t) => isOverdue(t)) : data;
 
   return (
     <TicketViewerContext.Provider value={viewer ?? DEFAULT_VIEWER}>
@@ -130,6 +146,19 @@ export default function TicketsTab({
               <path d="M4 21a8 8 0 0 1 16 0" />
             </svg>
             Assigned to me
+          </Button>
+          <Button
+            variant="secondary"
+            size="md"
+            aria-pressed={overdue}
+            onClick={() => setOverdue(!overdue)}
+            className={`!px-3 !font-normal ${overdue ? '!border-[var(--brand)] !bg-bg-elevated !text-text-primary' : ''}`}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <polyline points="12 7 12 12 15 14" />
+            </svg>
+            Overdue
           </Button>
           <Select
             aria-label="Filter by kind"
@@ -208,7 +237,7 @@ export default function TicketsTab({
 
       {/* ── Content ── */}
       {tickets.length === 0 ? (
-        <EmptyState kindFilter={kindFilter} statusFilter={statusFilter} assignedToMe={assignedToMe} />
+        <EmptyState kindFilter={kindFilter} statusFilter={statusFilter} assignedToMe={assignedToMe} overdue={overdue} />
       ) : viewMode === 'board' ? (
         <BoardView
           tickets={tickets}

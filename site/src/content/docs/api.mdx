@@ -42,7 +42,7 @@ Structured 401/403 error codes: `api_key_revoked`, `api_key_expired`, `service_k
 
 ### Service Keys (v0.10.10+)
 
-Org-scoped, scope-restricted API keys for cloud agents, CI runners, and integration partners. Org admin role + Team+ tier required for mutations. Raw key returned exactly once on create + rotate; the list/detail endpoints only return `key_prefix`.
+Org-scoped, scope-restricted API keys for cloud agents, CI runners, and integration partners. Org admin role + Team+ tier required for mutations. Raw key returned exactly once on create + rotate; the list endpoint only returns `key_prefix`.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
@@ -64,11 +64,13 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | `agent_feedback:read`, `agent_feedback:write` | ✅ live (v0.17) | `GET /agent-feedback`, `GET /agent-feedback/summary`, `POST /agent-feedback` |
 | `marketplace:read`, `marketplace:write` | ✅ live (v0.16) | Marketplace search/inspect/download/feed + personal package/registry publishing |
 | `skills:read`, `skills:request`, `skills:approve`, `skills:admin` | ✅ live (v0.16) | Approved instruction load, install-request lifecycle, org registries/packages/assignments |
-| `skills_verify:run` | ✅ live (platform) | The works-in harness protocol (claim / projection / result). Only a platform admin may mint or rotate a key with it |
-| `skills_registry:poll` | ✅ live (platform) | The registry poller's scheduler credential (`POST /api/v1/admin/skills/registries/poll`). Only a platform admin may mint or rotate a key with it |
-| `platform_sweeps:run` | ✅ live (platform) | The scheduled sweeps' credential: catalog regenerate, verify sweep, freshness sweep, rescan, publisher recheck, the GitHub webhook-delivery sweep, and (v0.23.0) the KB compile, org digest and helper retention sweeps. Only a platform admin may mint or rotate a key with it, and it stops working when that admin is demoted or deactivated |
-| `admin_metrics:read` | ✅ live (platform, v0.23.0) | `GET /api/v1/admin/metrics` (Prometheus). Only a platform admin may mint or rotate a key with it |
+| `skills_verify:run` | ✅ live (platform, tier-coupled) | The works-in harness protocol (claim / projection / result). Only a platform admin may mint or rotate a key with it, and the key works only while the user it runs as and the admin who minted or last rotated it are both still active platform admins |
+| `skills_registry:poll` | ✅ live (platform, tier-coupled) | The registry poller's scheduler credential (`POST /api/v1/admin/skills/registries/poll`). Only a platform admin may mint or rotate a key with it, and the key works only while the user it runs as and the admin who minted or last rotated it are both still active platform admins |
+| `platform_sweeps:run` | ✅ live (platform, tier-coupled) | The scheduled sweeps' credential: catalog regenerate, verify sweep, freshness sweep, rescan, publisher recheck, the GitHub webhook-delivery sweep, and (v0.23.0) the KB compile, org digest and helper retention sweeps. Only a platform admin may mint or rotate a key with it, and the key works only while the user it runs as and the admin who minted or last rotated it are both still active platform admins |
+| `admin_metrics:read` | ✅ live (platform, tier-coupled, v0.23.0) | `GET /api/v1/admin/metrics` (Prometheus). Only a platform admin may mint or rotate a key with it, and the key works only while the user it runs as and the admin who minted or last rotated it are both still active platform admins |
 | `sessions:read`, `rules:read`, `rules:write`, `retrieval_audit:read`, `admin:*` | Reserved | Not yet opted in on any route |
+
+**Tier-coupled scopes.** The four `platform` scopes above are *tier-coupled*: they are mint/rotate-only by a platform admin **and** the key keeps working only while both the user it runs as and the admin who minted or last rotated it are still active platform admins. Demoting or deactivating either one stops the key with a `403` that names the minter's current tier and the fix (restore the minter, or mint a new key as a user who stays a platform admin). Minting and rotating a tier-coupled key returns a `warnings` array with a `minter_tier_coupling` entry so the operator knows before they build a job around it, and `service-keys list` exposes `coupling_ok` (`true`/`false`/`null`) plus `coupling_reason` so a silently-broken key is visible. Making someone a platform admin just long enough to mint a key doesn't work: the key stops as soon as they're demoted (v0.28.0 makes this visible; the rule itself is unchanged).
 
 ### Sessions
 
@@ -98,7 +100,7 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/v1/helper/turns` | Bearer (user key) | Ask a question; Server-Sent Events by default, one JSON document with `stream: false`. See [Session Helper](/session-helper/) |
+| POST | `/api/v1/helper/turns` | Bearer (user key) | Ask a question; Server-Sent Events by default, one JSON document with `stream: false`. `scope` takes at most one of `project_id`, `group_id` (a project group; v0.28.0) or `session_ids`. See [Session Helper](/session-helper/) |
 | GET | `/api/v1/helper/conversations` | Bearer (user key) | List your helper threads |
 | GET | `/api/v1/helper/conversations/{id}` | Bearer (user key) | One thread with its messages |
 | DELETE | `/api/v1/helper/conversations/{id}` | Bearer (user key) | Delete a thread |
@@ -199,12 +201,13 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/api/v1/projects/{id}/tickets` | Bearer (`tickets:read`) | List tickets. Query params: `status`, `assigned_to`, `assigned_user` (a user id, or `me` with a user key; v0.27.0), `priority`, `kind` |
+| GET | `/api/v1/projects/{id}/tickets` | Bearer (`tickets:read`) | List tickets. Query params: `status`, `assigned_to`, `assigned_user` (a user id, or `me` with a user key; v0.27.0), `priority`, `kind`, `overdue=true` (unfinished tickets past their due date; v0.28.0) |
 | GET | `/api/v1/projects/{id}/assignable-users` | Bearer (`tickets:read`, user key) | Teammates who can read the project and can be assigned a ticket directly, with whether each can edit it (v0.27.0) |
-| POST | `/api/v1/projects/{id}/tickets` | Bearer (`tickets:write`) | Create a ticket (body: `title`, `description`, `acceptance_criteria`, `priority`, `kind`, `parent_ticket_id`, `depends_on`, and either `assigned_to` (persona) or `assigned_user` (teammate email or user id; v0.27.0)) |
+| POST | `/api/v1/projects/{id}/tickets` | Bearer (`tickets:write`) | Create a ticket (body: `title`, `description`, `acceptance_criteria`, `priority`, `kind`, `parent_ticket_id`, `depends_on`, and either `assigned_to` (persona) or `assigned_user` (teammate email or user id; v0.27.0); optional `due_date` (`YYYY-MM-DD`) and `estimated_effort` (Jira duration such as `2d 4h`; v0.28.0)) |
 | GET | `/api/v1/tickets/{tid}` | Bearer (`tickets:read`) | Look a ticket up by id alone (for links): the ticket detail plus its project name, comment count and latest comments. Not found and no access both return 404 (v0.25.0) |
-| GET | `/api/v1/projects/{id}/tickets/{tid}` | Bearer (`tickets:read`) | Get a ticket with dependencies, dependents, and recent comments |
-| PUT | `/api/v1/projects/{id}/tickets/{tid}` | Bearer (`tickets:write`) | Partial mutation for `title` / `description` / `priority` / `acceptance_criteria` / `context_refs` / `file_refs` / `depends_on` / `assigned_user` (teammate email or user id, `null` to unassign; v0.27.0). Status transitions remain FSM-only. Authz: creator OR project admin. Optional `lease_epoch` for optimistic concurrency (409 + structured envelope on stale; last-write-wins when omitted; `lease_epoch` alone rejected with 400 — it's a fence, not a mutation). Side effect: every successful update auto-posts ONE `author_persona='system'` diff comment + writes per-field rows to the `ticket_edits` audit table (no-op writes don't pollute the audit). `depends_on` updates run same-project + cycle + dedup validation before wipe-and-reinsert. (v0.10.28) |
+| GET | `/api/v1/projects/{id}/tickets/{tid}` | Bearer (`tickets:read`) | Get a ticket with dependencies, dependents, and recent comments. Includes `created_by` and `resolved_by` (name and persona), `due_date` and `estimated_effort` (v0.28.0) |
+| GET | `/api/v1/projects/{id}/tickets/{tid}/events` | Bearer (`tickets:read`) | The ticket's change history, newest first: each event has `action`, `field`, `before`, `after`, `actor` and `created_at`. Query: `limit` (1–200, default 50) and `before` (an event id; pass `next_before` from the previous page) (v0.28.0) |
+| PUT | `/api/v1/projects/{id}/tickets/{tid}` | Bearer (`tickets:write`) | Partial mutation for `title` / `description` / `priority` / `acceptance_criteria` / `context_refs` / `file_refs` / `depends_on` / `assigned_user` (teammate email or user id, `null` to unassign; v0.27.0) / `due_date` / `estimated_effort` (`null` clears either; v0.28.0). Status transitions remain FSM-only. Authz: creator OR project admin. Optional `lease_epoch` for optimistic concurrency (409 + structured envelope on stale; last-write-wins when omitted; `lease_epoch` alone rejected with 400 — it's a fence, not a mutation). Side effect: every successful update auto-posts ONE `author_persona='system'` diff comment + writes per-field rows to the `ticket_edits` audit table (no-op writes don't pollute the audit). `depends_on` updates run same-project + cycle + dedup validation before wipe-and-reinsert. (v0.10.28) |
 | POST | `/api/v1/projects/{id}/tickets/{tid}/start` | Bearer (`tickets:write`) | Atomic claim. Increments and returns `lease_epoch`, creates a server-side `retrieval_audit_id`, returns compiled persona + ticket context |
 | POST | `/api/v1/projects/{id}/tickets/{tid}/complete` | Bearer (`tickets:write`) | `in_progress` → `review`. Pass `lease_epoch` to reject stale workers with 409 |
 | POST | `/api/v1/projects/{id}/tickets/{tid}/resolve` | Bearer (`tickets:write`) | `review` → `done`. Atomic with rowcount-1 guard |
@@ -215,7 +218,8 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | GET | `/api/v1/projects/{id}/tickets/{tid}/comments` | Bearer (`tickets:read`) | Paginated comment thread (query: `since`, `since_id`, `limit`) |
 | GET | `/api/v1/projects/{id}/tickets/{tid}/review-state` | Bearer (`tickets:read`) | Derived review state — open/closed findings, last verdict, severity counts |
 | POST | `/api/v1/projects/{id}/tickets/{tid}/jira/preview` | Bearer (`tickets:write`) | Draft a Jira story from the ticket (Enterprise, v0.23.0). See [Jira Cloud](/integrations/jira/) |
-| POST | `/api/v1/projects/{id}/tickets/{tid}/jira/publish` | Bearer (`tickets:write`) | Create or update the linked Jira issue. Overwriting a linked issue that was never published from SessionFS needs `overwrite_existing: true` (else `409 jira_overwrite_required`) |
+| POST | `/api/v1/projects/{id}/tickets/{tid}/jira/publish` | Bearer (`tickets:write`) | Create or update the linked Jira issue. Overwriting a linked issue that was never published from SessionFS needs `overwrite_existing: true` (else `409 jira_overwrite_required`). Optional `sprint_id` places the issue in a sprint; fields Jira refused are listed in `warnings` (v0.28.0) |
+| GET | `/api/v1/projects/{id}/jira/sprints` | Bearer (`tickets:write`) | Active and future sprints of the mapped Jira project, for the publish dialog (v0.28.0) |
 | GET | `/api/v1/projects/{id}/tickets/{tid}/jira` | Bearer (`tickets:read`) | Linked Jira issue and cached status |
 | DELETE | `/api/v1/projects/{id}/tickets/{tid}/jira` | Bearer (`tickets:write`, project admin) | Unlink the Jira issue |
 | POST | `/api/v1/projects/{id}/tickets/{tid}/jira/link` | Bearer (`tickets:write`, ticket editor) | Link the ticket to an existing Jira issue (`issue_key`); nothing is sent to Jira (v0.27.0) |
@@ -242,8 +246,10 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | PUT | `/api/v1/orgs/{org_id}/members/me/digest` | Bearer | Turn your weekly activity digest off or on (`{"opt_out": true}`) — v0.23.0 |
 | GET / PUT / DELETE | `/api/v1/orgs/{org_id}/llm-settings` | Bearer | Org AI key for the session helper (owner or admin, Enterprise) — v0.23.0 |
 | POST | `/api/v1/orgs/{org_id}/llm-settings/test` | Bearer | Test the org AI key connection (owner or admin, Enterprise); same body and response as `/settings/judge/test` |
+| POST | `/api/v1/orgs/{org_id}/llm-settings/models` | Bearer | List the models the org key can use (owner or admin, Enterprise); same body and response as `/settings/judge/models`, rate-limited per user (`429 models_rate_limited`) — v0.28.0 |
 | GET / PUT | `/api/v1/orgs/{org_id}/helper-settings` | Bearer | Org helper settings, ceilings, instructions and monthly token budget (PUT: owner or admin, Enterprise; GET: members see effective values and their own usage) |
-| GET / PUT / DELETE | `/api/v1/orgs/{org_id}/integrations/jira` | Bearer | Jira Cloud connection (admin, Enterprise); also `/projects`, `/mappings[/{project_id}]`, `/health` — v0.23.0 |
+| GET / PUT / DELETE | `/api/v1/orgs/{org_id}/integrations/jira` | Bearer | Jira Cloud connection (admin, Enterprise); also `/projects`, `/mappings[/{project_id}]`, `/health`, `/sync` (two-way sync settings and, since v0.28.0, the sprint and epic-link field overrides) — v0.23.0 |
+| POST | `/api/v1/orgs/{org_id}/jira/fields/detect` | Bearer | Detect the Jira site's sprint and epic-link field ids without saving them (owner or admin, Enterprise) — v0.28.0 |
 | GET | `/api/v1/orgs/{org_id}/personas/{name}/rollup` | Bearer | Org persona activity across the projects you can see — v0.23.0 |
 | GET | `/api/v1/orgs/{org_id}/personas/{name}/represent-history` | Bearer | Who has represented an org persona over time (admin) — v0.23.0 |
 

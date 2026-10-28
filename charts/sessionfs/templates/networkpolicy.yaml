@@ -56,6 +56,20 @@ spec:
         - port: {{ .Values.api.service.port }}
           protocol: TCP
     {{- end }}
+    {{- $sweeps := include "sessionfs.sweepDefs" . | fromYamlArray }}
+    {{- range $s := $sweeps }}
+    {{- $cfg := index $.Values.api $s.key | default dict }}
+    {{- if and $cfg.enabled ($cfg.cronJob | default dict).enabled }}
+    # Allow from the {{ $s.component }} CronJob
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "sessionfs.componentSelectorLabels" (list $ $s.component) | nindent 14 }}
+      ports:
+        - port: {{ $.Values.api.service.port }}
+          protocol: TCP
+    {{- end }}
+    {{- end }}
   egress:
     {{- if and $polling.enabled $polling.allowedPrivateCidrs }}
     # Registry polling opt-in: internal Git hosts (https only)
@@ -199,5 +213,64 @@ spec:
         - port: 5432
           protocol: TCP
   egress: []
+{{- end }}
+---
+# Scheduled CronJobs (sweeps, helper retention, registry poll): allow DNS +
+# API egress only, so a compromised curl image cannot send the injected
+# service key anywhere else. Rendered only when at least one of those CronJobs
+# is enabled; each pod is selected by its component label.
+{{- $cronComponents := list }}
+{{- $sweeps := include "sessionfs.sweepDefs" . | fromYamlArray }}
+{{- range $s := $sweeps }}
+{{- $cfg := index $.Values.api $s.key | default dict }}
+{{- if and $cfg.enabled ($cfg.cronJob | default dict).enabled }}
+{{- $cronComponents = append $cronComponents $s.component }}
+{{- end }}
+{{- end }}
+{{- $retention := .Values.api.helperRetention | default dict }}
+{{- if and $retention.enabled ($retention.cronJob | default dict).enabled }}
+{{- $cronComponents = append $cronComponents "helper-retention" }}
+{{- end }}
+{{- $polling := .Values.api.registryPolling | default dict }}
+{{- if and $polling.enabled ($polling.cronJob | default dict).enabled }}
+{{- $cronComponents = append $cronComponents "registry-poll" }}
+{{- end }}
+{{- if gt (len $cronComponents) 0 }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "sessionfs.fullname" . }}-cronjobs
+  labels:
+    {{- include "sessionfs.componentLabels" (list . "cronjobs") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "sessionfs.selectorLabels" . | nindent 6 }}
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+        {{- range $cronComponents }}
+          - {{ . }}
+        {{- end }}
+  policyTypes:
+    - Egress
+  egress:
+    # Allow to API
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "sessionfs.componentSelectorLabels" (list . "api") | nindent 14 }}
+      ports:
+        - port: {{ .Values.api.service.port }}
+          protocol: TCP
+    # Allow DNS resolution
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
 {{- end }}
 {{- end }}

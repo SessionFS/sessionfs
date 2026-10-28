@@ -323,6 +323,12 @@ export const tickets = statuses.map((status, i) => ({
   created_at: EARLIER,
   updated_at: NOW,
   resolved_at: status === 'done' ? NOW : null,
+  // GitHub #113: the open and blocked tickets are past due, the in-progress
+  // one is due later, the done one was due before it shipped.
+  due_date: [null, '2026-10-01', '2026-12-15', '2026-09-30', null, '2026-10-10'][i],
+  estimated_effort: [null, '3d', '2d 4h', null, '1d', '4h'][i],
+  created_by: { user_id: me.user_id, display_name: me.display_name, email: me.email, persona: null, session_id: null },
+  resolved_by: status === 'done' ? { user_id: me.user_id, display_name: me.display_name, email: me.email } : null,
 }));
 
 export const agentRuns = [
@@ -677,7 +683,12 @@ export const jiraConnection = {
   has_webhook_secret: true,
   webhook_secret_last4: 'b7e1',
   webhook_url: 'https://api.example.test/api/v1/webhooks/jira/org_fixture01',
+  sprint_field_id: 'customfield_10020',
+  epic_link_field_id: null,
 };
+
+// POST /api/v1/orgs/{id}/jira/fields/detect
+export const jiraDetectedFields = { sprint_field_id: 'customfield_10020', epic_link_field_id: 'customfield_10014' };
 
 export const jiraHealth = {
   unmapped_project_count: 1,
@@ -1601,6 +1612,8 @@ export const linkedTicketJira = {
 export const linkedTicket = {
   ...tickets[2],
   jira: linkedTicketJira,
+  // A Task under the fixture Issue, whose Jira issue is the epic WID-40.
+  parent_ticket_id: tickets[3].id,
   description:
     'ProjectDetail renders every tab inline, so a change to one section re-renders the whole page. Split it into one component per section and keep the URL contract (?tab=…&sub=…) unchanged.',
   acceptance_criteria: [
@@ -1611,6 +1624,7 @@ export const linkedTicket = {
   depends_on: [tickets[1].id],
   created_by_persona: 'compass',
   created_at: '2026-10-17T08:00:00Z',
+  created_by: { user_id: me.user_id, display_name: me.display_name, email: me.email, persona: 'compass', session_id: 'ses_fixture01' },
 };
 export const linkedTicketJiraLink = {
   ticket_id: LINKED_TICKET_ID,
@@ -1624,7 +1638,71 @@ export const linkedTicketJiraLink = {
   comment_sync_outbound: true,
   can_send_to_jira: true,
   attached_not_published: false,
+  sprint: { id: 37, name: 'WID Sprint 14', state: 'active' },
+  parent: { key: 'WID-40', ticket_id: tickets[3].id },
 };
+
+// GET /api/v1/projects/{id}/jira/sprints — active first, then future.
+export const jiraSprints = {
+  sprints: [
+    { id: 37, name: 'WID Sprint 14', state: 'active', board_name: 'Widgets board', start_date: '2026-10-19T09:00:00Z', end_date: '2026-11-02T09:00:00Z' },
+    { id: 38, name: 'WID Sprint 15', state: 'future', board_name: 'Widgets board', start_date: '2026-11-02T09:00:00Z', end_date: '2026-11-16T09:00:00Z' },
+    { id: 52, name: 'Platform hardening', state: 'future', board_name: 'Platform kanban', start_date: null, end_date: null },
+  ],
+};
+
+// GET /api/v1/projects/{id}/tickets/{tid}/jira/templates
+export const jiraTicketTemplates = {
+  templates: [
+    { slug: 'agile', name: 'Agile Standard', version: null, builtin: true },
+    { slug: 'bug', name: 'Bug Report', version: null, builtin: true },
+  ],
+  inherited_default: { slug: 'agile', name: 'Agile Standard', version: null },
+  pinned: null,
+};
+
+// POST /api/v1/projects/{id}/tickets/{tid}/jira/preview (a first publish).
+export const jiraPreview = (ticketId: string) => ({
+  summary: 'Add retry budget to the sync worker',
+  sections: [
+    {
+      key: 'summary',
+      heading: 'Summary',
+      mode: 'rewrite',
+      paragraphs: [{ text: 'Cap sync retries per worker so one failing session cannot starve the queue.', citations: [] }],
+    },
+    {
+      key: 'acceptance_criteria',
+      heading: 'Acceptance criteria',
+      mode: 'verbatim',
+      paragraphs: [{ text: '- Replays do not double-charge\n- Covered by a regression test', citations: [] }],
+    },
+  ],
+  citations: [],
+  issue_type: 'Story',
+  jira_project_key: 'WID',
+  llm_used: false,
+  key_source: 'none',
+  ticket_id: ticketId,
+  project_id: PROJECT_ID,
+  template: { slug: 'agile', name: 'Agile Standard', version: null },
+});
+
+// POST .../jira/publish: Jira took the issue but not the sprint or the due date.
+export const jiraPublishWithWarnings = (ticketId: string) => ({
+  ticket_id: ticketId,
+  provider: 'jira',
+  issue_key: 'WID-57',
+  issue_url: 'https://acme.atlassian.net/browse/WID-57',
+  last_pushed_at: NOW,
+  last_known_status: null,
+  last_status_checked_at: null,
+  payload_hash: 'fixture',
+  warnings: ['jira_sprint_not_set:move_failed', 'jira_parent_not_linked', 'jira_field_not_on_screen:duedate'],
+  sprint: null,
+  parent: null,
+  template: { slug: 'agile', name: 'Agile Standard', version: null },
+});
 export const linkedTicketComments = [
   {
     id: 'tc_fixture1', ticket_id: LINKED_TICKET_ID, author_user_id: me.user_id, author_persona: 'prism',
@@ -1633,7 +1711,8 @@ export const linkedTicketComments = [
   },
   {
     id: 'tc_fixture2', ticket_id: LINKED_TICKET_ID, author_user_id: me.user_id, author_persona: 'system',
-    content: 'Edited by prism: priority medium → high',
+    content:
+      '**Ticket fields updated** via `update_ticket` (tk_835a876529de4551):\n- `priority`: "medium" → "high"\n\n_Full per-field old/new values preserved in `ticket_edits`._',
     session_id: null, created_at: '2026-10-18T09:42:00Z', source: 'sessionfs',
   },
   {
@@ -1717,3 +1796,20 @@ export const openTicketComments = [
     session_id: 'ses_fixture03', created_at: EARLIER, source: 'sessionfs',
   },
 ];
+
+// GET .../tickets/{tid}/events for the linked ticket, newest first. The
+// priority edit at 09:42 also left the system diff comment tc_fixture2, which
+// the timeline folds away. next_before is set so "Show earlier history" shows.
+const actorMe = { type: 'user', user_id: me.user_id, display_name: me.display_name, persona: null, label: null };
+export const linkedTicketEvents = {
+  events: [
+    { id: 'evt_fixture08', action: 'jira_published', field: null, before: null, after: { issue_key: 'WID-43' }, actor: { ...actorMe, persona: 'prism' }, created_at: '2026-10-19T10:05:00Z' },
+    { id: 'evt_fixture07', action: 'estimate_set', field: 'estimated_effort', before: '1d', after: '2d 4h', actor: { type: 'service', user_id: null, display_name: null, persona: null, label: 'ci-planner' }, created_at: '2026-10-19T09:00:00Z' },
+    { id: 'evt_fixture06', action: 'field_edited', field: 'description', before: { changed: true, length: 120 }, after: { changed: true, length: 186 }, actor: actorMe, created_at: '2026-10-18T15:10:00Z' },
+    { id: 'evt_fixture05', action: 'due_date_set', field: 'due_date', before: null, after: '2026-12-15', actor: { type: 'jira', user_id: null, display_name: null, persona: null, label: 'Priya Shah' }, created_at: '2026-10-18T14:06:00Z' },
+    { id: 'evt_fixture04', action: 'field_edited', field: 'priority', before: 'medium', after: 'high', actor: { ...actorMe, persona: 'prism' }, created_at: '2026-10-18T09:42:00Z' },
+    { id: 'evt_fixture03', action: 'status_changed', field: 'status', before: 'open', after: 'in_progress', actor: { ...actorMe, persona: 'prism' }, created_at: '2026-10-18T09:39:00Z' },
+    { id: 'evt_fixture02', action: 'assigned', field: 'assigned_to', before: null, after: { persona: 'prism' }, actor: { type: 'system', user_id: null, display_name: null, persona: null, label: null }, created_at: '2026-10-17T08:05:00Z' },
+  ],
+  next_before: 'evt_fixture02',
+};

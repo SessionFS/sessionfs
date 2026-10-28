@@ -20,6 +20,12 @@ export function useMessages(
       : ['messages', sessionId, page, pageSize, order],
     queryFn: () => auth!.client.getMessages(sessionId, page, pageSize, order, around),
     enabled: !!auth && !!sessionId,
-    staleTime: 60_000,
+    // A deep link whose message wasn't found (`hidden`/`missing`) is asked
+    // again next time instead of being served from cache: the session may
+    // have synced the message since.
+    staleTime: (query) => {
+      const target = (query.state.data as { target?: { status?: string } | null } | undefined)?.target;
+      return around != null && target && target.status !== 'found' ? 0 : 60_000;
+    },
   });
 }

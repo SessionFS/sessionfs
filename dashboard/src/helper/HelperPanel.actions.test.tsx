@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { clearRememberedScope } from './scopeMemory';
 
 /**
  * The drawer attaches write-action proposals to the answer they arrived in:
@@ -28,6 +29,7 @@ vi.mock('./useHelper', async (importActual) => ({
   useHelperStatus: useHelperStatusMock,
   useHelperConversations: useHelperConversationsMock,
   useDeleteHelperConversation: () => ({ mutate: vi.fn(), isPending: false }),
+  useHelperGroups: () => ({ data: [] }),
 }));
 
 import HelperPanel from './HelperPanel';
@@ -59,6 +61,7 @@ function renderPanel() {
 }
 
 beforeEach(() => {
+  clearRememberedScope();
   vi.clearAllMocks();
   useAuthMock.mockReturnValue({
     auth: { apiKey: 'sk', baseUrl: 'http://test.api', client: { getHelperConversation, getHelperAction } },

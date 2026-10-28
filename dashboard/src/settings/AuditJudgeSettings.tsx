@@ -9,8 +9,9 @@ import {
 import { useLlmProviders } from '../hooks/useLlmProviders';
 import { useToast } from '../hooks/useToast';
 import { judgeSettingsSchema, fieldErrorsFromZod, type FieldErrors } from '../utils/validation';
-import FieldError from '../components/FieldError';
 import { Card, Button, Input, Select } from '../components/ui';
+import ModelPicker from './ModelPicker';
+import { useKeyCommit } from './useKeyCommit';
 import { errorMessage } from '../utils/errorMessage';
 import type { SaveWarning } from '../api/client';
 import { ConnectionTestStatus, SaveWarnings } from './LlmConnectionTest';
@@ -33,12 +34,9 @@ export default function AuditJudgeSettings() {
   const [judgeProvider, setJudgeProvider] = useState('openrouter');
   const [judgeModel, setJudgeModel] = useState('');
   const [judgeApiKey, setJudgeApiKey] = useState('');
+  const [keyCommit, onKeyBlur] = useKeyCommit(judgeApiKey);
   const [judgeBaseUrl, setJudgeBaseUrl] = useState('');
   const [judgeSaved, setJudgeSaved] = useState(false);
-  const [discoveredModels, setDiscoveredModels] = useState<{ id: string; owned_by: string }[]>([]);
-  const [fetchedProviderModels, setFetchedProviderModels] = useState<{ id: string; owned_by: string }[]>([]);
-  const [discovering, setDiscovering] = useState(false);
-  const [fetchingModels, setFetchingModels] = useState(false);
   const [judgeErrors, setJudgeErrors] = useState<FieldErrors>({});
   const [saveWarnings, setSaveWarnings] = useState<SaveWarning[]>([]);
 
@@ -51,7 +49,6 @@ export default function AuditJudgeSettings() {
   }, [judgeProvider, judgeModel, judgeApiKey, judgeBaseUrl, resetConnection]);
 
   const currentProvider = providers.find((p) => p.id === judgeProvider);
-  const isDiscovery = currentProvider?.discovery === true;
 
   // Populate from saved settings
   useEffect(() => {
@@ -62,36 +59,14 @@ export default function AuditJudgeSettings() {
     }
   }, [judgeSettings]);
 
-  // Discover models when base URL changes (custom endpoints)
-  useEffect(() => {
-    if (!judgeBaseUrl || !auth) {
-      setDiscoveredModels([]);
-      return;
-    }
-    const timer = setTimeout(async () => {
-      setDiscovering(true);
-      try {
-        const result = await auth.client.discoverModels(judgeBaseUrl, judgeApiKey || undefined);
-        setDiscoveredModels(result.models || []);
-      } catch {
-        setDiscoveredModels([]);
-      } finally {
-        setDiscovering(false);
-      }
-    }, 500); // debounce
-    return () => clearTimeout(timer);
-  }, [judgeBaseUrl, judgeApiKey, auth]);
-
   if (!auth) return null;
 
   const providerOptions = providers.map((p) => ({ value: p.id, label: p.label }));
-  const suggestedOptions = (currentProvider?.suggested_models ?? []).map((m) => ({ value: m, label: m }));
   const keySet = judgeSettings?.key_set === true;
 
   function handleProviderChange(newProvider: string) {
     setJudgeProvider(newProvider);
     setJudgeSaved(false);
-    setFetchedProviderModels([]);
     const next = providers.find((p) => p.id === newProvider);
     setJudgeModel(next?.suggested_models[0] ?? '');
   }
@@ -103,19 +78,6 @@ export default function AuditJudgeSettings() {
       base_url: judgeBaseUrl.trim() || '',
       api_key: judgeApiKey || undefined,
     });
-  }
-
-  async function handleFetchModels() {
-    if (!auth || !isDiscovery) return;
-    setFetchingModels(true);
-    try {
-      const result = await auth.client.discoverModels('', judgeApiKey || undefined, judgeProvider);
-      setFetchedProviderModels(result.models || []);
-    } catch {
-      setFetchedProviderModels([]);
-    } finally {
-      setFetchingModels(false);
-    }
   }
 
   function handleSaveJudge() {
@@ -169,11 +131,6 @@ export default function AuditJudgeSettings() {
     judgeProvider === 'google' ? 'AIza…' :
     'sk-…';
 
-  const fetchedOptions = fetchedProviderModels.map((m) => ({
-    value: m.id,
-    label: m.id + (m.owned_by ? ` (${m.owned_by})` : ''),
-  }));
-
   return (
     <div className="space-y-5">
       {/* Audit Judge */}
@@ -197,69 +154,23 @@ export default function AuditJudgeSettings() {
             </div>
 
             <div className="mb-4">
-              <label className="text-sm text-text-tertiary block mb-1">
-                Model
-                {discovering && <span className="text-text-tertiary opacity-50 ml-2">discovering…</span>}
-                {fetchingModels && <span className="text-text-tertiary opacity-50 ml-2">fetching…</span>}
-              </label>
-              {judgeBaseUrl && discoveredModels.length > 0 ? (
-                <Select
-                  value={judgeModel}
-                  onValueChange={(v) => { setJudgeModel(v); setJudgeSaved(false); }}
-                  options={[
-                    { value: '', label: 'Select a model…' },
-                    ...discoveredModels.map((m) => ({ value: m.id, label: m.id + (m.owned_by ? ` (${m.owned_by})` : '') })),
-                  ]}
-                />
-              ) : judgeBaseUrl ? (
-                <Input
-                  type="text"
-                  value={judgeModel}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => { setJudgeModel(e.target.value); setJudgeSaved(false); }}
-                  placeholder="model-name"
-                  title="Model"
-                  className="font-mono"
-                />
-              ) : fetchedOptions.length > 0 ? (
-                <Select
-                  value={judgeModel}
-                  onValueChange={(v) => { setJudgeModel(v); setJudgeSaved(false); }}
-                  options={[{ value: '', label: 'Select a model…' }, ...fetchedOptions]}
-                />
-              ) : isOpenRouter || suggestedOptions.length === 0 ? (
-                <Input
-                  type="text"
-                  value={judgeModel}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => { setJudgeModel(e.target.value); setJudgeSaved(false); }}
-                  placeholder={isOpenRouter ? 'vendor/model-name' : 'model-name'}
-                  title="Model"
-                  className="font-mono"
-                />
-              ) : (
-                <Select
-                  value={judgeModel}
-                  onValueChange={(v) => { setJudgeModel(v); setJudgeSaved(false); }}
-                  options={suggestedOptions}
-                />
-              )}
-              {isDiscovery && !judgeBaseUrl && (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={handleFetchModels}
-                  disabled={fetchingModels}
-                  loading={fetchingModels}
-                  className="mt-1.5"
-                >
-                  Fetch models
-                </Button>
-              )}
-              <FieldError message={judgeErrors.model} />
+              <ModelPicker
+                providerId={judgeProvider}
+                provider={currentProvider}
+                model={judgeModel}
+                onModelChange={(v) => { setJudgeModel(v); setJudgeSaved(false); }}
+                baseUrl={judgeBaseUrl}
+                apiKey={judgeApiKey}
+                keyCommit={keyCommit}
+                discover={auth.client.discoverModels}
+                error={judgeErrors.model}
+              />
             </div>
 
             <div className="mb-4">
               <Input
                 type="password"
+                onBlur={onKeyBlur}
                 value={judgeApiKey}
                 onChange={(e: React.ChangeEvent<HTMLInputElement>) => { setJudgeApiKey(e.target.value); setJudgeSaved(false); if (judgeErrors.apiKey) setJudgeErrors((prev) => ({ ...prev, apiKey: undefined })); }}
                 placeholder={keyPlaceholder}

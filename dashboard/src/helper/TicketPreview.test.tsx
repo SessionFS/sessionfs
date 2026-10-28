@@ -153,6 +153,24 @@ describe('ticket references in helper answers', () => {
     expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
   });
 
+  it('re-checks a ticket that was not available when the preview opens again', async () => {
+    // A ticket the helper just created (or one shared since) must not stay
+    // "not available" from the cached 404 (GitHub #113 A3).
+    getTicketById
+      .mockRejectedValueOnce(new ApiError(404, '{"detail":"Ticket not found"}'))
+      .mockResolvedValueOnce(ticket);
+    const user = userEvent.setup();
+    renderAnswer();
+    await user.click(screen.getByRole('button', { name: `Preview ticket ${TK}` }));
+    expect(await screen.findByRole('heading', { name: 'Ticket not available' })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+
+    await user.click(screen.getByRole('button', { name: `Preview ticket ${TK}` }));
+    expect(await screen.findByRole('heading', { name: ticket.title })).toBeInTheDocument();
+    expect(getTicketById).toHaveBeenCalledTimes(2);
+  });
+
   it('offers a retry on other errors', async () => {
     // The hook retries a 5xx once before showing the error.
     getTicketById

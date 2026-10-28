@@ -2,9 +2,12 @@ import { createContext, useCallback, useContext, useMemo, useRef, useState, type
 
 import HelperPanel from './HelperPanel';
 
-/** The scope a helper turn is opened with (project page or session detail). */
+/** The scope a helper turn is opened with (project page, session detail, or a
+ *  project group picked in the drawer). */
 export interface HelperScope {
   project_id?: string;
+  /** A project group (exclusive with project_id and session_ids). */
+  group_id?: string;
   session_ids?: string[];
   /** Display name for the scope chip (project name / session title). Never sent to the API. */
   label?: string;

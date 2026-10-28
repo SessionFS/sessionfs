@@ -2114,6 +2114,12 @@ class Ticket(Base):
     # FK lives in migration 101. Nullable for persona/unassigned tickets.
     assigned_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
+    # Scheduling — a calendar due date (no time component) and a bounded
+    # Jira-duration estimate ("2d 4h", "30m"), both nullable and validated
+    # at the API layer. #113 ticket timeline.
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    estimated_effort: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
     # Reporter provenance (structured, not free string).
     created_by_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     created_by_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -2640,6 +2646,58 @@ class TicketEdit(Base):
     )
     lease_epoch: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
+    )
+
+
+class TicketEvent(Base):
+    """Append-only event log for a ticket (GitHub #113 ticket timeline).
+
+    One row per meaningful change: created, status_changed, assigned /
+    unassigned, field_edited, due_date_set / estimate_set, jira_linked /
+    jira_published / jira_unlinked / jira_pulled, approved / dismissed.
+
+    ``action`` is a fixed verb; ``field`` is only set for field-scoped
+    actions; ``before_value`` / ``after_value`` are JSON strings (a bound-
+    limited value or a ``{"changed": true, "length": N}`` stub for free-text
+    fields, so comment/description bodies never land here). ``project_id``
+    is denormalised so the list endpoint can read a ticket's timeline without
+    a join. The actor columns are plain provenance strings with no FK — a
+    deleted user still shows up as "a former user", mirroring TicketEdit.
+    """
+
+    __tablename__ = "ticket_events"
+    __table_args__ = (
+        # The timeline reads one ticket's events newest-first by ``seq``.
+        Index("idx_ticket_events_ticket_seq", "ticket_id", "seq"),
+        # SQLite would otherwise reuse a deleted max seq, and pagination needs
+        # ids that never repeat.
+        {"sqlite_autoincrement": True},
+    )
+
+    seq: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    # Public, string id for the API; kept unique so ``before`` can resolve it.
+    id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    ticket_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tickets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    project_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    field: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    # JSON-encoded prior + new values (or free-text length stubs).
+    before_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    after_value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    actor_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    actor_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_persona: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    actor_label: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 
@@ -3671,6 +3729,12 @@ class OrgTrackerConnection(Base):
     last_webhook_auth_failure_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Custom-field ids for sprint and epic-link (migration 103). Discovered from
+    # GET /rest/api/3/field on verify/save and overridable on the connection; NULL
+    # when the field does not exist on the site (epic-link in particular is absent
+    # on Jira Cloud). sprint_field_id is required to publish a sprint.
+    sprint_field_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    epic_link_field_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -3759,6 +3823,15 @@ class TicketTrackerLink(Base):
     last_pushed_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Durable timestamp of the first publish attempt whose remote outcome is
+    # uncertain (a timed-out create, or a dead worker's stale claim). Set once
+    # on the transition to ``unknown`` / the first stale-pending reclaim and
+    # cleared when the row becomes ``linked``; never overwritten while the row
+    # stays unknown/pending-adopt. ``_adoption_block`` refuses issues predating
+    # it, while ``last_pushed_at`` keeps ticking as the claim-staleness clock.
+    unknown_since: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     last_pushed_by_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     last_known_status: Mapped[str | None] = mapped_column(String(50), nullable=True)
     last_status_checked_at: Mapped[datetime | None] = mapped_column(
@@ -3785,6 +3858,20 @@ class TicketTrackerLink(Base):
     last_inbound_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Sprint cache (migration 103): refreshed on pull and inbound sprint
+    # changelogs without mutating the ticket. ``jira_sprint_state`` is one of
+    # active/future/closed or NULL when unknown.
+    jira_sprint_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    jira_sprint_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    jira_sprint_state: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Parent/epic issue key read from fields.parent.key (or the epic-link field);
+    # surfaced on link GET. Never written to the ticket's parent_ticket_id.
+    jira_parent_key: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    # The destination Jira project key the issue was published into (migration
+    # 103). Persisted at create/update so a timed-out create's adopt retry
+    # searches the SAME project by label — never a different project an
+    # override could drift to between publish attempts.
+    jira_project_key: Mapped[str | None] = mapped_column(String(50), nullable=True)
 
 
 class TrackerSyncEvent(Base):

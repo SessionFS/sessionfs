@@ -1,19 +1,58 @@
-import { useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { ApiError, type JiraPreview, type JiraSection, type Ticket } from '../../api/client';
-import { Alert, Badge, Button, Dialog, DialogFooter, DialogHeader, Dropdown, Input, Select, Textarea } from '../../components/ui';
+import {
+  ApiError,
+  type JiraLink,
+  type JiraLinkParent,
+  type JiraLinkSprint,
+  type JiraPreview,
+  type JiraSection,
+  type JiraSprint,
+  type JiraSprintList,
+  type Ticket,
+} from '../../api/client';
+import {
+  Alert,
+  Badge,
+  Button,
+  Combobox,
+  Dialog,
+  DialogFooter,
+  DialogHeader,
+  Dropdown,
+  Input,
+  Select,
+  Textarea,
+  type ComboboxOption,
+} from '../../components/ui';
 import {
   useJiraLink,
   useJiraPreview,
+  useJiraSprints,
   useLinkJiraIssue,
   usePullJira,
   usePublishJira,
   useTicketJiraTemplates,
   useUnlinkJira,
 } from '../../hooks/useJiraTickets';
+import { useTicketPreview } from '../../hooks/useTickets';
 import { useToast } from '../../hooks/useToast';
 import { errorMessage } from '../../utils/errorMessage';
-import { defaultJiraTemplateChoice, jiraErrorCode, parseJiraIssueInput, urlHost } from '../../utils/jira';
+import {
+  defaultJiraTemplateChoice,
+  jiraConnectionSettingsHref,
+  jiraErrorCode,
+  jiraPublishWarningMessage,
+  jiraSiblingIssueUrl,
+  jiraSprintDateLabel,
+  jiraSprintName,
+  jiraSprintStateLabel,
+  jiraSprintStateVariant,
+  parseJiraIssueInput,
+  sortJiraSprints,
+  urlHost,
+} from '../../utils/jira';
 import { safeHttpUrl } from '../../utils/url';
 import { useTicketViewer } from './viewer';
 
@@ -89,6 +128,8 @@ function friendlyError(err: unknown): string {
       return TEMPLATE_CHANGED_MESSAGE;
     case 'template_archived':
       return 'That template was archived; pick another one.';
+    case 'jira_sprint_field_unknown':
+      return 'This Jira connection has no sprint field yet; publish without a sprint, or ask an org admin to detect fields in the Jira connection settings.';
     default:
       return errorMessage(err, 'Could not load the Jira draft');
   }
@@ -144,6 +185,8 @@ interface JiraTicketSectionProps {
   isEnterprise: boolean;
   /** Project editor; only editors may link an existing issue. Defaults true. */
   canEdit?: boolean;
+  /** Open another ticket of this project in place (the Jira parent's ticket). */
+  onNavigateTicket?: (ticketId: string) => void;
 }
 
 export function JiraTicketSection({
@@ -153,6 +196,7 @@ export function JiraTicketSection({
   isProjectAdmin,
   isEnterprise,
   canEdit = true,
+  onNavigateTicket,
 }: JiraTicketSectionProps) {
   // 'overwrite' opens the publish dialog already committed to replacing an
   // issue that was linked from Jira (it asks before sending either way).
@@ -318,6 +362,14 @@ export function JiraTicketSection({
         )}
       </div>
 
+      {linked && link && (link.sprint || link.parent) && (
+        <JiraHierarchy
+          link={link}
+          ticket={ticket}
+          onNavigateTicket={onNavigateTicket}
+        />
+      )}
+
       {linkFormOpen && (
         <LinkExistingIssueForm
           id={linkFormId}
@@ -352,6 +404,7 @@ export function JiraTicketSection({
         <PromoteToJiraDialog
           projectId={projectId}
           ticketId={ticket.id}
+          orgId={orgId}
           overwrite={promoteMode === 'overwrite'}
           onClose={() => setPromoteMode(null)}
         />
@@ -376,6 +429,154 @@ export function JiraTicketSection({
         />
       )}
     </div>
+  );
+}
+
+const ticketLinkClass =
+  'font-mono text-brand hover:underline outline-none rounded-sm focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]';
+
+/**
+ * Where the linked issue sits in Jira: its sprint and its parent (or epic).
+ * Read from the cached link, so it shows only what Jira last reported; with
+ * neither, nothing renders.
+ */
+function JiraHierarchy({
+  link,
+  ticket,
+  onNavigateTicket,
+}: {
+  link: JiraLink;
+  ticket: Ticket;
+  onNavigateTicket?: (ticketId: string) => void;
+}) {
+  return (
+    <div role="group" aria-label="Jira planning" className="mt-2">
+      <dl className="flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs">
+        {link.sprint && <SprintItem sprint={link.sprint} />}
+        {link.parent && (
+          <ParentItem
+            parent={link.parent}
+            issueUrl={link.issue_url}
+            ticket={ticket}
+            onNavigateTicket={onNavigateTicket}
+          />
+        )}
+      </dl>
+    </div>
+  );
+}
+
+function SprintItem({ sprint }: { sprint: JiraLinkSprint }) {
+  const state = jiraSprintStateLabel(sprint.state);
+  return (
+    <div className="flex min-w-0 items-center gap-1.5">
+      <dt className="text-text-tertiary">Sprint</dt>
+      <dd className="flex min-w-0 items-center gap-1.5">
+        <span className="truncate text-text-primary">{jiraSprintName(sprint)}</span>
+        {state && <Badge size="sm" variant={jiraSprintStateVariant(sprint.state)} label={state} />}
+      </dd>
+    </div>
+  );
+}
+
+function ParentItem({
+  parent,
+  issueUrl,
+  ticket,
+  onNavigateTicket,
+}: {
+  parent: JiraLinkParent;
+  issueUrl: string;
+  ticket: Ticket;
+  onNavigateTicket?: (ticketId: string) => void;
+}) {
+  const href = jiraSiblingIssueUrl(issueUrl, parent.key);
+  const ticketId = parent.ticket_id;
+  // The ticket's own parent lives in this project: open it in place. Any
+  // other readable ticket may sit in another project, so look it up first.
+  const sameProject = !!ticketId && ticketId === ticket.parent_ticket_id && !!onNavigateTicket;
+  return (
+    <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+      <dt className="text-text-tertiary">Parent</dt>
+      <dd className="flex min-w-0 flex-wrap items-center gap-x-1.5">
+        {href ? (
+          <a
+            href={href}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={`inline-flex items-center gap-1 ${ticketLinkClass}`}
+          >
+            {parent.key}
+            <span className="sr-only"> in Jira (opens in a new tab)</span>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              <polyline points="15 3 21 3 21 9" />
+              <line x1="10" y1="14" x2="21" y2="3" />
+            </svg>
+          </a>
+        ) : (
+          <span className="font-mono text-text-primary">{parent.key}</span>
+        )}
+        {ticketId && sameProject && (
+          <>
+            <span aria-hidden="true" className="text-text-tertiary">·</span>
+            <button
+              type="button"
+              className={ticketLinkClass}
+              onClick={() => onNavigateTicket!(ticketId)}
+            >
+              {ticketId}
+              <span className="sr-only"> (open the parent ticket)</span>
+            </button>
+          </>
+        )}
+        {ticketId && !sameProject && (
+          <OtherProjectTicketLink
+            ticketId={ticketId}
+            currentProjectId={ticket.project_id}
+            onNavigateTicket={onNavigateTicket}
+          />
+        )}
+      </dd>
+    </div>
+  );
+}
+
+/** Link to a readable ticket that may live in another project. Renders
+ *  nothing until the lookup says where it is (or if it can't be read). */
+function OtherProjectTicketLink({
+  ticketId,
+  currentProjectId,
+  onNavigateTicket,
+}: {
+  ticketId: string;
+  currentProjectId: string;
+  onNavigateTicket?: (ticketId: string) => void;
+}) {
+  const preview = useTicketPreview(ticketId);
+  const projectId = preview.data?.project_id;
+  if (!projectId) return null;
+  if (projectId === currentProjectId && onNavigateTicket) {
+    // Turns out to be in this project after all: open it in place.
+    return (
+      <>
+        <span aria-hidden="true" className="text-text-tertiary">·</span>
+        <button type="button" className={ticketLinkClass} title={preview.data?.title} onClick={() => onNavigateTicket(ticketId)}>
+          {ticketId}
+          <span className="sr-only"> (open the parent ticket)</span>
+        </button>
+      </>
+    );
+  }
+  const to = `/projects/${encodeURIComponent(projectId)}?tab=work&sub=tickets&ticket=${encodeURIComponent(ticketId)}`;
+  return (
+    <>
+      <span aria-hidden="true" className="text-text-tertiary">·</span>
+      <Link to={to} className={ticketLinkClass} title={preview.data?.title}>
+        {ticketId}
+        <span className="sr-only"> (open the parent ticket)</span>
+      </Link>
+    </>
   );
 }
 
@@ -686,6 +887,8 @@ interface PromoteToJiraDialogProps {
   ticketId: string;
   /** Opened to replace an issue that was linked from Jira (explicit choice). */
   overwrite?: boolean;
+  /** The project's org, so settings links open on the right organization. */
+  orgId?: string | null;
   onClose: () => void;
 }
 
@@ -693,16 +896,23 @@ function templateChoiceLabel(t: { name: string; version: number | null }): strin
   return t.version != null ? `${t.name} v${t.version}` : t.name;
 }
 
-export function PromoteToJiraDialog({ projectId, ticketId, overwrite = false, onClose }: PromoteToJiraDialogProps) {
+export function PromoteToJiraDialog({ projectId, ticketId, overwrite = false, orgId, onClose }: PromoteToJiraDialogProps) {
   const choices = useTicketJiraTemplates(projectId, ticketId, true);
   const [picked, setPicked] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // The sprint lives here, not in the draft form: the form remounts whenever
+  // the draft is rebuilt (template change) and the choice must survive that.
+  const [sprint, setSprint] = useState('');
+  // A publish Jira accepted with warnings: the dialog stays open on them.
+  const [published, setPublished] = useState<JiraLink | null>(null);
   // Wait for the template list before the first preview so it renders with the
   // picker's starting choice. An older server without the list endpoint (or
   // an error, surfaced by the preview below) falls back to the inherited draft.
   const choicesSettled = choices.isSuccess || choices.isError;
   const selected = choices.data ? (picked ?? defaultJiraTemplateChoice(choices.data)) : undefined;
-  const preview = useJiraPreview(projectId, ticketId, choicesSettled, selected);
+  // Once published, the draft is gone (publish clears it); don't rebuild it.
+  const preview = useJiraPreview(projectId, ticketId, choicesSettled && !published, selected);
+  const sprints = useJiraSprints(projectId, !published);
   const queryClient = useQueryClient();
 
   const options = useMemo(() => {
@@ -736,6 +946,14 @@ export function PromoteToJiraDialog({ projectId, ticketId, overwrite = false, on
     void choices.refetch?.();
   }
 
+  if (published) {
+    return (
+      <Dialog open onClose={handleClose} titleId="jira-promote-heading" className="max-w-xl">
+        <PublishedWithWarnings result={published} onDone={handleClose} />
+      </Dialog>
+    );
+  }
+
   return (
     <Dialog open onClose={handleClose} titleId="jira-promote-heading" className="max-w-3xl">
       <DialogHeader titleId="jira-promote-heading">
@@ -761,6 +979,16 @@ export function PromoteToJiraDialog({ projectId, ticketId, overwrite = false, on
         </div>
       )}
 
+      {(preview.data || preview.isLoading) && (
+        <SprintPicker
+          query={sprints}
+          orgId={orgId}
+          value={sprint}
+          onChange={setSprint}
+          republish={!!preview.data?.existing}
+        />
+      )}
+
       {notice && (
         <Alert variant="warning" className="mb-3">
           {notice}
@@ -783,7 +1011,10 @@ export function PromoteToJiraDialog({ projectId, ticketId, overwrite = false, on
           preview={preview.data}
           isFetching={preview.isFetching}
           overwrite={overwrite}
+          sprintId={sprintIdFromChoice(sprint)}
+          orgId={orgId}
           onClose={handleClose}
+          onPublishedWithWarnings={setPublished}
           onTemplateChanged={handleTemplateChanged}
         />
       )}
@@ -797,7 +1028,10 @@ function JiraDraftForm({
   preview,
   isFetching,
   overwrite = false,
+  sprintId,
+  orgId,
   onClose,
+  onPublishedWithWarnings,
   onTemplateChanged,
 }: {
   projectId: string;
@@ -805,16 +1039,23 @@ function JiraDraftForm({
   preview: JiraPreview;
   isFetching?: boolean;
   overwrite?: boolean;
+  /** The picked sprint, or undefined to leave the sprint alone. */
+  sprintId?: number;
+  orgId?: string | null;
   onClose: () => void;
+  /** Jira took the publish but left something out: show why instead of closing. */
+  onPublishedWithWarnings?: (result: JiraLink) => void;
   onTemplateChanged?: () => void;
 }) {
   const publish = usePublishJira(projectId);
+  const queryClient = useQueryClient();
   const { addToast } = useToast();
   // The dialog is mounted once per open; `preview` is available on first
   // render, so the editable draft seeds directly from it (no effect).
   const [summary, setSummary] = useState(preview.summary);
   const [sections, setSections] = useState<JiraSection[]>(preview.sections);
   const [publishError, setPublishError] = useState<string | null>(null);
+  const [sprintFieldMissing, setSprintFieldMissing] = useState(false);
   // Publishing over an issue that was linked from Jira replaces its text, so
   // the draft says so and the publish carries overwrite_existing. A stale
   // view learns it from the server's 409 and asks here instead of sending.
@@ -838,8 +1079,9 @@ function JiraDraftForm({
 
   async function handlePublish() {
     setPublishError(null);
+    setSprintFieldMissing(false);
     try {
-      await publish.mutateAsync({
+      const result = await publish.mutateAsync({
         ticketId,
         body: {
           summary,
@@ -856,8 +1098,14 @@ function JiraDraftForm({
           template: preview.template.slug,
           template_version: preview.template.version,
           ...(overwriteNeeded ? { overwrite_existing: true } : {}),
+          ...(sprintId !== undefined ? { sprint_id: sprintId } : {}),
         },
       });
+      const warnings = result?.warnings ?? [];
+      if (warnings.length > 0 && onPublishedWithWarnings) {
+        onPublishedWithWarnings(result);
+        return;
+      }
       addToast('success', overwriteNeeded ? `Replaced ${existingKey} in Jira` : 'Published to Jira');
       onClose();
     } catch (err: unknown) {
@@ -870,6 +1118,15 @@ function JiraDraftForm({
         // user confirm it with the (now explicit) replace button.
         setOverwriteNeeded(true);
         scrollRef.current?.scrollTo?.({ top: 0 });
+        return;
+      }
+      if (jiraErrorCode(err) === 'jira_sprint_field_unknown') {
+        // Nothing was sent to Jira. Only an org admin can fix the connection;
+        // anyone can still publish without a sprint.
+        setSprintFieldMissing(true);
+        // The sprints list now knows too: refetch it so the picker gives way
+        // to its "no sprint field" note (and the choice is cleared).
+        void queryClient.invalidateQueries({ queryKey: ['jiraSprints', projectId] });
         return;
       }
       setPublishError(friendlyError(err));
@@ -971,6 +1228,17 @@ function JiraDraftForm({
         ))}
 
         {publishError && <Alert variant="danger">{publishError}</Alert>}
+        {sprintFieldMissing && (
+          <Alert variant="danger" title="Jira sprint field unknown">
+            This organization’s Jira connection doesn’t know the site’s sprint field, so the issue
+            can’t be put in a sprint. Clear the sprint to publish now, and ask an org admin to run{' '}
+            <strong>Detect fields</strong> in{' '}
+            <Link to={jiraConnectionSettingsHref(orgId)} className="text-brand underline">
+              Organization settings → Integrations → Jira → Connection
+            </Link>
+            .
+          </Alert>
+        )}
       </div>
 
       <DialogFooter>
@@ -984,6 +1252,174 @@ function JiraDraftForm({
           onClick={handlePublish}
         >
           {overwriteNeeded ? `Replace ${existingKey}` : preview.existing ? 'Publish update' : 'Publish'}
+        </Button>
+      </DialogFooter>
+    </>
+  );
+}
+
+/* ── Sprint picker + publish warnings ── */
+
+/** Only numeric sprint ids can be sent (`sprint_id` is an int on the server). */
+function sprintIdFromChoice(value: string): number | undefined {
+  if (!/^\d+$/.test(value)) return undefined;
+  const id = Number(value);
+  return Number.isSafeInteger(id) ? id : undefined;
+}
+
+function sprintDescription(s: JiraSprint): string | undefined {
+  const start = jiraSprintDateLabel(s.start_date);
+  const end = jiraSprintDateLabel(s.end_date);
+  const dates = start && end ? `${start} – ${end}` : start ? `from ${start}` : end ? `until ${end}` : null;
+  const parts = [s.board_name, dates].filter(Boolean);
+  return parts.length ? parts.join(' · ') : undefined;
+}
+
+/** Why the publish can't pick a sprint, for the `unavailable` codes the sprints list returns. */
+function sprintUnavailableMessage(code: string): string {
+  switch (code) {
+    case 'jira_software_not_available':
+      return 'Sprints aren’t available: this Jira site doesn’t have Jira Software boards for the mapped project, so the issue is published without a sprint.';
+    case 'jira_sprint_field_unknown':
+      return 'Sprints aren’t available: this organization’s Jira connection doesn’t know the site’s sprint field, so no sprint can be set. Ask an org admin to run Detect fields in the Jira connection settings.';
+    default:
+      return 'Sprints aren’t available for this project, so the issue is published without a sprint.';
+  }
+}
+
+const SPRINT_GROUP: Record<string, string> = { active: 'Active sprints', future: 'Future sprints' };
+
+/**
+ * Optional sprint for the publish. Fed by the project's sprints endpoint;
+ * a refusal or outage leaves just a quiet note, since a sprint is never
+ * required. Without Jira Software the site has no sprints at all, and the
+ * picker says so instead.
+ */
+function SprintPicker({
+  query,
+  orgId,
+  value,
+  onChange,
+  republish,
+}: {
+  query: { data?: JiraSprintList; isLoading: boolean; isError: boolean; error: unknown };
+  orgId?: string | null;
+  value: string;
+  onChange: (value: string) => void;
+  /** Updating an existing issue: no choice leaves its sprint as it is. */
+  republish: boolean;
+}) {
+  const options = useMemo<ComboboxOption[]>(() => {
+    const none: ComboboxOption = {
+      value: '',
+      label: republish ? 'Don’t change the sprint' : 'No sprint',
+      description: republish ? 'Leave the issue in the sprint it’s in now' : 'Publish to the backlog',
+    };
+    const list = sortJiraSprints(query.data?.sprints ?? []).filter((s) => sprintIdFromChoice(String(s.id)) !== undefined);
+    return [
+      none,
+      ...list.map((s) => {
+        const state = (s.state ?? '').toLowerCase();
+        return {
+          value: String(s.id),
+          label: jiraSprintName(s),
+          description: sprintDescription(s),
+          group: Object.hasOwn(SPRINT_GROUP, state) ? SPRINT_GROUP[state] : 'Other sprints',
+          searchText: `${s.name} ${s.board_name ?? ''}`,
+        };
+      }),
+    ];
+  }, [query.data, republish]);
+
+  // A sprint that left the list (closed, or the list failed) can't be sent.
+  useEffect(() => {
+    if (value && !options.some((o) => o.value === value)) onChange('');
+  }, [options, value, onChange]);
+
+  // Not an editor (or an older server): no picker, no noise.
+  if (query.isError && query.error instanceof ApiError && [403, 404, 405].includes(query.error.status)) {
+    return null;
+  }
+
+  if (query.data?.unavailable) {
+    return (
+      <div className="mb-3">
+        <p className="text-sm font-medium text-text-secondary mb-1">Sprint</p>
+        <p className="text-xs text-text-tertiary">
+          {sprintUnavailableMessage(query.data.unavailable)}
+          {query.data.unavailable === 'jira_sprint_field_unknown' && (
+            <>
+              {' '}
+              <Link to={jiraConnectionSettingsHref(orgId)} className="text-brand underline">
+                Open the Jira connection settings
+              </Link>
+            </>
+          )}
+        </p>
+      </div>
+    );
+  }
+
+  const sprintCount = options.length - 1;
+  return (
+    <div className="mb-3">
+      <Combobox
+        title="Sprint"
+        value={value}
+        onValueChange={(v) => onChange(v)}
+        options={options}
+        placeholder="No sprint"
+        searchPlaceholder="Search sprints or boards"
+        loading={query.isLoading}
+        noMatchesMessage={(q) => `No sprints match “${q}”`}
+        hint={
+          query.isError
+            ? 'Sprints couldn’t be loaded from Jira; you can still publish without one.'
+            : query.isLoading
+              ? 'Loading sprints…'
+              : sprintCount === 0
+                ? 'No active or future sprints on this project’s Jira boards.'
+                : 'Optional. Active sprints are listed first.'
+        }
+      />
+    </div>
+  );
+}
+
+/** Jira took the publish but left parts out; say what, one sentence each. */
+function PublishedWithWarnings({ result, onDone }: { result: JiraLink; onDone: () => void }) {
+  const warnings = result.warnings ?? [];
+  const href = safeHttpUrl(result.issue_url);
+  return (
+    <>
+      <DialogHeader titleId="jira-promote-heading">Published {result.issue_key}, with notes</DialogHeader>
+      <div className="space-y-3">
+        <p className="text-sm text-text-secondary">
+          The issue is in Jira
+          {href ? (
+            <>
+              {' '}
+              (
+              <a href={href} target="_blank" rel="noopener noreferrer" className="font-mono text-brand underline">
+                {result.issue_key}
+                <span className="sr-only"> (opens in a new tab)</span>
+              </a>
+              )
+            </>
+          ) : null}
+          , but Jira didn’t take everything:
+        </p>
+        <Alert variant="warning">
+          <ul className="list-disc space-y-1 pl-4">
+            {warnings.map((code) => (
+              <li key={code}>{jiraPublishWarningMessage(code)}</li>
+            ))}
+          </ul>
+        </Alert>
+      </div>
+      <DialogFooter>
+        <Button variant="primary" autoFocus onClick={onDone}>
+          Done
         </Button>
       </DialogFooter>
     </>

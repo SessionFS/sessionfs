@@ -2281,6 +2281,39 @@ class TestNewToolDispatch:
         assert captured["ack"] == {"cursor": 7, "persona": ""}
         assert result.get("acknowledged") is True
 
+    @pytest.mark.asyncio
+    async def test_dispatch_create_ticket_forwards_compact_estimate(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        """create_ticket wraps POST /tickets without local estimate
+        validation, so the compact ``2d4h`` form passes through to the
+        server (which canonicalizes it)."""
+        result = await mcp_server._handle_create_ticket({
+            "title": "Fix flaky test", "estimated_effort": "2d4h",
+        })
+        assert captured["method"] == "POST"
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_test/tickets"
+        )
+        assert captured["json"]["estimated_effort"] == "2d4h"
+        assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_dispatch_update_ticket_forwards_compact_estimate(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        """update_ticket wraps PUT /tickets/{id} without local estimate
+        validation, so the compact ``2d4h`` form is forwarded unchanged."""
+        result = await mcp_server._handle_update_ticket({
+            "ticket_id": "tk_x", "estimated_effort": "2d4h",
+        })
+        assert captured["method"] == "PUT"
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_test/tickets/tk_x"
+        )
+        assert captured["json"]["estimated_effort"] == "2d4h"
+        assert "error" not in result
+
 
 # ---------------------------------------------------------------------------
 # v0.10.2 — ticket approval + local session ops
@@ -4260,6 +4293,28 @@ class TestAskSessionHelper:
             "conversation_id": "hc_1",
             "scope": {"project_id": "proj_1", "session_ids": ["ses_1", "ses_2"]},
         }
+
+    @pytest.mark.asyncio
+    async def test_forwards_group_id_into_scope(self, fake_client):
+        fake_client["response"] = lambda: type(
+            "R", (), {"status_code": 200, "text": "{}", "json": lambda self: {}},
+        )()
+        await mcp_server._handle_ask_session_helper({
+            "question": "summarize",
+            "group_id": "pg_1",
+        })
+        assert fake_client["json"] == {
+            "message": "summarize",
+            "stream": False,
+            "scope": {"group_id": "pg_1"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_rejects_non_string_group_id(self, fake_client):
+        result = await mcp_server._handle_ask_session_helper(
+            {"question": "hi", "group_id": 42},
+        )
+        assert result == {"error": "group_id must be a string."}
 
     @pytest.mark.asyncio
     async def test_requires_question(self, fake_client):

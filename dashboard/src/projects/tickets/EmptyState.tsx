@@ -5,11 +5,21 @@ export function EmptyState({
   kindFilter,
   statusFilter,
   assignedToMe = false,
+  overdue = false,
 }: {
   kindFilter: string;
   statusFilter: string;
   assignedToMe?: boolean;
+  overdue?: boolean;
 }) {
+  if (overdue) {
+    return (
+      <div className="border border-border rounded-lg p-6 text-center text-text-tertiary space-y-1">
+        <p className="font-medium text-md text-text-secondary">Nothing overdue{assignedToMe ? ' for you' : ''}.</p>
+        <p className="text-sm">Tickets past their due date that aren't done, closed or cancelled show up here.</p>
+      </div>
+    );
+  }
   if (assignedToMe) {
     const scope = [
       kindFilter ? `${kindFilter === 'issue' ? 'Issues' : 'Tasks'}` : 'tickets',

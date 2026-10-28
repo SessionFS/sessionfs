@@ -173,6 +173,10 @@ sfs project group compile SLUG
 sfs project group context SLUG
 ```
 
+### Ask the session helper about a group
+
+On the Enterprise plan, the [session helper](/session-helper/#scope-a-question-to-a-project-group) can answer a question across a whole group (v0.28.0): pick the group in the drawer's scope menu, run `sfs helper ask --group SLUG "..."`, or pass `group_id` to the `ask_session_helper` MCP tool. The answer only draws on the group's member projects you can read. When the group has a compiled overview and you can read every project behind it, that overview goes into the prompt too, redacted with your DLP policy.
+
 ## Lifecycle
 
 - **Soft delete** frees a group's slug for reuse but keeps the row for audit continuity.

@@ -158,6 +158,18 @@ class ServiceKeyResponse(BaseModel):
     last_used_at: datetime | None
     last_used_ip: str | None
     is_active: bool
+    # Tier-coupling status for platform-admin-minted scopes (the key stops
+    # working when its owner/minter is no longer an active platform admin).
+    # None when the key has no tier-coupled scope; True/False otherwise.
+    coupling_ok: bool | None = None
+    coupling_reason: str | None = None
+
+
+class ServiceKeyWarning(BaseModel):
+    """A non-fatal warning attached to a create/rotate response."""
+
+    code: str
+    message: str
 
 
 class ServiceKeyCreateResponse(ServiceKeyResponse):
@@ -165,6 +177,7 @@ class ServiceKeyCreateResponse(ServiceKeyResponse):
     Save it — subsequent reads only return key_prefix."""
 
     key: str  # raw sk_sfs_... — returned exactly once
+    warnings: list[ServiceKeyWarning] = Field(default_factory=list)
 
 
 class RevokeKeyRequest(BaseModel):

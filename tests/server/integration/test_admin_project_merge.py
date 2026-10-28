@@ -16,7 +16,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sessionfs.server.db.models import AdminAction, Project, Session
+from sessionfs.server.db.models import AdminAction, Project, Session, Ticket, TicketEvent
 from tests.server.integration.test_admin_overrides import _hdrs, _org, _project, _user
 
 pytestmark = pytest.mark.asyncio
@@ -75,6 +75,46 @@ async def test_admin_merges_projects_they_do_not_own(
         )
     ).scalars().all()
     assert moved == [target.id]
+
+
+async def test_admin_merge_reassigns_ticket_events(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    admin, admin_key = await _user(db_session, "ops", tier="admin")
+    alice, _ = await _user(db_session, "alice")
+    bob, _ = await _user(db_session, "bob")
+    source = await _project(db_session, alice)
+    target = await _project(db_session, bob)
+    ticket = Ticket(
+        id=f"tk_{uuid.uuid4().hex[:16]}",
+        project_id=source.id,
+        title="t",
+        created_by_user_id=alice.id,
+    )
+    db_session.add(ticket)
+    await db_session.flush()
+    db_session.add(TicketEvent(
+        id=f"evt_{uuid.uuid4().hex[:16]}",
+        ticket_id=ticket.id,
+        project_id=source.id,
+        action="created",
+        actor_type="user",
+    ))
+    await db_session.commit()
+
+    done = await client.post(_url(target.id, source.id),
+                             json={"reason": "dup twins", "dry_run": False},
+                             headers=_hdrs(admin_key))
+    assert done.status_code == 200, done.text
+
+    assert (await db_session.execute(
+        select(Ticket.project_id).where(Ticket.id == ticket.id)
+        .execution_options(populate_existing=True)
+    )).scalar_one() == target.id
+    assert (await db_session.execute(
+        select(TicketEvent.project_id).where(TicketEvent.ticket_id == ticket.id)
+        .execution_options(populate_existing=True)
+    )).scalar_one() == target.id
 
 
 async def _actions_for(db: AsyncSession, project_id: str) -> list[AdminAction]:

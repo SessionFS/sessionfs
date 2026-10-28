@@ -1147,6 +1147,8 @@ _TOOLS = [
                     "type": "string",
                     "description": "Optional parent Issue (only valid when kind='task'). Parent must be kind='issue' in this same project.",
                 },
+                "due_date": {"type": "string", "description": "Optional due date as YYYY-MM-DD."},
+                "estimated_effort": {"type": "string", "description": "Optional Jira-duration estimate like '3d', '2d 4h' or '30m'."},
                 "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["title"],
@@ -1445,7 +1447,8 @@ _TOOLS = [
         description=(
             "Patch mutable ticket fields (title, description, "
             "acceptance_criteria, context_refs, file_refs, depends_on, "
-            "priority, assigned_user). Only fields the caller passes are mutated — "
+            "priority, assigned_user, due_date, estimated_effort). Only "
+            "fields the caller passes are mutated — "
             "omitted fields are left untouched.\n\n"
             "SIDE EFFECT: every successful update auto-posts a "
             "`system`-authored diff comment on the ticket AND writes one "
@@ -1498,6 +1501,8 @@ _TOOLS = [
                     "type": "array",
                     "items": {"type": "string"},
                 },
+                "due_date": {"type": ["string", "null"], "description": "Due date as YYYY-MM-DD (null to clear)."},
+                "estimated_effort": {"type": ["string", "null"], "description": "Jira-duration estimate like '3d' (null to clear)."},
                 "lease_epoch": {
                     "type": "integer",
                     "description": "Optional fence — read from get_ticket; 409 if stale. Not a mutation by itself.",
@@ -2596,6 +2601,14 @@ _TOOLS = [
                     "description": (
                         "Optional project ID (proj_...) to scope the question to. "
                         "The helper will only read sessions within this project."
+                    ),
+                },
+                "group_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional project group ID (pg_...) to scope the question to. "
+                        "The helper will only read the group's member projects that you "
+                        "can already read. Mutually exclusive with project and session_ids."
                     ),
                 },
                 "session_ids": {
@@ -4140,7 +4153,9 @@ async def _handle_ask_session_helper(args: dict) -> dict:
     plus citations. Unlike most project-scoped tools this endpoint is
     user-scoped (not project-scoped), so it authenticates with the caller's
     user key directly and never resolves a git remote. The optional `project`
-    argument is a project ID (proj_...) forwarded as `scope.project_id`.
+    argument is a project ID (proj_...) forwarded as `scope.project_id`; the
+    optional `group_id` argument is a project group ID (pg_...) forwarded as
+    `scope.group_id`.
     """
     # MCP clients can send arbitrary JSON, so validate types up front: a
     # wrong-typed argument must return a clean error instead of crashing the
@@ -4162,6 +4177,10 @@ async def _handle_ask_session_helper(args: dict) -> dict:
     project_id = args.get("project")
     if project_id is not None and not isinstance(project_id, str):
         return {"error": "project must be a string."}
+
+    group_id = args.get("group_id")
+    if group_id is not None and not isinstance(group_id, str):
+        return {"error": "group_id must be a string."}
 
     conversation_id = args.get("conversation_id")
     if conversation_id is not None and not isinstance(conversation_id, str):
@@ -4190,6 +4209,8 @@ async def _handle_ask_session_helper(args: dict) -> dict:
     scope: dict[str, Any] = {}
     if project_id:
         scope["project_id"] = project_id
+    if group_id:
+        scope["group_id"] = group_id
     if ids:
         scope["session_ids"] = ids
 
@@ -5774,7 +5795,7 @@ async def _handle_create_ticket(args: dict) -> dict:
     for key in (
         "description", "assigned_to", "assigned_user", "priority", "source",
         "created_by_session_id", "created_by_persona",
-        "kind", "parent_ticket_id",
+        "kind", "parent_ticket_id", "due_date", "estimated_effort",
     ):
         val = args.get(key)
         if isinstance(val, str) and val.strip():
@@ -6564,8 +6585,13 @@ _UPDATE_TICKET_MUTABLE_FIELDS = (
     "file_refs",
     "depends_on",
     "assigned_user",
+    "due_date",
+    "estimated_effort",
 )
 _UPDATE_TICKET_FIELDS = _UPDATE_TICKET_MUTABLE_FIELDS + ("lease_epoch",)
+# Fields whose explicit null clears the value (rather than being dropped as
+# omitted-as-no-op): direct assignment and the scheduling fields (GitHub #113).
+_UPDATE_TICKET_NULL_CLEARS = {"assigned_user", "due_date", "estimated_effort"}
 
 
 async def _handle_update_ticket(args: dict) -> dict:
@@ -6586,11 +6612,11 @@ async def _handle_update_ticket(args: dict) -> dict:
             continue
         val = args[key]
         if val is None:
-            # An explicit null on `assigned_user` unassigns the person
-            # (GitHub #96). Every other field keeps omitted-as-no-op
-            # semantics, so its null is dropped rather than sent as a
-            # clearing value.
-            if key == "assigned_user":
+            # An explicit null clears `assigned_user` (unassign, GitHub #96)
+            # and the scheduling fields (clear due date / estimate, GitHub
+            # #113). Every other field keeps omitted-as-no-op semantics, so
+            # its null is dropped rather than sent as a clearing value.
+            if key in _UPDATE_TICKET_NULL_CLEARS:
                 body[key] = None
             continue
         body[key] = val
@@ -6604,7 +6630,8 @@ async def _handle_update_ticket(args: dict) -> dict:
             "error": (
                 "At least one mutable field is required for update_ticket "
                 "(title, description, priority, acceptance_criteria, "
-                "context_refs, file_refs, depends_on, assigned_user). "
+                "context_refs, file_refs, depends_on, assigned_user, "
+                "due_date, estimated_effort). "
                 "lease_epoch alone is a fence, not a mutation; use "
                 "assign_persona to change persona assignment."
             )

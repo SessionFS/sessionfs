@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import secrets
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal
@@ -497,7 +498,68 @@ def _parse_model_list(raw: bytes) -> list[dict]:
     return models
 
 
-async def _discover_models(base_url: str, api_key: str, user: User, db: AsyncSession) -> dict:
+SavedKeyLoader = Callable[[str | None, str | None], Awaitable[str]]
+"""``loader(provider, base_url)`` -> the stored key when it is bound to exactly
+that registry provider (``base_url`` None) or custom endpoint, else ``""``."""
+
+
+def judge_key_loader(user: User, db: AsyncSession) -> SavedKeyLoader:
+    """Saved-key loader for the caller's personal judge settings."""
+
+    async def load(provider: str | None, base_url: str | None) -> str:
+        return await _saved_judge_api_key(user, db, provider=provider, base_url=base_url)
+
+    return load
+
+
+BeforeFetch = Callable[[], Awaitable[None]]
+
+
+async def _noop() -> None:
+    return None
+
+
+def discovery_before_fetch(user: User, db: AsyncSession) -> BeforeFetch:
+    """What a discovery route runs right before its outbound /models request.
+
+    Takes the per-user discovery slot there (so a request refused with
+    400/422, or answered from the provider's suggested models, costs
+    nothing): 429 ``models_rate_limited`` past the limit, which matches the
+    connection tests in size but has its own bucket. Then releases the
+    read transaction so the outbound call doesn't hold a pooled connection.
+    """
+    from sessionfs.server.services import llm_connection
+
+    async def run() -> None:
+        if not llm_connection.take_discovery_slot(user.id):
+            raise HTTPException(status_code=429, detail=llm_connection.DISCOVERY_RATE_LIMITED)
+        await release_transaction(db)
+
+    return run
+
+
+async def discover_models_for_request(
+    body: DiscoverModelsRequest,
+    load_saved_key: SavedKeyLoader,
+    before_fetch: BeforeFetch = _noop,
+) -> dict:
+    """Shared model discovery for the personal and org key forms.
+
+    A registry ``provider`` id routes discovery to that provider's fixed
+    /models endpoint; otherwise the custom ``base_url`` is SSRF-checked and
+    queried. Without ``api_key`` the stored key is used only when
+    ``load_saved_key`` says it is bound to that same provider/endpoint.
+    ``before_fetch`` runs once the stored key is resolved and before any
+    outbound request (routes release their DB transaction there).
+    """
+    if body.provider:
+        return await _discover_models_from_provider(body.provider, body.api_key, load_saved_key, before_fetch)
+    return await _discover_models(body.base_url, body.api_key, load_saved_key, before_fetch)
+
+
+async def _discover_models(
+    base_url: str, api_key: str, load_saved_key: SavedKeyLoader, before_fetch: BeforeFetch = _noop
+) -> dict:
     from sessionfs.server.llm_url_guard import guard_llm_base_url
 
     checked = await _check_llm_base_url_or_400(base_url)
@@ -505,7 +567,8 @@ async def _discover_models(base_url: str, api_key: str, user: User, db: AsyncSes
         raise HTTPException(400, "base_url is required")
 
     if not api_key:
-        api_key = await _saved_judge_api_key(user, db, base_url=checked)
+        api_key = await load_saved_key(None, checked)
+    await before_fetch()
 
     url = checked
     if not url.endswith("/models"):
@@ -545,7 +608,7 @@ async def _discover_models(base_url: str, api_key: str, user: User, db: AsyncSes
 
 
 async def _discover_models_from_provider(
-    provider: str, api_key: str, user: User, db: AsyncSession
+    provider: str, api_key: str, load_saved_key: SavedKeyLoader, before_fetch: BeforeFetch = _noop
 ) -> dict:
     """List models for a registry provider using its fixed /models endpoint.
 
@@ -572,7 +635,8 @@ async def _discover_models_from_provider(
 
     url = profile.base_url.rstrip("/") + profile.models_path
     if not api_key:
-        api_key = await _saved_judge_api_key(user, db, provider=profile.id)
+        api_key = await load_saved_key(profile.id, None)
+    await before_fetch()
 
     headers: dict[str, str] = {}
     if api_key:
@@ -612,7 +676,9 @@ async def discover_models(
             400,
             "Send the API key in the body of POST /api/v1/settings/judge/models, not in the query string.",
         )
-    return await _discover_models(base_url, "", user, db)
+    return await _discover_models(
+        base_url, "", judge_key_loader(user, db), discovery_before_fetch(user, db)
+    )
 
 
 @router.post("/judge/models")
@@ -627,9 +693,11 @@ async def discover_models_post(
     A registry ``provider`` id routes discovery to that provider's fixed
     /models endpoint; otherwise a custom ``base_url`` is queried as before.
     """
-    if body.provider:
-        return await _discover_models_from_provider(body.provider, body.api_key, user, db)
-    return await _discover_models(body.base_url, body.api_key, user, db)
+    # Read-only route: the slot is taken and the transaction released only
+    # right before the outbound request (up to 15 s).
+    return await discover_models_for_request(
+        body, judge_key_loader(user, db), discovery_before_fetch(user, db)
+    )
 
 
 # --- GitHub installation settings ---

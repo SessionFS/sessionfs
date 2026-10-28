@@ -121,6 +121,7 @@ Ask the session helper a question over sessions and project knowledge you can al
 |-----------|------|----------|-------------|
 | `question` | string | yes | The question to ask over your sessions and project knowledge |
 | `project` | string | no | Project ID (`proj_...`) to scope the question to |
+| `group_id` | string | no | Project group ID (`pg_...`) to scope the question to. The helper reads only the group's member projects that you can already read. Use at most one of `project`, `group_id` and `session_ids` (v0.28.0) |
 | `session_ids` | array | no | Session IDs (`ses_...`) to scope the question to |
 | `conversation_id` | string | no | Conversation ID (`hc_...`) to continue an existing helper thread |
 
@@ -435,11 +436,13 @@ Open a new ticket. Agent-created tickets require ≥1 acceptance criterion + ≥
 | `depends_on` | array | no | List of ticket IDs |
 | `persona` | string | no | Assign a persona |
 | `assigned_user` | string | no | Assign directly to a teammate by email or user id; they get a "Your turn" notification. Can't be combined with a persona (v0.27.0) |
+| `due_date` | string | no | Due date as `YYYY-MM-DD` (v0.28.0) |
+| `estimated_effort` | string | no | Estimate in Jira duration syntax, such as `3d`, `2d 4h` or `30m` (v0.28.0) |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 
 #### `update_ticket`
 
-Change a ticket's title, description, acceptance criteria, context or file references, dependencies or priority. Only the fields you pass change. Each update posts a diff comment on the ticket and records one audit row per changed field. Status changes go through the lifecycle tools and persona assignment through `assign_persona`; `assigned_user` assigns the ticket directly to a teammate. Only the ticket's creator or a project admin can edit it.
+Change a ticket's title, description, acceptance criteria, context or file references, dependencies, priority, due date or estimate. Only the fields you pass change. Each update posts a diff comment on the ticket and records one audit row per changed field. Status changes go through the lifecycle tools and persona assignment through `assign_persona`; `assigned_user` assigns the ticket directly to a teammate. Only the ticket's creator or a project admin can edit it.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -451,6 +454,8 @@ Change a ticket's title, description, acceptance criteria, context or file refer
 | `context_refs` / `file_refs` | array | no | Replacement reference lists |
 | `depends_on` | array | no | Replacement list of ticket IDs |
 | `assigned_user` | string or null | no | Teammate email or user id for direct-to-person assignment; `null` unassigns the person (v0.27.0) |
+| `due_date` | string or null | no | Due date as `YYYY-MM-DD`; `null` clears it (v0.28.0) |
+| `estimated_effort` | string or null | no | Jira-duration estimate such as `2d 4h`; `null` clears it (v0.28.0) |
 | `lease_epoch` | number | no | Optional fence from `get_ticket`; returns 409 if the ticket has moved on |
 
 #### `approve_ticket`

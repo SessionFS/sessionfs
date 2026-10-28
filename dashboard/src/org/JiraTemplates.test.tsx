@@ -134,7 +134,7 @@ describe('TemplateEditorDialog', () => {
     // Rewrite: the whole vocabulary.
     expect(within(section).getByRole('checkbox', { name: 'Title' })).toBeInTheDocument();
 
-    await user.click(within(section).getByRole('button', { name: /Mode/ }));
+    await user.click(within(section).getByRole('button', { name: /^Mode$/ }));
     await user.click(screen.getByRole('option', { name: 'Verbatim' }));
     expect(within(section).getAllByRole('checkbox')).toHaveLength(3);
     for (const name of ['Acceptance criteria', 'Completion notes', 'Linked sessions']) {
@@ -200,7 +200,7 @@ describe('TemplateEditorDialog', () => {
     const user = userEvent.setup();
 
     await user.click(await screen.findByRole('button', { name: /Mapped project/ }));
-    await user.click(await screen.findByRole('option', { name: 'Alpha' }));
+    await user.click(await screen.findByRole('option', { name: /^Alpha/ }));
     await user.click(screen.getByRole('button', { name: /Ticket/ }));
     await user.click(await screen.findByRole('option', { name: 'Fix login (tk_1)' }));
     await user.click(screen.getByRole('button', { name: 'Preview' }));
@@ -215,5 +215,122 @@ describe('TemplateEditorDialog', () => {
     const region = screen.getByRole('region', { name: 'Template preview' });
     expect(await within(region).findByText('Fix login', { selector: 'p.whitespace-pre-wrap' })).toBeInTheDocument();
     expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('copies sections from a built-in template', async () => {
+    client.listJiraTemplates.mockResolvedValue([
+      template({
+        slug: 'agile',
+        name: 'Agile Standard',
+        version: null,
+        builtin: true,
+        sections: [
+          { key: 'story', heading: 'User Story', mode: 'rewrite', source_fields: ['title', 'description'], guidance: null },
+          { key: 'ac', heading: 'Acceptance Criteria', mode: 'verbatim', source_fields: ['acceptance_criteria'], guidance: null },
+          { key: 'notes', heading: 'Notes', mode: 'verbatim', source_fields: ['completion_notes'], guidance: null },
+        ],
+      }),
+      template(),
+    ]);
+    editor();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Copy sections from a template' }));
+    expect(screen.getByRole('option', { name: 'Design Lite (2 sections)' })).toBeInTheDocument();
+    await user.click(screen.getByRole('option', { name: 'Built-in · Agile Standard (3 sections)' }));
+
+    const groups = screen.getAllByRole('group', { name: /Section \d/ });
+    expect(groups).toHaveLength(3);
+    expect(within(groups[0]).getByDisplayValue('User Story')).toBeInTheDocument();
+    expect(within(groups[0]).getByRole('checkbox', { name: 'Description' })).toBeChecked();
+    expect(screen.getByRole('status')).toHaveTextContent('Sections copied from Agile Standard');
+  });
+
+  it('explains mode and each source field', async () => {
+    const { container } = editor();
+    const user = userEvent.setup();
+    const section = screen.getByRole('group', { name: 'Section 1' });
+    const modeInfo = within(section).getByRole('button', { name: 'About Mode' });
+    expect(modeInfo).toHaveAccessibleDescription(/every paragraph it writes must cite the ticket field/);
+    expect(within(section).getByRole('button', { name: 'About source fields' })).toHaveAccessibleDescription(
+      /in the order you ticked them/,
+    );
+    expect(within(section).getByRole('button', { name: 'About Linked sessions' })).toBeInTheDocument();
+    // Tap/click shows the bubble too (no hover on touch screens).
+    await user.click(modeInfo);
+    expect(await screen.findByRole('tooltip')).toHaveTextContent(/Verbatim: copied from the ticket exactly/);
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('searches mapped projects in the preview picker', async () => {
+    client.listJiraMappings.mockResolvedValue([
+      { project_id: 'proj_a', jira_project_key: 'KEY', issue_type: 'Story', template: null, done_status_name: null },
+      { project_id: 'proj_b', jira_project_key: 'BETA', issue_type: 'Story', template: null, done_status_name: null },
+    ]);
+    client.listProjects.mockResolvedValue([
+      { id: 'proj_a', name: 'Alpha', git_remote_normalized: 'x', context_document: '', owner_id: 'u', org_id: 'org_x', created_at: '', updated_at: '' },
+      { id: 'proj_b', name: 'Beta', git_remote_normalized: 'y', context_document: '', owner_id: 'u', org_id: 'org_x', created_at: '', updated_at: '' },
+    ]);
+    editor(template());
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: /Mapped project/ }));
+    await screen.findByRole('option', { name: /^Beta/ });
+    await user.type(screen.getByRole('combobox'), 'bet');
+    expect(screen.queryByRole('option', { name: /^Alpha/ })).toBeNull();
+    await user.click(screen.getByRole('option', { name: /^Beta/ }));
+    expect(screen.getByRole('button', { name: /Mapped project/ })).toHaveTextContent('Beta');
+  });
+
+  it('asks before copying over edited sections; Escape closes only the confirm', async () => {
+    editor(template());
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Copy sections from a template' }));
+    await user.click(screen.getByRole('option', { name: /Agile Standard/ }));
+
+    const confirm = screen.getByRole('dialog', { name: 'Replace your sections?' });
+    expect(confirm).toHaveAttribute('aria-modal', 'true');
+    // Only the topmost dialog is modal; the editor under it is inert and
+    // hidden from assistive tech until the confirm closes.
+    expect(screen.queryByRole('dialog', { name: 'Edit template' })).toBeNull();
+    const editorPanel = screen.getByRole('dialog', { name: 'Edit template', hidden: true });
+    expect(editorPanel).not.toHaveAttribute('aria-modal');
+    const editorRoot = editorPanel.parentElement!;
+    expect(editorRoot).toHaveAttribute('aria-hidden', 'true');
+    expect(editorRoot.hasAttribute('inert')).toBe(true);
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('dialog', { name: 'Replace your sections?' })).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'Edit template' })).toHaveAttribute('aria-modal', 'true');
+    expect(editorRoot.hasAttribute('inert')).toBe(false);
+    expect(editorRoot).not.toHaveAttribute('aria-hidden');
+    // Focus goes back to the trigger the confirm came from.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Copy sections from a template' })).toHaveFocus(),
+    );
+    expect(screen.getAllByRole('group', { name: /Section \d/ })).toHaveLength(2);
+    expect(screen.getByDisplayValue('Summary')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Copy sections from a template' }));
+    await user.click(screen.getByRole('option', { name: /Agile Standard/ }));
+    await user.click(screen.getByRole('button', { name: 'Replace sections' }));
+    expect(screen.getByRole('status')).toHaveTextContent('Sections copied from Agile Standard');
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Copy sections from a template' })).toHaveFocus(),
+    );
+  });
+
+  it('closes an info tooltip on Escape without closing the editor', async () => {
+    const onClose = vi.fn();
+    renderNode(
+      <TemplateEditorDialog orgId="org_x" existingSlugs={new Set()} onClose={onClose} onSaved={vi.fn()} />,
+    );
+    const user = userEvent.setup();
+    await user.click(screen.getAllByRole('button', { name: 'About Mode' })[0]);
+    expect(await screen.findByRole('tooltip')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('tooltip')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

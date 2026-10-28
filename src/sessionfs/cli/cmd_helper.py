@@ -150,6 +150,7 @@ def _render_usage(result: dict, *, conversation_id: str | None = None) -> None:
 def _build_payload(
     question: str,
     project: str | None,
+    group: str | None,
     sessions: list[str] | None,
     conversation: str | None,
 ) -> dict:
@@ -159,11 +160,53 @@ def _build_payload(
     scope: dict[str, Any] = {}
     if project:
         scope["project_id"] = project
+    if group:
+        scope["group_id"] = group
     if sessions:
         scope["session_ids"] = [s for s in sessions if s]
     if scope:
         payload["scope"] = scope
     return payload
+
+
+async def _resolve_group_ref(api_url: str, api_key: str, group: str) -> str:
+    """Resolve a ``--group`` value to a group id.
+
+    A value that already looks like a group id (``pg_…``) is passed through —
+    the API validates existence and visibility.  Anything else is treated as a
+    slug and matched against the caller's own groups (``GET /me/groups``); a
+    slug that matches more than one group across orgs is ambiguous and is
+    refused with the matching ids listed.
+    """
+    if group.startswith("pg_"):
+        return group
+    status, body, _ = await _api_request("GET", "/api/v1/me/groups", api_url, api_key)
+    if status >= 400:
+        raise _GroupLookupError(status, format_api_error(body, status))
+    if not isinstance(body, list):
+        raise _GroupLookupError(500, "Unexpected API response while listing groups.")
+    matches = [g for g in body if isinstance(g, dict) and g.get("slug") == group]
+    if not matches:
+        raise _GroupLookupError(
+            404,
+            f"No project group found with slug {group!r}. Pass the group id (pg_…) instead.",
+        )
+    if len(matches) > 1:
+        ids = ", ".join(str(g.get("id", "")) for g in matches)
+        raise _GroupLookupError(
+            422,
+            f"Slug {group!r} matches more than one group ({ids}). Pass the group id (pg_…).",
+        )
+    return str(matches[0]["id"])
+
+
+class _GroupLookupError(Exception):
+    """A group slug/id could not be resolved; carries an (status, message) pair."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
 
 
 async def _iter_sse_events(client: Any, url: str, headers: dict, payload: dict):
@@ -346,6 +389,12 @@ def helper_ask(
     project: str | None = typer.Option(
         None, "--project", "-P", help="Project ID (proj_...) to scope the question to."
     ),
+    group: str | None = typer.Option(
+        None,
+        "--group",
+        "-g",
+        help="Project group id (pg_...) or slug to scope the question to.",
+    ),
     session: list[str] | None = typer.Option(
         None, "--session", "-s", help="Session ID (ses_...) to scope to. Repeatable."
     ),
@@ -365,8 +414,24 @@ def helper_ask(
         err_console.print("[red]Please provide a non-empty question.[/red]")
         raise typer.Exit(1)
 
+    # A turn accepts exactly one of project / group / sessions; enforce it here
+    # too so a mixed invocation fails before any request is made.
+    chosen = sum(1 for v in (project, group, session) if v)
+    if chosen > 1:
+        err_console.print(
+            "[red]Pass at most one of --project, --group or --session.[/red]"
+        )
+        raise typer.Exit(1)
+
     api_url, api_key = _get_api_config()
-    payload = _build_payload(question, project, session, conversation)
+    if group is not None:
+        try:
+            group = asyncio.run(_resolve_group_ref(api_url, api_key, group))
+        except _GroupLookupError as exc:
+            err_console.print(f"[red]{markup_escape(exc.message)}[/red]")
+            raise typer.Exit(1) from exc
+
+    payload = _build_payload(question, project, group, session, conversation)
     stream = not (no_stream or json_output)
 
     if stream:

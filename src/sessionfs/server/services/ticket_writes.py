@@ -17,7 +17,7 @@ import logging
 import secrets
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
@@ -37,6 +37,7 @@ from sessionfs.server.db.models import (
     WorkQueueItem,
 )
 from sessionfs.server.services import ticket_watchers
+from sessionfs.server.services.ticket_events import record_ticket_event
 
 if TYPE_CHECKING:
     from sessionfs.server.auth.dependencies import AuthContext
@@ -226,6 +227,20 @@ async def maybe_capture_route_feedback(
         pass  # a concurrent reassignment already recorded it
     except Exception:  # noqa: BLE001 — best-effort; never fail reassignment
         logger.exception("auto-capture route feedback failed (best-effort)")
+
+
+def _jsonable(value: object) -> object:
+    """Fold date/datetime diff values to ISO strings for JSON encoding.
+
+    ``apply_ticket_update`` keeps raw ``date`` objects in its edit tuples so
+    the event ledger can encode them via ``encode_event_value``; the
+    ``ticket_edits`` audit rows need a JSON-safe form instead.
+    """
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return value
 
 
 def format_edit_diff_summary(
@@ -453,6 +468,7 @@ async def apply_ticket_update(
     user_id: str,
     ctx: Any,
     body: Any,
+    actor_type: str = "user",
 ) -> TicketUpdateOutcome:
     """Apply a ``TicketUpdate`` body to ``ticket``; the caller commits.
 
@@ -467,6 +483,11 @@ async def apply_ticket_update(
        suggested;
     5. the ``system`` diff comment;
     6. reassignment notifications/watchers and route-feedback capture.
+
+    ``actor_type`` is the timeline actor vocabulary for the field_edited /
+    due_date_set / estimate_set events (defaults to ``"user"``). ``user_id``
+    is always the acting user id, so a ``jira`` pull can attribute the change
+    to Jira while still carrying the clicking user in ``actor_user_id``.
 
     A no-op (nothing actually changed) writes no audit rows or comment.
     """
@@ -483,6 +504,8 @@ async def apply_ticket_update(
             "related_sessions",
             "acceptance_criteria",
             "depends_on",
+            "due_date",
+            "estimated_effort",
         )
         if getattr(body, name) is not None
     ]
@@ -493,6 +516,12 @@ async def apply_ticket_update(
         present.append("assigned_to")
     if "assigned_user_id" in body_fields_set or "assigned_user" in body_fields_set:
         present.append("assigned_user_id")
+    # Scheduling fields are not work-defining, but an explicit null is a
+    # change (clear the due date / estimate) and must pass the same gate.
+    if "due_date" in body_fields_set:
+        present.append("due_date")
+    if "estimated_effort" in body_fields_set:
+        present.append("estimated_effort")
     editor = await assert_ticket_fields_editable(
         db, ticket=ticket, project=project, user_id=user_id, fields=present
     )
@@ -675,6 +704,22 @@ async def apply_ticket_update(
         for dep_id in deduped:
             db.add(TicketDependency(ticket_id=ticket.id, depends_on_id=dep_id))
 
+    # Scheduling fields: due_date (calendar date) and estimated_effort (a
+    # Jira-duration string). An explicit null clears them, so both sides of
+    # the body_fields_set fence are handled.
+    if body.due_date is not None:
+        _record("due_date", ticket.due_date, body.due_date)
+        ticket.due_date = body.due_date
+    elif "due_date" in body_fields_set:
+        _record("due_date", ticket.due_date, None)
+        ticket.due_date = None
+    if body.estimated_effort is not None:
+        _record("estimated_effort", ticket.estimated_effort, body.estimated_effort)
+        ticket.estimated_effort = body.estimated_effort
+    elif "estimated_effort" in body_fields_set:
+        _record("estimated_effort", ticket.estimated_effort, None)
+        ticket.estimated_effort = None
+
     # No-op: nothing actually changed. Skip the audit-write + diff
     # comment so empty PUTs don't pollute the audit trail.
     if not edits:
@@ -693,12 +738,77 @@ async def apply_ticket_update(
                 edited_by_user_id=user_id,
                 edited_by_persona=editing_persona,
                 field_name=field_name,
-                old_value=json.dumps(old_v),
-                new_value=json.dumps(new_v),
+                old_value=json.dumps(_jsonable(old_v)),
+                new_value=json.dumps(_jsonable(new_v)),
                 edited_at=now,
                 lease_epoch=ticket.lease_epoch,
             )
         )
+
+    # Append-only event ledger, one row per changed field, in the same
+    # transaction as the audit rows above. Assignment and scheduling fields
+    # get their dedicated verbs; everything else is a generic field_edited.
+    for field_name, old_v, new_v in edits:
+        if field_name == "assigned_to":
+            await record_ticket_event(
+                db,
+                ticket,
+                "assigned" if new_v else "unassigned",
+                field="assigned_to",
+                before={"persona": old_v} if old_v else None,
+                after={"persona": new_v} if new_v else None,
+                actor_type=actor_type,
+                actor_user_id=user_id,
+                actor_persona=editing_persona,
+            )
+        elif field_name == "assigned_user_id":
+            await record_ticket_event(
+                db,
+                ticket,
+                "assigned" if new_v else "unassigned",
+                field="assigned_user_id",
+                before={"user_id": old_v} if old_v else None,
+                after={"user_id": new_v} if new_v else None,
+                actor_type=actor_type,
+                actor_user_id=user_id,
+                actor_persona=editing_persona,
+            )
+        elif field_name == "due_date":
+            await record_ticket_event(
+                db,
+                ticket,
+                "due_date_set",
+                field="due_date",
+                before=old_v,
+                after=new_v,
+                actor_type=actor_type,
+                actor_user_id=user_id,
+                actor_persona=editing_persona,
+            )
+        elif field_name == "estimated_effort":
+            await record_ticket_event(
+                db,
+                ticket,
+                "estimate_set",
+                field="estimated_effort",
+                before=old_v,
+                after=new_v,
+                actor_type=actor_type,
+                actor_user_id=user_id,
+                actor_persona=editing_persona,
+            )
+        else:
+            await record_ticket_event(
+                db,
+                ticket,
+                "field_edited",
+                field=field_name,
+                before=old_v,
+                after=new_v,
+                actor_type=actor_type,
+                actor_user_id=user_id,
+                actor_persona=editing_persona,
+            )
 
     # A non-editor's change to an approved ticket withdraws the approval.
     if not editor and ticket.status == "open":
@@ -716,6 +826,17 @@ async def apply_ticket_update(
                 edited_at=now,
                 lease_epoch=ticket.lease_epoch,
             )
+        )
+        await record_ticket_event(
+            db,
+            ticket,
+            "status_changed",
+            field="status",
+            before="open",
+            after="suggested",
+            actor_type=actor_type,
+            actor_user_id=user_id,
+            actor_persona=editing_persona,
         )
         db.add(
             TicketComment(

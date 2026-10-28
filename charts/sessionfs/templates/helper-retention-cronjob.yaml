@@ -26,6 +26,9 @@ spec:
             {{- include "sessionfs.componentSelectorLabels" (list . "helper-retention") | nindent 12 }}
         spec:
           restartPolicy: Never
+          # The pod only posts one request with an injected service key; it never
+          # talks to the Kubernetes API, so no service-account token is mounted.
+          automountServiceAccountToken: false
           {{- include "sessionfs.imagePullSecrets" . | nindent 10 }}
           securityContext:
             runAsNonRoot: true

@@ -584,16 +584,42 @@ async def assert_platform_key_minter_active(
         return
     api_key = await db.get(ApiKey, ctx.api_key_id)
     minter_id = api_key.created_by_user_id if api_key is not None else None
-    message = (
-        f"A {scope} key works only while the platform admin who minted it "
-        "is still an active platform admin."
-    )
+
     if minter_id is None:
-        raise HTTPException(status_code=403, detail={"error": error, "message": message})
-    for user_id in {ctx.user.id, minter_id}:
-        user = ctx.user if user_id == ctx.user.id else await db.get(User, user_id)
-        if user is None or not user.is_active or user.tier != "admin":
-            raise HTTPException(status_code=403, detail={"error": error, "message": message})
+        minter_tier = "unknown"
+    else:
+        minter = ctx.user if minter_id == ctx.user.id else await db.get(User, minter_id)
+        owner_ok = ctx.user.is_active and ctx.user.tier == "admin"
+        minter_ok = minter is not None and minter.is_active and minter.tier == "admin"
+        if owner_ok and minter_ok:
+            return
+        if minter is None or not minter.is_active:
+            minter_tier = "deactivated"
+        else:
+            minter_tier = minter.tier
+
+    message = (
+        f"A {scope} key works only while its owner (the user it runs as) and "
+        "the user who minted it are both active platform admins."
+    )
+    detail = {
+        "error": error,
+        "message": message,
+        "minter_user_id": minter_id,
+        "minter_current_tier": minter_tier,
+        "required_minter_tier": "admin",
+        "resolution": (
+            "Restore the minter's admin tier, or mint a new key as a user "
+            "who will stay a platform admin."
+        ),
+    }
+    # The caller presented the key to get here, so these details only reach
+    # the key's own holder. Log the key id (never the key itself).
+    logger.warning(
+        "platform key denied: error=%s key_id=%s minter_user_id=%s minter_current_tier=%s",
+        error, ctx.api_key_id, minter_id, minter_tier,
+    )
+    raise HTTPException(status_code=403, detail=detail)
 
 
 def sweep_actor_details(ctx: AuthContext) -> dict:

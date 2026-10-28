@@ -9,16 +9,14 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import { useAuth } from '../auth/AuthContext';
 import type { HelperAction, HelperActionConfirmBody, HelperConversation, HelperConversationSummary, HelperStatus } from '../api/client';
 import type { HelperScope } from './HelperProvider';
-import { scopeKey } from './scope';
+import { apiScope, scopeKey, type GroupChoice } from './scope';
 
 export function useHelperStatus(open: boolean, scope?: HelperScope) {
   const { auth } = useAuth();
   return useQuery<HelperStatus>({
     queryKey: ['helperStatus', scopeKey(scope)],
     queryFn: () =>
-      auth!.client.getHelperStatus(
-        scope ? { project_id: scope.project_id, session_ids: scope.session_ids } : undefined,
-      ),
+      auth!.client.getHelperStatus(apiScope(scope)),
     // The drawer only needs these while it is open — skip the fetch when it is
     // closed so merely mounting the panel does not hit the API. Keying on the
     // scope (not just the project) means a scope switch or a restored thread
@@ -40,6 +38,20 @@ export function useHelperConversations(open: boolean) {
     queryFn: () => auth!.client.listHelperConversations(),
     enabled: !!auth && open,
     staleTime: 30_000,
+  });
+}
+
+/** Project groups the caller can see (GET /me/groups), offered as scopes. */
+export function useHelperGroups(open: boolean) {
+  const { auth } = useAuth();
+  return useQuery<GroupChoice[]>({
+    // Shares the cache entry of the groups pages' useMyGroups.
+    queryKey: ['myGroups'],
+    queryFn: () => auth!.client.listMyGroups(),
+    enabled: !!auth && open,
+    staleTime: 60_000,
+    // Groups are an optional extra in the menu: no retries, no error UI.
+    retry: false,
   });
 }
 

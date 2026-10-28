@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from httpx import AsyncClient
@@ -34,6 +34,7 @@ from sessionfs.server.db.models import (
 )
 from sessionfs.server.helper.context import HelperContext, HelperScope, RetrievalBudget
 from sessionfs.server.helper.tools import TOOLS, ToolArgumentError
+from sessionfs.server.services.ticket_events import record_ticket_event
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +305,110 @@ async def test_propose_ticket_never_mutates(db_session: AsyncSession):
     assert proposal["params"]["sources"] == _ticket_sources()
 
     assert (await db_session.execute(select(Ticket))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_propose_ticket_accepts_due_date_and_estimate(db_session: AsyncSession):
+    user, _ = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    ctx = _ctx(db_session, user)
+
+    output = await TOOLS["propose_ticket"].handler(
+        ctx, _ticket_args(project, due_date="2026-11-15", estimated_effort="3d")
+    )
+
+    assert "Proposed action" in output.text
+    proposal = ctx.pending_actions[0]
+    assert proposal["params"]["due_date"] == "2026-11-15"
+    assert proposal["params"]["estimated_effort"] == "3d"
+    assert (await db_session.execute(select(Ticket))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_propose_ticket_accepts_compact_estimate(db_session: AsyncSession):
+    user, _ = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    ctx = _ctx(db_session, user)
+
+    output = await TOOLS["propose_ticket"].handler(
+        ctx, _ticket_args(project, estimated_effort="2d4h")
+    )
+
+    assert "Proposed action" in output.text
+    proposal = ctx.pending_actions[0]
+    assert proposal["params"]["estimated_effort"] == "2d 4h"
+    assert (await db_session.execute(select(Ticket))).scalars().all() == []
+
+
+@pytest.mark.asyncio
+async def test_get_ticket_shows_creator_due_estimate_and_events(db_session: AsyncSession):
+    user, _ = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    ticket = await _make_ticket(db_session, user, project, title="Flaky CI")
+    ticket.due_date = date(2026, 11, 15)
+    ticket.estimated_effort = "3d"
+    await db_session.commit()
+
+    await record_ticket_event(
+        db_session, ticket, "created", actor_user_id=user.id
+    )
+    await record_ticket_event(
+        db_session, ticket, "status_changed", field="status",
+        before="open", after="in_progress", actor_user_id=user.id,
+    )
+    await record_ticket_event(
+        db_session, ticket, "assigned", after={"persona": "atlas"},
+        actor_user_id=user.id,
+    )
+    await record_ticket_event(
+        db_session, ticket, "due_date_set", field="due_date",
+        after=date(2026, 11, 15), actor_user_id=user.id,
+    )
+    await record_ticket_event(
+        db_session, ticket, "estimate_set", field="estimated_effort",
+        after="3d", actor_user_id=user.id,
+    )
+    await db_session.commit()
+
+    ctx = _ctx(db_session, user)
+    output = await TOOLS["get_ticket"].handler(ctx, {"ticket_id": ticket.id})
+
+    assert "creator:" in output.text
+    assert "Alice" in output.text
+    assert "due: 2026-11-15" in output.text
+    assert "estimate: 3d" in output.text
+    assert "events (last 5)" in output.text
+    assert "created the ticket" in output.text
+    assert "assigned to atlas" in output.text
+    assert "set due date to 2026-11-15" in output.text
+    assert "set estimate to 3d" in output.text
+
+
+@pytest.mark.asyncio
+async def test_get_ticket_shows_creator_email_without_assignee(db_session: AsyncSession):
+    # A caller with read standing (the project owner) sees the full creator
+    # address even when the ticket has no assignee (GitHub #113 L3). Before
+    # the fix, show_email was only computed when an assignee existed, so a
+    # display-name-less creator was masked here.
+    owner = User(
+        id=str(uuid.uuid4()),
+        email="owner-no-name@example.com",
+        display_name=None,
+        tier="enterprise",
+        email_verified=True,
+        is_active=True,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(owner)
+    await db_session.commit()
+    project = await _make_project(db_session, owner)
+    ticket = await _make_ticket(db_session, owner, project, title="No assignee")
+
+    ctx = _ctx(db_session, owner)
+    output = await TOOLS["get_ticket"].handler(ctx, {"ticket_id": ticket.id})
+
+    assert "creator:" in output.text
+    assert owner.email in output.text
 
 
 @pytest.mark.asyncio

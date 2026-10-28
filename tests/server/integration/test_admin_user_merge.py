@@ -34,6 +34,7 @@ from sessionfs.server.db.models import (
     Team,
     TeamMember,
     Ticket,
+    TicketEvent,
     TicketNotification,
     TicketWatcher,
     TicketWatchCursor,
@@ -108,12 +109,17 @@ async def _populate(db: AsyncSession, src: User) -> dict:
     ticket = Ticket(id=f"tk_{uuid.uuid4().hex[:16]}", project_id=project.id, title="t",
                     created_by_user_id=src.id, assigned_user_id=src.id)
     db.add(ticket)
+    await db.flush()
+    event = TicketEvent(id=f"evt_{uuid.uuid4().hex[:16]}", ticket_id=ticket.id,
+                        project_id=project.id, action="created", actor_type="user",
+                        actor_user_id=src.id)
+    db.add(event)
     db.add(KnowledgeEntry(project_id=project.id, session_id=sessions[0].id, user_id=src.id,
                           entry_type="decision", content="x"))
     folder = BookmarkFolder(id=str(uuid.uuid4()), user_id=src.id, name="f")
     db.add(folder)
     await db.commit()
-    return {"project": project, "sessions": sessions, "ticket": ticket}
+    return {"project": project, "sessions": sessions, "ticket": ticket, "event": event}
 
 
 async def _merge(client: AsyncClient, key: str, src: str, tgt: str, **body):
@@ -139,6 +145,7 @@ async def test_dry_run_writes_nothing(client: AsyncClient, db_session: AsyncSess
     assert rows["projects.owner_id"]["ids"] == [data["project"].id]
     assert "tickets.created_by_user_id" in rows
     assert rows["tickets.assigned_user_id"]["ids"] == [data["ticket"].id]
+    assert rows["ticket_events.actor_user_id"]["count"] == 1
     assert body["plan"]["revoked"]["api_keys"]["count"] == 1
 
     assert await _count(db_session, Session, Session.user_id == src.id) == 2
@@ -169,6 +176,7 @@ async def test_apply_reassigns_revokes_and_audits(
     for model, col in ((Session, Session.user_id), (Project, Project.owner_id),
                        (Ticket, Ticket.created_by_user_id),
                        (Ticket, Ticket.assigned_user_id),
+                       (TicketEvent, TicketEvent.actor_user_id),
                        (KnowledgeEntry, KnowledgeEntry.user_id),
                        (BookmarkFolder, BookmarkFolder.user_id)):
         assert await _count(db_session, model, col == src.id) == 0

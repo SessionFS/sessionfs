@@ -10,6 +10,12 @@ const SUGGESTIONS: Record<ScopeOption['kind'], string[]> = {
     'Which problems keep coming up across sessions?',
     'Summarize the most recent sessions',
   ],
+  group: [
+    'What changed across these projects this week?',
+    'Which decisions affect more than one project?',
+    'Which problems keep coming up across the group?',
+    'Summarize the most recent sessions in the group',
+  ],
   session: [
     'Summarize this session',
     'What was decided, and why?',
@@ -26,6 +32,8 @@ const SUGGESTIONS: Record<ScopeOption['kind'], string[]> = {
 
 function heading(scope: ScopeOption): string {
   if (scope.kind === 'project') return `Ask about ${scope.label === 'This project' ? 'this project' : scope.label}`;
+  if (scope.kind === 'group')
+    return `Ask about ${scope.label === 'This project group' ? 'this project group' : scope.label}`;
   if (scope.kind === 'session') return 'Ask about this session';
   return 'Ask about your sessions';
 }
