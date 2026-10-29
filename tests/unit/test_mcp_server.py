@@ -299,10 +299,10 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_100(self):
+    def test_tool_count_is_106(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 100, (
-            "Expected 100 MCP tools after project-group tools (GitHub #101), "
+        assert len(_TOOLS) == 106, (
+            "Expected 106 MCP tools after meeting tools (GitHub #116), "
             f"got {len(_TOOLS)}"
         )
 

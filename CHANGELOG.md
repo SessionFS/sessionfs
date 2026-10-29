@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.0] - 2026-10-29
+
+**Meetings: store transcripts, pull out action items and decisions, and turn them into tickets. The session helper knows who is asking.** Server migrations 104 and 105.
+
+### Added
+- **Meeting transcripts** (GitHub #116), for projects on every plan and for project groups on Team and Enterprise.
+  - Add a meeting by pasting text or uploading `.txt`, `.md`, `.vtt` or `.srt` files (caption timing is removed) from the dashboard, `sfs meeting upload`, the API or MCP.
+  - Secrets and personal data are redacted under your org's DLP policy before anything is stored; a blocking policy refuses the upload.
+  - **Extract** action items, decisions and participants with your own AI key or your org's. Every item cites the transcript lines it came from, and items that can't be checked against the text are dropped and counted.
+  - Participants are matched to org members and personas only when their name appears in the transcript; anyone unmatched can be matched by hand.
+  - **Create ticket** from an action item through an editable preview that quotes the meeting lines, with the assignee and due date filled in and optional Jira publishing.
+  - Meetings are kept for 180 days by default (`general.meeting_retention_days`, 1–3650), with an opt-in Helm CronJob for the cleanup sweep.
+  - New API key scopes `meetings:read` and `meetings:write`; promoting with a service key also needs `tickets:write`.
+- **Meetings in the dashboard**: a Meetings view under a project's Work section and on project group pages, with search, upload, a numbered transcript, and action items, decisions and participants beside it.
+- **`sfs meeting`** commands: `upload`, `list`, `search`, `show`, `delete`, `extract`, `participants`, `resolve-participant`, `action-items`, `promote`, `dismiss`, `restore`.
+- **Six MCP tools** (106 in total): `upload_meeting_transcript`, `list_meeting_transcripts`, `get_meeting_transcript`, `extract_meeting_action_items`, `promote_meeting_action_item`, `search_meetings`.
+- **The session helper reads meetings**: it can search and read meetings in your scope, list your open action items, and cite meeting lines as links that open the transcript at those lines.
+- **The session helper knows who is asking** (GitHub #117): "my tickets" works, a name finds tickets assigned to a persona or to a person, and project groups can be named by name, slug or abbreviation.
+- AI usage is recorded by source, so meeting extraction and helper chats show separately and both count against the org budget.
+
+### Changed
+- Tabs across the dashboard use a quieter underline style instead of boxed tabs.
+- The project **Personas** tab is now called **Agents**.
+- Dialogs keep keyboard focus inside the topmost dialog while it is busy.
+
 ## [0.28.0] - 2026-10-28
 
 **Ask the session helper about a whole project group, due dates, estimates and a full history on tickets, Jira sprints and parent epics, and sweep keys that explain themselves.** Server migrations 102 and 103.

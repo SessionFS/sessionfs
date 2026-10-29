@@ -28,6 +28,11 @@ interface TabsProps {
   idPrefix?: string;
   /** Accessible name for the tablist. */
   'aria-label'?: string;
+  /** `line` (default): plain labels with a brand underline under the active
+   *  one, on a hairline rule. `underline`: the same without the rule, for a
+   *  bar that sits on the edge of a card. `subtle`: borderless labels with a
+   *  soft fill on the active one, for a bar nested inside another section. */
+  variant?: TabsVariant;
 }
 
 // Keys can hold characters that are awkward in an id.
@@ -60,12 +65,30 @@ export function TabPanel({ idPrefix, tabKey, className, children }: TabPanelProp
   );
 }
 
+type TabsVariant = 'line' | 'underline' | 'subtle';
+
+function variantClass(variant: TabsVariant, active: boolean): string {
+  if (variant !== 'subtle') {
+    // The underline is drawn inside the button so the scrolling bar can't clip it.
+    return `relative px-1 py-2.5 rounded-sm after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:rounded-full ${
+      active
+        ? 'text-text-primary after:bg-brand'
+        : 'text-text-secondary hover:text-text-primary after:bg-transparent'
+    }`;
+  }
+  return `px-3 py-1.5 rounded-md ${
+    active
+      ? 'bg-surface-hover text-text-primary'
+      : 'text-text-secondary hover:text-text-primary hover:bg-surface-hover'
+  }`;
+}
+
 // Width of the fade on an edge that has more tabs past it.
 const FADE_PX = 24;
 
 /**
- * Pill-style tabs matching the Phase 1b nav pattern:
- * active tab = --surface pill + hairline border, inactive = transparent.
+ * Tabs in three looks (see `variant`). The default is an underline on a
+ * hairline rule; none of them draw a box around the tab.
  *
  * The bar never wraps and never spills past its container (GitHub #86/#87):
  * tabs keep their single-line width, the bar scrolls horizontally when they
@@ -80,6 +103,7 @@ export function Tabs({
   bare = false,
   idPrefix,
   'aria-label': ariaLabel,
+  variant = 'line',
 }: TabsProps) {
   const generatedId = useId();
   const prefix = idPrefix ?? generatedId;
@@ -196,10 +220,12 @@ export function Tabs({
 
   return (
     <div className="min-w-0">
-      <div className="border-b border-border">
+      <div className={variant === 'line' ? 'border-b border-border' : undefined}>
         <div
           ref={listRef}
-          className="relative flex gap-1 overflow-x-auto overflow-y-hidden pb-px [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className={`relative flex overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden ${
+            variant === 'subtle' ? 'gap-1' : 'gap-4'
+          }`}
           role="tablist"
           aria-label={ariaLabel}
           onKeyDown={onKeyDown}
@@ -220,11 +246,7 @@ export function Tabs({
                 aria-controls={active ? panelDomId(prefix, tab.key) : undefined}
                 tabIndex={active ? 0 : -1}
                 onClick={() => onChange(tab.key)}
-                className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-md text-sm font-medium transition-colors cursor-pointer outline-none focus-visible:shadow-[inset_0_0_0_2px_var(--brand-glow)] ${
-                  active
-                    ? 'bg-surface border border-border text-text-primary'
-                    : 'border border-transparent text-text-secondary hover:text-text-primary hover:bg-surface-hover'
-                }`}
+                className={`shrink-0 whitespace-nowrap text-sm font-medium transition-colors cursor-pointer outline-none focus-visible:shadow-[inset_0_0_0_2px_var(--brand-glow)] ${variantClass(variant, active)}`}
               >
                 {tab.label}
               </button>

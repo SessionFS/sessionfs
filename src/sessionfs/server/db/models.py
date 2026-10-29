@@ -6609,6 +6609,9 @@ class HelperUsage(Base):
         CheckConstraint(
             "key_source IN ('user', 'org')", name="ck_helper_usage_key_source"
         ),
+        CheckConstraint(
+            "source IN ('helper', 'meeting_extract')", name="ck_helper_usage_source"
+        ),
         Index("idx_helper_usage_org_created", "org_id", "created_at"),
         Index("idx_helper_usage_user_created", "user_id", "created_at"),
     )
@@ -6622,6 +6625,12 @@ class HelperUsage(Base):
         String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     key_source: Mapped[str] = mapped_column(String(20), nullable=False)
+    # What wrote this ledger row: ``helper`` (session-helper turn) or
+    # ``meeting_extract`` (meeting action-item extraction). Both charge the
+    # org key identically; the tag only splits the usage summaries.
+    source: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="helper", server_default=text("'helper'")
+    )
     conversation_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     input_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
     output_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False, server_default="0")
@@ -6677,3 +6686,192 @@ def _register_facet_listeners() -> None:
 
 
 _register_facet_listeners()
+
+
+# v0.28 — meeting transcripts (GitHub #116, migration 104).
+
+
+class MeetingTranscript(Base):
+    """A stored, scoped meeting transcript.
+
+    Exactly one of ``project_id`` / ``group_id`` is set
+    (ck_meeting_transcripts_scope). ``org_id`` is the owning org of the
+    project/group (NULL for a personal project), denormalised so the
+    retention sweep can page per-org without joining through the scope.
+    ``content`` is the DLP-redacted, newline-normalised text and the ONLY
+    stored copy; ``content_sha256`` dedupes re-uploads. Soft-delete via
+    ``deleted_at``; the retention sweep hard-deletes expired and
+    long-soft-deleted rows.
+    """
+
+    __tablename__ = "meeting_transcripts"
+    __table_args__ = (
+        Index(
+            "idx_meeting_transcripts_project_created",
+            "project_id",
+            "created_at",
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_meeting_transcripts_group_created",
+            "group_id",
+            "created_at",
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+        Index(
+            "idx_meeting_transcripts_org_created",
+            "org_id",
+            "created_at",
+            postgresql_where=text("deleted_at IS NULL"),
+            sqlite_where=text("deleted_at IS NULL"),
+        ),
+        CheckConstraint(
+            "(project_id IS NOT NULL AND group_id IS NULL) "
+            "OR (project_id IS NULL AND group_id IS NOT NULL)",
+            name="ck_meeting_transcripts_scope",
+        ),
+        CheckConstraint(
+            "source IN ('manual_paste', 'file_upload')",
+            name="ck_meeting_transcripts_source",
+        ),
+        CheckConstraint(
+            "extraction_status IN ('none', 'done', 'failed')",
+            name="ck_meeting_transcripts_extraction_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
+    )
+    group_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("project_groups.id", ondelete="CASCADE"), nullable=True
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    meeting_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    line_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    dlp_findings: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    extraction_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="none", server_default=text("'none'")
+    )
+    extracted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    extraction_model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    extraction_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class MeetingParticipant(Base):
+    """One speaker named in a transcript.
+
+    ``name_raw`` / ``email_raw`` are the values as they appeared in the text.
+    ``user_id`` / ``persona_name`` are filled by server-side resolution
+    (§6); ``resolution_method`` records how (exact_email | display_name |
+    persona | manual | unresolved). A manual override also sets
+    ``resolved_by_user_id``.
+    """
+
+    __tablename__ = "meeting_participants"
+    __table_args__ = (
+        Index("idx_meeting_participants_transcript", "transcript_id"),
+        CheckConstraint(
+            "resolution_method IN ('exact_email', 'display_name', 'persona', 'manual', 'unresolved')",
+            name="ck_meeting_participants_resolution_method",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    transcript_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("meeting_transcripts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name_raw: Mapped[str] = mapped_column(String(200), nullable=False)
+    email_raw: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    persona_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resolution_method: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="unresolved", server_default=text("'unresolved'")
+    )
+    resolved_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+
+class MeetingActionItem(Base):
+    """An extracted action item or decision.
+
+    Decisions share this table (``kind='decision'``) so the extraction,
+    citation and UI code has one path; only ``action`` rows can be promoted.
+    ``promoted_ticket_id`` has no FK (tickets can be deleted; keep the
+    record).
+    """
+
+    __tablename__ = "meeting_action_items"
+    __table_args__ = (
+        Index("idx_meeting_action_items_transcript", "transcript_id"),
+        CheckConstraint(
+            "kind IN ('action', 'decision')",
+            name="ck_meeting_action_items_kind",
+        ),
+        CheckConstraint(
+            "status IN ('pending', 'promoted', 'dismissed')",
+            name="ck_meeting_action_items_status",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    transcript_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("meeting_transcripts.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="action", server_default=text("'action'")
+    )
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    owner_participant_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("meeting_participants.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    line_start: Mapped[int] = mapped_column(Integer, nullable=False)
+    line_end: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(12), nullable=False, default="pending", server_default=text("'pending'")
+    )
+    promoted_ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    promoted_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    extracted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )

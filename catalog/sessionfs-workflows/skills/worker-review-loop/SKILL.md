@@ -1,6 +1,6 @@
 ---
 name: worker-review-loop
-description: Build a change with brief-driven coding agents in isolated git worktrees, gated by an independent read-only reviewer, a fix pass, and a re-review by the same reviewer before merge. Uses SessionFS tickets, agent runs, a review_until_clean work queue with a trusted reviewer, handoffs, and the knowledge base. Use when the user wants to split work across worker agents, run a worker/reviewer loop, or gate a merge on an independent review.
+description: Build a change with brief-driven coding agents in isolated git worktrees, gated by an independent read-only reviewer, a fix pass, and a re-review by the same reviewer before merge, on a token budget. Uses SessionFS tickets, agent runs, a review_until_clean work queue with a trusted reviewer, handoffs, and the knowledge base. Use when the user wants to split work across worker agents, run a worker/reviewer loop, or gate a merge on an independent review.
 ---
 
 # Worker review loop
@@ -193,6 +193,64 @@ Merge only when `get_ticket_review_state` shows
 the branch, run the full test suite on the merged result, then
 `resolve_ticket`. The queue never changes ticket status itself. Remove the
 worktree with `git worktree remove`.
+
+## 9. Spend tokens where they catch bugs
+
+Most of a loop's cost is context: every turn re-reads the brief, the files
+and the conversation so far. Review rounds are the second biggest cost. The
+habits below keep the loop cheap without weakening the gate.
+
+**Size the work before you launch it.**
+- One worker, one brief, one context window. A brief that needs more than
+  roughly 150 turns is two briefs. Split by phase (data and routes, then
+  the logic on top, then interfaces), not by file.
+- Put each phase's new code in new files where you can, so phases can run
+  in parallel worktrees without merge conflicts.
+- Tell workers to commit after each step that works. A worker that runs out
+  of turns then costs a short continuation, not a rebuild.
+
+**Pick the model per job.**
+- Routine build work goes to the cheapest model that passes review. Use a
+  stronger model for UI and design work, for reviewers, and for anything
+  security-sensitive.
+- Check the balance or plan headroom of the worker's provider before every
+  launch, not once per feature. A worker that starts with no credit fails
+  on its first request and wastes the brief.
+
+**Keep context small.**
+- Point workers at paths and line ranges; never paste files into a brief.
+  Workers search first (`grep -n`) and read slices.
+- Start workers with a trimmed tool setup: no large instruction files, only
+  the tools the brief needs.
+- Hand a finished worker's next task back to the same session (it already
+  holds the code) instead of starting a fresh one that must re-read
+  everything.
+
+**Make every review round count.**
+- Reuse the same reviewer across rounds; it keeps its context. Each re-review
+  prompt is narrow: "verify these fixes, then check what changed since
+  <sha>", not "review the branch again".
+- Severity decides whether there is another round. HIGH and MEDIUM findings
+  are fixed and re-reviewed. LOW findings go into one follow-up ticket and
+  do not start a new round.
+- Fix one-line or wording findings yourself and verify them with a
+  targeted test. Resume a worker only when the fix is real work.
+- Cap rounds. After three rounds on one branch, stop and look at why the
+  findings keep coming (the brief, the design, or the model) before paying
+  for a fourth.
+- A second reviewer (another model) gets one final pass, limited to the
+  changed code, after the first reviewer is clean. Do not run two full
+  reviewers round after round.
+
+**Run tests where they are cheap.**
+- Workers run targeted tests per step and the full suite once before
+  reporting. You run the full suite once more on the merged result.
+- Do not run several full suites at once on one machine: load makes
+  timing-sensitive tests fail, and the reruns cost more than waiting.
+
+**Write down what each run cost.** Put the tokens or spend of every worker
+and review round in the agent run's result summary. Over a few features
+this shows which phase sizes, models and review habits pay off.
 
 ## Rules
 

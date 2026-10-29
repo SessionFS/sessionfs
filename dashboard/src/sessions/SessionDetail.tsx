@@ -470,8 +470,9 @@ export default function SessionDetail() {
         <BookmarksSection sessionId={session.id} />
 
         {/* Tabs — bare mode: tab bar only, content lives in scrollable container below */}
-        <div className="px-5 mt-2">
+        <div className="px-5 mt-2 border-t border-border">
           <Tabs
+            variant="underline"
             tabs={TAB_DEFS}
             activeKey={activeTab}
             onChange={(key) => setActiveTab(key as Tab)}

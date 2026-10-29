@@ -34,12 +34,12 @@ export default function HandoffList() {
     {
       key: 'inbox',
       label: (
-        <>
+        <span className="inline-flex items-center gap-1.5">
           Inbox
           {pendingCount > 0 && (
             <Badge variant="warning" label={String(pendingCount)} size="sm" />
           )}
-        </>
+        </span>
       ),
     },
     { key: 'sent', label: 'Sent' },

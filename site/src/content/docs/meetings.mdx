@@ -1,0 +1,125 @@
+---
+title: "Meetings"
+description: "Store meeting transcripts, extract action items, promote them to tickets, and keep them under org retention and DLP."
+---
+
+Meetings let a project or group capture a meeting transcript and store it server-side. The stored copy is DLP-redacted under the strictest of the caller's org policies, participants can be resolved to org members or personas, transcripts can be extracted into action items and decisions, and those action items can be promoted to tickets. Transcripts age out under an org-level retention window.
+
+The **meetings** feature is available on every tier. Group-scoped meetings additionally require the `project_groups` feature (**Team+**), and promoting an action item to a ticket requires `agent_tickets` (**Team+**).
+
+## Scope
+
+Every meeting belongs to exactly one of:
+
+- a **project** (`project_id`), or
+- a **group** (`group_id`).
+
+That is the meeting's scope. Its owning org is taken from the scope; a personal project has none.
+
+Access follows the scope's normal standing:
+
+| Action | Project meeting | Group meeting |
+|--------|-----------------|---------------|
+| List / get | project read (or a service key with `meetings:read` + project allowlist) | group reader (user key) |
+| Upload | project edit (or a service key with `meetings:write` + project allowlist) | group editor or admin |
+| Delete | uploader or project admin (a service key's backing user must be one of these) | uploader or group admin |
+| Override participant | project editor | group editor or admin |
+
+Group meetings always require a user key. There are no org-wide meetings.
+
+## Upload and DLP
+
+`POST` uploads a meeting with a `title` (1–200 chars), `content` (the transcript text), an optional `meeting_at` / `duration_minutes`, and a `source` (`manual_paste` or `file_upload`). Set `extract: true` to run action-item extraction in the same request.
+
+The request body is streamed with a hard cap of **1 MiB**; the normalised content is capped at **512 KiB** and **10 000 lines**. Over the cap the upload is refused with `413 meeting_too_large`.
+
+Before storage the `title` and `content` are normalised (newlines collapsed in the title, CRLF → LF, NULs and lone surrogates stripped, trailing whitespace trimmed per line) and scanned under the strictest union of every org the caller is an active member of, plus the scope org. Secrets are always scanned. A `block`-mode finding refuses the upload with `422 dlp_blocked` (counts by finding type). In every other mode — `redact`, `warn`, or no policy at all — secrets are redacted before storage and counted in `dlp_findings`. The stored `title` and `content` are the only copy kept — the raw text is never persisted.
+
+Re-uploading identical content still stores a new meeting, with `warnings: ["duplicate_of: meet_…"]` pointing at the earlier one.
+
+## Participant resolution
+
+Each named participant in the transcript is resolved over the meeting's scope (its org), in order:
+
+1. an exact email matching an active org member,
+2. an exact persona name (project personas first, then the org's personas the caller can see),
+3. a display name matching exactly one active member,
+
+otherwise the participant stays **unresolved**. A persona that represents a member fills both `persona_name` and `user_id`. Personal meetings have no org, so only a project persona resolves; otherwise participants stay unresolved until overridden.
+
+A project or group editor can override any participant manually with exactly one of `user_id` or `persona_name`, which sets the resolution method to `manual` and records who made the override.
+
+## Action-item extraction
+
+Extraction turns a stored transcript into a list of `participants` and `items` (each an `action` or `decision`) with one LLM call. Run it on upload with `extract: true`, or later with `POST /api/v1/meetings/{meeting_id}/extract`.
+
+The model is asked for names, owners, due dates and 1-based line citations, but everything it returns is validated against the stored text before it is persisted: participants are resolved server-side (same order as [participant resolution](#participant-resolution)), and each item must cite a valid line range (at most 40 lines apart). An item whose owner matches no resolved participant is dropped and counted in the response's `dropped_items`.
+
+Extraction uses the same LLM key resolution and monthly token budget as the session helper. With no key configured it returns `409 llm_key_required`; an exhausted org budget returns `429 helper_budget_exceeded`. AI usage is recorded as `meeting_extract`, separately from helper chats, and counts against the same org budget. A provider failure or an unparseable response marks the meeting `extraction_status: "failed"` with a classified `extraction_error` and leaves existing items untouched.
+
+Re-running replaces **pending** items and every **non-manual** participant; **promoted** / **dismissed** items and manually overridden participants are kept, so a re-extract never undoes a promotion or a dismissal.
+
+## Promote to a ticket
+
+A pending `action` item (never a `decision`) can be promoted to a ticket. First build a confirmable draft with `POST /api/v1/meetings/{meeting_id}/action-items/{item_id}/promote/preview`, then confirm with `POST .../promote` (body: `title` ≤ 200, `description`, `priority`, `kind`, optional `assigned_to` / `assigned_user_id` / `due_date`, and for a group meeting `target_project_id`). The preview also returns `jira_publish_available` (true only when the plan includes Jira, you can edit the target project, the org has an enabled Jira connection and the project is mapped; computed from the database, never by calling Atlassian). For a group meeting it is judged for the project passed as `?target_project_id=` and is false without one. The draft title is the item's first sentence; the description carries the item text plus a `From meeting …` provenance header and the quoted source lines.
+
+The target project is the meeting's own project for a project meeting, or an editable project the caller chooses from the group for a group meeting (omitting it returns `422 target_project_required`). Confirming creates the ticket, flips the item to `promoted` with `promoted_ticket_id`, and — with `publish_to_jira: true` — publishes it to Jira. A concurrent promote is refused with `409 item_not_pending`.
+
+Dismiss a pending item with `POST .../dismiss` (a second dismiss returns `409 item_not_pending`) and bring it back with `POST .../restore` (`409 item_not_dismissed` if it was not dismissed).
+
+## CLI
+
+`sfs meeting` is a thin client of the REST routes below; the server enforces every access rule. Without `--project` or `--group` it uses the project of the current repository.
+
+```bash
+sfs meeting upload standup.vtt --title "Standup" --date 2026-10-29 --extract
+sfs meeting upload --stdin --title "Planning" --group pg_abc123 < notes.txt
+sfs meeting list --query roadmap
+sfs meeting show meet_0123456789abcdef            # numbered transcript, participants, items
+sfs meeting resolve-participant meet_… mp_… --persona atlas
+sfs meeting promote meet_… mi_… --assignee atlas --due 2026-11-05   # shows the draft, asks to confirm
+sfs meeting promote meet_… mi_… --target-project proj_… --yes       # group meeting, no prompt
+```
+
+A file upload is stored with `source=file_upload` (`.vtt` and `.srt` cue timing is stripped server-side); `--stdin` uses `manual_paste`. `promote` always prints the ticket draft first and asks before creating it unless `--yes` is given. See the [CLI reference](/cli/#sfs-meeting) for every command.
+
+## MCP tools
+
+Six tools cover the same flows for agents: `upload_meeting_transcript`, `list_meeting_transcripts`, `get_meeting_transcript`, `extract_meeting_action_items`, `promote_meeting_action_item` and `search_meetings`. A project is picked by `git_remote` or the workspace, a group by `group_id` (user keys only). `promote_meeting_action_item` is **preview only** unless `confirm=true`. Extraction (`extract_meeting_action_items`, or `extract=true` on upload) uses your own LLM key. See [MCP Server](/mcp/#meetings).
+
+## Session helper
+
+The [session helper](/session-helper/) can read meetings you have access to: `search_meetings`, `list_recent_meetings`, `get_meeting` (numbered lines) and `list_my_meeting_actions` (pending action items owned by you or by a persona that represents you). It is read-only, honours the conversation's scope, and cites passages as `[meeting:<id> L<first>-<last>]`, which are checked against the meeting's real line count before the answer is shown.
+
+## Retention and deletion
+
+`DELETE` soft-deletes a meeting. A scheduled retention sweep hard-deletes:
+
+- live meetings older than their org's `general.meeting_retention_days` (default **180** days, configurable 1–3650), and
+- soft-deleted meetings older than **30** days.
+
+Participants and action items are deleted with the meeting. Uploads, deletes and manual overrides are recorded in the org audit trail (ids and counts only — never transcript text); personal meetings are audited too, with a null `org_id`.
+
+## REST API
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/projects/{project_id}/meetings` | `meetings:write` | Upload a project meeting |
+| GET | `/api/v1/projects/{project_id}/meetings` | `meetings:read` | List project meetings, newest first (`?q=` substring search); each entry carries `extraction_status`, `extraction_error`, `pending_action_count` and `decision_count` |
+| POST | `/api/v1/groups/{group_id}/meetings` | user key, group editor/admin | Upload a group meeting |
+| GET | `/api/v1/groups/{group_id}/meetings` | user key, group reader+ | List group meetings, newest first (`?q=`); same entry fields as the project list |
+| GET | `/api/v1/meetings/{meeting_id}` | `meetings:read` | Get a meeting with content, participants and action items |
+| DELETE | `/api/v1/meetings/{meeting_id}` | `meetings:write` | Soft-delete a meeting |
+| PUT | `/api/v1/meetings/{meeting_id}/participants/{participant_id}` | user key | Manually override a participant |
+| POST | `/api/v1/meetings/{meeting_id}/extract` | `meetings:write` | Extract participants and action items (returns `dropped_items`) |
+| POST | `/api/v1/meetings/{meeting_id}/action-items/{item_id}/promote/preview` | `meetings:write` | Draft a ticket from an action item |
+| POST | `/api/v1/meetings/{meeting_id}/action-items/{item_id}/promote` | `meetings:write` | Promote an action item to a ticket (`agent_tickets`) |
+| POST | `/api/v1/meetings/{meeting_id}/action-items/{item_id}/dismiss` | `meetings:write` | Dismiss a pending action item |
+| POST | `/api/v1/meetings/{meeting_id}/action-items/{item_id}/restore` | `meetings:write` | Restore a dismissed action item |
+
+## Org setting
+
+```
+GET /api/v1/orgs/{org_id}/settings   # includes meeting_retention_days (null = platform default 180)
+PUT /api/v1/orgs/{org_id}/settings   # {"meeting_retention_days": 365}
+```

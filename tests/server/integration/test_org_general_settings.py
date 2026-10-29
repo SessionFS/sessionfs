@@ -121,7 +121,8 @@ async def test_admin_can_update_all_fields(
     )
     assert resp.status_code == 200, resp.text
     # restrict_project_visibility (GitHub #101) always reads back as a bool.
-    expected = {**payload, "restrict_project_visibility": False}
+    # meeting_retention_days (GitHub #116) reads back as None when unset.
+    expected = {**payload, "restrict_project_visibility": False, "meeting_retention_days": None}
     assert resp.json() == expected
 
     # Round-trip via GET.
@@ -367,3 +368,19 @@ async def test_dlp_policy_block_not_clobbered_by_general_settings_put(
     raw = _json.loads(org.settings)
     assert "dlp" in raw and raw["dlp"]["mode"] == "warn"
     assert "general" in raw and raw["general"]["kb_retention_days"] == 90
+
+
+@pytest.mark.asyncio
+async def test_meeting_retention_days_rejects_booleans(
+    client: AsyncClient,
+    db_session: AsyncSession,
+):
+    """JSON true must not be read as 1 day of meeting retention."""
+    admin, key = await _make_user(db_session, "admin")
+    org = await _make_org_with(db_session, admin)
+    resp = await client.put(
+        f"/api/v1/orgs/{org.id}/settings",
+        headers=_hdrs(key),
+        json={"meeting_retention_days": True},
+    )
+    assert resp.status_code in (400, 422), resp.text

@@ -1525,7 +1525,7 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed: 100, covering sessions (including `ask_session_helper`), knowledge, rules, personas, tickets (including `watch_ticket` and `get_ticket_updates`), agent runs (including `replay_agent_run`), agent feedback, handoffs, work queues, the skills marketplace and project groups. See [MCP Server](/mcp/) for the full catalogue.
+Tools exposed: 106, covering sessions (including `ask_session_helper`), knowledge, rules, personas, tickets (including `watch_ticket` and `get_ticket_updates`), agent runs (including `replay_agent_run`), agent feedback, handoffs, work queues, the skills marketplace, project groups and meetings. See [MCP Server](/mcp/) for the full catalogue.
 
 ---
 
@@ -1998,6 +1998,24 @@ Native plugin catalogs: read-only git repositories of approved packages that eac
 | `sfs catalog add --for TOOL [--org ORG \| --personal] [--run] [--no-credential-helper]` | Print the tool's own command to add a catalog (`claude-code`, `copilot`, `codex`, `cursor`, `gemini`, `antigravity`); `--run` runs it where supported. Configures git to authenticate to the SessionFS host only through `sfs catalog credential`, so your key never appears in a URL |
 | `sfs catalog doctor` | Check that git sends your SessionFS key only through the SessionFS credential helper (run it inside a repository to check that repository's config too) |
 | `sfs catalog export --to REMOTE [--org ORG \| --personal] [--branch main] [--dry-run] [--ssh-key-file PATH] [--known-hosts PATH]` | Copy a catalog to a git repository you own (for example, for a Cursor team marketplace). The destination branch is overwritten with the generated catalog commit, and nothing is pushed when it is already current. With `--ssh-key-file` only that deploy key is used, over SSH with strict host-key checking, so it can run unattended |
+
+## `sfs meeting`
+
+Store meeting transcripts for a project or a [project group](/project-groups/), extract action items and decisions, and promote action items to tickets. Transcripts are DLP-redacted by the server before storage, and every access rule is enforced server-side. See [Meetings](/meetings/). Without `--project` or `--group` a command uses the project of the current repository.
+
+| Command | Description |
+|---------|-------------|
+| `sfs meeting upload <file> \| --stdin --title T [--project proj_… \| --group pg_…] [--date ISO] [--duration MIN] [--extract]` | Upload a `.txt`, `.md`, `.vtt` or `.srt` transcript (cue timing in VTT/SRT is stripped server-side). `--extract` also runs extraction right away |
+| `sfs meeting list [--project \| --group] [-q TEXT] [-n N] [--before ID]` | Meetings, newest first; a printed cursor pages onwards |
+| `sfs meeting search <q> [--project \| --group]` | Search titles and transcript text |
+| `sfs meeting show <id> [--no-transcript]` | The numbered transcript, participants and their resolution, and the action items and decisions with line ranges |
+| `sfs meeting delete <id> [--yes]` | Delete a meeting |
+| `sfs meeting extract <id>` | Extract participants, action items and decisions with **your own** LLM key (your key, else your org's; never a SessionFS key) |
+| `sfs meeting participants <id>` | Participants and how each was resolved |
+| `sfs meeting resolve-participant <id> <participant_id> --user USER_ID \| --persona NAME` | Resolve a participant manually |
+| `sfs meeting action-items <id>` | Action items and decisions |
+| `sfs meeting promote <id> <item_id> [--title T] [--description D] [--assignee PERSONA \| --user USER_ID] [--due DATE] [--priority P] [--target-project ID] [--jira] [--yes]` | Show the ticket draft and ask before creating it; `--yes` skips the prompt. A group meeting needs `--target-project` |
+| `sfs meeting dismiss <id> <item_id>` / `restore <id> <item_id>` | Dismiss a pending item, or bring a dismissed one back |
 
 ## `sfs helper` (Enterprise)
 

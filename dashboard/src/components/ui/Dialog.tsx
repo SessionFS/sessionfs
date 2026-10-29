@@ -91,8 +91,11 @@ export function Dialog({ open, onClose, titleId, className: panelClassName, chil
         role="dialog"
         aria-modal={isTop ? true : undefined}
         aria-labelledby={titleId}
-        className={`relative rounded-xl p-6 max-w-lg w-full mx-4 border border-border bg-overlay ${panelClassName ?? ''}`}
-        style={{ boxShadow: 'var(--shadow-overlay)', animation: 'overlayEnter 150ms ease-out both' }}
+        // Focus can rest on the panel itself when every control is disabled
+        // (a write in flight), so the focus trap always has a target.
+        tabIndex={-1}
+        className={`relative rounded-xl p-6 max-w-lg w-full mx-4 border border-border bg-overlay shadow-[var(--shadow-overlay)] outline-none focus-visible:shadow-[inset_0_0_0_3px_var(--brand-glow),var(--shadow-overlay)] ${panelClassName ?? ''}`}
+        style={{ animation: 'overlayEnter 150ms ease-out both' }}
       >
         {children}
       </div>

@@ -466,12 +466,49 @@ async def check_reassignment_allowed(
     return None
 
 
+async def _project_for_actor(
+    db: AsyncSession, project_id: str, user_id: str, auth
+) -> Project:
+    """Load the project for a user, or for a service key by its org boundary.
+
+    ``auth`` is optional: without it (the helper's own paths) this is exactly
+    ``load_project_for_user``. A service key is authorized by its org and
+    allowlist, never by its minter's personal project standing.
+    """
+    if auth is not None and auth.key_kind == "service":
+        from sessionfs.server.auth.dependencies import (
+            assert_service_key_can_access_project,
+        )
+
+        project = (
+            await db.execute(select(Project).where(Project.id == project_id))
+        ).scalar_one_or_none()
+        if project is None:
+            raise HTTPException(404, "Project not found")
+        await assert_service_key_can_access_project(db, auth, project)
+        return project
+    return await load_project_for_user(project_id, db, user_id)
+
+
+async def _visible_org(db: AsyncSession, project: Project, user_id: str, auth) -> str | None:
+    if auth is not None:
+        return await visible_persona_org_id(
+            db,
+            project,
+            user_id=user_id,
+            key_kind=auth.key_kind,
+            key_org_id=auth.org_id,
+        )
+    return await visible_persona_org_id(db, project, user_id=user_id)
+
+
 async def _canonical_persona_name(
     db: AsyncSession,
     project: Project,
     name: str,
     *,
     user_id: str,
+    auth=None,
 ) -> str | None:
     """Best-effort normalize ``name`` to a canonical active persona name.
 
@@ -479,7 +516,7 @@ async def _canonical_persona_name(
     org the caller can see), returning ``None`` when no case-insensitive
     active match exists so the caller can keep the value as-is.
     """
-    visible_org = await visible_persona_org_id(db, project, user_id=user_id)
+    visible_org = await _visible_org(db, project, user_id, auth)
     row = await resolve_persona(
         db,
         project.id,
@@ -508,6 +545,13 @@ async def create_ticket_action(
     display_name: str,
     due_date: date | str | None = None,
     estimated_effort: str | None = None,
+    context_refs: list[str] | None = None,
+    append_provenance: bool = True,
+    actor_type: str = "user",
+    service_key_id: str | None = None,
+    service_key_name: str | None = None,
+    auth=None,
+    require_editor: bool = False,
 ) -> str:
     """Create a ticket as the confirming user; caller owns the commit.
 
@@ -526,13 +570,14 @@ async def create_ticket_action(
     if isinstance(due_date, str):
         due_date = date.fromisoformat(due_date)
 
-    project = await load_project_for_user(project_id, db, user_id)
+    project = await _project_for_actor(db, project_id, user_id, auth)
     await check_project_feature(ctx, "agent_tickets", project, db)
 
     from sessionfs.server.services.scope_locks import lock_project_scope_authorized
 
     await lock_project_scope_authorized(
-        db, project, user_id=user_id, ctx=ctx, feature="agent_tickets"
+        db, project, user_id=user_id, ctx=ctx, feature="agent_tickets", auth=auth,
+        edit=require_editor,
     )
 
     if kind == "issue" and not await user_is_project_admin(db, user_id, project):
@@ -543,13 +588,17 @@ async def create_ticket_action(
         )
 
     initial_status = "open"
-    if not await user_can_edit_project(db, user_id, project):
+    # A service key is authorized by its scopes, not the minter's project
+    # standing (same rule as the ticket route), so it is never demoted.
+    if actor_type != "service_key" and not await user_can_edit_project(
+        db, user_id, project
+    ):
         initial_status = "suggested"
 
     normalized_assigned_to = assigned_to or None
     if normalized_assigned_to is not None:
         canonical = await _canonical_persona_name(
-            db, project, normalized_assigned_to, user_id=user_id
+            db, project, normalized_assigned_to, user_id=user_id, auth=auth
         )
         if canonical is not None:
             normalized_assigned_to = canonical
@@ -564,7 +613,11 @@ async def create_ticket_action(
         id=f"tk_{uuid.uuid4().hex[:16]}",
         project_id=project_id,
         title=title,
-        description=description + _provenance_line(conversation_id, display_name),
+        description=(
+            description + _provenance_line(conversation_id, display_name)
+            if append_provenance
+            else description
+        ),
         priority=priority,
         assigned_to=normalized_assigned_to,
         assigned_user_id=(
@@ -574,13 +627,13 @@ async def create_ticket_action(
         created_by_session_id=None,
         created_by_persona=None,
         status=initial_status,
-        context_refs="[]",
+        context_refs=json.dumps(context_refs or []),
         file_refs="[]",
         related_sessions="[]",
         acceptance_criteria=json.dumps(acceptance_criteria),
-        actor_type="user",
-        service_key_id=None,
-        service_key_name=None,
+        actor_type=actor_type,
+        service_key_id=service_key_id,
+        service_key_name=service_key_name,
         kind=kind,
         parent_ticket_id=None,
         due_date=due_date,
@@ -591,9 +644,16 @@ async def create_ticket_action(
 
     # The ticket timeline: the same create-time events the ticket route
     # writes, attributed to the confirming user.
-    await record_ticket_event(
-        db, ticket, "created", actor_type="user", actor_user_id=user_id
-    )
+    if actor_type == "service_key":
+        # The timeline vocabulary says ``service``; a key has no user actor.
+        actor: dict[str, str | None] = {
+            "actor_type": "service",
+            "actor_user_id": None,
+            "actor_label": service_key_name,
+        }
+    else:
+        actor = {"actor_type": "user", "actor_user_id": user_id}
+    await record_ticket_event(db, ticket, "created", **actor)
     if due_date is not None:
         await record_ticket_event(
             db,
@@ -601,8 +661,7 @@ async def create_ticket_action(
             "due_date_set",
             field="due_date",
             after=due_date,
-            actor_type="user",
-            actor_user_id=user_id,
+            **actor,
         )
     if estimated_effort is not None:
         await record_ticket_event(
@@ -611,8 +670,7 @@ async def create_ticket_action(
             "estimate_set",
             field="estimated_effort",
             after=estimated_effort,
-            actor_type="user",
-            actor_user_id=user_id,
+            **actor,
         )
     if resolved_assigned_user is not None:
         await record_ticket_event(
@@ -621,8 +679,7 @@ async def create_ticket_action(
             "assigned",
             field="assigned_user_id",
             after={"user_id": resolved_assigned_user.id},
-            actor_type="user",
-            actor_user_id=user_id,
+            **actor,
         )
     elif normalized_assigned_to is not None:
         await record_ticket_event(
@@ -631,13 +688,15 @@ async def create_ticket_action(
             "assigned",
             field="assigned_to",
             after={"persona": normalized_assigned_to},
-            actor_type="user",
-            actor_user_id=user_id,
+            **actor,
         )
 
-    await ticket_watchers.subscribe_guarded(
-        db, ticket_id=ticket.id, user_id=user_id, source="creator"
-    )
+    if actor_type != "service_key":
+        # A service key acts on its minter's behalf: the minter is not
+        # auto-subscribed (same rule as the ticket route).
+        await ticket_watchers.subscribe_guarded(
+            db, ticket_id=ticket.id, user_id=user_id, source="creator"
+        )
     if initial_status != "suggested":
         # Person assignment wins outright; a persona assignment maps to its
         # human owner only when the mapping is unambiguous.
@@ -654,7 +713,7 @@ async def create_ticket_action(
                 db,
                 project_id=project_id,
                 name=normalized_assigned_to,
-                org_id=await visible_persona_org_id(db, project, user_id=user_id),
+                org_id=await _visible_org(db, project, user_id, auth),
             )
             if assignee_human is not None:
                 notify_user_id, notify_persona_name = assignee_human
@@ -672,7 +731,9 @@ async def create_ticket_action(
                 ticket=ticket,
                 kind="assignment",
                 summary=notify_summary,
-                actor_user_id=user_id,
+                actor_user_id=None if actor_type == "service_key" else user_id,
+                actor_type=actor_type,
+                service_key_name=service_key_name,
                 your_turn_user_id=notify_user_id,
             )
     return ticket.id
@@ -1056,6 +1117,7 @@ async def jira_publish_preflight(
     jira_template_version: int | None = None,
     jira_template_builtin: bool | None = None,
     jira_sprint_id: int | None = None,
+    auth=None,
 ) -> tuple[Project, OrgTrackerConnection, TrackerProjectMapping]:
     """Re-check publish preconditions for a create-ticket-and-publish confirm.
 
@@ -1065,8 +1127,12 @@ async def jira_publish_preflight(
     so the confirm handler records the same per-target failures.  Called BEFORE
     the ticket is created so a failed gate creates nothing.
     """
-    project = await load_project_for_user(project_id, db, user_id)
-    if not await user_can_edit_project(db, user_id, project):
+    project = await _project_for_actor(db, project_id, user_id, auth)
+    # A service key is org-bound by ``_project_for_actor`` (the Jira route's
+    # rule); the editor predicate is a human-standing check.
+    if (auth is None or auth.key_kind != "service") and not await user_can_edit_project(
+        db, user_id, project
+    ):
         raise HTTPException(
             403,
             {
@@ -1176,6 +1242,7 @@ async def publish_ticket_to_jira(
     template_version: int | None = None,
     template_builtin: bool | None = None,
     sprint_id: int | None = None,
+    auth=None,
 ) -> dict:
     """Publish a just-created ticket to Jira through the shared publish path.
 
@@ -1212,7 +1279,7 @@ async def publish_ticket_to_jira(
     ticket = await db.get(Ticket, ticket_id)
     if ticket is None or ticket.project_id != project_id:
         raise HTTPException(404, "Ticket not found")
-    project = await load_project_for_user(project_id, db, actor_user_id)
+    project = await _project_for_actor(db, project_id, actor_user_id, auth)
     if project.org_id is None:
         raise HTTPException(
             409,
@@ -1280,13 +1347,14 @@ async def publish_ticket_to_jira(
         summary=sources.title,
         sections=sections,
         actor=actor,
-        actor_type="user",
-        service_key_id=None,
-        service_key_name=None,
+        actor_type=auth.actor_type if auth is not None else "user",
+        service_key_id=auth.service_key_id if auth is not None else None,
+        service_key_name=auth.service_key_name if auth is not None else None,
         dashboard_url=dashboard_url,
         overwrite_existing=overwrite_existing,
         jira_project_key=jira_project_key,
         sprint_id=sprint_id,
+        auth=auth,
     )
 
 

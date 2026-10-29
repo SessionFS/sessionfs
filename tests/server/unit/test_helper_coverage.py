@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import sessionfs.server.routes.helper as helper_routes
@@ -28,7 +29,9 @@ from sessionfs.judge.agent_stream import ToolCall
 from sessionfs.server.auth.project_access import (
     project_session_clause,
     user_can_access_project,
+    user_has_read_standing,
 )
+from sessionfs.server.email import mask_address
 from sessionfs.server.db.models import (
     AgentPersona,
     AgentRun,
@@ -50,7 +53,15 @@ from sessionfs.server.helper.context import (
     HelperScope,
     RetrievalBudget,
 )
-from sessionfs.server.helper.tools import _age, _fmt_dt_with_age, execute, tool_specs
+from sessionfs.server.helper.tools import (
+    _IdentityScope,
+    _age,
+    _fmt_dt_with_age,
+    _identity_person_label,
+    _identity_scope,
+    execute,
+    tool_specs,
+)
 
 
 def _now() -> datetime:
@@ -166,6 +177,7 @@ async def _make_ticket(
     status: str = "open",
     kind: str = "task",
     assigned_to: str | None = None,
+    assigned_user_id: str | None = None,
     created_by: User | None = None,
     description: str = "",
     acceptance_criteria: str = "[]",
@@ -182,6 +194,7 @@ async def _make_ticket(
         description=description,
         priority=priority,
         assigned_to=assigned_to,
+        assigned_user_id=assigned_user_id,
         created_by_user_id=(created_by or project.owner_id),
         status=status,
         acceptance_criteria=acceptance_criteria,
@@ -292,6 +305,32 @@ async def _make_persona(
     return persona
 
 
+async def _make_org_persona(
+    db: AsyncSession,
+    org: Organization,
+    *,
+    name: str,
+    represented: User,
+    role: str = "Engineer",
+    is_active: bool = True,
+) -> AgentPersona:
+    persona = AgentPersona(
+        id=f"ap_{uuid.uuid4().hex[:12]}",
+        project_id=None,
+        org_id=org.id,
+        name=name,
+        role=role,
+        is_active=is_active,
+        represented_user_id=represented.id,
+        created_by=represented.id,
+        updated_at=_now(),
+    )
+    db.add(persona)
+    await db.commit()
+    await db.refresh(persona)
+    return persona
+
+
 @pytest.fixture(autouse=True)
 async def _enterprise_test_user(db_session, test_user):
     """Tickets / agent runs / personas are plan-gated like their routes; the
@@ -347,6 +386,8 @@ def test_tool_specs_exposes_new_read_tools():
         "list_agent_runs",
         "get_agent_run",
         "list_personas",
+        "resolve_identity",
+        "list_project_groups",
     } <= names
 
 
@@ -418,6 +459,9 @@ async def test_list_tickets_filters_status_kind_and_assignee(db_session, test_us
     project = await _make_project(db_session, owner=test_user)
     await _make_ticket(db_session, project, title="open task", status="open", kind="task")
     await _make_ticket(db_session, project, title="done issue", status="done", kind="issue")
+    # The assignee filter now resolves through personas/people (GitHub #117), so
+    # the persona the ticket's ``assigned_to`` names must exist in scope.
+    await _make_persona(db_session, project, name="scout")
     await _make_ticket(db_session, project, title="assigned", assigned_to="scout")
 
     ctx = _ctx(db_session, test_user, audit=RecordingSink())
@@ -432,6 +476,257 @@ async def test_list_tickets_filters_status_kind_and_assignee(db_session, test_us
     assigned = await _run(ctx, "list_tickets", {"project_id": project.id, "assignee": "scout"})
     assert "assigned" in assigned.content
     assert "open task" not in assigned.content
+
+
+# ── resolve_identity ──
+
+
+@pytest.mark.asyncio
+async def test_resolve_identity_matches_persona_exact_and_insensitive(db_session, test_user):
+    project = await _make_project(db_session, owner=test_user)
+    await _make_persona(db_session, project, name="scout", role="Security reviewer")
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+
+    exact = await _run(ctx, "resolve_identity", {"name": "scout"})
+    assert not exact.is_error
+    assert "Personas matching 'scout':" in exact.content
+    assert "Security reviewer" in exact.content
+
+    ci = await _run(ctx, "resolve_identity", {"name": "SCOUT"})
+    assert "Personas matching 'SCOUT':" in ci.content
+    assert "Security reviewer" in ci.content
+
+
+@pytest.mark.asyncio
+async def test_resolve_identity_matches_person_by_display_and_email(db_session, test_user):
+    org = await _make_org(db_session)
+    await _add_member(db_session, org=org, user=test_user, role="admin")
+    alice = await _make_user(
+        db_session, email="alice@example.com", display_name="Alice Smith"
+    )
+    await _add_member(db_session, org=org, user=alice, role="member")
+    project = await _make_project(db_session, owner=test_user, org=org)
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    # Display-name match (caller is an org admin → full email is shown).
+    result = await _run(ctx, "resolve_identity", {"name": "Alice Smith"})
+    assert not result.is_error
+    assert "People matching 'Alice Smith':" in result.content
+    assert "Alice Smith" in result.content
+    assert "alice@example.com" in result.content
+
+    # Email local-part match.
+    local = await _run(ctx, "resolve_identity", {"name": "alice"})
+    assert "Alice Smith" in local.content
+
+    # Full email match.
+    full = await _run(ctx, "resolve_identity", {"name": "alice@example.com"})
+    assert "Alice Smith" in full.content
+
+
+@pytest.mark.asyncio
+async def test_resolve_identity_no_match(db_session, test_user):
+    project = await _make_project(db_session, owner=test_user)
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    result = await _run(ctx, "resolve_identity", {"name": "nobody"})
+    assert not result.is_error
+    assert result.content == "No persona or person matched 'nobody'."
+
+
+@pytest.mark.asyncio
+async def test_resolve_identity_lists_persona_and_person_candidates(db_session, test_user):
+    org = await _make_org(db_session)
+    await _add_member(db_session, org=org, user=test_user, role="admin")
+    alice = await _make_user(
+        db_session, email="alice@example.com", display_name="Alice Smith"
+    )
+    await _add_member(db_session, org=org, user=alice, role="member")
+    await _make_project(db_session, owner=test_user, org=org)
+    # "alice" is both an org persona and the email local-part of a person, so
+    # resolve_identity reports both candidates rather than picking one.
+    await _make_org_persona(db_session, org, name="alice", represented=alice)
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    result = await _run(ctx, "resolve_identity", {"name": "alice"})
+    assert not result.is_error
+    assert "Personas matching 'alice':" in result.content
+    assert "People matching 'alice':" in result.content
+    assert "Alice Smith" in result.content
+
+
+@pytest.mark.asyncio
+async def test_resolve_identity_person_in_other_org_never_resolves(db_session, test_user):
+    my_org = await _make_org(db_session)
+    await _add_member(db_session, org=my_org, user=test_user, role="admin")
+    await _make_project(db_session, owner=test_user, org=my_org)
+
+    other_org = await _make_org(db_session)
+    alice = await _make_user(
+        db_session, email="alice@example.com", display_name="Alice Smith"
+    )
+    await _add_member(db_session, org=other_org, user=alice, role="member")
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    result = await _run(ctx, "resolve_identity", {"name": "alice"})
+    assert not result.is_error
+    assert result.content == "No persona or person matched 'alice'."
+
+
+@pytest.mark.asyncio
+async def test_list_tickets_assignee_matches_person_and_representing_persona(
+    db_session, test_user,
+):
+    org = await _make_org(db_session)
+    await _add_member(db_session, org=org, user=test_user, role="admin")
+    alice = await _make_user(
+        db_session, email="alice@example.com", display_name="Alice Smith"
+    )
+    await _add_member(db_session, org=org, user=alice, role="member")
+    project = await _make_project(db_session, owner=test_user, org=org)
+
+    # An org persona "alice" that represents Alice, plus a ticket assigned
+    # directly to Alice's user id and another assigned to the persona name.
+    await _make_org_persona(db_session, org, name="alice", represented=alice)
+    await _make_ticket(db_session, project, title="direct", assigned_user_id=alice.id)
+    await _make_ticket(db_session, project, title="via persona", assigned_to="alice")
+    await _make_ticket(db_session, project, title="someone else", assigned_to="scout")
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    result = await _run(ctx, "list_tickets", {"project_id": project.id, "assignee": "alice"})
+    assert not result.is_error
+    # The output names what "alice" resolved to.
+    assert "'alice' matched personas alice; people Alice Smith" in result.content
+    assert "direct" in result.content
+    assert "via persona" in result.content
+    assert "someone else" not in result.content
+
+
+@pytest.mark.asyncio
+async def test_list_tickets_assignee_unknown_is_reported(db_session, test_user):
+    project = await _make_project(db_session, owner=test_user)
+    await _make_ticket(db_session, project, title="unassigned", assigned_to="scout")
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    result = await _run(ctx, "list_tickets", {"project_id": project.id, "assignee": "ghost"})
+    assert not result.is_error
+    assert result.content == "No persona or person matched 'ghost'."
+
+
+@pytest.mark.asyncio
+async def test_list_tickets_assignee_persona_name_returns_each_ticket_once(
+    db_session, test_user,
+):
+    org = await _make_org(db_session)
+    await _add_member(db_session, org=org, user=test_user, role="admin")
+    alice = await _make_user(
+        db_session, email="alice@example.com", display_name="Alice Smith"
+    )
+    await _add_member(db_session, org=org, user=alice, role="member")
+    project = await _make_project(db_session, owner=test_user, org=org)
+
+    # "alice" is a persona name (several tickets) and the person the persona
+    # represents (one direct assignment).  Every ticket must surface exactly
+    # once — the persona and person paths are OR'd in one SQL query, never
+    # unioned into duplicates.
+    await _make_org_persona(db_session, org, name="alice", represented=alice)
+    by_persona = [
+        await _make_ticket(db_session, project, title=f"persona {i}", assigned_to="alice")
+        for i in range(3)
+    ]
+    by_person = await _make_ticket(
+        db_session, project, title="person", assigned_user_id=alice.id
+    )
+    other = await _make_ticket(db_session, project, title="other", assigned_to="scout")
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    result = await _run(ctx, "list_tickets", {"project_id": project.id, "assignee": "alice"})
+    assert not result.is_error
+    for t in (*by_persona, by_person):
+        assert result.content.count(t.id) == 1
+    assert other.id not in result.content
+
+
+@pytest.mark.asyncio
+async def test_list_tickets_assignee_finds_deactivated_persona_tickets(
+    db_session, test_user,
+):
+    # The raw assigned_to string must always be OR'd in (GitHub #117): a ticket
+    # left assigned to a now-deactivated persona is still found by that name.
+    project = await _make_project(db_session, owner=test_user)
+    persona = await _make_persona(db_session, project, name="scout")
+    await _make_ticket(db_session, project, title="legacy assignment", assigned_to="scout")
+    persona.is_active = False
+    await db_session.commit()
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    result = await _run(ctx, "list_tickets", {"project_id": project.id, "assignee": "scout"})
+    assert not result.is_error
+    assert "legacy assignment" in result.content
+
+
+@pytest.mark.asyncio
+async def test_list_tickets_assignee_does_not_prefix_match_persona(
+    db_session, test_user,
+):
+    # Persona matching is exact/case-insensitive only (GitHub #117): a short
+    # assignee like "sa" must not pull persona "sam".
+    project = await _make_project(db_session, owner=test_user)
+    await _make_persona(db_session, project, name="sam")
+    await _make_ticket(db_session, project, title="sam ticket", assigned_to="sam")
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    result = await _run(ctx, "list_tickets", {"project_id": project.id, "assignee": "sa"})
+    assert not result.is_error
+    assert result.content == "No persona or person matched 'sa'."
+
+
+@pytest.mark.asyncio
+async def test_identity_scope_query_count_is_constant_in_project_count(
+    db_engine, db_session, test_user,
+):
+    # GitHub #117: collecting personas/people must issue a fixed number of SQL
+    # statements, never one query per project.  20 projects (each with a
+    # persona) would blow past a small bound under the old per-project loop.
+    org = await _make_org(db_session)
+    await _add_member(db_session, org=org, user=test_user, role="admin")
+    projects = [
+        await _make_project(db_session, owner=test_user, org=org) for _ in range(20)
+    ]
+    for project in projects:
+        await _make_persona(db_session, project, name="scout")
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    statements: list[str] = []
+
+    def _on_execute(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(db_engine.sync_engine, "before_cursor_execute", _on_execute)
+    try:
+        scope = await _identity_scope(ctx, projects, name="scout")
+    finally:
+        event.remove(db_engine.sync_engine, "before_cursor_execute", _on_execute)
+
+    assert len(projects) == 20
+    assert scope.personas  # the batched project-persona query found every row
+    assert len(statements) <= 8
+
+
+def test_identity_person_label_falls_back_to_masked_email():
+    # GitHub #117: the display-name fallback must be the address we actually
+    # show — masked when the caller lacks read standing — never the raw email.
+    user = SimpleNamespace(id="u1", email="alice@example.com", display_name=None)
+    scope = _IdentityScope(
+        personas=[],
+        people={},
+        allowed_org_ids={"org1"},
+        representing_names={},
+        represented_display={},
+        standing_by_org={"org1": False},
+    )
+    label = _identity_person_label(user, {"org1"}, scope)
+    masked = mask_address("alice@example.com")
+    assert masked in label
+    assert "alice@example.com" not in label
 
 
 # ── get_ticket ──
@@ -486,6 +781,36 @@ async def test_get_ticket_inaccessible_is_not_found(db_session, test_user):
     result = await _run(ctx, "get_ticket", {"ticket_id": ticket.id})
     assert not result.is_error
     assert result.content == "Ticket not found."
+
+
+@pytest.mark.asyncio
+async def test_get_ticket_masks_emails_without_read_standing(db_session, test_user):
+    owner = await _make_user(
+        db_session, email="owner@example.com", display_name="Owner", tier="team"
+    )
+    project = await _make_project(
+        db_session, owner=owner, remote="github.com/acme/repo"
+    )
+    creator = await _make_user(
+        db_session, email="creator@example.com", display_name="Creator Person"
+    )
+    ticket = await _make_ticket(db_session, project, title="secret", created_by=creator.id)
+
+    # The owner has read standing: the creator line shows the full address.
+    owner_ctx = _ctx(db_session, owner, audit=RecordingSink())
+    owner_result = await _run(owner_ctx, "get_ticket", {"ticket_id": ticket.id})
+    assert "creator@example.com" in owner_result.content
+
+    # A captured-session-only reader (no read standing) sees the masked address.
+    stranger = await _make_user(db_session, email="stranger@example.com")
+    await _make_session(db_session, stranger, project_id=None, remote="github.com/acme/repo")
+    assert await user_can_access_project(db_session, stranger.id, project) is True
+    assert await user_has_read_standing(db_session, stranger.id, project) is False
+
+    stranger_ctx = _ctx(db_session, stranger, audit=RecordingSink())
+    stranger_result = await _run(stranger_ctx, "get_ticket", {"ticket_id": ticket.id})
+    assert "creator@example.com" not in stranger_result.content
+    assert mask_address("creator@example.com") in stranger_result.content
 
 
 @pytest.mark.asyncio
@@ -1051,3 +1376,82 @@ def test_strip_ticket_and_wiki_citations_drop_unknown_ids():
         "[wiki:proj_0000000000000001/arch] kept "
     )
     assert helper_routes._strip_wiki_citations(wiki, set()) == " kept "
+
+
+@pytest.mark.asyncio
+async def test_resolve_identity_and_list_tickets_accept_user_id(db_session, test_user):
+    # The caller block and resolve_identity hand the model user ids, so both
+    # tools must resolve a person by id (GitHub #117 round 2).
+    org = await _make_org(db_session)
+    await _add_member(db_session, org=org, user=test_user, role="admin")
+    alice = await _make_user(
+        db_session, email="alice@example.com", display_name="Alice Smith"
+    )
+    await _add_member(db_session, org=org, user=alice, role="member")
+    project = await _make_project(db_session, owner=test_user, org=org)
+    await _make_ticket(
+        db_session, project, title="alice direct", assigned_user_id=alice.id
+    )
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    found = await _run(ctx, "resolve_identity", {"name": alice.id})
+    assert "Alice Smith" in found.content
+    listed = await _run(
+        ctx, "list_tickets", {"project_id": project.id, "assignee": alice.id}
+    )
+    assert "alice direct" in listed.content
+
+
+@pytest.mark.asyncio
+async def test_list_tickets_matched_persona_without_tickets_is_not_no_match(
+    db_session, test_user,
+):
+    # A persona that exists but has nothing under the filter must not be
+    # reported as unknown.
+    project = await _make_project(db_session, owner=test_user)
+    await _make_persona(db_session, project, name="atlas")
+    await _make_ticket(
+        db_session, project, title="atlas done", status="done", assigned_to="atlas"
+    )
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    result = await _run(
+        ctx,
+        "list_tickets",
+        {"project_id": project.id, "assignee": "atlas", "status": "open"},
+    )
+    assert not result.is_error
+    assert "No persona or person matched" not in result.content
+    assert "'atlas' matched personas atlas." in result.content
+    assert "No tickets matched." in result.content
+
+
+@pytest.mark.asyncio
+async def test_list_tickets_assignee_stays_inside_listed_projects(db_session, test_user):
+    # The raw assigned_to match never reaches a readable project that is not
+    # being listed.
+    listed = await _make_project(db_session, owner=test_user)
+    other = await _make_project(db_session, owner=test_user)
+    await _make_ticket(db_session, listed, title="in listed", assigned_to="ghost")
+    await _make_ticket(db_session, other, title="in other", assigned_to="ghost")
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    result = await _run(
+        ctx, "list_tickets", {"project_id": listed.id, "assignee": "ghost"}
+    )
+    assert "in listed" in result.content
+    assert "in other" not in result.content
+
+
+@pytest.mark.asyncio
+async def test_resolve_identity_treats_like_wildcards_literally(db_session, test_user):
+    org = await _make_org(db_session)
+    await _add_member(db_session, org=org, user=test_user, role="admin")
+    bob = await _make_user(db_session, email="bob@example.com", display_name="Bob Jones")
+    await _add_member(db_session, org=org, user=bob, role="member")
+    await _make_project(db_session, owner=test_user, org=org)
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    for needle in ("%", "_ob", "b%"):
+        result = await _run(ctx, "resolve_identity", {"name": needle})
+        assert "Bob Jones" not in result.content, needle

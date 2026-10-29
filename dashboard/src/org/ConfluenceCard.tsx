@@ -154,6 +154,7 @@ function EnterpriseConfluenceCard({
 
       {sections.length > 1 ? (
         <Tabs
+          variant="subtle"
           aria-label="Confluence sections"
           tabs={sections.map((key) => ({ key, label: SECTION_LABELS[key], content: content[key] }))}
           activeKey={active}

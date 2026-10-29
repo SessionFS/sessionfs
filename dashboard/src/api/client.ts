@@ -395,11 +395,24 @@ export interface HelperWikiCitation {
   at?: string | null;
 }
 
+/** Lines of a stored meeting transcript, cited with `[meeting:<id> L<a>-<b>]`. */
+export interface HelperMeetingCitation {
+  kind?: 'meeting';
+  meeting_id: string;
+  title: string | null;
+  line_start?: number | null;
+  line_end?: number | null;
+  project_id?: string | null;
+  group_id?: string | null;
+  at?: string | null;
+}
+
 export type HelperCitationRef =
   | HelperCitation
   | HelperDocCitation
   | HelperTicketCitation
-  | HelperWikiCitation;
+  | HelperWikiCitation
+  | HelperMeetingCitation;
 
 export interface HelperMessage {
   id: string;
@@ -2731,6 +2744,132 @@ export interface ProjectGroupUpdate {
   description?: string | null;
 }
 
+// ── Meeting transcripts (GitHub #116) ──
+
+export type MeetingSource = 'manual_paste' | 'file_upload';
+export type MeetingExtractionStatus = 'none' | 'done' | 'failed';
+export type MeetingResolutionMethod = 'exact_email' | 'display_name' | 'persona' | 'manual' | 'unresolved';
+export type MeetingItemKind = 'action' | 'decision';
+export type MeetingItemStatus = 'pending' | 'promoted' | 'dismissed';
+
+export interface MeetingParticipant {
+  id: string;
+  name_raw: string;
+  email_raw: string | null;
+  user_id: string | null;
+  persona_name: string | null;
+  resolution_method: MeetingResolutionMethod;
+  resolved_by_user_id: string | null;
+}
+
+export interface MeetingActionItem {
+  id: string;
+  kind: MeetingItemKind;
+  description: string;
+  owner_participant_id: string | null;
+  /** YYYY-MM-DD */
+  due_date: string | null;
+  /** 1-based, inclusive, into the stored text. */
+  line_start: number;
+  line_end: number;
+  status: MeetingItemStatus;
+  promoted_ticket_id: string | null;
+  extracted_at: string | null;
+}
+
+export interface MeetingSummary {
+  id: string;
+  org_id: string | null;
+  project_id: string | null;
+  group_id: string | null;
+  title: string;
+  meeting_at: string | null;
+  duration_minutes: number | null;
+  source: MeetingSource;
+  line_count: number;
+  dlp_findings: number;
+  extraction_status: MeetingExtractionStatus;
+  /** Classified reason when extraction failed; newer servers only. */
+  extraction_error?: string | null;
+  /** Pending action items / decisions; newer servers only. */
+  pending_action_count?: number | null;
+  decision_count?: number | null;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+}
+
+export interface MeetingDetail extends MeetingSummary {
+  /** DLP-redacted, newline-normalised; line numbers refer to this text. */
+  content: string;
+  content_sha256: string;
+  participants: MeetingParticipant[];
+  action_items: MeetingActionItem[];
+  /** e.g. `duplicate_of: meet_…`, `extraction_skipped: llm_key_required`. */
+  warnings: string[];
+}
+
+export interface MeetingExtraction extends MeetingDetail {
+  dropped_items: number;
+}
+
+export interface MeetingList {
+  meetings: MeetingSummary[];
+  next_cursor: string | null;
+}
+
+export interface MeetingCreate {
+  title: string;
+  content: string;
+  meeting_at?: string | null;
+  duration_minutes?: number | null;
+  source: MeetingSource;
+  extract?: boolean;
+}
+
+export interface MeetingPromotePreview {
+  meeting_id: string;
+  item_id: string;
+  title: string;
+  description: string;
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  kind: 'task' | 'issue';
+  assigned_to: string | null;
+  assigned_user_id: string | null;
+  due_date: string | null;
+  context_refs: string[];
+  /** Fixed for a project meeting; null for a group meeting (pick one). */
+  target_project_id: string | null;
+  target_project_options?: { id: string; name: string }[] | null;
+  /** Publishing this ticket to Jira would pass every server-side gate (plan,
+   *  standing, connection, mapping) — for a group meeting, for the target
+   *  passed as `target_project_id`. Older servers omit it. */
+  jira_publish_available?: boolean;
+}
+
+export interface MeetingPromoteRequest {
+  title: string;
+  description: string;
+  priority: 'critical' | 'high' | 'medium' | 'low';
+  kind: 'task' | 'issue';
+  assigned_to: string | null;
+  assigned_user_id: string | null;
+  due_date: string | null;
+  target_project_id?: string | null;
+  publish_to_jira?: boolean;
+}
+
+export interface MeetingPromoteResult {
+  ticket_id: string;
+  item_id: string;
+  status: 'promoted';
+  published_to_jira: boolean;
+  warnings: string[];
+}
+
+export type MeetingScope = { kind: 'project'; id: string } | { kind: 'group'; id: string };
+
 export class ApiError extends Error {
   status: number;
   /** v0.10.x envelope code, when the response body parses cleanly. */
@@ -4648,6 +4787,76 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       request<ProjectGroupSummary[]>(`/api/v1/projects/${encodeURIComponent(projectId)}/groups`),
 
     listMyGroups: () => request<ProjectGroupSummary[]>('/api/v1/me/groups'),
+
+    // ── Meeting transcripts (GitHub #116) ──
+    listMeetings: (scope: MeetingScope, params: { q?: string; before?: string; limit?: number } = {}) => {
+      const sp = new URLSearchParams();
+      if (params.q) sp.set('q', params.q);
+      if (params.before) sp.set('before', params.before);
+      if (params.limit) sp.set('limit', String(params.limit));
+      const qs = sp.toString();
+      const base = scope.kind === 'project' ? 'projects' : 'groups';
+      return request<MeetingList>(
+        `/api/v1/${base}/${encodeURIComponent(scope.id)}/meetings${qs ? `?${qs}` : ''}`,
+      );
+    },
+
+    uploadMeeting: (scope: MeetingScope, body: MeetingCreate) => {
+      const base = scope.kind === 'project' ? 'projects' : 'groups';
+      return request<MeetingDetail>(`/api/v1/${base}/${encodeURIComponent(scope.id)}/meetings`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
+
+    getMeeting: (meetingId: string) =>
+      request<MeetingDetail>(`/api/v1/meetings/${encodeURIComponent(meetingId)}`),
+
+    deleteMeeting: (meetingId: string) =>
+      request<MeetingDetail>(`/api/v1/meetings/${encodeURIComponent(meetingId)}`, { method: 'DELETE' }),
+
+    extractMeeting: (meetingId: string) =>
+      request<MeetingExtraction>(`/api/v1/meetings/${encodeURIComponent(meetingId)}/extract`, {
+        method: 'POST',
+      }),
+
+    /** Exactly one of user_id / persona_name. */
+    resolveMeetingParticipant: (
+      meetingId: string,
+      participantId: string,
+      body: { user_id: string } | { persona_name: string },
+    ) =>
+      request<MeetingParticipant>(
+        `/api/v1/meetings/${encodeURIComponent(meetingId)}/participants/${encodeURIComponent(participantId)}`,
+        { method: 'PUT', body: JSON.stringify(body) },
+      ),
+
+    /** `targetProjectId` judges Jira availability for a group meeting's chosen project. */
+    previewMeetingPromote: (meetingId: string, itemId: string, targetProjectId?: string) =>
+      request<MeetingPromotePreview>(
+        `/api/v1/meetings/${encodeURIComponent(meetingId)}/action-items/${encodeURIComponent(itemId)}/promote/preview${
+          targetProjectId ? `?target_project_id=${encodeURIComponent(targetProjectId)}` : ''
+        }`,
+        { method: 'POST' },
+      ),
+
+    promoteMeetingItem: (meetingId: string, itemId: string, body: MeetingPromoteRequest) =>
+      request<MeetingPromoteResult>(
+        `/api/v1/meetings/${encodeURIComponent(meetingId)}/action-items/${encodeURIComponent(itemId)}/promote`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+
+    dismissMeetingItem: (meetingId: string, itemId: string) =>
+      request<MeetingActionItem>(
+        `/api/v1/meetings/${encodeURIComponent(meetingId)}/action-items/${encodeURIComponent(itemId)}/dismiss`,
+        { method: 'POST' },
+      ),
+
+    restoreMeetingItem: (meetingId: string, itemId: string) =>
+      request<MeetingActionItem>(
+        `/api/v1/meetings/${encodeURIComponent(meetingId)}/action-items/${encodeURIComponent(itemId)}/restore`,
+        { method: 'POST' },
+      ),
 
     // ── Share Links (v0.14.0) ──
     createShareLink: (sessionId: string, body: { expires_in_hours?: number; password?: string }) =>

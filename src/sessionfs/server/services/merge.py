@@ -27,6 +27,7 @@ from sessionfs.server.db.models import (
     KnowledgeEntry,
     KnowledgeLink,
     KnowledgePage,
+    MeetingTranscript,
     Project,
     ProjectFeatureGrandfather,
     ProjectGroupAccess,
@@ -63,6 +64,7 @@ _STRAIGHT_REASSIGN_MODELS = [
     ContextCompilation,
     RetrievalAuditContext,
     RetrievalAuditEvent,
+    MeetingTranscript,
 ]
 
 
@@ -422,6 +424,7 @@ async def _compute_merge_stats(
         ("wiki_page_revisions", WikiPageRevision),
         ("retrieval_audit_contexts", RetrievalAuditContext),
         ("retrieval_audit_events", RetrievalAuditEvent),
+        ("meeting_transcripts", MeetingTranscript),
     ]:
         count = (
             await db.execute(

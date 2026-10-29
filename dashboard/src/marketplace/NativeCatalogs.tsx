@@ -64,6 +64,7 @@ export function UseInYourTool() {
       {tools.length > 0 && (
         <div className="mt-5">
           <Tabs
+            variant="subtle"
             bare
             idPrefix="install-tool"
             aria-label="Tool"

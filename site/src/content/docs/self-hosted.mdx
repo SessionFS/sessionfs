@@ -381,6 +381,10 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 - **Check your sweep keys.** A `platform_sweeps:run` key only works while the admin who minted it and the user it runs as are still platform admins. `sfs admin service-keys list` now shows a key that has stopped working as `inactive`, with the reason. See [Scheduled sweeps](#scheduled-sweeps).
 - **Optional sweep CronJobs.** The chart can now schedule every sweep for you; see [Scheduled sweeps](#scheduled-sweeps).
 
+**Upgrading to v0.29.0** runs migrations 104 and 105 (meeting transcripts, participants and action items); both are additive. Also:
+
+- **Optional meeting retention sweep.** Stored meetings are deleted after the org's retention window (180 days by default); schedule the sweep if you use meetings. See [Scheduled sweeps](#scheduled-sweeps) and [Meetings](/meetings/).
+
 ## Troubleshooting
 
 ### Check pod status
@@ -651,9 +655,10 @@ Since v0.28.0 this is visible up front: minting or rotating such a key returns a
 | Helper retention | `POST /api/v1/admin/sweeps/helper-retention` | Deletes session helper messages older than the org's `helper_retention_days` (default 90), then removes empty threads |
 | Ticket digest | `POST /api/v1/admin/sweeps/ticket-notifications` | Emails each user one digest of their pending ticket notifications, following their preference (`off`, `your_turn` by default, or `all`). Access is re-checked before anything is sent (v0.24.0) |
 | Jira sync | `POST /api/v1/admin/sweeps/jira-sync` | Delivers queued outbound Jira changes (status moves, comments, completion evidence) with retry and backoff, and expires old ones. Body `{"limit": N, "budget_seconds": S}` (defaults 100 and 50 s) (v0.26.0). See [Jira Cloud](/integrations/jira/) |
+| Meeting retention | `POST /api/v1/admin/sweeps/meeting-retention` | Deletes stored meeting transcripts older than the org's `meeting_retention_days` (default 180) and meetings deleted more than 30 days ago, together with their participants and action items (v0.29.0). See [Meetings](/meetings/) |
 | Confluence publish | `POST /api/v1/admin/sweeps/confluence-publish` | Republishes opted-in wiki pages and, where the mapping allows it, the context document; unchanged pages are skipped and pages edited in Confluence are never overwritten (v0.26.0). See [Confluence Cloud](/integrations/confluence/) |
 
-Suggested schedules: KB compile every 15 minutes, org digest and helper retention daily, ticket digest every 10 minutes, **Jira sync every minute** (its first retry is due one minute after a failed delivery; without the job a failed change never reaches Jira) and Confluence publish every 15 minutes. Every sweep is safe to run repeatedly and returns immediately when there is nothing to do.
+Suggested schedules: KB compile every 15 minutes, org digest, helper retention and meeting retention daily, ticket digest every 10 minutes, **Jira sync every minute** (its first retry is due one minute after a failed delivery; without the job a failed change never reaches Jira) and Confluence publish every 15 minutes. Every sweep is safe to run repeatedly and returns immediately when there is nothing to do.
 
 Example CronJob for the KB compile sweep, every 15 minutes:
 
@@ -724,6 +729,12 @@ api:
       schedule: "*/15 * * * *"        # every 15 minutes
       existingSecret: sessionfs-sweep-key
       secretKey: confluence-publish-api-key
+  meetingRetention:
+    enabled: true
+    cronJob:
+      schedule: "30 3 * * *"          # daily
+      existingSecret: sessionfs-sweep-key
+      secretKey: meeting-retention-api-key
 ```
 
 Each CronJob pod sends one authenticated request to the API sweep endpoint and exits; the work itself runs in the API pods. The key is read from the Secret into an environment variable and never printed, and the pods don't mount a Kubernetes service account token. When network policies are enabled, the chart adds an ingress rule so each enabled CronJob can reach the API, and an egress policy that lets the CronJob pods reach only DNS and the API, so the key can't be sent anywhere else.

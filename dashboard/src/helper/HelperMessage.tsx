@@ -5,6 +5,7 @@ import { Alert, Button, Markdown } from '../components/ui';
 import HelperActionCard from './HelperActionCard';
 import {
   parseCiteHref,
+  meetingCiteHref,
   sourceHref,
   ticketHref,
   wikiHref,
@@ -128,6 +129,7 @@ function sourceLabel(s: Source, messageIndex?: number): string {
   if (s.kind === 'doc') return s.title;
   if (s.kind === 'ticket') return s.title || `Ticket ${s.ticketId}`;
   if (s.kind === 'wiki') return s.title || `Wiki ${s.slug}`;
+  if (s.kind === 'meeting') return `${s.title || `Meeting ${s.meetingId}`}${meetingLinesText(s.ranges)}`;
   const indexes = messageIndex !== undefined ? [messageIndex] : s.messageIndexes;
   const msgs = indexes.length
     ? `, message${indexes.length > 1 ? 's' : ''} ${indexes.join(', ')}`
@@ -136,6 +138,14 @@ function sourceLabel(s: Source, messageIndex?: number): string {
 }
 
 const NEW_TAB = ' (opens in new tab)';
+
+/** ", lines 12–15" / ", lines 3–4 and 9" for a meeting source's ranges. */
+function meetingLinesText(ranges: { start: number; end: number }[]): string {
+  if (ranges.length === 0) return '';
+  const parts = ranges.map((r) => (r.start === r.end ? `${r.start}` : `${r.start}–${r.end}`));
+  const single = ranges.length === 1 && ranges[0].start === ranges[0].end;
+  return `, line${single ? '' : 's'} ${parts.join(', ')}`;
+}
 
 /**
  * Inline footnote chip for a `[session:…]` or `[doc:…]` marker. Opens the
@@ -148,10 +158,13 @@ const NEW_TAB = ' (opens in new tab)';
 export function CitationChip({
   source,
   messageIndex,
+  lines,
   onNavigate,
 }: {
   source: Source;
   messageIndex?: number;
+  /** The line range this marker named (meeting sources). */
+  lines?: { start: number; end: number };
   onNavigate: () => void;
 }) {
   const base =
@@ -173,7 +186,7 @@ export function CitationChip({
       </span>
     );
   }
-  if ((source.kind === 'ticket' || source.kind === 'wiki') && !source.verified) {
+  if ((source.kind === 'ticket' || source.kind === 'wiki' || source.kind === 'meeting') && !source.verified) {
     return (
       <span className={`${base} bg-bg-sunken text-text-tertiary`} title="Source not available to you">
         {source.n}
@@ -209,6 +222,21 @@ export function CitationChip({
         onClick={onNavigate}
         aria-label={`Source ${source.n}: ${sourceLabel(source)}`}
         title={sourceLabel(source)}
+        className={`${base} bg-[color-mix(in_oklch,var(--brand)_16%,transparent)] text-brand transition-colors hover:bg-brand hover:text-text-on-brand outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]`}
+      >
+        {source.n}
+      </Link>
+    );
+  }
+  if (source.kind === 'meeting') {
+    const range = lines ?? source.ranges[0] ?? null;
+    const label = `${source.title || `Meeting ${source.meetingId}`}${range ? meetingLinesText([range]) : ''}`;
+    return (
+      <Link
+        to={meetingCiteHref(source.meetingId, range)}
+        onClick={onNavigate}
+        aria-label={`Source ${source.n}: ${label}`}
+        title={label}
         className={`${base} bg-[color-mix(in_oklch,var(--brand)_16%,transparent)] text-brand transition-colors hover:bg-brand hover:text-text-on-brand outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]`}
       >
         {source.n}
@@ -335,6 +363,34 @@ function Sources({ sources, onNavigate }: { sources: Source[]; onNavigate: () =>
                     <span className="sr-only">{chipName(s)}</span>
                   </span>
                 )}
+              </li>
+            );
+          }
+          if (s.kind === 'meeting') {
+            const first = s.ranges[0];
+            return (
+              <li key={`meeting:${s.meetingId}`} className="min-w-0 max-w-full">
+                <Link
+                  to={meetingCiteHref(s.meetingId, first)}
+                  onClick={onNavigate}
+                  aria-label={chipName(s)}
+                  title={sourceTitle(s)}
+                  className={CHIP}
+                >
+                  <SourceNumber n={s.n} />
+                  <MeetingIcon />
+                  <span className="min-w-0 truncate">{s.title || 'Meeting'}</span>
+                  {first && (
+                    <span className="shrink-0 font-mono text-2xs text-text-tertiary">
+                      {s.ranges
+                        .slice(0, 2)
+                        .map((r) => (r.start === r.end ? `L${r.start}` : `L${r.start}–${r.end}`))
+                        .join(', ')}
+                      {s.ranges.length > 2 ? '…' : ''}
+                    </span>
+                  )}
+                  <SourceAge age={sourceAgeLabel(s)} />
+                </Link>
               </li>
             );
           }
@@ -477,17 +533,34 @@ const CitationContext = createContext<{ sources: Source[]; onNavigate: () => voi
   onNavigate: () => {},
 });
 
-function CitationRef({ n, messageIndex }: { n: number; messageIndex?: number }) {
+function CitationRef({
+  n,
+  messageIndex,
+  lines,
+}: {
+  n: number;
+  messageIndex?: number;
+  lines?: { start: number; end: number };
+}) {
   const { sources, onNavigate } = useContext(CitationContext);
   const s = sources.find((x) => x.n === n);
-  return s ? <CitationChip source={s} messageIndex={messageIndex} onNavigate={onNavigate} /> : null;
+  return s ? <CitationChip source={s} messageIndex={messageIndex} lines={lines} onNavigate={onNavigate} /> : null;
+}
+
+/** A small "meeting" mark so a meeting source reads as one at a glance. */
+function MeetingIcon() {
+  return (
+    <svg className="h-3 w-3 shrink-0 text-text-tertiary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+    </svg>
+  );
 }
 
 /** Markdown link override: `#sfs-cite-<n>[-m<msg>]` becomes a footnote chip. */
 function renderCitationLink(href: string): ReactNode | undefined {
   const cite = parseCiteHref(href);
   if (!cite) return undefined;
-  return <CitationRef n={cite.n} messageIndex={cite.messageIndex} />;
+  return <CitationRef n={cite.n} messageIndex={cite.messageIndex} lines={cite.lines} />;
 }
 
 /** Citation chips first, then ticket / project / session references. */

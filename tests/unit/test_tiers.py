@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from sessionfs.server.tiers import (
     Tier,
     format_bytes,
@@ -14,8 +12,9 @@ from sessionfs.server.tiers import (
 
 
 class TestTierFeatures:
-    def test_free_has_no_features(self):
-        assert get_features_for_tier(Tier.FREE) == set()
+    def test_free_has_meetings(self):
+        # GitHub #116 — meetings is available on every tier, including free.
+        assert get_features_for_tier(Tier.FREE) == {"meetings"}
 
     def test_starter_has_cloud_sync(self):
         features = get_features_for_tier(Tier.STARTER)

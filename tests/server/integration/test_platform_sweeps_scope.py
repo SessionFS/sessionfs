@@ -43,6 +43,7 @@ SWEEPS: list[tuple[str, dict, str | None]] = [
     ("/api/v1/admin/sweeps/ticket-notifications", {}, "run_ticket_notifications_sweep"),
     ("/api/v1/admin/sweeps/confluence-publish", {}, "confluence_publish_sweep"),
     ("/api/v1/admin/sweeps/jira-sync", {}, "jira_sync_sweep"),
+    ("/api/v1/admin/sweeps/meeting-retention", {}, "meeting_retention_sweep"),
 ]
 SWEEP_PATHS = {path for path, _, _ in SWEEPS}
 

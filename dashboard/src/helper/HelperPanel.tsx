@@ -21,6 +21,7 @@ import {
   type HelperStoredScope,
   type HelperTicketCitation,
   type HelperWikiCitation,
+  type HelperMeetingCitation,
 } from '../api/client';
 import { useMe } from '../hooks/useMe';
 import { useToast } from '../hooks/useToast';
@@ -455,6 +456,26 @@ export default function HelperPanel({
             citations: [
               ...t.citations,
               { kind: 'wiki', project_id: c.project_id, slug: c.slug, title: c.title, at: c.at ?? null },
+            ],
+          }));
+        } else if (ev.event === 'meeting_citation') {
+          const c = JSON.parse(ev.data) as HelperMeetingCitation;
+          if (!c.meeting_id) return;
+          citationCount += 1;
+          patchAssistant((t) => ({
+            ...t,
+            citations: [
+              ...t.citations,
+              {
+                kind: 'meeting',
+                meeting_id: c.meeting_id,
+                title: c.title ?? null,
+                line_start: c.line_start ?? null,
+                line_end: c.line_end ?? null,
+                project_id: c.project_id ?? null,
+                group_id: c.group_id ?? null,
+                at: c.at ?? null,
+              },
             ],
           }));
         } else if (ev.event === 'doc_citation') {

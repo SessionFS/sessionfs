@@ -21,6 +21,7 @@ import PersonasTab from './PersonasTab';
 import TicketsTab from './TicketsTab';
 import type { TicketJiraSurface } from './tickets/constants';
 import AgentRunsTab from './AgentRunsTab';
+import MeetingsTab from '../meetings/MeetingsTab';
 import MarketplaceTab from './MarketplaceTab';
 import ProjectSettings from './ProjectSettings';
 import ProjectHeader from './ProjectHeader';
@@ -57,8 +58,9 @@ const SUB_TABS: Partial<Record<Section, { key: string; label: string }[]>> = {
   ],
   work: [
     { key: 'tickets', label: 'Tickets' },
+    { key: 'meetings', label: 'Meetings' },
     { key: 'agent-runs', label: 'Agent runs' },
-    { key: 'personas', label: 'Personas' },
+    { key: 'personas', label: 'Agents' },
   ],
   config: [
     { key: 'rules', label: 'Rules' },
@@ -75,6 +77,7 @@ const LEGACY_TABS: Record<string, [Section, string?]> = {
   history: ['knowledge', 'history'],
   tickets: ['work', 'tickets'],
   'agent-runs': ['work', 'agent-runs'],
+  meetings: ['work', 'meetings'],
   personas: ['work', 'personas'],
   rules: ['config', 'rules'],
   marketplace: ['config', 'marketplace'],
@@ -221,6 +224,29 @@ export default function ProjectDetail() {
       const params = new URLSearchParams(prev);
       if (on) params.set('due', 'overdue');
       else params.delete('due');
+      return params;
+    }, { replace: true });
+  }, [setSearchParams]);
+
+  // The open meeting and its highlighted lines live in the URL
+  // (?meeting=&lines=) so a helper citation or a shared link lands on them.
+  // Opening a meeting is a navigation (Back returns to the list); moving the
+  // highlight replaces the entry.
+  const openMeeting = useCallback((meetingId: string | null) => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      if (meetingId) params.set('meeting', meetingId);
+      else params.delete('meeting');
+      params.delete('lines');
+      return params;
+    });
+  }, [setSearchParams]);
+
+  const setMeetingLines = useCallback((lines: string | null) => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      if (lines) params.set('lines', lines);
+      else params.delete('lines');
       return params;
     }, { replace: true });
   }, [setSearchParams]);
@@ -376,6 +402,7 @@ export default function ProjectDetail() {
         <div className="mt-4">
           <Tabs
             bare
+            variant="subtle"
             idPrefix="project-sub"
             aria-label="Section views"
             activeKey={sub ?? subTabs[0].key}
@@ -528,6 +555,21 @@ export default function ProjectDetail() {
             onAssignedToMeChange={setAssignedToMe}
             overdue={searchParams.get('due') === 'overdue'}
             onOverdueChange={setOverdueFilter}
+          />
+        </Panel>
+      )}
+      {section === 'work' && sub === 'meetings' && (
+        <Panel padded sub={sub}>
+          <MeetingsTab
+            scope={{ kind: 'project', id: project.id }}
+            orgId={project.org_id}
+            scopeLabel={project.name || project.git_remote_normalized}
+            canEdit={canEdit}
+            canAdmin={isProjectAdmin}
+            meetingId={searchParams.get('meeting')}
+            lines={searchParams.get('lines')}
+            onOpenMeeting={openMeeting}
+            onLinesChange={setMeetingLines}
           />
         </Panel>
       )}

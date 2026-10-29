@@ -83,6 +83,10 @@ Each session records the AI model it ran on, as reported by the tool that captur
 
 Every session line shows its model, for example `[claude-code] model: deepseek-v4-pro`. A Claude Code session can show a DeepSeek model when Claude Code was pointed at DeepSeek. Long lists come in pages (up to 100 sessions, or 20 for a keyword search) that start with "Showing 1–100 of 240"; the helper pages through with `offset`. In a conversation scoped to one project, the helper can't reach another project's sessions: it tells you to start an unscoped conversation instead.
 
+### Who is asking (v0.29.0)
+
+The helper knows who you are, so "my tickets" and "what is assigned to me" work. A name is looked up as a person, a persona or a project group (by name, slug or abbreviation), and tickets assigned to either a persona or a person are found. It still reads only what you can already see.
+
 ### Project work items
 
 Beyond sessions and project knowledge, the helper reads the project's own work items and people — still only what you can already see:
@@ -93,11 +97,15 @@ Beyond sessions and project knowledge, the helper reads the project's own work i
 - **Personas** — `list_personas`. The project's own personas and the org personas visible from it, with role and active state.
 - **Jira issues** — `get_jira_issue`. The Jira issue linked to a ticket: summary, status, assignee, priority, labels, components, last update and the latest comments, read through the org's Jira connection. It takes a ticket id, never a free-form Jira key, so it can only read an issue a ticket you can see already points at. Comments that came from Jira are marked as such on `get_ticket`.
 
+- **Meetings** — `search_meetings`, `list_recent_meetings`, `get_meeting`, `list_my_meeting_actions`. Stored [meeting transcripts](/meetings/): search titles and text, list the newest, read one as numbered lines (`L12| …`, at most 400 lines per call, with a range to read on) together with its participants and extracted action items and decisions, and list the pending action items owned by you or by a persona that represents you. Scope is a hard filter: a project-scoped question reads that project's meetings only; a group-scoped question reads the group's own meetings plus the meetings of its member projects you can read; a session-scoped question reads the meetings of the sessions' projects; an unscoped question reads every meeting you can read. Group meetings also need standing on the group and a plan with project groups. Transcript text is untrusted data: it is already DLP-redacted when stored, and the helper treats instructions inside it as text.
+
 These tools follow the same plan gates as the matching pages: tickets and agent runs need the project's plan to include them, and personas need it to include personas. On a project whose plan doesn't, the helper says they aren't available instead of reading them. Long fields are capped with a visible "…[truncated]" (ticket descriptions, each acceptance criterion, run summaries and finding messages), and one tool result is capped at 40,000 characters.
 
 In a conversation scoped to a project, nothing from any other project comes back. A session counts as the project's when it is attributed to it, or when it has no project and sits on one of the project's repositories. A session attributed to another project stays out, even on a shared repository.
 
 The helper may cite a ticket or wiki page only after one of its tools returned it in that question, and only when it belongs to a project you can read inside the conversation's scope; any other `[ticket:…]` or `[wiki:…]` marker is removed from the answer.
+
+A meeting passage is cited as `[meeting:<id> L<first>-<last>]`. The marker is kept only when a tool returned that meeting earlier in this conversation (this question or a previous one in the same thread), you can still read it in the conversation's scope, and the line range lies inside the transcript (`1 <= first <= last <= line count`); anything else is removed from the answer. In the API a kept citation is `{"kind": "meeting", "meeting_id", "line_start", "line_end", "title", "project_id", "group_id", "at"}`, and a streaming turn sends it as a `meeting_citation` event.
 
 Every line a tool returns carries a source date as `YYYY-MM-DD (Nd ago)`. When the newest source for a claim is more than 7 days old, the helper says so with "As of \<date\>, ..." so you can see the information may be stale.
 

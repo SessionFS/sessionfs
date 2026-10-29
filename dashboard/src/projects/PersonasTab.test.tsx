@@ -71,14 +71,14 @@ describe('PersonasTab', () => {
   it('shows empty state when no personas', () => {
     hooks.usePersonas.mockReturnValue({ data: [], isLoading: false, error: null });
     render(<PersonasTab projectId="proj_1" />);
-    expect(screen.getByText(/No personas yet/i)).toBeInTheDocument();
+    expect(screen.getByText(/No agents yet/i)).toBeInTheDocument();
   });
 
   it('opens the create modal', () => {
     render(<PersonasTab projectId="proj_1" />);
-    fireEvent.click(screen.getByRole('button', { name: /New persona/i }));
+    fireEvent.click(screen.getByRole('button', { name: /New agent/i }));
     expect(screen.getByRole('dialog')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: /New persona/i })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /New agent/i })).toBeInTheDocument();
   });
 
   it('opens the edit modal with persona prefilled', () => {
@@ -110,7 +110,7 @@ describe('PersonasTab', () => {
     });
     hooks.useCreatePersona.mockReturnValue(create);
     render(<PersonasTab projectId="proj_1" />);
-    fireEvent.click(screen.getByRole('button', { name: /New persona/i }));
+    fireEvent.click(screen.getByRole('button', { name: /New agent/i }));
     fireEvent.change(screen.getByLabelText(/Name/i), { target: { value: 'taken' } });
     fireEvent.change(screen.getByLabelText(/Role/i), { target: { value: 'Tester' } });
     fireEvent.submit(screen.getByRole('dialog').querySelector('form')!);

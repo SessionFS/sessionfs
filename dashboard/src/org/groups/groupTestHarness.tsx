@@ -70,6 +70,11 @@ export function makeClient() {
     removeGroupProject: vi.fn().mockResolvedValue(detail()),
     listProjectGroups: vi.fn().mockResolvedValue([]),
     listMyGroups: vi.fn().mockResolvedValue([summary()]),
+    // Group meetings section (GitHub #116).
+    listMeetings: vi.fn().mockResolvedValue({ meetings: [], next_cursor: null }),
+    uploadMeeting: vi.fn(),
+    getMeeting: vi.fn(),
+    listOrgPersonas: vi.fn().mockResolvedValue([]),
   };
 }
 

@@ -24,6 +24,7 @@ const OrgPage = React.lazy(() => import('./org/OrgPage'));
 const GroupDetailPage = React.lazy(() => import('./org/groups/GroupDetailPage'));
 const ProjectsPage = React.lazy(() => import('./projects/ProjectsPage'));
 const ProjectDetail = React.lazy(() => import('./projects/ProjectDetail'));
+const MeetingRedirect = React.lazy(() => import('./meetings/MeetingRedirect'));
 const TransferInbox = React.lazy(() => import('./transfers/TransferInbox'));
 const InvitesPage = React.lazy(() => import('./invites/InvitesPage'));
 const TicketInbox = React.lazy(() => import('./notifications/TicketInbox'));
@@ -89,6 +90,7 @@ export default function App() {
               <Route path="/sessions/:id" element={<SessionDetail />} />
               <Route path="/projects" element={<ProjectsPage />} />
               <Route path="/projects/:id" element={<ProjectDetail />} />
+              <Route path="/meetings/:meetingId" element={<MeetingRedirect />} />
               <Route path="/marketplace" element={<MarketplacePage />} />
               <Route path="/marketplace/moderation" element={<ModerationPage />} />
               <Route path="/marketplace/publishers" element={<PublishersPage />} />

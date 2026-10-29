@@ -21,6 +21,7 @@ import { useOrgMembers } from '../useOrgMembers';
 import ConfirmDialog from './ConfirmDialog';
 import EditGroupDialog from './EditGroupDialog';
 import GroupAccessSection from './GroupAccessSection';
+import GroupMeetingsSection from './GroupMeetingsSection';
 import GroupProjectsSection from './GroupProjectsSection';
 import { usePrimaryOrgInfo } from './usePrimaryOrgInfo';
 import { useDeleteGroup, useProjectGroup } from './useProjectGroups';
@@ -80,6 +81,7 @@ export default function GroupDetailPage() {
   }
 
   const g = group.data;
+  const meetingOpen = !!searchParams.get('meeting');
   // The members roster carries the caller's role in this org; for the primary
   // org /org answers too (and may land first, or alone if the roster fails).
   const isOrgAdmin = isOrgAdminRole(
@@ -147,7 +149,24 @@ export default function GroupDetailPage() {
       )}
 
       <div className="space-y-5">
-        <GroupProjectsSection group={g} canManage={canManage} isOrgAdmin={isOrgAdmin} planAllows={planAllows} />
+        {/* An open meeting (a helper citation, a shared link) leads the page.
+            The two sections are moved in the DOM (not with CSS order), so
+            reading and tab order match what is on screen; the stable keys
+            make it a move, not a remount, so the warnings of an upload that
+            just finished survive the switch. */}
+        {(meetingOpen ? ['meetings', 'projects'] : ['projects', 'meetings']).map((key) =>
+          key === 'projects' ? (
+            <GroupProjectsSection
+              key="projects"
+              group={g}
+              canManage={canManage}
+              isOrgAdmin={isOrgAdmin}
+              planAllows={planAllows}
+            />
+          ) : (
+            <GroupMeetingsSection key="meetings" group={g} canAdmin={canManage || isOrgAdmin} />
+          ),
+        )}
         <GroupAccessSection
           group={g}
           canManage={canManage}

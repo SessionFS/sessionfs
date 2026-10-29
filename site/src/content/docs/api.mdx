@@ -58,6 +58,7 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | `handoffs:read`, `handoffs:write` | ✅ live (v0.10.10) | Handoff create/claim/revoke/decline + comments + events |
 | `agent_runs:write` | ✅ live (v0.10.10) | `POST /agent-runs`, `POST /agent-runs/{id}/complete` |
 | `tickets:read`, `tickets:write` | ✅ live (v0.10.18) | Ticket list/get/comments/review-state + start/complete/comment |
+| `meetings:read`, `meetings:write` | ✅ live (v0.29.0) | Stored meeting transcripts: upload/list/get/delete + participant resolution (see [Meetings](/meetings/)) |
 | `knowledge:read`, `knowledge:write` | ✅ live (v0.10.19) | `GET /entries`, `GET /entries/{id}`, `POST /entries/add`, `PUT /entries/{id}` (dismiss/update/refresh/promote/supersede) |
 | `personas:read`, `personas:write` | ✅ live (v0.10.20) | Persona list/get + create/update/delete |
 | `agent_runs:read` | ✅ live (v0.10.21) | `GET /agent-runs`, `GET /agent-runs/{run_id}` |
@@ -225,6 +226,25 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | POST | `/api/v1/projects/{id}/tickets/{tid}/jira/link` | Bearer (`tickets:write`, ticket editor) | Link the ticket to an existing Jira issue (`issue_key`); nothing is sent to Jira (v0.27.0) |
 | POST | `/api/v1/projects/{id}/tickets/{tid}/jira/pull` | Bearer (`tickets:write`, user key, ticket editor) | Replace the ticket's title and description with the linked issue's (`confirm: true`); empty Jira fields leave the ticket unchanged (v0.27.0) |
 
+### Meetings (v0.29.0)
+
+Stored meeting transcripts (GitHub #116). A meeting belongs to exactly one project or one group; project meetings admit service keys via `meetings:read` / `meetings:write`, while group meetings require a user key (Team+). Uploads are DLP-scanned under the strictest union of the caller's orgs and the scope org; a block-mode policy rejects with `422 dlp_blocked`, and every other mode (redact, warn, or no policy) redacts secrets before storage. See [Meetings](/meetings/).
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/projects/{id}/meetings` | Bearer (`meetings:write`) | Upload a meeting (body: `title`, `content`, optional `meeting_at`, `duration_minutes`, `source`). Hard caps: 1 MiB request body, 512 KiB / 10000 lines of normalised content (else `413 meeting_too_large`) |
+| GET | `/api/v1/projects/{id}/meetings` | Bearer (`meetings:read`) | List project meetings newest first. Query: `q` (substring over title and content) |
+| POST | `/api/v1/groups/{group_id}/meetings` | Bearer (user key, group editor/admin) | Upload a group meeting (same body and caps) |
+| GET | `/api/v1/groups/{group_id}/meetings` | Bearer (user key, group reader+) | List group meetings newest first. Query: `q` |
+| GET | `/api/v1/meetings/{id}` | Bearer (`meetings:read`) | Get a meeting with its content, participants and action items |
+| DELETE | `/api/v1/meetings/{id}` | Bearer (`meetings:write`) | Soft-delete a meeting (the uploader, a project admin, or a group admin) |
+| PUT | `/api/v1/meetings/{id}/participants/{participant_id}` | Bearer (user key) | Manually override a participant's resolution (body: exactly one of `user_id` or `persona_name`) |
+| POST | `/api/v1/meetings/{id}/extract` | Bearer (`meetings:write`) | Extract participants and action items from the transcript (one LLM call; returns `dropped_items`). `409 llm_key_required` with no key, `429 helper_budget_exceeded` over the org budget |
+| POST | `/api/v1/meetings/{id}/action-items/{item_id}/promote/preview` | Bearer (`meetings:write`) | Draft a ticket from a pending action item (project meeting: target is its project; group meeting: returns editable `target_project_options`) |
+| POST | `/api/v1/meetings/{id}/action-items/{item_id}/promote` | Bearer (`meetings:write`, `agent_tickets`) | Promote a pending action item to a ticket (body: `title`, `description`, `priority`, `kind`, optional `assigned_to` / `assigned_user_id` / `due_date` / `target_project_id` / `publish_to_jira`). `409 item_not_pending` on a concurrent promote |
+| POST | `/api/v1/meetings/{id}/action-items/{item_id}/dismiss` | Bearer (`meetings:write`) | Dismiss a pending action item (`409 item_not_pending` if not pending) |
+| POST | `/api/v1/meetings/{id}/action-items/{item_id}/restore` | Bearer (`meetings:write`) | Restore a dismissed action item (`409 item_not_dismissed` if not dismissed) |
+
 ### Organizations
 
 | Method | Path | Auth | Description |
@@ -241,7 +261,7 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | POST | `/api/v1/orgs/{org_id}/invite` | Bearer | Org-scoped invite path (admin only). Same UPSERT-over-stale semantics as `/api/v1/org/invite` since v0.10.28. |
 | PUT | `/api/v1/org/members/{user_id}/role` | Bearer | Change a member's role (admin only) |
 | DELETE | `/api/v1/org/members/{user_id}` | Bearer | Remove a member from the org (admin only) |
-| PUT | `/api/v1/orgs/{org_id}/settings` | Bearer | Update org settings (admin only). Merges since v0.23.0: settings left out are kept, an explicit `null` restores the default. Includes `helper_retention_days` (1–3650) |
+| PUT | `/api/v1/orgs/{org_id}/settings` | Bearer | Update org settings (admin only). Merges since v0.23.0: settings left out are kept, an explicit `null` restores the default. Includes `helper_retention_days` and `meeting_retention_days` (both 1–3650) |
 | POST | `/api/v1/orgs/{org_id}/projects/{project_id}/propose-transfer` | Bearer | Propose moving a member's personal project into the org (owner or admin; the project owner must accept) — v0.23.0 |
 | PUT | `/api/v1/orgs/{org_id}/members/me/digest` | Bearer | Turn your weekly activity digest off or on (`{"opt_out": true}`) — v0.23.0 |
 | GET / PUT / DELETE | `/api/v1/orgs/{org_id}/llm-settings` | Bearer | Org AI key for the session helper (owner or admin, Enterprise) — v0.23.0 |

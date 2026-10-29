@@ -78,6 +78,7 @@ from sessionfs.cli.cmd_dlp import dlp_app
 from sessionfs.cli.cmd_rules import rules_app
 from sessionfs.cli.cmd_hooks import hooks_app
 from sessionfs.cli.cmd_persona import persona_app
+from sessionfs.cli.cmd_meeting import meeting_app
 from sessionfs.cli.cmd_ticket import ticket_app
 from sessionfs.cli.cmd_agent import agent_app
 from sessionfs.cli.cmd_skill import skill_app
@@ -117,6 +118,7 @@ app.add_typer(rules_app, name="rules")
 app.add_typer(hooks_app, name="hooks")
 app.add_typer(persona_app, name="persona")
 app.add_typer(ticket_app, name="ticket")
+app.add_typer(meeting_app, name="meeting")
 app.add_typer(agent_app, name="agent")
 app.add_typer(skill_app, name="skill")
 app.add_typer(skill_app, name="plugin")

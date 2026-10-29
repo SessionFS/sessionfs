@@ -159,6 +159,18 @@
         { "name": "compile_group_knowledge", "desc": "Rebuild the group's knowledge overview" },
         { "name": "ask_group", "desc": "Research a question across a group, with sources" }
       ]
+    },
+    {
+      "id": "meetings",
+      "label": "Meetings",
+      "tools": [
+        { "name": "upload_meeting_transcript", "desc": "Store a meeting transcript, optionally extracting its items" },
+        { "name": "list_meeting_transcripts", "desc": "Meetings of a project or group, newest first" },
+        { "name": "get_meeting_transcript", "desc": "A transcript with participants and extracted items" },
+        { "name": "extract_meeting_action_items", "desc": "Extract action items and decisions with your own key" },
+        { "name": "promote_meeting_action_item", "desc": "Preview, then confirm, turning an item into a ticket" },
+        { "name": "search_meetings", "desc": "Search meeting titles and transcript text" }
+      ]
     }
   ]
 }

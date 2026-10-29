@@ -9,6 +9,7 @@ import {
   type HelperCitation,
   type HelperCitationRef,
   type HelperDocCitation,
+  type HelperMeetingCitation,
   type HelperTicketCitation,
   type HelperWikiCitation,
 } from '../api/client';
@@ -188,14 +189,14 @@ export function usageFrom(src: {
 // ── Citations ──
 
 /**
- * All four marker kinds in one pass so footnote numbers stay shared and
+ * All five marker kinds in one pass so footnote numbers stay shared and
  * ordered. Same shapes the server parses (`_CITATION_RE` / `_DOC_CITATION_RE`
  * / `_TICKET_CITATION_RE` / `_WIKI_CITATION_RE` in routes/helper.py). Doc
  * slugs and anchors use the docs index's own charset, so an unclosed `[doc:`
  * can't swallow the prose or citations after it.
  */
 const MARKER_RE =
-  /\[session:([A-Za-z0-9_-]+)(?:\s+msg:(\d+))?\]|\[doc:([a-z0-9][a-z0-9/_-]*)(?:#([a-z0-9_-]+))?\]|\[ticket:(tk_[0-9a-f]{16})\]|\[wiki:(proj_[0-9a-f]{16})\/([^\]\s]+)\]/g;
+  /\[session:([A-Za-z0-9_-]+)(?:\s+msg:(\d+))?\]|\[doc:([a-z0-9][a-z0-9/_-]*)(?:#([a-z0-9_-]+))?\]|\[ticket:(tk_[0-9a-f]{16})\]|\[wiki:(proj_[0-9a-f]{16})\/([^\]\s]+)\]|\[meeting:(meet_[0-9a-f]{16})(?:\s+L(\d{1,6})(?:-L?(\d{1,6}))?)?\]/g;
 
 export interface SessionSource {
   kind: 'session';
@@ -254,21 +255,52 @@ export interface WikiSource {
   at: string | null;
 }
 
-export type Source = SessionSource | DocSource | TicketSource | WikiSource;
+/** Lines of a stored meeting transcript, `[meeting:<id> L<a>-<b>]`. */
+export interface MeetingSource {
+  kind: 'meeting';
+  /** 1-based footnote number, by first appearance. */
+  n: number;
+  meetingId: string;
+  title: string | null;
+  /** Every line range cited for this meeting, in order of first appearance. */
+  ranges: { start: number; end: number }[];
+  /** False when the server dropped the citation (not seen this turn). */
+  verified: boolean;
+  at: string | null;
+}
+
+export type Source = SessionSource | DocSource | TicketSource | WikiSource | MeetingSource;
 
 export const CITE_HREF_PREFIX = '#sfs-cite-';
 
-/** In-answer href for footnote `n`, optionally pinned to one cited message. */
-export function citeHref(n: number, messageIndex?: number): string {
+/**
+ * In-answer href for footnote `n`, optionally pinned to one cited message
+ * (sessions) or one cited line range (meetings).
+ */
+export function citeHref(n: number, messageIndex?: number, lines?: { start: number; end: number }): string {
+  if (lines) return `${CITE_HREF_PREFIX}${n}-L${lines.start}-${lines.end}`;
   return `${CITE_HREF_PREFIX}${n}${messageIndex !== undefined ? `-m${messageIndex}` : ''}`;
 }
 
 /** Inverse of {@link citeHref}; null for any other href. */
-export function parseCiteHref(href: string): { n: number; messageIndex?: number } | null {
+export function parseCiteHref(
+  href: string,
+): { n: number; messageIndex?: number; lines?: { start: number; end: number } } | null {
   if (!href.startsWith(CITE_HREF_PREFIX)) return null;
-  const m = /^(\d+)(?:-m(\d+))?$/.exec(href.slice(CITE_HREF_PREFIX.length));
+  const m = /^(\d+)(?:-m(\d+)|-L(\d+)-(\d+))?$/.exec(href.slice(CITE_HREF_PREFIX.length));
   if (!m) return null;
-  return { n: Number(m[1]), messageIndex: m[2] !== undefined ? Number(m[2]) : undefined };
+  return {
+    n: Number(m[1]),
+    messageIndex: m[2] !== undefined ? Number(m[2]) : undefined,
+    lines: m[3] !== undefined ? { start: Number(m[3]), end: Number(m[4]) } : undefined,
+  };
+}
+
+/** Dashboard link to a cited meeting, opened at its lines (`/meetings/:id` redirects). */
+export function meetingCiteHref(meetingId: string, lines?: { start: number; end: number } | null): string {
+  const base = `/meetings/${encodeURIComponent(meetingId)}`;
+  if (!lines) return base;
+  return `${base}?lines=${lines.start === lines.end ? lines.start : `${lines.start}-${lines.end}`}`;
 }
 
 /**
@@ -305,7 +337,9 @@ function stripPartialMarker(text: string): string {
     '[ticket:'.startsWith(tail) ||
     /^\[ticket:(?:tk_[0-9a-f]{0,16})?$/.test(tail) ||
     '[wiki:'.startsWith(tail) ||
-    /^\[wiki:(?:proj_[0-9a-f]{0,16}\/[^\]\s]*)?$/.test(tail)
+    /^\[wiki:(?:proj_[0-9a-f]{0,16}\/[^\]\s]*)?$/.test(tail) ||
+    '[meeting:'.startsWith(tail) ||
+    /^\[meeting:(?:meet_[0-9a-f]{0,16}(?:\s+(?:L(?:\d{0,6}(?:-L?\d{0,6})?)?)?)?)?$/.test(tail)
   ) {
     return text.slice(0, i);
   }
@@ -333,8 +367,10 @@ export function processCitations(
   const docCitations: HelperDocCitation[] = [];
   const ticketCitations: HelperTicketCitation[] = [];
   const wikiCitations: HelperWikiCitation[] = [];
+  const meetingCitations: HelperMeetingCitation[] = [];
   for (const c of citations) {
-    if ('session_id' in c) sessionCitations.push(c);
+    if ('meeting_id' in c) meetingCitations.push(c);
+    else if ('session_id' in c) sessionCitations.push(c);
     else if ('ticket_id' in c) ticketCitations.push(c);
     else if ('project_id' in c && 'slug' in c) wikiCitations.push(c);
     else docCitations.push(c);
@@ -354,6 +390,9 @@ export function processCitations(
     const key = `${c.project_id}/${c.slug}`;
     if (!knownWikis.has(key)) knownWikis.set(key, c);
   }
+
+  const knownMeetings = new Map<string, HelperMeetingCitation>();
+  for (const c of meetingCitations) if (!knownMeetings.has(c.meeting_id)) knownMeetings.set(c.meeting_id, c);
 
   const sources: Source[] = [];
 
@@ -430,6 +469,29 @@ export function processCitations(
     return s;
   };
 
+  const meetingSourceFor = (meetingId: string): MeetingSource => {
+    let s = sources.find((x): x is MeetingSource => x.kind === 'meeting' && x.meetingId === meetingId);
+    if (!s) {
+      const k = knownMeetings.get(meetingId);
+      s = {
+        kind: 'meeting',
+        n: sources.length + 1,
+        meetingId,
+        title: k?.title ?? null,
+        ranges: [],
+        verified: k !== undefined || !opts.settled,
+        at: k?.at ?? null,
+      };
+      sources.push(s);
+    }
+    return s;
+  };
+  const addRange = (s: MeetingSource, start: number, end: number) => {
+    const r = { start: Math.min(start, end), end: Math.max(start, end) };
+    if (!s.ranges.some((x) => x.start === r.start && x.end === r.end)) s.ranges.push(r);
+    return r;
+  };
+
   let body = text;
   if (opts.streaming) body = stripPartialMarker(body);
 
@@ -444,7 +506,18 @@ export function processCitations(
       ticketId?: string,
       wikiProject?: string,
       wikiSlug?: string,
+      meetingId?: string,
+      lineStart?: string,
+      lineEnd?: string,
     ) => {
+      if (meetingId !== undefined) {
+        const s = meetingSourceFor(meetingId);
+        if (lineStart !== undefined) {
+          const r = addRange(s, Number(lineStart), Number(lineEnd ?? lineStart));
+          return `[${s.n}](${citeHref(s.n, undefined, r)})`;
+        }
+        return `[${s.n}](${citeHref(s.n)})`;
+      }
       if (sid !== undefined) {
         const s = sessionSourceFor(sid);
         if (idx !== undefined) {
@@ -476,6 +549,10 @@ export function processCitations(
   for (const c of docCitations) docSourceFor(c.slug, c.anchor);
   for (const c of ticketCitations) ticketSourceFor(c.ticket_id);
   for (const c of wikiCitations) wikiSourceFor(c.project_id, c.slug);
+  for (const c of meetingCitations) {
+    const s = meetingSourceFor(c.meeting_id);
+    if (c.line_start != null) addRange(s, c.line_start, c.line_end ?? c.line_start);
+  }
   for (const s of sources) if (s.kind === 'session') s.messageIndexes.sort((x, y) => x - y);
   return { markdown, sources };
 }
@@ -494,7 +571,12 @@ export function answerAsPlainText(text: string, citations: HelperCitationRef[]):
       ticketId?: string,
       wikiProject?: string,
       wikiSlug?: string,
+      meetingId?: string,
     ) => {
+      if (meetingId !== undefined) {
+        const s = sources.find((x): x is MeetingSource => x.kind === 'meeting' && x.meetingId === meetingId);
+        return s?.verified ? `[${s.n}]` : '';
+      }
       if (sid !== undefined) {
         const s = sources.find((x): x is SessionSource => x.kind === 'session' && x.sessionId === sid);
         return s ? `[${s.n}]` : '';
@@ -523,6 +605,10 @@ export function answerAsPlainText(text: string, citations: HelperCitationRef[]):
     if (s.kind === 'doc') return `[${s.n}] ${s.title} (${s.url})`;
     if (s.kind === 'ticket') return `[${s.n}] ${s.title || s.ticketId} (ticket ${s.ticketId})`;
     if (s.kind === 'wiki') return `[${s.n}] ${s.title || s.slug} (wiki ${s.projectId}/${s.slug})`;
+    if (s.kind === 'meeting') {
+      const where = s.ranges.map((r) => (r.start === r.end ? `L${r.start}` : `L${r.start}-${r.end}`)).join(', ');
+      return `[${s.n}] ${s.title || s.meetingId} (meeting ${s.meetingId}${where ? ` ${where}` : ''})`;
+    }
     return `[${s.n}] ${s.title || s.sessionId} (session ${s.sessionId})`;
   });
   return `${numbered}\n\nSources:\n${lines.join('\n')}`;

@@ -42,6 +42,7 @@ def ledger_row(
     input_tokens: int,
     output_tokens: int,
     stop_reason: str | None,
+    source: str = "helper",
 ) -> HelperUsage | None:
     """A ledger row for one turn, or ``None`` when the turn reported no tokens."""
     if input_tokens <= 0 and output_tokens <= 0:
@@ -50,6 +51,7 @@ def ledger_row(
         id=f"hu_{uuid.uuid4().hex[:24]}",
         user_id=user_id,
         key_source=key_source,
+        source=source[:32] if source else "helper",
         org_id=org_id if key_source == "org" else None,
         conversation_id=conversation_id,
         input_tokens=max(int(input_tokens), 0),

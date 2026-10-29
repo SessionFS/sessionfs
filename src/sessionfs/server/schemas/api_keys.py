@@ -23,6 +23,8 @@ VALID_SCOPES = frozenset(
         "handoffs:write",
         "tickets:read",
         "tickets:write",
+        "meetings:read",
+        "meetings:write",
         "personas:read",
         "personas:write",
         "knowledge:read",

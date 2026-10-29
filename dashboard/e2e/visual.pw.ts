@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { mockApi } from './fixtures/mock-api';
 import {
   GROUP_ID,
+  GROUP_MEETING_ID,
+  MEETING_ID,
   LINKED_TICKET_ID,
   linkedTicketJiraLink,
   ORG_ID,
@@ -1249,6 +1251,90 @@ const TEMPLATE_EDITOR_SCENARIOS: Scenario[] = [
   },
 ];
 
+// Meetings (GitHub #116): the project list, its empty state, a meeting
+// with highlighted lines, the upload and promote dialogs, a DLP refusal, the
+// group section and a deleted meeting.
+const MEETINGS = `/projects/${PROJECT}?tab=work&sub=meetings`;
+const MEETING_SCENARIOS: Scenario[] = [
+  { name: 'meetings-list', path: MEETINGS },
+  {
+    name: 'meetings-empty',
+    path: MEETINGS,
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT}/meetings`,
+        (route) => route.fulfill(fulfillJson(200, { meetings: [], next_cursor: null })),
+      );
+    },
+  },
+  { name: 'meeting-detail', path: `${MEETINGS}&meeting=${MEETING_ID}&lines=7-9` },
+  {
+    name: 'meeting-participant-match',
+    path: `${MEETINGS}&meeting=${MEETING_ID}`,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Match Jordan (contractor)' }).click();
+      await page.getByRole('button', { name: /Match “Jordan \(contractor\)” to/ }).click();
+      await page.getByRole('listbox').waitFor();
+    },
+  },
+  {
+    name: 'meeting-promote-dialog',
+    path: `${MEETINGS}&meeting=${MEETING_ID}`,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: /^Create ticket: Draft the rollout plan/ }).click();
+      const dlg = page.getByRole('dialog', { name: 'Create ticket' });
+      await dlg.getByRole('textbox', { name: 'Title' }).waitFor();
+    },
+  },
+  {
+    name: 'meeting-upload-dialog',
+    path: MEETINGS,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Add meeting' }).click();
+      const dlg = page.getByRole('dialog', { name: 'Add a meeting' });
+      await dlg.getByRole('textbox', { name: 'Title' }).fill('Launch readiness — weekly sync');
+      await dlg.getByRole('textbox', { name: 'Transcript' }).fill(
+        'Dev Fixture: Three things today.\nPeer Fixture: I can draft the rollout plan by Friday.\nLead: I will send the support briefing on Monday.',
+      );
+    },
+  },
+  {
+    name: 'meeting-upload-dlp-blocked',
+    path: MEETINGS,
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT}/meetings`,
+        (route) =>
+          route.request().method() === 'POST'
+            ? route.fulfill(
+                fulfillJson(422, {
+                  error: {
+                    code: '422',
+                    message: 'DLP policy blocked upload: 3 finding(s)',
+                    details: { error: 'dlp_blocked', findings: { aws_access_key: 2, email_address: 1 } },
+                  },
+                }),
+              )
+            : route.fallback(),
+      );
+    },
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Add meeting' }).click();
+      const dlg = page.getByRole('dialog', { name: 'Add a meeting' });
+      await dlg.getByRole('textbox', { name: 'Title' }).fill('Infra handover');
+      await dlg.getByRole('textbox', { name: 'Transcript' }).fill('Lead: the key is AKIA…');
+      await dlg.getByRole('button', { name: 'Add meeting' }).click();
+      await dlg.getByText(/data protection policy blocked/).waitFor();
+    },
+  },
+  { name: 'group-meetings', path: `/settings/organization/groups/${GROUP_ID}?org=${ORG_ID}` },
+  {
+    name: 'group-meeting-detail',
+    path: `/settings/organization/groups/${GROUP_ID}?org=${ORG_ID}&meeting=${GROUP_MEETING_ID}&lines=10-11`,
+  },
+  { name: 'meeting-not-found', path: '/meetings/meet_00000000000000ff' },
+];
+
 const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...WIDTHS.map((width) => ({ width, scenarios: PAGES })),
   ...SHELL_WIDTHS.map((width) => ({ width, scenarios: SHELL_SCENARIOS })),
@@ -1264,6 +1350,7 @@ const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...OVERLAY_WIDTHS.map((width) => ({ width, scenarios: TIMELINE_SCENARIOS })),
   ...OVERLAY_WIDTHS.map((width) => ({ width, scenarios: ORG_KEY_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: TEMPLATE_EDITOR_SCENARIOS })),
+  ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: MEETING_SCENARIOS })),
 ];
 
 for (const theme of THEMES) {

@@ -1813,3 +1813,116 @@ export const linkedTicketEvents = {
   ],
   next_before: 'evt_fixture02',
 };
+
+// ── meeting transcripts (GitHub #116) ──
+export const MEETING_ID = 'meet_f1x7ure0000000a1';
+export const GROUP_MEETING_ID = 'meet_f1x7ure0000000b2';
+
+const meetingLines = [
+  'Dev Fixture: Thanks for joining. Three things today: the launch date, the rollout plan and the status page.',
+  'Dev Fixture: First, the launch. Are we confident in November 10?',
+  'Peer Fixture: Yes. The last two blockers closed on Friday and the load test passed at twice the expected peak.',
+  'Lead: Agreed, November 10 works for support as long as the help articles are live the week before.',
+  'Dev Fixture: Then November 10 it is. Let us write that down as decided.',
+  'Dev Fixture: Second, the rollout plan. We need it written down before the go/no-go on the sixth.',
+  'Peer Fixture: I can draft the rollout plan, including the feature-flag stages and the rollback steps.',
+  'Peer Fixture: I will have a first version by Friday, October 31.',
+  'Dev Fixture: Great. Include who is on call for each stage.',
+  'Lead: Third, the status page. The copy still talks about the old pricing tiers.',
+  'Jordan (contractor): I can take the status page copy, but I need someone to review the wording.',
+  'Dev Fixture: The security reviewer should look at anything that mentions data handling.',
+  'Lead: Then we keep the existing incident template and only change the pricing references.',
+  'Dev Fixture: Last thing: someone needs to tell the support team about the date.',
+  'Lead: I will send the support briefing on Monday.',
+  'Dev Fixture: That is everything. Thanks, all.',
+];
+
+export const projectMeetings = {
+  meetings: [
+    {
+      id: MEETING_ID, org_id: ORG_ID, project_id: PROJECT_ID, group_id: null,
+      title: 'Launch readiness — weekly sync', meeting_at: '2026-10-27T00:00:00Z', duration_minutes: 30,
+      source: 'file_upload', line_count: meetingLines.length, dlp_findings: 1, extraction_status: 'done',
+      pending_action_count: 3, decision_count: 2,
+      created_by_user_id: 'user_fixture01', created_at: NOW, updated_at: NOW, deleted_at: null,
+    },
+    {
+      id: 'meet_f1x7ure0000000a2', org_id: ORG_ID, project_id: PROJECT_ID, group_id: null,
+      title: 'Incident review: checkout timeouts on October 14, and what we change in the payment retry policy',
+      meeting_at: '2026-10-15T00:00:00Z', duration_minutes: 45,
+      source: 'manual_paste', line_count: 212, dlp_findings: 0, extraction_status: 'failed',
+      extraction_error: 'timeout', pending_action_count: 0, decision_count: 0,
+      created_by_user_id: 'user_fixture02', created_at: EARLIER, updated_at: EARLIER, deleted_at: null,
+    },
+    {
+      id: 'meet_f1x7ure0000000a3', org_id: ORG_ID, project_id: PROJECT_ID, group_id: null,
+      title: 'Design review', meeting_at: null, duration_minutes: null,
+      source: 'manual_paste', line_count: 48, dlp_findings: 0, extraction_status: 'none',
+      created_by_user_id: 'user_fixture01', created_at: OLD, updated_at: OLD, deleted_at: null,
+    },
+  ],
+  next_cursor: null,
+};
+
+export const meetingDetail = {
+  ...projectMeetings.meetings[0],
+  content: meetingLines.join('\n'),
+  content_sha256: 'f'.repeat(64),
+  warnings: [],
+  participants: [
+    { id: 'mp_f1', name_raw: 'Dev Fixture', email_raw: 'fixture@example.test', user_id: 'user_fixture01', persona_name: null, resolution_method: 'exact_email', resolved_by_user_id: null },
+    { id: 'mp_f2', name_raw: 'Peer Fixture', email_raw: null, user_id: 'user_fixture02', persona_name: null, resolution_method: 'display_name', resolved_by_user_id: null },
+    { id: 'mp_f3', name_raw: 'Lead', email_raw: null, user_id: 'user_fixture03', persona_name: null, resolution_method: 'manual', resolved_by_user_id: 'user_fixture01' },
+    { id: 'mp_f4', name_raw: 'security reviewer', email_raw: null, user_id: null, persona_name: 'sentinel', resolution_method: 'persona', resolved_by_user_id: null },
+    { id: 'mp_f5', name_raw: 'Jordan (contractor)', email_raw: null, user_id: null, persona_name: null, resolution_method: 'unresolved', resolved_by_user_id: null },
+  ],
+  action_items: [
+    { id: 'mai_f1', kind: 'action', description: 'Draft the rollout plan, including the feature-flag stages, rollback steps and who is on call for each stage.', owner_participant_id: 'mp_f2', due_date: '2026-10-31', line_start: 7, line_end: 9, status: 'pending', promoted_ticket_id: null, extracted_at: NOW },
+    { id: 'mai_f2', kind: 'action', description: 'Update the status page copy to remove the old pricing tiers.', owner_participant_id: 'mp_f5', due_date: null, line_start: 10, line_end: 11, status: 'pending', promoted_ticket_id: null, extracted_at: NOW },
+    { id: 'mai_f3', kind: 'action', description: 'Review status page wording that mentions data handling.', owner_participant_id: 'mp_f4', due_date: null, line_start: 12, line_end: 12, status: 'pending', promoted_ticket_id: null, extracted_at: NOW },
+    { id: 'mai_f4', kind: 'action', description: 'Send the support team a briefing on the launch date.', owner_participant_id: 'mp_f3', due_date: '2026-11-03', line_start: 14, line_end: 15, status: 'promoted', promoted_ticket_id: 'tk_fixture2', extracted_at: NOW },
+    { id: 'mai_f5', kind: 'action', description: 'Schedule a second load test.', owner_participant_id: null, due_date: null, line_start: 3, line_end: 3, status: 'dismissed', promoted_ticket_id: null, extracted_at: NOW },
+    { id: 'mai_f6', kind: 'decision', description: 'Launch on November 10.', owner_participant_id: null, due_date: null, line_start: 2, line_end: 5, status: 'pending', promoted_ticket_id: null, extracted_at: NOW },
+    { id: 'mai_f7', kind: 'decision', description: 'Keep the existing incident template; change only the pricing references.', owner_participant_id: null, due_date: null, line_start: 13, line_end: 13, status: 'pending', promoted_ticket_id: null, extracted_at: NOW },
+  ],
+};
+
+export const groupMeetings = {
+  meetings: [
+    {
+      ...projectMeetings.meetings[0],
+      id: GROUP_MEETING_ID, project_id: null, group_id: GROUP_ID,
+      title: 'Payments program review', pending_action_count: 3, decision_count: 2,
+    },
+  ],
+  next_cursor: null,
+};
+
+export const groupMeetingDetail = {
+  ...meetingDetail,
+  ...groupMeetings.meetings[0],
+};
+
+export const meetingPromotePreview = {
+  meeting_id: MEETING_ID,
+  item_id: 'mai_f1',
+  title: 'Draft the rollout plan, including the feature-flag stages, rollback steps and who is on call for each stage.',
+  description: [
+    'Draft the rollout plan, including the feature-flag stages, rollback steps and who is on call for each stage.',
+    '',
+    'From meeting *Launch readiness — weekly sync* (2026-10-27), lines 7-9:',
+    `> ${meetingLines[6]}`,
+    `> ${meetingLines[7]}`,
+    `> ${meetingLines[8]}`,
+  ].join('\n'),
+  priority: 'medium',
+  kind: 'task',
+  assigned_to: null,
+  assigned_user_id: 'user_fixture02',
+  due_date: '2026-10-31',
+  context_refs: [`meeting:${MEETING_ID}#mai_f1`],
+  target_project_id: PROJECT_ID,
+  target_project_options: null,
+  // DB-only gate result from the server; the fixture project publishes to Jira.
+  jira_publish_available: true,
+};

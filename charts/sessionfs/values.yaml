@@ -269,6 +269,16 @@ api:
       image: curlimages/curl:8.12.1
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3
+  meetingRetention:
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "30 3 * * *"
+      existingSecret: ""
+      secretKey: "meeting-retention-api-key"
+      image: curlimages/curl:8.12.1
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
 
 ## MCP Server
 mcp:

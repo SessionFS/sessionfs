@@ -109,6 +109,12 @@ is the k8s component label; `path` is the admin sweep endpoint; `schedule` and
   schedule: '*/15 * * * *'
   envVar: SFS_CONFLUENCE_PUBLISH_API_KEY
   secretKey: confluence-publish-api-key
+- key: meetingRetention
+  component: meeting-retention
+  path: /api/v1/admin/sweeps/meeting-retention
+  schedule: '30 3 * * *'
+  envVar: SFS_MEETING_RETENTION_API_KEY
+  secretKey: meeting-retention-api-key
 {{- end }}
 
 {{/*

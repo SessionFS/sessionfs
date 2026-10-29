@@ -198,6 +198,7 @@ function EnterpriseJiraCard({
       )}
 
       <Tabs
+        variant="subtle"
         aria-label="Jira sections"
         tabs={sections.map((key) => ({ key, label: SECTION_LABELS[key], content: content[key] }))}
         activeKey={active}

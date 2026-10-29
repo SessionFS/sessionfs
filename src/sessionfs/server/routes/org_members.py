@@ -44,7 +44,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, StrictInt, field_validator
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -273,6 +273,9 @@ class OrgGeneralSettings(BaseModel):
     # Session-helper retention window in days (per message). ``None`` means
     # "use the platform default (90)"; the stored value is validated 1–3650.
     helper_retention_days: int | None = None
+    # GitHub #116 — stored meeting-transcript retention in days. ``None`` means
+    # "use the platform default (180)"; the stored value is validated 1–3650.
+    meeting_retention_days: StrictInt | None = None
     # GitHub #59 — verified-email-domain auto-join (v0.17.0). ``None``
     # is the "leave unchanged on partial PUT" sentinel; the stored/returned
     # value is always a list ([] when unset).
@@ -304,6 +307,7 @@ def _read_general_settings(org: Organization) -> OrgGeneralSettings:
         kb_max_context_words=general.get("kb_max_context_words"),
         kb_section_page_limit=general.get("kb_section_page_limit"),
         helper_retention_days=general.get("helper_retention_days"),
+        meeting_retention_days=general.get("meeting_retention_days"),
         auto_join_domains=auto_join,
         # Always a bool on read. Unreadable settings report True: access
         # checks treat them as restricted (fail closed).
@@ -369,6 +373,10 @@ async def update_org_settings(
         1 <= body.helper_retention_days <= 3650
     ):
         raise HTTPException(400, "helper_retention_days must be between 1 and 3650")
+    if body.meeting_retention_days is not None and not (
+        1 <= body.meeting_retention_days <= 3650
+    ):
+        raise HTTPException(400, "meeting_retention_days must be between 1 and 3650")
 
     # GitHub #101 — restricted visibility requires the project_groups feature
     # (Team+). Only the OFF -> ON transition is gated: clearing it is always

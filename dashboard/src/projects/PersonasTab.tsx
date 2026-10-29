@@ -1,6 +1,9 @@
 /**
  * v0.10.3 — Personas tab (v0.10.1 backend, v0.10.3 dashboard surface).
  *
+ * Labelled "Agents" in the UI (tk_40a20306cf13450c): project personas are
+ * the AI roles. The URL key stays `personas` so existing links keep working.
+ *
  * Lists agent personas for the project; supports create / edit / delete.
  * Personas are scoped per project (Pro+ tier) and used to give ticketed
  * agent work a stable role + content profile.
@@ -53,17 +56,17 @@ export default function PersonasTab({ projectId, canEdit = true }: PersonasTabPr
   const [edit, setEdit] = useState<EditState | null>(null);
   const [deleting, setDeleting] = useState<Persona | null>(null);
 
-  if (isLoading) return <p>Loading personas…</p>;
-  if (error) return <p role="alert">Failed to load personas: {errorMessage(error)}</p>;
+  if (isLoading) return <p>Loading agents…</p>;
+  if (error) return <p role="alert">Failed to load agents: {errorMessage(error)}</p>;
   if (!data) return null;
 
   return (
     <section aria-labelledby="personas-heading" className="space-y-4">
       <div className="flex items-center justify-between">
         <h2 id="personas-heading" className="text-lg font-semibold">
-          Personas
+          Agents
           <span className="ml-2 text-sm text-text-tertiary">
-            {data.length} {data.length === 1 ? 'persona' : 'personas'}
+            {data.length} {data.length === 1 ? 'agent' : 'agents'}
           </span>
         </h2>
         {canEdit && (
@@ -72,17 +75,17 @@ export default function PersonasTab({ projectId, canEdit = true }: PersonasTabPr
             size="sm"
             onClick={() => setEdit({ mode: 'create' })}
           >
-            New persona
+            New agent
           </Button>
         )}
       </div>
 
       {data.length === 0 ? (
         <div className="border border-border rounded-lg p-6 text-center text-sm text-text-tertiary space-y-1">
-          <p className="font-medium text-md text-text-secondary">No personas yet.</p>
+          <p className="font-medium text-md text-text-secondary">No agents yet.</p>
           <p>
-            Personas are reusable agent roles you can attach to tickets so every
-            captured session is tagged with the agent's identity.
+            Agents are the AI roles your coding tools work as. Assign them
+            tickets and every captured session is tagged with the agent that did the work.
           </p>
         </div>
       ) : (
@@ -99,7 +102,7 @@ export default function PersonasTab({ projectId, canEdit = true }: PersonasTabPr
                   {isOrgPersona(p) && (
                     <span
                       className="rounded px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide bg-bg-tertiary text-text-secondary border border-border"
-                      title="Org-level persona — shared by every project in the organization"
+                      title="Org-level — shared by every project in the organization"
                     >
                       Org
                     </span>
@@ -137,7 +140,7 @@ export default function PersonasTab({ projectId, canEdit = true }: PersonasTabPr
                 !canEdit ? null : isOrgPersona(p) ? (
                   <span
                     className="block text-right text-xs text-text-tertiary whitespace-nowrap"
-                    title="Org admins manage org personas on the Organization page. Create a project persona with the same name to override it here."
+                    title="Org admins manage this on the Organization page. Create a project agent with the same name to override it here."
                   >
                     Managed by org
                   </span>
@@ -173,12 +176,13 @@ export default function PersonasTab({ projectId, canEdit = true }: PersonasTabPr
       {edit && (
         <PersonaEditModal
           state={edit}
+          noun="agent"
           onClose={() => setEdit(null)}
           onSubmit={async (body) => {
             try {
               if (edit.mode === 'create') {
                 await create.mutateAsync(body);
-                addToast('success', `Created persona "${body.name}"`);
+                addToast('success', `Created agent "${body.name}"`);
               } else if (edit.persona) {
                 await update.mutateAsync({
                   name: edit.persona.name,
@@ -200,6 +204,7 @@ export default function PersonasTab({ projectId, canEdit = true }: PersonasTabPr
 
       {deleting && (
         <DeleteConfirmModal
+          noun="agent"
           persona={deleting}
           onClose={() => setDeleting(null)}
           onConfirm={async (force) => {
@@ -325,9 +330,11 @@ interface DeleteModalProps {
   persona: Persona;
   onClose: () => void;
   onConfirm: (force: boolean) => void | Promise<void>;
+  /** Noun used in the explanation, e.g. "agent". */
+  noun?: string;
 }
 
-export function DeleteConfirmModal({ persona, onClose, onConfirm }: DeleteModalProps) {
+export function DeleteConfirmModal({ persona, onClose, onConfirm, noun = 'persona' }: DeleteModalProps) {
   const [force, setForce] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -336,7 +343,7 @@ export function DeleteConfirmModal({ persona, onClose, onConfirm }: DeleteModalP
       <DialogHeader titleId="persona-delete-title">Delete "{persona.name}"?</DialogHeader>
       <p className="text-sm text-text-secondary mb-3">
         The server refuses delete when non-terminal tickets still reference
-        this persona. Check <code className="font-mono">--force</code> to
+        this {noun}. Check <code className="font-mono">--force</code> to
         override and orphan those tickets' assignments.
       </p>
       <label className="flex items-center gap-2 text-sm mb-4 text-text-secondary cursor-pointer">
@@ -346,7 +353,7 @@ export function DeleteConfirmModal({ persona, onClose, onConfirm }: DeleteModalP
           onChange={(e) => setForce(e.target.checked)}
           className="w-4 h-4 rounded border-border accent-[var(--brand)]"
         />
-        <span>Force — proceed even if tickets reference this persona</span>
+        <span>Force — proceed even if tickets reference this {noun}</span>
       </label>
       <DialogFooter>
         <Button variant="secondary" onClick={onClose}>

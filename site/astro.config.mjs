@@ -67,6 +67,7 @@ export default defineConfig({
             { label: 'Git Integration', slug: 'git-integration' },
             { label: 'Project Context', slug: 'project-context' },
             { label: 'Project Groups', slug: 'project-groups' },
+            { label: 'Meetings', slug: 'meetings' },
             { label: 'Skills Marketplace', slug: 'skills-marketplace' },
             { label: 'Worker Review Loop', slug: 'review-loop' },
             { label: 'Session Helper', slug: 'session-helper' },

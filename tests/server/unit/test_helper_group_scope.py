@@ -40,7 +40,11 @@ from sessionfs.server.db.models import (
     ProjectGroupMember,
 )
 from sessionfs.server.helper.context import HelperScope
-from sessionfs.server.helper.tools import group_effective_project_ids, scope_project_ids
+from sessionfs.server.helper.tools import (
+    _group_initialism,
+    group_effective_project_ids,
+    scope_project_ids,
+)
 from tests.server.integration.test_helper_api import (
     _fake_resolve,
     _fake_run_agent_capture_kwargs,
@@ -1060,3 +1064,345 @@ async def test_visible_group_requires_grant_for_non_admin(db_session, test_user)
     assert scope is not None
     assert "group_name" not in scope
     assert scope["label"] == secret.id
+
+
+# ── list_project_groups + the optional `group` argument (GitHub #117) ──
+
+
+@pytest.mark.asyncio
+async def test_list_project_groups_lists_visible_groups_with_members(db_session, test_user):
+    s = await _seed_group_matrix(db_session, test_user)
+    g = s["group"]
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    out = await _run(ctx, "list_project_groups", {})
+    assert not out.is_error
+    assert "AI-ML" in out.content
+    assert g.slug in out.content
+    assert "Member Project" in out.content
+    # The foreign project is a stale group member the caller cannot read; it
+    # must not surface in the group's member list.
+    assert "Foreign Project" not in out.content
+
+
+@pytest.mark.asyncio
+async def test_list_project_groups_empty_for_member_without_grant(db_session, test_user):
+    org = await _make_org(db_session, tier="enterprise")
+    await _add_member(db_session, org=org, user=test_user, role="member")
+    group = ProjectGroup(
+        id=f"pg_{uuid.uuid4().hex[:12]}",
+        org_id=org.id,
+        slug=f"g-{uuid.uuid4().hex[:8]}",
+        name="Secret",
+        created_by_user_id=test_user.id,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    db_session.add(group)
+    await db_session.commit()
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    out = await _run(ctx, "list_project_groups", {})
+    assert not out.is_error
+    assert out.content == "No project groups."
+
+    # Same for the group argument: an invisible group reads exactly like an
+    # unknown one — no existence oracle.
+    listed = await _run(ctx, "list_tickets", {"group": group.slug})
+    assert listed.is_error
+    assert listed.content == "Project group not found."
+
+
+@pytest.mark.asyncio
+async def test_group_argument_narrows_list_tickets(db_session, test_user):
+    s = await _seed_group_matrix(db_session, test_user)
+    g = s["group"]
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    by_slug = await _run(ctx, "list_tickets", {"group": g.slug})
+    assert not by_slug.is_error
+    assert "MEMBER ticket" in by_slug.content
+    assert "OUTSIDER ticket" not in by_slug.content
+    assert "FOREIGN ticket" not in by_slug.content
+
+    # A case-insensitive name works too.
+    by_name = await _run(ctx, "list_tickets", {"group": "ai-ml"})
+    assert not by_name.is_error
+    assert "MEMBER ticket" in by_name.content
+    assert "OUTSIDER ticket" not in by_name.content
+
+
+@pytest.mark.asyncio
+async def test_group_argument_narrows_sessions(db_session, test_user):
+    s = await _seed_group_matrix(db_session, test_user)
+    g = s["group"]
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    recent = await _run(ctx, "list_recent_sessions", {"group": g.slug})
+    assert not recent.is_error
+    assert "MEMBER session" in recent.content
+    assert "OUTSIDER session" not in recent.content
+    assert "FOREIGN session" not in recent.content
+
+    search = await _run(
+        ctx, "search_sessions", {"group": g.slug, "query": "session"}
+    )
+    assert not search.is_error
+    assert "MEMBER session" in search.content
+    assert "OUTSIDER session" not in search.content
+
+
+@pytest.mark.asyncio
+async def test_group_argument_resolves_initialism(db_session, test_user):
+    s = await _seed_group_matrix(db_session, test_user)
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    # "AIM" abbreviates "AI-ML" token by token ("ai" + "m").
+    out = await _run(ctx, "list_tickets", {"group": "AIM"})
+    assert not out.is_error
+    assert "MEMBER ticket" in out.content
+    assert "OUTSIDER ticket" not in out.content
+
+
+@pytest.mark.asyncio
+async def test_group_argument_unknown_group_is_not_found(db_session, test_user):
+    s = await _seed_group_matrix(db_session, test_user)
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    out = await _run(ctx, "list_tickets", {"group": "does-not-exist"})
+    assert out.is_error
+    assert out.content == "Project group not found."
+
+
+@pytest.mark.asyncio
+async def test_group_argument_rejects_project_outside_group(db_session, test_user):
+    s = await _seed_group_matrix(db_session, test_user)
+    g = s["group"]
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    out = await _run(
+        ctx,
+        "search_project_knowledge",
+        {"group": g.slug, "project_id": s["outsider"].id, "query": "ctx"},
+    )
+    assert out.is_error
+    assert out.content == (
+        f"project {s['outsider'].id} is not a readable member of that project group."
+    )
+
+
+@pytest.mark.asyncio
+async def test_group_argument_cannot_widen_project_scoped_turn(db_session, test_user):
+    s = await _seed_group_matrix(db_session, test_user)
+    g = s["group"]
+
+    # Add the outsider to the group so the group now covers two readable
+    # projects.  A project-scoped turn on one of them must not be widened to
+    # the other by passing the group.
+    db_session.add(
+        ProjectGroupAccess(
+            group_id=g.id,
+            project_id=s["outsider"].id,
+            added_by_user_id=test_user.id,
+            created_at=_now(),
+        )
+    )
+    await db_session.commit()
+
+    ctx = _ctx(
+        db_session,
+        test_user,
+        scope=HelperScope(project_id=s["member"].id),
+        audit=RecordingSink(),
+    )
+    out = await _run(ctx, "list_tickets", {"group": g.slug})
+    assert not out.is_error
+    assert "MEMBER ticket" in out.content
+    assert "OUTSIDER ticket" not in out.content
+
+
+@pytest.mark.asyncio
+async def test_group_argument_refuses_when_scope_project_not_in_group(
+    db_session, test_user,
+):
+    s = await _seed_group_matrix(db_session, test_user)
+    g = s["group"]
+
+    # The outsider is readable but not a group member, so the group argument
+    # cannot cover the scoped project and the turn is refused outright.
+    ctx = _ctx(
+        db_session,
+        test_user,
+        scope=HelperScope(project_id=s["outsider"].id),
+        audit=RecordingSink(),
+    )
+    out = await _run(ctx, "list_tickets", {"group": g.slug})
+    assert out.is_error
+    assert out.content == (
+        f"This conversation is limited to project {s['outsider'].id}; "
+        f"project group {g.slug} does not contain it."
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_project_groups_honours_project_scope(db_session, test_user):
+    org = await _make_org(db_session, tier="enterprise")
+    await _add_member(db_session, org=org, user=test_user, role="admin")
+    pa = await _make_project(db_session, owner=test_user, org=org)
+    pa.name = "Project A"
+    sibling = await _make_project(db_session, owner=test_user, org=org)
+    sibling.name = "Sibling Project"
+    pb = await _make_project(db_session, owner=test_user, org=org)
+    pb.name = "Project B"
+    await db_session.commit()
+
+    g1 = ProjectGroup(
+        id=f"pg_{uuid.uuid4().hex[:12]}",
+        org_id=org.id,
+        slug=f"g1-{uuid.uuid4().hex[:6]}",
+        name="Group One",
+        created_by_user_id=test_user.id,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    g2 = ProjectGroup(
+        id=f"pg_{uuid.uuid4().hex[:12]}",
+        org_id=org.id,
+        slug=f"g2-{uuid.uuid4().hex[:6]}",
+        name="Group Two",
+        created_by_user_id=test_user.id,
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    db_session.add_all([g1, g2])
+    await db_session.commit()
+    db_session.add_all(
+        [
+            ProjectGroupAccess(
+                group_id=g1.id, project_id=pa.id, added_by_user_id=test_user.id, created_at=_now()
+            ),
+            ProjectGroupAccess(
+                group_id=g1.id, project_id=sibling.id, added_by_user_id=test_user.id, created_at=_now()
+            ),
+            ProjectGroupAccess(
+                group_id=g2.id, project_id=pb.id, added_by_user_id=test_user.id, created_at=_now()
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    ctx = _ctx(
+        db_session, test_user, scope=HelperScope(project_id=pa.id), audit=RecordingSink()
+    )
+    out = await _run(ctx, "list_project_groups", {})
+    assert not out.is_error
+    assert "Group One" in out.content
+    assert "Group Two" not in out.content
+    assert "Project A" in out.content
+    assert "Sibling Project" not in out.content
+
+    # The system prompt's caller block applies the same scope rules, so the
+    # model is never told about groups or projects the tool would hide.
+    from sessionfs.server.routes.helper import _caller_block
+
+    block = await _caller_block(db_session, test_user, HelperScope(project_id=pa.id))
+    assert "Group One" in block
+    assert "Group Two" not in block
+    assert "Project A" in block
+    assert "Sibling Project" not in block
+
+
+@pytest.mark.asyncio
+async def test_list_project_groups_excludes_merged_tombstone_member(db_session, test_user):
+    s = await _seed_group_matrix(db_session, test_user)
+    merged = await _make_project(db_session, owner=test_user, org=s["org"])
+    s["member"].merged_into_project_id = merged.id
+    s["member"].name = "Merged Away"
+    await db_session.commit()
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    out = await _run(ctx, "list_project_groups", {})
+    assert not out.is_error
+    assert "AI-ML" in out.content
+    assert "Merged Away" not in out.content
+
+
+@pytest.mark.asyncio
+async def test_find_visible_group_ambiguous_slug_across_orgs(db_session, test_user):
+    org1 = await _make_org(db_session, tier="enterprise")
+    org2 = await _make_org(db_session, tier="enterprise")
+    await _add_member(db_session, org=org1, user=test_user, role="admin")
+    await _add_member(db_session, org=org2, user=test_user, role="admin")
+
+    slug = "shared"
+    for i, org in enumerate((org1, org2)):
+        db_session.add(
+            ProjectGroup(
+                id=f"pg_{uuid.uuid4().hex[:12]}",
+                org_id=org.id,
+                slug=slug,
+                name=f"Group {i}",
+                created_by_user_id=test_user.id,
+                created_at=_now(),
+                updated_at=_now(),
+            )
+        )
+    await db_session.commit()
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    out = await _run(ctx, "list_tickets", {"group": slug})
+    assert out.is_error
+    assert out.content == f"Project group '{slug}' is ambiguous; use its id."
+
+
+def test_group_initialism_matches_token_initials_only():
+    assert _group_initialism("pt", "Platform Team")
+    assert not _group_initialism("pt", "Payments")
+    assert _group_initialism("am", "AI-ML")
+    assert _group_initialism("aim", "AI-ML")
+    assert not _group_initialism("aim", "AI")
+    assert not _group_initialism("amx", "AI-ML")
+    assert not _group_initialism("", "Anything")
+
+
+def test_group_initialism_is_bounded_on_pathological_input():
+    # A backtracking matcher took ~49 s on 14 tokens; the DP plus the length
+    # caps keep the worst case trivial.
+    import time
+
+    name = " ".join(["aaaa"] * 14)
+    start = time.perf_counter()
+    assert not _group_initialism("a" * 28 + "b", name)
+    assert not _group_initialism("a" * 500, " ".join(["aaaa"] * 60))
+    assert time.perf_counter() - start < 0.5
+    assert _group_initialism("aaaaaaaaaaaaaa", name)
+
+
+@pytest.mark.asyncio
+async def test_stale_cross_org_group_membership_is_ignored(db_session, test_user):
+    # Groups are org-scoped. A leftover membership row pointing at a project in
+    # another org (one the caller can read) must not widen the group or name
+    # the group in that project's scope.
+    s = await _seed_group_matrix(db_session, test_user)
+    other_org = await _make_org(db_session, tier="enterprise")
+    await _add_member(db_session, org=other_org, user=test_user, role="admin")
+    stray = await _make_project(db_session, owner=test_user, org=other_org)
+    stray.name = "Stray Project"
+    db_session.add(
+        ProjectGroupAccess(
+            group_id=s["group"].id,
+            project_id=stray.id,
+            added_by_user_id=test_user.id,
+            created_at=_now(),
+        )
+    )
+    await db_session.commit()
+
+    assert stray.id not in await group_effective_project_ids(
+        db_session, test_user.id, s["group"].id
+    )
+    ctx = _ctx(
+        db_session, test_user, scope=HelperScope(project_id=stray.id), audit=RecordingSink()
+    )
+    out = await _run(ctx, "list_project_groups", {})
+    assert out.content == "No project groups."

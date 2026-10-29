@@ -32,12 +32,16 @@ from sessionfs.server.db.models import (
     HelperConversation,
     HelperMessage,
     HelperUsage,
+    MeetingActionItem,
+    MeetingParticipant,
+    MeetingTranscript,
     OidcLoginAttempt,
     Organization,
     OrgAuditEvent,
     OrgDigestRun,
     OrgMember,
     Project,
+    ProjectGroup,
     ProjectTransfer,
     Session,
     SsoExchangeCode,
@@ -2508,6 +2512,12 @@ async def sweep_confluence_publish(
 # not overridden it via ``organizations.settings`` → ``general.helper_retention_days``.
 _HELPER_RETENTION_DAYS = 90
 
+# GitHub #116 — stored meeting-transcript retention. Soft-deleted meetings get
+# a fixed grace window before hard-delete; live meetings expire per-org.
+_MEETING_RETENTION_DAYS = 180
+_MEETING_RETENTION_BATCH = 500
+_MEETING_SOFT_DELETE_GRACE_DAYS = 30
+
 # Max rows hard-deleted per transaction during the retention sweep, so a large
 # backlog is drained in bounded batches instead of one unbounded transaction.
 _HELPER_RETENTION_BATCH = 1000
@@ -2544,6 +2554,27 @@ def _helper_retention_days_from_settings(settings: str | dict | None) -> int:
 def _helper_retention_days(org: Organization) -> int:
     """Read an org's ``general.helper_retention_days`` setting (default 90, min 1)."""
     return _helper_retention_days_from_settings(org.settings)
+
+
+def _meeting_retention_days_from_settings(settings: str | dict | None) -> int:
+    """Read ``general.meeting_retention_days`` from raw settings JSON (default 180, min 1, max 3650)."""
+    if isinstance(settings, str):
+        try:
+            parsed = json.loads(settings)
+        except (TypeError, ValueError):
+            return _MEETING_RETENTION_DAYS
+        settings = parsed
+    if not isinstance(settings, dict):
+        return _MEETING_RETENTION_DAYS
+    general = settings.get("general")
+    days = (
+        general.get("meeting_retention_days", _MEETING_RETENTION_DAYS)
+        if isinstance(general, dict)
+        else _MEETING_RETENTION_DAYS
+    )
+    if isinstance(days, bool) or not isinstance(days, int) or days < 1 or days > 3650:
+        return _MEETING_RETENTION_DAYS
+    return days
 
 
 @router.post("/sweeps/helper-retention")
@@ -2745,6 +2776,96 @@ async def sweep_helper_retention(
         "actions_deleted": actions_deleted,
         "usage_rows_deleted": usage_rows_deleted,
     }
+
+
+@router.post("/sweeps/meeting-retention")
+async def sweep_meeting_retention(
+    body: dict | None = None,
+    batch_size: int = Query(default=_MEETING_RETENTION_BATCH, ge=1, le=10000),
+    auth: AuthContext = Depends(require_platform_sweeper()),
+    db: AsyncSession = Depends(get_db),
+):
+    """Hard-delete stored meeting transcripts past retention (GitHub #116).
+
+    Two criteria: a live meeting whose ``created_at`` is older than its org's
+    ``general.meeting_retention_days`` (default 180; personal meetings use the
+    same default), and a soft-deleted meeting whose ``deleted_at`` is older
+    than 30 days. Participants and action items are deleted first (explicit,
+    so SQLite without FK enforcement still cascades) before the transcript.
+    Bounded keyset batching — never loads every expired id at once.
+    """
+    now = datetime.now(timezone.utc)
+    batch = batch_size
+    soft_delete_cutoff = now - timedelta(days=_MEETING_SOFT_DELETE_GRACE_DAYS)
+
+    # Retention window per org (settings["general"]["meeting_retention_days"]).
+    org_days: dict[str, int] = {}
+    for org_id, settings in (
+        await db.execute(select(Organization.id, Organization.settings))
+    ).all():
+        org_days[org_id] = _meeting_retention_days_from_settings(settings)
+
+    meetings_deleted = 0
+    cursor: str | None = None
+    while True:
+        # Derive the org from the live scope — ``MeetingTranscript.org_id`` is
+        # denormalised and goes stale after a project transfer between orgs.
+        stmt = (
+            select(
+                MeetingTranscript.id,
+                func.coalesce(Project.org_id, ProjectGroup.org_id),
+                MeetingTranscript.created_at,
+                MeetingTranscript.deleted_at,
+            )
+            .outerjoin(Project, Project.id == MeetingTranscript.project_id)
+            .outerjoin(ProjectGroup, ProjectGroup.id == MeetingTranscript.group_id)
+            .order_by(MeetingTranscript.id.asc())
+            .limit(batch)
+        )
+        if cursor is not None:
+            stmt = stmt.where(MeetingTranscript.id > cursor)
+        page = (await db.execute(stmt)).all()
+        if not page:
+            break
+        doomed: list[str] = []
+        for meeting_id, org_id, created_at, deleted_at in page:
+            if deleted_at is not None:
+                if _as_utc(deleted_at) < soft_delete_cutoff:
+                    doomed.append(meeting_id)
+            elif created_at is not None:
+                cutoff = now - timedelta(days=org_days.get(org_id, _MEETING_RETENTION_DAYS))
+                if _as_utc(created_at) < cutoff:
+                    doomed.append(meeting_id)
+        if doomed:
+            # Children first (explicit for SQLite); then the transcript.
+            await db.execute(
+                delete(MeetingActionItem).where(MeetingActionItem.transcript_id.in_(doomed))
+            )
+            await db.execute(
+                delete(MeetingParticipant).where(MeetingParticipant.transcript_id.in_(doomed))
+            )
+            result = await db.execute(
+                delete(MeetingTranscript).where(MeetingTranscript.id.in_(doomed))
+            )
+            meetings_deleted += result.rowcount or 0
+            await db.commit()
+        cursor = page[-1][0]
+        if len(page) < batch:
+            break
+
+    await _log_action(
+        db,
+        auth.user.id,
+        "meeting_retention_sweep",
+        "meeting_transcript",
+        "bulk",
+        {
+            **sweep_actor_details(auth),
+            "meetings_deleted": meetings_deleted,
+        },
+    )
+    await db.commit()
+    return {"meetings_deleted": meetings_deleted}
 
 
 @router.post("/github-webhook-deliveries/{fingerprint}/retry")

@@ -422,7 +422,7 @@ describe('ProjectDetail', () => {
     await user.click(screen.getByRole('tab', { name: 'Work' }));
     expect(screen.getByRole('tab', { name: 'Tickets' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('tab', { name: 'Agent runs' })).toBeInTheDocument();
-    expect(screen.getByRole('tab', { name: 'Personas' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Agents' })).toBeInTheDocument();
 
     await user.click(screen.getByRole('tab', { name: 'Rules & Skills' }));
     expect(screen.getByRole('tab', { name: 'Rules' })).toHaveAttribute('aria-selected', 'true');
@@ -449,7 +449,7 @@ describe('ProjectDetail', () => {
       expect(screen.getByTestId('loc')).toHaveTextContent('tab=work');
       expect(screen.getByTestId('loc')).toHaveTextContent('edit=1');
 
-      await user.click(screen.getByRole('tab', { name: 'Personas' }));
+      await user.click(screen.getByRole('tab', { name: 'Agents' }));
       expect(screen.getByTestId('loc')).toHaveTextContent('tab=work');
       expect(screen.getByTestId('loc')).toHaveTextContent('sub=personas');
 
@@ -464,7 +464,7 @@ describe('ProjectDetail', () => {
       const user = userEvent.setup();
       await user.click(screen.getByRole('tab', { name: 'Work' }));
       await user.click(screen.getByRole('tab', { name: 'Agent runs' }));
-      await user.click(screen.getByRole('tab', { name: 'Personas' }));
+      await user.click(screen.getByRole('tab', { name: 'Agents' }));
       await user.click(screen.getByRole('button', { name: 'history back' }));
       expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
     });
@@ -484,7 +484,7 @@ describe('ProjectDetail', () => {
       ['history', 'Knowledge', 'History'],
       ['tickets', 'Work', 'Tickets'],
       ['agent-runs', 'Work', 'Agent runs'],
-      ['personas', 'Work', 'Personas'],
+      ['personas', 'Work', 'Agents'],
       ['rules', 'Rules & Skills', 'Rules'],
       ['marketplace', 'Rules & Skills', 'Skills'],
       ['repos', 'Settings', null],

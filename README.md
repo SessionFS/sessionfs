@@ -130,6 +130,8 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs ticket list\|show\|create\|update\|start\|complete\|comment\|comments\|watch\|review-state` | Manage agent tickets — start/complete writes a local provenance bundle so the daemon tags captured sessions (Team+) |
 | `sfs ticket assign\|resolve\|escalate` | Re-route, close out (review→done with dep enrichment), or bump priority |
 | `sfs ticket status\|block\|unblock\|reopen\|approve\|close\|dismiss` | Ticket lifecycle transitions and active-bundle inspection |
+| `sfs meeting upload\|list\|search\|show\|delete` | Store meeting transcripts on a project or group (DLP-redacted before storage) |
+| `sfs meeting extract\|participants\|resolve-participant\|action-items\|promote\|dismiss\|restore` | Extract action items and decisions with your own AI key, match participants, turn items into tickets |
 | `sfs ticket follow\|unfollow\|inbox\|updates` | Follow tickets, list your notifications, and poll the agent delta (Ticket Watchers) |
 | `sfs ticket jira preview\|publish\|status\|unlink` | Promote a ticket to a Jira Cloud issue with a reviewable preview (Enterprise) |
 | `sfs agent run\|complete\|status\|list` | Record agent runs (e.g. CI reviews) with findings (Team+) |
@@ -151,7 +153,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs auth use\|profiles\|whoami` | Switch between named account profiles |
 | `sfs auth keys list\|create\|revoke` | Manage your personal API keys |
 | `sfs config show\|set\|default-org` | Manage configuration and your default organization |
-| `sfs mcp serve` | Start MCP server (100 tools) for AI tool integration |
+| `sfs mcp serve` | Start MCP server (106 tools) for AI tool integration |
 | `sfs mcp install\|uninstall --for TOOL` | Add or remove the MCP registration for any of the 10 supported tools |
 | `sfs mcp index` | Rebuild the local full-text search index |
 | `sfs init` | Interactive setup wizard — auto-detects tools, optional sync |
@@ -266,6 +268,8 @@ Sessions are stored as `.sfs` directories:
 All file paths are relative to workspace root. Sessions are append-only — conflict resolution appends both sides rather than merging.
 
 ## Status
+
+**v0.29.0 — Public Beta.** 10264 backend tests + 1859 dashboard tests passing. Database migrations 001–105 (067 and 068 unused). 106 MCP tools. **Meeting transcripts:** add a meeting to a project or group by pasting text or uploading a caption file, redacted before it is stored; pull out action items, decisions and participants with your own AI key, each tied to the transcript lines it came from; and turn an action item into a ticket through an editable preview (dashboard Meetings view, `sfs meeting`, six MCP tools). The session helper can read meetings and cite their lines, and now knows who is asking ("my tickets", tickets for a person or persona, groups by name). Also: a quieter tab style across the dashboard and the project Personas tab renamed Agents. Migrations 104 and 105.
 
 **v0.28.0 — Public Beta.** 10042 backend tests + 1801 dashboard tests passing. Database migrations 001–103 (067 and 068 unused). 100 MCP tools. **Ask the session helper about a whole project group** (scope menu, `sfs helper ask --group`). **Due dates, estimates and a full change history on tickets** (`sfs ticket history`, Overdue filter), sent to and pulled from Jira. **Jira sprints and parent epics** on publish, with automatic field detection and no duplicate issues after timeouts or errors. Also: Fetch models on the org AI-key form, a clearer Jira template editor, sweep keys that explain their admin rule, and opt-in Helm CronJobs for every scheduled sweep. Migrations 102 and 103.
 
@@ -387,7 +391,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### MCP and dashboard
 
-- **MCP server** (local, stdio) with 100 tools — sessions, knowledge read and write, rules, personas, tickets, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
+- **MCP server** (local, stdio) with 106 tools — sessions, knowledge read and write, rules, personas, tickets, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
 - **`sfs mcp install --for <tool>`** for all 10 tools (stale registration repair, malformed config handling)
 - **Web dashboard** with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, command palette (Cmd+K), mobile nav, accessibility (focus trapping, ARIA live regions), product identity
 - **`/help` page** — MCP-first guidance, 10-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference

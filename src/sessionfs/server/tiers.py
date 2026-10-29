@@ -23,7 +23,7 @@ TIER_ORDER = {
 
 TIER_FEATURES: dict[Tier, dict] = {
     Tier.FREE: {
-        "features": set(),
+        "features": {"meetings"},
         "storage_bytes": 0,
         "description": "Capture + resume + local search only",
     },
@@ -38,6 +38,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "summary_deterministic",
             "oidc_sso",
             "marketplace_access",
+            "meetings",
         },
         "storage_bytes": 500 * 1024 * 1024,  # 500 MB
         "description": "Cloud sync + dashboard + manual judge",
@@ -65,6 +66,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "agent_personas",
             "oidc_sso",
             "marketplace_access",
+            "meetings",
         },
         "storage_bytes": 2 * 1024 * 1024 * 1024,  # 2 GB
         "description": "Everything including DLP and auto-audit",
@@ -100,6 +102,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "marketplace_access",
             "team_skill_library",
             "project_groups",
+            "meetings",
         },
         "storage_bytes": 1024 * 1024 * 1024,  # 1 GB per user
         "description": "Pro + team management",
@@ -147,6 +150,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "jira_integration",
             "confluence_integration",
             "project_groups",
+            "meetings",
         },
         "storage_bytes": 0,  # Unlimited (self-hosted)
         "description": "Self-hosted + HIPAA + governance",

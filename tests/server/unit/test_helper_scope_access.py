@@ -165,6 +165,8 @@ def _tool_calls(a: dict, b: dict) -> dict[str, list[dict]]:
         "list_agent_runs": [{"project_id": bp}],
         "get_agent_run": [{"project_id": bp, "run_id": b["run"].id}],
         "list_personas": [{}, {"project_id": bp}],
+        "resolve_identity": [{"name": "alpha-persona"}, {"name": "bravo-persona"}],
+        "list_project_groups": [{}],
         "trash_sessions": [
             {"session_ids": [b["attributed"].id, b["legacy"].id]},
             {"model": "unknown", "project_id": bp},
@@ -181,6 +183,10 @@ def _tool_calls(a: dict, b: dict) -> dict[str, list[dict]]:
                 },
             }
         ],
+        "search_meetings": [{"query": "BRAVO"}, {"query": "sync", "project_id": bp}],
+        "list_recent_meetings": [{}, {"project_id": bp}],
+        "get_meeting": [{"meeting_id": "meet_0000000000000000"}],
+        "list_my_meeting_actions": [{}, {"project_id": bp}],
         "propose_assignment": [
             {"ticket_id": b["ticket"].id, "persona_name": "some-persona"}
         ],
@@ -500,6 +506,9 @@ async def test_assigned_to_me_matches_created_and_represented_personas(db_sessio
 
     mine_created = await _make_ticket(db_session, pa, title="created by me", created_by=test_user.id)
     mine_assigned = await _make_ticket(db_session, pa, title="assigned to me", assigned_to="ATLAS")
+    mine_person = await _make_ticket(
+        db_session, pa, title="assigned to me directly", assigned_user_id=test_user.id
+    )
     await _make_ticket(db_session, pa, title="assigned to other", assigned_to="Other")
     await _make_ticket(db_session, pb, title="shadowed atlas", assigned_to="atlas")
     nobody = await _make_ticket(db_session, pa, title="nobody's ticket")
@@ -508,6 +517,7 @@ async def test_assigned_to_me_matches_created_and_represented_personas(db_sessio
     result = await _run(ctx, "list_tickets", {"assigned_to_me": True})
     assert mine_created.id in result.content
     assert mine_assigned.id in result.content
+    assert mine_person.id in result.content
     assert "assigned to other" not in result.content
     assert "shadowed atlas" not in result.content
     assert nobody.id not in result.content

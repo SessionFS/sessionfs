@@ -34,6 +34,16 @@ export function resolve(method: string, pathname: string): MockResult | null {
   const jiraPublishPost = !get && path.match(/^\/api\/v1\/projects\/[^/]+\/tickets\/([^/]+)\/jira\/publish$/);
   if (jiraPublishPost) return ok(d.jiraPublishWithWarnings(decodeURIComponent(jiraPublishPost[1])));
   if (!get && /^\/api\/v1\/orgs\/[^/]+\/jira\/fields\/detect$/.test(path)) return ok(d.jiraDetectedFields);
+  // Meetings (GitHub #116): the promote draft, a promote, an extraction.
+  if (!get && /^\/api\/v1\/meetings\/[^/]+\/action-items\/[^/]+\/promote\/preview$/.test(path)) {
+    return ok(path.includes(d.GROUP_MEETING_ID)
+      ? { ...d.meetingPromotePreview, meeting_id: d.GROUP_MEETING_ID, target_project_id: null, target_project_options: [{ id: d.PROJECT_ID, name: 'Acme Widgets' }], jira_publish_available: false }
+      : d.meetingPromotePreview);
+  }
+  if (!get && /^\/api\/v1\/meetings\/[^/]+\/action-items\/[^/]+\/promote$/.test(path)) {
+    return ok({ ticket_id: 'tk_fixture7', item_id: 'mai_f1', status: 'promoted', published_to_jira: false, warnings: [] });
+  }
+  if (!get && /^\/api\/v1\/meetings\/[^/]+\/extract$/.test(path)) return ok({ ...d.meetingDetail, dropped_items: 0 });
   if (!get) return ok({ status: 'ok' });
 
   // ── account ──
@@ -89,6 +99,7 @@ export function resolve(method: string, pathname: string): MockResult | null {
       if (sub === '/jira/templates') return ok(d.jiraTicketTemplates);
       return null;
     }
+    if (rest === '/meetings') return ok(d.projectMeetings);
     if (rest === '/agent-runs') return ok(d.agentRuns);
     if (rest === '/rules') return ok(d.rules.rules);
     if (rest === '/rules/versions') return ok(d.rulesVersions);
@@ -181,6 +192,21 @@ export function resolve(method: string, pathname: string): MockResult | null {
       return ok([{ name: 'Story', id: '10001' }, { name: 'Bug', id: '10004' }]);
     }
     return null;
+  }
+  // ── meetings ──
+  if (/^\/api\/v1\/groups\/[^/]+\/meetings$/.test(path)) return ok(d.groupMeetings);
+  const meeting = path.match(/^\/api\/v1\/meetings\/([^/]+)$/);
+  if (meeting) {
+    const mid = decodeURIComponent(meeting[1]);
+    if (mid === d.MEETING_ID) return ok(d.meetingDetail);
+    if (mid === d.GROUP_MEETING_ID) return ok(d.groupMeetingDetail);
+    return { status: 404, body: { error: { code: '404', message: 'Meeting not found' } } };
+  }
+  // A promoted item in a group meeting looks its ticket up to link it.
+  const ticketById = path.match(/^\/api\/v1\/tickets\/([^/]+)$/);
+  if (ticketById) {
+    const t = d.tickets.find((x) => x.id === decodeURIComponent(ticketById[1]));
+    return t ? ok({ ...t, project_name: 'Acme Widgets', comment_count: 0, recent_comments: [] }) : notFound();
   }
   if (path === '/api/v1/transfers') return ok({ transfers: [] });
   if (path === '/api/v1/me/groups') return ok(d.myGroups);

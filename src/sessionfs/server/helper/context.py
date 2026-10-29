@@ -297,6 +297,9 @@ class HelperContext:
     seen_session_ids: set[str] = field(default_factory=set)
     seen_message_refs: set[tuple[str, int]] = field(default_factory=set)
     seen_doc_slugs: set[str] = field(default_factory=set)
+    # Meeting ids tool results surfaced; [meeting:… L<a>-<b>] citations
+    # are only kept for these (and only when still readable).
+    seen_meeting_ids: set[str] = field(default_factory=set)
     # Plan-gate results for this turn, keyed (feature, project_id), and the
     # caller's tier context they are resolved against (built lazily).
     feature_cache: dict[tuple[str, str], bool] = field(default_factory=dict)

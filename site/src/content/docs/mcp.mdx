@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 100 tools in twelve categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Skills Marketplace, and Project Groups (Team+).
+The MCP server exposes 106 tools in thirteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Skills Marketplace, Project Groups (Team+), and Meetings.
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -865,6 +865,19 @@ Org-scoped groups of projects. Every tool addresses a group by its org-scoped sl
 | `get_group_context` | The group's compiled overview (only if you can read every contributing project) |
 | `compile_group_knowledge` | Compile the deterministic overview (group editor/admin or org admin; the group must have `compile_enabled`) |
 | `ask_group` | Research a question across the group's context and knowledge, with typed `sources_cited` including project ids |
+
+### Meetings
+
+Stored meeting transcripts for a project (`git_remote` or the workspace) or a project group (`group_id`, user keys only). Transcript text is DLP-redacted by the server before storage and is returned as untrusted data. All access rules are enforced server-side. See [Meetings](/meetings/).
+
+| Tool | Purpose |
+|------|---------|
+| `upload_meeting_transcript` | Store a transcript (`title`, `content`, optional `meeting_at`, `source`, `extract`). With `extract=true` it also runs one extraction call using **your own** LLM key (your key, else your org's; never a SessionFS key); without a key the transcript is still stored |
+| `list_meeting_transcripts` | Meetings, newest first (`q`, `limit` 1–200, `before` cursor); summaries only |
+| `get_meeting_transcript` | One meeting by id: text, participants and extracted items |
+| `extract_meeting_action_items` | Extract participants, action items and decisions with your own LLM key. Re-running keeps promoted and dismissed items |
+| `promote_meeting_action_item` | **Preview only unless `confirm=true`.** The preview returns the ticket draft; with `confirm=true` it creates the ticket, using any edited `title`, `description`, `priority`, `kind`, `assigned_to`, `assigned_user_id`, `due_date`, `target_project_id` you pass, and marks the item promoted. `publish_to_jira=true` also publishes it to Jira |
+| `search_meetings` | Search meeting titles and transcript text (`q`, `limit`) |
 
 ## Agent Knowledge Contribution
 

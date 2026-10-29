@@ -192,6 +192,7 @@ async def _api_request(
     json_data: dict | None = None,
     extra_headers: dict | None = None,
     params: dict | None = None,
+    timeout: float = 30,
 ) -> tuple[int, dict | str, dict]:
     """Return (status_code, body, headers). Body is dict if JSON else text."""
     import httpx
@@ -202,7 +203,7 @@ async def _api_request(
         headers.update(extra_headers)
 
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             if method == "GET":
                 resp = await client.get(
                     url, headers=headers, **({"params": params} if params else {})

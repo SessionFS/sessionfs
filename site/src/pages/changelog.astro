@@ -17,14 +17,39 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.28.0 -->
+      <!-- v0.29.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.29.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 29, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Meeting Transcripts &middot; Action Items to Tickets &middot; Helper That Knows Who Is Asking</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Meeting transcripts.</strong> Add a meeting by pasting text or uploading a <span class="font-mono text-accent text-sm">.txt</span>, <span class="font-mono text-accent text-sm">.md</span>, <span class="font-mono text-accent text-sm">.vtt</span> or <span class="font-mono text-accent text-sm">.srt</span> file (caption timing is removed) from the dashboard, <span class="font-mono text-accent text-sm">sfs meeting upload</span>, the API or MCP. Secrets and personal data are redacted under your org&rsquo;s DLP policy before anything is stored, and a blocking policy refuses the upload. Meetings work on every plan for projects; project-group meetings need Team or Enterprise. See <a href="/meetings/" class="text-brand hover:underline">Meetings</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Extract action items, decisions and participants.</strong> Extraction uses your own AI key or your org&rsquo;s. Every item cites the transcript lines it came from, and items that can&rsquo;t be checked against the text are dropped and counted. Participants are matched to org members and personas only when their name appears in the transcript; anyone unmatched can be matched by hand.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Create a ticket from an action item.</strong> An editable preview quotes the meeting lines, with the assignee and due date filled in and optional Jira publishing. Dismiss an item, or restore it later.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Meetings in the dashboard and CLI.</strong> A Meetings view sits under a project&rsquo;s Work section and on project group pages, with search, upload, a numbered transcript, and action items, decisions and participants beside it. <span class="font-mono text-accent text-sm">sfs meeting</span> covers upload, list, search, show, delete, extract, participants, resolve-participant, action-items, promote, dismiss and restore.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Six new MCP tools (106 in total).</strong> <span class="font-mono text-accent text-sm">upload_meeting_transcript</span>, <span class="font-mono text-accent text-sm">list_meeting_transcripts</span>, <span class="font-mono text-accent text-sm">get_meeting_transcript</span>, <span class="font-mono text-accent text-sm">extract_meeting_action_items</span>, <span class="font-mono text-accent text-sm">promote_meeting_action_item</span> and <span class="font-mono text-accent text-sm">search_meetings</span>. New API key scopes <span class="font-mono text-accent text-sm">meetings:read</span> and <span class="font-mono text-accent text-sm">meetings:write</span>; promoting with a service key also needs <span class="font-mono text-accent text-sm">tickets:write</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>The session helper reads meetings.</strong> It can search and read meetings in your scope, list your open action items, and cite meeting lines as links that open the transcript at those lines (Enterprise).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>The session helper knows who is asking.</strong> &ldquo;My tickets&rdquo; works, a name finds tickets assigned to a persona or to a person, and project groups can be named by name, slug or abbreviation.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Retention.</strong> Meetings are kept for 180 days by default (1&ndash;3650 days, set per org), and the Helm chart has an opt-in CronJob for the cleanup sweep. AI usage is recorded by source, so meeting extraction and helper chats show separately and both count against the org budget.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Changed:</strong> tabs across the dashboard use a quieter underline style, the project <strong>Personas</strong> tab is now called <strong>Agents</strong>, and dialogs keep keyboard focus inside the topmost dialog while it is busy.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;105 (104 and 105 add meeting transcripts, participants and action items; additive). Self-hosted: run migrations 104&ndash;105 (see <a href="/self-hosted/#upgrading" class="text-brand hover:underline">Self-Hosted</a>). 10,264 backend tests + 1859 dashboard UI tests passing. 106 MCP tools (+6).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.28.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.28.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 28, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Helper for Project Groups &middot; Ticket Due Dates &amp; History &middot; Jira Sprints &amp; Parents &middot; Sweep CronJobs</h2>
         <ul class="space-y-2 text-base text-muted">

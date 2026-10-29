@@ -1870,7 +1870,7 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed (100):
+Tools exposed (106):
 
 - **Sessions:** `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_session_summary`, `get_audit_report`, `get_session_provenance`, `get_session_retrieval_log`, `rename_session`, `checkpoint_session`, `list_checkpoints`, `fork_session`, `ask_session_helper`
 - **Knowledge (read):** `get_project_context`, `get_context_section`, `get_wiki_page`, `get_wiki_page_history`, `search_project_knowledge`, `list_knowledge_entries`, `get_knowledge_entry`, `get_knowledge_health`, `ask_project`
@@ -1883,6 +1883,7 @@ Tools exposed (100):
 - **Handoffs:** `create_handoff`, `get_handoff`, `list_inbox_handoffs`, `list_sent_handoffs`, `claim_handoff`, `decline_handoff`, `revoke_handoff`, `add_handoff_comment`
 - **Marketplace (never writes files or enables executable content):** `search_skill_marketplace`, `get_marketplace_package`, `diff_marketplace_versions`, `get_skill_policy`, `preview_marketplace_skill`, `load_marketplace_skill`, `request_skill_install`, `list_skill_install_requests`, `get_skill_install_request`, `cancel_skill_install_request`
 - **Project groups:** `list_project_groups`, `get_project_group`, `create_project_group`, `update_project_group`, `delete_project_group`, `add_project_to_group`, `remove_project_from_group`, `list_group_members`, `grant_group_access`, `revoke_group_access`, `list_group_access`, `search_group_knowledge`, `get_group_context`, `compile_group_knowledge`, `ask_group`
+- **Meetings:** `upload_meeting_transcript`, `list_meeting_transcripts`, `get_meeting_transcript`, `extract_meeting_action_items`, `promote_meeting_action_item` (preview only unless `confirm=true`), `search_meetings`
 
 If you are an agent or have the MCP server installed, prefer the MCP tools over the CLI equivalents listed in this reference — they are faster, run in-process, and avoid hitting API rate limits.
 
@@ -3115,6 +3116,24 @@ Run a **resident** — an operator-hosted, always-on agent that drives a work qu
 | `sfs resident health --config <name>` | Read-only summary of the resident's config + today's LLM budget spend (does not contact the server or start the loop). |
 
 The implementer resident runs inside a hardened sandbox (`deploy/resident-sandbox/`). Merging a resident-authored, resident-auto-closed change in a high-risk class follows the mandatory checklist in `docs/operations/high-risk-merge-checklist.md`.
+
+## `sfs meeting`
+
+Store meeting transcripts for a project or a project group, extract action items and decisions, and promote action items to tickets. Transcripts are DLP-redacted by the server before storage, and every access rule is enforced server-side. Without `--project` or `--group` a command uses the project of the current repository. See [Meetings](https://sessionfs.dev/meetings/).
+
+| Command | Description |
+|---------|-------------|
+| `sfs meeting upload <file> \| --stdin --title T [--project proj_… \| --group pg_…] [--date ISO] [--duration MIN] [--extract]` | Upload a `.txt`, `.md`, `.vtt` or `.srt` transcript. `--extract` also runs extraction (uses your own LLM key; allow up to two minutes) |
+| `sfs meeting list [--project \| --group] [-q TEXT] [-n N] [--before ID]` | Meetings, newest first |
+| `sfs meeting search <q> [--project \| --group]` | Search titles and transcript text |
+| `sfs meeting show <id> [--no-transcript]` | Numbered transcript, participants, action items and decisions |
+| `sfs meeting delete <id> [--yes]` | Delete a meeting |
+| `sfs meeting extract <id>` | Extract participants, action items and decisions with your own LLM key |
+| `sfs meeting participants <id>` | Participants and how each was resolved |
+| `sfs meeting resolve-participant <id> <participant_id> --user USER_ID \| --persona NAME` | Resolve a participant manually |
+| `sfs meeting action-items <id>` | Action items and decisions |
+| `sfs meeting promote <id> <item_id> [--title T] [--assignee PERSONA \| --user USER_ID] [--due DATE] [--priority P] [--target-project ID] [--jira] [--yes]` | Show the ticket draft and ask before creating it; a group meeting needs `--target-project` |
+| `sfs meeting dismiss <id> <item_id>` / `restore <id> <item_id>` | Dismiss or restore a pending item |
 
 ## `sfs helper` (Enterprise, BYOK)
 

@@ -112,9 +112,10 @@ export default function ProjectHeader({
       )}
 
       {/* Tabs */}
-      <div className="px-5 mt-2 border-t border-border pt-2">
+      <div className="px-5 mt-2 border-t border-border">
         <Tabs
           bare
+          variant="underline"
           idPrefix="project-section"
           aria-label="Project sections"
           activeKey={activeTab}
