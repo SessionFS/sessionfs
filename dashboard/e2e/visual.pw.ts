@@ -4,6 +4,7 @@ import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { mockApi } from './fixtures/mock-api';
 import {
+  agentRuns,
   GROUP_ID,
   GROUP_MEETING_ID,
   MEETING_ID,
@@ -1335,6 +1336,74 @@ const MEETING_SCENARIOS: Scenario[] = [
   { name: 'meeting-not-found', path: '/meetings/meet_00000000000000ff' },
 ];
 
+// Review Loop: Mission Control with data, empty, and one ticket's Story.
+const LOOP_PATH = `/projects/${PROJECT_ID}?tab=work&sub=loop`;
+const LOOP_SCENARIOS: Scenario[] = [
+  { name: 'loop-mission-control', path: LOOP_PATH },
+  {
+    name: 'loop-empty',
+    path: LOOP_PATH,
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/loops`,
+        (route) => route.fulfill(fulfillJson(200, [])),
+      );
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/loop-insights`,
+        (route) => route.fulfill(fulfillJson(200, { caught: [], cost_per_accepted_change: [], learning: [] })),
+      );
+    },
+  },
+  { name: 'loop-story', path: `${LOOP_PATH}&story=tk_child1` },
+  {
+    name: 'loop-raise-limit',
+    path: LOOP_PATH,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: /Raise limit/ }).click();
+      await page.getByRole('dialog', { name: 'Raise limit' }).waitFor();
+    },
+  },
+  {
+    name: 'loop-close-item',
+    path: LOOP_PATH,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: /Close item/ }).click();
+      await page.getByRole('dialog', { name: 'Close item' }).waitFor();
+    },
+  },
+  {
+    name: 'loop-checklist-empty',
+    path: LOOP_PATH,
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/loop-checklist`,
+        (route) => route.fulfill(fulfillJson(200, [])),
+      );
+    },
+  },
+  { name: 'agent-run-linked', path: `/projects/${PROJECT_ID}?tab=work&sub=agent-runs&run=run_2` },
+  {
+    name: 'agent-run-linked-old',
+    path: `/projects/${PROJECT_ID}?tab=work&sub=agent-runs&run=run_old`,
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/agent-runs/run_old`,
+        (route) => route.fulfill(fulfillJson(200, { ...agentRuns[1], id: 'run_old' })),
+      );
+    },
+  },
+  {
+    name: 'agent-run-linked-missing',
+    path: `/projects/${PROJECT_ID}?tab=work&sub=agent-runs&run=run_gone`,
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/agent-runs/run_gone`,
+        (route) => route.fulfill(fulfillJson(404, { detail: 'Run not found' })),
+      );
+    },
+  },
+];
+
 const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...WIDTHS.map((width) => ({ width, scenarios: PAGES })),
   ...SHELL_WIDTHS.map((width) => ({ width, scenarios: SHELL_SCENARIOS })),
@@ -1351,6 +1420,7 @@ const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...OVERLAY_WIDTHS.map((width) => ({ width, scenarios: ORG_KEY_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: TEMPLATE_EDITOR_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: MEETING_SCENARIOS })),
+  ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: LOOP_SCENARIOS })),
 ];
 
 for (const theme of THEMES) {

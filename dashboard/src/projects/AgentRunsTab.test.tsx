@@ -1,11 +1,13 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from '../api/client';
 import AgentRunsTab from './AgentRunsTab';
 
 const { hooks } = vi.hoisted(() => ({
   hooks: {
     useAgentRuns: vi.fn(),
+    useAgentRun: vi.fn(),
     useReplayAgentRun: vi.fn(),
     useCompareAgentRuns: vi.fn(),
   },
@@ -50,6 +52,7 @@ function run(overrides: Record<string, unknown> = {}) {
 }
 
 beforeEach(() => {
+  hooks.useAgentRun.mockReturnValue({ data: undefined, isLoading: false, error: null });
   hooks.useAgentRuns.mockReturnValue({
     data: [run()],
     isLoading: false,
@@ -93,6 +96,41 @@ describe('AgentRunsTab', () => {
     });
     render(<AgentRunsTab projectId="proj_1" />);
     expect(screen.getByText(/No runs yet/i)).toBeInTheDocument();
+  });
+
+  it('opens the run named by initialRunId and ignores an unknown one', () => {
+    const { unmount } = render(<AgentRunsTab projectId="proj_1" initialRunId="run_abc" />);
+    expect(screen.getByRole('button', { name: /run_abc/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText(/unused import/)).toBeInTheDocument();
+    unmount();
+    render(<AgentRunsTab projectId="proj_1" initialRunId="run_missing" />);
+    expect(screen.getByRole('button', { name: /run_abc/ })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('opens a different run when initialRunId changes while mounted', () => {
+    hooks.useAgentRuns.mockReturnValue({
+      data: [run(), run({ id: 'run_two', result_summary: 'Second one' })],
+      isLoading: false, error: null, refetch: vi.fn(), isFetching: false,
+    });
+    const { rerender } = render(<AgentRunsTab projectId="proj_1" initialRunId="run_abc" />);
+    expect(screen.getByRole('button', { name: /run_abc/ })).toHaveAttribute('aria-expanded', 'true');
+    rerender(<AgentRunsTab projectId="proj_1" initialRunId="run_two" />);
+    expect(screen.getByRole('button', { name: /run_two/ })).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  it('fetches a linked run that is not in the listed page and pins it', () => {
+    hooks.useAgentRun.mockReturnValue({ data: run({ id: 'run_old', result_summary: 'Old run summary' }), isLoading: false, error: null });
+    render(<AgentRunsTab projectId="proj_1" initialRunId="run_old" />);
+    expect(hooks.useAgentRun).toHaveBeenCalledWith('proj_1', 'run_old');
+    const pinned = screen.getByTestId('linked-run');
+    expect(within(pinned).getByText('run_old')).toBeInTheDocument();
+    expect(within(pinned).getAllByText(/Old run summary/).length).toBeGreaterThan(0);
+  });
+
+  it('says Run not found for a linked run that 404s', () => {
+    hooks.useAgentRun.mockReturnValue({ data: undefined, isLoading: false, error: new ApiError(404, '{"detail":"Run not found"}') });
+    render(<AgentRunsTab projectId="proj_1" initialRunId="run_gone" />);
+    expect(screen.getByText('Run not found.')).toBeInTheDocument();
   });
 
   it('expands run detail on click and renders findings JSON', () => {

@@ -1525,7 +1525,7 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed: 109, covering sessions (including `ask_session_helper`), knowledge, rules, personas, tickets (including `watch_ticket` and `get_ticket_updates`), agent runs (including `replay_agent_run`, `report_agent_run_usage` and `get_spend_summary`), merge readiness (`check_merge_readiness`), agent feedback, handoffs, work queues, the skills marketplace, project groups and meetings. See [MCP Server](/mcp/) for the full catalogue.
+Tools exposed: 115, covering sessions (including `ask_session_helper`), knowledge, rules, personas, tickets (including `watch_ticket` and `get_ticket_updates`), agent runs (including `replay_agent_run`, `report_agent_run_usage` and `get_spend_summary`), review-loop rollups (`get_loop_report`), merge readiness (`check_merge_readiness`), review loops (`start_review_loop`, `get_loop_status` and `update_review_loop`), the review checklist (`get_loop_checklist` and `propose_checklist_item`), agent feedback, handoffs, work queues, the skills marketplace, project groups and meetings. See [MCP Server](/mcp/) for the full catalogue.
 
 ---
 
@@ -1936,7 +1936,23 @@ Only runs with a `reported` or `estimated` cost basis add dollars; `plan` and `u
 
 ## `sfs loop`
 
-Merge readiness for the [worker review loop](/review-loop/). Tier: **Team+**.
+Start, watch and budget a [worker review loop](/review-loop/), read its reports, keep its checklist, and check merge readiness. Tier: **Team+** (the checklist is on every plan). From v0.29.2.
+
+| Command | Description |
+|---------|-------------|
+| `sfs loop start <ticket-id-or-title> --reviewer-persona NAME [--ticket 'title::description' ...] [--criteria TEXT ...] [--token-budget N] [--cost-budget-usd N] [--max-review-rounds N]` | Start a loop on an existing issue, or create one from a title. Files one child task per `--ticket` and creates the reviewer's queue. `--cost-budget-usd` needs org owner or admin standing; there is no default round cap |
+| `sfs loop status [LOOP_ID]` | One loop's children (status, branch, head, rounds, spend), or every loop when the id is omitted |
+| `sfs loop update LOOP_ID [--token-budget N] [--cost-budget-usd N] [--max-review-rounds N]` | Raise a limit |
+| `sfs loop close-item LOOP_ID TICKET_ID` | Close an item the loop handed back as needing a person. Users only; service keys are refused |
+| `sfs loop report TICKET_ID` | Per-round findings by harm, known versus new classes and round cost |
+| `sfs loop insights [--from DATE] [--to DATE]` | Findings caught, cost per accepted change and checklist learning |
+| `sfs loop checklist list [--status proposed\|active\|retired]` | Show the project checklist |
+| `sfs loop checklist seed` | Offer the generic starter items as proposals |
+| `sfs loop checklist add TITLE [--check TEXT] [--slug SLUG]` | Propose an item |
+| `sfs loop checklist accept SLUG` / `retire SLUG` | Activate or retire an item |
+| `sfs loop ready TICKET_ID --sha HEAD_COMMIT` | Merge readiness (below) |
+
+Dollar figures are shown only to org owners and admins, or the owner of a personal project.
 
 ### `sfs loop ready`
 

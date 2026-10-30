@@ -1,9 +1,10 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
-import type {
-  AgentRun,
-  AgentRunCompareResult,
-  AgentRunReplayInput,
+import {
+  ApiError,
+  type AgentRun,
+  type AgentRunCompareResult,
+  type AgentRunReplayInput,
 } from '../api/client';
 
 /**
@@ -49,6 +50,8 @@ export function useAgentRun(
     queryFn: () => auth!.client.getAgentRun(projectId!, runId!),
     enabled: !!auth && !!projectId && !!runId,
     staleTime: 15_000,
+    // A missing run is final; do not retry it.
+    retry: (count, err) => !(err instanceof ApiError && err.status === 404) && count < 2,
   });
 }
 

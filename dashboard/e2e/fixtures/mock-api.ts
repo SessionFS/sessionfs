@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test';
 import * as d from './data';
+import * as loop from '../../src/projects/loop/fixtures';
 
 export interface MockResult {
   status: number;
@@ -82,6 +83,15 @@ export function resolve(method: string, pathname: string): MockResult | null {
     if (rest === '/personas') return ok(d.personas);
     if (rest === '/assignable-users') return ok(d.assignableUsers);
     if (rest === '/tickets') return ok(d.tickets.map((t) => (t.id === d.LINKED_TICKET_ID ? d.linkedTicket : t)));
+    // Review Loop (shapes follow routes/loops.py, review_loop.py, loop_checklist.py, spend.py).
+    if (rest === '/loops') return ok(loop.loops());
+    if (rest === '/loop-insights') return ok(loop.insights());
+    if (rest === '/loop-checklist') return ok(loop.checklist());
+    const loopTicket = rest.match(/^\/tickets\/(tk_child\d)\/(story|spend)$/);
+    if (loopTicket) {
+      if (loopTicket[2] === 'story') return ok(loop.story());
+      return ok({ totals: { runs: 3, input_tokens: 180000, output_tokens: 60000, cache_read_tokens: 0, cache_write_tokens: 0, tokens_on_plans: 0, cost_usd: 1.4 }, per_persona: [], per_model: [], review_rounds: 3 });
+    }
     const tk = rest.match(/^\/tickets\/([^/]+)(\/.*)?$/);
     if (tk) {
       const tid = decodeURIComponent(tk[1]);

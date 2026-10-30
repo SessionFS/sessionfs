@@ -338,6 +338,7 @@ export const agentRuns = [
     ci_run_url: 'https://example.test/runs/1', result_summary: 'No findings.', severity: 'none',
     findings_count: 0, findings: [], fail_on: 'high', policy_result: 'pass', exit_code: 0,
     session_id: null, triggered_by_user_id: me.user_id, triggered_by_persona: null,
+    replayed_from: null, prompt: null, context_refs: [],
     created_at: EARLIER, started_at: EARLIER, completed_at: NOW, duration_seconds: 94,
   },
   {
@@ -346,6 +347,7 @@ export const agentRuns = [
     ci_run_url: 'https://example.test/runs/2', result_summary: '2 findings.', severity: 'high',
     findings_count: 2, findings: [{ title: 'Unvalidated redirect' }], fail_on: 'high', policy_result: 'fail',
     exit_code: 1, session_id: null, triggered_by_user_id: me.user_id, triggered_by_persona: null,
+    replayed_from: null, prompt: null, context_refs: [],
     created_at: EARLIER, started_at: EARLIER, completed_at: NOW, duration_seconds: 131,
   },
 ];

@@ -1045,7 +1045,10 @@ class TestF1SelfReviewProhibition:
         item = await _make_item(db_session, queue, ticket)
 
         impl_sk = await _make_service_key(db_session, org, user)
-        reviewer_sk = await _make_service_key(db_session, org, user)
+        # A key is its minter, so the independent reviewer key must be
+        # minted by a different person.
+        reviewer_owner = await _make_user(db_session, org)
+        reviewer_sk = await _make_service_key(db_session, org, reviewer_owner)
 
         # Bind an implementer resident (the implementer key) so the F1 gate
         # applies; the independent reviewer key closes the item.

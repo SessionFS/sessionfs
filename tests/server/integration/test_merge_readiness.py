@@ -469,6 +469,92 @@ async def test_readiness_true_when_user_only_start_is_not_the_reviewer_minter(
 
 
 @pytest.mark.asyncio
+async def test_readiness_false_when_human_reviewer_minted_the_implementer_key(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    ticket_id = await _make_ticket(client, project, key)
+
+    # A human reviewer leaves a strict clean verdict, and the work was done
+    # by a service key THEY minted. The key IS its minter, so reviewing work
+    # their own key did is self-review and must fail closed.
+    reviewer, _ = await _make_user(db_session, name="reviewer")
+    svc = await _make_service_key(db_session, reviewer)
+    await _seed_clean_verdict(
+        db_session, ticket_id, reviewer, reviewed_commit=HEAD
+    )
+    await _seed_implementer(
+        db_session, project, ticket_id, user_id=None, service_key_id=svc.id
+    )
+
+    resp = await _readiness(client, project, ticket_id, key, HEAD)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ready"] is False
+    assert any(
+        "reviewer identity matches an implementer identity" in r
+        for r in body["reasons"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_readiness_true_when_implementer_key_minted_by_someone_else(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    ticket_id = await _make_ticket(client, project, key)
+
+    reviewer, _ = await _make_user(db_session, name="reviewer")
+    implementer, _ = await _make_user(db_session, name="implementer")
+    # The implementer service key is minted by a DIFFERENT user than the
+    # human reviewer, so the reviewer is not reviewing their own work.
+    svc = await _make_service_key(db_session, implementer)
+    await _seed_clean_verdict(
+        db_session, ticket_id, reviewer, reviewed_commit=HEAD
+    )
+    await _seed_implementer(
+        db_session, project, ticket_id, user_id=None, service_key_id=svc.id
+    )
+
+    resp = await _readiness(client, project, ticket_id, key, HEAD)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ready"] is True
+    assert body["reasons"] == []
+
+
+@pytest.mark.asyncio
+async def test_readiness_fails_closed_when_implementer_key_minter_unresolvable(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    ticket_id = await _make_ticket(client, project, key)
+
+    reviewer, _ = await _make_user(db_session, name="reviewer")
+    await _seed_clean_verdict(
+        db_session, ticket_id, reviewer, reviewed_commit=HEAD
+    )
+    # An implementer service-key id with no ApiKey row — the key's minter
+    # cannot be resolved, so readiness must fail closed rather than treat an
+    # anonymous key as independent of the reviewer.
+    await _seed_implementer(
+        db_session, project, ticket_id, user_id=None, service_key_id="sk_missing"
+    )
+
+    resp = await _readiness(client, project, ticket_id, key, HEAD)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ready"] is False
+    assert any(
+        "reviewer identity matches an implementer identity" in r
+        for r in body["reasons"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_readiness_outsider_gets_403(
     client: AsyncClient, db_session: AsyncSession
 ):
@@ -493,6 +579,74 @@ async def test_readiness_outsider_gets_403(
     resp = await _readiness(client, project, ticket_id, outsider_key, HEAD)
     assert resp.status_code == 403
     assert outsider.id not in {owner.id}
+
+
+@pytest.mark.asyncio
+async def test_readiness_cross_org_service_key_gets_opaque_404(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Review checklist #2 — a service key whose org does not include the
+    project gets a 404 that is byte-identical to a project miss, never a
+    cross_org_denied probe."""
+    from sessionfs.server.db.models import Organization
+
+    owner, key = await _make_user(db_session)
+    org_a = Organization(
+        id=f"org_{uuid.uuid4().hex[:8]}",
+        name=f"OrgA-{uuid.uuid4().hex[:6]}",
+        slug=f"oa-{uuid.uuid4().hex[:6]}",
+        tier="team",
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(org_a)
+    await db_session.commit()
+    await db_session.refresh(org_a)
+
+    project = Project(
+        id=f"proj_{uuid.uuid4().hex[:16]}",
+        name=f"ready-{uuid.uuid4().hex[:6]}",
+        git_remote_normalized=f"acme/r-{uuid.uuid4().hex[:6]}",
+        context_document="",
+        owner_id=owner.id,
+        org_id=org_a.id,
+    )
+    db_session.add(project)
+    await db_session.commit()
+    await db_session.refresh(project)
+    ticket_id = await _make_ticket(client, project, key)
+
+    other_user, _ = await _make_user(db_session, name="other")
+    org_b = Organization(
+        id=f"org_{uuid.uuid4().hex[:8]}",
+        name=f"OrgB-{uuid.uuid4().hex[:6]}",
+        slug=f"ob-{uuid.uuid4().hex[:6]}",
+        tier="team",
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(org_b)
+    await db_session.commit()
+    await db_session.refresh(org_b)
+
+    raw = generate_api_key()
+    db_session.add(
+        ApiKey(
+            id=str(uuid.uuid4()),
+            user_id=other_user.id,
+            key_hash=hash_api_key(raw),
+            name="svc-cross",
+            key_kind="service",
+            org_id=org_b.id,
+            scopes='["tickets:read"]',
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+
+    resp = await _readiness(client, project, ticket_id, raw, HEAD)
+    assert resp.status_code == 404
+    assert resp.json() == {
+        "error": {"code": "404", "details": {}, "message": "Project not found"}
+    }
 
 
 @pytest.mark.asyncio
@@ -548,3 +702,102 @@ async def test_readiness_true_when_service_key_implementer_minted_by_someone_els
     body = resp.json()
     assert body["ready"] is True
     assert body["reasons"] == []
+
+
+@pytest.mark.asyncio
+async def test_readiness_false_when_reviewer_and_implementer_keys_share_minter(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    ticket_id = await _make_ticket(client, project, key)
+
+    # A service key IS its minter. Two DIFFERENT keys minted by the same user
+    # are therefore the same identity — the reviewer is reviewing work their
+    # own key did, so readiness must fail closed.
+    minter, _ = await _make_user(db_session, name="minter")
+    reviewer_svc = await _make_service_key(db_session, minter)
+    impl_svc = await _make_service_key(db_session, minter)
+    await _seed_clean_verdict(
+        db_session,
+        ticket_id,
+        minter,
+        reviewed_commit=HEAD,
+        service_key_id=reviewer_svc.id,
+    )
+    await _seed_implementer(
+        db_session, project, ticket_id, user_id=None, service_key_id=impl_svc.id
+    )
+
+    resp = await _readiness(client, project, ticket_id, key, HEAD)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ready"] is False
+    assert any(
+        "reviewer identity matches an implementer identity" in r
+        for r in body["reasons"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_readiness_true_when_reviewer_and_implementer_keys_have_distinct_minters(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    ticket_id = await _make_ticket(client, project, key)
+
+    reviewer, _ = await _make_user(db_session, name="reviewer")
+    implementer, _ = await _make_user(db_session, name="implementer")
+    reviewer_svc = await _make_service_key(db_session, reviewer)
+    impl_svc = await _make_service_key(db_session, implementer)
+    await _seed_clean_verdict(
+        db_session,
+        ticket_id,
+        reviewer,
+        reviewed_commit=HEAD,
+        service_key_id=reviewer_svc.id,
+    )
+    await _seed_implementer(
+        db_session, project, ticket_id, user_id=None, service_key_id=impl_svc.id
+    )
+
+    resp = await _readiness(client, project, ticket_id, key, HEAD)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ready"] is True
+    assert body["reasons"] == []
+
+
+@pytest.mark.asyncio
+async def test_readiness_fails_closed_when_service_key_reviewer_and_unresolvable_implementer_key(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    ticket_id = await _make_ticket(client, project, key)
+
+    # Both identities are service keys, but the implementer key has no ApiKey
+    # row. Its minter can't be resolved, so the two keys can't be proven
+    # independent — fail closed.
+    reviewer, _ = await _make_user(db_session, name="reviewer")
+    reviewer_svc = await _make_service_key(db_session, reviewer)
+    await _seed_clean_verdict(
+        db_session,
+        ticket_id,
+        reviewer,
+        reviewed_commit=HEAD,
+        service_key_id=reviewer_svc.id,
+    )
+    await _seed_implementer(
+        db_session, project, ticket_id, user_id=None, service_key_id="sk_missing"
+    )
+
+    resp = await _readiness(client, project, ticket_id, key, HEAD)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ready"] is False
+    assert any(
+        "reviewer identity matches an implementer identity" in r
+        for r in body["reasons"]
+    )

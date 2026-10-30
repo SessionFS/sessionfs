@@ -43,7 +43,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 
 # One shared reviewer-name token — the review header is tool-agnostic, so a
@@ -501,3 +501,222 @@ def _coerce_dt(v) -> Optional[datetime]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def finding_is_harmful(finding: ReviewFinding) -> bool:
+    """Review Loop B2 — a finding is harmful unless it is explicitly tagged
+    ``harm: none``. An untagged finding of MEDIUM or higher fails closed
+    (harmful). Merge readiness and the loop status rollup share this predicate
+    so "what is still harmful" never drifts between the two surfaces."""
+    if finding.harm is not None:
+        return finding.harm != "none"
+    return finding.severity in ("MEDIUM", "HIGH", "CRITICAL")
+
+
+def compute_merge_readiness(
+    *,
+    comments: Iterable[dict],
+    sha: str,
+    implementer_identities: Iterable[tuple[Optional[str], Optional[str]]],
+    key_minters: Optional[Mapping[str, Optional[str]]] = None,
+) -> dict:
+    """Derive the merge-readiness dict from pre-fetched comment rows.
+
+    Pure function — no DB access. Shared by the readiness route and the loop
+    status rollup so the two can never drift. ``comments`` are the same dicts
+    ``compute_review_state`` consumes (``id``, ``author_persona``, ``content``,
+    ``created_at``, ``verdict_trusted``, ``service_key_id``, ``author_user_id``,
+    ``reviewed_commit``). ``implementer_identities`` is an iterable of
+    ``(service_key_id, user_id)`` tuples from every implementer source
+    (``load_implementer_identities``); when none records anyone, readiness
+    fails closed with "implementer unknown". ``key_minters`` maps a service
+    key id to the user who minted it (``load_key_minters``): a service key is
+    its minter, so a service-key reviewer and a user-only implementer record
+    for that minter are the same identity, and an unresolvable minter fails
+    closed.
+
+    Returns ``{"ready", "reasons", "verdict"}``; ``verdict`` is ``None`` when
+    there is no trusted strict clean verdict. See
+    ``routes/tickets.py:get_ticket_merge_readiness`` for the caller contract.
+    """
+    state = compute_review_state(comments)
+    if state is None or not state.last_verdict_is_strict_verified_clean:
+        return {
+            "ready": False,
+            "reasons": ["no trusted strict VERIFIED-CLEAN verdict"],
+            "verdict": None,
+        }
+
+    clean_comment_id: Optional[str] = None
+    for rnd in reversed(state.rounds):
+        if rnd.is_strict_verified_clean:
+            clean_comment_id = rnd.comment_id
+            break
+    closing = next((c for c in comments if c.get("id") == clean_comment_id), None)
+    if closing is None:
+        return {
+            "ready": False,
+            "reasons": ["closing verdict comment not found"],
+            "verdict": None,
+        }
+
+    closing_svc = closing.get("service_key_id") or None
+    closing_usr = closing.get("author_user_id") or None
+    reviewed_commit = closing.get("reviewed_commit")
+
+    reasons: list[str] = []
+    if not reviewed_commit or reviewed_commit != sha:
+        reasons.append("trusted clean verdict is not bound to the requested sha")
+
+    identities = [
+        (svc or None, usr or None)
+        for svc, usr in implementer_identities
+        if svc or usr
+    ]
+    closing_minter = (key_minters or {}).get(closing_svc) if closing_svc else None
+    if not identities:
+        reasons.append("implementer unknown")
+    for impl_svc, impl_usr in identities:
+        if closing_svc and impl_svc:
+            if closing_svc == impl_svc:
+                self_close = True
+            else:
+                # Two different service keys: the same identity only when the
+                # same user minted both. Fail closed (self-review) when either
+                # key's minter can't be resolved.
+                impl_minter = (key_minters or {}).get(impl_svc)
+                self_close = (
+                    closing_minter is None
+                    or impl_minter is None
+                    or closing_minter == impl_minter
+                )
+        elif closing_svc:
+            # Service-key reviewer vs a user-only implementer record: the user
+            # may be the key's minter (the same identity). Fail closed when
+            # the minter can't be resolved.
+            self_close = closing_minter is None or closing_minter == impl_usr
+        elif impl_svc:
+            # Human reviewer vs service-key implementer. The key IS its
+            # minter, so a human reviewing work their own key did is
+            # self-review. Compare against the recorded backing user and the
+            # key's minter; fail closed when the minter can't be resolved.
+            impl_minter = (key_minters or {}).get(impl_svc)
+            self_close = (
+                impl_minter is None
+                or bool(closing_usr and closing_usr == impl_minter)
+                or bool(closing_usr and impl_usr and closing_usr == impl_usr)
+            )
+        else:
+            self_close = bool(closing_usr and closing_usr == impl_usr)
+        if self_close:
+            reasons.append("reviewer identity matches an implementer identity")
+            break
+
+    harmful = [f for f in state.open_findings if finding_is_harmful(f)]
+    if harmful:
+        reasons.append(f"{len(harmful)} open harmful finding(s)")
+
+    closing_at = _coerce_dt(closing.get("created_at"))
+    return {
+        "ready": not reasons,
+        "reasons": reasons,
+        "verdict": {
+            "reviewer": closing_svc or closing_usr or "",
+            "reviewed_commit": reviewed_commit,
+            "at": closing_at.isoformat() if closing_at is not None else None,
+        },
+    }
+
+
+async def load_implementer_identities(
+    db: Any, tickets: Iterable[Any]
+) -> dict[str, list[tuple[Optional[str], Optional[str]]]]:
+    """Every recorded implementer ``(service_key_id, user_id)`` per ticket.
+
+    Four sources: work-queue items, implementer-role agent runs, the start
+    context of the ticket's CURRENT lease (written by start_ticket), and the
+    resolver. Batched: one query per source for all tickets.
+    """
+    from sqlalchemy import select
+
+    from sessionfs.server.db.models import (
+        AgentRun,
+        RetrievalAuditContext,
+        WorkQueueItem,
+    )
+
+    by_id = {t.id: t for t in tickets}
+    out: dict[str, list[tuple[Optional[str], Optional[str]]]] = {
+        tid: [] for tid in by_id
+    }
+    if not by_id:
+        return out
+    ids = list(by_id)
+    for tid, svc, usr in (
+        await db.execute(
+            select(
+                WorkQueueItem.ticket_id,
+                WorkQueueItem.implementer_service_key_id,
+                WorkQueueItem.implementer_user_id,
+            ).where(WorkQueueItem.ticket_id.in_(ids))
+        )
+    ).all():
+        out[tid].append((svc, usr))
+    for tid, svc, usr in (
+        await db.execute(
+            select(
+                AgentRun.ticket_id,
+                AgentRun.service_key_id,
+                AgentRun.triggered_by_user_id,
+            ).where(
+                AgentRun.ticket_id.in_(ids),
+                AgentRun.role.in_(("implementer", "ui-implementer")),
+            )
+        )
+    ).all():
+        out[tid].append((svc, usr))
+    for tid, epoch, svc, usr in (
+        await db.execute(
+            select(
+                RetrievalAuditContext.ticket_id,
+                RetrievalAuditContext.lease_epoch,
+                RetrievalAuditContext.service_key_id,
+                RetrievalAuditContext.created_by_user_id,
+            ).where(RetrievalAuditContext.ticket_id.in_(ids))
+        )
+    ).all():
+        if epoch == by_id[tid].lease_epoch:
+            out[tid].append((svc, usr))
+    for tid, ticket in by_id.items():
+        out[tid].append((None, ticket.resolver_user_id))
+    return out
+
+
+async def load_key_minters(
+    db: Any,
+    comments: Iterable[dict],
+    implementer_identities: Iterable[tuple[Optional[str], Optional[str]]] = (),
+) -> dict[str, Optional[str]]:
+    """The minting user of every relevant service key.
+
+    Covers both reviewer keys (every service key that authored a trusted
+    comment) and implementer keys (every service_key_id in
+    ``implementer_identities``), so ``compute_merge_readiness`` can resolve a
+    service-key implementer's minter and fail closed when it can't be found.
+    """
+    from sqlalchemy import select
+
+    from sessionfs.server.db.models import ApiKey
+
+    key_ids = {
+        c["service_key_id"]
+        for c in comments
+        if c.get("verdict_trusted") and c.get("service_key_id")
+    }
+    key_ids.update(svc for svc, _usr in implementer_identities if svc)
+    if not key_ids:
+        return {}
+    rows = (
+        await db.execute(select(ApiKey.id, ApiKey.user_id).where(ApiKey.id.in_(key_ids)))
+    ).all()
+    return {kid: uid for kid, uid in rows}

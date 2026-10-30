@@ -13,7 +13,7 @@ from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
 from sessionfs.server.middleware import MetricsMiddleware, RequestLoggingMiddleware
-from sessionfs.server.routes import activation, admin, admin_licenses, agent_feedback, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, confluence, dlp, handoffs, health, helm, helper, helper_settings, jira, knowledge, llm_providers, marketplace, marketplace_disclosure, marketplace_discovery, marketplace_moderation, marketplace_publishers, marketplace_scanning, me, meeting_actions, meetings, metrics, native_catalogs, org, org_llm_settings, org_members, personas, project_groups, project_transfers, projects, residents, retrieval_audit, rules, sessions, settings, skill_policy, spend, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, uploads, webhooks, wiki, work_queues
+from sessionfs.server.routes import activation, admin, admin_licenses, agent_feedback, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, confluence, dlp, handoffs, health, helm, helper, helper_settings, jira, knowledge, llm_providers, loop_checklist, loops, marketplace, marketplace_disclosure, marketplace_discovery, marketplace_moderation, marketplace_publishers, marketplace_scanning, me, meeting_actions, meetings, metrics, native_catalogs, org, org_llm_settings, org_members, personas, project_groups, project_transfers, projects, residents, retrieval_audit, review_loop, rules, sessions, settings, skill_policy, spend, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, uploads, webhooks, wiki, work_queues
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -231,11 +231,14 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     # projects must beat the projects catch-all `/{git_remote:path}`.
     app.include_router(agent_runs.router)
     app.include_router(spend.router)
+    app.include_router(loop_checklist.router)
+    app.include_router(review_loop.router)
     app.include_router(agent_feedback.router)
     app.include_router(retrieval_audit.router)
     # Work queues same precedence (WQ-P2): `/work-queues` subpath under
     # projects must beat the projects catch-all `/{git_remote:path}`.
     app.include_router(work_queues.router)
+    app.include_router(loops.router)
     # Meetings' project subpath must precede projects' catch-all
     # `/{git_remote_normalized:path}` (same precedence trick as rules/transfers).
     app.include_router(meetings.project_router)

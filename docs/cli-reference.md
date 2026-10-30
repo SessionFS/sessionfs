@@ -1870,7 +1870,7 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed (109):
+Tools exposed (115):
 
 - **Sessions:** `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_session_summary`, `get_audit_report`, `get_session_provenance`, `get_session_retrieval_log`, `rename_session`, `checkpoint_session`, `list_checkpoints`, `fork_session`, `ask_session_helper`
 - **Knowledge (read):** `get_project_context`, `get_context_section`, `get_wiki_page`, `get_wiki_page_history`, `search_project_knowledge`, `list_knowledge_entries`, `get_knowledge_entry`, `get_knowledge_health`, `ask_project`
@@ -1878,8 +1878,9 @@ Tools exposed (109):
 - **Rules (read-only):** `get_rules`, `get_compiled_rules`
 - **Personas:** `list_personas`, `get_persona`, `create_persona`, `update_persona`, `delete_persona`, `assume_persona`, `forget_persona`
 - **Tickets:** `list_tickets`, `get_ticket`, `create_ticket`, `update_ticket`, `start_ticket`, `complete_ticket`, `resolve_ticket`, `approve_ticket`, `assign_persona`, `escalate_ticket`, `add_ticket_comment`, `list_ticket_comments`, `get_ticket_review_state`, `watch_ticket`, `get_ticket_updates`
-- **Agent runs and feedback:** `create_agent_run`, `replay_agent_run`, `complete_agent_run`, `list_agent_runs`, `record_agent_feedback`, `list_agent_feedback`, `get_agent_feedback_summary`
+- **Agent runs and feedback:** `create_agent_run`, `replay_agent_run`, `complete_agent_run`, `list_agent_runs`, `record_agent_feedback`, `list_agent_feedback`, `get_agent_feedback_summary`, `get_loop_report`
 - **Work queues:** `create_work_queue`, `list_work_queues`, `get_work_queue`, `set_work_queue_status`, `run_work_queue_step`, `complete_work_queue_step`
+- **Review loops:** `start_review_loop`, `get_loop_status`, `update_review_loop`, `check_merge_readiness`
 - **Handoffs:** `create_handoff`, `get_handoff`, `list_inbox_handoffs`, `list_sent_handoffs`, `claim_handoff`, `decline_handoff`, `revoke_handoff`, `add_handoff_comment`
 - **Marketplace (never writes files or enables executable content):** `search_skill_marketplace`, `get_marketplace_package`, `diff_marketplace_versions`, `get_skill_policy`, `preview_marketplace_skill`, `load_marketplace_skill`, `request_skill_install`, `list_skill_install_requests`, `get_skill_install_request`, `cancel_skill_install_request`
 - **Project groups:** `list_project_groups`, `get_project_group`, `create_project_group`, `update_project_group`, `delete_project_group`, `add_project_to_group`, `remove_project_from_group`, `list_group_members`, `grant_group_access`, `revoke_group_access`, `list_group_access`, `search_group_knowledge`, `get_group_context`, `compile_group_knowledge`, `ask_group`
@@ -3143,7 +3144,22 @@ sfs agent feedback summary [--persona NAME] [--since ISO] [--format text|json]
 
 ## `sfs loop`
 
-Merge readiness for the [worker review loop](https://sessionfs.dev/review-loop/). Tier: **Team+**.
+Start and steer a [review loop](https://sessionfs.dev/review-loop/), read its reports, keep the project checklist and check merge readiness. Tier: **Team+**. Commands use the project of the current repository.
+
+| Command | Description |
+|---------|-------------|
+| `sfs loop start TARGET --reviewer-persona NAME --ticket 'title[::description]' ... [--acceptance TEXT ...] [--token-budget N] [--cost-budget-usd X] [--max-review-rounds N]` | Start a loop. `TARGET` is an existing issue id (`tk_...`) to adopt, or the title of a new one. Files one child task per `--ticket` and stands up a review queue for the reviewer persona. There is no default round cap. A dollar budget needs an org owner or admin. |
+| `sfs loop status [LOOP_ID]` | Show one loop, or every loop in the project |
+| `sfs loop update LOOP_ID [--token-budget N] [--max-review-rounds N] [--cost-budget-usd X]` | Raise the loop's caps. Only the flags you pass change. |
+| `sfs loop close-item LOOP_ID TICKET_ID` | Settle a child that needs a person as done by a human, so the loop stops waiting. People only: service keys are refused. |
+| `sfs loop report TICKET_ID` | Per-round report: findings by harm, class and design counts, tokens |
+| `sfs loop insights [--from ISO] [--to ISO]` | Project-wide insights: findings caught, cost per accepted change, what the checklist learned |
+| `sfs loop checklist list [--status proposed\|active\|retired]` | The project checklist |
+| `sfs loop checklist seed` | Offer the six generic seed traps as proposed items (safe to rerun) |
+| `sfs loop checklist add TITLE [--check TEXT] [--slug SLUG]` | Propose an item by hand |
+| `sfs loop checklist accept SLUG` / `retire SLUG` | Make a proposed item active, or retire an item |
+
+Dollar amounts appear only for org owners and admins, or the owner of a personal project. Everyone else sees token counts. MCP: `start_review_loop`, `get_loop_status`, `update_review_loop`, `get_loop_report`, `get_loop_checklist`, `propose_checklist_item`, `check_merge_readiness`.
 
 ### `sfs loop ready`
 
@@ -3157,7 +3173,7 @@ sfs loop ready TICKET_ID --sha HEAD_COMMIT
 |--------|------|-------------|
 | `--sha` | string | Full head commit id (40 or 64 lowercase hex characters) |
 
-Prints **READY** only when a trusted strict `VERIFIED-CLEAN` verdict is bound to exactly that commit, the reviewer's identity differs from every implementer identity recorded for the ticket, and no open finding is harmful. Otherwise it prints **NOT READY** with the reasons and exits `1`, so it can gate a script. MCP: `check_merge_readiness`.
+Prints **READY** only when a trusted strict `VERIFIED-CLEAN` verdict is bound to exactly that commit, the reviewer's identity differs from every implementer identity recorded for the ticket (a service key counts as the person who minted it), and no open finding is harmful. Otherwise it prints **NOT READY** with the reasons and exits `1`, so it can gate a script. MCP: `check_merge_readiness`.
 
 ## `sfs resident` (v0.14.0)
 

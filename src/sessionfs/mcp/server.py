@@ -1851,6 +1851,28 @@ _TOOLS = [
         },
     ),
     Tool(
+        name="get_loop_report",
+        description=(
+            "Get the review-loop report for a single ticket: one row per "
+            "review round with findings grouped by harm, how many findings "
+            "were known checklist classes vs. brand-new, how many were "
+            "design-stage issues, and the tokens (and, for callers with admin "
+            "standing on the project, dollars) the round cost. Token totals "
+            "are always returned; dollar amounts are only returned to org "
+            "owners/admins or the owner of a personal project.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs loop report` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string", "description": "Ticket id (tk_...)."},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["ticket_id"],
+        },
+    ),
+    Tool(
         name="dismiss_knowledge_entry",
         description=(
             "Dismiss a knowledge entry that's wrong, stale, or no longer "
@@ -3273,6 +3295,144 @@ _TOOLS = [
             "required": ["ticket_id", "sha"],
         },
     ),
+    Tool(
+        name="start_review_loop",
+        description=(
+            "Start a review loop: create (or adopt) a parent issue, file one "
+            "child task per brief, and stand up a review_until_clean work "
+            "queue for the reviewer persona. Returns loop_id, the child "
+            "ticket ids with their briefs, queue_id, the reviewer setup "
+            "status, and the env for each role (implementer/reviewer). "
+            "`tickets` is a list of {title, description, acceptance_criteria}; "
+            "`from_ticket_id` optionally adopts an existing issue as the loop "
+            "parent instead of creating a new one. `cost_budget_usd` is org "
+            "owner/admin only.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs loop start` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Loop parent issue title (ignored when from_ticket_id is set)."},
+                "description": {"type": "string", "description": "Parent issue description (optional)."},
+                "from_ticket_id": {"type": "string", "description": "Existing issue ticket id (tk_...) to adopt as the loop parent."},
+                "tickets": {
+                    "type": "array",
+                    "description": "Child tasks: [{title, description, acceptance_criteria}].",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "description": {"type": "string"},
+                            "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["title"],
+                    },
+                },
+                "reviewer_persona": {"type": "string", "description": "Persona name that reviews the children."},
+                "token_budget": {"type": "integer", "description": "Optional token budget for the loop."},
+                "cost_budget_usd": {"type": "number", "description": "Optional dollar budget (org owner/admin only)."},
+                "max_review_rounds": {"type": "integer", "description": "Optional review-round cap (no default)."},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["tickets", "reviewer_persona"],
+        },
+    ),
+    Tool(
+        name="get_loop_status",
+        description=(
+            "Roll up one review loop into the dashboard shape: the parent "
+            "issue id/title and, per child, status, branch, head sha, review "
+            "rounds, harmful-open count, findings by harm, tokens (and "
+            "dollars for admins), budget, needs_human, and merge readiness. "
+            "Read-only.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs loop status` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "loop_id": {"type": "string", "description": "Loop (parent issue) ticket id (tk_...)."},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["loop_id"],
+        },
+    ),
+    Tool(
+        name="get_loop_checklist",
+        description=(
+            "List a project's review checklist (the traps the loop has learned), "
+            "optionally filtered by status (proposed | active | retired). Only "
+            "active items are rendered into briefs; proposed items are the "
+            "acceptance inbox. Pure read.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs loop checklist list` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "description": "Filter by status: proposed | active | retired",
+                },
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+        },
+    ),
+    Tool(
+        name="propose_checklist_item",
+        description=(
+            "Propose a new review-checklist item for the current project. The "
+            "item starts proposed and the project owner accepts or skips it. "
+            "Use this when a review or session surfaces a recurring trap that "
+            "should be checked in every future brief. The slug is derived from "
+            "the title when not given.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs loop checklist add` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "The trap, e.g. 'Access rechecked after slow steps'.",
+                },
+                "check_text": {
+                    "type": "string",
+                    "description": "How to check for it. Defaults to the title.",
+                },
+                "slug": {
+                    "type": "string",
+                    "description": "Lowercase slug (letters, digits, hyphens). Derived from the title when omitted.",
+                },
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["title"],
+        },
+    ),
+    Tool(
+        name="update_review_loop",
+        description=(
+            "Raise or clear a review loop's budget caps (token_budget, "
+            "max_review_rounds, cost_budget_usd). Fields omitted are left "
+            "unchanged; pass an explicit null to clear a cap. "
+            "cost_budget_usd is org owner/admin only and never visible to "
+            "service keys.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs loop update` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "loop_id": {"type": "string", "description": "Loop (parent issue) ticket id (tk_...)."},
+                "token_budget": {"type": ["integer", "null"], "description": "Optional token budget for the loop (null clears it)."},
+                "max_review_rounds": {"type": ["integer", "null"], "description": "Optional review-round cap (null clears it)."},
+                "cost_budget_usd": {"type": ["number", "null"], "description": "Optional dollar budget (org owner/admin only; null clears it)."},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["loop_id"],
+        },
+    ),
 ]
 
 
@@ -3379,6 +3539,16 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_get_ticket_review_state(arguments)
         elif name == "check_merge_readiness":
             result = await _handle_check_merge_readiness(arguments)
+        elif name == "start_review_loop":
+            result = await _handle_start_review_loop(arguments)
+        elif name == "get_loop_status":
+            result = await _handle_get_loop_status(arguments)
+        elif name == "get_loop_checklist":
+            result = await _handle_get_loop_checklist(arguments)
+        elif name == "propose_checklist_item":
+            result = await _handle_propose_checklist_item(arguments)
+        elif name == "update_review_loop":
+            result = await _handle_update_review_loop(arguments)
         elif name == "watch_ticket":
             result = await _handle_watch_ticket(arguments)
         elif name == "get_ticket_updates":
@@ -3439,6 +3609,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_get_agent_feedback_summary(arguments)
         elif name == "get_spend_summary":
             result = await _handle_get_spend_summary(arguments)
+        elif name == "get_loop_report":
+            result = await _handle_get_loop_report(arguments)
         elif name == "dismiss_knowledge_entry":
             result = await _handle_dismiss_knowledge_entry(arguments)
         elif name == "update_entry_confidence":
@@ -5910,6 +6082,220 @@ async def _handle_check_merge_readiness(args: dict) -> dict:
     return resp.json()
 
 
+async def _handle_start_review_loop(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/loops.
+
+    Review Loop D1. Validates required args locally so bad input surfaces
+    here rather than as an opaque 422.
+    """
+    tickets = args.get("tickets")
+    if not isinstance(tickets, list) or not tickets:
+        return {"error": "tickets must be a non-empty list of briefs"}
+    normalized_tickets: list[dict] = []
+    for i, t in enumerate(tickets):
+        if not isinstance(t, dict) or not str(t.get("title", "")).strip():
+            return {"error": f"tickets[{i}].title is required"}
+        normalized_tickets.append(
+            {
+                "title": str(t["title"]).strip(),
+                "description": str(t.get("description", "") or ""),
+                "acceptance_criteria": [
+                    str(a)
+                    for a in t.get("acceptance_criteria", [])
+                    if isinstance(a, str)
+                ],
+            }
+        )
+
+    reviewer_persona = str(args.get("reviewer_persona", "")).strip()
+    if not reviewer_persona:
+        return {"error": "reviewer_persona is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {
+        "tickets": normalized_tickets,
+        "reviewer_persona": reviewer_persona,
+    }
+    if isinstance(args.get("title"), str) and args["title"].strip():
+        body["title"] = args["title"].strip()
+    if isinstance(args.get("description"), str) and args["description"].strip():
+        body["description"] = args["description"].strip()
+    if isinstance(args.get("from_ticket_id"), str) and args["from_ticket_id"].strip():
+        body["from_ticket_id"] = args["from_ticket_id"].strip()
+    for key in ("token_budget", "max_review_rounds"):
+        val = args.get(key)
+        if isinstance(val, int) and not isinstance(val, bool):
+            body[key] = val
+    if isinstance(args.get("cost_budget_usd"), (int, float)) and not isinstance(
+        args.get("cost_budget_usd"), bool
+    ):
+        body["cost_budget_usd"] = args["cost_budget_usd"]
+
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/loops",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_get_loop_status(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/loops/{loop_id}."""
+    loop_id = args.get("loop_id", "")
+    if not isinstance(loop_id, str) or not loop_id.strip():
+        return {"error": "loop_id is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/loops/{_path_segment(loop_id)}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Loop '{loop_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_get_loop_checklist(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/loop-checklist (Review Loop E1).
+
+    Pure read; optional status filter.
+    """
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    params = {}
+    status = args.get("status")
+    if status:
+        params["status"] = str(status).strip().lower()
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/loop-checklist",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
+        )
+    if resp.status_code == 404:
+        return {"error": "Project not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return {"items": resp.json()}
+
+
+def _mcp_slugify(title: str) -> str:
+    """Derive a checklist slug from a title (mirrors the server's slugify)."""
+    import re
+
+    slug = re.sub(r"[^a-z0-9]+", "-", (title or "").lower()).strip("-")
+    slug = re.sub(r"-{2,}", "-", slug)
+    slug = slug[:63].rstrip("-")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", slug or ""):
+        return ""
+    return slug
+
+
+async def _handle_propose_checklist_item(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/loop-checklist (Review Loop E1)."""
+    title = args.get("title", "")
+    if not title or not str(title).strip():
+        return {"error": "title is required"}
+    title = str(title).strip()
+
+    check_text = args.get("check_text") or title
+    check_text = str(check_text).strip()
+
+    slug = args.get("slug") or _mcp_slugify(title)
+    if not slug:
+        return {"error": "could not derive a slug from title; pass slug explicitly"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/loop-checklist",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={"slug": slug, "title": title, "check_text": check_text},
+        )
+    if resp.status_code == 404:
+        return {"error": "Project not found"}
+    if resp.status_code == 409:
+        return {"error": f"Checklist item '{slug}' already exists"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_update_review_loop(args: dict) -> dict:
+    """Wrap PATCH /api/v1/projects/{project_id}/loops/{loop_id}."""
+    loop_id = args.get("loop_id", "")
+    if not isinstance(loop_id, str) or not loop_id.strip():
+        return {"error": "loop_id is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {}
+    for key in ("token_budget", "max_review_rounds"):
+        if key in args:
+            val = args[key]
+            if val is None:
+                body[key] = None
+            elif isinstance(val, int) and not isinstance(val, bool):
+                body[key] = val
+            else:
+                return {"error": f"{key} must be an integer or null"}
+    if "cost_budget_usd" in args:
+        val = args["cost_budget_usd"]
+        if val is None:
+            body["cost_budget_usd"] = None
+        elif isinstance(val, (int, float)) and not isinstance(val, bool):
+            body["cost_budget_usd"] = val
+        else:
+            return {"error": "cost_budget_usd must be a number or null"}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.patch(
+            f"{api_url}/api/v1/projects/{project_id}/loops/{_path_segment(loop_id)}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code == 404:
+        return {"error": f"Loop '{loop_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
 async def _handle_watch_ticket(args: dict) -> dict:
     """Wrap PUT/DELETE /api/v1/projects/{project_id}/tickets/{ticket_id}/watch."""
     ticket_id = args.get("ticket_id", "")
@@ -7685,6 +8071,35 @@ async def _handle_get_spend_summary(args: dict) -> dict:
     if resp.status_code == 404:
         target = f"Ticket '{ticket_id}'" if ticket_id else "Project"
         return {"error": f"{target} not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_get_loop_report(args: dict) -> dict:
+    """Wrap GET /projects/{p}/tickets/{t}/loop-report."""
+    ticket_id = (args.get("ticket_id") or "").strip()
+    if not ticket_id:
+        return {"error": "ticket_id is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    path = (
+        f"/api/v1/projects/{project_id}/tickets/"
+        f"{_path_segment(ticket_id)}/loop-report"
+    )
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}{path}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Ticket '{ticket_id}' not found"}
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return resp.json()

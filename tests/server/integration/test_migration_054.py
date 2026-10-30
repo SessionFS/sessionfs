@@ -28,8 +28,28 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from sessionfs.server.db.models import WorkQueue, WorkQueueItem
+from sessionfs.server.db.models import WorkQueueItem
 from sessionfs.server.services.work_queues import claim_work_queue_item
+
+
+def _insert_work_queue(db_path: Path, queue_id: str, name: str) -> None:
+    """Insert a 054-era work_queues row.
+
+    Migration 110 later added actor_type / service_key_id / service_key_name,
+    which the ORM ``WorkQueue`` model now carries — but the 054 fixture schema
+    predates them, so an ORM insert would fail ("no column named actor_type").
+    Seed the queue with raw SQL over only the 054 columns, exactly like the
+    other old-migration tests in this repo do.
+    """
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO work_queues "
+        "(id, project_id, name, mode, status, created_by_user_id) "
+        "VALUES (?, 'proj-1', ?, 'review_until_clean', 'active', 'u1')",
+        (queue_id, name),
+    )
+    conn.commit()
+    conn.close()
 
 
 def _build_pre_054_db(db_path: Path) -> None:
@@ -230,17 +250,8 @@ class TestAtomicClaim:
         # `next_eligible_at <= now` comparison binds (raw-string seeding with a
         # different ISO format would lexically mis-compare on SQLite TEXT).
         past = datetime.now(timezone.utc) - timedelta(minutes=5)
+        _insert_work_queue(migration_054_db_path, "wq-1", "q")
         async with maker_a() as seed:
-            seed.add(
-                WorkQueue(
-                    id="wq-1",
-                    project_id="proj-1",
-                    name="q",
-                    mode="review_until_clean",
-                    status="active",
-                    created_by_user_id="u1",
-                )
-            )
             seed.add(
                 WorkQueueItem(
                     id="wqi-1",
@@ -289,17 +300,8 @@ class TestAtomicClaim:
         maker = async_sessionmaker(engine, expire_on_commit=False)
         future = datetime.now(timezone.utc) + timedelta(hours=1)
         try:
+            _insert_work_queue(migration_054_db_path, "wq-2", "q2")
             async with maker() as seed:
-                seed.add(
-                    WorkQueue(
-                        id="wq-2",
-                        project_id="proj-1",
-                        name="q2",
-                        mode="review_until_clean",
-                        status="active",
-                        created_by_user_id="u1",
-                    )
-                )
                 seed.add(
                     WorkQueueItem(
                         id="wqi-2",
@@ -333,17 +335,8 @@ class TestAtomicClaim:
         maker = async_sessionmaker(engine, expire_on_commit=False)
         past = datetime.now(timezone.utc) - timedelta(minutes=5)
         try:
+            _insert_work_queue(migration_054_db_path, "wq-3", "q3")
             async with maker() as seed:
-                seed.add(
-                    WorkQueue(
-                        id="wq-3",
-                        project_id="proj-1",
-                        name="q3",
-                        mode="review_until_clean",
-                        status="active",
-                        created_by_user_id="u1",
-                    )
-                )
                 seed.add(
                     WorkQueueItem(
                         id="wqi-3",

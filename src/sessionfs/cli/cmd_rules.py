@@ -212,6 +212,8 @@ async def _api_request(
                 resp = await client.post(url, headers=headers, json=json_data)
             elif method == "PUT":
                 resp = await client.put(url, headers=headers, json=json_data)
+            elif method == "PATCH":
+                resp = await client.patch(url, headers=headers, json=json_data)
             elif method == "DELETE":
                 # httpx.AsyncClient.delete() does not accept a json kwarg —
                 # use the lower-level request() so DELETE-with-body endpoints

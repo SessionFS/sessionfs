@@ -82,6 +82,9 @@ _REVIEW_ORACLE_COMMENT_LIMIT = 500
 _WAITING_STATUS = "waiting"
 _DONE_STATUS = "done"
 _FAILED_STATUS = "failed"
+# Review Loop D2 — a budget/round-cap hit parks the item for a human; it is
+# resumable (raising the limit flips it back to claimable on the next wake).
+_NEEDS_HUMAN_STATUS = "needs_human"
 
 # Review Loop B2 — reviewed_commit is a FULL commit id (40- or 64-char
 # lowercase hex, i.e. SHA-1 or SHA-256). Readiness compares the verdict's
@@ -287,39 +290,69 @@ def _held_item_status(ticket_status: str, current: str) -> str:
 async def _settle_cancelled_items(
     db: AsyncSession, queue: WorkQueue, *, now: datetime
 ) -> None:
-    """Settle idle items whose ticket was cancelled as terminal, once.
+    """Settle idle items whose ticket reached a terminal state, once.
+
+    A ticket that is cancelled or closed stops its queue work: pending and
+    waiting items are settled so they never re-enter the candidate window,
+    and a parked ``needs_human`` item is settled too so the loop queue can
+    stop instead of hanging on a park.
 
     Writes one run row per item at the transition (the item is 'failed'
     afterwards, so it is never considered — or recorded — again).
     """
     rows = (
         await db.execute(
-            select(WorkQueueItem)
+            select(WorkQueueItem, Ticket.status)
             .join(Ticket, Ticket.id == WorkQueueItem.ticket_id)
             .where(
                 WorkQueueItem.work_queue_id == queue.id,
-                WorkQueueItem.item_status.in_(("pending", _WAITING_STATUS)),
+                WorkQueueItem.item_status.in_(
+                    ("pending", _WAITING_STATUS, _NEEDS_HUMAN_STATUS)
+                ),
                 WorkQueueItem.open_directive_id.is_(None),
                 WorkQueueItem.open_directive_run_id.is_(None),
-                Ticket.status == "cancelled",
+                Ticket.status.in_(("cancelled", "closed")),
             )
         )
-    ).scalars().all()
-    for item in rows:
-        item.item_status = _FAILED_STATUS
-        item.next_eligible_at = None
-        item.updated_at = now
+    ).all()
+    settled = 0
+    for item, ticket_status in rows:
+        # Guarded status flip (checklist #11): settle only if the item is
+        # STILL claimable/parked. A concurrent wake that already settled or
+        # resumed it fails the predicate (rowcount 0) and must not mint a
+        # second terminal run row.
+        result = await db.execute(
+            update(WorkQueueItem)
+            .where(
+                WorkQueueItem.id == item.id,
+                WorkQueueItem.item_status.in_(
+                    ("pending", _WAITING_STATUS, _NEEDS_HUMAN_STATUS)
+                ),
+            )
+            .values(
+                item_status=_FAILED_STATUS,
+                next_eligible_at=None,
+                updated_at=now,
+            )
+        )
+        if result.rowcount != 1:
+            continue
         db.add(
             WorkQueueRun(
                 id=_new_run_id(),
                 work_queue_id=queue.id,
                 work_queue_item_id=item.id,
                 directive_id=None,
-                outcome="ticket_cancelled",
+                outcome=(
+                    "ticket_cancelled"
+                    if ticket_status == "cancelled"
+                    else "ticket_closed"
+                ),
                 created_at=now,
             )
         )
-    if rows:
+        settled += 1
+    if settled:
         await db.flush()
 
 
@@ -939,6 +972,132 @@ async def _review_turn(
     return _WAITING_STATUS
 
 
+async def _notify_budget_hit(
+    db: AsyncSession,
+    queue: WorkQueue,
+    ticket: Ticket,
+    budget: Any,
+    *,
+    actor_type: str | None,
+    service_key_name: str | None,
+) -> None:
+    """Notify the ticket assignee + queue creator that a limit was hit.
+
+    Review Loop D2 — the ``your_turn`` kind (not a status event) hands the
+    work to a human; the summary names the limit. Both recipients are
+    auto-subscribed first so the hand-off survives even when they were not
+    already watching. Emission is best-effort (SAVEPOINT + swallow inside
+    ``emit_notifications``), so a watcher/access failure never rolls back the
+    item transition that parked the loop.
+    """
+    from sessionfs.server.services import ticket_watchers
+
+    project = await _queue_project(db, queue)
+    summary = f"Review loop needs a human: {budget.limit_summary()} reached"
+    subscribe: list[tuple[str, str, str | None]] = []
+    seen: set[str] = set()
+    assignee = await ticket_watchers.resolve_assigned_user(
+        db, project_id=project.id, ticket=ticket, org_id=project.org_id
+    )
+    if assignee is not None:
+        subscribe.append((assignee[0], "assignee", assignee[1]))
+        seen.add(assignee[0])
+    creator = queue.created_by_user_id
+    if creator and creator not in seen:
+        subscribe.append((creator, "queue_creator", None))
+    await ticket_watchers.emit_notifications(
+        db,
+        ticket=ticket,
+        kind="your_turn",
+        summary=summary,
+        actor_user_id=None,
+        actor_type=actor_type or "user",
+        service_key_name=service_key_name,
+        subscribe_users=subscribe or None,
+    )
+
+
+async def _resume_needs_human_items(
+    db: AsyncSession, queue: WorkQueue, *, now: datetime
+) -> int:
+    """Resume ``needs_human`` items whose limit has since been raised.
+
+    Review Loop D2 — ``needs_human`` is a park, not a terminal state. On each
+    non-gated wake we re-read the ticket's budget and flip a parked item back
+    to ``pending`` when it is no longer exceeded, so raising a limit resumes
+    the loop without a dedicated endpoint. Returns the number resumed.
+    """
+    from sessionfs.server.services.loop_budget import budget_status
+
+    items = (
+        (
+            await db.execute(
+                select(WorkQueueItem).where(
+                    WorkQueueItem.work_queue_id == queue.id,
+                    WorkQueueItem.item_status == _NEEDS_HUMAN_STATUS,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not items:
+        return 0
+
+    # Batch the ticket reads (one query across all parked items, no per-item
+    # N+1); keyed by id so a hard-deleted ticket simply falls out.
+    ticket_ids = [item.ticket_id for item in items]
+    tickets = (
+        (
+            await db.execute(select(Ticket).where(Ticket.id.in_(ticket_ids)))
+        )
+        .scalars()
+        .all()
+    )
+    tickets_by_id = {t.id: t for t in tickets}
+
+    resumed = 0
+    for item in items:
+        ticket = tickets_by_id.get(item.ticket_id)
+        if ticket is None:
+            continue
+        budget = await budget_status(db, ticket)
+        if budget.exceeded:
+            continue
+        # Guarded status flip (checklist #11): only flip if the item is STILL
+        # parked. A concurrent wake that already resumed it fails the
+        # ``item_status = 'needs_human'`` predicate and gets rowcount 0 — in
+        # that case we must NOT mint a second ``resumed`` run row.
+        result = await db.execute(
+            update(WorkQueueItem)
+            .where(
+                WorkQueueItem.id == item.id,
+                WorkQueueItem.item_status == _NEEDS_HUMAN_STATUS,
+            )
+            .values(
+                item_status="pending",
+                next_eligible_at=None,
+                updated_at=now,
+            )
+        )
+        if result.rowcount != 1:
+            continue
+        db.add(
+            WorkQueueRun(
+                id=_new_run_id(),
+                work_queue_id=queue.id,
+                work_queue_item_id=item.id,
+                directive_id=None,
+                outcome="resumed",
+                created_at=now,
+            )
+        )
+        resumed += 1
+    if resumed:
+        await db.flush()
+    return resumed
+
+
 async def run_work_queue_step(
     db: AsyncSession,
     *,
@@ -1110,6 +1269,9 @@ async def run_work_queue_step(
     # Candidate eligible items (the atomic claim is the real guard — this
     # SELECT only narrows the set the claim races over).
     await _settle_cancelled_items(db, queue, now=now)
+    # Review Loop D2 — resume needs_human items whose limit was raised since
+    # they were parked, so they re-enter the candidate window this wake.
+    await _resume_needs_human_items(db, queue, now=now)
     from sessionfs.server.auth.project_access import project_restricts_visibility
 
     queue_project = await _queue_project(db, queue)
@@ -1150,6 +1312,7 @@ async def run_work_queue_step(
     # not double-record a noop run row (the verb already wrote stopped/waited).
     review_settled: list[str] = []
     held_settled: list[str] = []
+    needs_human_settled: list[str] = []
     for item in candidates:
         if claimed >= budget:
             break
@@ -1228,6 +1391,45 @@ async def run_work_queue_step(
             # generic path below stamps open_directive_id + builds the
             # directive with intent='post_review').
 
+        # ── Review Loop D2 — budgets / round cap gate NEW work ──
+        # Before emitting a fresh directive (a new worker start or review
+        # round), read the ticket's budget. On a hit, park the item for a
+        # human and notify; no directive, no attempts bump, lease released.
+        from sessionfs.server.services.loop_budget import budget_status
+
+        budget_status_result = await budget_status(db, ticket)
+        if budget_status_result.exceeded:
+            await db.execute(
+                update(WorkQueueItem)
+                .where(WorkQueueItem.id == item.id)
+                .values(
+                    item_status=_NEEDS_HUMAN_STATUS,
+                    open_directive_run_id=None,
+                    next_eligible_at=None,
+                    updated_at=now,
+                )
+            )
+            db.add(
+                WorkQueueRun(
+                    id=run_id_for_claim,
+                    work_queue_id=queue.id,
+                    work_queue_item_id=item.id,
+                    directive_id=None,
+                    outcome="needs_human",
+                    created_at=now,
+                )
+            )
+            await _notify_budget_hit(
+                db,
+                queue,
+                ticket,
+                budget_status_result,
+                actor_type=actor_type,
+                service_key_name=service_key_name,
+            )
+            needs_human_settled.append(item.id)
+            continue
+
         directive_id = _new_directive_id()
         # SEEN cursor advances to the newest comment we are about to SHOW —
         # never the ACKED cursor (that moves only at settle).
@@ -1288,7 +1490,12 @@ async def run_work_queue_step(
                     select(func.count(WorkQueueItem.id)).where(
                         WorkQueueItem.work_queue_id == queue.id,
                         WorkQueueItem.item_status.in_(
-                            ("pending", "active", _WAITING_STATUS)
+                            (
+                                "pending",
+                                "active",
+                                _WAITING_STATUS,
+                                _NEEDS_HUMAN_STATUS,
+                            )
                         ),
                     )
                 )
@@ -1307,6 +1514,10 @@ async def run_work_queue_step(
         if held_settled:
             # Each held item already recorded its own noop run (with reason).
             return StepResult(status="idle", reason=held_settled[0])
+        if needs_human_settled:
+            # Each budget/round-cap hit already recorded its own run row
+            # (outcome=needs_human) + notification; report the park.
+            return StepResult(status="idle", reason="needs_human")
 
         # Nothing eligible. Record a no-op wake so cadence advances + the loop
         # is observable; report stop when the queue is genuinely empty.
@@ -1325,7 +1536,12 @@ async def run_work_queue_step(
                 select(func.count(WorkQueueItem.id)).where(
                     WorkQueueItem.work_queue_id == queue.id,
                     WorkQueueItem.item_status.in_(
-                        ("pending", "active", _WAITING_STATUS)
+                        (
+                            "pending",
+                            "active",
+                            _WAITING_STATUS,
+                            _NEEDS_HUMAN_STATUS,
+                        )
                     ),
                 )
             )
@@ -1741,16 +1957,37 @@ async def complete_work_queue_step(
             # F1(c): reject auto-close on identity match (self-review).
             impl_svc = item.implementer_service_key_id
             impl_usr = item.implementer_user_id
-            # Identity comparison: when EITHER side is a service-key identity
-            # (residents are service keys), compare SERVICE KEY ids only — two
-            # service keys minted by the same org admin share author_user_id,
-            # so a user-id match would falsely flag an independent reviewer key
-            # as self-review (Sentinel same-operator-collusion boundary). Only
-            # fall back to user-id comparison when BOTH identities are human.
-            if closing_svc_key or impl_svc:
-                self_close = bool(
-                    closing_svc_key and impl_svc and closing_svc_key == impl_svc
-                )
+            # Identity comparison mirrors compute_merge_readiness: when BOTH
+            # identities are service keys, they are the same identity if their
+            # ids match OR the same user minted both keys; an unresolvable
+            # minter fails closed (self-review). Mixed key/human identities are
+            # independent, and only a human/human pair falls back to user-id
+            # comparison.
+            if closing_svc_key and impl_svc:
+                if closing_svc_key == impl_svc:
+                    self_close = True
+                else:
+                    minters = {
+                        kid: uid
+                        for kid, uid in (
+                            await db.execute(
+                                select(ApiKey.id, ApiKey.user_id).where(
+                                    ApiKey.id.in_(
+                                        [closing_svc_key, impl_svc]
+                                    )
+                                )
+                            )
+                        ).all()
+                    }
+                    closing_minter = minters.get(closing_svc_key)
+                    impl_minter = minters.get(impl_svc)
+                    self_close = (
+                        closing_minter is None
+                        or impl_minter is None
+                        or closing_minter == impl_minter
+                    )
+            elif closing_svc_key or impl_svc:
+                self_close = False
             else:
                 self_close = bool(
                     closing_usr and impl_usr and closing_usr == impl_usr

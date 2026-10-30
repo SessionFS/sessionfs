@@ -17,6 +17,30 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.29.2 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.29.2</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 30, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Review Loop API &middot; Budgets &middot; Checklist &middot; Loop Reports</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Start a review loop in one call.</strong> Adopt an existing ticket or create a new one, file a child task per brief and create the reviewer&rsquo;s queue. CLI: <span class="font-mono text-accent text-sm">sfs loop start</span>, <span class="font-mono text-accent text-sm">sfs loop status</span>; MCP: <span class="font-mono text-accent text-sm">start_review_loop</span>, <span class="font-mono text-accent text-sm">get_loop_status</span>; API: <span class="font-mono text-accent text-sm">POST /api/v1/projects/&#123;id&#125;/loops</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Token and cost budgets, round caps.</strong> A loop can carry a token budget, a dollar budget (org owners and admins only) and a review-round cap; there is no default cap. A limit that is reached hands the item to a person instead of spending more. Raise or clear limits with <span class="font-mono text-accent text-sm">sfs loop update</span> or <span class="font-mono text-accent text-sm">update_review_loop</span>. Only people can close an item handed back to them (<span class="font-mono text-accent text-sm">sfs loop close-item</span>); service keys cannot.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Review checklist.</strong> A per-project list of review traps that every brief carries: seed it with starters, propose items by hand, accept or retire them. New kinds of finding are proposed automatically. CLI: <span class="font-mono text-accent text-sm">sfs loop checklist</span>; MCP: <span class="font-mono text-accent text-sm">get_loop_checklist</span>, <span class="font-mono text-accent text-sm">propose_checklist_item</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Loop reports and insights.</strong> Per review round: findings by harm, known versus new classes, design-stage findings and round cost; across a date range: findings caught and cost per accepted change. CLI: <span class="font-mono text-accent text-sm">sfs loop report</span>, <span class="font-mono text-accent text-sm">sfs loop insights</span>; MCP: <span class="font-mono text-accent text-sm">get_loop_report</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Review Loop in the dashboard.</strong> Loop runs, a story of each ticket from brief to merge, a Checklist panel, and Raise limit and Close item dialogs. Dollar amounts show only to org owners and admins, or the owner of a personal project.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>New API scopes.</strong> <span class="font-mono text-accent text-sm">loops:read</span> and <span class="font-mono text-accent text-sm">loops:write</span> for service keys and API keys.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Self-review counts a service key as the person who made it.</strong> Two keys minted by the same person are one identity, so a worker and a reviewer cannot both be that person&rsquo;s keys.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;112 (110 stores loop settings on the parent issue; 111 adds the needs-human item status; 112 adds the checklist; all additive). Self-hosted: run migrations 110&ndash;112 (see <a href="/self-hosted/#upgrading" class="text-brand hover:underline">Self-Hosted</a>). 115 MCP tools (+6).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
       <!-- v0.29.1 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +48,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.29.1</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 30, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Agent Spend Tracking &middot; Merge Readiness &middot; Commit-Bound Review Verdicts</h2>
         <ul class="space-y-2 text-base text-muted">

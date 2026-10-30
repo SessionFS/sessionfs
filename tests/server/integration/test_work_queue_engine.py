@@ -23,6 +23,7 @@ Covers run_work_queue_step / complete_work_queue_step (services + routes):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -135,13 +136,13 @@ async def _make_project(db: AsyncSession, owner: User) -> Project:
 
 
 async def _make_ticket(db: AsyncSession, project: Project, status: str = "open",
-                       priority: str = "medium") -> Ticket:
+                       priority: str = "medium", kind: str = "task") -> Ticket:
     t = Ticket(
         id=f"tk_{uuid.uuid4().hex[:16]}",
         project_id=project.id,
         title="A ticket",
         status=status,
-        kind="task",
+        kind=kind,
         priority=priority,
         created_by_user_id=project.owner_id,
         created_at=datetime.now(timezone.utc),
@@ -857,3 +858,137 @@ async def test_route_step_then_complete_roundtrip(
     assert comp.status_code == 200, comp.text
     assert comp.json()["status"] == "settled"
     assert comp.json()["item_status"] == "waiting"
+
+
+async def test_settle_cancelled_items_also_settles_needs_human_items(
+    db_session: AsyncSession,
+):
+    """Brief D3 — a parked (needs_human) item whose ticket is cancelled or
+    closed is settled terminal, so the loop queue stops instead of hanging on
+    a park. Open tickets stay parked (they may resume if a limit is raised)."""
+    user, _ = await _make_user_with_key(db_session)
+    project = await _make_project(db_session, user)
+    queue = await _make_queue(db_session, project, user)
+
+    cancelled_ticket = await _make_ticket(db_session, project, status="cancelled")
+    closed_ticket = await _make_ticket(
+        db_session, project, status="closed", kind="issue"
+    )
+    open_ticket = await _make_ticket(db_session, project, status="open")
+
+    cancelled_item = await _make_item(
+        db_session, queue, cancelled_ticket, status="needs_human"
+    )
+    closed_item = await _make_item(
+        db_session, queue, closed_ticket, status="needs_human"
+    )
+    open_item = await _make_item(
+        db_session, queue, open_ticket, status="needs_human"
+    )
+    await db_session.commit()
+
+    await wq_engine._settle_cancelled_items(
+        db_session, queue, now=datetime.now(timezone.utc)
+    )
+    await db_session.commit()
+
+    await db_session.refresh(cancelled_item)
+    await db_session.refresh(closed_item)
+    await db_session.refresh(open_item)
+    assert cancelled_item.item_status == "failed"
+    assert closed_item.item_status == "failed"
+    assert open_item.item_status == "needs_human"
+
+    outcomes = (
+        (
+            await db_session.execute(
+                select(WorkQueueRun.outcome).where(
+                    WorkQueueRun.work_queue_item_id.in_(
+                        [cancelled_item.id, closed_item.id, open_item.id]
+                    )
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert sorted(outcomes) == ["ticket_cancelled", "ticket_closed"]
+
+
+async def test_resume_needs_human_items_guards_concurrent_resume(
+    db_session: AsyncSession,
+):
+    """Brief D2 — a needs_human park is flipped back to pending by a guarded
+    ``UPDATE ... WHERE item_status='needs_human'``. Two concurrent resumes of
+    the same item must mint exactly one ``resumed`` run row: the loser fails
+    the WHERE predicate (rowcount 0) and must not write a second run."""
+    user, _ = await _make_user_with_key(db_session)
+    project = await _make_project(db_session, user)
+    queue = await _make_queue(db_session, project, user)
+    ticket = await _make_ticket(db_session, project)
+    item = await _make_item(db_session, queue, ticket, status="needs_human")
+    await db_session.commit()
+
+    now = datetime.now(timezone.utc)
+    results = await asyncio.gather(
+        wq_engine._resume_needs_human_items(db_session, queue, now=now),
+        wq_engine._resume_needs_human_items(db_session, queue, now=now),
+    )
+    await db_session.commit()
+
+    runs = (
+        (
+            await db_session.execute(
+                select(WorkQueueRun).where(
+                    WorkQueueRun.work_queue_item_id == item.id,
+                    WorkQueueRun.outcome == "resumed",
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(runs) == 1
+    assert sum(results) == 1
+
+    await db_session.refresh(item)
+    assert item.item_status == "pending"
+
+
+async def test_settle_cancelled_items_guards_concurrent_settle(
+    db_session: AsyncSession,
+):
+    """Review checklist #11 — settling a cancelled/closed needs_human item
+    uses a guarded ``UPDATE ... WHERE item_status IN (...)``; two concurrent
+    settles of the same item must mint exactly one terminal run row (the loser
+    fails the WHERE predicate and skips the run write)."""
+    user, _ = await _make_user_with_key(db_session)
+    project = await _make_project(db_session, user)
+    queue = await _make_queue(db_session, project, user)
+    cancelled_ticket = await _make_ticket(db_session, project, status="cancelled")
+    item = await _make_item(db_session, queue, cancelled_ticket, status="needs_human")
+    await db_session.commit()
+
+    now = datetime.now(timezone.utc)
+    await asyncio.gather(
+        wq_engine._settle_cancelled_items(db_session, queue, now=now),
+        wq_engine._settle_cancelled_items(db_session, queue, now=now),
+    )
+    await db_session.commit()
+
+    runs = (
+        (
+            await db_session.execute(
+                select(WorkQueueRun).where(
+                    WorkQueueRun.work_queue_item_id == item.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(runs) == 1
+    assert runs[0].outcome == "ticket_cancelled"
+
+    await db_session.refresh(item)
+    assert item.item_status == "failed"

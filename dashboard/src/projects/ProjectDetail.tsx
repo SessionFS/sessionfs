@@ -22,6 +22,7 @@ import TicketsTab from './TicketsTab';
 import type { TicketJiraSurface } from './tickets/constants';
 import AgentRunsTab from './AgentRunsTab';
 import MeetingsTab from '../meetings/MeetingsTab';
+import ReviewLoopTab from './loop/ReviewLoopTab';
 import MarketplaceTab from './MarketplaceTab';
 import ProjectSettings from './ProjectSettings';
 import ProjectHeader from './ProjectHeader';
@@ -59,6 +60,7 @@ const SUB_TABS: Partial<Record<Section, { key: string; label: string }[]>> = {
   work: [
     { key: 'tickets', label: 'Tickets' },
     { key: 'meetings', label: 'Meetings' },
+    { key: 'loop', label: 'Review Loop' },
     { key: 'agent-runs', label: 'Agent runs' },
     { key: 'personas', label: 'Agents' },
   ],
@@ -195,6 +197,8 @@ export default function ProjectDetail() {
       const params = new URLSearchParams(prev);
       params.set('tab', next);
       params.delete('sub');
+      params.delete('story');
+      params.delete('run');
       return params;
     });
   }, [setSearchParams]);
@@ -203,6 +207,8 @@ export default function ProjectDetail() {
     setSearchParams((prev) => {
       const params = new URLSearchParams(prev);
       params.set('sub', next);
+      params.delete('story');
+      params.delete('run');
       return params;
     }, { replace: true });
   }, [setSearchParams]);
@@ -238,6 +244,16 @@ export default function ProjectDetail() {
       if (meetingId) params.set('meeting', meetingId);
       else params.delete('meeting');
       params.delete('lines');
+      return params;
+    });
+  }, [setSearchParams]);
+
+  // The open Review Loop story (?story=<ticket id>) is a navigation too.
+  const openStory = useCallback((ticketId: string | null) => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      if (ticketId) params.set('story', ticketId);
+      else params.delete('story');
       return params;
     });
   }, [setSearchParams]);
@@ -573,8 +589,13 @@ export default function ProjectDetail() {
           />
         </Panel>
       )}
+      {section === 'work' && sub === 'loop' && (
+        <Panel padded sub={sub}>
+          <ReviewLoopTab projectId={project.id} storyId={searchParams.get('story')} onOpenStory={openStory} canEdit={canEdit} />
+        </Panel>
+      )}
       {section === 'work' && sub === 'agent-runs' && (
-        <Panel padded sub={sub}><AgentRunsTab projectId={project.id} /></Panel>
+        <Panel padded sub={sub}><AgentRunsTab projectId={project.id} initialRunId={searchParams.get('run')} /></Panel>
       )}
       {section === 'work' && sub === 'personas' && (
         <Panel padded sub={sub}><PersonasTab projectId={project.id} canEdit={canEdit} /></Panel>

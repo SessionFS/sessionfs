@@ -60,6 +60,12 @@
         { "name": "list_ticket_comments", "desc": "Read a ticket's comment thread" },
         { "name": "get_ticket_review_state", "desc": "Open and closed review findings and the last verdict" },
         { "name": "check_merge_readiness", "desc": "Whether a ticket is safe to merge at a head commit" },
+        { "name": "start_review_loop", "desc": "Start a review loop: child tasks plus a review queue" },
+        { "name": "get_loop_status", "desc": "Rounds, findings, spend and readiness for a review loop" },
+        { "name": "get_loop_report", "desc": "Per-round findings, harm and tokens for a ticket's review loop" },
+        { "name": "get_loop_checklist", "desc": "The project's review checklist" },
+        { "name": "propose_checklist_item", "desc": "Propose a recurring trap for the review checklist" },
+        { "name": "update_review_loop", "desc": "Raise or clear a review loop's budget caps" },
         { "name": "watch_ticket", "desc": "Follow, mute or unfollow a ticket" },
         { "name": "get_ticket_updates", "desc": "Changes on the tickets you follow since you last checked" }
       ]

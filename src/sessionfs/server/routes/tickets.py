@@ -1782,14 +1782,19 @@ async def get_ticket_merge_readiness(
       - no open finding is harmful (harm != 'none'; an untagged finding of
         MEDIUM or higher fails closed).
     """
-    from sessionfs.server.db.models import AgentRun, ApiKey, WorkQueueItem
-    from sessionfs.server.services.review_state import compute_review_state
+    from sessionfs.server.services.review_state import (
+        compute_merge_readiness,
+        load_implementer_identities,
+        load_key_minters,
+    )
 
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
-    await assert_service_key_can_access_project(db, auth, project)
+    await assert_service_key_can_access_project(
+        db, auth, project, opaque_404_detail="Project not found"
+    )
     await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
 
@@ -1822,164 +1827,16 @@ async def get_ticket_merge_readiness(
         for r in rows
     ]
 
-    state = compute_review_state(comments)
-    reasons: list[str] = []
+    identities = (await load_implementer_identities(db, [ticket]))[ticket.id]
+    key_minters = await load_key_minters(db, comments, identities)
 
-    # (1) A trusted strict VERIFIED-CLEAN must exist.
-    if state is None or not state.last_verdict_is_strict_verified_clean:
-        return {
-            "ticket_id": ticket.id,
-            "ready": False,
-            "reasons": ["no trusted strict VERIFIED-CLEAN verdict"],
-            "verdict": None,
-        }
-
-    # Locate the actual closing clean round's comment (mirror the work-queue
-    # self-review close: bind identity to the clean round, not the latest
-    # review comment, so a later trusted non-verdict note can't spoof it).
-    clean_comment_id: str | None = None
-    for rnd in reversed(state.rounds):
-        if rnd.is_strict_verified_clean:
-            clean_comment_id = rnd.comment_id
-            break
-    closing = next((r for r in rows if r.id == clean_comment_id), None)
-    if closing is None:
-        return {
-            "ticket_id": ticket.id,
-            "ready": False,
-            "reasons": ["closing verdict comment not found"],
-            "verdict": None,
-        }
-
-    closing_svc = closing.service_key_id or None
-    closing_usr = closing.author_user_id or None
-
-    # (2) The verdict must be bound to exactly the requested head commit.
-    if not closing.reviewed_commit or closing.reviewed_commit != sha:
-        reasons.append(
-            "trusted clean verdict is not bound to the requested sha"
-        )
-
-    # (3) The reviewer's identity must differ from every implementer identity.
-    # Implementer identities come from four sources: work-queue item rows,
-    # implementer-role agent runs, the ticket's current start-lease executor
-    # (the RetrievalAuditContext written by start_ticket), and the resolver.
-    # If none of them records an implementer, readiness fails closed — an
-    # unknown implementer can't be proven different from the reviewer.
-    impl_rows = (
-        await db.execute(
-            select(
-                WorkQueueItem.implementer_service_key_id,
-                WorkQueueItem.implementer_user_id,
-            ).where(WorkQueueItem.ticket_id == ticket.id)
-        )
-    ).all()
-    run_rows = (
-        await db.execute(
-            select(
-                AgentRun.service_key_id,
-                AgentRun.triggered_by_user_id,
-            ).where(
-                AgentRun.ticket_id == ticket.id,
-                AgentRun.role.in_(("implementer", "ui-implementer")),
-            )
-        )
-    ).all()
-    start_lease_rows = (
-        await db.execute(
-            select(
-                RetrievalAuditContext.service_key_id,
-                RetrievalAuditContext.created_by_user_id,
-            ).where(
-                RetrievalAuditContext.ticket_id == ticket.id,
-                RetrievalAuditContext.lease_epoch == ticket.lease_epoch,
-            )
-        )
-    ).all()
-
-    identities: list[tuple[str | None, str | None]] = [
-        (impl_svc or None, impl_usr or None) for impl_svc, impl_usr in impl_rows
-    ]
-    identities += [
-        (run_svc or None, run_usr or None) for run_svc, run_usr in run_rows
-    ]
-    identities += [
-        (start_svc or None, start_usr or None)
-        for start_svc, start_usr in start_lease_rows
-    ]
-    identities.append((None, ticket.resolver_user_id or None))
-
-    # A service key IS its minter, so a service-key reviewer is the same
-    # identity as its backing user. Resolve the reviewer key's minter once so a
-    # user-only implementer record (e.g. a pre-109 start context that stored
-    # only created_by_user_id) whose user is that minter can be failed closed.
-    closing_minter_user_id: str | None = None
-    if closing_svc:
-        closing_key = await db.get(ApiKey, closing_svc)
-        closing_minter_user_id = closing_key.user_id if closing_key else None
-
-    impl_minters: dict[str, str | None] = {}
-    if not any(svc or usr for svc, usr in identities):
-        reasons.append("implementer unknown")
-    else:
-        for impl_svc, impl_usr in identities:
-            if not impl_svc and not impl_usr:
-                continue
-            # Same identity comparison as the work-queue self-review close: when
-            # either side is a service key, compare service-key ids only; only fall
-            # back to user-id comparison when both are human.
-            if closing_svc and impl_svc:
-                self_close = closing_svc == impl_svc
-            elif closing_svc and not impl_svc:
-                # Service-key reviewer vs user-only implementer. The user may be
-                # the key's minter (a start context written before 109 stored
-                # only the backing user), which is the SAME identity. Fail closed
-                # when the minter can't be resolved or matches the user.
-                self_close = (
-                    closing_minter_user_id is None
-                    or (impl_usr is not None and closing_minter_user_id == impl_usr)
-                )
-            elif impl_svc and not closing_svc:
-                # Human reviewer vs service-key implementer. The key IS its
-                # minter, so a human reviewing work their own key did is
-                # self-review. Compare against the recorded backing user and
-                # the key's minter; fail closed when the minter can't be
-                # resolved.
-                if impl_svc not in impl_minters:
-                    impl_key = await db.get(ApiKey, impl_svc)
-                    impl_minters[impl_svc] = impl_key.user_id if impl_key else None
-                impl_minter = impl_minters[impl_svc]
-                self_close = (
-                    impl_minter is None
-                    or bool(closing_usr and closing_usr == impl_minter)
-                    or bool(closing_usr and impl_usr and closing_usr == impl_usr)
-                )
-            else:
-                self_close = bool(closing_usr and impl_usr and closing_usr == impl_usr)
-            if self_close:
-                reasons.append("reviewer identity matches an implementer identity")
-                break
-
-    # (4) No open finding may be harmful.
-    def _finding_harmful(f) -> bool:
-        if f.harm is not None:
-            return f.harm != "none"
-        return f.severity in ("MEDIUM", "HIGH", "CRITICAL")
-
-    harmful = [f for f in state.open_findings if _finding_harmful(f)]
-    if harmful:
-        reasons.append(f"{len(harmful)} open harmful finding(s)")
-
-    return {
-        "ticket_id": ticket.id,
-        "ready": not reasons,
-        "reasons": reasons,
-        "verdict": {
-            "reviewer": closing_svc or closing_usr or "",
-            "reviewed_commit": closing.reviewed_commit,
-            "at": closing.created_at.isoformat(),
-        },
-    }
+    readiness = compute_merge_readiness(
+        comments=comments,
+        sha=sha,
+        implementer_identities=identities,
+        key_minters=key_minters,
+    )
+    return {"ticket_id": ticket.id, **readiness}
 
 
 @router.post(

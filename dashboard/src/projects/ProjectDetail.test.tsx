@@ -458,6 +458,24 @@ describe('ProjectDetail', () => {
       expect(screen.getByTestId('loc')).not.toHaveTextContent('sub=personas');
     });
 
+    it('drops ?run= and ?story= when leaving the tab they belong to', async () => {
+      setProjectData();
+      renderPage('/projects/sessionfs%2Fsessionfs?tab=work&sub=agent-runs&run=run_1&story=tk_1');
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('tab', { name: 'Agents' }));
+      expect(screen.getByTestId('loc')).not.toHaveTextContent('run=');
+      expect(screen.getByTestId('loc')).not.toHaveTextContent('story=');
+    });
+
+    it('drops ?run= and ?story= when changing section', async () => {
+      setProjectData();
+      renderPage('/projects/sessionfs%2Fsessionfs?tab=work&sub=agent-runs&run=run_1&story=tk_1');
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('tab', { name: 'Knowledge' }));
+      expect(screen.getByTestId('loc')).not.toHaveTextContent('run=');
+      expect(screen.getByTestId('loc')).not.toHaveTextContent('story=');
+    });
+
     it('Back returns to the previous section; sub-tab clicks do not add history', async () => {
       setProjectData();
       renderPage();

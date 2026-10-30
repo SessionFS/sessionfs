@@ -1601,6 +1601,31 @@ async def complete_agent_run(
         )
 
     await db.commit()
+    # Review Loop R3 track E1 — findings with class="new" propose checklist
+    # items; classes matching an existing item's slug bump its times_found.
+    # Best-effort and strictly after the run is durable: a proposal failure
+    # must never fail (or roll back) the completion itself.
+    try:
+        from sessionfs.server.routes.loop_checklist import propose_from_findings
+
+        await propose_from_findings(
+            db,
+            project_id,
+            run_id,
+            body.findings,
+            # A service-key completion leaves the creator user id NULL and
+            # records the key's provenance on the actor columns instead
+            # (review checklist #3); a user completion keeps the run's
+            # triggerer as the proposer.
+            None
+            if auth.key_kind == "service"
+            else (existing.triggered_by_user_id or user.id),
+            created_actor_type=auth.actor_type,
+            created_service_key_id=auth.service_key_id,
+            created_service_key_name=auth.service_key_name,
+        )
+    except Exception:
+        await db.rollback()
     include_cost = await _cost_visible(db, project, auth=auth, user=user)
     return _row_to_response(
         await _get_run_or_404(project_id, run_id, db), include_cost=include_cost

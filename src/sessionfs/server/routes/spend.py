@@ -39,11 +39,15 @@ from sqlalchemy.sql import Select
 router = APIRouter(prefix="/api/v1/projects", tags=["agent-spend"])
 
 
-def _parse_range(from_raw: str | None, to_raw: str | None) -> tuple[datetime, datetime]:
+def _parse_range(
+    from_raw: str | None, to_raw: str | None, *, max_days: int | None = None
+) -> tuple[datetime, datetime]:
     """Resolve the ``created_at`` window for the project view.
 
     Defaults to the last 30 days; a lone ``from`` or ``to`` extends the
     default in that direction. Returns a half-open, timezone-aware pair.
+    ``max_days`` (optional) rejects a window wider than that with a 422 so
+    rollups over it (e.g. weekly series) stay bounded.
     """
     to_dt = _parse_dt(to_raw) if to_raw else datetime.now(timezone.utc)
     if from_raw:
@@ -52,6 +56,8 @@ def _parse_range(from_raw: str | None, to_raw: str | None) -> tuple[datetime, da
         from_dt = to_dt - timedelta(days=DEFAULT_RANGE_DAYS)
     if from_dt >= to_dt:
         raise HTTPException(422, "from must be earlier than to")
+    if max_days is not None and (to_dt - from_dt) > timedelta(days=max_days):
+        raise HTTPException(422, f"range must be at most {max_days} days")
     return from_dt, to_dt
 
 

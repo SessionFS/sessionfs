@@ -2154,6 +2154,11 @@ class Ticket(Base):
     acceptance_criteria: Mapped[str] = mapped_column(
         Text, default="[]", server_default="[]"
     )
+    # Review Loop D1 (docs/design/review-loop-r3.md §4) — loop config JSON
+    # for a parent issue ticket: {queue_id, reviewer_persona, token_budget?,
+    # cost_budget_usd?, max_review_rounds?, checklist_version?}. Nullable —
+    # only loop parent issues populate it; every other ticket leaves it NULL.
+    loop_config: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Resolution.
     resolver_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -3053,6 +3058,13 @@ class WorkQueue(Base):
     created_by_persona: Mapped[str | None] = mapped_column(
         String(50), nullable=True
     )
+    # Service-key provenance (review checklist #3): a queue stood up by a
+    # service key records the key's identity; user keys leave the default.
+    actor_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default="user"
+    )
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -3096,7 +3108,7 @@ class WorkQueueItem(Base):
         Index("idx_wqi_ticket", "ticket_id"),
         CheckConstraint(
             "item_status IN "
-            "('pending', 'active', 'waiting', 'done', 'failed')",
+            "('pending', 'active', 'waiting', 'done', 'failed', 'needs_human')",
             name="ck_work_queue_item_status",
         ),
         CheckConstraint(
@@ -6938,4 +6950,101 @@ class MeetingActionItem(Base):
     )
     extracted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
+    )
+
+
+class LoopChecklistItem(Base):
+    """A project-scoped review trap the loop has learned (Review Loop R3, E1).
+
+    ``title`` is the trap; ``check_text`` is how to check for it. An item is
+    ``proposed`` (the acceptance inbox), ``active`` (rendered into briefs via
+    the markdown endpoint) or ``retired``. Provenance is ``seed`` (shipped
+    generic), ``finding`` (derived from a review finding whose ``class`` was
+    ``new``) or ``manual`` (added by an editor). ``(project_id, slug)`` is
+    unique so a re-hit bumps ``times_found`` instead of duplicating the row.
+
+    ``slug`` for finding-sourced items is derived from the finding title;
+    ``source_finding_refs`` keeps the JSON list of ``{run_id, title}`` (title
+    redacted) that produced or re-hit the item (Text for cross-DB parity, like
+    ``agent_runs.findings``).
+    """
+
+    __tablename__ = "loop_checklist_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "slug", name="uq_loop_checklist_project_slug"
+        ),
+        CheckConstraint(
+            "status IN ('proposed', 'active', 'retired')",
+            name="ck_loop_checklist_status",
+        ),
+        CheckConstraint(
+            "source IN ('seed', 'finding', 'manual')",
+            name="ck_loop_checklist_source",
+        ),
+        Index("idx_loop_checklist_project_status", "project_id", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # lci_<hex>
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    slug: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    check_text: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="proposed", server_default="proposed"
+    )
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="manual", server_default="manual"
+    )
+    source_finding_refs: Mapped[str | None] = mapped_column(Text, nullable=True)
+    times_found: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    last_found_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    accepted_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # Actor provenance (review checklist #3): a service key acting as its
+    # minter leaves the user_id NULL and records its own key id/name plus
+    # actor_type instead, so the minter never stands in for the key. The
+    # creator set is always stamped (defaults to a user); the acceptor set
+    # stays NULL until the proposed→active transition.
+    created_actor_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default="user"
+    )
+    created_service_key_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    created_service_key_name: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    accepted_actor_type: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
+    accepted_service_key_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    accepted_service_key_name: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    # The proposed→active transition stamps this once and preserves the
+    # original on a re-accept; briefs read it as the "joined the checklist"
+    # date.
+    accepted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
     )

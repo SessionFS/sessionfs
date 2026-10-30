@@ -33,6 +33,12 @@ VALID_SCOPES = frozenset(
         "rules:write",
         "agent_runs:read",
         "agent_runs:write",
+        # v0.29.2 — Review Loop R3: loops:read reads the project checklist
+        # (and its brief markdown) and the rollups (loop report, insights,
+        # story); loops:write creates, proposes, accepts, retires and edits
+        # checklist items.
+        "loops:read",
+        "loops:write",
         # v0.17.0 — structured agent-feedback records. read lists/summarizes;
         # write creates. Kept narrow so a reviewer principal can post/consume
         # feedback without the broader agent_runs write surface.
@@ -44,6 +50,12 @@ VALID_SCOPES = frozenset(
         # wildcard '*' keys satisfy both (existing behavior).
         "work_queues:read",
         "work_queues:write",
+        # Review Loop D1 (tk_b610f5c044f94094) — loop API. loops:read lists /
+        # inspects review loops (start/get status); loops:write starts one
+        # (adopts a parent issue, files child tickets, creates the reviewer
+        # queue). Same shape as tickets:read/write.
+        "loops:read",
+        "loops:write",
         # Resident R0 (migration 057) — durable mind for reviewer/implementer
         # residents. resident_memory:read hydrates; resident_memory:write
         # writes + compacts + quarantines.

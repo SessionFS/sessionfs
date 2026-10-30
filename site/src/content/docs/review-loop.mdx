@@ -145,12 +145,26 @@ Merge when the ticket is ready at the head commit you are about to merge. `check
 
 - a trusted strict `VERIFIED-CLEAN` verdict exists;
 - its `reviewed_commit` equals the requested head exactly (a prefix match is not accepted);
-- the reviewer's identity differs from every implementer identity recorded for the ticket, so no one grades their own work;
+- the reviewer's identity differs from every implementer identity recorded for the ticket, so no one grades their own work (a service key counts as the person who created it, so two keys minted by the same person are one identity);
 - no open finding is harmful.
 
 A finding's harm is read from a `harm: <tag>` marker in its line (`data-exposed`, `money-spent`, `wrong-actor`, `crash`, `other` or `none`). `harm: none` marks a finding as checked and harmless; an untagged finding of medium severity or higher counts as harmful. If no implementer identity was recorded for the ticket, the answer is not ready.
 
 `get_ticket_review_state` still shows the raw state (`sfs ticket review-state` prints `Strict VERIFIED-CLEAN: yes`), but readiness is the merge gate: it also enforces the commit binding and the reviewer-identity check that review state alone does not. Run the full test suite on the merged result, then resolve the ticket (`resolve_ticket` or `sfs ticket resolve`) and remove the worktree. The work queue never changes a ticket's status on its own.
+
+## Start a loop and set limits (v0.29.2)
+
+Instead of wiring the queue by hand you can start a loop in one call: `sfs loop start` (MCP: `start_review_loop`, API: `POST /api/v1/projects/{id}/loops`). Pass an existing issue to adopt it as the loop parent, or a title to create one. Each brief becomes a child task, and SessionFS creates the reviewer's `review_until_clean` queue.
+
+```
+sfs loop start "Billing fixes" --reviewer-persona reviewer \
+  --ticket "Fix proration::Round to the cent" --token-budget 400000 --max-review-rounds 4
+sfs loop status            # every loop, or pass a loop id for its children
+```
+
+A loop can carry three limits: a token budget, a dollar budget (set only by org owners and admins) and a cap on review rounds. There is no default round cap. When a limit is reached the item stops and is handed back to a person as needing a human instead of continuing to spend. A person can raise a limit with `sfs loop update` (MCP: `update_review_loop`) or **Raise limit** in the dashboard, or settle the item with `sfs loop close-item` or **Close item**. Closing items is for people only; service keys cannot do it, and the ticket keeps its own status.
+
+The **review checklist** is a per-project list of traps that every brief carries. Seed it with the generic starters (`sfs loop checklist seed`), propose items by hand, and accept or retire them; new kinds of finding from reviews are proposed automatically. `sfs loop report <ticket_id>` shows each review round's findings by harm, how many were known classes versus new, and what the round cost; `sfs loop insights` rolls that up over a date range. In the dashboard, the project's Work section shows runs, a story of each ticket, and the Checklist panel.
 
 ## Track spend
 

@@ -300,10 +300,11 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_109(self):
+    def test_tool_count_is_115(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 109, (
-            "Expected 109 MCP tools after agent-run records, spend rollups and merge readiness, "
+        assert len(_TOOLS) == 115, (
+            "Expected 115 MCP tools after review-loop start, status and "
+            "update, the project checklist and the loop report, "
             f"got {len(_TOOLS)}"
         )
 
@@ -376,6 +377,8 @@ class TestToolRegistryV0996:
             "get_agent_feedback_summary",
             # Review Loop R3 — agent-run spend rollups (Brief A2)
             "get_spend_summary",
+            # Review Loop R3 — loop report (Brief E2)
+            "get_loop_report",
             # GitHub #95 — replay an agent run with an edited prompt/ticket/context
             "replay_agent_run",
             # Agent-run records — report token/cost usage in flight (Review Loop R3 A1)
@@ -401,6 +404,14 @@ class TestToolRegistryV0996:
             "get_group_context",
             "compile_group_knowledge",
             "ask_group",
+            # Review Loop R3 D1 — loop start + status
+            "start_review_loop",
+            "get_loop_status",
+            # Review Loop R3 track E1 — the project checklist that learns
+            "get_loop_checklist",
+            "propose_checklist_item",
+            # Review Loop R3 D — raise/clear a loop's budget caps
+            "update_review_loop",
         ):
             assert new_tool in names, f"Missing MCP tool: {new_tool}"
         # A3: approval is dashboard/CLI/API only — never brokered over MCP,
@@ -855,6 +866,86 @@ class TestNewToolDispatch:
     ):
         result = await mcp_server._handle_report_agent_run_usage({})
         assert "run_id is required" in result["error"]
+        assert not captured
+
+    @pytest.mark.asyncio
+    async def test_dispatch_start_review_loop(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_start_review_loop({
+            "title": "Loop",
+            "tickets": [
+                {"title": "c1", "description": "do A"},
+                {"title": "c2", "acceptance_criteria": ["x"]},
+            ],
+            "reviewer_persona": "codex",
+            "token_budget": 5000,
+            "max_review_rounds": 3,
+            "cost_budget_usd": 12.5,
+        })
+        assert captured["method"] == "POST"
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_test/loops"
+        )
+        assert captured["json"] == {
+            "tickets": [
+                {"title": "c1", "description": "do A", "acceptance_criteria": []},
+                {"title": "c2", "description": "", "acceptance_criteria": ["x"]},
+            ],
+            "reviewer_persona": "codex",
+            "title": "Loop",
+            "token_budget": 5000,
+            "max_review_rounds": 3,
+            "cost_budget_usd": 12.5,
+        }
+        assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_dispatch_start_review_loop_requires_tickets(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_start_review_loop({
+            "reviewer_persona": "codex",
+        })
+        assert "tickets must be a non-empty list" in result["error"]
+        assert not captured
+
+    @pytest.mark.asyncio
+    async def test_dispatch_start_review_loop_requires_ticket_titles(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_start_review_loop({
+            "reviewer_persona": "codex",
+            "tickets": [{"description": "no title"}],
+        })
+        assert "tickets[0].title is required" in result["error"]
+        assert not captured
+
+    @pytest.mark.asyncio
+    async def test_dispatch_start_review_loop_requires_reviewer_persona(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_start_review_loop({
+            "tickets": [{"title": "c1"}],
+        })
+        assert "reviewer_persona is required" in result["error"]
+        assert not captured
+
+    @pytest.mark.asyncio
+    async def test_dispatch_get_loop_status(self, fake_resolver, fake_httpx, captured):
+        result = await mcp_server._handle_get_loop_status({"loop_id": "tk_42"})
+        assert captured["method"] == "GET"
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_test/loops/tk_42"
+        )
+        assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_dispatch_get_loop_status_requires_loop_id(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_get_loop_status({})
+        assert "loop_id is required" in result["error"]
         assert not captured
 
     @pytest.mark.asyncio

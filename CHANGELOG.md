@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.2] - 2026-10-30
+
+**Run a review loop with a budget, learn from every round, and see it all in the dashboard.** Server migrations 110–112.
+
+### Added
+- **Review loops with budgets.** Start a loop on an existing issue or a new one, with one child task per brief and a review queue for the reviewer persona (`sfs loop start`, `sfs loop status`, MCP `start_review_loop` and `get_loop_status`, `POST/GET /api/v1/projects/{id}/loops`). Set a token budget, a dollar budget (org owners and admins only) and a review-round cap; there is no default cap. A loop that reaches a cap stops and waits for a person instead of spending more. Raise the caps with `sfs loop update`, MCP `update_review_loop` or `PATCH .../loops/{loop_id}`.
+- **Items that need a person.** A child that hits a limit or needs a decision is parked as needs-human; a person settles it with `sfs loop close-item` (service keys are refused).
+- **A project checklist that learns.** Review findings can propose checklist items; people accept or retire them, and six generic traps can be seeded (`sfs loop checklist list|seed|add|accept|retire`, MCP `get_loop_checklist` and `propose_checklist_item`).
+- **Loop reports and insights.** Per-round findings by harm, class and design counts, with tokens (`sfs loop report`, MCP `get_loop_report`), and project-wide findings caught, cost per accepted change and what the checklist learned (`sfs loop insights`).
+- **Review Loop in the dashboard.** Runs, a per-loop story, the checklist panel, and Raise limit and Close item dialogs.
+- API scopes `loops:read` and `loops:write` for service keys. Six MCP tools (115 in total).
+
+### Changed
+- **A service key counts as the person who minted it, in both directions.** Two keys minted by the same person count as one identity, so neither merge readiness nor an `implement_until_done` work queue accepts one of them reviewing the other's work. A key whose minter can't be resolved fails closed.
+- Loop reads and merge readiness give a service key outside its org or allowlist the same 404 as a project or loop that doesn't exist, and every miss returns the same body.
+- Notifications about loops never include dollar amounts.
+
 ## [0.29.1] - 2026-10-30
 
 **What agent work costs, and whether it is safe to merge.** Server migrations 106–109.

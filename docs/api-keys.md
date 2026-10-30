@@ -49,6 +49,8 @@ The capability scopes defined for service keys (including `devices:report`). The
 | `rules:read` | reserved | — |
 | `rules:write` | reserved | — |
 | `agent_runs:read` | ✅ live | `GET /api/v1/projects/{project_id}/agent-runs`, `GET /api/v1/projects/{project_id}/agent-runs/{run_id}` |
+| `loops:read` | ✅ live | `GET /api/v1/projects/{project_id}/loops`, `GET /api/v1/projects/{project_id}/loops/{loop_id}`, `GET /api/v1/projects/{project_id}/loop-checklist`, `GET /api/v1/projects/{project_id}/loop-checklist.md`, `GET /api/v1/projects/{project_id}/tickets/{ticket_id}/loop-report`, `GET /api/v1/projects/{project_id}/loop-insights`, `GET /api/v1/projects/{project_id}/tickets/{ticket_id}/story` (read-only review-loop rollups) |
+| `loops:write` | ✅ live | `POST /api/v1/projects/{project_id}/loops` (also requires editor standing for user keys; `cost_budget_usd` is org-admin only), `POST /api/v1/projects/{project_id}/loop-checklist`, `POST /api/v1/projects/{project_id}/loop-checklist/seed`, `PATCH /api/v1/projects/{project_id}/loop-checklist/{item_id}` |
 | `work_queues:read` | ✅ live | `GET /api/v1/projects/{project_id}/work-queues`, `GET /api/v1/projects/{project_id}/work-queues/{queue_id}` |
 | `work_queues:write` | ✅ live | `POST /api/v1/projects/{project_id}/work-queues`, `POST .../work-queues/{queue_id}/status`, `POST .../work-queues/{queue_id}/step`, `POST .../work-queues/{queue_id}/step/complete` (acting also requires the downstream `tickets:write` / `agent_runs:write`) |
 | `devices:report` | ✅ live | `POST /api/v1/devices/me/policy-report` (skills-policy compliance from `sfs skill pull` / the daemon, CI runners included); `GET /api/v1/devices/me/policy` also accepts `skills:read` |

@@ -137,6 +137,8 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs agent run\|complete\|status\|list` | Record agent runs (e.g. CI reviews) with findings (Team+) |
 | `sfs agent usage\|spend` | Report a run's tokens and cost; total spend per ticket or project (dollars for org admins only) |
 | `sfs loop ready` | Is a ticket's work safe to merge at a given commit? (Team+) |
+| `sfs loop start\|status\|update\|close-item` | Run a review loop with token, dollar and round budgets (Team+) |
+| `sfs loop report\|insights\|checklist` | Per-round reports, project insights and the checklist that learns (Team+) |
 | `sfs agent replay\|compare` | Re-run a recorded agent run with an edited prompt or context, and compare two runs side by side |
 | `sfs agent feedback add\|list\|summary` | Record and summarize whether agent work was useful (Team+) |
 | `sfs resident run\|health` | Run an operator-hosted resident reviewer or implementer against a work queue |
@@ -270,6 +272,8 @@ Sessions are stored as `.sfs` directories:
 All file paths are relative to workspace root. Sessions are append-only — conflict resolution appends both sides rather than merging.
 
 ## Status
+
+**v0.29.2 — Public Beta.** 10482 backend tests + 1908 dashboard tests passing. Database migrations 001–112 (067 and 068 unused). 115 MCP tools. **Review loops with budgets:** start a loop on an issue with one child task per brief, cap it by tokens, dollars and review rounds, and let a person settle anything it parks (`sfs loop start|status|update|close-item`). **A checklist that learns** from review findings, plus per-round reports and project insights (`sfs loop checklist|report|insights`), and a Review Loop view in the dashboard. Also: a service key now counts as the person who minted it, so two keys from one person can't review each other's work. Migrations 110–112.
 
 **v0.29.1 — Public Beta.** 10373 backend tests + 1859 dashboard tests passing. Database migrations 001–109 (067 and 068 unused). 109 MCP tools. **What agent work costs:** agent runs record model, tokens and cost as they go, with spend rolled up per ticket and per project (`sfs agent usage|spend`, MCP `report_agent_run_usage` and `get_spend_summary`); only org owners and admins see dollars. **Safe-to-merge checks:** `sfs loop ready <ticket> --sha <head>` and MCP `check_merge_readiness` say a ticket is ready only when a trusted clean review is bound to that exact commit by someone other than the implementer, with no harmful findings open. Also: structured review findings (round, class, harm, stage), service keys reading project context and wiki pages, and one active ticket per parallel worker. Migrations 106–109.
 

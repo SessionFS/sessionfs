@@ -16,8 +16,9 @@
  * be compared for a findings diff.
  */
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
+  useAgentRun,
   useAgentRuns,
   useCompareAgentRuns,
   useReplayAgentRun,
@@ -35,7 +36,7 @@ import {
   DialogHeader,
   DialogFooter,
 } from '../components/ui';
-import type { AgentRun, AgentRunReplayInput, AgentRunReplayResult } from '../api/client';
+import { ApiError, type AgentRun, type AgentRunReplayInput, type AgentRunReplayResult } from '../api/client';
 import { errorMessage } from '../utils/errorMessage';
 import { safeHttpUrl } from '../utils/url';
 
@@ -45,6 +46,8 @@ import { safeHttpUrl } from '../utils/url';
 
 interface AgentRunsTabProps {
   projectId: string;
+  /** Run to open on arrival (URL `run=`). */
+  initialRunId?: string | null;
 }
 
 const STATUS_FILTERS: { value: string; label: string }[] = [
@@ -94,11 +97,17 @@ const SEVERITY_TONE: Record<string, string> = {
   critical: 'text-danger font-semibold',
 };
 
-export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
+export default function AgentRunsTab({ projectId, initialRunId = null }: AgentRunsTabProps) {
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [triggerFilter, setTriggerFilter] = useState<string>('');
   const [personaFilter, setPersonaFilter] = useState<string>('');
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<string | null>(initialRunId);
+  // A different ?run= while mounted opens that run.
+  const [seenRunId, setSeenRunId] = useState(initialRunId);
+  if (seenRunId !== initialRunId) {
+    setSeenRunId(initialRunId);
+    if (initialRunId) setExpanded(initialRunId);
+  }
   const [replayTarget, setReplayTarget] = useState<AgentRun | null>(null);
   const [compareTarget, setCompareTarget] = useState<AgentRun | null>(null);
 
@@ -108,6 +117,14 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
     persona_name: personaFilter.trim() || undefined,
     limit: 50,
   });
+
+  // Arriving from a link (?run=<id>): bring the opened run into view once listed.
+  const hasInitialRun = !!initialRunId && !!data?.some((r) => r.id === initialRunId);
+  useEffect(() => {
+    if (hasInitialRun) {
+      document.getElementById(`run-${initialRunId}`)?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [hasInitialRun, initialRunId]);
 
   function openRun(id: string) {
     setExpanded(id);
@@ -169,6 +186,16 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
         Runs are recorded by <code className="font-mono text-text-secondary">sfs agent run</code> in CI.
         This tab is read-only; refreshes every 30 seconds while open.
       </p>
+
+      {initialRunId && !runs.some((r) => r.id === initialRunId) && (
+        <LinkedRun
+          projectId={projectId}
+          runId={initialRunId}
+          onReplay={setReplayTarget}
+          onCompare={setCompareTarget}
+          onOpenRun={openRun}
+        />
+      )}
 
       {runs.length === 0 ? (
         <div className="rounded-lg border border-border p-8 text-center bg-surface">
@@ -269,6 +296,40 @@ export default function AgentRunsTab({ projectId }: AgentRunsTabProps) {
   );
 }
 
+/** A run named by ?run= that is not in the listed page: fetched by id and pinned above the list. */
+function LinkedRun({
+  projectId,
+  runId,
+  onReplay,
+  onCompare,
+  onOpenRun,
+}: {
+  projectId: string;
+  runId: string;
+  onReplay: (r: AgentRun) => void;
+  onCompare: (r: AgentRun) => void;
+  onOpenRun: (id: string) => void;
+}) {
+  const { data: run, isLoading, error } = useAgentRun(projectId, runId);
+  if (isLoading) return <p className="text-sm text-text-tertiary">Loading run…</p>;
+  if (error || !run) {
+    return (
+      <p role="status" className="text-sm text-text-tertiary">
+        {error instanceof ApiError && error.status === 404 ? 'Run not found.' : `Could not load run ${runId}.`}
+      </p>
+    );
+  }
+  return (
+    <Card className="p-0" data-testid="linked-run">
+      <div id={`run-${run.id}`} className="px-4 pt-3 text-sm">
+        <code className="text-mono-chip">{run.id}</code>
+        <span className="ml-2 text-xs text-text-tertiary">Linked run, not in the latest 50</span>
+      </div>
+      <RunDetail run={run} onReplay={() => onReplay(run)} onCompare={() => onCompare(run)} onOpenRun={onOpenRun} />
+    </Card>
+  );
+}
+
 function RunDetail({
   run,
   onReplay,
@@ -344,14 +405,14 @@ function RunDetail({
 
       {run.prompt && (
         <div>
-          <h4 className="text-micro text-text-tertiary mb-1">Prompt</h4>
+          <h3 className="text-micro text-text-tertiary mb-1">Prompt</h3>
           <p className="text-text-secondary whitespace-pre-wrap">{run.prompt}</p>
         </div>
       )}
 
       {run.context_refs.length > 0 && (
         <div>
-          <h4 className="text-micro text-text-tertiary mb-1">Context refs</h4>
+          <h3 className="text-micro text-text-tertiary mb-1">Context refs</h3>
           <ul className="list-disc list-inside text-text-secondary">
             {run.context_refs.map((ref, i) => (
               <li key={`${ref}-${i}`} className="font-mono text-xs">{ref}</li>
@@ -362,16 +423,16 @@ function RunDetail({
 
       {run.result_summary && (
         <div>
-          <h4 className="text-micro text-text-tertiary mb-1">Summary</h4>
+          <h3 className="text-micro text-text-tertiary mb-1">Summary</h3>
           <p className="text-text-secondary whitespace-pre-wrap">{run.result_summary}</p>
         </div>
       )}
 
       {run.findings.length > 0 && (
         <div>
-          <h4 className="text-micro text-text-tertiary mb-1">
+          <h3 className="text-micro text-text-tertiary mb-1">
             Findings ({run.findings.length})
-          </h4>
+          </h3>
           <pre
             className="text-xs p-2 rounded-lg border border-border overflow-x-auto bg-bg-primary"
           >
@@ -440,7 +501,7 @@ function ReplayDialog({
             Queued replay <code className="text-mono-chip">{result.run.id}</code>.
           </p>
           <div>
-            <h4 className="text-micro text-text-tertiary mb-1">Command</h4>
+            <h3 className="text-micro text-text-tertiary mb-1">Command</h3>
             <div className="flex items-start gap-2">
               <code className="flex-1 font-mono text-xs p-2 rounded-lg border border-border bg-bg-primary break-all">
                 {result.command}
@@ -449,7 +510,7 @@ function ReplayDialog({
             </div>
           </div>
           <div>
-            <h4 className="text-micro text-text-tertiary mb-1">CI snippet</h4>
+            <h3 className="text-micro text-text-tertiary mb-1">CI snippet</h3>
             <pre className="text-xs p-2 rounded-lg border border-border overflow-x-auto bg-bg-primary whitespace-pre-wrap">
               {result.ci_hint}
             </pre>
@@ -532,9 +593,9 @@ function FindingList({ label, items }: { label: string; items: Record<string, un
   }
   return (
     <div>
-      <h4 className="text-micro text-text-tertiary mb-1">
+      <h3 className="text-micro text-text-tertiary mb-1">
         {label} ({items.length})
-      </h4>
+      </h3>
       <ul className="list-disc list-inside">
         {items.map((f, i) => (
           <li key={`${label}-${i}`} className="text-xs text-text-secondary font-mono">

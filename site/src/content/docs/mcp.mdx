@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 109 tools in thirteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Skills Marketplace, Project Groups (Team+), and Meetings.
+The MCP server exposes 115 tools in fifteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Review Checklist (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Skills Marketplace, Project Groups (Team+), and Meetings.
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -875,6 +875,80 @@ Summarize agent-run spend for the current project (grouped by `persona`, `model`
 | `group_by` | string | no | `persona`, `model`, `ticket`, `role`, or `day` (project mode only) |
 | `from` | string | no | Start of the window (ISO datetime) |
 | `to` | string | no | End of the window (ISO datetime) |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `get_loop_report`
+
+Per-round review-loop rollup for one ticket: findings grouped by harm, how many findings were known checklist classes versus brand-new (`class: "new"`), how many were raised at the design stage, and the tokens (and dollars, for admin callers) attributed to that round. A run's tokens/dollars go to its primary round — the first `(round, stage)` key in its findings. Dollar amounts follow the same visibility rule as `get_spend_summary` (org owner/admin or the owner of a personal project; never service keys).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | yes | Ticket id (`tk_...`) |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+### Review Loops (Team+)
+
+Start and watch a [worker review loop](/review-loop/) and manage its budgets. Reports and the checklist tools are listed below and under Review Checklist. Added in v0.29.2.
+
+#### `start_review_loop`
+
+Start a loop: adopt an existing issue (`from_ticket_id`) or create a new parent issue, file one child task per brief and create the `review_until_clean` queue for the reviewer persona. Returns the loop id, the child tickets with their briefs, the queue id and the environment each role needs. `cost_budget_usd` needs org owner or admin standing.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `tickets` | array | yes | Child tasks: `{title, description, acceptance_criteria}` |
+| `reviewer_persona` | string | yes | Persona that reviews the children |
+| `title` | string | no | Parent issue title (ignored with `from_ticket_id`) |
+| `description` | string | no | Parent issue description |
+| `from_ticket_id` | string | no | Existing issue (`tk_...`) to adopt as the loop parent |
+| `token_budget` | integer | no | Token budget for the loop |
+| `cost_budget_usd` | number | no | Dollar budget (org owner or admin only) |
+| `max_review_rounds` | integer | no | Review-round cap; there is no default cap |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `get_loop_status`
+
+Read-only rollup of one loop: for each child its status, branch, head commit, review rounds, open harmful findings, findings by harm, tokens (and dollars for admins), budget use, whether it needs a person, and merge readiness.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `loop_id` | string | yes | Loop (parent issue) id (`tk_...`) |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `update_review_loop`
+
+Raise or clear a loop's limits. Omitted fields stay as they are; an explicit `null` clears a limit. `cost_budget_usd` is for org owners and admins and is never visible to service keys. Closing an item the loop handed back for a person is not available here: only people can do that, from the dashboard, `sfs loop close-item` or the API.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `loop_id` | string | yes | Loop (parent issue) id (`tk_...`) |
+| `token_budget` | integer or null | no | New token budget |
+| `max_review_rounds` | integer or null | no | New review-round cap |
+| `cost_budget_usd` | number or null | no | New dollar budget (org owner or admin only) |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+### Review Checklist (Team+)
+
+The project checklist that learns: a per-project list of review traps. Proposed items are the acceptance inbox; active items render into every brief via the markdown endpoint. Finding-sourced items are proposed automatically when an agent run completes with `class: "new"` findings.
+
+#### `get_loop_checklist`
+
+List the project's checklist items, optionally filtered by status.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `status` | string | no | Filter by `proposed`, `active` or `retired` |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `propose_checklist_item`
+
+Propose a checklist item by hand. The item starts `proposed` and the project owner accepts or skips it; the slug is derived from the title when not given.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `title` | string | yes | The trap, e.g. "Access rechecked after slow steps" |
+| `check_text` | string | no | How to check for it (defaults to the title) |
+| `slug` | string | no | Lowercase slug; derived from the title when omitted |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 
 ### Skills Marketplace

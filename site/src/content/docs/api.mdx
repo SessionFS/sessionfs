@@ -62,6 +62,7 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | `knowledge:read`, `knowledge:write` | ✅ live (v0.10.19; project context + wiki since v0.29.1) | Knowledge entries: `GET /entries`, `GET /entries/{id}`, `POST /entries/add`, `PUT /entries/{id}` (dismiss/update/refresh/promote/supersede). Project context (`knowledge:read`): `GET /projects/{id}`, `GET /projects/{id}/context/sections/{slug}`. Wiki (`knowledge:read`): list/get pages, page history and backlinks; (`knowledge:write`): `PUT /projects/{id}/pages/{slug}` — writes record `actor_type="service_key"` + `service_key_id`/`service_key_name` |
 | `personas:read`, `personas:write` | ✅ live (v0.10.20) | Persona list/get + create/update/delete |
 | `agent_runs:read` | ✅ live (v0.10.21) | `GET /agent-runs`, `GET /agent-runs/{run_id}` |
+| `loops:read`, `loops:write` | ✅ live (v0.29.2) | Review loops: `GET /projects/{id}/loops`, `GET /projects/{id}/loops/{loop_id}`, `POST /projects/{id}/loops`, `PATCH /projects/{id}/loops/{loop_id}`, plus the loop report, insights, story and checklist routes (see [Review Loop API](#review-loop-v0292)). User keys also need editor standing; `cost_budget_usd` is org-admin only, and service keys never see or set dollars |
 | `agent_feedback:read`, `agent_feedback:write` | ✅ live (v0.17) | `GET /agent-feedback`, `GET /agent-feedback/summary`, `POST /agent-feedback` |
 | `marketplace:read`, `marketplace:write` | ✅ live (v0.16) | Marketplace search/inspect/download/feed + personal package/registry publishing |
 | `skills:read`, `skills:request`, `skills:approve`, `skills:admin` | ✅ live (v0.16) | Approved instruction load, install-request lifecycle, org registries/packages/assignments |
@@ -229,6 +230,28 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | DELETE | `/api/v1/projects/{id}/tickets/{tid}/jira` | Bearer (`tickets:write`, project admin) | Unlink the Jira issue |
 | POST | `/api/v1/projects/{id}/tickets/{tid}/jira/link` | Bearer (`tickets:write`, ticket editor) | Link the ticket to an existing Jira issue (`issue_key`); nothing is sent to Jira (v0.27.0) |
 | POST | `/api/v1/projects/{id}/tickets/{tid}/jira/pull` | Bearer (`tickets:write`, user key, ticket editor) | Replace the ticket's title and description with the linked issue's (`confirm: true`); empty Jira fields leave the ticket unchanged (v0.27.0) |
+
+### Review Loop (v0.29.2)
+
+Start and watch a [worker review loop](/review-loop/), set its budgets and keep the project checklist. Tier: **Team+** for loops; the checklist is on every plan.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/projects/{id}/loops` | Bearer (`loops:write`) | Start a loop on an existing issue (`from_ticket_id`) or a new one (`title`). Files one child task per entry in `tickets` and creates the reviewer's work queue. Optional `token_budget`, `cost_budget_usd` (org owners and admins only) and `max_review_rounds` (no default cap) |
+| GET | `/api/v1/projects/{id}/loops` | Bearer (`loops:read`) | The project's loops with status, children, spend and budget |
+| GET | `/api/v1/projects/{id}/loops/{loop_id}` | Bearer (`loops:read`) | One loop: each child's status, branch, head commit, review rounds, harm, tokens, budget use and merge readiness |
+| PATCH | `/api/v1/projects/{id}/loops/{loop_id}` | Bearer (`loops:write`) | Raise or clear a budget. Only the fields you send change; an explicit `null` clears a limit. Dollar limits need org owner or admin standing |
+| POST | `/api/v1/projects/{id}/loops/{loop_id}/children/{ticket_id}/close` | Bearer (user key only) | Close an item the loop handed back as `needs_human`. People only: service keys get 403. The ticket keeps its own status |
+| GET | `/api/v1/projects/{id}/tickets/{tid}/loop-report` | Bearer (`loops:read`) | Per review round: findings by harm, known versus new checklist classes, design-stage findings and the tokens (and dollars, for admins) the round cost |
+| GET | `/api/v1/projects/{id}/loop-insights` | Bearer (`loops:read`) | Findings caught, cost per accepted change by month and how many new checklist classes were learned. Query: `from`, `to` (window up to 366 days) |
+| GET | `/api/v1/projects/{id}/tickets/{tid}/story` | Bearer (`loops:read`) | The ticket's ordered event stream: brief, run, round, finding, fix, verdict, merge |
+| GET | `/api/v1/projects/{id}/loop-checklist` | Bearer | List checklist items. Query: `status` (`proposed`, `active`, `retired`) |
+| GET | `/api/v1/projects/{id}/loop-checklist.md` | Bearer | Active items as markdown for a brief |
+| POST | `/api/v1/projects/{id}/loop-checklist` | Bearer (editor) | Propose an item (`title`, optional `check_text` and `slug`) |
+| POST | `/api/v1/projects/{id}/loop-checklist/seed` | Bearer (editor) | Offer the generic starter items as proposals |
+| PATCH | `/api/v1/projects/{id}/loop-checklist/{item_id}` | Bearer (editor) | Accept, retire or edit an item |
+
+Dollar fields appear only for org owners and admins, or the owner of a personal project, and are left out of the response for everyone else.
 
 ### Meetings (v0.29.0)
 
