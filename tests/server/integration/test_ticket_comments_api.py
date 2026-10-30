@@ -122,6 +122,40 @@ async def test_post_comment_returns_201_and_persists(
 
 
 @pytest.mark.asyncio
+async def test_comment_reviewed_commit_requires_full_id(
+    client: AsyncClient, db_session: AsyncSession
+):
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    tk_id = (
+        await client.post(
+            f"/api/v1/projects/{project.id}/tickets",
+            headers=_hdrs(key),
+            json={"title": "comment-test"},
+        )
+    ).json()["id"]
+
+    # A short (formerly accepted) hex prefix is not a full commit id.
+    short = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+        headers=_hdrs(key),
+        json={"content": "bound to a short sha", "reviewed_commit": "a1b2c3d4e5f6a7b8"},
+    )
+    assert short.status_code == 422, short.text
+
+    # A full 40-char lowercase hex commit id is accepted.
+    full = await client.post(
+        f"/api/v1/projects/{project.id}/tickets/{tk_id}/comments",
+        headers=_hdrs(key),
+        json={
+            "content": "bound to a full sha",
+            "reviewed_commit": "0123456789abcdef0123456789abcdef01234567",
+        },
+    )
+    assert full.status_code == 201, full.text
+
+
+@pytest.mark.asyncio
 async def test_list_comments_returns_chronological(
     client: AsyncClient, db_session: AsyncSession
 ):

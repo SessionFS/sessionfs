@@ -183,6 +183,68 @@ def test_ticket_start_warns_on_bundle_write_failure(monkeypatch):
     assert "Active ticket bundle written" not in result.output
 
 
+def test_ticket_start_passes_workspace_to_write_bundle(monkeypatch):
+    """G1: start_ticket resolves the repo root and passes it to write_bundle
+    so an env-selected bundle is also mirrored into the workspace."""
+    from pathlib import Path
+
+    from sessionfs.cli import cmd_ticket
+
+    ws = Path("/tmp/ws")
+    monkeypatch.setattr(cmd_ticket, "resolve_project_root", lambda: ws)
+    monkeypatch.setattr(cmd_ticket, "_get_git_remote", lambda: "")
+    monkeypatch.setattr(
+        cmd_ticket, "_resolve_project",
+        lambda: ("https://api.test", "test-key", "proj_a"),
+    )
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        return (
+            200,
+            {"ticket": {"id": "tk_x", "assigned_to": "atlas"}, "compiled_context": ""},
+            {},
+        )
+
+    monkeypatch.setattr(cmd_ticket, "_api_request", _fake_api)
+    captured = {}
+    monkeypatch.setattr(
+        cmd_ticket, "write_bundle", lambda **kw: captured.update(kw) or True
+    )
+
+    result = runner.invoke(ticket_app, ["start", "tk_x", "--no-print-context"])
+    assert result.exit_code == 0, result.output
+    assert captured.get("workspace") == ws
+
+
+def test_ticket_complete_passes_workspace_to_clear(monkeypatch):
+    """G1: complete_ticket passes the repo root to clear_bundle_if_owned so
+    the workspace mirror is removed alongside the run-scoped bundle."""
+    from pathlib import Path
+
+    from sessionfs.cli import cmd_ticket
+
+    ws = Path("/tmp/ws")
+    monkeypatch.setattr(cmd_ticket, "resolve_project_root", lambda: ws)
+    monkeypatch.setattr(cmd_ticket, "read_bundle", lambda **kw: None)
+    monkeypatch.setattr(
+        cmd_ticket, "_resolve_project",
+        lambda: ("https://api.test", "test-key", "proj_a"),
+    )
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        return (200, {"id": "tk_x"}, {})
+
+    monkeypatch.setattr(cmd_ticket, "_api_request", _fake_api)
+    captured = {}
+    monkeypatch.setattr(
+        cmd_ticket, "clear_bundle_if_owned", lambda **kw: captured.update(kw) or True
+    )
+
+    result = runner.invoke(ticket_app, ["complete", "tk_x", "--notes", "done"])
+    assert result.exit_code == 0, result.output
+    assert captured.get("workspace") == ws
+
+
 # ── GitHub #96 — direct-to-person assignment CLI plumbing ──
 
 

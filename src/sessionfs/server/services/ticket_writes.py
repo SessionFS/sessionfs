@@ -933,6 +933,7 @@ async def insert_ticket_comment(
     lease_epoch: int | None,
     verdict_trusted: bool,
     auth: AuthContext | None = None,
+    reviewed_commit: str | None = None,
 ) -> str:
     """Insert one ticket comment and notify watchers; the caller commits.
 
@@ -968,6 +969,7 @@ async def insert_ticket_comment(
         literal(service_key_id),
         literal(service_key_name),
         literal(verdict_trusted),
+        literal(reviewed_commit),
     ).where(
         Ticket.id == ticket_id,
         Ticket.project_id == project.id,
@@ -992,6 +994,7 @@ async def insert_ticket_comment(
                 "service_key_id",
                 "service_key_name",
                 "verdict_trusted",
+                "reviewed_commit",
             ],
             source,
         )

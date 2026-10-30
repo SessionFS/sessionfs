@@ -415,7 +415,11 @@ async def test_duplicate_complete_is_idempotent(db_session: AsyncSession):
     )
     await db_session.commit()
     assert first.status == "settled"
-    assert first.item_terminal is True
+    # Review Loop B2 / G9 — an implement item no longer closes on the agent's
+    # CLAIMED outcome ("completed_ticket"). It parks waiting until a trusted
+    # strict VERIFIED-CLEAN from a different identity closes it.
+    assert first.item_terminal is False
+    assert first.item_status == "waiting"
 
     second = await wq_engine.complete_work_queue_step(
         db_session, queue=queue, item_id=d["item_id"],
@@ -425,7 +429,7 @@ async def test_duplicate_complete_is_idempotent(db_session: AsyncSession):
     )
     await db_session.commit()
     assert second.status == "idempotent_replay"
-    assert second.item_status == "done"
+    assert second.item_status == "waiting"
 
 
 # ── crash simulation ──

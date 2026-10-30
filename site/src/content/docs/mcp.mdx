@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 106 tools in thirteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Skills Marketplace, Project Groups (Team+), and Meetings.
+The MCP server exposes 109 tools in thirteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Skills Marketplace, Project Groups (Team+), and Meetings.
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -677,11 +677,21 @@ Paginated read of the existing `GET /api/v1/projects/{id}/tickets/{id}/comments`
 
 #### `get_ticket_review_state`
 
-A compact summary of a review ticket: open and closed findings, the last verdict, and open-finding counts by severity, derived from the comment thread. Cheaper than reading a long thread with `list_ticket_comments`. Returns `review_state: null` for tickets with no review comments. `last_verdict_is_strict_verified_clean` is `true` only when the last trusted verdict is a literal `VERIFIED-CLEAN`. Verdict headers take any reviewer name, in the form `<Reviewer> R<n> review on <ticket>: <VERDICT>`; see [Worker Review Loop](/review-loop/).
+A compact summary of a review ticket: open and closed findings, the last verdict, and open-finding counts by severity, derived from the comment thread. Cheaper than reading a long thread with `list_ticket_comments`. Returns `review_state: null` for tickets with no review comments. `last_verdict_is_strict_verified_clean` is `true` only when the last trusted verdict is a literal `VERIFIED-CLEAN`. "Last" means most recently posted: round numbers are labels, so a later changes-requested verdict reopens the review even if it carries a lower round number. Verdict headers take any reviewer name, in the form `<Reviewer> R<n> review on <ticket>: <VERDICT>`; see [Worker Review Loop](/review-loop/).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `ticket_id` | string | yes | Ticket ID |
+
+#### `check_merge_readiness`
+
+Whether a ticket's work is safe to merge at a specific head commit. Returns `{ready, reasons, verdict}`. `ready` is `true` only when a trusted strict `VERIFIED-CLEAN` verdict exists, its `reviewed_commit` equals `sha` exactly, the reviewer's identity differs from every implementer identity recorded for the ticket (with no implementer identity recorded, the answer is not ready), and no open finding is harmful. A finding tagged `harm: none` is harmless; an untagged finding of medium severity or higher counts as harmful. Pure read: a person still does the merge. CLI: `sfs loop ready`. See [Worker Review Loop](/review-loop/#8-merge).
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | yes | Ticket ID |
+| `sha` | string | yes | Head commit id (full 40- or 64-character lowercase hex) |
+| `git_remote` | string | no | Project selector (see above) |
 
 ### Work Queues
 
@@ -713,6 +723,8 @@ Report the result of the directive returned by `run_work_queue_step`. This is th
 
 In `review_until_clean` mode the reviewer passes its verdict as `verdict_content`, and the server writes the trusted verdict comment itself. The first line must be a verdict header such as `Claude R2 review on <ticket_id>: VERIFIED-CLEAN`, with any reviewer name; a header that can't be parsed is refused with `422 verdict_header_unparseable` before anything is written (v0.27.0).
 
+The reviewer can also pass `reviewed_commit`, the full commit id (40 or 64 lowercase hex characters) of the head it read, which is stored with the verdict so `check_merge_readiness` can require the clean verdict to be on the current head (v0.29.1). In `implement_until_done` mode the implementer reporting `done` no longer finishes an item on its own: the item finishes only once a trusted strict `VERIFIED-CLEAN` verdict comes from an identity other than the implementer's.
+
 ### AgentRun (Team+)
 
 Tracked execution records for persona runs, manual or in CI. These tools record that a run happened and evaluate a `fail_on` policy at completion; they never start the model themselves. See [CI Integration](/integrations/ci-integration).
@@ -730,12 +742,19 @@ Create a run for a persona. Pass `start_now=true` to create and start it in one 
 | `trigger_ref` | string | no | Commit, PR or other reference |
 | `ci_provider` / `ci_run_url` | string | no | CI provenance |
 | `fail_on` | string | no | `none`, `low`, `medium`, `high` or `critical` |
+| `model` | string | no | Model the run reports it ran |
+| `provider` | string | no | Provider of the reported model |
+| `role` | string | no | `implementer`, `ui-implementer`, `reviewer`, `design-reviewer`, `security-reviewer` or `release` |
+| `branch` | string | no | Working-tree branch for the run |
+| `base_sha` | string | no | Base commit SHA (7–64 hex chars) |
+| `parent_run_id` | string | no | Parent run (same project) |
+| `continues_run_id` | string | no | Run this continues (same project) |
 | `start_now` | boolean | no | Start the run immediately (default `false`) |
 | `git_remote` | string | no | Project selector (see above) |
 
 #### `complete_agent_run`
 
-Record the result of a queued or running run. The server evaluates `fail_on` and stores `policy_result` and `exit_code`.
+Record the result of a queued or running run. The server evaluates `fail_on` and stores `policy_result` and `exit_code`. Usage fields are additive — if you reported usage while the run was in flight, the values here are added on top rather than overwriting them.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -745,6 +764,29 @@ Record the result of a queued or running run. The server evaluates `fail_on` and
 | `findings` | array | no | Structured findings (objects) |
 | `result_summary` | string | no | Short summary |
 | `session_id` | string | no | Session that did the work |
+| `input_tokens` / `output_tokens` | integer | no | Token usage (≥0, additive) |
+| `cache_read_tokens` / `cache_write_tokens` | integer | no | Cache token usage (≥0, additive) |
+| `cost_usd` | number | no | Cost in USD (≥0, additive) |
+| `cost_basis` | string | no | `reported`, `estimated`, `plan` or `unknown` |
+| `head_sha` | string | no | Head commit SHA (7–64 hex chars) |
+| `exit_reason` | string | no | `finished`, `out_of_turns` or `crashed` |
+| `occurred_at` | string | no | When the run finished (ISO-8601) |
+
+`cost_basis` says where a cost came from: `reported` (the tool or provider reported it), `estimated` (your own estimate), `plan` (covered by a subscription, no per-token cost) or `unknown`. A run that reports tokens without a cost counts as `unknown`. Spend rollups add dollars only for `reported` and `estimated` runs.
+
+Each finding may carry review-loop keys, validated when present: `round` (integer ≥ 1), `severity` (`none`, `low`, `medium`, `high` or `critical`), `class` (a lowercase slug naming the kind of mistake, or `new`), `harm` (`data-exposed`, `money-spent`, `wrong-actor`, `crash`, `other` or `none`), `stage` (`design` or `code`), `status` (`open`, `fixed`, `accepted` or `ticketed`) and `fixed_in_sha` (7–64 hex characters). Findings without these keys are stored as before.
+
+#### `report_agent_run_usage`
+
+Add token/cost usage to a queued or running run. Usage is additive while the run is active — long runs and continuations report more than once. After the run reaches a terminal state the totals are fixed and further reports are rejected with a conflict.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `run_id` | string | yes | Run ID |
+| `input_tokens` / `output_tokens` | integer | no | Token usage (≥0, additive) |
+| `cache_read_tokens` / `cache_write_tokens` | integer | no | Cache token usage (≥0, additive) |
+| `cost_usd` | number | no | Cost in USD (≥0, additive) |
+| `git_remote` | string | no | Project selector (see above) |
 
 #### `replay_agent_run`
 
@@ -821,6 +863,18 @@ Grouped counts by `feedback_type` × `verdict` × `label` — pure SQL aggregati
 |-----------|------|----------|-------------|
 | `persona` | string | no | Only records whose run/ticket belongs to this persona |
 | `since` | string | no | Only records after this ISO timestamp |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `get_spend_summary`
+
+Summarize agent-run spend for the current project (grouped by `persona`, `model`, `ticket`, `role`, or `day` over a `from`/`to` window that defaults to the last 30 days) or for a single ticket (totals plus per-persona and per-model plus the review-round count). Token totals are always returned; dollar amounts are only returned when the caller has admin standing on the project (org owner/admin, or the owner of a personal project) and never for service keys. Runs with `cost_basis` `plan` or `unknown` count tokens but no dollars.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | no | Summarize a single ticket instead of the project |
+| `group_by` | string | no | `persona`, `model`, `ticket`, `role`, or `day` (project mode only) |
+| `from` | string | no | Start of the window (ISO datetime) |
+| `to` | string | no | End of the window (ISO datetime) |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 
 ### Skills Marketplace

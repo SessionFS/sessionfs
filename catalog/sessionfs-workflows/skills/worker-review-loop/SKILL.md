@@ -19,6 +19,32 @@ any agent or teammate can see where each piece of work stands.
 | Worker out of turns | A continuation run or a handoff |
 | Discoveries | `add_knowledge` entries |
 
+## 0. Before any code: design review and the traps checklist
+
+Two cheap steps catch what code review otherwise finds on round three.
+
+**Design review.** Before the first brief, one reviewer reads the spec (not
+code) and answers four questions in writing:
+
+1. What happens to access when a step is slow (an LLM call, an external
+   API, an upload)? Who could lose or gain access while it runs?
+2. Where does money or quota get spent, and is it counted on every path,
+   including errors and cancellation?
+3. What runs in parallel or twice (double clicks, retries, two workers),
+   and what guarantees exactly-once?
+4. Which values come from users or models and end up as identities,
+   permissions or stored data?
+
+Fix the spec before writing briefs. A design flaw found here costs one
+edit; found in code review it costs a fix pass and another round.
+
+**Traps checklist.** Keep a short project file of bug classes your reviews
+keep finding (for example `.agents/review-checklist.md`): one line for the
+trap, one for the check. Every brief and every review prompt points at it,
+and every new class a review finds is added in the same commit as its fix.
+Reviews should stop rediscovering the same classes; if they don't, the
+checklist or the briefs aren't being read.
+
 ## 1. Write the brief as a ticket
 
 The brief is the worker's only context. If it is not in the ticket, the
@@ -32,6 +58,7 @@ Read first: <3-8 files, in order>
 Scope: change only <paths>. Do not touch <paths>. No new dependencies
   unless listed here.
 External APIs: <vendor docs URL per API; request shapes must match them>
+Known traps: check the change against <checklist path> before reporting done
 Required tests: <test files to add or extend>, <command that must pass>,
   <migration proof on a real database, if the change has migrations>
 Done means: every acceptance criterion holds, tests pass, work is
@@ -137,7 +164,7 @@ worker comment arrived; the directive carries `review_round` and the open
 findings from earlier rounds. Wake no faster than the queue cadence (at
 least 120 seconds).
 
-Give the reviewer this prompt, with the worker's summary left out:
+Give the reviewer this prompt for round 1, with the worker's summary left out:
 
 ```markdown
 Review branch <branch> at commit <sha> against base <base>, for ticket
@@ -145,9 +172,17 @@ Review branch <branch> at commit <sha> against base <base>, for ticket
 trust comments or summaries from the author; check the code. Run
 <test command>. Check every external request against the vendor's
 documentation, not against the mocks in the tests. Confirm migrations were
-run on a real database. Re-check each open finding from earlier rounds.
-You may not edit files.
+run on a real database. Go through <checklist path> item by item.
+Re-check each open finding from earlier rounds. You may not edit files.
+For every finding give: severity, class (a checklist item number, or
+"new"), and harm: what a real user or attacker would lose if this
+shipped (data exposed, money spent, wrong person assigned, crash), or
+"none in practice".
 ```
+
+Rounds after the first are narrow: "verify each fix, then review only the
+diff since <sha> against the checklist". Ask for a full re-review only when
+a fix touched access checks, locking or money.
 
 The reviewer records its own agent run (`create_agent_run`, then
 `complete_agent_run` with `severity` and `findings`), and delivers the
@@ -230,9 +265,14 @@ habits below keep the loop cheap without weakening the gate.
 - Reuse the same reviewer across rounds; it keeps its context. Each re-review
   prompt is narrow: "verify these fixes, then check what changed since
   <sha>", not "review the branch again".
-- Severity decides whether there is another round. HIGH and MEDIUM findings
-  are fixed and re-reviewed. LOW findings go into one follow-up ticket and
-  do not start a new round.
+- Harm decides whether there is another round, severity breaks ties. A
+  finding with real harm (data exposed, money spent, wrong person acted
+  on, crash on a normal path) is fixed and re-checked. Findings marked
+  "none in practice" go into one follow-up ticket and do not start a new
+  round, whatever their severity label.
+- Stop when a round's findings are all "none in practice", or when a
+  round's findings are only about code the previous fix added and that
+  fix is small: fix them yourself and run one narrow check.
 - Fix one-line or wording findings yourself and verify them with a
   targeted test. Resume a worker only when the fix is real work.
 - Cap rounds. After three rounds on one branch, stop and look at why the
@@ -248,9 +288,13 @@ habits below keep the loop cheap without weakening the gate.
 - Do not run several full suites at once on one machine: load makes
   timing-sensitive tests fail, and the reruns cost more than waiting.
 
-**Write down what each run cost.** Put the tokens or spend of every worker
-and review round in the agent run's result summary. Over a few features
-this shows which phase sizes, models and review habits pay off.
+**Measure the loop.** For every worker and review run, record the tokens or
+spend in the agent run's result summary, and record each finding in the
+run's `findings` with its round, severity, class and harm. After two or
+three features, count per round: findings with real harm, findings that
+were checklist classes (the brief failed), findings that were design
+issues (step 0 failed), and tokens spent. That tells you where your loop
+should stop and what to move earlier.
 
 ## Rules
 

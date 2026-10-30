@@ -86,6 +86,7 @@ from sessionfs.cli.cmd_catalog import catalog_app
 from sessionfs.cli.cmd_policy import policy_app
 from sessionfs.cli.cmd_resident import resident_app
 from sessionfs.cli.cmd_helper import helper_app
+from sessionfs.cli.cmd_loop import loop_app
 from sessionfs.cli.cmd_keys import (
     auth_keys_app,
     service_keys_app,
@@ -130,6 +131,9 @@ app.add_typer(resident_app, name="resident")
 
 # Register the session helper (Enterprise, BYOK)
 app.add_typer(helper_app, name="helper")
+
+# Register the review-loop watch + merge-readiness commands (Review Loop B2)
+app.add_typer(loop_app, name="loop")
 
 # Register top-level commands (wrapped with handle_errors for resilient error reporting)
 from sessionfs.cli.common import handle_errors

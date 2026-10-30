@@ -42,6 +42,7 @@ from sessionfs.active_ticket import (
     read_bundle,
     write_bundle,
 )
+from sessionfs.project_root import resolve_project_root
 from sessionfs.cli.cmd_rules import (
     _api_request,
     _get_api_config,
@@ -418,6 +419,10 @@ def start_ticket(
         raise typer.Exit(1)
 
     ticket = body.get("ticket", {})
+    # G1 — store the normalized git remote so the daemon can verify the
+    # bundle belongs to this workspace before tagging captured sessions.
+    remote = _get_git_remote()
+    normalized_remote = _normalize_remote(remote) if remote else None
     bundle_ok = write_bundle(
         ticket_id=ticket_id,
         # GH #70 — canonical persona name from the server when available.
@@ -429,6 +434,8 @@ def start_ticket(
             if isinstance(body.get("retrieval_audit_id"), str)
             else None
         ),
+        git_remote=normalized_remote,
+        workspace=resolve_project_root(),
     )
     if bundle_ok:
         console.print(
@@ -502,7 +509,9 @@ def complete_ticket(
         err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
 
-    cleared = clear_bundle_if_owned(ticket_id=ticket_id, project_id=project_id)
+    cleared = clear_bundle_if_owned(
+        ticket_id=ticket_id, project_id=project_id, workspace=resolve_project_root()
+    )
     if cleared:
         console.print(f"[green]Completed {ticket_id}.[/green] Active bundle cleared.")
     else:

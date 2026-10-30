@@ -264,6 +264,31 @@ Findings: none.
     assert all(f.closed_round == 3 for f in r2_findings)
 
 
+def test_out_of_order_rounds_resolve_by_chronology_not_round_number():
+    """A trusted R9 VERIFIED-CLEAN posted BEFORE a later R2 CHANGES_REQUESTED
+    with a HIGH finding must NOT read as clean. Round numbers are labels; the
+    latest verdict and finding closure come from (created_at, comment id)
+    order, never from the round number."""
+    t0 = datetime(2026, 5, 1, tzinfo=timezone.utc)
+    r9 = "Codex R9 review on tk_x: VERIFIED-CLEAN\n\nFindings: none.\n"
+    r2 = (
+        "Codex R2 review on tk_x: CHANGES REQUESTED\n\n"
+        "Findings:\n\n • HIGH — residual crash risk in src/foo.py:10\n"
+    )
+    state = compute_review_state([
+        _comment("c_r9", "codex-reviewer", r9, t0),
+        _comment("c_r2", "codex-reviewer", r2, t0 + timedelta(hours=1)),
+    ])
+    assert state is not None
+    assert state.last_verdict == VERDICT_CHANGES
+    assert state.last_raw_verdict == "CHANGES REQUESTED"
+    assert state.last_verdict_is_strict_verified_clean is False
+    assert len(state.open_findings) == 1
+    assert state.open_findings[0].round == 2
+    assert state.open_findings[0].severity == "HIGH"
+    assert len(state.closed_findings) == 0
+
+
 def test_unresolved_findings_stay_open_when_no_subsequent_clean():
     """R1 CHANGES_REQUESTED with findings, R2 also CHANGES_REQUESTED
     (more findings), no R3 yet. ALL findings stay open."""

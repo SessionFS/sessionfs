@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.1] - 2026-10-30
+
+**What agent work costs, and whether it is safe to merge.** Server migrations 106–109.
+
+### Added
+- **Agent run usage and cost.** A run records its model, provider and role, input/output/cache tokens, its cost and where that cost came from (`reported`, `estimated`, `plan` or `unknown`), the head commit and how it exited. Long runs report usage as they go and the totals add up; once complete they are fixed. `sfs agent run --model --provider --role`, `sfs agent usage`, `sfs agent complete --input-tokens --output-tokens --cost-usd --cost-basis`; MCP `report_agent_run_usage`; `POST /api/v1/projects/{id}/agent-runs/{run_id}/usage`.
+- **Spend rollups** per ticket, or per project by persona, model, ticket, role or day (`sfs agent spend`, MCP `get_spend_summary`, `GET /api/v1/projects/{id}/spend`). Everyone with read access sees tokens; only org owners and admins (or a personal project's owner) see dollars, and dollar fields are left out of responses for everyone else.
+- **Merge readiness** (`sfs loop ready <ticket> --sha <head>`, MCP `check_merge_readiness`): ready only when a trusted strict VERIFIED-CLEAN verdict is bound to exactly that commit, the reviewer is a different identity from every implementer (a service key counts as the person who minted it), and no open finding is harmful. A person still does the merge.
+- **Verdicts bound to the reviewed commit** (`reviewed_commit`, a full 40- or 64-character id).
+- **Structured findings** on agent runs: `round`, `severity`, `class`, `harm` and `stage`, validated when present.
+- **Service keys read project context and wiki pages** with `knowledge:read`, and write wiki pages with `knowledge:write`, within the key's project allowlist; the key is recorded as the actor.
+- **One active ticket per worker**: set `SFS_AGENT_RUN_ID` per worker; the per-worktree copy lives under `~/.sessionfs/workspaces/`, never inside the repository.
+- Three MCP tools (109 in total).
+
+### Changed
+- The latest review verdict is the most recently posted one, not the highest round number.
+- In an `implement_until_done` work queue an item finishes only on a trusted strict VERIFIED-CLEAN verdict from a different identity; the implementer's own settle no longer finishes it, and a later settle never replaces the recorded implementer.
+- Service keys asking for a project outside their org or allowlist on project, context and wiki reads get the same 404 as an unknown project.
+
 ## [0.29.0] - 2026-10-29
 
 **Meetings: store transcripts, pull out action items and decisions, and turn them into tickets. The session helper knows who is asking.** Server migrations 104 and 105.

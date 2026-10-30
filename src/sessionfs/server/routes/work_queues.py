@@ -315,6 +315,11 @@ class WorkQueueStepCompleteRequest(BaseModel):
     # closure from verdict_content regardless.
     verdict_content: str | None = Field(None, max_length=20000)
     verdict: str | None = Field(None, max_length=50)
+    # Review Loop B2 — the exact head commit (full 40- or 64-char lowercase
+    # hex) the reviewer reviewed, bound to the verdict so merge readiness can
+    # demand the verdict be on the current head. Only meaningful with
+    # verdict_content.
+    reviewed_commit: str | None = Field(None, max_length=64)
 
 
 class WorkQueueItemSummary(BaseModel):
@@ -920,6 +925,7 @@ async def complete_work_queue_step(
             # AUTHENTICATED actor (AuthContext + the project's org), NEVER from
             # the body, so verdict_trusted can never be spoofed.
             verdict_content=body.verdict_content,
+            reviewed_commit=body.reviewed_commit,
             actor_user_id=auth.user.id,
             actor_org_id=project.org_id,
             actor_service_key_id=auth.service_key_id,

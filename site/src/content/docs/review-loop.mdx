@@ -58,7 +58,7 @@ sfs persona create implementer --role "Implements ticket briefs" \
 RUN_ID=$(sfs agent run implementer --ticket <ticket_id> --output-id)
 ```
 
-The worker calls `start_ticket` first, which loads the ticket, the persona and related knowledge, and records what it learns with `add_knowledge` as it goes. Keep the full output in a log file. A fast, inexpensive model often works well as a worker when a stronger model reviews, but that split is optional.
+The worker calls `start_ticket` first, which loads the ticket, the persona and related knowledge, and records what it learns with `add_knowledge` as it goes. When several workers run at once in different worktrees, give each its own run id in `SFS_AGENT_RUN_ID`: each worker then keeps its own active ticket, a copy for the worktree is kept under `~/.sessionfs/workspaces/` (never inside the repository), and captured sessions are tagged with a ticket only when the ticket's repository matches the session's. Keep the full output in a log file. A fast, inexpensive model often works well as a worker when a stronger model reviews, but that split is optional.
 
 ## 4. Detect how the worker exited
 
@@ -84,7 +84,8 @@ Give the reviewer an identity nothing else uses, usually an org [service key](/i
 sfs admin service-keys create --org <org_id> --name reviewer \
   --scope tickets:read --scope tickets:write \
   --scope work_queues:read --scope work_queues:write \
-  --scope agent_runs:write --project <project_id> --output-key
+  --scope agent_runs:write --scope knowledge:read \
+  --project <project_id> --output-key
 
 sfs persona create reviewer --role "Reviews branches read-only" \
   --content "Review the code, not the worker's report. Post one verdict per round."
@@ -106,6 +107,8 @@ Then create a work queue with the `create_work_queue` MCP tool:
 
 Run the reviewer under that key only, for example as its own auth profile (`sfs auth login --profile reviewer --key <key>`, then `SESSIONFS_PROFILE=reviewer` in the reviewer's shell), never under a worker's identity.
 
+`knowledge:read` lets the reviewer read the project context and wiki pages (v0.29.1) in addition to the ticket and queue — useful when the brief points at a spec page or a compiled context section to judge against. Keep it read-only: this key has no `knowledge:write`, so the reviewer cannot alter the knowledge base or wiki it is judging.
+
 `assigned_persona` must match the persona the reviewer is registered for. The server counts a verdict only when the caller's identity is registered for exactly that persona, and it ignores any persona name a client sends.
 
 ## 6. Independent, read-only review
@@ -125,7 +128,9 @@ Findings:
 
 `<Reviewer>` must start with a letter and contain only letters, digits, `.`, `_` or `-` (at most 32 characters). A `verdict_content` whose header does not parse is rejected with `verdict_header_unparseable` before anything is written.
 
-The reviewer also records its own agent run, with the severity and findings, so the review shows up next to the worker runs.
+The reviewer may also pass `reviewed_commit` — the full commit id (40 or 64 lowercase hex characters) of the head commit it actually read — so the verdict is bound to the code it reviewed. A merge gate later requires the clean verdict to be bound to the current head, so a verdict on a SHA that has since moved no longer marks the branch ready.
+
+The reviewer also records its own agent run, with the severity and findings, so the review shows up next to the worker runs. Findings on a run can carry `round`, `severity`, `class`, `harm` and `stage` keys (see [`complete_agent_run`](/mcp/#complete_agent_run)), so mistakes can later be counted by kind and by whether they were caught in design or in code.
 
 ## 7. Fix pass and re-review
 
@@ -136,7 +141,20 @@ The reviewer also records its own agent run, with the severity and findings, so 
 
 ## 8. Merge
 
-Merge when `get_ticket_review_state` shows `last_verdict_is_strict_verified_clean: true` and no open findings (`sfs ticket review-state` prints this as `Strict VERIFIED-CLEAN: yes`). Run the full test suite on the merged result, then resolve the ticket (`resolve_ticket` or `sfs ticket resolve`) and remove the worktree. The work queue never changes a ticket's status on its own.
+Merge when the ticket is ready at the head commit you are about to merge. `check_merge_readiness` (or `sfs loop ready <ticket_id> --sha <head>`) returns `ready: true` only when all of these hold:
+
+- a trusted strict `VERIFIED-CLEAN` verdict exists;
+- its `reviewed_commit` equals the requested head exactly (a prefix match is not accepted);
+- the reviewer's identity differs from every implementer identity recorded for the ticket, so no one grades their own work;
+- no open finding is harmful.
+
+A finding's harm is read from a `harm: <tag>` marker in its line (`data-exposed`, `money-spent`, `wrong-actor`, `crash`, `other` or `none`). `harm: none` marks a finding as checked and harmless; an untagged finding of medium severity or higher counts as harmful. If no implementer identity was recorded for the ticket, the answer is not ready.
+
+`get_ticket_review_state` still shows the raw state (`sfs ticket review-state` prints `Strict VERIFIED-CLEAN: yes`), but readiness is the merge gate: it also enforces the commit binding and the reviewer-identity check that review state alone does not. Run the full test suite on the merged result, then resolve the ticket (`resolve_ticket` or `sfs ticket resolve`) and remove the worktree. The work queue never changes a ticket's status on its own.
+
+## Track spend
+
+Each run can record its model, role and token usage: pass `--model`, `--provider` and `--role` to `sfs agent run`, report usage while it runs with `sfs agent usage` (MCP: `report_agent_run_usage`), and send the final figures with `sfs agent complete --input-tokens --output-tokens --cost-usd --cost-basis`. `sfs agent spend --ticket <ticket_id>` (MCP: `get_spend_summary`) then shows what a ticket cost across workers, reviewers and review rounds. Token totals are visible to everyone who can read the project; dollar amounts only to org owners and admins, or the owner of a personal project.
 
 ## Lessons
 

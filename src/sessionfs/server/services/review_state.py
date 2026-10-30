@@ -84,6 +84,15 @@ _FINDINGS_END_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Harm tag embedded in a finding's text: "harm: crash", "harm: data-exposed".
+# Review Loop B2 — a finding's harm decides whether an open finding blocks
+# merge readiness. `none` means "checked, harmless"; every other value is
+# harmful. Accepted tokens match agent_runs.findings' validated `harm` key.
+_HARM_RE = re.compile(
+    r"\bharm\s*:\s*(data[-_]exposed|money[-_]spent|wrong[-_]actor|crash|other|none)\b",
+    re.IGNORECASE,
+)
+
 
 VERDICT_CLEAN = "VERIFIED-CLEAN"
 VERDICT_CHANGES = "CHANGES_REQUESTED"
@@ -99,6 +108,11 @@ class ReviewFinding:
     raised_at: datetime  # timestamp of the raising comment
     raised_comment_id: str
     closed_round: Optional[int] = None  # round that cleared it (None = open)
+    # Review Loop B2 — harm tag parsed from the finding text
+    # (data-exposed|money-spent|wrong-actor|crash|other|none). None when the
+    # reviewer did not tag a harm; merge readiness treats an untagged finding
+    # of MEDIUM or higher as harmful (fail closed).
+    harm: Optional[str] = None
 
     @property
     def status(self) -> str:
@@ -113,6 +127,7 @@ class ReviewFinding:
             "raised_comment_id": self.raised_comment_id,
             "status": self.status,
             "closed_round": self.closed_round,
+            "harm": self.harm,
         }
 
 
@@ -140,7 +155,7 @@ class ReviewRound:
         return False here. The work-queue stop oracle uses this; the
         human-facing renderer uses `verdict`.
         """
-        return _is_strict_verified_clean(self.raw_verdict)
+        return is_strict_verified_clean(self.raw_verdict)
 
     def to_dict(self) -> dict:
         return {
@@ -227,7 +242,7 @@ def verdict_from_header(content: str) -> Optional[str]:
     return _normalize_verdict(match.group("verdict"))
 
 
-def _is_strict_verified_clean(raw: str) -> bool:
+def is_strict_verified_clean(raw: str) -> bool:
     """True ONLY for the literal canonical `VERIFIED-CLEAN` phrase.
 
     WQ-P4 / design §5.0 (Sentinel #5): an UNATTENDED auto-stop demands the
@@ -236,9 +251,29 @@ def _is_strict_verified_clean(raw: str) -> bool:
     but are NOT sufficient to end a loop without a human in the seat. This
     accepts only `VERIFIED-CLEAN` / `VERIFIED_CLEAN` (case-insensitive,
     hyphen-or-underscore) — nothing else.
+
+    Public seam for Review Loop B2 merge-readiness (and the work-queue
+    oracle); `ReviewRound.is_strict_verified_clean` delegates here.
     """
+    return _is_strict_verified_clean(raw)
+
+
+def _is_strict_verified_clean(raw: str) -> bool:
+    """True ONLY for the literal canonical `VERIFIED-CLEAN` phrase."""
     cleaned = re.sub(r"[\s_-]+", "_", raw.strip().upper())
     return cleaned == "VERIFIED_CLEAN"
+
+
+def _parse_harm(text: str) -> Optional[str]:
+    """Extract a normalized harm tag from a finding bullet's text, else None.
+
+    Review Loop B2. Normalizes `data_exposed`/`data-exposed` etc. to the
+    canonical hyphen form; returns None when the reviewer wrote no harm tag.
+    """
+    m = _HARM_RE.search(text or "")
+    if not m:
+        return None
+    return m.group(1).lower().replace("_", "-")
 
 
 def _parse_codex_comment(
@@ -281,6 +316,7 @@ def _parse_codex_comment(
                 round=round_num,
                 raised_at=created_at,
                 raised_comment_id=comment_id,
+                harm=_parse_harm(text),
             )
         )
 
@@ -376,14 +412,22 @@ def compute_review_state(
         return None
 
     # Closure rule: every finding raised in round N is closed if ANY
-    # later round's verdict is VERIFIED-CLEAN. Annotate findings with
-    # the closing round so renderers can show "closed in R{N}".
-    rounds_sorted = sorted(rounds, key=lambda r: r.round)
+    # LATER round's verdict is VERIFIED-CLEAN. "Later" means later in
+    # (created_at, comment id) order — round numbers are labels only, and a
+    # reviewer can post out-of-order (R9 clean, then R2 changes). Annotate
+    # findings with the closing round so renderers can show "closed in R{N}".
+    rounds_sorted = sorted(rounds, key=lambda r: (r.timestamp, r.comment_id))
     clean_rounds = [r for r in rounds_sorted if r.verdict == VERDICT_CLEAN]
     annotated: list[ReviewFinding] = []
     for f in all_findings:
+        raised_key = (f.raised_at, f.raised_comment_id)
         closing = next(
-            (r.round for r in clean_rounds if r.round > f.round), None
+            (
+                r.round
+                for r in clean_rounds
+                if (r.timestamp, r.comment_id) > raised_key
+            ),
+            None,
         )
         if closing is not None:
             annotated.append(
@@ -394,6 +438,7 @@ def compute_review_state(
                     raised_at=f.raised_at,
                     raised_comment_id=f.raised_comment_id,
                     closed_round=closing,
+                    harm=f.harm,
                 )
             )
         else:
@@ -407,7 +452,8 @@ def compute_review_state(
         for sev in ("CRITICAL", "HIGH", "MEDIUM", "LOW")
     }
 
-    # Last verdict is the verdict of the latest (highest-round) Codex comment.
+    # Last verdict is the verdict of the chronologically latest Codex round
+    # (by created_at, comment id) — not the highest round number.
     last_round = rounds_sorted[-1]
     last_verdict = last_round.verdict
 

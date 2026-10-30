@@ -5,6 +5,7 @@ v0.10.2 — AgentRun layer for ephemeral agent execution tracking.
 Commands:
 - sfs agent run <persona>      — create + start a run, print compiled context
 - sfs agent complete <run_id>  — record result and exit per fail_on policy
+- sfs agent usage <run_id>     — add token/cost usage to a run in flight
 - sfs agent status <run_id>    — print run detail (text / json / markdown)
 - sfs agent list               — list recent runs with filters
 
@@ -108,6 +109,14 @@ def run_agent(
         help="Severity threshold (low/medium/high/critical) — exit non-zero "
              "at `complete` time when met.",
     ),
+    model: str | None = typer.Option(None, "--model", help="Model this run reports it ran"),
+    provider: str | None = typer.Option(None, "--provider", help="Provider of the reported model"),
+    role: str | None = typer.Option(
+        None, "--role",
+        help="implementer / ui-implementer / reviewer / design-reviewer / "
+             "security-reviewer / release",
+    ),
+    branch: str | None = typer.Option(None, "--branch", help="Working-tree branch for the run"),
     prompt: str | None = typer.Option(
         None, "--prompt",
         help="Edited prompt for the run (GitHub #95).",
@@ -160,6 +169,8 @@ def run_agent(
                 ("--context-ref", context_ref),
                 ("--tool", tool != "generic"),
                 ("--trigger-source", trigger_source != "manual"),
+                ("--model", model), ("--provider", provider),
+                ("--role", role), ("--branch", branch),
             ) if given
         ]
         if create_only:
@@ -184,7 +195,8 @@ def run_agent(
         }
         for k, v in (("ticket_id", ticket), ("trigger_ref", trigger_ref),
                      ("ci_provider", ci_provider), ("ci_run_url", ci_run_url),
-                     ("fail_on", fail_on)):
+                     ("fail_on", fail_on), ("model", model),
+                     ("provider", provider), ("role", role), ("branch", branch)):
             if v:
                 body[k] = v
         if prompt:
@@ -276,6 +288,20 @@ def complete_agent(
         help="passed / failed / errored. Policy may flip passed→failed.",
     ),
     session_id: str | None = typer.Option(None, "--session-id"),
+    input_tokens: int | None = typer.Option(None, "--input-tokens"),
+    output_tokens: int | None = typer.Option(None, "--output-tokens"),
+    cache_read_tokens: int | None = typer.Option(None, "--cache-read-tokens"),
+    cache_write_tokens: int | None = typer.Option(None, "--cache-write-tokens"),
+    cost_usd: float | None = typer.Option(None, "--cost-usd"),
+    cost_basis: str | None = typer.Option(
+        None, "--cost-basis",
+        help="reported / estimated / plan / unknown",
+    ),
+    head_sha: str | None = typer.Option(None, "--head-sha"),
+    exit_reason: str | None = typer.Option(
+        None, "--exit-reason",
+        help="finished / out_of_turns / crashed",
+    ),
     enforce: bool = typer.Option(
         False, "--enforce",
         help="Exit with the stored exit_code (0 pass, 1 fail) for CI gating.",
@@ -315,6 +341,15 @@ def complete_agent(
     }
     if session_id:
         body["session_id"] = session_id
+    for k, v in (
+        ("input_tokens", input_tokens), ("output_tokens", output_tokens),
+        ("cache_read_tokens", cache_read_tokens),
+        ("cache_write_tokens", cache_write_tokens),
+        ("cost_usd", cost_usd), ("cost_basis", cost_basis),
+        ("head_sha", head_sha), ("exit_reason", exit_reason),
+    ):
+        if v is not None:
+            body[k] = v
 
     s, resp = _post(f"/api/v1/projects/{{p}}/agent-runs/{run_id}/complete", body)
     if s == 409:
@@ -337,6 +372,56 @@ def complete_agent(
             raise typer.Exit(resp["exit_code"])
         if resp.get("status") in {"failed", "errored"}:
             raise typer.Exit(1)
+
+
+@agent_app.command("usage")
+@handle_errors
+def usage_agent(
+    run_id: str = typer.Argument(...),
+    input_tokens: int | None = typer.Option(None, "--input-tokens"),
+    output_tokens: int | None = typer.Option(None, "--output-tokens"),
+    cache_read_tokens: int | None = typer.Option(None, "--cache-read-tokens"),
+    cache_write_tokens: int | None = typer.Option(None, "--cache-write-tokens"),
+    cost_usd: float | None = typer.Option(None, "--cost-usd"),
+) -> None:
+    """Add token/cost usage to a queued or running run (additive).
+
+    Usage can be reported incrementally while the run is still in flight;
+    once the run completes, its usage is fixed and further reports are
+    rejected with 409.
+    """
+    body: dict = {}
+    for k, v in (
+        ("input_tokens", input_tokens), ("output_tokens", output_tokens),
+        ("cache_read_tokens", cache_read_tokens),
+        ("cache_write_tokens", cache_write_tokens),
+        ("cost_usd", cost_usd),
+    ):
+        if v is not None:
+            body[k] = v
+    if not body:
+        err_console.print(
+            "[red]Pass at least one usage field "
+            "(--input-tokens / --output-tokens / --cache-read-tokens / "
+            "--cache-write-tokens / --cost-usd).[/red]"
+        )
+        raise typer.Exit(2)
+
+    s, resp = _post(f"/api/v1/projects/{{p}}/agent-runs/{run_id}/usage", body)
+    if s == 409:
+        err_console.print(
+            f"[red]Run {run_id} is complete — usage can't be changed.[/red]"
+        )
+        raise typer.Exit(1)
+    if s >= 400 or not isinstance(resp, dict):
+        err_console.print(f"[red]Usage report failed ({s}): {resp}[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"[green]Recorded usage for {run_id}.[/green] — "
+        f"tokens={resp.get('input_tokens') or 0}/{resp.get('output_tokens') or 0}"
+        + (f", cost={resp.get('cost_usd')}" if resp.get("cost_usd") is not None else "")
+    )
 
 
 @agent_app.command("status")
@@ -576,6 +661,123 @@ def _render_compare(resp: dict, stream) -> None:
             stream.print(
                 f"  - [{sev}] {title}" + (f"  ({loc})" if loc else "")
             )
+
+
+@agent_app.command("spend")
+@handle_errors
+def spend_agent(
+    ticket: str | None = typer.Option(None, "--ticket", help="Ticket id to summarize"),
+    project: bool = typer.Option(False, "--project", help="Summarize the current project"),
+    group_by: str | None = typer.Option(
+        None, "--group-by", help="persona / model / ticket / role / day",
+    ),
+    from_: str | None = typer.Option(
+        None, "--from", help="Start of the window (ISO datetime)",
+    ),
+    to_: str | None = typer.Option(
+        None, "--to", help="End of the window (ISO datetime)",
+    ),
+    format_: str = typer.Option("text", "--format", help="text / json"),
+) -> None:
+    """Summarize agent-run spend for a ticket or the current project.
+
+    Dollar amounts only appear when the caller has admin standing on the
+    project (org owners/admins or the owner of a personal project);
+    token totals are always shown.
+    """
+    if ticket and project:
+        err_console.print("[red]Pass --ticket or --project, not both.[/red]")
+        raise typer.Exit(2)
+
+    api_url, api_key, project_id = _resolve_project()
+    if ticket:
+        path = f"/api/v1/projects/{project_id}/tickets/{ticket}/spend"
+        params: dict | None = None
+    else:
+        path = f"/api/v1/projects/{project_id}/spend"
+        params = {}
+        if group_by:
+            params["group_by"] = group_by
+        if from_:
+            params["from"] = from_
+        if to_:
+            params["to"] = to_
+
+    s, resp = asyncio.run(
+        _api_request("GET", path, api_url, api_key, params=params)
+    )[:2]
+    if s == 404:
+        err_console.print(
+            f"[red]{'Ticket' if ticket else 'Project'} not found.[/red]"
+        )
+        raise typer.Exit(1)
+    if s >= 400 or not isinstance(resp, dict):
+        err_console.print(f"[red]API error ({s}): {resp}[/red]")
+        raise typer.Exit(1)
+
+    if format_ == "json":
+        sys.stdout.write(_json.dumps(resp, indent=2, default=str) + "\n")
+        return
+    _render_spend(resp, console)
+
+
+def _render_spend(resp: dict, stream) -> None:
+    totals = resp.get("totals", {})
+    stream.print(
+        f"[bold]{resp.get('ticket_id') or resp.get('project_id')}[/bold] — "
+        f"{totals.get('runs', 0)} runs, "
+        f"{totals.get('input_tokens', 0)} in / "
+        f"{totals.get('output_tokens', 0)} out tokens"
+        + (f", ${totals['cost_usd']:.2f}" if "cost_usd" in totals else "")
+    )
+
+    if "review_rounds" in resp:
+        stream.print(f"Review rounds: {resp['review_rounds']}")
+
+    for label, key in (("Per persona", "per_persona"), ("Per model", "per_model")):
+        groups = resp.get(key)
+        if not groups:
+            continue
+        table = Table()
+        table.add_column(label, style="cyan")
+        table.add_column("Runs", justify="right")
+        table.add_column("In", justify="right")
+        table.add_column("Out", justify="right")
+        if any("cost_usd" in g for g in groups):
+            table.add_column("Cost", justify="right")
+        for g in groups:
+            row = [
+                str(g.get("key") or "-"),
+                str(g.get("runs", 0)),
+                str(g.get("input_tokens", 0)),
+                str(g.get("output_tokens", 0)),
+            ]
+            if "cost_usd" in g:
+                row.append(f"${g['cost_usd']:.2f}")
+            table.add_row(*row)
+        stream.print(table)
+
+    groups = resp.get("groups")
+    if groups:
+        stream.print(f"[bold]By {resp.get('group_by') or 'group'}[/bold]")
+        table = Table()
+        table.add_column("Key", style="cyan")
+        table.add_column("Runs", justify="right")
+        table.add_column("In", justify="right")
+        table.add_column("Out", justify="right")
+        if any("cost_usd" in g for g in groups):
+            table.add_column("Cost", justify="right")
+        for g in groups:
+            row = [
+                str(g.get("key") or "-"),
+                str(g.get("runs", 0)),
+                str(g.get("input_tokens", 0)),
+                str(g.get("output_tokens", 0)),
+            ]
+            if "cost_usd" in g:
+                row.append(f"${g['cost_usd']:.2f}")
+            table.add_row(*row)
+        stream.print(table)
 
 
 # ── `sfs agent feedback …` — structured feedback/outcome records ──

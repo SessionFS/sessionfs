@@ -636,6 +636,8 @@ async def assert_service_key_can_access_project(
     db: AsyncSession,
     ctx: AuthContext,
     project: Project,
+    *,
+    opaque_404_detail: str | None = None,
 ) -> None:
     """Cross-org enforcement for service-key requests (Codex R1 MEDIUM 1).
 
@@ -646,40 +648,45 @@ async def assert_service_key_can_access_project(
 
     User keys are unaffected (no org boundary on user keys — they keep
     legacy any-project-they-can-see semantics).
+
+    ``opaque_404_detail``: when set, every deny raises 404 with this detail
+    instead of 403. Read routes use it so a cross-org or unallowlisted
+    project is indistinguishable from one that does not exist — no
+    ``cross_org_denied``/``project_not_in_allowlist`` code and no
+    ``project_org_id``/``allowed_project_ids`` leak. The detail is whatever
+    the route returns for an unknown project, so the deny is byte-identical
+    to a miss. Write routes omit it and keep the 403 oracle.
     """
     if ctx.key_kind != "service":
         return
+
+    def _deny(detail: dict) -> None:
+        if opaque_404_detail is not None:
+            raise HTTPException(status_code=404, detail=opaque_404_detail)
+        raise HTTPException(status_code=403, detail=detail)
+
     if ctx.org_id is None:
         # Schema-level: service keys are required to have org_id, but
         # be defensive if a malformed row sneaks through.
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "service_key_missing_org",
-                "message": "Service key lacks org_id binding",
-            },
-        )
+        _deny({
+            "error": "service_key_missing_org",
+            "message": "Service key lacks org_id binding",
+        })
     if project.org_id != ctx.org_id:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "cross_org_denied",
-                "key_org_id": ctx.org_id,
-                "project_org_id": project.org_id,
-                "message": "Service key cannot access projects outside its org",
-            },
-        )
+        _deny({
+            "error": "cross_org_denied",
+            "key_org_id": ctx.org_id,
+            "project_org_id": project.org_id,
+            "message": "Service key cannot access projects outside its org",
+        })
     # Optional per-key project allowlist within org.
     if ctx.project_ids is not None and project.id not in ctx.project_ids:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "project_not_in_allowlist",
-                "allowed_project_ids": ctx.project_ids,
-                "requested_project_id": project.id,
-                "message": "Service key project allowlist does not include this project",
-            },
-        )
+        _deny({
+            "error": "project_not_in_allowlist",
+            "allowed_project_ids": ctx.project_ids,
+            "requested_project_id": project.id,
+            "message": "Service key project allowlist does not include this project",
+        })
 
 
 async def require_admin(

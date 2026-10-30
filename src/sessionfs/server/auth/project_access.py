@@ -618,6 +618,32 @@ async def user_is_project_admin(
     return False
 
 
+async def user_can_view_spend_dollars(
+    db: AsyncSession, user_id: str, project: Project
+) -> bool:
+    """Return True if the user may see dollar figures on agent spend.
+
+    Review Loop R3 (agent-run spend): dollars are visible to org
+    owners/admins of the project's org, or to the owner of a personal
+    (org-less) project. Everyone else with read access sees token totals
+    only. Narrower than ``user_is_project_admin`` — the owner of an
+    org-scoped project does NOT see dollars unless they also hold an
+    org admin/owner role.
+    """
+    if project.org_id is None:
+        return project.owner_id == user_id
+    admin = (
+        await db.execute(
+            select(OrgMember.user_id).where(
+                OrgMember.org_id == project.org_id,
+                OrgMember.user_id == user_id,
+                OrgMember.role.in_(ADMIN_ROLES),
+            )
+        )
+    ).scalar_one_or_none()
+    return admin is not None
+
+
 async def list_accessible_projects(
     db: AsyncSession, user_id: str
 ) -> list[Project]:

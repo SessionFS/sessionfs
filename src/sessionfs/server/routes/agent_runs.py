@@ -36,16 +36,18 @@ are typically execution records tied to ticket work).
 from __future__ import annotations
 
 import json
+import math
 import re
 import shlex
 import uuid
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, field_validator
-from sqlalchemy import select, update
+from pydantic import BaseModel, PrivateAttr, field_validator, model_serializer
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import (
@@ -54,7 +56,17 @@ from sessionfs.server.auth.dependencies import (
     require_scope,
 )
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import AgentPersona, AgentRun, Project, Ticket, User
+from sessionfs.server.db.models import (
+    WorkQueue,
+    WorkQueueItem,
+    AgentPersona,
+    AgentRun,
+    OrgMember,
+    Project,
+    Ticket,
+    User,
+)
+from sessionfs.server.roles import has_minimum_role
 from sessionfs.server.services.personas import (
     resolve_persona,
     visible_persona_org_id,
@@ -109,6 +121,33 @@ _MAX_TICKET_ID_CHARS = 64
 _MAX_FINDINGS_PER_SIDE = 2_000
 _MAX_DIFF_ITEMS_PER_LIST = 500
 
+# Review Loop R3 track A — spend / role / loop-field vocabularies (mirror the
+# migration 106 CHECK constraints; server-side validation gives a 422 naming
+# the field before the DB CHECK would raise a bare IntegrityError).
+_VALID_COST_BASIS: tuple[str, ...] = ("reported", "estimated", "plan", "unknown")
+_VALID_ROLES: tuple[str, ...] = (
+    "implementer", "ui-implementer", "reviewer",
+    "design-reviewer", "security-reviewer", "release",
+)
+_VALID_EXIT_REASONS: tuple[str, ...] = ("finished", "out_of_turns", "crashed")
+_VALID_FINDING_STAGES: tuple[str, ...] = ("design", "code")
+_VALID_FINDING_HARMS: tuple[str, ...] = (
+    "data-exposed", "money-spent", "wrong-actor", "crash", "other", "none",
+)
+_VALID_FINDING_STATUSES: tuple[str, ...] = ("open", "fixed", "accepted", "ticketed")
+
+# Token counters are cumulative per run; cap each at 10**12 so a bad client
+# can't store an absurd BigInt. Cost is capped below 1,000,000 because
+# Numeric(12,6) holds at most 999,999.999999; the stored running total is
+# held to the same cap (``_usage_within_caps``).
+_MAX_TOKEN_COUNT = 10**12
+_MAX_COST_USD = 999_999
+
+# A finding class is a URL-safe slug ("new" reserved for an unclassified
+# finding); a git SHA is 7-64 lowercase hex (short SHAs accepted, full 40s fit).
+_FINDING_CLASS_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
+
 
 def _reject_unsafe_ci(value: str, field: str) -> str:
     if _UNSAFE_CI_MARKER in value:
@@ -119,7 +158,133 @@ def _reject_unsafe_ci(value: str, field: str) -> str:
     return value
 
 
+def _validate_finding(finding: dict[str, Any]) -> None:
+    """Validate the Review Loop R3 finding keys (spend design §4b).
+
+    Only the keys this track owns are validated; every other key the caller
+    sends is preserved verbatim (findings are stored as opaque JSON). A bad
+    value raises ``ValueError`` naming the offending key so the route turns
+    it into a 422 with a field name instead of a bare DB error.
+    """
+    round_ = finding.get("round")
+    if round_ is not None:
+        if isinstance(round_, bool) or not isinstance(round_, int):
+            raise ValueError("finding 'round' must be an integer")
+        if round_ < 1:
+            raise ValueError("finding 'round' must be >= 1")
+
+    stage = finding.get("stage")
+    if stage is not None and stage not in _VALID_FINDING_STAGES:
+        raise ValueError(
+            f"finding 'stage' must be one of: {list(_VALID_FINDING_STAGES)}"
+        )
+
+    # Older clients send free-text finding severities; only Review Loop
+    # findings (those carrying harm, class or round) are held to the enum.
+    is_loop_finding = any(k in finding for k in ("harm", "class", "round"))
+    severity = finding.get("severity")
+    if is_loop_finding and severity is not None and str(severity).lower() not in _VALID_SEVERITIES:
+        raise ValueError(
+            f"finding 'severity' must be one of: {list(_VALID_SEVERITIES)}"
+        )
+
+    class_ = finding.get("class")
+    if class_ is not None:
+        if class_ == "new":
+            pass
+        elif not isinstance(class_, str) or not _FINDING_CLASS_RE.match(class_):
+            raise ValueError(
+                "finding 'class' must be a lowercase slug "
+                "(letters, digits, hyphens) or 'new'"
+            )
+
+    harm = finding.get("harm")
+    if harm is not None and harm not in _VALID_FINDING_HARMS:
+        raise ValueError(
+            f"finding 'harm' must be one of: {list(_VALID_FINDING_HARMS)}"
+        )
+
+    status = finding.get("status")
+    if is_loop_finding and status is not None and status not in _VALID_FINDING_STATUSES:
+        raise ValueError(
+            f"finding 'status' must be one of: {list(_VALID_FINDING_STATUSES)}"
+        )
+
+    fixed_in_sha = finding.get("fixed_in_sha")
+    if fixed_in_sha is not None:
+        if not isinstance(fixed_in_sha, str) or not _SHA_RE.match(
+            fixed_in_sha.strip().lower()
+        ):
+            raise ValueError(
+                "finding 'fixed_in_sha' must be 7-64 lowercase hex characters"
+            )
+
+
 # ── Pydantic models ──
+
+
+class _AgentRunUsage(BaseModel):
+    """Token/cost fields shared by the usage endpoint and run completion.
+
+    Token counts are cumulative integers (booleans and non-integer numbers
+    are rejected — bool is an int subclass in Python, so a bare `int` type
+    would silently accept `true`). ``cost_usd`` is a reported dollar figure.
+    """
+
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    cost_usd: float | None = None
+
+    @field_validator(
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+        mode="before",
+    )
+    @classmethod
+    def _token_int(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            raise ValueError("token counts must be integers, not booleans")
+        if not isinstance(v, int):
+            raise ValueError("token counts must be integers")
+        return v
+
+    @field_validator(
+        "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+    )
+    @classmethod
+    def _token_range(cls, v: int | None) -> int | None:
+        if v is None:
+            return None
+        if v < 0 or v > _MAX_TOKEN_COUNT:
+            raise ValueError(
+                f"token counts must be between 0 and {_MAX_TOKEN_COUNT}"
+            )
+        return v
+
+    @field_validator("cost_usd", mode="before")
+    @classmethod
+    def _cost_number(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, bool):
+            raise ValueError("cost_usd must be a number, not a boolean")
+        if not isinstance(v, (int, float)):
+            raise ValueError("cost_usd must be a number")
+        return v
+
+    @field_validator("cost_usd")
+    @classmethod
+    def _cost_range(cls, v: float | None) -> float | None:
+        if v is None:
+            return None
+        if not math.isfinite(v):
+            raise ValueError("cost_usd must be a finite number")
+        if v < 0 or v > _MAX_COST_USD:
+            raise ValueError(f"cost_usd must be between 0 and {_MAX_COST_USD}")
+        return v
 
 
 class AgentRunCreate(BaseModel):
@@ -135,6 +300,16 @@ class AgentRunCreate(BaseModel):
     # GitHub #95 — an edited prompt and context refs for the run.
     prompt: str | None = None
     context_refs: list[str] | None = None
+    # Review Loop R3 track A — model/role and loop-linkage fields.
+    model: str | None = None
+    provider: str | None = None
+    role: str | None = None
+    branch: str | None = None
+    base_sha: str | None = None
+    parent_run_id: str | None = None
+    continues_run_id: str | None = None
+    work_queue_id: str | None = None
+    work_queue_item_id: str | None = None
 
     @field_validator("persona_name")
     @classmethod
@@ -250,8 +425,80 @@ class AgentRunCreate(BaseModel):
             )
         return cleaned
 
+    @field_validator("model")
+    @classmethod
+    def _model_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) > 120:
+            raise ValueError("model must be 120 characters or fewer")
+        return v
 
-class AgentRunComplete(BaseModel):
+    @field_validator("provider")
+    @classmethod
+    def _provider_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) > 40:
+            raise ValueError("provider must be 40 characters or fewer")
+        return v
+
+    @field_validator("role")
+    @classmethod
+    def _role_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip().lower()
+        if not v:
+            return None
+        if v not in _VALID_ROLES:
+            raise ValueError(f"role must be one of: {list(_VALID_ROLES)}")
+        return v
+
+    @field_validator("branch")
+    @classmethod
+    def _branch_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) > 200:
+            raise ValueError("branch must be 200 characters or fewer")
+        return v
+
+    @field_validator("base_sha")
+    @classmethod
+    def _base_sha_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip().lower()
+        if not v:
+            return None
+        if not _SHA_RE.match(v):
+            raise ValueError("base_sha must be 7-64 lowercase hex characters")
+        return v
+
+    @field_validator("parent_run_id", "continues_run_id", "work_queue_id", "work_queue_item_id")
+    @classmethod
+    def _run_id_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            return None
+        if len(v) > 64:
+            raise ValueError("run ids must be 64 characters or fewer")
+        return v
+
+
+class AgentRunComplete(_AgentRunUsage):
     """Final-state submission at run completion."""
 
     status: str = "passed"  # passed | failed | errored — never queued/running/cancelled here
@@ -259,6 +506,14 @@ class AgentRunComplete(BaseModel):
     severity: str = "none"
     findings: list[dict[str, Any]] = []
     session_id: str | None = None
+    # Review Loop R3 track A — completion adds usage (inherited above) plus
+    # the cost basis, the head commit the run produced, why it exited and the
+    # wall-clock time it actually ran (bounded so a bad clock can't write a
+    # run into the far past or future).
+    cost_basis: str | None = None
+    head_sha: str | None = None
+    exit_reason: str | None = None
+    occurred_at: datetime | None = None
 
     @field_validator("status")
     @classmethod
@@ -278,6 +533,71 @@ class AgentRunComplete(BaseModel):
             raise ValueError(
                 f"severity must be one of: {list(_VALID_SEVERITIES)}"
             )
+        return v
+
+    @field_validator("cost_basis")
+    @classmethod
+    def _cost_basis_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip().lower()
+        if not v:
+            return None
+        if v not in _VALID_COST_BASIS:
+            raise ValueError(
+                f"cost_basis must be one of: {list(_VALID_COST_BASIS)}"
+            )
+        return v
+
+    @field_validator("head_sha")
+    @classmethod
+    def _head_sha_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip().lower()
+        if not v:
+            return None
+        if not _SHA_RE.match(v):
+            raise ValueError("head_sha must be 7-64 lowercase hex characters")
+        return v
+
+    @field_validator("exit_reason")
+    @classmethod
+    def _exit_reason_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip().lower()
+        if not v:
+            return None
+        if v not in _VALID_EXIT_REASONS:
+            raise ValueError(
+                f"exit_reason must be one of: {list(_VALID_EXIT_REASONS)}"
+            )
+        return v
+
+    @field_validator("occurred_at")
+    @classmethod
+    def _occurred_at_shape(cls, v: datetime | None) -> datetime | None:
+        if v is None:
+            return None
+        if v.tzinfo is None:
+            # Naive datetimes are treated as UTC so a naive client isn't
+            # silently shifted by the server's local zone.
+            v = v.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        if v > now + timedelta(minutes=5):
+            raise ValueError("occurred_at must not be more than 5 minutes in the future")
+        if v < now - timedelta(days=30):
+            raise ValueError("occurred_at must not be more than 30 days in the past")
+        return v
+
+    @field_validator("findings")
+    @classmethod
+    def _findings_shape(cls, v: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for finding in v:
+            if not isinstance(finding, dict):
+                continue
+            _validate_finding(finding)
         return v
 
 
@@ -319,6 +639,37 @@ class AgentRunResponse(BaseModel):
     started_at: datetime | None
     completed_at: datetime | None
     duration_seconds: int | None
+    # Review Loop R3 track A — model, spend and loop-linkage fields. Token
+    # fields are visible to every reader; cost_usd is omitted entirely (not
+    # nulled) for callers who are not org owners/admins or the personal
+    # project's owner. `_include_cost` controls that omission.
+    model: str | None = None
+    provider: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+    cost_usd: float | None = None
+    cost_basis: str | None = None
+    role: str | None = None
+    branch: str | None = None
+    base_sha: str | None = None
+    head_sha: str | None = None
+    parent_run_id: str | None = None
+    continues_run_id: str | None = None
+    work_queue_id: str | None = None
+    work_queue_item_id: str | None = None
+    exit_reason: str | None = None
+    occurred_at: datetime | None = None
+
+    _include_cost: bool = PrivateAttr(default=True)
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler):
+        data = handler(self)
+        if not self._include_cost:
+            data.pop("cost_usd", None)
+        return data
 
 
 class StartAgentRunResponse(BaseModel):
@@ -582,9 +933,43 @@ def _build_ci_hint(command: str) -> str:
     )
 
 
-def _row_to_response(row: AgentRun) -> AgentRunResponse:
+async def _cost_visible(
+    db: AsyncSession,
+    project: Project,
+    *,
+    auth: AuthContext | None = None,
+    user: User | None = None,
+) -> bool:
+    """Dollar visibility (spend design §9 / review-loop-r3 §8).
+
+    Only org owners/admins and personal-project owners see ``cost_usd``.
+    Service keys never see dollars — they hold project data but not budget
+    authority. Everyone else with read access sees token totals only.
+    """
+    if auth is not None and auth.key_kind == "service":
+        return False
+    if user is None:
+        user = auth.user if auth is not None else None
+    if user is None:
+        return False
+    if project.org_id is None:
+        return project.owner_id == user.id
+    role = (
+        await db.execute(
+            select(OrgMember.role).where(
+                OrgMember.org_id == project.org_id,
+                OrgMember.user_id == user.id,
+            )
+        )
+    ).scalars().first()
+    return role is not None and has_minimum_role(role, "admin")
+
+
+def _row_to_response(
+    row: AgentRun, *, include_cost: bool = True
+) -> AgentRunResponse:
     findings = _decode_findings(row.findings)
-    return AgentRunResponse(
+    response = AgentRunResponse(
         id=row.id,
         project_id=row.project_id,
         persona_name=row.persona_name,
@@ -615,7 +1000,27 @@ def _row_to_response(row: AgentRun) -> AgentRunResponse:
         replayed_from=row.replayed_from,
         prompt=row.prompt,
         context_refs=_decode_context_refs(row.context_refs),
+        model=row.model,
+        provider=row.provider,
+        input_tokens=row.input_tokens,
+        output_tokens=row.output_tokens,
+        cache_read_tokens=row.cache_read_tokens,
+        cache_write_tokens=row.cache_write_tokens,
+        cost_usd=float(row.cost_usd) if row.cost_usd is not None else None,
+        cost_basis=row.cost_basis,
+        role=row.role,
+        branch=row.branch,
+        base_sha=row.base_sha,
+        head_sha=row.head_sha,
+        parent_run_id=row.parent_run_id,
+        continues_run_id=row.continues_run_id,
+        work_queue_id=row.work_queue_id,
+        work_queue_item_id=row.work_queue_item_id,
+        exit_reason=row.exit_reason,
+        occurred_at=row.occurred_at,
     )
+    response._include_cost = include_cost
+    return response
 
 
 async def _get_run_or_404(
@@ -724,6 +1129,69 @@ def _new_run_id() -> str:
     return f"run_{uuid.uuid4().hex[:16]}"
 
 
+def _additive_usage(
+    *,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    cache_read_tokens: int | None,
+    cache_write_tokens: int | None,
+    cost_usd: float | None,
+    cost_basis: str | None = None,
+) -> dict[str, Any]:
+    """UPDATE values that add reported usage to a run's stored totals.
+
+    The addition happens in SQL (``coalesce(col, 0) + delta``) so two
+    concurrent reports can't overwrite each other. A field reported as None
+    is left out and keeps its stored value. ``cost_usd`` is added as a
+    ``Decimal`` so Numeric(12,6) never accumulates float rounding error. A
+    cost sent without a basis is recorded as ``reported``.
+    """
+    values: dict[str, Any] = {}
+    for name, delta in (
+        ("input_tokens", input_tokens),
+        ("output_tokens", output_tokens),
+        ("cache_read_tokens", cache_read_tokens),
+        ("cache_write_tokens", cache_write_tokens),
+    ):
+        if delta is not None:
+            column = getattr(AgentRun, name)
+            values[name] = func.coalesce(column, 0) + delta
+    if cost_usd is not None:
+        values["cost_usd"] = func.coalesce(AgentRun.cost_usd, 0) + Decimal(str(cost_usd))
+    if cost_basis is not None:
+        values["cost_basis"] = cost_basis
+    elif cost_usd is not None:
+        values["cost_basis"] = func.coalesce(AgentRun.cost_basis, "reported")
+    return values
+
+
+def _usage_within_caps(*, cost_usd: float | None) -> list[Any]:
+    """Extra UPDATE conditions keeping the stored running cost total within
+    ``_MAX_COST_USD``: a report that would push it past the column's range
+    matches no row (and is answered with 422) instead of failing on
+    PostgreSQL with a numeric overflow."""
+    if cost_usd is None:
+        return []
+    return [
+        func.coalesce(AgentRun.cost_usd, 0) + Decimal(str(cost_usd))
+        <= _MAX_COST_USD
+    ]
+
+
+async def _raise_usage_conflict(
+    db: AsyncSession, project_id: str, run_id: str, *, what: str
+) -> None:
+    """After a guarded usage UPDATE matched no row: 422 when the run is still
+    open (so only the cost cap can have refused it), else 409."""
+    await db.rollback()
+    current = await _get_run_or_404(project_id, run_id, db)
+    if current.status in ("queued", "running"):
+        raise HTTPException(
+            422, f"cost_usd total for a run must stay at or below {_MAX_COST_USD}"
+        )
+    raise HTTPException(409, f"{what}: current status is {current.status!r}.")
+
+
 # ── Routes ──
 
 
@@ -774,6 +1242,24 @@ async def create_agent_run(
     # Validate ticket (if provided) is in this project.
     if body.ticket_id:
         await _validate_same_project_ticket(project_id, body.ticket_id, db)
+    # Review Loop R3 — loop-linkage ids must name a run in this project
+    # (uniform 404, never a cross-project leak).
+    if body.parent_run_id:
+        await _get_run_or_404(project_id, body.parent_run_id, db)
+    if body.continues_run_id:
+        await _get_run_or_404(project_id, body.continues_run_id, db)
+    # A run started from a queue directive is linked to that queue (and
+    # item) so queue spend and budgets see it; both must be in this project.
+    if body.work_queue_item_id and not body.work_queue_id:
+        raise HTTPException(422, "work_queue_item_id needs work_queue_id")
+    if body.work_queue_id:
+        queue = await db.get(WorkQueue, body.work_queue_id)
+        if queue is None or queue.project_id != project_id:
+            raise HTTPException(404, "Work queue not found")
+        if body.work_queue_item_id:
+            item = await db.get(WorkQueueItem, body.work_queue_item_id)
+            if item is None or item.work_queue_id != queue.id:
+                raise HTTPException(404, "Work queue item not found")
 
     now = datetime.now(timezone.utc)
     row = AgentRun(
@@ -799,11 +1285,21 @@ async def create_agent_run(
         service_key_id=auth.service_key_id,
         service_key_name=auth.service_key_name,
         created_at=now,
+        model=body.model,
+        provider=body.provider,
+        role=body.role,
+        branch=body.branch,
+        base_sha=body.base_sha,
+        parent_run_id=body.parent_run_id,
+        continues_run_id=body.continues_run_id,
+        work_queue_id=body.work_queue_id,
+        work_queue_item_id=body.work_queue_item_id,
     )
     db.add(row)
     await db.commit()
     await db.refresh(row)
-    return _row_to_response(row)
+    include_cost = await _cost_visible(db, project, auth=auth, user=user)
+    return _row_to_response(row, include_cost=include_cost)
 
 
 @router.get(
@@ -846,7 +1342,8 @@ async def list_agent_runs(
     stmt = stmt.order_by(AgentRun.created_at.desc()).limit(limit)
 
     rows = (await db.execute(stmt)).scalars().all()
-    return [_row_to_response(r) for r in rows]
+    include_cost = await _cost_visible(db, project, auth=auth)
+    return [_row_to_response(r, include_cost=include_cost) for r in rows]
 
 
 @router.get(
@@ -867,7 +1364,10 @@ async def get_agent_run(
     )
     await assert_service_key_can_access_project(db, auth, project)
     await check_project_feature(ctx, "agent_runs", project, db)
-    return _row_to_response(await _get_run_or_404(project_id, run_id, db))
+    include_cost = await _cost_visible(db, project, auth=auth)
+    return _row_to_response(
+        await _get_run_or_404(project_id, run_id, db), include_cost=include_cost
+    )
 
 
 @router.post(
@@ -972,8 +1472,9 @@ async def start_agent_run(
     # the run to another project, and a re-query filtered by this project
     # would then 404 a start that succeeded.
     await db.refresh(pre)
+    include_cost = await _cost_visible(db, project, user=user)
     response = StartAgentRunResponse(
-        run=_row_to_response(pre),
+        run=_row_to_response(pre, include_cost=include_cost),
         compiled_context=compiled,
     )
     # Commit the transition (and release the scope lock). A concurrent
@@ -1050,6 +1551,24 @@ async def complete_agent_run(
         policy_result = "fail"
         exit_code = 1
 
+    # Review Loop R3 — completion reports usage additively on top of any
+    # usage reported earlier via POST …/usage, then fixes it (no further
+    # usage reports after a terminal state).
+    usage = _additive_usage(
+        input_tokens=body.input_tokens,
+        output_tokens=body.output_tokens,
+        cache_read_tokens=body.cache_read_tokens,
+        cache_write_tokens=body.cache_write_tokens,
+        cost_usd=body.cost_usd,
+        cost_basis=body.cost_basis,
+    )
+    # Optional completion fields only overwrite what is already stored when
+    # the caller actually sent them.
+    for name in ("head_sha", "exit_reason", "occurred_at"):
+        value = getattr(body, name)
+        if value is not None:
+            usage[name] = value
+
     # Atomic write — must not be in a terminal state, must currently be
     # queued or running. The pre-check above already raised if terminal,
     # but the atomic UPDATE is the actual guard against concurrent
@@ -1060,6 +1579,7 @@ async def complete_agent_run(
             AgentRun.id == run_id,
             AgentRun.project_id == project_id,
             AgentRun.status.in_(("queued", "running")),
+            *_usage_within_caps(cost_usd=body.cost_usd),
         )
         .values(
             status=final_status,
@@ -1072,20 +1592,91 @@ async def complete_agent_run(
             session_id=body.session_id,
             policy_result=policy_result,
             exit_code=exit_code,
+            **usage,
         )
     )
     if result.rowcount != 1:
-        await db.rollback()
-        # Re-fetch to surface the actual current state.
-        current = await _get_run_or_404(project_id, run_id, db)
-        raise HTTPException(
-            409,
-            f"Concurrent completion detected: current status is "
-            f"{current.status!r}.",
+        await _raise_usage_conflict(
+            db, project_id, run_id, what="Concurrent completion detected"
         )
 
     await db.commit()
-    return _row_to_response(await _get_run_or_404(project_id, run_id, db))
+    include_cost = await _cost_visible(db, project, auth=auth, user=user)
+    return _row_to_response(
+        await _get_run_or_404(project_id, run_id, db), include_cost=include_cost
+    )
+
+
+@router.post(
+    "/{project_id}/agent-runs/{run_id}/usage",
+    response_model=AgentRunResponse,
+)
+async def report_agent_run_usage(
+    project_id: str,
+    run_id: str,
+    body: _AgentRunUsage,
+    auth: AuthContext = Depends(require_scope("agent_runs:write")),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> AgentRunResponse:
+    """Add token/cost usage to a queued or running run (additive).
+
+    Same auth as complete. Usage is additive while the run is active (long
+    runs and continuations report more than once); once the run reaches a
+    terminal state the totals are fixed and any further report is a 409.
+    """
+    if all(
+        getattr(body, f) is None
+        for f in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd")
+    ):
+        raise HTTPException(422, "Report at least one usage field")
+    user = auth.user
+    project = await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_runs", project, db)
+
+    existing = await _get_run_or_404(project_id, run_id, db)
+    await _require_run_actor(db, project, existing, user.id, key_kind=auth.key_kind)
+    if existing.status in _TERMINAL_STATUSES:
+        raise HTTPException(
+            409,
+            f"Cannot report usage: current status is {existing.status!r} "
+            "(already terminal).",
+        )
+
+    usage = _additive_usage(
+        input_tokens=body.input_tokens,
+        output_tokens=body.output_tokens,
+        cache_read_tokens=body.cache_read_tokens,
+        cache_write_tokens=body.cache_write_tokens,
+        cost_usd=body.cost_usd,
+    )
+
+    # Atomic write — the run must still be queued/running; the rowcount-1
+    # guard also closes the race with a concurrent complete.
+    result = await db.execute(
+        update(AgentRun)
+        .where(
+            AgentRun.id == run_id,
+            AgentRun.project_id == project_id,
+            AgentRun.status.in_(("queued", "running")),
+            *_usage_within_caps(cost_usd=body.cost_usd),
+        )
+        .values(**usage)
+    )
+    if result.rowcount != 1:
+        await _raise_usage_conflict(
+            db, project_id, run_id, what="Cannot report usage"
+        )
+
+    await db.commit()
+    include_cost = await _cost_visible(db, project, auth=auth, user=user)
+    return _row_to_response(
+        await _get_run_or_404(project_id, run_id, db), include_cost=include_cost
+    )
 
 
 @router.post(
@@ -1136,7 +1727,10 @@ async def cancel_agent_run(
             "(already terminal).",
         )
     await db.commit()
-    return _row_to_response(await _get_run_or_404(project_id, run_id, db))
+    include_cost = await _cost_visible(db, project, user=user)
+    return _row_to_response(
+        await _get_run_or_404(project_id, run_id, db), include_cost=include_cost
+    )
 
 
 @router.post(
@@ -1233,7 +1827,7 @@ async def replay_agent_run(
     await db.commit()
     await db.refresh(row)
 
-    run_response = _row_to_response(row)
+    run_response = _row_to_response(row, include_cost=await _cost_visible(db, project, auth=auth, user=user))
     command = _build_replay_command(run_response.id)
     return AgentRunReplayResponse(
         run=run_response,

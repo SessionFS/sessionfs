@@ -28,6 +28,7 @@ incremented). See `_review_until_clean_step`.
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -40,7 +41,6 @@ from sqlalchemy.orm import aliased
 from sessionfs.server.db.models import (
     ApiKey,
     Project,
-    Resident,
     Ticket,
     TicketComment,
     TicketEdit,
@@ -82,6 +82,11 @@ _REVIEW_ORACLE_COMMENT_LIMIT = 500
 _WAITING_STATUS = "waiting"
 _DONE_STATUS = "done"
 _FAILED_STATUS = "failed"
+
+# Review Loop B2 — reviewed_commit is a FULL commit id (40- or 64-char
+# lowercase hex, i.e. SHA-1 or SHA-256). Readiness compares the verdict's
+# reviewed_commit to the current head exactly (no prefix match).
+_REVIEWED_COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 
 # expand_hints — the on-demand context menu (NOT a payload). The agent pulls
 # full context only when the bounded directive is insufficient.
@@ -395,50 +400,6 @@ async def _comment_delta(
         else:
             query = query.where(TicketComment.created_at > since)
     return list((await db.execute(query)).scalars().all())
-
-
-async def _queue_has_implementer_resident(
-    db: AsyncSession, work_queue_id: str
-) -> bool:
-    """True if a registered implementer resident drives this queue.
-
-    Resident R0 F1: the strict re-derive/self-review/fail-closed close only
-    applies to queues bound to a registered implementer resident — non-resident
-    implement_until_done queues keep the pre-existing outcome-based close.
-    """
-    found = await db.scalar(
-        select(Resident.id)
-        .where(
-            Resident.work_queue_id == work_queue_id,
-            Resident.kind == "implementer",
-        )
-        .limit(1)
-    )
-    return found is not None
-
-
-async def _is_implementer_resident_key(
-    db: AsyncSession, service_key_id: str | None
-) -> bool:
-    """True if the service key is bound to a registered implementer resident.
-
-    Resident R0 F1 (Sentinel H1): the strict close must key on the ACTING /
-    recorded implementer IDENTITY, not only on which queue a resident is bound
-    to. Otherwise an implementer resident can create a fresh (unbound)
-    implement queue with its own key and self-close there, routing around the
-    queue-binding gate.
-    """
-    if service_key_id is None:
-        return False
-    found = await db.scalar(
-        select(Resident.id)
-        .where(
-            Resident.service_key_id == service_key_id,
-            Resident.kind == "implementer",
-        )
-        .limit(1)
-    )
-    return found is not None
 
 
 async def _review_comments_for_oracle(
@@ -1402,6 +1363,7 @@ async def complete_work_queue_step(
     ticket_lease_epoch: int | None = None,
     agent_summary: str | None = None,
     verdict_content: str | None = None,
+    reviewed_commit: str | None = None,
     actor_user_id: str | None = None,
     actor_org_id: str | None = None,
     actor_service_key_id: str | None = None,
@@ -1570,6 +1532,18 @@ async def complete_work_queue_step(
                 "the loop.",
                 http_status=422,
             )
+        # Review Loop B2 — the verdict may be bound to the exact commit the
+        # reviewer read. Reject a malformed commit loudly before any write;
+        # readiness later compares this string to the current head exactly.
+        if reviewed_commit is not None and not _REVIEWED_COMMIT_RE.fullmatch(
+            reviewed_commit
+        ):
+            raise StepEngineError(
+                "reviewed_commit_invalid",
+                "reviewed_commit must be a full commit id (40 or 64 lowercase "
+                "hex chars) of the commit the reviewer reviewed.",
+                http_status=422,
+            )
         # The verdict's author identity is server-derived from queue config.
         reviewer_persona = queue.assigned_persona or "codex-reviewer"
         # Trust is derived from the AUTHENTICATED actor — never the body.
@@ -1599,6 +1573,7 @@ async def complete_work_queue_step(
             service_key_id=actor_service_key_id,
             service_key_name=service_key_name,
             verdict_trusted=verdict_trusted,
+            reviewed_commit=reviewed_commit,
         )
         db.add(created_comment)
         # Flush so the new row is visible to the re-derive query below and so
@@ -1678,12 +1653,13 @@ async def complete_work_queue_step(
     # declare the item done by asserting outcome='done'; a forged trusted-false
     # verdict can never close it.
     #
-    # Resident R0 F1 (design §3.7.2): implement_until_done also re-derives
-    # review_state server-side. The implementer's own "done" is NEVER a close.
-    # The server records implementer identity at settle, then checks whether
-    # a trusted VERIFIED-CLEAN exists from a DIFFERENT identity. Self-review
-    # is rejected (identity match); unknown implementer → fail-closed.
-    # auto_close_review_kind stamps the CEO condition-(a) marker.
+    # Review Loop B2 / G9 (docs/design/review-loop-r3.md §4, §7):
+    # implement_until_done also re-derives review_state server-side. The
+    # implementer's own "done" is NEVER a close. The server records implementer
+    # identity at settle, then checks whether a trusted VERIFIED-CLEAN exists
+    # from a DIFFERENT identity. Self-review is rejected (identity match);
+    # unknown implementer → fail-closed. auto_close_review_kind stamps the CEO
+    # condition-(a) marker.
     auto_close_kind: str | None = None
     if queue.mode == "review_until_clean":
         review_comments = await _review_comments_for_oracle(
@@ -1695,21 +1671,25 @@ async def complete_work_queue_step(
             and rs_settle.last_verdict_is_strict_verified_clean
             and not rs_settle.open_findings
         )
-    elif queue.mode == "implement_until_done" and (
-        await _queue_has_implementer_resident(db, queue.id)
-        or await _is_implementer_resident_key(db, actor_service_key_id)
-        or await _is_implementer_resident_key(db, item.implementer_service_key_id)
-    ):
-        # Resident R0 F1 (design §3.7.2 + Sentinel H1): the strict
-        # re-derive/self-review/fail-closed close fires when a REGISTERED
-        # implementer resident is involved — whether by the queue it drives,
-        # the acting key, OR the item's recorded implementer. Keying on
-        # identity (not just queue-binding) closes the bypass where a resident
-        # spins up a fresh unbound implement queue with its own key and
-        # self-closes there. Non-resident implement queues keep the existing
-        # outcome-based close via the `else` branch below.
-        # F1: record implementer identity at first settle.
-        if item.implementer_service_key_id is None:
+    elif queue.mode == "implement_until_done":
+        # Review Loop B2 / G9 (docs/design/review-loop-r3.md §4, §7): EVERY
+        # implement_until_done item closes ONLY on a trusted strict
+        # VERIFIED-CLEAN from a DIFFERENT identity — resident or not. The
+        # implementer's claimed outcome is never the authority for closure; the
+        # server re-derives review state over TRUSTED comments only and records
+        # the implementer identity at first settle, then enforces self-review /
+        # unknown-implementer / stale-verdict checks. This closes the pre-B2
+        # bypass where a non-resident implement item settled 'done' on the
+        # agent's own asserted outcome.
+        # F1: record implementer identity at first settle — but never
+        # overwrite a recorded identity on a later settle. A later actor
+        # settling the same item is not the implementer; replacing the
+        # identity here would let that later actor's clean verdict close the
+        # item despite the original implementer being a different identity.
+        if (
+            item.implementer_service_key_id is None
+            and item.implementer_user_id is None
+        ):
             item.implementer_service_key_id = actor_service_key_id
             if actor_user_id:
                 item.implementer_user_id = actor_user_id
@@ -1801,10 +1781,15 @@ async def complete_work_queue_step(
                             TicketComment.author_user_id == impl_usr,
                         )
                     )
-                stale_verdict = (
-                    impl_latest_at is None
-                    or closing_comment.created_at <= impl_latest_at
-                )
+                # SQLite returns `func.max(created_at)` naive while the
+                # closing comment may be the identity-mapped instance still
+                # carrying tzinfo — normalize both to aware before comparing.
+                if impl_latest_at is not None and impl_latest_at.tzinfo is None:
+                    impl_latest_at = impl_latest_at.replace(tzinfo=timezone.utc)
+                closing_at = closing_comment.created_at
+                if closing_at.tzinfo is None:
+                    closing_at = closing_at.replace(tzinfo=timezone.utc)
+                stale_verdict = impl_latest_at is None or closing_at <= impl_latest_at
 
             if self_close or impl_unknown or stale_verdict:
                 terminal = False

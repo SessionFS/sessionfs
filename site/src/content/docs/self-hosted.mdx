@@ -385,6 +385,8 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 
 - **Optional meeting retention sweep.** Stored meetings are deleted after the org's retention window (180 days by default); schedule the sweep if you use meetings. See [Scheduled sweeps](#scheduled-sweeps) and [Meetings](/meetings/).
 
+**Upgrading to v0.29.1** runs migrations 106 (agent run usage, cost, model, role and loop fields), 107 (service-key attribution on wiki revisions), 108 (the reviewed commit on review verdicts) and 109 (service-key attribution on retrieval audit contexts); all are additive. Existing runs carry no usage, and existing verdicts carry no reviewed commit, so merge readiness reports them as not ready until a reviewer posts a verdict bound to the head commit.
+
 ## Troubleshooting
 
 ### Check pod status

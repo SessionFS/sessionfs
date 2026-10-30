@@ -509,6 +509,10 @@ class CommentCreate(BaseModel):
     # for editor-tier callers (two-way sync); a plain contributor's flag is
     # ignored so a read-mostly role can't drive outbound Jira comments.
     send_to_jira: bool = False
+    # Review Loop B2 — the exact head commit (full 40- or 64-char lowercase
+    # hex) a trusted review verdict reviewed. Bound to the verdict row so
+    # merge readiness can demand the verdict be on the current head.
+    reviewed_commit: str | None = None
 
     @field_validator("content")
     @classmethod
@@ -518,6 +522,18 @@ class CommentCreate(BaseModel):
             raise ValueError("content is required")
         if len(v) > 10_000:
             raise ValueError("content must be 10000 characters or fewer")
+        return v
+
+    @field_validator("reviewed_commit")
+    @classmethod
+    def _reviewed_commit_shape(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", v):
+            raise ValueError(
+                "reviewed_commit must be a full commit id (40 or 64 lowercase hex chars)"
+            )
         return v
 
 
@@ -1742,6 +1758,230 @@ async def get_ticket_review_state(
     return {"ticket_id": ticket.id, "review_state": state.to_dict() if state else None}
 
 
+@router.get(
+    "/{project_id}/tickets/{ticket_id}/readiness",
+)
+async def get_ticket_merge_readiness(
+    project_id: str,
+    ticket_id: str,
+    sha: str = Query(
+        ..., description="Head commit id (full 40- or 64-char lowercase hex)."
+    ),
+    auth: AuthContext = Depends(require_scope("tickets:read")),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Review Loop B2 (docs/design/review-loop-r3.md §4, §5) — merge readiness.
+
+    Pure read; same access as GET ticket. Ready only when ALL of these hold:
+      - a trusted STRICT literal VERIFIED-CLEAN verdict exists;
+      - its reviewed_commit equals ``sha`` exactly (full-string equality — a
+        prefix match is NOT accepted);
+      - the reviewer's identity differs from EVERY implementer identity
+        recorded for the ticket (self-review is never ready);
+      - no open finding is harmful (harm != 'none'; an untagged finding of
+        MEDIUM or higher fails closed).
+    """
+    from sessionfs.server.db.models import AgentRun, ApiKey, WorkQueueItem
+    from sessionfs.server.services.review_state import compute_review_state
+
+    project = await _get_project_for_auth(project_id, db, auth)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_tickets", project, db)
+    ticket = await _get_ticket_or_404(project_id, ticket_id, db)
+
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", sha.strip()):
+        raise HTTPException(
+            422, "sha must be a full commit id (40 or 64 lowercase hex chars)"
+        )
+    sha = sha.strip()
+
+    rows = (
+        await db.execute(
+            select(TicketComment)
+            .where(TicketComment.ticket_id == ticket.id)
+            .order_by(TicketComment.created_at, TicketComment.id)
+            .limit(500)
+        )
+    ).scalars().all()
+
+    comments = [
+        {
+            "id": r.id,
+            "author_persona": r.author_persona,
+            "content": r.content,
+            "created_at": r.created_at,
+            "verdict_trusted": r.verdict_trusted,
+            "service_key_id": r.service_key_id,
+            "author_user_id": r.author_user_id,
+            "reviewed_commit": r.reviewed_commit,
+        }
+        for r in rows
+    ]
+
+    state = compute_review_state(comments)
+    reasons: list[str] = []
+
+    # (1) A trusted strict VERIFIED-CLEAN must exist.
+    if state is None or not state.last_verdict_is_strict_verified_clean:
+        return {
+            "ticket_id": ticket.id,
+            "ready": False,
+            "reasons": ["no trusted strict VERIFIED-CLEAN verdict"],
+            "verdict": None,
+        }
+
+    # Locate the actual closing clean round's comment (mirror the work-queue
+    # self-review close: bind identity to the clean round, not the latest
+    # review comment, so a later trusted non-verdict note can't spoof it).
+    clean_comment_id: str | None = None
+    for rnd in reversed(state.rounds):
+        if rnd.is_strict_verified_clean:
+            clean_comment_id = rnd.comment_id
+            break
+    closing = next((r for r in rows if r.id == clean_comment_id), None)
+    if closing is None:
+        return {
+            "ticket_id": ticket.id,
+            "ready": False,
+            "reasons": ["closing verdict comment not found"],
+            "verdict": None,
+        }
+
+    closing_svc = closing.service_key_id or None
+    closing_usr = closing.author_user_id or None
+
+    # (2) The verdict must be bound to exactly the requested head commit.
+    if not closing.reviewed_commit or closing.reviewed_commit != sha:
+        reasons.append(
+            "trusted clean verdict is not bound to the requested sha"
+        )
+
+    # (3) The reviewer's identity must differ from every implementer identity.
+    # Implementer identities come from four sources: work-queue item rows,
+    # implementer-role agent runs, the ticket's current start-lease executor
+    # (the RetrievalAuditContext written by start_ticket), and the resolver.
+    # If none of them records an implementer, readiness fails closed — an
+    # unknown implementer can't be proven different from the reviewer.
+    impl_rows = (
+        await db.execute(
+            select(
+                WorkQueueItem.implementer_service_key_id,
+                WorkQueueItem.implementer_user_id,
+            ).where(WorkQueueItem.ticket_id == ticket.id)
+        )
+    ).all()
+    run_rows = (
+        await db.execute(
+            select(
+                AgentRun.service_key_id,
+                AgentRun.triggered_by_user_id,
+            ).where(
+                AgentRun.ticket_id == ticket.id,
+                AgentRun.role.in_(("implementer", "ui-implementer")),
+            )
+        )
+    ).all()
+    start_lease_rows = (
+        await db.execute(
+            select(
+                RetrievalAuditContext.service_key_id,
+                RetrievalAuditContext.created_by_user_id,
+            ).where(
+                RetrievalAuditContext.ticket_id == ticket.id,
+                RetrievalAuditContext.lease_epoch == ticket.lease_epoch,
+            )
+        )
+    ).all()
+
+    identities: list[tuple[str | None, str | None]] = [
+        (impl_svc or None, impl_usr or None) for impl_svc, impl_usr in impl_rows
+    ]
+    identities += [
+        (run_svc or None, run_usr or None) for run_svc, run_usr in run_rows
+    ]
+    identities += [
+        (start_svc or None, start_usr or None)
+        for start_svc, start_usr in start_lease_rows
+    ]
+    identities.append((None, ticket.resolver_user_id or None))
+
+    # A service key IS its minter, so a service-key reviewer is the same
+    # identity as its backing user. Resolve the reviewer key's minter once so a
+    # user-only implementer record (e.g. a pre-109 start context that stored
+    # only created_by_user_id) whose user is that minter can be failed closed.
+    closing_minter_user_id: str | None = None
+    if closing_svc:
+        closing_key = await db.get(ApiKey, closing_svc)
+        closing_minter_user_id = closing_key.user_id if closing_key else None
+
+    impl_minters: dict[str, str | None] = {}
+    if not any(svc or usr for svc, usr in identities):
+        reasons.append("implementer unknown")
+    else:
+        for impl_svc, impl_usr in identities:
+            if not impl_svc and not impl_usr:
+                continue
+            # Same identity comparison as the work-queue self-review close: when
+            # either side is a service key, compare service-key ids only; only fall
+            # back to user-id comparison when both are human.
+            if closing_svc and impl_svc:
+                self_close = closing_svc == impl_svc
+            elif closing_svc and not impl_svc:
+                # Service-key reviewer vs user-only implementer. The user may be
+                # the key's minter (a start context written before 109 stored
+                # only the backing user), which is the SAME identity. Fail closed
+                # when the minter can't be resolved or matches the user.
+                self_close = (
+                    closing_minter_user_id is None
+                    or (impl_usr is not None and closing_minter_user_id == impl_usr)
+                )
+            elif impl_svc and not closing_svc:
+                # Human reviewer vs service-key implementer. The key IS its
+                # minter, so a human reviewing work their own key did is
+                # self-review. Compare against the recorded backing user and
+                # the key's minter; fail closed when the minter can't be
+                # resolved.
+                if impl_svc not in impl_minters:
+                    impl_key = await db.get(ApiKey, impl_svc)
+                    impl_minters[impl_svc] = impl_key.user_id if impl_key else None
+                impl_minter = impl_minters[impl_svc]
+                self_close = (
+                    impl_minter is None
+                    or bool(closing_usr and closing_usr == impl_minter)
+                    or bool(closing_usr and impl_usr and closing_usr == impl_usr)
+                )
+            else:
+                self_close = bool(closing_usr and impl_usr and closing_usr == impl_usr)
+            if self_close:
+                reasons.append("reviewer identity matches an implementer identity")
+                break
+
+    # (4) No open finding may be harmful.
+    def _finding_harmful(f) -> bool:
+        if f.harm is not None:
+            return f.harm != "none"
+        return f.severity in ("MEDIUM", "HIGH", "CRITICAL")
+
+    harmful = [f for f in state.open_findings if _finding_harmful(f)]
+    if harmful:
+        reasons.append(f"{len(harmful)} open harmful finding(s)")
+
+    return {
+        "ticket_id": ticket.id,
+        "ready": not reasons,
+        "reasons": reasons,
+        "verdict": {
+            "reviewer": closing_svc or closing_usr or "",
+            "reviewed_commit": closing.reviewed_commit,
+            "at": closing.created_at.isoformat(),
+        },
+    }
+
+
 @router.post(
     "/{project_id}/tickets",
     response_model=TicketResponse,
@@ -2282,6 +2522,8 @@ async def start_ticket(
         persona_name=persona.name if persona is not None else None,
         lease_epoch=ticket.lease_epoch,
         created_by_user_id=user.id,
+        actor_type=auth.actor_type,
+        service_key_id=auth.service_key_id,
     )
     db.add(audit_context)
     deps = await _ticket_dependencies(db, ticket.id)
@@ -2968,6 +3210,7 @@ async def create_ticket_comment(
             session_id=body.session_id,
             lease_epoch=body.lease_epoch,
             verdict_trusted=verdict_trusted,
+            reviewed_commit=body.reviewed_commit,
             auth=auth,
         )
         if send_to_jira and not await jira_sync.comment_forwarding_enabled(db, ticket_id):

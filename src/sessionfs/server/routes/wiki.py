@@ -12,7 +12,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sessionfs.server.auth.dependencies import get_current_user
+from sessionfs.server.auth.dependencies import (
+    AuthContext,
+    get_current_user,
+    require_scope,
+)
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
     KnowledgeLink,
@@ -25,7 +29,7 @@ from sessionfs.server.db.models import (
 )
 from sessionfs.server.services.personas import (
     resolve_persona,
-    visible_persona_org_id,
+    visible_persona_org_id_for_auth,
 )
 from sessionfs.server.services.project_settings import (
     load_project_for_settings,
@@ -163,6 +167,40 @@ async def _get_editable_project_or_404(
     return await load_project_for_editor(project_id, db, user_id)
 
 
+async def _get_project_for_auth(
+    project_id: str, db: AsyncSession, auth: AuthContext
+) -> Project:
+    """Load project enforcing the right boundary for the auth principal.
+
+    Mirrors ``knowledge.py:_get_project_for_auth`` (Codex R1 MEDIUM 1): for
+    service keys, skip the legacy user-owner gate and load by id (404 when
+    missing); the org/allowlist boundary is enforced separately via
+    ``assert_service_key_can_access_project``, which the caller MUST invoke.
+    User keys keep the legacy fetch-with-access-gate semantics.
+    """
+    if auth.key_kind == "service":
+        result = await db.execute(select(Project).where(Project.id == project_id))
+        project = result.scalar_one_or_none()
+        if not project:
+            raise HTTPException(404, "Project not found")
+        return project
+    return await _get_project_or_404(project_id, db, auth.user.id)
+
+
+async def _get_project_for_editor(
+    project_id: str, db: AsyncSession, auth: AuthContext
+) -> Project:
+    """Edit-tier variant of ``_get_project_for_auth``.
+
+    Service keys are unchanged: their boundary is the key's org and project
+    allowlist (``assert_service_key_can_access_project``), which the caller
+    must still invoke. User keys need editor standing.
+    """
+    if auth.key_kind == "service":
+        return await _get_project_for_auth(project_id, db, auth)
+    return await _get_editable_project_or_404(project_id, db, auth.user.id)
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -171,11 +209,18 @@ async def _get_editable_project_or_404(
 @router.get("/{project_id}/pages", response_model=list[PageSummary])
 async def list_pages(
     project_id: str,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("knowledge:read")),
     db: AsyncSession = Depends(get_db),
 ) -> list[PageSummary]:
     """List all wiki pages for a project."""
-    await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+
+    project = await _get_project_for_auth(project_id, db, auth)
+    await assert_service_key_can_access_project(
+        db, auth, project, opaque_404_detail="Project not found"
+    )
 
     result = await db.execute(
         select(KnowledgePage)
@@ -209,12 +254,13 @@ async def get_page_history(
     slug: str,
     limit: int = 50,
     cursor: int | None = None,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("knowledge:read")),
     db: AsyncSession = Depends(get_db),
 ) -> WikiHistoryResponse:
     """v0.10.7 — return the wiki page's full revision history.
 
-    Cross-project access blocked by `_get_project_or_404`. Pagination:
+    Cross-project access blocked by `_get_project_for_auth` +
+    `assert_service_key_can_access_project`. Pagination:
     pass `cursor` (the `id` of the last revision from the previous
     page) for keyset pagination. Sort is `revised_at DESC, id DESC` so
     same-timestamp ties resolve deterministically (mirrors v0.10.5
@@ -224,7 +270,14 @@ async def get_page_history(
     `/history` suffix here rather than treating `slug/history` as a
     single page slug.
     """
-    await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+
+    project = await _get_project_for_auth(project_id, db, auth)
+    await assert_service_key_can_access_project(
+        db, auth, project, opaque_404_detail="Project not found"
+    )
     limit = max(1, min(limit, 200))
     conds = [
         WikiPageRevision.project_id == project_id,
@@ -274,11 +327,18 @@ async def get_page_history(
 async def get_page(
     project_id: str,
     slug: str,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("knowledge:read")),
     db: AsyncSession = Depends(get_db),
 ) -> PageDetail:
     """Get a wiki page with backlinks."""
-    await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+
+    project = await _get_project_for_auth(project_id, db, auth)
+    await assert_service_key_can_access_project(
+        db, auth, project, opaque_404_detail="Project not found"
+    )
 
     result = await db.execute(
         select(KnowledgePage).where(
@@ -441,13 +501,34 @@ async def create_or_update_page(
     project_id: str,
     slug: str,
     body: PageWriteRequest,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("knowledge:write")),
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> PageDetail:
-    """Create or update a wiki page."""
-    project = await _get_editable_project_or_404(project_id, db, user.id)
+    """Create or update a wiki page.
+
+    Service keys with ``knowledge:write`` may write pages; their revision
+    rows carry ``actor_type=service_key`` provenance. User keys keep the
+    legacy editor gate unchanged.
+    """
+    user = auth.user
+    project = await _get_project_for_editor(project_id, db, auth)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+
+    await assert_service_key_can_access_project(db, auth, project)
     await check_project_feature(ctx, "project_context", project, db)
+    # Service keys write revisions as themselves, not as the minter. The
+    # provenance validator below resolves ticket/persona ownership against a
+    # USER id, so a service key could forge provenance through its minter.
+    # Refuse the provenance fields outright rather than validate them on the
+    # minter's behalf.
+    if auth.key_kind == "service" and (body.persona_name or body.ticket_id):
+        raise HTTPException(
+            422,
+            "service keys cannot attribute wiki revisions to a persona or ticket",
+        )
     # GH #70 — merge relocates pages under the project scope lock; take it
     # before the (project_id, slug) lookup so a page can't be created in a
     # project that is being (or was) merged away.
@@ -456,14 +537,14 @@ async def create_or_update_page(
     )
 
     # GH #70 — lock, then re-authorize against the re-read project.
-    await lock_project_scope_authorized(db, project, edit=True, user_id=user.id, ctx=ctx, feature="project_context")
+    await lock_project_scope_authorized(db, project, edit=True, auth=auth, ctx=ctx, feature="project_context")
     canonical_persona = await _validate_revision_provenance(
         project_id,
         user.id,
         body.persona_name,
         body.ticket_id,
         db,
-        persona_org_id=await visible_persona_org_id(db, project, user_id=user.id),
+        persona_org_id=await visible_persona_org_id_for_auth(db, project, auth),
     )
 
     result = await db.execute(
@@ -483,7 +564,9 @@ async def create_or_update_page(
         page.updated_at = now
         if body.title is not None:
             page.title = body.title
-        if body.publish is not None:
+        # A service key cannot flip the Confluence publish opt-in on write;
+        # keep the stored value (only the user-key PATCH route toggles it).
+        if body.publish is not None and auth.key_kind != "service":
             page.publish = body.publish
         effective_title = page.title
     else:
@@ -498,7 +581,7 @@ async def create_or_update_page(
             word_count=word_count,
             created_at=now,
             updated_at=now,
-            publish=body.publish is True,
+            publish=(body.publish is True) if auth.key_kind != "service" else False,
         )
         db.add(page)
         effective_title = title
@@ -534,6 +617,9 @@ async def create_or_update_page(
         user_id=user.id,
         persona_name=canonical_persona,
         ticket_id=body.ticket_id,
+        actor_type=auth.actor_type,
+        service_key_id=auth.service_key_id,
+        service_key_name=auth.service_key_name,
         revised_at=now,
     )
     db.add(revision)
@@ -781,11 +867,18 @@ async def get_backlinks(
     project_id: str,
     target_type: str,
     target_id: str,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("knowledge:read")),
     db: AsyncSession = Depends(get_db),
 ) -> list[BacklinkItem]:
     """Get backlinks for a target."""
-    await _get_project_or_404(project_id, db, user.id)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+
+    project = await _get_project_for_auth(project_id, db, auth)
+    await assert_service_key_can_access_project(
+        db, auth, project, opaque_404_detail="Project not found"
+    )
 
     result = await db.execute(
         select(KnowledgeLink).where(

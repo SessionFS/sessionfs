@@ -29,7 +29,7 @@ All operations require `Authorization: Bearer <SessionFS_API_key>`. As of v0.10.
 
 MCP works great for local tools (Claude Code, Cursor, Codex, etc.) where the agent runtime can spawn `sfs mcp serve` as a stdio subprocess. Bedrock, Vertex, and custom cloud agents typically can't. The Cloud Agent Control Plane gives those agents the same operations through plain HTTP, with no client-side daemon, no MCP transport, and no special SDK.
 
-If your agent *can* speak MCP, prefer it — you get 106 tools and richer descriptions. If it can't, use this layer.
+If your agent *can* speak MCP, prefer it — you get 109 tools and richer descriptions. If it can't, use this layer.
 
 ## Amazon Bedrock
 
@@ -143,6 +143,8 @@ curl -X POST "$SESSIONFS_API_URL/api/v1/orgs/$ORG_ID/service-keys" \
 The response includes the raw key **exactly once** — copy it into AWS Secrets Manager (Bedrock Lambda) or Google Secret Manager (Vertex). The list endpoint only returns the `key_prefix` going forward.
 
 Service keys are deny-by-default at the route layer: `get_current_user` rejects them with `403 service_key_not_allowed`, and a key only reaches a handler via `require_scope("tickets:write")` style dependencies. Cross-org access is blocked at the project boundary. Audit rows (HandoffEvent, AgentRun, TicketComment, KnowledgeEntry, RetrievalAuditEvent) record `actor_type="service_key"` + `service_key_id` + `service_key_name` so service-key activity is distinguishable from human activity.
+
+As of v0.29.1, `knowledge:read` also lets an agent read the project context (`GET /projects/{id}`, `GET /projects/{id}/context/sections/{slug}`) and wiki pages, and `knowledge:write` lets it write wiki pages — each scoped to the key's `project_ids` allowlist. Wiki writes record the service key as the actor (`actor_type="service_key"` + `service_key_id`/`service_key_name`).
 
 Structured error codes: `api_key_revoked`, `api_key_expired`, `service_key_not_allowed`, `insufficient_scope` (with `required`/`current` arrays), `cross_org_denied`.
 

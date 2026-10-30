@@ -17,14 +17,38 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
-      <!-- v0.29.0 -->
+      <!-- v0.29.1 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
           <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.29.1</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 30, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Agent Spend Tracking &middot; Merge Readiness &middot; Commit-Bound Review Verdicts</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Agent run usage and cost.</strong> A run can record its model, provider and role, its input, output and cache tokens, its cost and where that cost came from (<span class="font-mono text-accent text-sm">reported</span>, <span class="font-mono text-accent text-sm">estimated</span>, <span class="font-mono text-accent text-sm">plan</span> or <span class="font-mono text-accent text-sm">unknown</span>), the head commit and how it exited. Long runs report usage as they go and the figures add up; once a run is complete its totals are fixed. CLI: <span class="font-mono text-accent text-sm">sfs agent run --model --role</span>, <span class="font-mono text-accent text-sm">sfs agent usage</span>, <span class="font-mono text-accent text-sm">sfs agent complete --input-tokens --output-tokens --cost-usd --cost-basis</span>; MCP: <span class="font-mono text-accent text-sm">report_agent_run_usage</span>; API: <span class="font-mono text-accent text-sm">POST /api/v1/projects/&#123;id&#125;/agent-runs/&#123;run_id&#125;/usage</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Spend rollups.</strong> See what a ticket cost across workers, reviewers and review rounds, or a project&rsquo;s spend by persona, model, ticket, role or day over any date range (the last 30 days by default). Token totals are shown to everyone who can read the project; dollar amounts only to org owners and admins, or the owner of a personal project, and never to service keys. Only reported and estimated costs add dollars; runs on a subscription plan add tokens only. CLI: <span class="font-mono text-accent text-sm">sfs agent spend</span>; MCP: <span class="font-mono text-accent text-sm">get_spend_summary</span>; API: <span class="font-mono text-accent text-sm">GET /api/v1/projects/&#123;id&#125;/spend</span> and <span class="font-mono text-accent text-sm">/tickets/&#123;tid&#125;/spend</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Merge readiness.</strong> <span class="font-mono text-accent text-sm">check_merge_readiness</span> and <span class="font-mono text-accent text-sm">sfs loop ready &lt;ticket&gt; --sha &lt;head&gt;</span> answer whether a ticket&rsquo;s work is safe to merge at a given commit: only when a trusted strict <span class="font-mono text-accent text-sm">VERIFIED-CLEAN</span> verdict is bound to exactly that commit, the reviewer is a different identity from every implementer, and no open finding is harmful. A person still does the merge. See <a href="/review-loop/#8-merge" class="text-brand hover:underline">Worker Review Loop</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Verdicts bound to the reviewed commit.</strong> A reviewer can pass <span class="font-mono text-accent text-sm">reviewed_commit</span> (a full 40- or 64-character commit id) with its verdict, so a clean verdict on code that has since changed no longer counts as ready. The latest verdict is now the most recently posted one rather than the highest round number.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Structured findings.</strong> Findings on an agent run can carry <span class="font-mono text-accent text-sm">round</span>, <span class="font-mono text-accent text-sm">severity</span>, <span class="font-mono text-accent text-sm">class</span>, <span class="font-mono text-accent text-sm">harm</span> and <span class="font-mono text-accent text-sm">stage</span> keys, validated when present, so mistakes can be counted by kind and by whether they were caught in design or in code. A <span class="font-mono text-accent text-sm">harm: none</span> tag marks a finding as checked and harmless for merge readiness.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Implement queues close only on an independent review.</strong> In an <span class="font-mono text-accent text-sm">implement_until_done</span> work queue, the implementer reporting done no longer finishes an item; it finishes on a trusted strict <span class="font-mono text-accent text-sm">VERIFIED-CLEAN</span> verdict from a different identity.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Service keys can read project context and wiki pages.</strong> <span class="font-mono text-accent text-sm">knowledge:read</span> now covers the project context and its sections, wiki pages, page history and backlinks, and <span class="font-mono text-accent text-sm">knowledge:write</span> covers wiki page writes, each limited to the key&rsquo;s project allowlist. Wiki writes and retrieval audit records name the service key as the actor. See <a href="/integrations/cloud-agents/" class="text-brand hover:underline">Cloud Agents</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>One active ticket per worker.</strong> Parallel workers in different worktrees no longer overwrite each other&rsquo;s active ticket: set <span class="font-mono text-accent text-sm">SFS_AGENT_RUN_ID</span> per worker, a copy for the worktree is kept under <span class="font-mono text-accent text-sm">~/.sessionfs/workspaces/</span> (never inside the repository), and captured sessions are tagged with a ticket only when the ticket&rsquo;s repository matches the session&rsquo;s.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;109 (106 adds agent run usage and loop fields; 107 and 109 record service keys on wiki revisions and retrieval audit contexts; 108 adds the reviewed commit to verdicts; all additive). Self-hosted: run migrations 106&ndash;109 (see <a href="/self-hosted/#upgrading" class="text-brand hover:underline">Self-Hosted</a>). 10,373 backend tests + 1859 dashboard UI tests passing. 109 MCP tools (+3).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
+      <!-- v0.29.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-4 py-1.5 font-mono text-sm">
             <span class="text-brand font-semibold">v0.29.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 29, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Meeting Transcripts &middot; Action Items to Tickets &middot; Helper That Knows Who Is Asking</h2>
         <ul class="space-y-2 text-base text-muted">

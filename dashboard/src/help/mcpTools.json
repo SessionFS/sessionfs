@@ -59,6 +59,7 @@
         { "name": "add_ticket_comment", "desc": "Comment on a ticket" },
         { "name": "list_ticket_comments", "desc": "Read a ticket's comment thread" },
         { "name": "get_ticket_review_state", "desc": "Open and closed review findings and the last verdict" },
+        { "name": "check_merge_readiness", "desc": "Whether a ticket is safe to merge at a head commit" },
         { "name": "watch_ticket", "desc": "Follow, mute or unfollow a ticket" },
         { "name": "get_ticket_updates", "desc": "Changes on the tickets you follow since you last checked" }
       ]
@@ -95,6 +96,8 @@
       "label": "Agent runs & feedback",
       "tools": [
         { "name": "create_agent_run", "desc": "Start tracking an agent run (manual or CI)" },
+        { "name": "report_agent_run_usage", "desc": "Add tokens and cost to a running agent run" },
+        { "name": "get_spend_summary", "desc": "Tokens and cost by persona, model, ticket or day" },
         { "name": "complete_agent_run", "desc": "Record a run's findings and pass or fail it" },
         { "name": "replay_agent_run", "desc": "Queue a copy of a run with edited inputs" },
         { "name": "list_agent_runs", "desc": "Recent agent runs in the project" },

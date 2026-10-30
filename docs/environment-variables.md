@@ -155,6 +155,8 @@ Linking an installation goes through GitHub OAuth. SessionFS accepts the link on
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `SFS_CAPTURE_GLOBAL_RULES` | Controls whether global instruction artifacts (rule files in user home directories, global agent files) are hashed into session provenance. Values: `on`, `off`. When `off`, SessionFS skips all artifacts with `scope: global` and never hashes personal conventions from a developer's home directory into shared session records. Project-scope artifacts are captured regardless. | `on` |
+| `SFS_AGENT_RUN_ID` | **Client-side.** Gives a parallel worker its own active ticket: the bundle is kept at `~/.sessionfs/agents/<id>/active_ticket.json` (plus a per-worktree copy under `~/.sessionfs/workspaces/` for the daemon), so workers in different worktrees never overwrite each other. Letters, digits, `.`, `_` and `-`, up to 128 characters. | unset |
+| `SFS_ACTIVE_TICKET_PATH` | **Client-side.** Explicit path for the active-ticket bundle; takes precedence over `SFS_AGENT_RUN_ID`. | unset |
 
 ## Defaults
 

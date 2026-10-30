@@ -45,6 +45,7 @@ from sessionfs.server.db.models import (
     AgentPersona,
     ApiKey,
     KnowledgeEntry,
+    KnowledgePage,
     OrgMember,
     Organization,
     Project,
@@ -3236,3 +3237,293 @@ async def test_user_key_agent_runs_read_still_works(
     )
     assert get_resp.status_code == 200
     assert get_resp.json()["id"] == run_id
+
+
+# ── G0 — knowledge-scoped service keys on project context + wiki ──
+
+
+async def _make_wiki_page(
+    db_session: AsyncSession, project: "Project", slug: str = "architecture"
+) -> "KnowledgePage":
+    page = KnowledgePage(
+        id=f"page_{uuid.uuid4().hex[:16]}",
+        project_id=project.id,
+        slug=slug,
+        title="Architecture",
+        page_type="article",
+        content="# Architecture\n\nOriginal page.",
+        word_count=3,
+        entry_count=0,
+        auto_generated=False,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+    db_session.add(page)
+    await db_session.commit()
+    await db_session.refresh(page)
+    return page
+
+
+async def _make_g0_project(
+    db_session: AsyncSession, org: Organization, owner: User
+) -> "Project":
+    """A project whose id matches the `proj_<16 hex>` shape that
+    GET /projects/{id} resolves by id (the org-level helper mints 12-hex
+    ids, which get_project treats as git remotes)."""
+    project = Project(
+        id=f"proj_{uuid.uuid4().hex[:16]}",
+        name=f"g0-{uuid.uuid4().hex[:6]}",
+        git_remote_normalized=f"sessionfs/{uuid.uuid4().hex[:8]}",
+        owner_id=owner.id,
+        org_id=org.id,
+        context_document="",
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(project)
+    await db_session.commit()
+    await db_session.refresh(project)
+    return project
+
+
+@pytest.mark.asyncio
+async def test_service_key_knowledge_read_context_and_wiki(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """knowledge:read service key reads project context, context sections
+    and every wiki read route on an allowlisted project."""
+    org, admin, _ = await _make_org_with_admin(db_session, slug="g0-read")
+    project = await _make_g0_project(db_session, org, admin)
+    project.context_document = "## Architecture\n\nService-key readable context."
+    db_session.add(project)
+    await _make_wiki_page(db_session, project)
+
+    _row, svc_key = await _create_service_key(
+        db_session, org.id, admin, scopes=["knowledge:read"], project_ids=[project.id],
+    )
+
+    # Project context document.
+    resp = await client.get(f"/api/v1/projects/{project.id}", headers=_hdrs(svc_key))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["id"] == project.id
+
+    # Context section.
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/context/sections/architecture",
+        headers=_hdrs(svc_key),
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Wiki read routes.
+    for url in (
+        f"/api/v1/projects/{project.id}/pages",
+        f"/api/v1/projects/{project.id}/pages/architecture",
+        f"/api/v1/projects/{project.id}/pages/architecture/history",
+        f"/api/v1/projects/{project.id}/links/page/architecture",
+    ):
+        r = await client.get(url, headers=_hdrs(svc_key))
+        assert r.status_code == 200, (url, r.text)
+
+
+@pytest.mark.asyncio
+async def test_service_key_knowledge_read_requires_scope(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A service key without knowledge:read is denied 403 insufficient_scope."""
+    org, admin, _ = await _make_org_with_admin(db_session, slug="g0-noscope")
+    project = await _make_g0_project(db_session, org, admin)
+    await _make_wiki_page(db_session, project)
+
+    _row, svc_key = await _create_service_key(
+        db_session, org.id, admin, scopes=["tickets:read"], project_ids=[project.id],
+    )
+
+    for url in (
+        f"/api/v1/projects/{project.id}",
+        f"/api/v1/projects/{project.id}/pages",
+        f"/api/v1/projects/{project.id}/context/sections/architecture",
+    ):
+        resp = await client.get(url, headers=_hdrs(svc_key))
+        assert resp.status_code == 403, (url, resp.text)
+        assert _structured_error(resp.json()).get("error") == "insufficient_scope", resp.json()
+
+
+@pytest.mark.asyncio
+async def test_service_key_knowledge_read_allowlist_and_cross_org(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """knowledge:read is confined to the key's org and project allowlist —
+    and a denied project is byte-identical to an unknown one (opaque 404)."""
+    org_a, admin_a, _ = await _make_org_with_admin(db_session, slug="g0-a")
+    org_b, admin_b, _ = await _make_org_with_admin(db_session, slug="g0-b")
+    allowed = await _make_g0_project(db_session, org_a, admin_a)
+    denied = await _make_g0_project(db_session, org_a, admin_a)
+    other_org = await _make_g0_project(db_session, org_b, admin_b)
+    await _make_wiki_page(db_session, allowed)
+    await _make_wiki_page(db_session, denied)
+
+    _row, svc_key = await _create_service_key(
+        db_session, org_a.id, admin_a, scopes=["knowledge:read"], project_ids=[allowed.id],
+    )
+
+    assert (await client.get(f"/api/v1/projects/{allowed.id}", headers=_hdrs(svc_key))).status_code == 200
+
+    unknown = "proj_" + "f" * 16
+
+    def _urls(pid: str) -> list[str]:
+        return [
+            f"/api/v1/projects/{pid}",
+            f"/api/v1/projects/{pid}/context/sections/architecture",
+            f"/api/v1/projects/{pid}/pages",
+        ]
+
+    # A genuinely unknown project id establishes the opaque 404 body for
+    # each G0-converted read route.
+    baselines: dict[str, str] = {}
+    for url in _urls(unknown):
+        r = await client.get(url, headers=_hdrs(svc_key))
+        assert r.status_code == 404, (url, r.text)
+        baselines[url] = r.text
+
+    # Allowlist miss and cross-org must be indistinguishable from a miss:
+    # same status, byte-identical body, and no org/allowlist leak.
+    for project in (denied, other_org):
+        for url, baseline_url in zip(_urls(project.id), _urls(unknown)):
+            resp = await client.get(url, headers=_hdrs(svc_key))
+            assert resp.status_code == 404, (url, resp.text)
+            assert resp.text == baselines[baseline_url], (url, resp.text)
+            assert "cross_org_denied" not in resp.text
+            assert "project_not_in_allowlist" not in resp.text
+            assert "allowed_project_ids" not in resp.text
+            assert "project_org_id" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_service_key_knowledge_write_wiki_records_actor(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """knowledge:write is required to write wiki pages and the revision
+    records the service key as the actor."""
+    from sqlalchemy import select as _sel
+
+    from sessionfs.server.db.models import WikiPageRevision
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="g0-write")
+    project = await _make_g0_project(db_session, org, admin)
+
+    # knowledge:read-only key cannot write.
+    _read_row, read_key = await _create_service_key(
+        db_session, org.id, admin, scopes=["knowledge:read"], project_ids=[project.id],
+    )
+    resp = await client.put(
+        f"/api/v1/projects/{project.id}/pages/architecture",
+        headers=_hdrs(read_key),
+        json={"content": "# Nope"},
+    )
+    assert resp.status_code == 403, resp.text
+    assert _structured_error(resp.json()).get("error") == "insufficient_scope", resp.json()
+
+    # knowledge:write key writes and records service provenance.
+    write_row, write_key = await _create_service_key(
+        db_session, org.id, admin, scopes=["knowledge:write"], project_ids=[project.id],
+    )
+    resp = await client.put(
+        f"/api/v1/projects/{project.id}/pages/architecture",
+        headers=_hdrs(write_key),
+        json={"content": "# Written by a service key"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    rev = (
+        await db_session.execute(
+            _sel(WikiPageRevision).where(WikiPageRevision.project_id == project.id)
+        )
+    ).scalars().first()
+    assert rev is not None
+    assert rev.actor_type == "service_key"
+    assert rev.service_key_id == write_row.id
+    assert rev.service_key_name == write_row.service_key_name
+
+
+@pytest.mark.asyncio
+async def test_service_key_wiki_provenance_rejected(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A service key cannot attribute a wiki revision to a ticket or persona —
+    the minter's user id must never validate provenance on the key's behalf."""
+    org, admin, _ = await _make_org_with_admin(db_session, slug="g0-provenance")
+    project = await _make_g0_project(db_session, org, admin)
+    await _make_persona(db_session, project.id, admin, name="atlas")
+    ticket = await _make_ticket(db_session, project, admin)
+
+    _row, write_key = await _create_service_key(
+        db_session, org.id, admin, scopes=["knowledge:write"], project_ids=[project.id],
+    )
+
+    # Both identities resolve/are owned by the minter, so the legacy
+    # user-id provenance path would otherwise ACCEPT these as forged.
+    for payload in (
+        {"content": "# x", "persona_name": "atlas"},
+        {"content": "# x", "ticket_id": ticket.id},
+    ):
+        resp = await client.put(
+            f"/api/v1/projects/{project.id}/pages/architecture",
+            headers=_hdrs(write_key),
+            json=payload,
+        )
+        assert resp.status_code == 422, (payload, resp.text)
+
+
+@pytest.mark.asyncio
+async def test_service_key_wiki_publish_ignored(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A service key's ``publish`` on wiki PUT is ignored — the stored value
+    (the Confluence sweep opt-in) is preserved."""
+    from sqlalchemy import select as _sel
+
+    from sessionfs.server.db.models import KnowledgePage
+
+    org, admin, _ = await _make_org_with_admin(db_session, slug="g0-publish")
+    project = await _make_g0_project(db_session, org, admin)
+    page = await _make_wiki_page(db_session, project)
+    assert page.publish is False
+
+    _row, write_key = await _create_service_key(
+        db_session, org.id, admin, scopes=["knowledge:write"], project_ids=[project.id],
+    )
+
+    resp = await client.put(
+        f"/api/v1/projects/{project.id}/pages/architecture",
+        headers=_hdrs(write_key),
+        json={"content": "# Rewritten", "publish": True},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["publish"] is False
+
+    stored = (
+        await db_session.execute(
+            _sel(KnowledgePage).where(KnowledgePage.id == page.id)
+        )
+    ).scalar_one()
+    assert stored.publish is False
+
+
+@pytest.mark.asyncio
+async def test_user_key_context_and_wiki_unchanged(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Legacy user keys (scopes='*') keep reading context + wiki unchanged."""
+    org, admin, user_key = await _make_org_with_admin(db_session, slug="g0-user")
+    project = await _make_g0_project(db_session, org, admin)
+    project.context_document = "## Architecture\n\nUser readable context."
+    db_session.add(project)
+    await _make_wiki_page(db_session, project)
+
+    assert (await client.get(f"/api/v1/projects/{project.id}", headers=_hdrs(user_key))).status_code == 200
+    assert (await client.get(f"/api/v1/projects/{project.id}/pages", headers=_hdrs(user_key))).status_code == 200
+    assert (
+        await client.get(
+            f"/api/v1/projects/{project.id}/context/sections/architecture",
+            headers=_hdrs(user_key),
+        )
+    ).status_code == 200

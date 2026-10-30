@@ -1525,7 +1525,7 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed: 106, covering sessions (including `ask_session_helper`), knowledge, rules, personas, tickets (including `watch_ticket` and `get_ticket_updates`), agent runs (including `replay_agent_run`), agent feedback, handoffs, work queues, the skills marketplace, project groups and meetings. See [MCP Server](/mcp/) for the full catalogue.
+Tools exposed: 109, covering sessions (including `ask_session_helper`), knowledge, rules, personas, tickets (including `watch_ticket` and `get_ticket_updates`), agent runs (including `replay_agent_run`, `report_agent_run_usage` and `get_spend_summary`), merge readiness (`check_merge_readiness`), agent feedback, handoffs, work queues, the skills marketplace, project groups and meetings. See [MCP Server](/mcp/) for the full catalogue.
 
 ---
 
@@ -1882,6 +1882,75 @@ Register, list, or revoke an organization's trusted reviewers (org-admin only). 
 ```
 sfs admin trusted-reviewers (list | add | revoke) [OPTIONS]
 ```
+
+---
+
+## `sfs agent`
+
+Run, complete, replay and measure agent runs against tickets. The run lifecycle (`run`, `complete`, `status`, `list`, `replay`, `compare`) and CI workflow are covered in [CI integration](/integrations/ci-integration/); structured outcome records live under `sfs agent feedback`. This section documents usage reporting and the spend rollup.
+
+### Recording usage on a run
+
+`sfs agent run` also takes `--model`, `--provider`, `--role` (`implementer`, `ui-implementer`, `reviewer`, `design-reviewer`, `security-reviewer` or `release`) and `--branch`, so runs can be sliced by model and role. `sfs agent complete` takes the run's usage and outcome:
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `--input-tokens` / `--output-tokens` | integer | Token usage (added to anything already reported) |
+| `--cache-read-tokens` / `--cache-write-tokens` | integer | Cache token usage (additive) |
+| `--cost-usd` | number | Cost in USD (additive) |
+| `--cost-basis` | string | `reported` (the cost the tool or provider reported), `estimated` (your own estimate), `plan` (covered by a subscription, no per-token cost) or `unknown` |
+| `--head-sha` | string | Head commit the run finished on (7–64 hex chars) |
+| `--exit-reason` | string | `finished`, `out_of_turns` or `crashed` |
+
+### `sfs agent usage`
+
+Add token and cost usage to a queued or running run, for long runs and continuations that report more than once. Values are added to the run's totals. Once the run is complete, the totals are fixed and further reports are refused.
+
+```
+sfs agent usage RUN_ID [--input-tokens N] [--output-tokens N] [--cache-read-tokens N] [--cache-write-tokens N] [--cost-usd X]
+```
+
+At least one value is required.
+
+### `sfs agent spend`
+
+Summarize agent-run spend for a ticket or the current project. Dollar amounts only appear when the caller has admin standing on the project (org owners/admins, or the owner of a personal project); token totals are always shown. Service keys never see dollar figures.
+
+```
+sfs agent spend --ticket ID
+sfs agent spend --project [--group-by GROUP] [--from ISO] [--to ISO] [--format text|json]
+```
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `--ticket` | string | Ticket id to summarize (totals, per-persona, per-model, review rounds) |
+| `--project` | flag | Summarize the current project (defaults to the last 30 days) |
+| `--group-by` | string | `persona` \| `model` \| `ticket` \| `role` \| `day` (project view only) |
+| `--from` | string | Start of the `created_at` window (ISO datetime) |
+| `--to` | string | End of the `created_at` window (ISO datetime) |
+| `--format` | string | `text` (default) or `json` |
+
+Only runs with a `reported` or `estimated` cost basis add dollars; `plan` and `unknown` runs (including runs that reported tokens but no cost) add tokens only, shown separately as tokens on plans.
+
+---
+
+## `sfs loop`
+
+Merge readiness for the [worker review loop](/review-loop/). Tier: **Team+**.
+
+### `sfs loop ready`
+
+Check whether a ticket's work is safe to merge at a given head commit. Pure read: a person still does the merge.
+
+```
+sfs loop ready TICKET_ID --sha HEAD_COMMIT
+```
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `--sha` | string | Full head commit id (40 or 64 lowercase hex characters) |
+
+Prints **READY** only when a trusted strict `VERIFIED-CLEAN` verdict is bound to exactly that commit, the reviewer's identity differs from every implementer identity recorded for the ticket, and no open finding is harmful. Otherwise it prints **NOT READY** with the reasons and exits `1`, so it can gate a script. MCP: `check_merge_readiness`.
 
 ---
 

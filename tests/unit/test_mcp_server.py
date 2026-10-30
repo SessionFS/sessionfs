@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from sessionfs.active_ticket import workspace_bundle_path as _wbp
 import json
 from pathlib import Path
 
@@ -299,10 +300,10 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_106(self):
+    def test_tool_count_is_109(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 106, (
-            "Expected 106 MCP tools after meeting tools (GitHub #116), "
+        assert len(_TOOLS) == 109, (
+            "Expected 109 MCP tools after agent-run records, spend rollups and merge readiness, "
             f"got {len(_TOOLS)}"
         )
 
@@ -373,8 +374,12 @@ class TestToolRegistryV0996:
             "record_agent_feedback",
             "list_agent_feedback",
             "get_agent_feedback_summary",
+            # Review Loop R3 — agent-run spend rollups (Brief A2)
+            "get_spend_summary",
             # GitHub #95 — replay an agent run with an edited prompt/ticket/context
             "replay_agent_run",
+            # Agent-run records — report token/cost usage in flight (Review Loop R3 A1)
+            "report_agent_run_usage",
             # Session helper (Enterprise, BYOK) — non-streaming answer + citations
             "ask_session_helper",
             # Ticket watchers — follow/unfollow + agent notification delta
@@ -749,6 +754,108 @@ class TestNewToolDispatch:
         })
         assert captured["json"] == {"prompt": ""}
         assert "error" not in result
+
+    # ── Review Loop R3 agent-run records (cost/model/loop fields) ──
+
+    @pytest.mark.asyncio
+    async def test_dispatch_create_agent_run_forwards_record_fields(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_create_agent_run({
+            "persona_name": "atlas",
+            "model": "claude-sonnet-5-5",
+            "provider": "anthropic",
+            "role": "implementer",
+            "branch": "feat/rl-a1",
+            "base_sha": "ABCDEF1234567",
+            "parent_run_id": "run_parent",
+            "continues_run_id": "run_prev",
+        })
+        assert captured["method"] == "POST"
+        assert captured["url"] == "https://api.test/api/v1/projects/proj_test/agent-runs"
+        assert captured["json"] == {
+            "persona_name": "atlas",
+            "model": "claude-sonnet-5-5",
+            "provider": "anthropic",
+            "role": "implementer",
+            "branch": "feat/rl-a1",
+            "base_sha": "ABCDEF1234567",
+            "parent_run_id": "run_parent",
+            "continues_run_id": "run_prev",
+        }
+        assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_dispatch_complete_agent_run_forwards_usage_fields(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_complete_agent_run({
+            "run_id": "run_x",
+            "status": "passed",
+            "severity": "none",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_tokens": 10,
+            "cache_write_tokens": 5,
+            "cost_usd": 0.25,
+            "cost_basis": "reported",
+            "head_sha": "abcdef1234567",
+            "exit_reason": "finished",
+            "occurred_at": "2026-10-29T00:00:00Z",
+        })
+        assert captured["method"] == "POST"
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_test"
+            "/agent-runs/run_x/complete"
+        )
+        assert captured["json"] == {
+            "status": "passed",
+            "severity": "none",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_tokens": 10,
+            "cache_write_tokens": 5,
+            "cost_usd": 0.25,
+            "cost_basis": "reported",
+            "head_sha": "abcdef1234567",
+            "exit_reason": "finished",
+            "occurred_at": "2026-10-29T00:00:00Z",
+        }
+        assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_dispatch_report_agent_run_usage(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_report_agent_run_usage({
+            "run_id": "run_x",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_tokens": 10,
+            "cache_write_tokens": 5,
+            "cost_usd": 0.25,
+        })
+        assert captured["method"] == "POST"
+        assert captured["url"] == (
+            "https://api.test/api/v1/projects/proj_test"
+            "/agent-runs/run_x/usage"
+        )
+        assert captured["json"] == {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_tokens": 10,
+            "cache_write_tokens": 5,
+            "cost_usd": 0.25,
+        }
+        assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_dispatch_report_agent_run_usage_requires_run_id(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_report_agent_run_usage({})
+        assert "run_id is required" in result["error"]
+        assert not captured
 
     @pytest.mark.asyncio
     async def test_dispatch_get_agent_feedback_summary(
@@ -1435,6 +1542,85 @@ class TestNewToolDispatch:
         result = await mcp_server._handle_start_ticket({"ticket_id": "tk_x"})
         assert "provenance_warning" in result
         assert "Could not write" in result["provenance_warning"]
+
+    @pytest.mark.asyncio
+    async def test_start_ticket_writes_workspace_mirror(
+        self, fake_resolver, monkeypatch, tmp_path
+    ):
+        """G1: with SFS_AGENT_RUN_ID set, start_ticket ALSO mirrors the
+        bundle to <workspace>/.sessionfs/active_ticket.json so the daemon
+        can tag sessions without the worker env."""
+        import httpx
+        from pathlib import Path
+
+        import sessionfs.project_root as pr
+
+        class _Resp:
+            status_code = 200
+            text = "{}"
+            def json(self):
+                return {
+                    "ticket": {"id": "tk_x", "assigned_to": "atlas"},
+                    "compiled_context": "",
+                }
+
+        class _FakeClient:
+            def __init__(self, *a, **k): pass
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def post(self, url, *, headers=None, params=None, json=None):
+                return _Resp()
+
+        monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+
+        ws = tmp_path / "ws"
+        monkeypatch.setattr(pr, "resolve_project_root", lambda: ws)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("SFS_AGENT_RUN_ID", "r1")
+
+        async def _remote(_git_remote=""):
+            return "acme/repo"
+
+        monkeypatch.setattr(mcp_server, "_resolve_git_remote_arg", _remote)
+
+        result = await mcp_server._handle_start_ticket({"ticket_id": "tk_x"})
+        assert "error" not in result
+
+        env_bundle = tmp_path / ".sessionfs" / "agents" / "r1" / "active_ticket.json"
+        ws_bundle = _wbp(ws)
+        assert env_bundle.exists()
+        assert ws_bundle.exists()
+        assert json.loads(ws_bundle.read_text())["ticket_id"] == "tk_x"
+
+    @pytest.mark.asyncio
+    async def test_complete_ticket_clears_workspace_mirror(
+        self, fake_resolver, fake_httpx, monkeypatch, tmp_path
+    ):
+        """G1: complete_ticket clears the run-scoped home bundle AND the
+        workspace mirror, so a stale mirror doesn't tag later sessions."""
+        from pathlib import Path
+
+        import sessionfs.project_root as pr
+        from sessionfs import active_ticket as _at
+
+        ws = tmp_path / "ws"
+        monkeypatch.setattr(pr, "resolve_project_root", lambda: ws)
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        monkeypatch.setenv("SFS_AGENT_RUN_ID", "r1")
+        _at.write_bundle(
+            ticket_id="tk_ME", persona_name="atlas", project_id="proj_test",
+            workspace=ws,
+        )
+        env_bundle = tmp_path / ".sessionfs" / "agents" / "r1" / "active_ticket.json"
+        ws_bundle = _wbp(ws)
+        assert env_bundle.exists() and ws_bundle.exists()
+
+        result = await mcp_server._handle_complete_ticket({
+            "ticket_id": "tk_ME", "notes": "done",
+        })
+        assert "error" not in result
+        assert not env_bundle.exists()
+        assert not ws_bundle.exists()
 
     # ── v0.10.1 Phase 8 — agent workflow handlers ──
 

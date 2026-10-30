@@ -56,10 +56,10 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | Scope | Status | Routes opted in |
 |-------|--------|-----------------|
 | `handoffs:read`, `handoffs:write` | ✅ live (v0.10.10) | Handoff create/claim/revoke/decline + comments + events |
-| `agent_runs:write` | ✅ live (v0.10.10) | `POST /agent-runs`, `POST /agent-runs/{id}/complete` |
-| `tickets:read`, `tickets:write` | ✅ live (v0.10.18) | Ticket list/get/comments/review-state + start/complete/comment |
+| `agent_runs:write` | ✅ live (v0.10.10) | `POST /agent-runs`, `POST /agent-runs/{id}/complete`, `POST /agent-runs/{id}/usage` |
+| `tickets:read`, `tickets:write` | ✅ live (v0.10.18) | Ticket list/get/comments/review-state/readiness + start/complete/comment |
 | `meetings:read`, `meetings:write` | ✅ live (v0.29.0) | Stored meeting transcripts: upload/list/get/delete + participant resolution (see [Meetings](/meetings/)) |
-| `knowledge:read`, `knowledge:write` | ✅ live (v0.10.19) | `GET /entries`, `GET /entries/{id}`, `POST /entries/add`, `PUT /entries/{id}` (dismiss/update/refresh/promote/supersede) |
+| `knowledge:read`, `knowledge:write` | ✅ live (v0.10.19; project context + wiki since v0.29.1) | Knowledge entries: `GET /entries`, `GET /entries/{id}`, `POST /entries/add`, `PUT /entries/{id}` (dismiss/update/refresh/promote/supersede). Project context (`knowledge:read`): `GET /projects/{id}`, `GET /projects/{id}/context/sections/{slug}`. Wiki (`knowledge:read`): list/get pages, page history and backlinks; (`knowledge:write`): `PUT /projects/{id}/pages/{slug}` — writes record `actor_type="service_key"` + `service_key_id`/`service_key_name` |
 | `personas:read`, `personas:write` | ✅ live (v0.10.20) | Persona list/get + create/update/delete |
 | `agent_runs:read` | ✅ live (v0.10.21) | `GET /agent-runs`, `GET /agent-runs/{run_id}` |
 | `agent_feedback:read`, `agent_feedback:write` | ✅ live (v0.17) | `GET /agent-feedback`, `GET /agent-feedback/summary`, `POST /agent-feedback` |
@@ -173,7 +173,10 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | GET | `/api/v1/projects/{id}/compile-status` | Bearer | Last compile, claims waiting, whether a compile is recommended (v0.23.0) |
 | GET | `/api/v1/projects/{id}/personas/{name}/rollup` | Bearer | Persona activity: recent sessions, open tickets, latest knowledge entry and agent run (v0.23.0) |
 | POST | `/api/v1/projects/{id}/agent-runs/{run_id}/replay` | Bearer | Queue a copy of a run with an edited prompt, ticket, persona, context references, fail-on or trigger ref (v0.23.0) |
+| POST | `/api/v1/projects/{id}/agent-runs/{run_id}/usage` | Bearer (`agent_runs:write`) | Add token/cost usage to a queued or running run (additive; `409` after completion) (v0.29.1) |
 | GET | `/api/v1/projects/{id}/agent-runs/{run_id}/compare/{other_id}` | Bearer | Findings added, removed or unchanged between two runs (v0.23.0) |
+| GET | `/api/v1/projects/{id}/spend` | Bearer (`agent_runs:read` or `tickets:read`) | Agent-run spend for the project. Query: `group_by` (`persona`, `model`, `ticket`, `role` or `day`), `from` / `to` (ISO datetimes; default the last 30 days), `work_queue_id`. Token totals always; `cost_usd` only for org owners/admins or the owner of a personal project, never for service keys. Only `reported` and `estimated` runs add dollars; `plan` and `unknown` runs add to `tokens_on_plans` (v0.29.1) |
+| GET | `/api/v1/projects/{id}/tickets/{tid}/spend` | Bearer (`agent_runs:read` or `tickets:read`) | Spend for one ticket: totals, per persona, per model and the number of review rounds, with the same dollar rules (v0.29.1) |
 
 ### Knowledge Base
 
@@ -218,6 +221,7 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | POST | `/api/v1/projects/{id}/tickets/{tid}/comments` | Bearer (`tickets:write`) | Append a comment to the ticket thread |
 | GET | `/api/v1/projects/{id}/tickets/{tid}/comments` | Bearer (`tickets:read`) | Paginated comment thread (query: `since`, `since_id`, `limit`) |
 | GET | `/api/v1/projects/{id}/tickets/{tid}/review-state` | Bearer (`tickets:read`) | Derived review state — open/closed findings, last verdict, severity counts |
+| GET | `/api/v1/projects/{id}/tickets/{tid}/readiness?sha=<commit>` | Bearer (`tickets:read`) | Merge readiness at a full head commit id: `{ready, reasons, verdict}`. Ready only when a trusted strict `VERIFIED-CLEAN` verdict is bound to exactly that commit, came from an identity other than every recorded implementer, and no open finding is harmful (v0.29.1) |
 | POST | `/api/v1/projects/{id}/tickets/{tid}/jira/preview` | Bearer (`tickets:write`) | Draft a Jira story from the ticket (Enterprise, v0.23.0). See [Jira Cloud](/integrations/jira/) |
 | POST | `/api/v1/projects/{id}/tickets/{tid}/jira/publish` | Bearer (`tickets:write`) | Create or update the linked Jira issue. Overwriting a linked issue that was never published from SessionFS needs `overwrite_existing: true` (else `409 jira_overwrite_required`). Optional `sprint_id` places the issue in a sprint; fields Jira refused are listed in `warnings` (v0.28.0) |
 | GET | `/api/v1/projects/{id}/jira/sprints` | Bearer (`tickets:write`) | Active and future sprints of the mapped Jira project, for the publish dialog (v0.28.0) |

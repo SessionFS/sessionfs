@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -191,6 +192,9 @@ def register_exception_handlers(app: FastAPI) -> None:
             clean = {k: v for k, v in err.items() if k != "ctx"}
             if "ctx" in err:
                 clean["ctx"] = {k: str(v) for k, v in err["ctx"].items()}
+            # NaN/Infinity can't be written as JSON; echo them as text.
+            if isinstance(clean.get("input"), float) and not math.isfinite(clean["input"]):
+                clean["input"] = str(clean["input"])
             sanitized_errors.append(clean)
         body = ErrorResponse(
             error=ErrorDetail(

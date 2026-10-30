@@ -656,3 +656,180 @@ def test_agent_run_run_id_rejects_create_only_flags(monkeypatch):
     assert result.exit_code == 2
     assert "--fail-on" in result.output
     assert calls == []
+
+
+def test_agent_run_run_id_rejects_new_record_flags(monkeypatch):
+    """Review Loop R3 A1: model/provider/role/branch are create-only."""
+    from sessionfs.cli import cmd_agent
+
+    calls: list[str] = []
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        calls.append(path)
+        return (200, {}, {})
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, [
+        "run", "--run-id", "run_x", "--model", "claude-sonnet-5-5",
+    ])
+    assert result.exit_code == 2
+    assert "--model" in result.output
+    assert calls == []
+
+
+# ── Review Loop R3 A1: agent-run record fields (cost/model/loop) ──
+
+
+def test_agent_run_forwards_record_fields(monkeypatch):
+    from sessionfs.cli import cmd_agent
+
+    calls: list[tuple[str, str, dict | None]] = []
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        calls.append((method, path, json_data))
+        if path.endswith("/start"):
+            return (200, {"id": "run_x", "compiled_context": ""}, {})
+        return (200, {"id": "run_x", "status": "queued"}, {})
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, [
+        "run", "atlas",
+        "--model", "claude-sonnet-5-5",
+        "--provider", "anthropic",
+        "--role", "implementer",
+        "--branch", "feat/rl-a1",
+    ])
+    assert result.exit_code == 0, result.output
+
+    create_call = next(c for c in calls if c[1].endswith("/agent-runs"))
+    assert create_call[2] == {
+        "persona_name": "atlas",
+        "tool": "generic",
+        "trigger_source": "manual",
+        "model": "claude-sonnet-5-5",
+        "provider": "anthropic",
+        "role": "implementer",
+        "branch": "feat/rl-a1",
+    }
+
+
+def test_agent_complete_forwards_usage_fields(monkeypatch):
+    from sessionfs.cli import cmd_agent
+
+    captured: dict = {}
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json_data"] = json_data
+        return (200, {"id": "run_x", "status": "passed",
+                      "policy_result": "pass", "exit_code": 0}, {})
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, [
+        "complete", "run_x", "--summary", "ok",
+        "--input-tokens", "100",
+        "--output-tokens", "50",
+        "--cache-read-tokens", "10",
+        "--cache-write-tokens", "5",
+        "--cost-usd", "0.25",
+        "--cost-basis", "reported",
+        "--head-sha", "abcdef1234567",
+        "--exit-reason", "finished",
+    ])
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == "/api/v1/projects/proj_a/agent-runs/run_x/complete"
+    body = captured["json_data"]
+    assert body["input_tokens"] == 100
+    assert body["output_tokens"] == 50
+    assert body["cache_read_tokens"] == 10
+    assert body["cache_write_tokens"] == 5
+    assert body["cost_usd"] == 0.25
+    assert body["cost_basis"] == "reported"
+    assert body["head_sha"] == "abcdef1234567"
+    assert body["exit_reason"] == "finished"
+
+
+def test_agent_usage_posts_body_and_prints_confirm(monkeypatch):
+    from sessionfs.cli import cmd_agent
+
+    captured: dict = {}
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        captured["method"] = method
+        captured["path"] = path
+        captured["json_data"] = json_data
+        return (200, {"id": "run_x", "input_tokens": 100, "output_tokens": 50,
+                      "cost_usd": 0.25}, {})
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, [
+        "usage", "run_x", "--input-tokens", "100", "--output-tokens", "50",
+        "--cost-usd", "0.25",
+    ])
+    assert result.exit_code == 0, result.output
+    assert captured["path"] == "/api/v1/projects/proj_a/agent-runs/run_x/usage"
+    assert captured["json_data"] == {
+        "input_tokens": 100,
+        "output_tokens": 50,
+        "cost_usd": 0.25,
+    }
+    assert "Recorded usage for run_x" in result.output
+
+
+def test_agent_usage_requires_at_least_one_field(monkeypatch):
+    from sessionfs.cli import cmd_agent
+
+    calls: list[str] = []
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        calls.append(path)
+        return (200, {}, {})
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, ["usage", "run_x"])
+    assert result.exit_code == 2
+    assert "at least one usage field" in result.output
+    assert calls == []
+
+
+def test_agent_usage_conflict_prints_terminal_message(monkeypatch):
+    from sessionfs.cli import cmd_agent
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None):
+        return (409, {"error": {"code": "409", "message": "conflict"}}, {})
+
+    monkeypatch.setattr(
+        cmd_agent, "_resolve_project",
+        lambda: ("https://api.test", "k", "proj_a"),
+    )
+    monkeypatch.setattr(cmd_agent, "_api_request", _fake_api)
+
+    result = runner.invoke(agent_app, ["usage", "run_x", "--input-tokens", "10"])
+    assert result.exit_code == 1
+    assert "usage can't be changed" in result.output

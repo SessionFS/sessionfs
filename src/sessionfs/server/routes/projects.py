@@ -14,7 +14,12 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sessionfs.server.auth.dependencies import get_current_user
+from sessionfs.server.auth.dependencies import (
+    AuthContext,
+    assert_service_key_can_access_project,
+    get_current_user,
+    require_scope,
+)
 from sessionfs.server.auth.rate_limit import SlidingWindowRateLimiter
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import AdminAction, OrgMember, Project, ProjectRepo, Session, User
@@ -1588,7 +1593,7 @@ _PROJECT_ID_RE = re.compile(r"^proj_[0-9a-f]{16}$")
 @router.get("/{git_remote_normalized:path}", response_model=ProjectResponse)
 async def get_project(
     git_remote_normalized: str,
-    user: User = Depends(get_current_user),
+    auth: AuthContext = Depends(require_scope("knowledge:read")),
     db: AsyncSession = Depends(get_db),
 ) -> ProjectResponse:
     """Get a project context by project id or git remote.
@@ -1597,21 +1602,29 @@ async def get_project(
     else is a normalized git remote.  Both share the access, tombstone
     and 404/403 handling below.
 
-    User must be the project owner, a member of the project's org
+    User keys must be the project owner, a member of the project's org
     (v0.10.22 — tk_7a457574c5624e12), or have captured at least one
-    session on this git remote.
+    session on this git remote.  Service keys with ``knowledge:read`` are
+    admitted by their org/allowlist boundary (G0).
 
     Multi-repo aware (P2): resolves through project_repos join table.
     Tombstone-aware (F4): merged projects return 410 with merged_into
     target, gated by access check on the source first.  Unauthorized
-    callers get opaque 404 — the target id is never leaked.
+    user keys get opaque 404 — the target id is never leaked.
     """
-    from sessionfs.server.auth.project_access import user_can_access_project
+    from sessionfs.server.auth.project_access import (
+        user_can_access_project,
+        user_can_edit_project,
+        user_is_project_admin,
+    )
+    from sessionfs.server.routes.project_groups import project_group_summaries
     from sessionfs.server.services.project_resolver import (
         ProjectResolutionLoopError,
         resolve_project_by_id,
         resolve_project_by_remote,
     )
+
+    user = auth.user
 
     # Resolve without following tombstones first — we need to detect
     # the tombstone so we can run F4's access-on-source-before-disclose.
@@ -1635,7 +1648,11 @@ async def get_project(
 
     # F4 tombstone: source access check before disclosing merged_into.
     if project.merged_into_project_id:
-        if not await user_can_access_project(db, user.id, project):
+        if auth.key_kind == "service":
+            await assert_service_key_can_access_project(
+                db, auth, project, opaque_404_detail="No project context found"
+            )
+        elif not await user_can_access_project(db, user.id, project):
             # Unauthorized → opaque 404 (do not leak tombstone existence).
             raise HTTPException(404, "No project context found")
         # F5: re-authorize on the resolved/redirected target.
@@ -1644,7 +1661,11 @@ async def get_project(
         )
         if target is None:
             raise HTTPException(404, "No project context found")
-        if not await user_can_access_project(db, user.id, target):
+        if auth.key_kind == "service":
+            await assert_service_key_can_access_project(
+                db, auth, target, opaque_404_detail="No project context found"
+            )
+        elif not await user_can_access_project(db, user.id, target):
             raise HTTPException(403, "No access to this project")
         raise HTTPException(
             status_code=410,
@@ -1660,26 +1681,34 @@ async def get_project(
 
     # Not a tombstone — run access check on the resolved project (F5:
     # resolver resolves, we authorize).
-    if not await user_can_access_project(db, user.id, project):
+    if auth.key_kind == "service":
+        await assert_service_key_can_access_project(
+            db, auth, project, opaque_404_detail="No project context found"
+        )
+    elif not await user_can_access_project(db, user.id, project):
         raise HTTPException(403, "No access to this project")
 
-    from sessionfs.server.auth.project_access import (
-        user_can_edit_project,
-        user_is_project_admin,
-    )
-    from sessionfs.server.routes.project_groups import project_group_summaries
-
     effective_tier = (await resolve_project_plan_tier(project, db)).value
-    # Groups are shown only to members of the project's org (GitHub #101).
-    groups = await project_group_summaries(db, project, user.id)
+    if auth.key_kind == "service":
+        # Service keys read context/wiki only — no edit/admin standing and
+        # no org-membership group visibility on the response.
+        can_edit = can_admin = can_delete = can_transfer = False
+        groups = []
+    else:
+        # Groups are shown only to members of the project's org (GitHub #101).
+        groups = await project_group_summaries(db, project, user.id)
+        can_edit = await user_can_edit_project(db, user.id, project)
+        can_admin = await user_is_project_admin(db, user.id, project)
+        can_delete = _can_delete_project(project, user)
+        can_transfer = await _can_transfer_project(db, user.id, project)
     return _project_response(
         project,
         repos=await _repos_for_project(db, project.id),
         effective_tier=effective_tier,
-        can_edit=await user_can_edit_project(db, user.id, project),
-        can_admin=await user_is_project_admin(db, user.id, project),
-        can_delete=_can_delete_project(project, user),
-        can_transfer=await _can_transfer_project(db, user.id, project),
+        can_edit=can_edit,
+        can_admin=can_admin,
+        can_delete=can_delete,
+        can_transfer=can_transfer,
         groups=groups,
     )
 

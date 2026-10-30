@@ -38,7 +38,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs mcp install --for claude-code</span></div>
             <div class="mt-2 text-muted">MCP server configured for Claude Code.</div>
             <div class="text-muted">Restart Claude Code to activate.</div>
-            <div class="mt-4 text-muted-dim">106 tools available to your AI agent:</div>
+            <div class="mt-4 text-muted-dim">109 tools available to your AI agent:</div>
             <div class="mt-1 text-muted-dim">Session tools (10):</div>
             <div class="text-txt">&bull; <span class="text-brand">search_sessions</span> <span class="text-muted-dim">— Search past sessions</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_session_context</span> <span class="text-muted-dim">— Full conversation from a session</span></div>
@@ -80,7 +80,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div class="text-txt">&bull; <span class="text-accent">delete_persona</span> <span class="text-muted-dim">— Retire a persona</span></div>
             <div class="text-txt">&bull; <span class="text-accent">assume_persona</span> <span class="text-muted-dim">— Tag captured sessions with this persona</span></div>
             <div class="text-txt">&bull; <span class="text-accent">forget_persona</span> <span class="text-muted-dim">— Clear the active persona bundle</span></div>
-            <div class="mt-2 text-muted-dim">Tickets (15) — <span class="text-accent">Team+</span>:</div>
+            <div class="mt-2 text-muted-dim">Tickets (16) — <span class="text-accent">Team+</span>:</div>
             <div class="text-txt">&bull; <span class="text-brand">list_tickets</span> <span class="text-muted-dim">— Filter by status / assignee</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_ticket</span> <span class="text-muted-dim">— Ticket detail + dependencies</span></div>
             <div class="text-txt">&bull; <span class="text-accent">create_ticket</span> <span class="text-muted-dim">— Open new ticket (acceptance criteria required for agents)</span></div>
@@ -94,13 +94,16 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div class="text-txt">&bull; <span class="text-accent">add_ticket_comment</span> <span class="text-muted-dim">— Slack-like thread</span></div>
             <div class="text-txt">&bull; <span class="text-brand">list_ticket_comments</span> <span class="text-muted-dim">— Page through a ticket's comments</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_ticket_review_state</span> <span class="text-muted-dim">— Open findings + last review verdict</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">check_merge_readiness</span> <span class="text-muted-dim">— Is the work safe to merge at this commit?</span></div>
             <div class="text-txt">&bull; <span class="text-accent">watch_ticket</span> <span class="text-muted-dim">— Follow a ticket to be told when it changes</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_ticket_updates</span> <span class="text-muted-dim">— Poll what changed on followed tickets</span></div>
-            <div class="mt-2 text-muted-dim">Agent runs (4) — <span class="text-accent">Team+</span>:</div>
+            <div class="mt-2 text-muted-dim">Agent runs (6) — <span class="text-accent">Team+</span>:</div>
             <div class="text-txt">&bull; <span class="text-accent">create_agent_run</span> <span class="text-muted-dim">— Track a persona run, manual or CI</span></div>
             <div class="text-txt">&bull; <span class="text-accent">complete_agent_run</span> <span class="text-muted-dim">— Record findings, evaluate fail-on policy</span></div>
             <div class="text-txt">&bull; <span class="text-accent">replay_agent_run</span> <span class="text-muted-dim">— Re-run with an edited prompt or context</span></div>
             <div class="text-txt">&bull; <span class="text-brand">list_agent_runs</span> <span class="text-muted-dim">— Browse runs by persona / status / ticket</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">report_agent_run_usage</span> <span class="text-muted-dim">— Add tokens and cost to a run in flight</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">get_spend_summary</span> <span class="text-muted-dim">— Agent spend by persona, model, ticket, role or day</span></div>
             <div class="mt-2 text-muted-dim">Agent feedback (3) — <span class="text-accent">Team+</span>:</div>
             <div class="text-txt">&bull; <span class="text-accent">record_agent_feedback</span> <span class="text-muted-dim">— Record how an agent run or ticket turned out</span></div>
             <div class="text-txt">&bull; <span class="text-brand">list_agent_feedback</span> <span class="text-muted-dim">— Browse feedback records</span></div>

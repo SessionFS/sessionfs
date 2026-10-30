@@ -1568,6 +1568,19 @@ _TOOLS = [
                     "enum": ["none", "low", "medium", "high", "critical"],
                 },
                 "triggered_by_persona": {"type": "string"},
+                "model": {"type": "string"},
+                "provider": {"type": "string"},
+                "role": {
+                    "type": "string",
+                    "enum": [
+                        "implementer", "ui-implementer", "reviewer",
+                        "design-reviewer", "security-reviewer", "release",
+                    ],
+                },
+                "branch": {"type": "string"},
+                "base_sha": {"type": "string"},
+                "parent_run_id": {"type": "string"},
+                "continues_run_id": {"type": "string"},
                 "start_now": {"type": "boolean", "default": False},
                 "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
@@ -1610,6 +1623,46 @@ _TOOLS = [
                     "default": [],
                 },
                 "session_id": {"type": "string"},
+                "input_tokens": {"type": "integer", "minimum": 0},
+                "output_tokens": {"type": "integer", "minimum": 0},
+                "cache_read_tokens": {"type": "integer", "minimum": 0},
+                "cache_write_tokens": {"type": "integer", "minimum": 0},
+                "cost_usd": {"type": "number", "minimum": 0},
+                "cost_basis": {
+                    "type": "string",
+                    "enum": ["reported", "estimated", "plan", "unknown"],
+                },
+                "head_sha": {"type": "string"},
+                "exit_reason": {
+                    "type": "string",
+                    "enum": ["finished", "out_of_turns", "crashed"],
+                },
+                "occurred_at": {"type": "string"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["run_id"],
+        },
+    ),
+    Tool(
+        name="report_agent_run_usage",
+        description=(
+            "Add token/cost usage to a queued or running agent run. Usage "
+            "is additive while the run is active (long runs and "
+            "continuations report more than once); after the run reaches a "
+            "terminal state the totals are fixed and further reports are "
+            "rejected with a conflict. Same auth as complete_agent_run.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs agent usage` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "input_tokens": {"type": "integer", "minimum": 0},
+                "output_tokens": {"type": "integer", "minimum": 0},
+                "cache_read_tokens": {"type": "integer", "minimum": 0},
+                "cache_write_tokens": {"type": "integer", "minimum": 0},
+                "cost_usd": {"type": "number", "minimum": 0},
                 "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["run_id"],
@@ -1766,6 +1819,33 @@ _TOOLS = [
             "properties": {
                 "persona": {"type": "string"},
                 "since": {"type": "string"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+        },
+    ),
+    Tool(
+        name="get_spend_summary",
+        description=(
+            "Summarize agent-run spend for a project (grouped by persona, "
+            "model, ticket, role, or day over a from/to date range, default "
+            "last 30 days) or for a single ticket (totals plus per-persona "
+            "and per-model plus the review-round count). Token totals are "
+            "always returned; dollar amounts are only returned to callers "
+            "with admin standing on the project (org owners/admins or the "
+            "owner of a personal project).\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs agent spend` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string"},
+                "group_by": {
+                    "type": "string",
+                    "enum": ["persona", "model", "ticket", "role", "day"],
+                },
+                "from": {"type": "string"},
+                "to": {"type": "string"},
                 "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
         },
@@ -2394,6 +2474,7 @@ _TOOLS = [
                 "comment_id": {"type": "string", "description": "The comment you just posted, for implementer/progress notes (validated server-side). For review verdicts use verdict_content instead — the server creates that comment."},
                 "verdict_content": {"type": "string", "description": "review_until_clean ONLY: the reviewer verdict text, whose first line must be a review verdict header ('<Reviewer> R3 review on tk_X: VERIFIED-CLEAN'). A verdict_content without a parseable header is rejected 422 (verdict_header_unparseable) before any write. The server creates this comment with server-derived trusted provenance — do NOT post it via add_ticket_comment."},
                 "verdict": {"type": "string", "description": "Optional raw verdict phrase for bookkeeping (clean|changes); the server re-derives closure from verdict_content regardless."},
+                "reviewed_commit": {"type": "string", "description": "review_until_clean ONLY: the exact head commit id (full 40- or 64-char lowercase hex) the reviewer reviewed, bound to the verdict so merge readiness can demand the verdict be on the current head."},
                 "agent_run_id": {"type": "string", "description": "AgentRun you opened, if any (optional)"},
                 "ticket_lease_epoch": {"type": "integer", "description": "Ticket lease epoch from the directive (fencing)"},
                 "failed": {"type": "boolean", "description": "true if no progress was made (triggers backoff)"},
@@ -3169,6 +3250,29 @@ _TOOLS = [
             "required": ["q"],
         },
     ),
+    Tool(
+        name="check_merge_readiness",
+        description=(
+            "Whether a ticket's work is safe to merge at a specific head "
+            "commit. Returns {ready, reasons, verdict} where ready is true "
+            "only when a trusted strict VERIFIED-CLEAN verdict exists, is "
+            "bound to exactly that commit, was posted by a reviewer identity "
+            "DIFFERENT from every implementer identity for the ticket, and no "
+            "open finding is harmful. Pure read; a human still does the "
+            "merge.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs loop ready` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string", "description": "Ticket id (tk_...)."},
+                "sha": {"type": "string", "description": "Head commit id (full 40- or 64-char lowercase hex) to check readiness against."},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["ticket_id", "sha"],
+        },
+    ),
 ]
 
 
@@ -3273,6 +3377,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_list_ticket_comments(arguments)
         elif name == "get_ticket_review_state":
             result = await _handle_get_ticket_review_state(arguments)
+        elif name == "check_merge_readiness":
+            result = await _handle_check_merge_readiness(arguments)
         elif name == "watch_ticket":
             result = await _handle_watch_ticket(arguments)
         elif name == "get_ticket_updates":
@@ -3319,6 +3425,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_create_agent_run(arguments)
         elif name == "complete_agent_run":
             result = await _handle_complete_agent_run(arguments)
+        elif name == "report_agent_run_usage":
+            result = await _handle_report_agent_run_usage(arguments)
         elif name == "list_agent_runs":
             result = await _handle_list_agent_runs(arguments)
         elif name == "replay_agent_run":
@@ -3329,6 +3437,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_list_agent_feedback(arguments)
         elif name == "get_agent_feedback_summary":
             result = await _handle_get_agent_feedback_summary(arguments)
+        elif name == "get_spend_summary":
+            result = await _handle_get_spend_summary(arguments)
         elif name == "dismiss_knowledge_entry":
             result = await _handle_dismiss_knowledge_entry(arguments)
         elif name == "update_entry_confidence":
@@ -5768,6 +5878,38 @@ async def _handle_get_ticket_review_state(args: dict) -> dict:
     return resp.json()
 
 
+async def _handle_check_merge_readiness(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/tickets/{ticket_id}/readiness.
+
+    Review Loop B2 — merge readiness at a specific head commit. Pure read.
+    """
+    ticket_id = args.get("ticket_id", "")
+    if not ticket_id:
+        return {"error": "ticket_id is required"}
+    sha = args.get("sha", "")
+    if not isinstance(sha, str) or not sha.strip():
+        return {"error": "sha is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/readiness",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params={"sha": sha.strip()},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Ticket '{ticket_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
 async def _handle_watch_ticket(args: dict) -> dict:
     """Wrap PUT/DELETE /api/v1/projects/{project_id}/tickets/{ticket_id}/watch."""
     ticket_id = args.get("ticket_id", "")
@@ -5929,6 +6071,16 @@ async def _handle_start_ticket(args: dict) -> dict:
 
     git_remote = args.get("git_remote", "")
     try:
+        git_remote = await _resolve_git_remote_arg(git_remote)
+    except GitRemotePathError as exc:
+        return {"error": str(exc)}
+
+    # G1 — record the normalized remote so the daemon can verify the
+    # bundle belongs to the session's workspace without a network call.
+    from sessionfs.git_remote import normalize_git_remote
+    normalized_remote = normalize_git_remote(git_remote) if git_remote else ""
+
+    try:
         api_url, api_key, project_id = await _resolve_project_id(git_remote)
     except Exception as exc:
         return {"error": str(exc)}
@@ -5965,6 +6117,7 @@ async def _handle_start_ticket(args: dict) -> dict:
     retrieval_audit_id = payload.get("retrieval_audit_id") if isinstance(payload, dict) else None
 
     from sessionfs.active_ticket import bundle_path, write_bundle
+    from sessionfs.project_root import resolve_project_root
     bundle_ok = write_bundle(
         ticket_id=ticket_id,
         persona_name=persona_name,
@@ -5973,6 +6126,8 @@ async def _handle_start_ticket(args: dict) -> dict:
         retrieval_audit_id=(
             retrieval_audit_id if isinstance(retrieval_audit_id, str) else None
         ),
+        git_remote=normalized_remote or None,
+        workspace=resolve_project_root(),
     )
     # KB 339 LOW — surface a structured warning when the bundle write
     # failed so the agent doesn't keep working under the assumption
@@ -6513,6 +6668,9 @@ async def _handle_complete_work_queue_step(args: dict) -> dict:
     vc = args.get("verdict_content")
     if isinstance(vc, str) and vc.strip():
         body["verdict_content"] = vc
+    rc = args.get("reviewed_commit")
+    if isinstance(rc, str) and rc.strip():
+        body["reviewed_commit"] = rc.strip()
     if isinstance(args.get("failed"), bool):
         body["failed"] = args["failed"]
     if args.get("ticket_lease_epoch") is not None:
@@ -6579,7 +6737,10 @@ async def _handle_complete_ticket(args: dict) -> dict:
     # since we started this one, leave its bundle in place so the daemon
     # keeps tagging that ticket's sessions.
     from sessionfs.active_ticket import clear_bundle_if_owned
-    clear_bundle_if_owned(ticket_id=ticket_id, project_id=project_id)
+    from sessionfs.project_root import resolve_project_root
+    clear_bundle_if_owned(
+        ticket_id=ticket_id, project_id=project_id, workspace=resolve_project_root()
+    )
 
     return resp.json()
 
@@ -7157,6 +7318,8 @@ async def _handle_create_agent_run(args: dict) -> dict:
     for key in (
         "tool", "trigger_source", "ticket_id", "trigger_ref",
         "ci_provider", "ci_run_url", "fail_on", "triggered_by_persona",
+        "model", "provider", "role", "branch", "base_sha",
+        "parent_run_id", "continues_run_id",
     ):
         val = args.get(key)
         if isinstance(val, str) and val.strip():
@@ -7219,11 +7382,64 @@ async def _handle_complete_agent_run(args: dict) -> dict:
     findings = args.get("findings")
     if isinstance(findings, list):
         body["findings"] = findings
+    # Review Loop R3 — usage fields are forwarded verbatim (the REST layer
+    # rejects booleans/out-of-range and does the additive merge).
+    for key in (
+        "input_tokens", "output_tokens", "cache_read_tokens",
+        "cache_write_tokens",
+    ):
+        if args.get(key) is not None:
+            body[key] = args[key]
+    if args.get("cost_usd") is not None:
+        body["cost_usd"] = args["cost_usd"]
+    for key in ("cost_basis", "head_sha", "exit_reason"):
+        if isinstance(args.get(key), str) and args[key].strip():
+            body[key] = args[key].strip()
+    if args.get("occurred_at"):
+        body["occurred_at"] = args["occurred_at"]
 
     import httpx
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/agent-runs/{_path_segment(run_id)}/complete",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code == 404:
+        return {"error": f"Agent run '{run_id}' not found"}
+    if resp.status_code == 409:
+        return {"error": f"Agent run '{run_id}' is already in a terminal state"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_report_agent_run_usage(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/agent-runs/{run_id}/usage."""
+    run_id = (args.get("run_id") or "").strip()
+    if not run_id:
+        return {"error": "run_id is required"}
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {}
+    for key in (
+        "input_tokens", "output_tokens", "cache_read_tokens",
+        "cache_write_tokens",
+    ):
+        if args.get(key) is not None:
+            body[key] = args[key]
+    if args.get("cost_usd") is not None:
+        body["cost_usd"] = args["cost_usd"]
+
+    import httpx
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/agent-runs/{_path_segment(run_id)}/usage",
             headers={"Authorization": f"Bearer {api_key}"},
             json=body,
         )
@@ -7427,6 +7643,48 @@ async def _handle_get_agent_feedback_summary(args: dict) -> dict:
             headers={"Authorization": f"Bearer {api_key}"},
             params=params,
         )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_get_spend_summary(args: dict) -> dict:
+    """Wrap GET /projects/{p}/spend or /projects/{p}/tickets/{t}/spend."""
+    ticket_id = (args.get("ticket_id") or "").strip()
+    group_by = (args.get("group_by") or "").strip()
+
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    if ticket_id:
+        path = (
+            f"/api/v1/projects/{project_id}/tickets/"
+            f"{_path_segment(ticket_id)}/spend"
+        )
+        params: dict[str, str] = {}
+    else:
+        path = f"/api/v1/projects/{project_id}/spend"
+        params = {}
+        if group_by:
+            params["group_by"] = group_by
+        for key in ("from", "to"):
+            val = args.get(key)
+            if isinstance(val, str) and val.strip():
+                params[key] = val.strip()
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}{path}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
+        )
+    if resp.status_code == 404:
+        target = f"Ticket '{ticket_id}'" if ticket_id else "Project"
+        return {"error": f"{target} not found"}
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return resp.json()

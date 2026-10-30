@@ -1538,7 +1538,9 @@ async def get_context_section(
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
-    await assert_service_key_can_access_project(db, auth, project)
+    await assert_service_key_can_access_project(
+        db, auth, project, opaque_404_detail="Project not found"
+    )
 
     sections = _split_context_sections(project.context_document or "")
     if slug not in sections:

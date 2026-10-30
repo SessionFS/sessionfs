@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, Float, Index, Integer, JSON, SmallInteger, String, Text, ForeignKey, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, Float, Index, Integer, JSON, Numeric, SmallInteger, String, Text, ForeignKey, UniqueConstraint, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -1813,6 +1814,11 @@ class WikiPageRevision(Base):
     )
     persona_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
     ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Service-key provenance (G0 / migration 106): None for human writes,
+    # set when a resident service key with ``knowledge:write`` edits a page.
+    actor_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     revised_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -2254,6 +2260,14 @@ class TicketComment(Base):
     verdict_trusted: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default=text("false")
     )
+    # Review Loop B2 (docs/design/review-loop-r3.md §4) — the exact head commit
+    # a trusted review verdict reviewed, so a VERIFIED-CLEAN can be bound to the
+    # code it actually read. Merge readiness only counts a verdict whose
+    # reviewed_commit matches the current head (a verdict on a moved SHA no
+    # longer marks the branch ready). Full commit id (40- or 64-char lowercase
+    # hex), nullable — only review verdict rows populate it; every other
+    # comment leaves it NULL.
+    reviewed_commit: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class TrustedReviewer(Base):
@@ -2734,6 +2748,21 @@ class AgentRun(Base):
         ),
         Index("idx_agent_run_project_created", "project_id", "created_at"),
         Index("idx_agent_run_replayed_from", "replayed_from"),
+        Index("idx_agent_run_project_parent", "project_id", "parent_run_id"),
+        CheckConstraint(
+            "cost_basis IS NULL OR cost_basis IN "
+            "('reported', 'estimated', 'plan', 'unknown')",
+            name="ck_agent_run_cost_basis",
+        ),
+        CheckConstraint(
+            "role IS NULL OR role IN ('implementer', 'ui-implementer', 'reviewer', "
+            "'design-reviewer', 'security-reviewer', 'release')",
+            name="ck_agent_run_role",
+        ),
+        CheckConstraint(
+            "exit_reason IS NULL OR exit_reason IN ('finished', 'out_of_turns', 'crashed')",
+            name="ck_agent_run_exit_reason",
+        ),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # run_<hex>
@@ -2820,6 +2849,31 @@ class AgentRun(Base):
     )
     service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # v0.29 — Review Loop R3 track A: model, spend and loop-linkage fields.
+    # All nullable; the route layer validates enum membership / ranges / SHA
+    # shape and the three enum CHECKs (cost_basis, role, exit_reason) are
+    # mirrored above. Tokens are BigInteger to survive long review-loop runs.
+    model: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    provider: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cache_write_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6), nullable=True)
+    cost_basis: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    role: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    branch: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    base_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    head_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    parent_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    continues_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    work_queue_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    work_queue_item_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    exit_reason: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    occurred_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class AgentFeedback(Base):
@@ -3187,6 +3241,16 @@ class RetrievalAuditContext(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # v0.10.10 provenance (mirrors RetrievalAuditEvent): a service-key start
+    # records WHICH key (service_key_id) in addition to its backing user
+    # (created_by_user_id). actor_type distinguishes user-key vs service-key.
+    # Pre-109 rows back-fill to actor_type='user' + NULL service_key_id, so a
+    # user-only start record may be the minter of a service-key reviewer and
+    # must be treated as fail-closed identity (see tickets readiness).
+    actor_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default="user"
+    )
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

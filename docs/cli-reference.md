@@ -1870,7 +1870,7 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed (106):
+Tools exposed (109):
 
 - **Sessions:** `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_session_summary`, `get_audit_report`, `get_session_provenance`, `get_session_retrieval_log`, `rename_session`, `checkpoint_session`, `list_checkpoints`, `fork_session`, `ask_session_helper`
 - **Knowledge (read):** `get_project_context`, `get_context_section`, `get_wiki_page`, `get_wiki_page_history`, `search_project_knowledge`, `list_knowledge_entries`, `get_knowledge_entry`, `get_knowledge_health`, `ask_project`
@@ -3014,6 +3014,41 @@ sfs agent complete <run_id> --summary "..." --severity none|low|medium|high|crit
 | `--status` | Override the terminal status — useful for review tooling that crashed (`--status errored --severity none`). Failed/errored statuses always store `exit_code=1` regardless of severity, so `--enforce` fails CI on crash. |
 | `--session-id` | Tag the run with the session that produced it. |
 | `--enforce` | Exit with the stored `exit_code` (0 on pass / 1 on fail). Defense-in-depth: also exits non-zero for any `failed`/`errored` status even when stored `exit_code` is 0. |
+| `--input-tokens`, `--output-tokens`, `--cache-read-tokens`, `--cache-write-tokens` | Token usage, added to anything reported earlier with `sfs agent usage` (v0.29.1). |
+| `--cost-usd` | Cost in USD, added to earlier reports (v0.29.1). |
+| `--cost-basis` | `reported`, `estimated`, `plan` or `unknown` (v0.29.1). |
+| `--head-sha` | Head commit the run finished on (v0.29.1). |
+| `--exit-reason` | `finished`, `out_of_turns` or `crashed` (v0.29.1). |
+
+### `sfs agent usage`
+
+Add token and cost usage to a queued or running run, for long runs and continuations that report more than once. Values are added to the run's totals. Once the run is complete, the totals are fixed and further reports are refused.
+
+```
+sfs agent usage RUN_ID [--input-tokens N] [--output-tokens N] [--cache-read-tokens N] [--cache-write-tokens N] [--cost-usd X]
+```
+
+At least one value is required.
+
+### `sfs agent spend`
+
+Summarize agent-run spend for a ticket or the current project. Dollar amounts only appear when the caller has admin standing on the project (org owners/admins, or the owner of a personal project); token totals are always shown. Service keys never see dollar figures.
+
+```
+sfs agent spend --ticket ID
+sfs agent spend --project [--group-by GROUP] [--from ISO] [--to ISO] [--format text|json]
+```
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `--ticket` | string | Ticket id to summarize (totals, per-persona, per-model, review rounds) |
+| `--project` | flag | Summarize the current project (defaults to the last 30 days) |
+| `--group-by` | string | `persona` \| `model` \| `ticket` \| `role` \| `day` (project view only) |
+| `--from` | string | Start of the `created_at` window (ISO datetime) |
+| `--to` | string | End of the `created_at` window (ISO datetime) |
+| `--format` | string | `text` (default) or `json` |
+
+Only runs with a `reported` or `estimated` cost basis add dollars; `plan` and `unknown` runs (including runs that reported tokens but no cost) add tokens only, shown separately as tokens on plans.
 
 ### `sfs agent status <run_id>`
 
@@ -3105,6 +3140,24 @@ sfs agent feedback summary [--persona NAME] [--since ISO] [--format text|json]
 `summary` is pure SQL aggregation (grouped counts by type × verdict × label) — no LLM. `--format json` on `list`/`summary` emits parseable output to stdout for scripting.
 
 ---
+
+## `sfs loop`
+
+Merge readiness for the [worker review loop](https://sessionfs.dev/review-loop/). Tier: **Team+**.
+
+### `sfs loop ready`
+
+Check whether a ticket's work is safe to merge at a given head commit. Pure read: a person still does the merge.
+
+```
+sfs loop ready TICKET_ID --sha HEAD_COMMIT
+```
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `--sha` | string | Full head commit id (40 or 64 lowercase hex characters) |
+
+Prints **READY** only when a trusted strict `VERIFIED-CLEAN` verdict is bound to exactly that commit, the reviewer's identity differs from every implementer identity recorded for the ticket, and no open finding is harmful. Otherwise it prints **NOT READY** with the reasons and exits `1`, so it can gate a script. MCP: `check_merge_readiness`.
 
 ## `sfs resident` (v0.14.0)
 

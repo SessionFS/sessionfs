@@ -20,7 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.models import ApiKey, Organization, User
-from sessionfs.skills.hosted import HostedClient, ServiceKeyNotAllowed, parse_api_error
+from sessionfs.skills.hosted import (
+    HostedClient,
+    HostedUnavailable,
+    ServiceKeyNotAllowed,
+    parse_api_error,
+)
 
 
 async def _service_key(db_session: AsyncSession, user: User) -> str:
@@ -85,16 +90,29 @@ async def test_real_user_key_identity_and_service_refusal_on_user_routes(
     hosted = _replay(me.status_code, me.content, me.headers.get("content-type", ""))
     assert hosted.identity() == {"kind": "user", "user_id": test_user.id}
 
-    # The older project-by-remote lookup is user-only: a service key gets the
-    # real rejection, which the client raises as ServiceKeyNotAllowed (pull
-    # then reports install requests as incomplete instead of empty).
+    # The older project-by-remote lookup now admits service keys holding
+    # knowledge:read; a marketplace-only key gets a 403 insufficient_scope,
+    # which the client raises as an authorization failure (never a silent
+    # "no project").
     raw = await _service_key(db_session, test_user)
     lookup = await client.get(
         "/api/v1/projects/github.com/acme/repo", headers={"Authorization": f"Bearer {raw}"}
     )
+    assert lookup.status_code == 403
+    assert "insufficient_scope" in lookup.text
     replay = _replay(lookup.status_code, lookup.content, lookup.headers.get("content-type", ""))
-    with pytest.raises(ServiceKeyNotAllowed):
+    with pytest.raises(HostedUnavailable) as raised:
         replay._legacy_project_id_for_remote("github.com/acme/repo")
+    assert not isinstance(raised.value, ServiceKeyNotAllowed)
+
+    # The user-only rejection still maps to ServiceKeyNotAllowed.
+    refused = _replay(
+        403,
+        b'{"detail": {"code": "service_key_not_allowed", "error": "service_key_not_allowed"}}',
+        "application/json",
+    )
+    with pytest.raises(ServiceKeyNotAllowed):
+        refused._legacy_project_id_for_remote("github.com/acme/repo")
 
 
 @pytest.mark.asyncio
