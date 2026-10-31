@@ -80,7 +80,7 @@ server = [
     # 119196/119197 (quadratic CPU in BER/CER/DER decoding).
     "pyasn1>=0.6.5",
     "cryptography>=50.0.0",
-    "stripe>=8.0,<16.0",
+    "stripe>=8.0,<17.0",
     # OIDC SSO domain verification resolves DNS TXT records (no stdlib TXT
     # resolver exists). dnspython is the established async-capable resolver.
     # Floor 2.9.0: GHSA-45c3-73f7-pv4m (name decompression CPU DoS). 2.9.0
