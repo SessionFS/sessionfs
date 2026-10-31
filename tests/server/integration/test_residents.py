@@ -1418,7 +1418,10 @@ class TestF1SelfReviewProhibition:
         ticket = await _make_ticket(db_session, project)
         queue = await _make_queue(db_session, project, user, mode="implement_until_done")
         item = await _make_item(db_session, queue, ticket)
-        impl_sk = await _make_service_key(db_session, org, user)
+        # The key must be minted by someone else: a human who minted the
+        # implementer key is that key's identity and cannot close its work.
+        other = await _make_user(db_session, org)
+        impl_sk = await _make_service_key(db_session, org, other)
 
         # Bind an implementer resident so the F1 gate applies; a human
         # reviewer (independent) then closes → 'human' marker.

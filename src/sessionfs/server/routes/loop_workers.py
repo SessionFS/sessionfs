@@ -753,7 +753,7 @@ async def _reviewer_is_independent(
         minter = minters.get(reviewer_key)
         if not minter:
             return False
-        reviewer_users.add(minter)
+        reviewer_users |= minter
     for svc, usr in identities:
         if usr and usr in reviewer_users:
             return False
@@ -763,7 +763,7 @@ async def _reviewer_is_independent(
             minter = minters.get(svc)
             if not minter:
                 return False
-            if minter in reviewer_users:
+            if minter & reviewer_users:
                 return False
     return True
 

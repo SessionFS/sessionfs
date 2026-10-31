@@ -1447,6 +1447,15 @@ async def _project_id_for_remote(db, normalized: str) -> str | None:
     ).scalar_one_or_none()
 
 
+async def _project_has_loop_plan(db, project_id: str) -> bool:
+    """Loop/release recording is a Team+ feature: skip (still 200) otherwise."""
+    from sessionfs.server.db.models import Project
+    from sessionfs.server.tier_gate import project_plan_has_feature
+
+    project = await db.get(Project, project_id)
+    return await project_plan_has_feature(project, "agent_tickets", db)
+
+
 async def _handle_pr_ingest(payload: dict, fence: tuple[str, int] | None = None) -> bool:
     """Upsert the PR (+ auto-link tickets) and refresh merge checks.
 
@@ -1481,9 +1490,9 @@ async def _handle_pr_ingest(payload: dict, fence: tuple[str, int] | None = None)
         async with async_session_factory() as db:
             await _hold_delivery_fence(db, fence)
             project_id = await _project_id_for_remote(db, normalized)
-            if project_id is None:
+            if project_id is None or not await _project_has_loop_plan(db, project_id):
                 await db.rollback()
-                return True  # unmapped repo — ignore
+                return True  # unmapped repo or plan without agent_tickets — ignore
             result = await releases.upsert_pull_request(
                 db,
                 project_id=project_id,
@@ -1539,9 +1548,9 @@ async def _handle_release_event(payload: dict, fence: tuple[str, int] | None = N
         async with async_session_factory() as db:
             await _hold_delivery_fence(db, fence)
             project_id = await _project_id_for_remote(db, normalized)
-            if project_id is None:
+            if project_id is None or not await _project_has_loop_plan(db, project_id):
                 await db.rollback()
-                return True  # unmapped repo — ignore
+                return True  # unmapped repo or plan without agent_tickets — ignore
             await releases.record_release(
                 db,
                 project_id=project_id,

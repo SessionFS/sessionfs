@@ -32,6 +32,7 @@ from sessionfs.server.db.models import (
     PullRequest,
     Release,
     ReleasePr,
+    ReleaseTicket,
     Ticket,
     TicketComment,
     TicketPrLink,
@@ -743,7 +744,8 @@ async def ticket_story(
     events.sort(key=lambda e: (e["at"] or "", _KIND_ORDER.get(e["kind"], 99)))
 
     # Shipped context (track F1): PRs linked to this ticket, the releases that
-    # carried them, and where those releases deployed. Fixed-size queries only.
+    # carried them (via PRs or a direct release → ticket link), and where those
+    # releases deployed. Fixed-size queries only.
     pr_ids = list(
         (
             await db.execute(
@@ -787,53 +789,69 @@ async def ticket_story(
             }
             for p in pr_rows
         ]
-        release_ids = list(
+
+    # A release reached by a PR link or by a direct link both count; load the
+    # union in one query (a ticket can be linked both ways without duplicating).
+    release_ids = set(
+        (
+            await db.execute(
+                select(ReleasePr.release_id).where(ReleasePr.pr_id.in_(pr_ids))
+            )
+        )
+        .scalars()
+        .all()
+        if pr_ids
+        else []
+    )
+    release_ids |= set(
+        (
+            await db.execute(
+                select(ReleaseTicket.release_id).where(
+                    ReleaseTicket.ticket_id == ticket.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if release_ids:
+        rel_rows = list(
             (
                 await db.execute(
-                    select(ReleasePr.release_id).where(ReleasePr.pr_id.in_(pr_ids))
+                    select(Release)
+                    .where(
+                        Release.project_id == project_id,
+                        Release.id.in_(list(release_ids)),
+                    )
+                    .order_by(Release.released_at, Release.id)
                 )
             )
             .scalars()
             .all()
         )
-        if release_ids:
-            rel_rows = list(
-                (
-                    await db.execute(
-                        select(Release)
-                        .where(
-                            Release.project_id == project_id,
-                            Release.id.in_(release_ids),
-                        )
-                        .order_by(Release.released_at, Release.id)
-                    )
+        releases_out = [
+            {"version": r.version, "released_at": _iso(r.released_at)}
+            for r in rel_rows
+        ]
+        dep_rows = list(
+            (
+                await db.execute(
+                    select(Deployment)
+                    .where(Deployment.release_id.in_([r.id for r in rel_rows]))
+                    .order_by(Deployment.deployed_at, Deployment.id)
                 )
-                .scalars()
-                .all()
             )
-            releases_out = [
-                {"version": r.version, "released_at": _iso(r.released_at)}
-                for r in rel_rows
-            ]
-            dep_rows = list(
-                (
-                    await db.execute(
-                        select(Deployment)
-                        .where(Deployment.release_id.in_([r.id for r in rel_rows]))
-                        .order_by(Deployment.deployed_at, Deployment.id)
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            deployments_out = [
-                {
-                    "environment": d.environment,
-                    "deployed_at": _iso(d.deployed_at),
-                    "source": d.source,
-                }
-                for d in dep_rows
-            ]
+            .scalars()
+            .all()
+        )
+        deployments_out = [
+            {
+                "environment": d.environment,
+                "deployed_at": _iso(d.deployed_at),
+                "source": d.source,
+            }
+            for d in dep_rows
+        ]
 
     return {
         "ticket_id": ticket.id,

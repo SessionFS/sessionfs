@@ -27,6 +27,8 @@ from sessionfs.server.auth.project_access import (
 )
 from sessionfs.server.db.models import LoopChecklistItem, Ticket
 from sessionfs.server.services.loops import load_loops
+from sessionfs.server.tier_gate import resolve_project_plan_tiers
+from sessionfs.server.tiers import Tier, get_features_for_tier
 
 # Cap the feed's item array; ``counts`` always reflects the full totals.
 _ITEM_LIMIT = 100
@@ -65,6 +67,17 @@ def _empty_counts() -> dict[str, int]:
 async def needs_you(db: AsyncSession, *, user_id: str) -> dict[str, Any]:
     """Return ``{"items": [...], "counts": {...}}`` for the caller's inbox."""
     projects = await list_accessible_projects(db, user_id)
+    if not projects:
+        return {"items": [], "counts": _empty_counts()}
+
+    # Only projects whose plan includes agent_tickets (Team+) contribute;
+    # one batched plan resolution, never a per-project query loop.
+    tiers = await resolve_project_plan_tiers(list(projects), db)
+    projects = [
+        p
+        for p in projects
+        if "agent_tickets" in get_features_for_tier(tiers.get(p.id, Tier.FREE))
+    ]
     if not projects:
         return {"items": [], "counts": _empty_counts()}
 

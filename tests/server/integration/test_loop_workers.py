@@ -401,3 +401,61 @@ async def test_unknown_implementer_does_not_auto_close(
     r = await _round(client, e, verdict="VERIFIED-CLEAN", findings=[])
     assert r.status_code == 201
     assert (await _item(db_session, e)).item_status != "done"
+
+
+@pytest.mark.asyncio
+async def test_human_cannot_close_item_implemented_with_their_own_key(
+    client: AsyncClient, db_session: AsyncSession
+):
+    e = await _env(db_session, client)
+    key_row, raw = await _make_service_key(
+        db_session, e.org, e.owner,
+        ["loops:write", "tickets:write", "agent_runs:write"],
+        project_ids=[e.project.id],
+    )
+    run_id = (await _start_worker(client, e, key=raw)).json()["run_id"]
+    await _finish(client, e, run_id, key=raw)
+    db_session.add(
+        TrustedReviewer(
+            id=f"tr_{uuid.uuid4().hex[:16]}",
+            project_id=e.project.id,
+            user_id=e.owner.id,
+            reviewer_persona="reviewer",
+            is_active=True,
+            created_by_user_id=e.owner.id,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+    r = await _round(client, e, key=e.owner_key, verdict="VERIFIED-CLEAN", findings=[])
+    assert r.status_code == 201
+    assert (await _item(db_session, e)).item_status != "done"
+
+
+@pytest.mark.asyncio
+async def test_key_cannot_close_item_implemented_by_its_minter(
+    client: AsyncClient, db_session: AsyncSession
+):
+    e = await _env(db_session, client)
+    run_id = (await _start_worker(client, e)).json()["run_id"]
+    await _finish(client, e, run_id)
+    key_row, raw = await _make_service_key(
+        db_session, e.org, e.owner,
+        ["loops:write", "tickets:write", "agent_runs:write", "work_queues:write"],
+        project_ids=[e.project.id],
+    )
+    db_session.add(
+        TrustedReviewer(
+            id=f"tr_{uuid.uuid4().hex[:16]}",
+            project_id=e.project.id,
+            service_key_id=key_row.id,
+            reviewer_persona="reviewer",
+            is_active=True,
+            created_by_user_id=e.owner.id,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    await db_session.commit()
+    r = await _round(client, e, key=raw, verdict="VERIFIED-CLEAN", findings=[])
+    assert r.status_code == 201, r.text
+    assert (await _item(db_session, e)).item_status != "done"

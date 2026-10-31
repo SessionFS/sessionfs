@@ -724,6 +724,190 @@ async def test_story_includes_prs_releases_deployments(
     assert [d["environment"] for d in body["deployments"]] == ["prod"]
 
 
+# ── direct ticket links (PR-less release flows) ───────────────────
+
+
+@pytest.mark.asyncio
+async def test_record_release_links_tickets_and_idempotent(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    ticket = await _make_ticket(db_session, project, owner)
+
+    body = {
+        "version": "1.0.0", "tag_sha": "a" * 40, "ticket_ids": [ticket.id],
+    }
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/releases", json=body, headers=_hdrs(key)
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ticket_ids"] == [ticket.id]
+
+    # Re-record: id stable, no duplicate link.
+    again = await client.post(
+        f"/api/v1/projects/{project.id}/releases",
+        json={"version": "1.0.0", "tag_sha": "b" * 40, "ticket_ids": [ticket.id]},
+        headers=_hdrs(key),
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["id"] == resp.json()["id"]
+    assert again.json()["ticket_ids"] == [ticket.id]
+
+    # The Ship Report counts the directly-linked ticket once.
+    report = await client.get(
+        f"/api/v1/projects/{project.id}/releases/1.0.0/ship-report",
+        headers=_hdrs(key),
+    )
+    assert report.json()["tickets"] == 1
+
+
+@pytest.mark.asyncio
+async def test_link_tickets_endpoint_idempotent(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    ticket = await _make_ticket(db_session, project, owner)
+    await client.post(
+        f"/api/v1/projects/{project.id}/releases",
+        json={"version": "1.0.0", "tag_sha": "a" * 40},
+        headers=_hdrs(key),
+    )
+
+    for _ in range(2):
+        resp = await client.post(
+            f"/api/v1/projects/{project.id}/releases/1.0.0/tickets",
+            json={"ticket_ids": [ticket.id]},
+            headers=_hdrs(key),
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["version"] == "1.0.0"
+        assert resp.json()["ticket_ids"] == [ticket.id]
+
+    report = await client.get(
+        f"/api/v1/projects/{project.id}/releases/1.0.0/ship-report",
+        headers=_hdrs(key),
+    )
+    assert report.json()["tickets"] == 1  # not duplicated
+
+
+@pytest.mark.asyncio
+async def test_cross_project_ticket_404(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+
+    other_owner, _ = await _make_user(db_session)
+    other_project = await _make_project(db_session, other_owner)
+    other_ticket = await _make_ticket(db_session, other_project, other_owner)
+
+    # Cross-project and bogus ids share one byte-identical 404 body.
+    cross = await client.post(
+        f"/api/v1/projects/{project.id}/releases",
+        json={"version": "1.0.0", "tag_sha": "a" * 40, "ticket_ids": [other_ticket.id]},
+        headers=_hdrs(key),
+    )
+    assert cross.status_code == 404
+    bogus = await client.post(
+        f"/api/v1/projects/{project.id}/releases",
+        json={"version": "1.0.0", "tag_sha": "a" * 40, "ticket_ids": [f"tk_{'0' * 16}"]},
+        headers=_hdrs(key),
+    )
+    assert bogus.status_code == 404
+    assert cross.json() == bogus.json()
+    assert cross.json()["error"]["message"] == "Ticket not found"
+
+
+@pytest.mark.asyncio
+async def test_ship_report_direct_links_union_pr_links_no_double_counting(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+
+    # A ships via PR only; B ships direct only; C ships both ways.
+    ticket_a = await _make_ticket(
+        db_session, project, owner,
+        status="done", resolved_at=datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc),
+    )
+    ticket_b = await _make_ticket(
+        db_session, project, owner,
+        status="done", resolved_at=datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc),
+    )
+    ticket_c = await _make_ticket(
+        db_session, project, owner,
+        status="done", resolved_at=datetime(2026, 10, 6, 12, 0, tzinfo=timezone.utc),
+    )
+    pr_a = await _upsert_pr(client, project, key, number=71, title=f"ship {ticket_a.id}")
+    pr_c = await _upsert_pr(client, project, key, number=72, title=f"ship {ticket_c.id}")
+
+    for ticket, cls in ((ticket_a, "xss"), (ticket_b, "crash"), (ticket_c, "sqli")):
+        await _make_run(
+            db_session, project, ticket_id=ticket.id, role="implementer",
+            model="model-impl",
+            occurred_at=datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc),
+            input_tokens=100, output_tokens=0,
+            cost_basis="reported", cost_usd="1.000000",
+            findings=[
+                {"round": 1, "stage": "code", "harm": "crash", "class": cls,
+                 "title": cls, "status": "fixed"},
+            ],
+        )
+
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/releases",
+        json={
+            "version": "1.0.0", "tag_sha": "a" * 40,
+            "released_at": "2026-10-10T00:00:00Z",
+            "pr_numbers": [71, 72],
+            "ticket_ids": [ticket_b.id, ticket_c.id],
+        },
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 200, resp.text
+    assert set(resp.json()["pr_ids"]) == {pr_a["id"], pr_c["id"]}
+    assert set(resp.json()["ticket_ids"]) == {ticket_b.id, ticket_c.id}
+
+    report = await client.get(
+        f"/api/v1/projects/{project.id}/releases/1.0.0/ship-report",
+        headers=_hdrs(key),
+    )
+    assert report.status_code == 200, report.text
+    body = report.json()
+    assert body["tickets"] == 3  # A, B, C — C counted once
+    assert body["findings"] == 3
+    assert body["harmful"] == 3
+    assert body["cost_per_accepted_change"]["tokens"] == pytest.approx(100.0)
+    assert body["cost_per_accepted_change"]["cost_usd"] == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_story_includes_direct_release(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    ticket = await _make_ticket(db_session, project, owner)
+    await client.post(
+        f"/api/v1/projects/{project.id}/releases",
+        json={
+            "version": "1.0.0", "tag_sha": "a" * 40,
+            "released_at": "2026-10-10T00:00:00Z", "ticket_ids": [ticket.id],
+        },
+        headers=_hdrs(key),
+    )
+
+    resp = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{ticket.id}/story",
+        headers=_hdrs(key),
+    )
+    assert resp.status_code == 200, resp.text
+    assert [r["version"] for r in resp.json()["releases"]] == ["1.0.0"]
+    assert resp.json()["prs"] == []
+
+
 # ── access: oracle + scopes ───────────────────────────────────────
 
 

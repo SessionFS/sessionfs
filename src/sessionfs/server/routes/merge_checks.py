@@ -18,6 +18,7 @@ from sessionfs.server.auth.dependencies import AuthContext, require_scope
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.routes.loop_checklist import _write_scope
 from sessionfs.server.services import merge_checks
+from sessionfs.server.tier_gate import UserContext, check_project_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/projects", tags=["merge-checks"])
 
@@ -27,10 +28,12 @@ async def post_ticket_merge_check(
     project_id: str,
     ticket_id: str,
     auth: AuthContext = Depends(require_scope("loops:write")),
+    ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Recompute and post a ticket's merge check. Returns the posted outcome."""
     project = await _write_scope(project_id, auth, db)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     return await merge_checks.refresh_merge_check(
         db, ticket_id=ticket_id, project_id=project.id
     )

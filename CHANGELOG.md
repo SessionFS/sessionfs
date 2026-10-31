@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.4] - 2026-10-31
+
+**Self-review can't slip through a rotated key, releases can carry their tickets directly, and release tooling is a Team feature.** Server migrations 117–118.
+
+### Added
+- **Link tickets to a release without a pull request.** `sfs release record <version> --ticket tk_…` (repeatable), `sfs release link <version> --ticket …`, `ticket_ids` on `POST /api/v1/projects/{id}/releases` and `POST .../releases/{version}/tickets`. The Ship Report and each ticket's story count tickets linked directly as well as through pull requests. Only tickets in the release's own project can be linked.
+
+### Changed
+- **A rotated service key counts as everyone who minted or rotated it.** When an admin rotates a member's key, the new key counts as both of them, so neither can review work done with it as if they were independent. A key whose rotation history can't be followed is never treated as independent. Merge readiness, work queues and review rounds all use the same rule, including when a person reviews work done with a key they minted.
+- **Release recording, merge checks, share links and the Review loops inbox need the Team plan**, like starting loops. Projects on other plans keep reading their releases, Ship Reports and stories, can still list and revoke share links, and their webhooks are acknowledged without recording anything.
+
+### Fixed
+- `sfs release deploy` printed "None" instead of the version.
+- Merge checks are no longer posted for projects without the Team plan after a review round.
+
 ## [0.29.3] - 2026-10-31
 
 **Record every worker run and review round, gate the merge on GitHub and GitLab, and tell the story of each release.** Server migrations 113–116.

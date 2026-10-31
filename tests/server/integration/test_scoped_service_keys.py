@@ -456,6 +456,32 @@ async def test_raw_key_not_in_logs_on_create_or_rotate(
     assert new_raw not in full_log
 
 
+@pytest.mark.asyncio
+async def test_rotate_records_link_to_previous_key(
+    client: AsyncClient, db_session: AsyncSession
+):
+    from sqlalchemy import select
+
+    from sessionfs.server.db.models import ApiKey
+
+    org, admin, admin_raw = await _make_org_with_admin(db_session)
+    create = await client.post(
+        f"/api/v1/orgs/{org.id}/service-keys",
+        headers=_hdrs(admin_raw),
+        json={"name": "t", "scopes": ["handoffs:write"]},
+    )
+    old_id = create.json()["id"]
+    rot = await client.post(
+        f"/api/v1/orgs/{org.id}/service-keys/{old_id}/rotate",
+        headers=_hdrs(admin_raw),
+    )
+    assert rot.status_code == 200
+    new = (
+        await db_session.execute(select(ApiKey).where(ApiKey.id == rot.json()["id"]))
+    ).scalar_one()
+    assert new.rotated_from_key_id == old_id
+
+
 # ── Property 8: back-compat for legacy user keys ──
 
 

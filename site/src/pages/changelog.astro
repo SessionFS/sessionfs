@@ -17,6 +17,27 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.29.4 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.29.4</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 31, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Rotated-Key Self-Review &middot; Release Ticket Links &middot; Team Plan for Release Tools</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Link tickets to a release without a pull request.</strong> <span class="font-mono text-accent text-sm">sfs release record &lt;version&gt; --ticket</span> (repeatable) and <span class="font-mono text-accent text-sm">sfs release link</span>. The Ship Report and each ticket&rsquo;s story count tickets linked directly as well as through pull requests. Only tickets in the release&rsquo;s own project can be linked.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>A rotated service key counts as everyone who minted or rotated it.</strong> When an admin rotates a member&rsquo;s key, the new key counts as both of them, so neither can review work done with it as if they were independent. A key whose rotation history can&rsquo;t be followed is never treated as independent. Merge readiness, work queues and review rounds all use the same rule, including when a person reviews work done with a key they minted.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Release recording, merge checks, share links and the Review loops inbox need the Team plan</strong>, like starting loops. Projects on other plans keep reading their releases, Ship Reports and stories, can still list and revoke share links, and their webhooks are acknowledged without recording anything.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed:</strong> <span class="font-mono text-accent text-sm">sfs release deploy</span> printed &ldquo;None&rdquo; instead of the version.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;118 (117 adds direct release&ndash;ticket links; 118 records which key a rotated service key replaced; both additive). Self-hosted: run migrations 117&ndash;118. 118 MCP tools.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
       <!-- v0.29.3 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +45,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.29.3</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 31, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Worker Runs &middot; Review Rounds &middot; Merge Check &middot; Ship Reports</h2>
         <ul class="space-y-2 text-base text-muted">

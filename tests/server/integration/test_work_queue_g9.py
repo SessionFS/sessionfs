@@ -797,3 +797,135 @@ async def test_implement_no_close_when_implementer_key_minter_unresolvable(
     assert final.implementer_service_key_id == "sk_missing"
     assert final.item_status == "waiting"
     assert final.closed_by_service_key_id is None
+
+
+async def test_implement_no_close_when_admin_rotated_the_implementer_key(
+    db_session: AsyncSession,
+):
+    """An admin who rotated a member's key is part of that key's identity, so
+    their own trusted clean over that key's work must not auto-close."""
+    owner = await _make_user(db_session, "owner")
+    member = await _make_user(db_session, "member")
+    admin = await _make_user(db_session, "admin")
+    project = await _make_project(db_session, owner)
+    ticket = await _make_ticket(db_session, project)
+    queue = await _make_queue(db_session, project, owner, mode="implement_until_done")
+    item = await _make_item(db_session, queue, ticket)
+    old_svc = await _make_service_key(db_session, member)
+    impl_svc = await _make_service_key(db_session, member)
+    impl_svc.created_by_user_id = admin.id
+    impl_svc.rotated_from_key_id = old_svc.id
+    reviewer_svc = await _make_service_key(db_session, admin)
+    await db_session.commit()
+
+    d = await _run_step(db_session, queue)
+    await db_session.commit()
+
+    impl_at = datetime.now(timezone.utc) - timedelta(minutes=10)
+    comment = await _seed_comment(
+        db_session, ticket, member, content="Implemented the change.",
+        service_key_id=impl_svc.id, created_at=impl_at,
+    )
+    await _seed_comment(
+        db_session, ticket, admin, content=CLEAN, verdict_trusted=True,
+        reviewed_commit=HEAD, service_key_id=reviewer_svc.id,
+        created_at=datetime.now(timezone.utc),
+    )
+    await db_session.commit()
+
+    comp = await wq_engine.complete_work_queue_step(
+        db_session, queue=queue, item_id=d["item_id"],
+        directive_id=d["directive_id"], ticket_id=ticket.id,
+        outcome="posted_progress", comment_id=comment.id,
+        agent_run_id=None, failed=False,
+        actor_user_id=member.id, actor_org_id=None,
+        actor_service_key_id=impl_svc.id, actor_type="service_key",
+        service_key_name="impl-svc",
+    )
+    await db_session.commit()
+    assert comp.item_terminal is False
+    final = await _refetch_item(db_session, item.id)
+    assert final.item_status == "waiting"
+
+
+async def test_implement_no_close_when_human_reviews_work_done_with_their_own_key(
+    db_session: AsyncSession,
+):
+    """A human who minted the implementer key is that key's identity."""
+    owner = await _make_user(db_session, "owner")
+    minter = await _make_user(db_session, "minter")
+    project = await _make_project(db_session, owner)
+    ticket = await _make_ticket(db_session, project)
+    queue = await _make_queue(db_session, project, owner, mode="implement_until_done")
+    item = await _make_item(db_session, queue, ticket)
+    impl_svc = await _make_service_key(db_session, minter)
+    await db_session.commit()
+
+    d = await _run_step(db_session, queue)
+    await db_session.commit()
+
+    comment = await _seed_comment(
+        db_session, ticket, minter, content="Implemented the change.",
+        service_key_id=impl_svc.id, created_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+    )
+    await _seed_comment(
+        db_session, ticket, minter, content=CLEAN, verdict_trusted=True,
+        reviewed_commit=HEAD, created_at=datetime.now(timezone.utc),
+    )
+    await db_session.commit()
+
+    comp = await wq_engine.complete_work_queue_step(
+        db_session, queue=queue, item_id=d["item_id"],
+        directive_id=d["directive_id"], ticket_id=ticket.id,
+        outcome="posted_progress", comment_id=comment.id,
+        agent_run_id=None, failed=False,
+        actor_user_id=minter.id, actor_org_id=None,
+        actor_service_key_id=impl_svc.id, actor_type="service_key",
+        service_key_name="impl-svc",
+    )
+    await db_session.commit()
+    assert comp.item_terminal is False
+    final = await _refetch_item(db_session, item.id)
+    assert final.item_status == "waiting"
+
+
+async def test_implement_no_close_when_key_reviews_its_minters_human_work(
+    db_session: AsyncSession,
+):
+    """A reviewer key whose minter implemented as a human is the same identity."""
+    owner = await _make_user(db_session, "owner")
+    minter = await _make_user(db_session, "minter")
+    project = await _make_project(db_session, owner)
+    ticket = await _make_ticket(db_session, project)
+    queue = await _make_queue(db_session, project, owner, mode="implement_until_done")
+    item = await _make_item(db_session, queue, ticket)
+    reviewer_svc = await _make_service_key(db_session, minter)
+    await db_session.commit()
+
+    d = await _run_step(db_session, queue)
+    await db_session.commit()
+
+    comment = await _seed_comment(
+        db_session, ticket, minter, content="Implemented the change.",
+        service_key_id=None, created_at=datetime.now(timezone.utc) - timedelta(minutes=10),
+    )
+    await _seed_comment(
+        db_session, ticket, owner, content=CLEAN, verdict_trusted=True,
+        reviewed_commit=HEAD, service_key_id=reviewer_svc.id,
+        created_at=datetime.now(timezone.utc),
+    )
+    await db_session.commit()
+
+    comp = await wq_engine.complete_work_queue_step(
+        db_session, queue=queue, item_id=d["item_id"],
+        directive_id=d["directive_id"], ticket_id=ticket.id,
+        outcome="posted_progress", comment_id=comment.id,
+        agent_run_id=None, failed=False,
+        actor_user_id=minter.id, actor_org_id=None,
+        actor_service_key_id=None, actor_type="user",
+        service_key_name="impl-svc",
+    )
+    await db_session.commit()
+    assert comp.item_terminal is False
+    final = await _refetch_item(db_session, item.id)
+    assert final.item_status == "waiting"

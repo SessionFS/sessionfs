@@ -518,7 +518,7 @@ def compute_merge_readiness(
     comments: Iterable[dict],
     sha: str,
     implementer_identities: Iterable[tuple[Optional[str], Optional[str]]],
-    key_minters: Optional[Mapping[str, Optional[str]]] = None,
+    key_minters: Optional[Mapping[str, Optional[frozenset[str]]]] = None,
 ) -> dict:
     """Derive the merge-readiness dict from pre-fetched comment rows.
 
@@ -588,13 +588,15 @@ def compute_merge_readiness(
                 self_close = (
                     closing_minter is None
                     or impl_minter is None
-                    or closing_minter == impl_minter
+                    or bool(closing_minter & impl_minter)
                 )
         elif closing_svc:
             # Service-key reviewer vs a user-only implementer record: the user
             # may be the key's minter (the same identity). Fail closed when
             # the minter can't be resolved.
-            self_close = closing_minter is None or closing_minter == impl_usr
+            self_close = closing_minter is None or bool(
+                impl_usr and impl_usr in closing_minter
+            )
         elif impl_svc:
             # Human reviewer vs service-key implementer. The key IS its
             # minter, so a human reviewing work their own key did is
@@ -603,7 +605,7 @@ def compute_merge_readiness(
             impl_minter = (key_minters or {}).get(impl_svc)
             self_close = (
                 impl_minter is None
-                or bool(closing_usr and closing_usr == impl_minter)
+                or bool(closing_usr and closing_usr in impl_minter)
                 or bool(closing_usr and impl_usr and closing_usr == impl_usr)
             )
         else:
@@ -692,17 +694,28 @@ async def load_implementer_identities(
     return out
 
 
+_MAX_ROTATION_DEPTH = 50
+
+
 async def load_key_minters(
     db: Any,
     comments: Iterable[dict],
     implementer_identities: Iterable[tuple[Optional[str], Optional[str]]] = (),
-) -> dict[str, Optional[str]]:
-    """The minting user of every relevant service key.
+) -> dict[str, Optional[frozenset[str]]]:
+    """The identity set of every relevant service key.
+
+    A key's identity is EVERY user who minted or rotated it: its ``user_id``,
+    its ``created_by_user_id``, and the same for each key it was rotated from
+    (``rotated_from_key_id`` chain). An admin who rotates a member's key is
+    therefore part of that key's identity. Keys rotated before the link
+    existed carry no ``rotated_from_key_id`` and resolve to
+    ``{user_id, created_by_user_id}``. A missing link row, a cycle, an
+    over-long chain or a key without a ``user_id`` maps to ``None`` (an
+    unresolvable identity, which every caller treats as not independent).
 
     Covers both reviewer keys (every service key that authored a trusted
     comment) and implementer keys (every service_key_id in
-    ``implementer_identities``), so ``compute_merge_readiness`` can resolve a
-    service-key implementer's minter and fail closed when it can't be found.
+    ``implementer_identities``).
     """
     from sqlalchemy import select
 
@@ -716,7 +729,47 @@ async def load_key_minters(
     key_ids.update(svc for svc, _usr in implementer_identities if svc)
     if not key_ids:
         return {}
-    rows = (
-        await db.execute(select(ApiKey.id, ApiKey.user_id).where(ApiKey.id.in_(key_ids)))
-    ).all()
-    return {kid: uid for kid, uid in rows}
+
+    rows: dict[str, tuple[Optional[str], Optional[str], Optional[str]]] = {}
+    queried: set[str] = set()
+    pending = set(key_ids)
+    for _ in range(_MAX_ROTATION_DEPTH + 1):
+        pending -= queried
+        if not pending:
+            break
+        queried |= pending
+        fetched = (
+            await db.execute(
+                select(
+                    ApiKey.id,
+                    ApiKey.user_id,
+                    ApiKey.created_by_user_id,
+                    ApiKey.rotated_from_key_id,
+                ).where(ApiKey.id.in_(pending))
+            )
+        ).all()
+        for kid, uid, cby, parent in fetched:
+            rows[kid] = (uid, cby, parent)
+        pending = {parent for _u, _c, parent in rows.values() if parent}
+
+    result: dict[str, Optional[frozenset[str]]] = {}
+    for kid in key_ids:
+        users: set[str] = set()
+        seen: set[str] = set()
+        cur: Optional[str] = kid
+        ok = True
+        while cur:
+            if cur in seen or len(seen) > _MAX_ROTATION_DEPTH or cur not in rows:
+                ok = False
+                break
+            seen.add(cur)
+            uid, cby, parent = rows[cur]
+            if not uid:
+                ok = False
+                break
+            users.add(uid)
+            if cby:
+                users.add(cby)
+            cur = parent
+        result[kid] = frozenset(users) if ok and users else None
+    return result

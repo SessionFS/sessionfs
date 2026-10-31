@@ -28,7 +28,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, func, literal, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.models import (
@@ -39,6 +39,7 @@ from sessionfs.server.db.models import (
     Release,
     ReleaseGate,
     ReleasePr,
+    ReleaseTicket,
     Ticket,
     TicketComment,
     TicketPrLink,
@@ -80,6 +81,7 @@ _MAX_KIND = 64
 _MAX_URL = 2048
 MAX_PR_NUMBER = 2_147_483_647
 MAX_PR_NUMBERS = 200
+MAX_RELEASE_TICKETS = 200
 
 
 def clean_str(value: Any, cap: int) -> str:
@@ -336,14 +338,16 @@ async def record_release(
     source: str = "manual",
     pr_numbers: list[int] | None = None,
     commit_shas: list[str] | None = None,
+    ticket_ids: list[str] | None = None,
     created_by_user_id: str | None = None,
     service_key_id: str | None = None,
 ) -> dict[str, Any]:
-    """Insert or update a release, then link its PRs. Idempotent.
+    """Insert or update a release, then link its PRs and tickets. Idempotent.
 
     PRs are matched by ``pr_numbers`` (PR number within the project) and/or
-    ``commit_shas`` (``head_sha`` or ``merge_commit_sha``). Re-recording the
-    same version updates the tag/date/source without duplicating links.
+    ``commit_shas`` (``head_sha`` or ``merge_commit_sha``); ``ticket_ids``
+    link tickets directly (a PR-less release flow). Re-recording the same
+    version updates the tag/date/source without duplicating links.
     """
     version = clean_str(version, _MAX_VERSION)
     source = (source or "").strip().lower()
@@ -351,6 +355,9 @@ async def record_release(
         pr_numbers = [n for n in pr_numbers if valid_pr_number(n)][:MAX_PR_NUMBERS]
     if commit_shas is not None:
         commit_shas = [clean_str(c, _MAX_SHA) for c in commit_shas[:MAX_PR_NUMBERS]]
+    if ticket_ids is not None:
+        ticket_ids = [clean_str(t, _MAX_SHA) for t in ticket_ids[:MAX_RELEASE_TICKETS]]
+        ticket_ids = list(dict.fromkeys(t for t in ticket_ids if t))
 
     values: dict[str, Any] = {
         "id": f"rel_{uuid.uuid4().hex[:16]}",
@@ -404,8 +411,19 @@ async def record_release(
             .values(release_id=release.id, pr_id=pr_id)
             .on_conflict_do_nothing()
         )
+    for ticket_id in ticket_ids or []:
+        await _link_ticket(
+            db,
+            release_id=release.id,
+            project_id=project_id,
+            ticket_id=ticket_id,
+            linked_by_user_id=created_by_user_id,
+            service_key_id=service_key_id,
+        )
     await db.commit()
-    return _release_to_dict(release, pr_ids=sorted(pr_ids))
+    return _release_to_dict(
+        release, pr_ids=sorted(pr_ids), ticket_ids=sorted(ticket_ids or [])
+    )
 
 
 async def _resolve_pr_ids(
@@ -435,6 +453,68 @@ async def _resolve_pr_ids(
         )
     ).scalars().all()
     return set(rows)
+
+
+
+async def _link_ticket(
+    db: AsyncSession,
+    *,
+    release_id: str,
+    project_id: str,
+    ticket_id: str,
+    linked_by_user_id: str | None,
+    service_key_id: str | None,
+) -> None:
+    """Link one ticket to a release in a single INSERT ... SELECT.
+
+    The SELECT only finds the ticket while it exists in the release's own
+    project, so a ticket deleted after validation (or one from another
+    project) is simply not linked instead of raising a foreign-key error.
+    """
+    source = select(
+        literal(release_id),
+        Ticket.id,
+        literal(linked_by_user_id),
+        literal(service_key_id),
+    ).where(Ticket.id == ticket_id, Ticket.project_id == project_id)
+    await db.execute(
+        (await _dialect_insert(db, ReleaseTicket))
+        .from_select(
+            ["release_id", "ticket_id", "linked_by_user_id", "service_key_id"], source
+        )
+        .on_conflict_do_nothing()
+    )
+
+async def link_release_tickets(
+    db: AsyncSession,
+    *,
+    release_id: str,
+    ticket_ids: list[str],
+    linked_by_user_id: str | None = None,
+    service_key_id: str | None = None,
+) -> list[str]:
+    """Link tickets directly to an existing release. Idempotent.
+
+    The route validates that every id is a ticket in the same project before
+    calling this; here we just upsert the unique pair (a re-link no-ops) and
+    return the idempotent linked set.
+    """
+    cleaned = [clean_str(t, _MAX_SHA) for t in ticket_ids[:MAX_RELEASE_TICKETS]]
+    cleaned = list(dict.fromkeys(t for t in cleaned if t))
+    project_id = await db.scalar(select(Release.project_id).where(Release.id == release_id))
+    if project_id is None:
+        return []
+    for ticket_id in cleaned:
+        await _link_ticket(
+            db,
+            release_id=release_id,
+            project_id=project_id,
+            ticket_id=ticket_id,
+            linked_by_user_id=linked_by_user_id,
+            service_key_id=service_key_id,
+        )
+    await db.commit()
+    return sorted(cleaned)
 
 
 async def record_gate(
@@ -534,7 +614,9 @@ def _pr_to_dict(
 
 
 def _release_to_dict(
-    release: Release, pr_ids: list[str] | None = None
+    release: Release,
+    pr_ids: list[str] | None = None,
+    ticket_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     out: dict[str, Any] = {
         "id": release.id,
@@ -550,6 +632,8 @@ def _release_to_dict(
     }
     if pr_ids is not None:
         out["pr_ids"] = pr_ids
+    if ticket_ids is not None:
+        out["ticket_ids"] = ticket_ids
     return out
 
 
@@ -656,6 +740,25 @@ async def _ticket_ids_for_prs(
     )
 
 
+async def _ticket_ids_for_releases(
+    db: AsyncSession, release_ids: list[str]
+) -> set[str]:
+    """Tickets linked directly to the releases (PR-less release flow)."""
+    if not release_ids:
+        return set()
+    return set(
+        (
+            await db.execute(
+                select(ReleaseTicket.ticket_id).where(
+                    ReleaseTicket.release_id.in_(release_ids)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+
 async def _checklist_learned(
     db: AsyncSession,
     *,
@@ -705,7 +808,9 @@ async def ship_report(
     estimates"). ``all_fixed_before_merge`` is True only when no harmful
     finding is still open. ``cost_per_accepted_change`` mirrors
     ``review_loop``: tokens (and dollars, for dollar-visible callers) of runs
-    on done tickets, divided by the number of done tickets.
+    on done tickets, divided by the number of done tickets. A release's ticket
+    set is the union of tickets linked via PRs and tickets linked directly
+    (PR-less release flow); loop parents still count as loops.
     """
     releases = await _load_releases(
         db, project_id=project_id, version=version, month=month
@@ -716,13 +821,22 @@ async def ship_report(
     release_ids = [r.id for r in releases]
     pr_ids = await _pr_ids_for_releases(db, release_ids)
     ticket_ids = await _ticket_ids_for_prs(db, pr_ids)
+    # PR-less release flow: a release's ticket set is the union of tickets
+    # linked through PRs and tickets linked directly.
+    ticket_ids |= await _ticket_ids_for_releases(db, release_ids)
 
     # Loop parents hold design-stage findings; load them alongside the shipped
     # tickets so the report sees the whole loop, not just the child tasks.
     tickets: list[Ticket] = []
     if ticket_ids:
         tickets = list(
-            (await db.execute(select(Ticket).where(Ticket.id.in_(ticket_ids))))
+            (
+                await db.execute(
+                    select(Ticket).where(
+                        Ticket.id.in_(ticket_ids), Ticket.project_id == project_id
+                    )
+                )
+            )
             .scalars()
             .all()
         )

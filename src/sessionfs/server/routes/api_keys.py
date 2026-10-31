@@ -388,6 +388,7 @@ async def rotate_service_key(
         scopes=old.scopes,
         expires_at=new_expires,
         created_by_user_id=user.id,
+        rotated_from_key_id=old.id,
         service_key_name=old.service_key_name or old.name,
         project_ids=old.project_ids,
         key_prefix=_key_prefix(raw_key),  # R3 MEDIUM 2

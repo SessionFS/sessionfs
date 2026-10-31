@@ -250,7 +250,7 @@ Start and watch a [worker review loop](/review-loop/), set its budgets and keep 
 | POST | `/api/v1/projects/{id}/loop-checklist` | Bearer (editor) | Propose an item (`title`, optional `check_text` and `slug`) |
 | POST | `/api/v1/projects/{id}/loop-checklist/seed` | Bearer (editor) | Offer the generic starter items as proposals |
 | PATCH | `/api/v1/projects/{id}/loop-checklist/{item_id}` | Bearer (editor) | Accept, retire or edit an item |
-| POST | `/api/v1/projects/{id}/loop-share-links` | Bearer (`loops:write`, editor) | Mint a revocable, expiring public link to a story (`{"kind": "story", "ticket_id": ...}`) or a ship report (`{"kind": "ship_report", "release_version" | "month": ...}`), optional `expires_days` (1–90, default 30). Returns the raw `token` exactly once plus the public `url`; only its SHA-256 is stored |
+| POST | `/api/v1/projects/{id}/loop-share-links` | Bearer (`loops:write`, editor, Team+) | Mint a revocable, expiring public link to a story (`{"kind": "story", "ticket_id": ...}`) or a ship report (`{"kind": "ship_report", "release_version" | "month": ...}`), optional `expires_days` (1–90, default 30). Returns the raw `token` exactly once plus the public `url`; only its SHA-256 is stored |
 | GET | `/api/v1/projects/{id}/loop-share-links` | Bearer (`loops:read`, editor) | List a project's share links newest first; tokens are never returned |
 | DELETE | `/api/v1/projects/{id}/loop-share-links/{link_id}` | Bearer (`loops:write`, editor) | Revoke a share link (soft — the row is kept for audit) |
 | GET | `/api/v1/share/loop/{token}` | None | Access a shared loop story (public, unauthenticated). Serves a DLP-redacted story with dollars and every author identity stripped; unknown, revoked, expired and deleted links all return the same `404` |
@@ -258,6 +258,8 @@ Start and watch a [worker review loop](/review-loop/), set its budgets and keep 
 Dollar fields appear only for org owners and admins, or the owner of a personal project, and are left out of the response for everyone else. Loop share links work the same way: the public story omits dollar fields, redacts secrets and emails, and is served with `Cache-Control: no-store` and `X-Robots-Tag: noindex`.
 
 #### Worker runs, review rounds, merge checks and releases (v0.29.3)
+
+Tier: **Team+** for every write below (including merge checks, release recording, share-link creation and the App/webhook ingest of pull requests and releases). Reads, share-link list/revoke and the public share view stay available after a downgrade.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|

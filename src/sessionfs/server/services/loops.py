@@ -102,7 +102,7 @@ def _build_child(
     runs: list[AgentRun],
     comments: list[dict],
     implementer_identities: list[tuple[str | None, str | None]],
-    key_minters: dict[str, str | None],
+    key_minters: dict[str, frozenset[str] | None],
     budget: dict,
     show_dollars: bool,
 ) -> dict:
@@ -195,7 +195,7 @@ async def load_loops(
     runs_by_ticket: dict[str, list[AgentRun]] = {}
     comments_by_ticket: dict[str, list[dict]] = {}
     implementers_by_ticket: dict[str, list[tuple[str | None, str | None]]] = {}
-    key_minters: dict[str, str | None] = {}
+    key_minters: dict[str, frozenset[str] | None] = {}
 
     if child_ids:
         runs = (

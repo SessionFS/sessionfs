@@ -142,6 +142,9 @@ class ApiKey(Base):
         nullable=True,
     )
     last_used_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    # Rotation chain: the key this one replaced (no FK on purpose — a deleted
+    # link must fail closed in the self-review identity check, not vanish).
+    rotated_from_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     # JSON list of project_ids; null/empty = all projects in org.
     project_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -7203,6 +7206,34 @@ class ReleasePr(Base):
     )
     pr_id: Mapped[str] = mapped_column(
         String(64), ForeignKey("pull_requests.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class ReleaseTicket(Base):
+    """A ticket linked straight to a release (PR-less release flow, Brief R1).
+
+    Composite primary key ``(release_id, ticket_id)`` is the unique pair, so a
+    re-link upserts via ``ON CONFLICT DO NOTHING``. ``linked_by_user_id`` /
+    ``service_key_id`` stamp who recorded the link (a service key leaves the
+    user stamp NULL). Cascades on both sides so a link never outlives either
+    endpoint.
+    """
+
+    __tablename__ = "release_tickets"
+    __table_args__ = (Index("idx_release_tickets_ticket", "ticket_id"),)
+
+    release_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("releases.id", ondelete="CASCADE"), primary_key=True
+    )
+    ticket_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tickets.id", ondelete="CASCADE"), primary_key=True
+    )
+    linked_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
 

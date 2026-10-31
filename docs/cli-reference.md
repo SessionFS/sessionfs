@@ -3191,7 +3191,7 @@ Start and steer a [review loop](https://sessionfs.dev/review-loop/), read its re
 | `sfs loop checklist seed` | Offer the six generic seed traps as proposed items (safe to rerun) |
 | `sfs loop checklist add TITLE [--check TEXT] [--slug SLUG]` | Propose an item by hand |
 | `sfs loop checklist accept SLUG` / `retire SLUG` | Make a proposed item active, or retire an item |
-| `sfs loop share story TICKET_ID [--expires-days N]` | Create a share link for a ticket's story. The link shows no dollars, emails or user ids; it expires after N days (default 30, at most 90). The token is printed once and not stored. |
+| `sfs loop share story TICKET_ID [--expires-days N]` | Create a share link for a ticket's story. The link shows no dollars, emails or user ids; it expires after N days (default 30, at most 90). The token is printed once and not stored. Team+ to create; `list` and `revoke` keep working after a downgrade. |
 | `sfs loop share ship-report VERSION [--expires-days N]` | Create a share link for a release's Ship Report, with the same limits |
 | `sfs loop share list` | The project's share links (no tokens) |
 | `sfs loop share revoke LINK_ID` | Revoke a share link so it stops working |
@@ -3218,7 +3218,8 @@ Record pull requests, releases, gates and deployments, then read the **Ship Repo
 
 | Command | Description |
 |---------|-------------|
-| `sfs release record VERSION --tag-sha SHA [--previous SHA --pr N --gate kind=status --source S]` | Record a release (idempotent on version), link its PRs (`--pr`, repeatable) and record its gates (`--gate`, repeatable, e.g. `--gate ci=passed`). |
+| `sfs release record VERSION --tag-sha SHA [--previous SHA --pr N --ticket TK --gate kind=status --source S]` | Record a release (idempotent on version), link its PRs (`--pr`, repeatable) and tickets (`--ticket`, repeatable, for PR-less flows), and record its gates (`--gate`, repeatable, e.g. `--gate ci=passed`). |
+| `sfs release link VERSION --ticket TK` | Link a ticket directly to a release (`--ticket`, repeatable), for tickets that shipped without a PR. Idempotent. |
 | `sfs release deploy VERSION --env ENV [--source S]` | Record a deployment of a release to an environment (`prod`, `staging`, …). |
 | `sfs release list` | The project's releases, newest first. |
 | `sfs release ship-report VERSION` | The Ship Report for one release. |

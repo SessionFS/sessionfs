@@ -1954,7 +1954,7 @@ Start, watch and budget a [worker review loop](/review-loop/), run its workers a
 | `sfs loop checklist add TITLE [--check TEXT] [--slug SLUG]` | Propose an item |
 | `sfs loop checklist accept SLUG` / `retire SLUG` | Activate or retire an item |
 | `sfs loop ready TICKET_ID --sha HEAD_COMMIT` | Merge readiness (below) |
-| `sfs loop share story TICKET_ID [--expires-days N]` | Mint a public, revocable link to a ticket's story. The raw token is printed once and is never stored |
+| `sfs loop share story TICKET_ID [--expires-days N]` | Mint a public, revocable link to a ticket's story. The raw token is printed once and is never stored. Team+ to create; `list` and `revoke` keep working after a downgrade |
 | `sfs loop share ship-report VERSION [--expires-days N]` | Mint a public, revocable link to a ship report |
 | `sfs loop share list` | List the project's share links (tokens are never shown) |
 | `sfs loop share revoke LINK_ID` | Revoke a share link |

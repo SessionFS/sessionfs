@@ -45,6 +45,7 @@ from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.routes.loop_checklist import _sanitize_text
 from sessionfs.server.routes.tickets import _get_ticket_or_404
 from sessionfs.server.services import releases, review_loop
+from sessionfs.server.tier_gate import UserContext, check_project_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/projects", tags=["loop-share-links"])
 share_router = APIRouter()
@@ -235,10 +236,12 @@ async def create_loop_share_link(
     project_id: str,
     body: _CreateShareLink,
     auth: AuthContext = Depends(require_scope("loops:write")),
+    ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Mint a share link; the raw token is returned once and never stored."""
     project = await _editor_scope(project_id, auth, db)
+    await check_project_feature(ctx, "agent_tickets", project, db)
 
     ticket_id: str | None = None
     if body.kind == "story":

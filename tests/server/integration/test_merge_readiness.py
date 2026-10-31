@@ -801,3 +801,121 @@ async def test_readiness_fails_closed_when_service_key_reviewer_and_unresolvable
         "reviewer identity matches an implementer identity" in r
         for r in body["reasons"]
     )
+
+
+# ── rotated-key identity (tk_e540d17057a84d14) ──────────────────────
+
+
+async def _make_rotated_key(
+    db: AsyncSession,
+    owner: User,
+    rotator: User,
+    rotated_from: str | None = None,
+) -> ApiKey:
+    """A service key as `rotate` leaves it: backing user kept, rotator recorded."""
+    key = ApiKey(
+        id=f"sk_{uuid.uuid4().hex[:24]}",
+        user_id=owner.id,
+        key_hash=hash_api_key(generate_api_key()),
+        name=f"svc-{uuid.uuid4().hex[:6]}",
+        key_kind="service",
+        scopes='["tickets:read","tickets:write"]',
+        created_by_user_id=rotator.id,
+        rotated_from_key_id=rotated_from,
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(key)
+    await db.commit()
+    await db.refresh(key)
+    return key
+
+
+async def _ready_with(
+    client: AsyncClient,
+    db: AsyncSession,
+    impl_key: ApiKey,
+    reviewer: User,
+):
+    owner, key = await _make_user(db)
+    project = await _make_project(db, owner)
+    ticket_id = await _make_ticket(client, project, key)
+    reviewer_svc = await _make_service_key(db, reviewer)
+    await _seed_clean_verdict(
+        db, ticket_id, reviewer, reviewed_commit=HEAD,
+        service_key_id=reviewer_svc.id,
+    )
+    await _seed_implementer(
+        db, project, ticket_id, user_id=None, service_key_id=impl_key.id
+    )
+    return (await _readiness(client, project, ticket_id, key, HEAD)).json()
+
+
+@pytest.mark.asyncio
+async def test_readiness_false_when_admin_rotated_the_implementer_key(
+    client: AsyncClient, db_session: AsyncSession
+):
+    member, _ = await _make_user(db_session, name="member")
+    admin, _ = await _make_user(db_session, name="admin")
+    old = await _make_rotated_key(db_session, member, member)
+    impl = await _make_rotated_key(db_session, member, admin, rotated_from=old.id)
+    body = await _ready_with(client, db_session, impl, admin)
+    assert body["ready"] is False
+    assert any("matches an implementer identity" in r for r in body["reasons"])
+
+
+@pytest.mark.asyncio
+async def test_readiness_true_for_unrelated_reviewer_of_rotated_key(
+    client: AsyncClient, db_session: AsyncSession
+):
+    member, _ = await _make_user(db_session, name="member")
+    admin, _ = await _make_user(db_session, name="admin")
+    other, _ = await _make_user(db_session, name="other")
+    old = await _make_rotated_key(db_session, member, member)
+    impl = await _make_rotated_key(db_session, member, admin, rotated_from=old.id)
+    body = await _ready_with(client, db_session, impl, other)
+    assert body["ready"] is True
+
+
+@pytest.mark.asyncio
+async def test_readiness_follows_two_hop_rotation_chain(
+    client: AsyncClient, db_session: AsyncSession
+):
+    member, _ = await _make_user(db_session, name="member")
+    admin, _ = await _make_user(db_session, name="admin")
+    other, _ = await _make_user(db_session, name="other")
+    k1 = await _make_rotated_key(db_session, member, member)
+    k2 = await _make_rotated_key(db_session, member, admin, rotated_from=k1.id)
+    k3 = await _make_rotated_key(db_session, member, other, rotated_from=k2.id)
+    # The admin only rotated the MIDDLE hop; still part of the identity.
+    body = await _ready_with(client, db_session, k3, admin)
+    assert body["ready"] is False
+
+
+@pytest.mark.asyncio
+async def test_readiness_fails_closed_on_broken_rotation_chain(
+    client: AsyncClient, db_session: AsyncSession
+):
+    member, _ = await _make_user(db_session, name="member")
+    other, _ = await _make_user(db_session, name="other")
+    impl = await _make_rotated_key(
+        db_session, member, member, rotated_from="sk_missing_link"
+    )
+    body = await _ready_with(client, db_session, impl, other)
+    assert body["ready"] is False
+
+
+@pytest.mark.asyncio
+async def test_load_key_minters_cycle_is_unresolvable(db_session: AsyncSession):
+    from sqlalchemy import update
+
+    from sessionfs.server.services.review_state import load_key_minters
+
+    member, _ = await _make_user(db_session, name="member")
+    a = await _make_rotated_key(db_session, member, member)
+    b = await _make_rotated_key(db_session, member, member, rotated_from=a.id)
+    await db_session.execute(
+        update(ApiKey).where(ApiKey.id == a.id).values(rotated_from_key_id=b.id)
+    )
+    await db_session.commit()
+    minters = await load_key_minters(db_session, [], [(a.id, None), (b.id, None)])
+    assert minters == {a.id: None, b.id: None}

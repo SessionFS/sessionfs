@@ -185,3 +185,36 @@ async def test_manual_release_requires_full_commit_sha(
                           json={"version": "1", "tag_sha": "A" * 40})
     assert r.status_code == 200, r.text
     assert r.json()["tag_sha"] == "a" * 40
+
+
+@pytest.mark.asyncio
+async def test_link_release_tickets_skips_foreign_and_missing_tickets(
+    db_session: AsyncSession,
+):
+    from sqlalchemy import select
+
+    from sessionfs.server.db.models import ReleaseTicket
+    from sessionfs.server.services import releases
+    from tests.server.integration.test_releases import _make_ticket
+
+    owner, _ = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    other = await _make_project(db_session, owner)
+    mine = await _make_ticket(db_session, project, owner)
+    theirs = await _make_ticket(db_session, other, owner)
+    rel = await releases.record_release(
+        db_session, project_id=project.id, version="1.0.0", tag_sha="a" * 40
+    )
+
+    linked = await releases.link_release_tickets(
+        db_session,
+        release_id=rel["id"],
+        ticket_ids=[mine.id, theirs.id, "tk_does_not_exist"],
+    )
+    assert mine.id in linked
+    rows = (
+        await db_session.execute(
+            select(ReleaseTicket.ticket_id).where(ReleaseTicket.release_id == rel["id"])
+        )
+    ).scalars().all()
+    assert rows == [mine.id]

@@ -1995,34 +1995,49 @@ async def complete_work_queue_step(
             # Identity comparison mirrors compute_merge_readiness: when BOTH
             # identities are service keys, they are the same identity if their
             # ids match OR the same user minted both keys; an unresolvable
-            # minter fails closed (self-review). Mixed key/human identities are
-            # independent, and only a human/human pair falls back to user-id
-            # comparison.
-            if closing_svc_key and impl_svc:
-                if closing_svc_key == impl_svc:
-                    self_close = True
-                else:
-                    minters = {
-                        kid: uid
-                        for kid, uid in (
-                            await db.execute(
-                                select(ApiKey.id, ApiKey.user_id).where(
-                                    ApiKey.id.in_(
-                                        [closing_svc_key, impl_svc]
-                                    )
-                                )
-                            )
-                        ).all()
-                    }
-                    closing_minter = minters.get(closing_svc_key)
-                    impl_minter = minters.get(impl_svc)
+            # minter fails closed (self-review). A key/human pair is the same
+            # identity when the human is in the key's identity set.
+            if closing_svc_key and closing_svc_key == impl_svc:
+                self_close = True
+            elif closing_svc_key or impl_svc:
+                from sessionfs.server.services.review_state import (
+                    load_key_minters,
+                )
+
+                key_ids = [k for k in (closing_svc_key, impl_svc) if k]
+                minters = await load_key_minters(
+                    db,
+                    [
+                        {"verdict_trusted": True, "service_key_id": k}
+                        for k in key_ids
+                    ],
+                    [],
+                )
+                closing_minter = (
+                    minters.get(closing_svc_key) if closing_svc_key else None
+                )
+                impl_minter = minters.get(impl_svc) if impl_svc else None
+                if closing_svc_key and impl_svc:
                     self_close = (
                         closing_minter is None
                         or impl_minter is None
-                        or closing_minter == impl_minter
+                        or bool(closing_minter & impl_minter)
                     )
-            elif closing_svc_key or impl_svc:
-                self_close = False
+                elif closing_svc_key:
+                    # Key reviewer vs human implementer: the human may be
+                    # anyone in the key's identity set.
+                    self_close = closing_minter is None or bool(
+                        impl_usr and impl_usr in closing_minter
+                    )
+                else:
+                    # Human reviewer vs key implementer.
+                    self_close = impl_minter is None or bool(
+                        closing_usr
+                        and (
+                            closing_usr in impl_minter
+                            or closing_usr == impl_usr
+                        )
+                    )
             else:
                 self_close = bool(
                     closing_usr and impl_usr and closing_usr == impl_usr

@@ -555,6 +555,17 @@ async def check_project_feature(
     raise_project_upgrade_required(feature, plan, project.id)
 
 
+async def project_plan_has_feature(
+    project: Project | None, feature: str, db: AsyncSession
+) -> bool:
+    """Non-raising plan check for system paths (webhooks, feeds) with no
+    caller plan: true when the project's own plan includes ``feature``."""
+    if project is None:
+        return False
+    plan = await resolve_project_plan_tier(project, db)
+    return feature in get_features_for_tier(plan)
+
+
 def check_role(ctx: UserContext, min_role: str) -> None:
     """Raise 403 if the user's role is insufficient.
 

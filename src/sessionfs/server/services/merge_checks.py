@@ -31,6 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.models import (
     GitHubInstallation,
+    Project,
     PullRequest,
     Ticket,
     TicketComment,
@@ -394,6 +395,13 @@ async def _refresh_for_target(
         return _skipped(repo, head_sha or "", False, "head commit is not a full sha")
     if not await _repo_verified(db, project_id, repo):
         return _skipped(repo, head_sha, False, "repo_not_verified")
+    # Merge checks are a Team feature: a downgraded project stops posting
+    # check runs and comments (the explicit trigger route is gated too).
+    from sessionfs.server.tier_gate import project_plan_has_feature
+
+    project = await db.get(Project, project_id)
+    if not await project_plan_has_feature(project, "agent_tickets", db):
+        return _skipped(repo, head_sha, False, "plan")
 
     all_ready = True
     any_verdict = False

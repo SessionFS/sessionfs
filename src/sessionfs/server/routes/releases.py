@@ -4,7 +4,9 @@ Review Loop R3, track F1 (docs/design/review-loop-r3.md §4, §5, §6.4). Routes
 under ``/api/v1/projects/{project_id}``:
 
     POST  /pull-requests                        — upsert a PR (+ auto-link)
-    POST  /releases                             — record a release (+ link PRs)
+    POST  /releases                             — record a release (+ link PRs,
+                                                  tickets)
+    POST  /releases/{version}/tickets           — link tickets directly
     POST  /releases/{version}/gates             — record a quality gate
     POST  /releases/{version}/deployments       — record a deployment
     GET   /releases                             — keyset list, newest first
@@ -34,15 +36,17 @@ from sessionfs.server.auth.dependencies import AuthContext, require_scope
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import Release
 from sessionfs.server.auth.dependencies import assert_service_key_can_access_project
-from sessionfs.server.db.models import Project
+from sessionfs.server.db.models import Project, Ticket
 from sessionfs.server.routes.loop_checklist import _sanitize_text, _stamp_user_id, _write_scope
 from sessionfs.server.routes.spend import _scope as _spend_scope
 from sessionfs.server.services import releases
+from sessionfs.server.tier_gate import UserContext, check_project_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/projects", tags=["releases"])
 
 # Byte-identical existence oracle (review checklist #2).
 _RELEASE_NOT_FOUND = "Release not found"
+_TICKET_NOT_FOUND = "Ticket not found"
 _PROJECT_NOT_FOUND = "Project not found"
 
 
@@ -212,6 +216,7 @@ class _ReleaseBody(BaseModel):
     source: str = "manual"
     pr_numbers: list[int] | None = None
     commit_shas: list[str] | None = None
+    ticket_ids: list[str] | None = None
 
     @field_validator("version")
     @classmethod
@@ -264,6 +269,38 @@ class _ReleaseBody(BaseModel):
         if v is None:
             return None
         return [s.strip() for s in v if s and s.strip()][:_MAX_SHA]
+
+    @field_validator("ticket_ids")
+    @classmethod
+    def _ticket_ids(cls, v: list[str] | None) -> list[str] | None:
+        if v is None:
+            return None
+        if len(v) > releases.MAX_RELEASE_TICKETS:
+            raise ValueError(
+                f"ticket_ids must have {releases.MAX_RELEASE_TICKETS} entries or fewer"
+            )
+        cleaned = [s.strip() for s in v if s and s.strip()]
+        if any(len(s) > _MAX_SHA for s in cleaned):
+            raise ValueError(f"ticket ids must be {_MAX_SHA} characters or fewer")
+        return cleaned
+
+
+class _LinkTicketsBody(BaseModel):
+    ticket_ids: list[str]
+
+    @field_validator("ticket_ids")
+    @classmethod
+    def _ticket_ids(cls, v: list[str]) -> list[str]:
+        cleaned = [s.strip() for s in v if s and s.strip()]
+        if not cleaned:
+            raise ValueError("ticket_ids must not be empty")
+        if len(cleaned) > releases.MAX_RELEASE_TICKETS:
+            raise ValueError(
+                f"ticket_ids must have {releases.MAX_RELEASE_TICKETS} entries or fewer"
+            )
+        if any(len(s) > _MAX_SHA for s in cleaned):
+            raise ValueError(f"ticket ids must be {_MAX_SHA} characters or fewer")
+        return cleaned
 
 
 class _GateBody(BaseModel):
@@ -352,6 +389,31 @@ async def _get_release_or_404(
     return release
 
 
+async def _ticket_ids_or_404(
+    db: AsyncSession, project_id: str, ticket_ids: list[str]
+) -> list[str]:
+    """Dedupe ticket ids and refuse (404, existence oracle) if any id is not a
+    ticket in THIS project — a cross-project id and a bogus id share one body."""
+    if not ticket_ids:
+        return []
+    wanted = set(ticket_ids)
+    existing = set(
+        (
+            await db.execute(
+                select(Ticket.id).where(
+                    Ticket.project_id == project_id,
+                    Ticket.id.in_(wanted),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if wanted != existing:
+        raise HTTPException(404, _TICKET_NOT_FOUND)
+    return list(dict.fromkeys(ticket_ids))
+
+
 # ── Routes ──
 
 
@@ -360,10 +422,12 @@ async def upsert_pr(
     project_id: str,
     body: _PullRequestBody,
     auth: AuthContext = Depends(require_scope("loops:write")),
+    ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Upsert a PR and auto-link tickets from ``tk_…`` ids / loop branches."""
     project = await _write_project(project_id, auth, db)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     return await releases.upsert_pull_request(
         db,
         project_id=project.id,
@@ -388,10 +452,14 @@ async def record_release(
     project_id: str,
     body: _ReleaseBody,
     auth: AuthContext = Depends(require_scope("loops:write")),
+    ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """Record a release and link its PRs (idempotent per project + version)."""
+    """Record a release and link its PRs and tickets (idempotent per project +
+    version)."""
     project = await _write_project(project_id, auth, db)
+    await check_project_feature(ctx, "agent_tickets", project, db)
+    ticket_ids = await _ticket_ids_or_404(db, project.id, body.ticket_ids or [])
     return await releases.record_release(
         db,
         project_id=project.id,
@@ -402,9 +470,38 @@ async def record_release(
         source=body.source,
         pr_numbers=body.pr_numbers,
         commit_shas=body.commit_shas,
+        ticket_ids=ticket_ids or None,
         created_by_user_id=_stamp_user_id(auth),
         service_key_id=auth.service_key_id if auth.key_kind == "service" else None,
     )
+
+
+@router.post("/{project_id}/releases/{version}/tickets")
+async def link_tickets(
+    project_id: str,
+    version: str,
+    body: _LinkTicketsBody,
+    auth: AuthContext = Depends(require_scope("loops:write")),
+    ctx: UserContext = Depends(get_user_context),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """Link tickets directly to a release (PR-less release flow, idempotent)."""
+    project = await _write_project(project_id, auth, db)
+    await check_project_feature(ctx, "agent_tickets", project, db)
+    release = await _get_release_or_404(db, project.id, version)
+    ticket_ids = await _ticket_ids_or_404(db, project.id, body.ticket_ids)
+    linked = await releases.link_release_tickets(
+        db,
+        release_id=release.id,
+        ticket_ids=ticket_ids,
+        linked_by_user_id=_stamp_user_id(auth),
+        service_key_id=auth.service_key_id if auth.key_kind == "service" else None,
+    )
+    return {
+        "project_id": project.id,
+        "version": release.version,
+        "ticket_ids": linked,
+    }
 
 
 @router.post("/{project_id}/releases/{version}/gates")
@@ -413,10 +510,12 @@ async def record_gate(
     version: str,
     body: _GateBody,
     auth: AuthContext = Depends(require_scope("loops:write")),
+    ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Record a quality gate against a release (upsert per release + kind)."""
     project = await _write_project(project_id, auth, db)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     release = await _get_release_or_404(db, project.id, version)
     return await releases.record_gate(
         db,
@@ -434,10 +533,12 @@ async def record_deployment(
     version: str,
     body: _DeploymentBody,
     auth: AuthContext = Depends(require_scope("loops:write")),
+    ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """Record a deployment of a release (append-only)."""
     project = await _write_project(project_id, auth, db)
+    await check_project_feature(ctx, "agent_tickets", project, db)
     release = await _get_release_or_404(db, project.id, version)
     return await releases.record_deployment(
         db,

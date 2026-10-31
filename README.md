@@ -140,8 +140,8 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs loop start\|status\|update\|close-item` | Run a review loop with token, dollar and round budgets (Team+) |
 | `sfs loop report\|insights\|checklist` | Per-round reports, project insights and the checklist that learns (Team+) |
 | `sfs loop run start\|finish`, `sfs loop review` | Record each worker run and review round in one call, with usage (Team+) |
-| `sfs loop share story\|ship-report\|list\|revoke` | Share a ticket story or Ship Report without dollars or emails |
-| `sfs release record\|deploy\|list\|ship-report` | Record PRs, releases, gates and deployments, then read the per-release or per-month Ship Report |
+| `sfs loop share story\|ship-report\|list\|revoke` | Share a ticket story or Ship Report without dollars or emails (Team+) |
+| `sfs release record\|link\|deploy\|list\|ship-report` | Record PRs, releases, gates and deployments, link tickets directly, then read the per-release or per-month Ship Report (Team+) |
 | `sfs org delivery-webhook rotate\|status` | Per-org GitHub and GitLab webhooks for pull requests, releases and deploys (Team+) |
 | `sfs agent replay\|compare` | Re-run a recorded agent run with an edited prompt or context, and compare two runs side by side |
 | `sfs agent feedback add\|list\|summary` | Record and summarize whether agent work was useful (Team+) |
@@ -276,6 +276,8 @@ Sessions are stored as `.sfs` directories:
 All file paths are relative to workspace root. Sessions are append-only — conflict resolution appends both sides rather than merging.
 
 ## Status
+
+**v0.29.4 — Public Beta.** 10628 backend tests + 1950 dashboard tests passing. Database migrations 001–118 (067 and 068 unused). 118 MCP tools. **Self-review can't slip through a rotated key:** a rotated service key counts as everyone who minted or rotated it, in merge readiness, work queues and review rounds. **Link tickets to a release without a pull request** (`sfs release record --ticket`, `sfs release link`), so PR-less release flows get a real Ship Report. Release recording, merge checks, share links and the Review loops inbox now need the Team plan. Migrations 117–118.
 
 **v0.29.3 — Public Beta.** 10600 backend tests + 1950 dashboard tests passing. Database migrations 001–116 (067 and 068 unused). 118 MCP tools. **One call per worker run and per review round,** with usage and commit-bound verdicts (`sfs loop run start|finish`, `sfs loop review`). **A merge check on GitHub and GitLab** that turns green only when every linked ticket is ready at exactly that commit. **Pull requests, releases and deploys** linked to tickets, with a per-release or per-month **Ship Report** and a model scoreboard (`sfs release`), share links that show no dollars or emails (`sfs loop share`), and a Loop Board, Ship Reports and a Review loops inbox in the dashboard. Migrations 113–116.
 

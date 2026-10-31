@@ -36,6 +36,7 @@ from sessionfs.server.db.models import (
 )
 from sessionfs.server.sanitize import sanitize_archive_string
 from sessionfs.server.services import releases
+from sessionfs.server.tier_gate import project_plan_has_feature
 from sessionfs.server.services.project_resolver import (
     ProjectResolutionLoopError,
     resolve_project_by_remote,
@@ -241,6 +242,8 @@ async def ingest_event(
     )
     if project is None:
         return {"status": "ignored", "reason": "unmapped"}
+    if not await project_plan_has_feature(project, "agent_tickets", db):
+        return {"status": "ignored", "reason": "plan"}
 
     try:
         if provider == "github":

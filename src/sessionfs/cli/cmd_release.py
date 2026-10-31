@@ -2,7 +2,9 @@
 
 Commands:
 - sfs release record <version> --tag-sha <sha> [--previous <sha> --pr N
-  --gate kind=status --source S]        — record a release, link PRs, record gates
+  --ticket TK --gate kind=status --source S]  — record a release, link PRs and
+  tickets, record gates
+- sfs release link <version> --ticket TK      — link tickets directly (repeatable)
 - sfs release deploy <version> --env <env> [--source S]  — record a deployment
 - sfs release list                       — newest-first release listing
 - sfs release ship-report <version> | --month YYYY-MM [--markdown]
@@ -65,6 +67,9 @@ def release_record(
     tag_sha: str = typer.Option(..., "--tag-sha", help="Commit the release is tagged at."),
     previous: str = typer.Option(None, "--previous", help="Previous tag SHA."),
     pr: list[int] = typer.Option(None, "--pr", help="PR number shipped (repeatable)."),
+    ticket: list[str] = typer.Option(
+        None, "--ticket", help="Ticket id to link directly (repeatable)."
+    ),
     gate: list[str] = typer.Option(
         None, "--gate", help="Gate as kind=status, e.g. --gate ci=passed (repeatable)."
     ),
@@ -72,7 +77,7 @@ def release_record(
         "manual", "--source", help="github_release | gitlab_release | helm_sync | manual"
     ),
 ) -> None:
-    """Record a release, link its PRs, and record its gates."""
+    """Record a release, link its PRs and tickets, and record its gates."""
     api_url, api_key, project_id = _resolve_project()
     version = version.strip()
     body: dict = {"version": version, "tag_sha": tag_sha.strip()}
@@ -80,6 +85,8 @@ def release_record(
         body["previous_tag_sha"] = previous.strip()
     if pr:
         body["pr_numbers"] = list(pr)
+    if ticket:
+        body["ticket_ids"] = [t.strip() for t in ticket if t.strip()]
     if source and source.strip():
         body["source"] = source.strip().lower()
 
@@ -127,8 +134,52 @@ def release_record(
     ))
     if result.get("pr_ids"):
         console.print(f"  PRs linked: {', '.join(result['pr_ids'])}")
+    if result.get("ticket_ids"):
+        console.print(f"  Tickets linked: {', '.join(result['ticket_ids'])}")
     for kind, status in gates:
         console.print(f"  gate [cyan]{kind}[/cyan] = {status}")
+
+
+@release_app.command("link")
+@handle_errors
+def release_link(
+    version: str = typer.Argument(..., help="Release version."),
+    ticket: list[str] = typer.Option(
+        ..., "--ticket", help="Ticket id to link directly (repeatable)."
+    ),
+) -> None:
+    """Link tickets directly to a release (PR-less release flow)."""
+    if not ticket:
+        err_console.print("[red]Pass at least one --ticket.[/red]")
+        raise typer.Exit(1)
+    api_url, api_key, project_id = _resolve_project()
+    ticket_ids = [t.strip() for t in ticket if t.strip()]
+    if not ticket_ids:
+        err_console.print("[red]Pass at least one --ticket.[/red]")
+        raise typer.Exit(1)
+
+    async def _link() -> dict:
+        st, payload, _ = await _api_request(
+            "POST",
+            f"/api/v1/projects/{project_id}/releases/{_path_segment(version.strip())}/tickets",
+            api_url,
+            api_key,
+            json_data={"ticket_ids": ticket_ids},
+        )
+        if st == 404:
+            err_console.print("[red]Release or ticket not found.[/red]")
+            raise typer.Exit(1)
+        if st >= 400 or not isinstance(payload, dict):
+            _api_error(st, payload)
+        return payload
+
+    result = asyncio.run(_link())
+    console.print(Panel(
+        f"version=[bold]{result.get('version')}[/bold]  "
+        f"tickets=[bold]{', '.join(result.get('ticket_ids') or [])}[/bold]",
+        title="Tickets linked",
+        title_align="left",
+    ))
 
 
 @release_app.command("deploy")
@@ -158,7 +209,7 @@ def release_deploy(
 
     result = asyncio.run(_deploy())
     console.print(
-        f"[green]deployed[/green] {result.get('version')} → "
+        f"[green]deployed[/green] {version.strip()} → "
         f"[bold]{result.get('environment')}[/bold] ({result.get('source')})"
     )
 
