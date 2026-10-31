@@ -250,8 +250,31 @@ Start and watch a [worker review loop](/review-loop/), set its budgets and keep 
 | POST | `/api/v1/projects/{id}/loop-checklist` | Bearer (editor) | Propose an item (`title`, optional `check_text` and `slug`) |
 | POST | `/api/v1/projects/{id}/loop-checklist/seed` | Bearer (editor) | Offer the generic starter items as proposals |
 | PATCH | `/api/v1/projects/{id}/loop-checklist/{item_id}` | Bearer (editor) | Accept, retire or edit an item |
+| POST | `/api/v1/projects/{id}/loop-share-links` | Bearer (`loops:write`, editor) | Mint a revocable, expiring public link to a story (`{"kind": "story", "ticket_id": ...}`) or a ship report (`{"kind": "ship_report", "release_version" | "month": ...}`), optional `expires_days` (1–90, default 30). Returns the raw `token` exactly once plus the public `url`; only its SHA-256 is stored |
+| GET | `/api/v1/projects/{id}/loop-share-links` | Bearer (`loops:read`, editor) | List a project's share links newest first; tokens are never returned |
+| DELETE | `/api/v1/projects/{id}/loop-share-links/{link_id}` | Bearer (`loops:write`, editor) | Revoke a share link (soft — the row is kept for audit) |
+| GET | `/api/v1/share/loop/{token}` | None | Access a shared loop story (public, unauthenticated). Serves a DLP-redacted story with dollars and every author identity stripped; unknown, revoked, expired and deleted links all return the same `404` |
 
-Dollar fields appear only for org owners and admins, or the owner of a personal project, and are left out of the response for everyone else.
+Dollar fields appear only for org owners and admins, or the owner of a personal project, and are left out of the response for everyone else. Loop share links work the same way: the public story omits dollar fields, redacts secrets and emails, and is served with `Cache-Control: no-store` and `X-Robots-Tag: noindex`.
+
+#### Worker runs, review rounds, merge checks and releases (v0.29.3)
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| POST | `/api/v1/projects/{id}/agent-runs/start-worker` | Bearer (`loops:write`) | Take a loop ticket's lease and open a worker run (`ticket_id`, optional `model`, `provider`, `branch`, `head_sha`, `tool`). Returns the run id, the lease epoch and the remaining budget. `loop_needs_human` when the item is parked or a budget is used up |
+| POST | `/api/v1/projects/{id}/agent-runs/{run_id}/finish` | Bearer (`loops:write`) | Finish a worker run with `head_sha`, `exit_reason` (`finished`, `out_of_turns`, `crashed`) and token usage. Repeating it with the same `head_sha` never counts usage twice; a different `head_sha` is `409` |
+| POST | `/api/v1/projects/{id}/loops/{loop_id}/rounds` | Bearer (`loops:write`) | Record a review round (`ticket_id`, `round`, `stage`, `reviewed_commit`, `verdict`, `findings`, reviewer usage). Safe to repeat. Trust comes from the caller's credential, never the body |
+| POST | `/api/v1/projects/{id}/tickets/{tid}/merge-check` | Bearer (`loops:write`, editor) | Recompute the ticket's merge readiness at its head commit and post or update the "SessionFS review loop" check on GitHub (or a pull request comment when the app lacks the Checks permission) |
+| POST | `/api/v1/projects/{id}/pull-requests` | Bearer (`loops:write`) | Record a pull request and link it to tickets |
+| POST | `/api/v1/projects/{id}/releases` | Bearer (`loops:write`) | Record a release at a commit |
+| POST | `/api/v1/projects/{id}/releases/{version}/gates` | Bearer (`loops:write`) | Record a release gate (for example `ci` passed) |
+| POST | `/api/v1/projects/{id}/releases/{version}/deployments` | Bearer (`loops:write`) | Record a deployment of a release to an environment |
+| GET | `/api/v1/projects/{id}/releases` | Bearer (`loops:read`) | The project's releases with gates and deployments |
+| GET | `/api/v1/projects/{id}/releases/{version}/ship-report` | Bearer (`loops:read`) | Ship Report for a release: loops, review rounds, findings, harmful findings and whether all were fixed before merge, cost per accepted change, checklist classes learned, gates, deploys, pull requests and a markdown snippet for release notes |
+| GET | `/api/v1/projects/{id}/ship-report` | Bearer (`loops:read`) | The same report for a month (`month=YYYY-MM`) |
+| POST | `/api/v1/orgs/{org_id}/delivery-webhooks/{provider}/rotate` | Bearer (org owner or admin) | Generate or rotate the GitHub or GitLab webhook secret; returned once |
+| GET | `/api/v1/orgs/{org_id}/delivery-webhooks/{provider}/status` | Bearer (org owner or admin) | Whether a secret exists, its last four characters and the inbound URL |
+| POST | `/api/v1/webhooks/github/{org_id}`, `/api/v1/webhooks/gitlab/{org_id}` | Provider signature or token | Inbound delivery webhooks. Unknown orgs and bad signatures get the same `401`; bodies over 1 MiB are refused |
 
 ### Meetings (v0.29.0)
 

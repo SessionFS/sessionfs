@@ -17,6 +17,13 @@ Commands:
 - sfs loop checklist add <title> [--check]   — propose an item by hand
 - sfs loop checklist accept <slug>           — accept a proposed item
 - sfs loop checklist retire <slug>           — retire an item
+- sfs loop run start <ticket>                — take the lease and open a worker run
+- sfs loop run finish <run_id> --head-sha S  — close the run with usage
+- sfs loop review <loop_id> --ticket T …     — record one review round
+- sfs loop share story <ticket> [--expires-days N] — mint a public story link
+- sfs loop share ship-report <version> [--expires-days N] — mint a public ship-report link
+- sfs loop share list                        — list the project's share links
+- sfs loop share revoke <id>                 — revoke a share link
 """
 
 from __future__ import annotations
@@ -50,6 +57,19 @@ checklist_app = typer.Typer(
     no_args_is_help=True,
 )
 loop_app.add_typer(checklist_app)
+
+run_app = typer.Typer(
+    name="run",
+    help="Worker runs on a loop ticket: take the lease, then report the result.",
+    no_args_is_help=True,
+)
+loop_app.add_typer(run_app)
+share_app = typer.Typer(
+    name="share",
+    help="Mint, list and revoke public loop share links (story / ship report).",
+    no_args_is_help=True,
+)
+loop_app.add_typer(share_app)
 
 
 def _resolve_project() -> tuple[str, str, str]:
@@ -380,6 +400,183 @@ def loop_close_item(
             f"[green]✓[/green] {result.get('ticket_id')} settled as "
             f"{result.get('item_status')}"
         )
+
+
+# ── Worker runs and review rounds (Review Loop D3) ──
+
+
+def _loop_post(path: str, body: dict, *, not_found: str) -> dict:
+    """POST a loop-worker request; exit 1 with a readable message on errors."""
+    api_url, api_key, project_id = _resolve_project()
+
+    async def _post() -> dict | None:
+        status, payload, _ = await _api_request(
+            "POST",
+            f"/api/v1/projects/{project_id}/{path}",
+            api_url,
+            api_key,
+            json_data=body,
+        )
+        if status == 404:
+            err_console.print(f"[red]{not_found}[/red]")
+            raise typer.Exit(1)
+        if status >= 400:
+            err_console.print(f"[red]{format_api_error(payload, status)}[/red]")
+            raise typer.Exit(1)
+        return payload
+
+    result = asyncio.run(_post())
+    return result if isinstance(result, dict) else {}
+
+
+@run_app.command("start")
+@handle_errors
+def loop_run_start(
+    ticket_id: str = typer.Argument(..., help="Child ticket id (tk_...)."),
+    model: str | None = typer.Option(None, "--model", help="Model name for the run."),
+    provider: str | None = typer.Option(None, "--provider", help="Provider name."),
+    branch: str | None = typer.Option(None, "--branch", help="Working branch."),
+    output_id: bool = typer.Option(
+        False, "--output-id", help="Print only the run id (for scripts)."
+    ),
+) -> None:
+    """Take the ticket lease and open a worker run linked to the loop."""
+    body: dict = {"ticket_id": ticket_id}
+    for key, val in (("model", model), ("provider", provider), ("branch", branch)):
+        if val:
+            body[key] = val
+    result = _loop_post(
+        "agent-runs/start-worker", body, not_found="Ticket or project not found."
+    )
+    if output_id:
+        typer.echo(result.get("run_id", ""))
+        return
+    console.print(
+        f"[green]✓[/green] run [bold]{result.get('run_id')}[/bold] "
+        f"lease_epoch={result.get('lease_epoch')} loop={result.get('loop_id')}"
+    )
+    budget = result.get("budget") or {}
+    if budget.get("tokens_remaining") is not None:
+        console.print(f"  tokens remaining: {budget['tokens_remaining']:,}")
+    if budget.get("rounds_remaining") is not None:
+        console.print(f"  rounds remaining: {budget['rounds_remaining']}")
+
+
+@run_app.command("finish")
+@handle_errors
+def loop_run_finish(
+    run_id: str = typer.Argument(..., help="Run id returned by `sfs loop run start`."),
+    head_sha: str = typer.Option(..., "--head-sha", help="Head commit the run produced."),
+    exit_reason: str = typer.Option(
+        "finished", "--exit-reason", help="finished | out_of_turns | crashed."
+    ),
+    branch: str | None = typer.Option(None, "--branch", help="Working branch."),
+    input_tokens: int | None = typer.Option(None, "--input-tokens"),
+    output_tokens: int | None = typer.Option(None, "--output-tokens"),
+    cache_read_tokens: int | None = typer.Option(None, "--cache-read-tokens"),
+    cache_write_tokens: int | None = typer.Option(None, "--cache-write-tokens"),
+    cost_usd: float | None = typer.Option(None, "--cost-usd"),
+    cost_basis: str | None = typer.Option(
+        None, "--cost-basis", help="reported | estimated | plan | unknown."
+    ),
+    summary: str | None = typer.Option(None, "--summary", help="Short result summary."),
+) -> None:
+    """Close a worker run: head commit, exit reason and usage (idempotent on head)."""
+    body: dict = {"head_sha": head_sha.strip().lower(), "exit_reason": exit_reason}
+    if branch:
+        body["branch"] = branch
+    if summary:
+        body["summary"] = summary
+    usage = {
+        k: v
+        for k, v in (
+            ("input_tokens", input_tokens),
+            ("output_tokens", output_tokens),
+            ("cache_read_tokens", cache_read_tokens),
+            ("cache_write_tokens", cache_write_tokens),
+            ("cost_usd", cost_usd),
+            ("cost_basis", cost_basis),
+        )
+        if v is not None
+    }
+    if usage:
+        body["usage"] = usage
+    result = _loop_post(
+        f"agent-runs/{_path_segment(run_id)}/finish", body, not_found="Run not found."
+    )
+    again = " (already finished)" if result.get("idempotent") else ""
+    console.print(
+        f"[green]✓[/green] {result.get('run_id')} {result.get('status')}{again} "
+        f"tokens={result.get('tokens')}"
+    )
+    if result.get("needs_human"):
+        console.print("[yellow]This loop item now needs a person.[/yellow]")
+
+
+@loop_app.command("review")
+@handle_errors
+def loop_review(
+    loop_id: str = typer.Argument(..., help="Loop (parent issue) id (tk_...)."),
+    ticket: str = typer.Option(..., "--ticket", help="Child ticket id, or the loop id for a design round."),
+    round_no: int = typer.Option(..., "--round", min=1, help="Review round number."),
+    commit: str = typer.Option(..., "--commit", help="Full commit id (40 or 64 hex) that was reviewed."),
+    verdict: str = typer.Option(..., "--verdict", help="VERIFIED-CLEAN | CHANGES-REQUESTED."),
+    findings_file: str | None = typer.Option(
+        None, "--findings-file", help="JSON file: a list of {severity, class, harm, title, file?, line?, status?}."
+    ),
+    stage: str = typer.Option("code", "--stage", help="code | design."),
+    model: str | None = typer.Option(None, "--model"),
+    provider: str | None = typer.Option(None, "--provider"),
+    input_tokens: int | None = typer.Option(None, "--input-tokens"),
+    output_tokens: int | None = typer.Option(None, "--output-tokens"),
+    cost_usd: float | None = typer.Option(None, "--cost-usd"),
+) -> None:
+    """Record one review round (idempotent per ticket, round and stage)."""
+    findings: list = []
+    if findings_file:
+        try:
+            with open(findings_file) as fh:
+                findings = json.load(fh)
+        except (OSError, ValueError) as exc:
+            err_console.print(f"[red]Could not read {findings_file}: {exc}[/red]")
+            raise typer.Exit(1)
+        if not isinstance(findings, list):
+            err_console.print("[red]--findings-file must contain a JSON list.[/red]")
+            raise typer.Exit(1)
+    body: dict = {
+        "ticket_id": ticket,
+        "round": round_no,
+        "stage": stage,
+        "reviewed_commit": commit.strip().lower(),
+        "verdict": verdict.strip().upper(),
+        "findings": findings,
+    }
+    if model:
+        body["model"] = model
+    if provider:
+        body["provider"] = provider
+    usage = {
+        k: v
+        for k, v in (
+            ("input_tokens", input_tokens),
+            ("output_tokens", output_tokens),
+            ("cost_usd", cost_usd),
+        )
+        if v is not None
+    }
+    if usage:
+        body["usage"] = usage
+    result = _loop_post(
+        f"loops/{_path_segment(loop_id)}/rounds", body, not_found="Loop or ticket not found."
+    )
+    again = " (already recorded)" if result.get("idempotent") else ""
+    trusted = "trusted" if result.get("verdict_trusted") else "NOT trusted"
+    console.print(
+        f"[green]✓[/green] round {result.get('round')} {result.get('stage')} "
+        f"recorded{again}; verdict {trusted}; item {result.get('item_status')}"
+    )
+    if result.get("needs_human"):
+        console.print("[yellow]This loop item now needs a person.[/yellow]")
 
 
 # ── Checklist (Review Loop E1) ──
@@ -733,3 +930,150 @@ def loop_insights_cmd(
             console.print(f"[cyan]{cls.get('class')}[/cyan] — {total} finding(s){joined_bits}")
     else:
         console.print("[dim]None.[/dim]")
+
+
+# ── Share links (Review Loop C3) ──
+
+
+def _share_api_error(status: int, body: object) -> None:
+    err_console.print(
+        f"[red]API error ({status}): {format_api_error(body, status)}[/red]"
+    )
+    raise typer.Exit(1)
+
+
+def _mint_share_link(body: dict) -> dict | None:
+    """POST /loop-share-links and surface the one-time token + url."""
+    api_url, api_key, project_id = _resolve_project()
+
+    async def _create() -> dict | None:
+        status, payload, _ = await _api_request(
+            "POST",
+            f"/api/v1/projects/{project_id}/loop-share-links",
+            api_url,
+            api_key,
+            json_data=body,
+        )
+        if status >= 400 or not isinstance(payload, dict):
+            _share_api_error(status, payload)
+        return payload
+
+    link = asyncio.run(_create())
+    if link is None:
+        return None
+    console.print(Panel(
+        "[yellow]Share once — this token is not stored and can never be shown again.[/yellow]\n"
+        f"url   [bold]{link.get('url')}[/bold]\n"
+        f"token [bold]{link.get('token')}[/bold]",
+        title=f"Loop share — {link.get('kind')}",
+        title_align="left",
+    ))
+    return link
+
+
+@share_app.command("story")
+@handle_errors
+def share_story(
+    ticket_id: str = typer.Argument(..., help="Ticket id (tk_...) whose loop story to share."),
+    expires_days: int = typer.Option(
+        None, "--expires-days", help="Link lifetime in days (1-90, default 30)."
+    ),
+) -> None:
+    """Mint a public share link for a ticket's loop story.
+
+    Anyone with the link reads the DLP-redacted story: no dollars, no emails,
+    no author identities.
+    """
+    body: dict = {"kind": "story", "ticket_id": ticket_id.strip()}
+    if expires_days is not None:
+        body["expires_days"] = expires_days
+    _mint_share_link(body)
+
+
+@share_app.command("ship-report")
+@handle_errors
+def share_ship_report(
+    version: str = typer.Argument(..., help="Release version (e.g. 0.30.0)."),
+    expires_days: int = typer.Option(
+        None, "--expires-days", help="Link lifetime in days (1-90, default 30)."
+    ),
+) -> None:
+    """Mint a public share link for a ship report."""
+    body: dict = {"kind": "ship_report", "release_version": version.strip()}
+    if expires_days is not None:
+        body["expires_days"] = expires_days
+    _mint_share_link(body)
+
+
+@share_app.command("list")
+@handle_errors
+def share_list() -> None:
+    """List the project's loop share links (tokens are never shown)."""
+    api_url, api_key, project_id = _resolve_project()
+
+    async def _fetch() -> list | None:
+        status, payload, _ = await _api_request(
+            "GET",
+            f"/api/v1/projects/{project_id}/loop-share-links",
+            api_url,
+            api_key,
+        )
+        if status >= 400:
+            _share_api_error(status, payload)
+        if not isinstance(payload, list):
+            err_console.print("[red]Unexpected API response.[/red]")
+            raise typer.Exit(1)
+        return payload
+
+    links = asyncio.run(_fetch())
+    if links is None:
+        return
+    if not links:
+        console.print("[dim]No share links.[/dim]")
+        return
+
+    table = Table(title="Loop share links", title_justify="left")
+    table.add_column("id")
+    table.add_column("kind")
+    table.add_column("target")
+    table.add_column("expires")
+    table.add_column("revoked")
+    for link in links:
+        target = (
+            link.get("ticket_id")
+            or link.get("release_version")
+            or link.get("month")
+            or "—"
+        )
+        table.add_row(
+            link.get("id", ""),
+            link.get("kind", ""),
+            target,
+            link.get("expires_at") or "—",
+            link.get("revoked_at") or "—",
+        )
+    console.print(table)
+
+
+@share_app.command("revoke")
+@handle_errors
+def share_revoke(
+    link_id: str = typer.Argument(..., help="Share link id (lsl_...) to revoke."),
+) -> None:
+    """Revoke a loop share link — it stops resolving immediately."""
+    api_url, api_key, project_id = _resolve_project()
+
+    async def _delete() -> int:
+        status, body, _ = await _api_request(
+            "DELETE",
+            f"/api/v1/projects/{project_id}/loop-share-links/{_path_segment(link_id)}",
+            api_url,
+            api_key,
+        )
+        if status >= 400:
+            _share_api_error(status, body)
+        return status
+
+    status = asyncio.run(_delete())
+    if status == 204:
+        console.print(f"[green]✓[/green] Revoked [bold]{link_id}[/bold].")

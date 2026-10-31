@@ -17,6 +17,33 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.29.3 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.29.3</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">October 31, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Worker Runs &middot; Review Rounds &middot; Merge Check &middot; Ship Reports</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Worker runs and review rounds in one call each.</strong> <span class="font-mono text-accent text-sm">start_worker_run</span> takes the ticket&rsquo;s lease and opens a run; <span class="font-mono text-accent text-sm">finish_worker_run</span> records the commit, how the worker exited and the tokens it used; <span class="font-mono text-accent text-sm">record_review_round</span> records the verdict for an exact commit, its findings with harm, and the reviewer&rsquo;s tokens. CLI: <span class="font-mono text-accent text-sm">sfs loop run start|finish</span>, <span class="font-mono text-accent text-sm">sfs loop review</span>. Repeating a finish or a round is safe and never counts usage twice. Hitting a token budget or round cap parks the ticket for a person.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>A merge check on GitHub.</strong> With the GitHub App installed, pull requests get a &ldquo;SessionFS review loop&rdquo; check that is green only when every ticket linked to the pull request is ready to merge at exactly that commit; branch protection can require it. Installs without the Checks permission get a pull request comment instead. GitLab merge requests get the same answer as a commit status. See <a href="/git-integration/#merge-check" class="text-brand hover:underline">Git Integration</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Pull requests, releases and deploys.</strong> Pull requests link to tickets from ticket ids in their title, body or branch, and from loop branches. Record releases, their gates and deployments by hand (<span class="font-mono text-accent text-sm">sfs release record|deploy|list</span>) or from the GitHub App and per-org GitHub and GitLab webhooks (<span class="font-mono text-accent text-sm">sfs org delivery-webhook rotate|status</span>).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Ship Report</strong> per release or per month: loops, review rounds, findings, harmful findings and whether all were fixed before merge, cost per accepted change, checklist classes learned, gates, deploys and pull requests, plus a markdown snippet for release notes (<span class="font-mono text-accent text-sm">sfs release ship-report</span>).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Model scoreboard</strong> in loop insights: harmful findings per accepted change, rounds to clean and cost per accepted change for each worker and reviewer model pairing.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Share links</strong> for a ticket&rsquo;s story or a Ship Report that show no dollars, emails or user ids, expire after 7, 30 or 90 days and can be revoked (<span class="font-mono text-accent text-sm">sfs loop share story|ship-report|list|revoke</span>).</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Dashboard.</strong> A Loop Board with one lane per ticket and a ring per review round sized by harmful findings, a budget forecast, Ship Reports with image and markdown export, the model scoreboard, where each ticket shipped, a Needs you panel that includes proposed checklist items, a Review loops page under Inbox for every project you can see, and the public share page.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>The <span class="font-mono text-accent text-sm">worker-review-loop</span> skill 2.0</strong> in the launch catalog, built on these calls. See <a href="/review-loop/" class="text-brand hover:underline">Worker Review Loop</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>A review round never closes a ticket for review</strong> when the reviewer is one of its implementers or the implementers can&rsquo;t be determined.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Pull request ingest from the GitHub App</strong> only writes to project repositories verified through the App.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;116 (113 adds the review round on agent runs; 114 adds pull requests, releases, gates and deployments; 115 adds share links; 116 adds per-org delivery webhooks; all additive). Self-hosted: run migrations 113&ndash;116 (see <a href="/self-hosted/#upgrading" class="text-brand hover:underline">Self-Hosted</a>). 118 MCP tools (+3).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
       <!-- v0.29.2 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,8 +51,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.29.2</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 30, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
-        </div>
+                  </div>
         <h2 class="font-heading text-xl font-bold mb-4">Review Loop API &middot; Budgets &middot; Checklist &middot; Loop Reports</h2>
         <ul class="space-y-2 text-base text-muted">
           <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Start a review loop in one call.</strong> Adopt an existing ticket or create a new one, file a child task per brief and create the reviewer&rsquo;s queue. CLI: <span class="font-mono text-accent text-sm">sfs loop start</span>, <span class="font-mono text-accent text-sm">sfs loop status</span>; MCP: <span class="font-mono text-accent text-sm">start_review_loop</span>, <span class="font-mono text-accent text-sm">get_loop_status</span>; API: <span class="font-mono text-accent text-sm">POST /api/v1/projects/&#123;id&#125;/loops</span>.</li>

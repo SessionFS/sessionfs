@@ -32,6 +32,8 @@ const HelpPage = React.lazy(() => import('./help/HelpPage'));
 const GettingStartedPage = React.lazy(() => import('./onboarding/GettingStartedPage'));
 const OnboardingGate = React.lazy(() => import('./onboarding/OnboardingGate'));
 const ShareView = React.lazy(() => import('./share/ShareView'));
+const PublicLoopShare = React.lazy(() => import('./projects/loop/PublicLoopShare'));
+const ReviewLoopsPage = React.lazy(() => import('./projects/loop/ReviewLoopsPage'));
 const MarketplacePage = React.lazy(() => import('./marketplace/MarketplacePage'));
 const ModerationPage = React.lazy(() => import('./marketplace/ModerationPage'));
 const PublishersPage = React.lazy(() => import('./marketplace/PublishersPage'));
@@ -75,6 +77,7 @@ export default function App() {
             <Route path="/sso/callback" element={<SsoCallback />} />
             <Route path="/handoffs/claim/:id" element={<HandoffClaimLanding />} />
             <Route path="/s/:token" element={<ShareView />} />
+            <Route path="/share/loop/:token" element={<PublicLoopShare />} />
             <Route
               element={
                 <ProtectedRoute>
@@ -101,6 +104,7 @@ export default function App() {
               <Route path="/transfers" element={<TransferInbox />} />
               <Route path="/invites" element={<InvitesPage />} />
               <Route path="/inbox" element={<TicketInbox />} />
+              <Route path="/review-loops" element={<ReviewLoopsPage />} />
               <Route path="/settings" element={<SettingsPage />} />
               <Route path="/settings/:section" element={<SettingsPage />} />
               <Route path="/settings/billing" element={<BillingPage />} />

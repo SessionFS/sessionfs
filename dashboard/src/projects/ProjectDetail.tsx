@@ -258,6 +258,15 @@ export default function ProjectDetail() {
     });
   }, [setSearchParams]);
 
+  const setLoopView = useCallback((view: 'home' | 'board' | 'ship') => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      if (view === 'board' || view === 'ship') params.set('view', view);
+      else params.delete('view');
+      return params;
+    });
+  }, [setSearchParams]);
+
   const setMeetingLines = useCallback((lines: string | null) => {
     setSearchParams((prev) => {
       const params = new URLSearchParams(prev);
@@ -591,7 +600,7 @@ export default function ProjectDetail() {
       )}
       {section === 'work' && sub === 'loop' && (
         <Panel padded sub={sub}>
-          <ReviewLoopTab projectId={project.id} storyId={searchParams.get('story')} onOpenStory={openStory} canEdit={canEdit} />
+          <ReviewLoopTab projectId={project.id} storyId={searchParams.get('story')} onOpenStory={openStory} canEdit={canEdit} view={searchParams.get('view')} onChangeView={setLoopView} />
         </Panel>
       )}
       {section === 'work' && sub === 'agent-runs' && (

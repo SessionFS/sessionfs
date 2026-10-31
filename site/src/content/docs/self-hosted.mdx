@@ -389,6 +389,8 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 
 **Upgrading to v0.29.2** runs migrations 110 (review loop settings on the parent issue and service-key attribution on work queues), 111 (the `needs_human` work-queue item status) and 112 (the review checklist); all are additive. API keys gain the `loops:read` and `loops:write` scopes. No new settings are needed.
 
+**Upgrading to v0.29.3** runs migrations 113 to 116 (the review round on agent runs, pull requests, releases, gates and deployments, share links, and per-org delivery webhooks); all are additive. For the GitHub merge check, grant the GitHub App the Checks permission and subscribe it to the Pull request and Release events; without the permission SessionFS comments on the pull request instead. Register each org's delivery webhooks with `sfs org delivery-webhook rotate`. No new settings are needed.
+
 ## Troubleshooting
 
 ### Check pod status

@@ -1,12 +1,15 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Badge, Button, Card } from '../../components/ui';
+import { Badge, Button, Card, TableShell } from '../../components/ui';
+import { useChecklist, usePatchChecklistItem } from '../../hooks/useReviewLoop';
+import { errorMessage } from '../../utils/errorMessage';
 import type {
   CaughtFinding,
   CostPoint,
   LearningClass,
   Loop,
   LoopChild,
+  ScoreboardRow,
 } from '../../api/reviewLoop';
 import {
   HARM_LABEL,
@@ -41,11 +44,28 @@ export function NeedsYou({
       .filter((c) => c.needs_human || c.ready)
       .map((c) => ({ child: c, loop: l })),
   );
-  if (items.length === 0) return null;
+  const proposed = (useChecklist(projectId).data ?? []).filter((i) => i.status === 'proposed');
+  const patch = usePatchChecklistItem(projectId);
+  const [accepting, setAccepting] = useState<string | null>(null);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
+  async function accept(itemId: string) {
+    if (accepting) return;
+    setAccepting(itemId);
+    setAcceptError(null);
+    try {
+      await patch.mutateAsync({ itemId, status: 'active' });
+    } catch (err) {
+      setAcceptError(errorMessage(err, 'Could not accept this item'));
+    } finally {
+      setAccepting(null);
+    }
+  }
+  const total = items.length + proposed.length;
+  if (total === 0) return null;
   return (
     <section aria-labelledby="loop-needs-you" className="space-y-2">
       <h3 id="loop-needs-you" className={SECTION_TITLE}>
-        Needs you <span className="text-sm font-normal text-text-tertiary">{items.length}</span>
+        Needs you <span className="text-sm font-normal text-text-tertiary">{total}</span>
       </h3>
       <Card className="divide-y divide-[var(--border)] p-0">
         <ul>
@@ -79,7 +99,21 @@ export function NeedsYou({
               </div>
             </li>
           ))}
+          {proposed.map((item) => (
+            <li key={item.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3">
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium text-text-primary">{item.title}</p>
+                <p className="text-xs text-text-tertiary">Proposed checklist item. {item.check_text}</p>
+              </div>
+              {canEdit && (
+                <Button size="sm" onClick={() => void accept(item.id)} loading={accepting === item.id}>
+                  Accept<span className="sr-only">: {item.title}</span>
+                </Button>
+              )}
+            </li>
+          ))}
         </ul>
+        {acceptError && <p role="alert" className="px-4 pb-3 text-xs text-danger">{acceptError}</p>}
       </Card>
       {action?.kind === 'raise' && (
         <RaiseLimitDialog projectId={projectId} loop={action.loop} child={action.child} onClose={() => setAction(null)} />
@@ -432,5 +466,48 @@ export function BudgetBar({ child: c }: { child: LoopChild }) {
         {pct >= 100 ? ' · budget reached' : ''}
       </p>
     </div>
+  );
+}
+
+/* ── Model scoreboard ──────────────────────────────────────────────── */
+
+/** Which agent pairings work best, from the team's own accepted changes. Hidden when empty. */
+export function Scoreboard({ rows }: { rows: ScoreboardRow[] }) {
+  if (rows.length === 0) return null;
+  const dollars = rows.every((r) => r.cost_per_accepted_change.cost_usd !== undefined);
+  const model = (m: string | null) => m ?? 'Unknown model';
+  return (
+    <section aria-labelledby="loop-scoreboard" className="space-y-3">
+      <h3 id="loop-scoreboard" className={SECTION_TITLE}>Model scoreboard</h3>
+      <p className={QUIET}>Each implementer and reviewer pairing, over the changes it got accepted.</p>
+      <TableShell label="Pairings by model" minWidth={640} bordered>
+        <thead>
+          <tr className="text-left text-2xs uppercase tracking-[0.04em] text-text-tertiary">
+            <th scope="col" className="px-3 py-2">Implementer × reviewer</th>
+            <th scope="col" className="px-3 py-2 text-right">Accepted changes</th>
+            <th scope="col" className="px-3 py-2 text-right">Harmful per change</th>
+            <th scope="col" className="px-3 py-2 text-right">Avg rounds to clean</th>
+            <th scope="col" className="px-3 py-2 text-right">Cost per change</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={`${r.implementer_model}-${r.reviewer_model}-${i}`} className="border-t border-border text-sm text-text-secondary">
+              <td className="px-3 py-2 text-text-primary">
+                {model(r.implementer_model)} <span className="text-text-tertiary">×</span> {model(r.reviewer_model)}
+              </td>
+              <td className="px-3 py-2 text-right">{r.accepted_changes}</td>
+              <td className="px-3 py-2 text-right">{r.harmful_findings_per_accepted_change}</td>
+              <td className="px-3 py-2 text-right">{r.avg_rounds_to_clean ?? 'Not yet'}</td>
+              <td className="px-3 py-2 text-right">
+                {dollars
+                  ? formatUsd(r.cost_per_accepted_change.cost_usd as number)
+                  : `${formatTokens(r.cost_per_accepted_change.tokens)} tokens`}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </TableShell>
+    </section>
   );
 }

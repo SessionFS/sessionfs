@@ -106,12 +106,25 @@ export interface LearningClass {
   joined_at: string | null;
   series: { week: string; count: number }[];
 }
+export interface ScoreboardRow {
+  /** Null when no implementer run named a model. */
+  implementer_model: string | null;
+  reviewer_model: string | null;
+  accepted_changes: number;
+  harmful_findings_per_accepted_change: number;
+  /** Null when no ticket of the pairing reached a clean verdict. */
+  avg_rounds_to_clean: number | null;
+  /** `cost_usd` is present for dollar-visible callers only. */
+  cost_per_accepted_change: { tokens: number; cost_usd?: number };
+}
 export interface LoopInsights {
   caught: CaughtFinding[];
   /** Every harmful fixed finding in the window; `caught` is the latest 100. */
   caught_total?: number;
   cost_per_accepted_change: CostPoint[];
   learning: LearningClass[];
+  /** Absent on older servers. */
+  scoreboard?: ScoreboardRow[];
 }
 
 export type StoryKind =
@@ -146,10 +159,154 @@ export interface StoryEvent {
   version?: string;
   environment?: string;
 }
+export interface StoryPr {
+  id: string;
+  provider: string;
+  repo: string | null;
+  number: number | null;
+  title: string | null;
+  state: string | null;
+  branch: string | null;
+  head_sha: string | null;
+  merged_at: string | null;
+  merge_commit_sha: string | null;
+  external_url: string | null;
+}
+export interface StoryRelease {
+  version: string;
+  released_at: string | null;
+}
+export interface StoryDeployment {
+  environment: string;
+  deployed_at: string | null;
+  source: string | null;
+}
 export interface Story {
   ticket_id: string;
   title: string;
   events: StoryEvent[];
+  /** Shipped context; absent on older servers. */
+  prs?: StoryPr[];
+  releases?: StoryRelease[];
+  deployments?: StoryDeployment[];
+}
+
+export interface ReleaseSummary {
+  id: string;
+  project_id: string;
+  version: string;
+  tag_sha: string | null;
+  released_at: string | null;
+  source: string | null;
+  created_at: string | null;
+}
+export interface ReleaseList {
+  project_id: string;
+  releases: ReleaseSummary[];
+}
+export interface ShipGate {
+  kind: string;
+  status: string;
+  url: string | null;
+}
+export interface ShipDeployment {
+  environment: string;
+  deployed_at: string | null;
+  source: string | null;
+}
+export interface ShipPr {
+  id: string;
+  provider: string;
+  repo: string | null;
+  number: number | null;
+  title: string | null;
+  state: string | null;
+  external_url: string | null;
+}
+export interface ShipClass {
+  class: string;
+  title: string;
+  joined_at: string | null;
+}
+export interface ShipReport {
+  project_id: string;
+  /** The release version, or the YYYY-MM month. */
+  version: string;
+  released_at: string | null;
+  loops: number;
+  tickets: number;
+  review_rounds: number;
+  findings: number;
+  harmful: number;
+  harmful_by_harm: Partial<Record<Harm, number>>;
+  all_fixed_before_merge: boolean;
+  /** `cost_usd` is present for dollar-visible callers only. */
+  cost_per_accepted_change: { tokens: number; cost_usd?: number };
+  checklist_classes_learned: ShipClass[];
+  gates: ShipGate[];
+  deployments: ShipDeployment[];
+  prs: ShipPr[];
+  markdown: string;
+}
+
+
+/* ── Org-wide inbox and share links ── */
+
+export type NeedsYouKind = 'ready' | 'needs_human' | 'proposed_checklist';
+export interface NeedsYouItem {
+  kind: NeedsYouKind;
+  project_id: string;
+  project_name: string;
+  loop_id: string | null;
+  ticket_id: string | null;
+  ticket_title?: string | null;
+  checklist_item_id: string | null;
+  title: string;
+  reason: string;
+  can_act: boolean;
+}
+export interface NeedsYouResponse {
+  items: NeedsYouItem[];
+  counts: { ready: number; needs_human: number; proposed_checklist: number; total: number };
+}
+
+export interface ShareLink {
+  id: string;
+  kind: 'story' | 'ship_report';
+  ticket_id: string | null;
+  release_version: string | null;
+  month: string | null;
+  created_at: string | null;
+  expires_at: string | null;
+  revoked_at: string | null;
+}
+export interface CreatedShareLink {
+  id: string;
+  kind: 'story' | 'ship_report';
+  ticket_id: string | null;
+  release_version: string | null;
+  month: string | null;
+  token: string;
+  url: string;
+  expires_at: string | null;
+}
+export type ShareTarget =
+  | { kind: 'story'; ticketId: string }
+  | { kind: 'ship_report'; releaseVersion?: string; month?: string };
+
+/** What the public endpoint serves: a story or a ship report (no dollars, no identities). */
+export type PublicLoopShare = Story | ShipReport;
+export function isPublicStory(d: PublicLoopShare): d is Story {
+  return Array.isArray((d as Story).events);
+}
+
+/** Fetch a public loop share. No credentials are sent. Throws ApiError on a miss. */
+export async function fetchPublicLoopShare(baseUrl: string, token: string): Promise<PublicLoopShare> {
+  const resp = await fetch(`${baseUrl}/api/v1/share/loop/${encodeURIComponent(token)}`, {
+    credentials: 'omit',
+  });
+  if (!resp.ok) throw new ApiError(resp.status, await resp.text());
+  return (await resp.json()) as PublicLoopShare;
 }
 
 export type ChecklistStatus = 'proposed' | 'active' | 'retired';
@@ -217,6 +374,24 @@ export function createReviewLoopApi(baseUrl: string, apiKey: string) {
   }
   const base = (p: string) => `/api/v1/projects/${enc(p)}`;
   return {
+    getNeedsYou: () => get<NeedsYouResponse>('/api/v1/me/loops/needs-you'),
+    getNeedsYouCount: () => get<{ count: number }>('/api/v1/me/loops/needs-you/count'),
+    listShareLinks: (projectId: string) => get<ShareLink[]>(`${base(projectId)}/loop-share-links`),
+    createShareLink: (projectId: string, target: ShareTarget, expiresDays: number) =>
+      send<CreatedShareLink>('POST', `${base(projectId)}/loop-share-links`, {
+        kind: target.kind,
+        expires_days: expiresDays,
+        ...(target.kind === 'story'
+          ? { ticket_id: target.ticketId }
+          : { release_version: target.releaseVersion, month: target.month }),
+      }),
+    revokeShareLink: async (projectId: string, linkId: string) => {
+      const resp = await fetch(`${baseUrl}${base(projectId)}/loop-share-links/${enc(linkId)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      if (!resp.ok) throw new ApiError(resp.status, await resp.text());
+    },
     updateLoop: (projectId: string, loopId: string, body: LoopBudgetPatch) =>
       send<Loop>('PATCH', `${base(projectId)}/loops/${enc(loopId)}`, body),
     closeLoopItem: (projectId: string, loopId: string, ticketId: string) =>
@@ -234,6 +409,11 @@ export function createReviewLoopApi(baseUrl: string, apiKey: string) {
       get<TicketSpend>(`${base(projectId)}/tickets/${enc(ticketId)}/spend`),
     getReadiness: (projectId: string, ticketId: string, sha: string) =>
       get<Readiness>(`${base(projectId)}/tickets/${enc(ticketId)}/readiness${qs({ sha })}`),
+    listReleases: (projectId: string) => get<ReleaseList>(`${base(projectId)}/releases?limit=50`),
+    getShipReport: (projectId: string, version: string) =>
+      get<ShipReport>(`${base(projectId)}/releases/${enc(version)}/ship-report`),
+    getMonthlyShipReport: (projectId: string, month: string) =>
+      get<ShipReport>(`${base(projectId)}/ship-report${qs({ month })}`),
     getStory: (projectId: string, ticketId: string) =>
       get<Story>(`${base(projectId)}/tickets/${enc(ticketId)}/story`),
   };

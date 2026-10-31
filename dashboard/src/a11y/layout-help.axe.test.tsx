@@ -27,6 +27,9 @@ vi.mock('../components/SearchBar', () => ({
 vi.mock('../hooks/useTicketNotifications', () => ({
   useTicketNotificationUnreadCount: () => ({ data: { count: 3, etag: '' } }),
 }));
+vi.mock('../hooks/useReviewLoop', () => ({
+  useNeedsYouCount: () => ({ data: { count: 2 } }),
+}));
 vi.mock('../helper/HelperProvider', () => ({
   useHelper: () => ({ openHelper: vi.fn() }),
 }));

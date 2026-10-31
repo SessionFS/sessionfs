@@ -6,6 +6,7 @@ import { useHandoffInbox } from '../hooks/useHandoffs';
 import { useMe } from '../hooks/useMe';
 import { useTransfers } from '../transfers/useTransfers';
 import { useMyInvites } from '../invites/useInvites';
+import { useNeedsYouCount } from '../hooks/useReviewLoop';
 import { useTicketNotificationUnreadCount } from '../hooks/useTicketNotifications';
 import SearchBar from './SearchBar';
 import ThemeToggle from './ThemeToggle';
@@ -45,6 +46,9 @@ const transfersIcon = mkIcon(
 const invitesIcon = mkIcon(
   <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><line x1="19" y1="8" x2="19" y2="14" /><line x1="22" y1="11" x2="16" y2="11" /></>
 );
+const loopsIcon = mkIcon(
+  <><path d="M17 2l4 4-4 4" /><path d="M3 11v-1a4 4 0 0 1 4-4h14" /><path d="M7 22l-4-4 4-4" /><path d="M21 13v1a4 4 0 0 1-4 4H3" /></>
+);
 const orgIcon = mkIcon(
   <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>
 );
@@ -81,7 +85,7 @@ interface NavItem {
   match: (p: string) => boolean;
   orgOnly?: boolean;
   adminOnly?: boolean;
-  badgeKey?: 'pending' | 'transfers' | 'invites' | 'notifications';
+  badgeKey?: 'pending' | 'transfers' | 'invites' | 'notifications' | 'loops';
 }
 
 interface NavGroup {
@@ -107,6 +111,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Inbox',
     items: [
       { to: '/inbox', label: 'Notifications', icon: bellIcon, match: (p: string) => p.startsWith('/inbox'), badgeKey: 'notifications' },
+      { to: '/review-loops', label: 'Review loops', icon: loopsIcon, match: (p: string) => p.startsWith('/review-loops'), badgeKey: 'loops' },
       { to: '/invites', label: 'Invites', icon: invitesIcon, match: (p: string) => p.startsWith('/invites'), badgeKey: 'invites' },
       { to: '/transfers', label: 'Transfers', icon: transfersIcon, match: (p: string) => p.startsWith('/transfers'), badgeKey: 'transfers' },
     ],
@@ -213,6 +218,8 @@ export default function Layout() {
   const notificationCount = useTicketNotificationUnreadCount();
   const notificationsUnread = notificationCount.data?.count ?? 0;
 
+  const loopsNeedYou = useNeedsYouCount().data?.count ?? 0;
+
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   // Sidebar collapse — persisted to localStorage
@@ -261,6 +268,7 @@ export default function Layout() {
       case 'transfers': return transfersPendingCount;
       case 'invites': return invitesPendingCount;
       case 'notifications': return notificationsUnread;
+      case 'loops': return loopsNeedYou;
       default: return undefined;
     }
   }

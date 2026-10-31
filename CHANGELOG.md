@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.3] - 2026-10-31
+
+**Record every worker run and review round, gate the merge on GitHub and GitLab, and tell the story of each release.** Server migrations 113–116.
+
+### Added
+- **Worker runs and review rounds in one call each.** `start_worker_run` takes the ticket's lease and opens a run; `finish_worker_run` records the commit, how the worker exited and the tokens it used; `record_review_round` records the verdict for an exact commit, its findings with harm, and the reviewer's tokens (`sfs loop run start|finish`, `sfs loop review`, `POST /api/v1/projects/{id}/agent-runs/start-worker`, `.../agent-runs/{run_id}/finish`, `.../loops/{loop_id}/rounds`). Repeating a finish or a round is safe and never counts usage twice. Hitting a token budget or round cap parks the ticket for a person.
+- **A merge check on GitHub.** With the GitHub App installed, pull requests get a "SessionFS review loop" check that is green only when every ticket linked to the pull request is ready to merge at exactly that commit; branch protection can require it. Installs without the Checks permission get a pull request comment instead (`POST /api/v1/projects/{id}/tickets/{ticket_id}/merge-check`). GitLab merge requests get the same answer as a commit status.
+- **Pull requests, releases and deploys.** Pull requests link to tickets from `tk_` ids in their title, body or branch, and from loop branches. Record releases, their gates and deployments by hand (`sfs release record|deploy|list`) or from the GitHub App and per-org GitHub and GitLab webhooks (`sfs org delivery-webhook rotate|status`).
+- **Ship Report** per release or per month: loops, review rounds, findings, harmful findings and whether all were fixed before merge, cost per accepted change, checklist classes learned, gates, deploys and pull requests, plus a markdown snippet for release notes (`sfs release ship-report`, `GET /api/v1/projects/{id}/releases/{version}/ship-report`).
+- **Model scoreboard** in loop insights: harmful findings per accepted change, rounds to clean and cost per accepted change for each worker and reviewer model pairing.
+- **Share links** for a ticket's story or a Ship Report that show no dollars, emails or user ids, expire after 7, 30 or 90 days and can be revoked (`sfs loop share story|ship-report|list|revoke`).
+- **Dashboard:** a Loop Board with one lane per ticket and a ring per review round sized by harmful findings, a budget forecast, Ship Reports with image and markdown export, the model scoreboard, where each ticket shipped, a Needs you panel that includes proposed checklist items, a Review loops page under Inbox for every project you can see, and the public share page.
+- The `worker-review-loop` skill 2.0 in the launch catalog, built on these calls.
+- Three MCP tools (118 in total).
+
+### Changed
+- A review round never closes a ticket for review when the reviewer is one of its implementers or the implementers can't be determined.
+- Pull request ingest from the GitHub App only writes to project repositories verified through the App.
+
 ## [0.29.2] - 2026-10-30
 
 **Run a review loop with a budget, learn from every round, and see it all in the dashboard.** Server migrations 110–112.

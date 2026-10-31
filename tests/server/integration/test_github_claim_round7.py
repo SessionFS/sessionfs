@@ -173,7 +173,12 @@ class TestFingerprintAndShape:
             "installation": {"id": 1},
         }
         assert webhooks._valid_pr_event(good)
-        assert not webhooks._valid_pr_event({**good, "action": "closed"})
+        # closed/edited are ingested (PR records) but never drive the
+        # session-link comment pipeline.
+        assert webhooks._valid_pr_event({**good, "action": "closed"})
+        assert "closed" not in webhooks._PR_COMMENT_ACTIONS
+        assert "edited" not in webhooks._PR_COMMENT_ACTIONS
+        assert not webhooks._valid_pr_event({**good, "action": "labeled"})
         assert not webhooks._valid_pr_event({**good, "pull_request": {}})
         assert not webhooks._valid_pr_event({**good, "installation": {"id": True}})
 

@@ -659,6 +659,7 @@ class AgentRunResponse(BaseModel):
     continues_run_id: str | None = None
     work_queue_id: str | None = None
     work_queue_item_id: str | None = None
+    review_round: int | None = None
     exit_reason: str | None = None
     occurred_at: datetime | None = None
 
@@ -1016,6 +1017,7 @@ def _row_to_response(
         continues_run_id=row.continues_run_id,
         work_queue_id=row.work_queue_id,
         work_queue_item_id=row.work_queue_item_id,
+        review_round=row.review_round,
         exit_reason=row.exit_reason,
         occurred_at=row.occurred_at,
     )

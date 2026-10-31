@@ -1565,6 +1565,104 @@ async def run_work_queue_step(
     )
 
 
+async def post_server_verdict(
+    db: AsyncSession,
+    *,
+    queue: WorkQueue,
+    ticket_id: str,
+    verdict_content: str,
+    reviewed_commit: str | None,
+    actor_user_id: str | None,
+    actor_org_id: str | None,
+    actor_service_key_id: str | None,
+    actor_type: str | None,
+    service_key_name: str | None,
+    now: datetime,
+) -> tuple[TicketComment, list[str]]:
+    """Create the server-derived reviewer verdict comment for a queue.
+
+    Shared by the directive settle path and the loop round endpoint so trust
+    NEVER comes from a request body: ``author_persona`` is the queue's
+    reviewer persona and ``verdict_trusted`` is computed from the
+    authenticated actor against the trusted_reviewers registry.
+    """
+    # Fail LOUD and BEFORE any write: a review outcome's verdict_content
+    # must carry a header the review-state oracle parses, or the trusted
+    # comment we create would be silently ignored by compute_review_state
+    # and the review_until_clean loop could never stop. Reject an
+    # unparseable header instead of persisting a dead verdict.
+    if verdict_from_header(verdict_content) is None:
+        raise StepEngineError(
+            "verdict_header_unparseable",
+            "verdict_content must carry a review verdict header of the "
+            "form '<Reviewer> R<N> review on <ticket_id>: "
+            "VERIFIED-CLEAN|CHANGES REQUESTED|NO CHANGES NEEDED|APPROVED'. "
+            "The header is what the review-state oracle parses to close "
+            "the loop.",
+            http_status=422,
+        )
+    # Review Loop B2 — the verdict may be bound to the exact commit the
+    # reviewer read. Reject a malformed commit loudly before any write;
+    # readiness later compares this string to the current head exactly.
+    if reviewed_commit is not None and not _REVIEWED_COMMIT_RE.fullmatch(
+        reviewed_commit
+    ):
+        raise StepEngineError(
+            "reviewed_commit_invalid",
+            "reviewed_commit must be a full commit id (40 or 64 lowercase "
+            "hex chars) of the commit the reviewer reviewed.",
+            http_status=422,
+        )
+    # The verdict's author identity is server-derived from queue config.
+    reviewer_persona = queue.assigned_persona or "codex-reviewer"
+    # Trust is derived from the AUTHENTICATED actor — never the body.
+    from sessionfs.server.routes.tickets import (
+        is_registered_trusted_reviewer,
+    )
+
+    verdict_trusted = False
+    if actor_user_id is not None:
+        verdict_trusted = await is_registered_trusted_reviewer(
+            db,
+            project_id=queue.project_id,
+            org_id=actor_org_id,
+            user_id=actor_user_id,
+            service_key_id=actor_service_key_id,
+            claimed_persona=reviewer_persona,
+        )
+    created_comment = TicketComment(
+        id=f"tc_{uuid.uuid4().hex[:16]}",
+        ticket_id=ticket_id,
+        author_user_id=actor_user_id or "",
+        author_persona=reviewer_persona,
+        content=verdict_content,
+        session_id=None,
+        created_at=now,
+        actor_type=actor_type or "user",
+        service_key_id=actor_service_key_id,
+        service_key_name=service_key_name,
+        verdict_trusted=verdict_trusted,
+        reviewed_commit=reviewed_commit,
+    )
+    db.add(created_comment)
+    # Flush so the new row is visible to the re-derive query below and so
+    # its id can become the acked-cursor target. The caller still owns the
+    # final commit.
+    await db.flush()
+    # Two-way Jira sync: a trusted VERIFIED-CLEAN verdict is forwarded to
+    # the linked Jira issue exactly like one posted through the comment
+    # route (outbox row in this transaction; best-effort, never raises).
+    jira_event_ids = await _queue_verdict_for_jira(
+        db,
+        ticket_id=ticket_id,
+        comment=created_comment,
+        project_id=queue.project_id,
+        actor_user_id=actor_user_id,
+        actor_service_key_id=actor_service_key_id,
+    )
+    return created_comment, jira_event_ids
+
+
 async def complete_work_queue_step(
     db: AsyncSession,
     *,
@@ -1733,84 +1831,21 @@ async def complete_work_queue_step(
         and verdict_content is not None
         and verdict_content.strip()
     ):
-        # Fail LOUD and BEFORE any write: a review outcome's verdict_content
-        # must carry a header the review-state oracle parses, or the trusted
-        # comment we create would be silently ignored by compute_review_state
-        # and the review_until_clean loop could never stop. Reject an
-        # unparseable header instead of persisting a dead verdict.
-        if verdict_from_header(verdict_content) is None:
-            raise StepEngineError(
-                "verdict_header_unparseable",
-                "verdict_content must carry a review verdict header of the "
-                "form '<Reviewer> R<N> review on <ticket_id>: "
-                "VERIFIED-CLEAN|CHANGES REQUESTED|NO CHANGES NEEDED|APPROVED'. "
-                "The header is what the review-state oracle parses to close "
-                "the loop.",
-                http_status=422,
-            )
-        # Review Loop B2 — the verdict may be bound to the exact commit the
-        # reviewer read. Reject a malformed commit loudly before any write;
-        # readiness later compares this string to the current head exactly.
-        if reviewed_commit is not None and not _REVIEWED_COMMIT_RE.fullmatch(
-            reviewed_commit
-        ):
-            raise StepEngineError(
-                "reviewed_commit_invalid",
-                "reviewed_commit must be a full commit id (40 or 64 lowercase "
-                "hex chars) of the commit the reviewer reviewed.",
-                http_status=422,
-            )
-        # The verdict's author identity is server-derived from queue config.
-        reviewer_persona = queue.assigned_persona or "codex-reviewer"
-        # Trust is derived from the AUTHENTICATED actor — never the body.
-        from sessionfs.server.routes.tickets import (
-            is_registered_trusted_reviewer,
-        )
-
-        verdict_trusted = False
-        if actor_user_id is not None:
-            verdict_trusted = await is_registered_trusted_reviewer(
-                db,
-                project_id=queue.project_id,
-                org_id=actor_org_id,
-                user_id=actor_user_id,
-                service_key_id=actor_service_key_id,
-                claimed_persona=reviewer_persona,
-            )
-        created_comment = TicketComment(
-            id=f"tc_{uuid.uuid4().hex[:16]}",
-            ticket_id=ticket_id,
-            author_user_id=actor_user_id or "",
-            author_persona=reviewer_persona,
-            content=verdict_content,
-            session_id=None,
-            created_at=now,
-            actor_type=actor_type or "user",
-            service_key_id=actor_service_key_id,
-            service_key_name=service_key_name,
-            verdict_trusted=verdict_trusted,
-            reviewed_commit=reviewed_commit,
-        )
-        db.add(created_comment)
-        # Flush so the new row is visible to the re-derive query below and so
-        # its id can become the acked-cursor target. The caller still owns the
-        # final commit.
-        await db.flush()
-        # The server-created verdict IS the writeback for this settle — make it
-        # the acked target so the validation below is satisfied without the
-        # caller round-tripping a comment_id.
-        comment_id = created_comment.id
-        # Two-way Jira sync: a trusted VERIFIED-CLEAN verdict is forwarded to
-        # the linked Jira issue exactly like one posted through the comment
-        # route (outbox row in this transaction; best-effort, never raises).
-        jira_event_ids = await _queue_verdict_for_jira(
+        created_comment, jira_event_ids = await post_server_verdict(
             db,
+            queue=queue,
             ticket_id=ticket_id,
-            comment=created_comment,
-            project_id=queue.project_id,
+            verdict_content=verdict_content,
+            reviewed_commit=reviewed_commit,
             actor_user_id=actor_user_id,
+            actor_org_id=actor_org_id,
             actor_service_key_id=actor_service_key_id,
+            actor_type=actor_type,
+            service_key_name=service_key_name,
+            now=now,
         )
+        # The server-created verdict IS the writeback for this settle.
+        comment_id = created_comment.id
 
     # ── (4b) Validate the writeback landed ──
     acked_comment: TicketComment | None = None

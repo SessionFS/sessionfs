@@ -187,8 +187,11 @@ _RETRY_BACKOFF = (
 _OPPORTUNISTIC_RETRY_LIMIT = 2
 # X-GitHub-Delivery is informational only (it is not signed).
 _DELIVERY_ID_RE = re.compile(r"[A-Za-z0-9-]{1,64}")
-_PR_ACTIONS = frozenset({"opened", "synchronize", "reopened"})
+_PR_ACTIONS = frozenset({"opened", "edited", "synchronize", "reopened", "closed"})
+# The session-link comment pipeline only reacts to new or updated code.
+_PR_COMMENT_ACTIONS = frozenset({"opened", "synchronize", "reopened"})
 _INSTALLATION_ACTIONS = frozenset({"created", "deleted", "suspend", "unsuspend"})
+_RELEASE_ACTIONS = frozenset({"published"})
 
 
 def _delivery_fingerprint(body: bytes) -> str:
@@ -248,6 +251,20 @@ def _valid_installation_event(payload: dict) -> bool:
     if GITHUB_APP_ID.isdigit() and inst["app_id"] != int(GITHUB_APP_ID):
         return False
     return True
+
+
+def _valid_release_event(payload: dict) -> bool:
+    """A ``release.published`` event whose repo can map to a project."""
+    release = payload.get("release")
+    repo = payload.get("repository")
+    return (
+        payload.get("action") in _RELEASE_ACTIONS
+        and isinstance(release, dict)
+        and isinstance(release.get("tag_name"), str)
+        and isinstance(repo, dict)
+        and isinstance(repo.get("full_name"), str)
+        and isinstance(repo.get("clone_url"), str)
+    )
 
 
 def _stored_payload(body: bytes) -> str | None:
@@ -500,6 +517,8 @@ def _canonical_event(payload: dict) -> str | None:
         return "pull_request"
     if _valid_installation_event(payload):
         return "installation"
+    if _valid_release_event(payload):
+        return "release"
     return None
 
 
@@ -518,12 +537,22 @@ async def _process_delivery(
         logger.info("GitHub webhook header %r disagrees with payload shape %r", event, canonical)
     ok = True
     if canonical == "pull_request":
-        ok = await _handle_pr_event(payload, fence=(fingerprint, lease))
+        if payload.get("action") in _PR_COMMENT_ACTIONS:
+            ok = await _handle_pr_event(payload, fence=(fingerprint, lease))
+        # The PR ingest (upsert + auto-link + merge-check refresh) runs beside
+        # the session-comment pipeline for the same delivery.
+        ok = (await _handle_pr_ingest(payload, fence=(fingerprint, lease))) and ok
     elif canonical == "installation":
         try:
             await _apply_installation_event(payload)
         except Exception:
             logger.warning("Failed to apply GitHub installation event", exc_info=True)
+            ok = False
+    elif canonical == "release":
+        try:
+            await _handle_release_event(payload, fence=(fingerprint, lease))
+        except Exception:
+            logger.warning("Failed to apply GitHub release event", exc_info=True)
             ok = False
     await _finish_delivery(fingerprint, ok, lease)
     return ok
@@ -1372,6 +1401,160 @@ async def _handle_pr_event(payload: dict, fence: tuple[str, int] | None = None) 
 
     except Exception as exc:
         logger.error("Failed to handle PR event: %s", exc)
+        return False
+
+
+def _parse_iso(value: object) -> datetime | None:
+    """Parse a GitHub ISO timestamp (with or without a trailing Z)."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _is_full_sha(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) in (40, 64)
+        and all(c in "0123456789abcdefABCDEF" for c in value)
+    )
+
+
+async def _project_id_for_remote(db, normalized: str) -> str | None:
+    """The project that owns a normalized git remote via a *verified* GitHub
+    App repo row (unmapped or unverified -> None).
+
+    Unverified / legacy rows are ignored: any tenant can register another
+    tenant's remote, so only a repo whose ownership was proven through the
+    GitHub App installation may receive PRs and releases.
+    """
+    from sessionfs.server.db.models import ProjectRepo
+
+    return (
+        await db.execute(
+            select(ProjectRepo.project_id)
+            .where(
+                ProjectRepo.git_remote_normalized == normalized,
+                ProjectRepo.verified.is_(True),
+                ProjectRepo.verification_method == "github_app",
+            )
+            .order_by(ProjectRepo.is_primary.desc(), ProjectRepo.id)
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+
+async def _handle_pr_ingest(payload: dict, fence: tuple[str, int] | None = None) -> bool:
+    """Upsert the PR (+ auto-link tickets) and refresh merge checks.
+
+    Runs beside the session-comment pipeline for the same delivery. Repos that
+    don't map to a project are ignored. The upsert is idempotent and the
+    merge-check refresh is best-effort, so a failed refresh never fails the
+    delivery.
+    """
+    from sessionfs.server.db.engine import _session_factory as async_session_factory
+    from sessionfs.server.routes.loop_checklist import _sanitize_text
+    from sessionfs.server.services import merge_checks, releases
+
+    try:
+        pr = payload["pull_request"]
+        repository = payload["repository"]
+        full_name = repository["full_name"]
+        action = payload.get("action")
+        number = pr["number"]
+        head = pr.get("head") or {}
+        branch = head.get("ref") or ""
+        head_sha = head.get("sha") or None
+        merged = bool(pr.get("merged"))
+        state = "merged" if merged else ("closed" if pr.get("state") == "closed" else "open")
+        title = _sanitize_text(pr.get("title") or "")
+        body = _sanitize_text(pr.get("body") or "")
+        normalized = normalize_git_remote(repository["clone_url"])
+
+        if async_session_factory is None:
+            logger.error("DB session factory not initialized")
+            return False
+
+        async with async_session_factory() as db:
+            await _hold_delivery_fence(db, fence)
+            project_id = await _project_id_for_remote(db, normalized)
+            if project_id is None:
+                await db.rollback()
+                return True  # unmapped repo — ignore
+            result = await releases.upsert_pull_request(
+                db,
+                project_id=project_id,
+                provider="github",
+                repo=full_name,
+                number=number,
+                title=title,
+                state=state,
+                branch=branch,
+                head_sha=head_sha,
+                merged_at=_parse_iso(pr.get("merged_at")),
+                merge_commit_sha=pr.get("merge_commit_sha") or None,
+                external_id=str(number),
+                body=body,
+                provider_updated_at=_parse_iso(pr.get("updated_at")),
+            )
+            linked = result.get("linked_ticket_ids") or []
+            if action in ("opened", "synchronize") and head_sha and linked:
+                # One shared check run per PR: evaluates every linked ticket.
+                await merge_checks.refresh_merge_check(
+                    db,
+                    project_id=project_id,
+                    repo=full_name,
+                    head_sha=head_sha,
+                )
+            return True
+    except _Superseded:
+        return True
+    except Exception as exc:
+        logger.error("Failed to ingest PR event: %s", exc)
+        return False
+
+
+async def _handle_release_event(payload: dict, fence: tuple[str, int] | None = None) -> bool:
+    """Record a GitHub release for the repo's project (unmapped repos ignored)."""
+    from sessionfs.server.db.engine import _session_factory as async_session_factory
+    from sessionfs.server.services import releases
+
+    try:
+        release = payload["release"]
+        repository = payload["repository"]
+        normalized = normalize_git_remote(repository["clone_url"])
+
+        if async_session_factory is None:
+            logger.error("DB session factory not initialized")
+            return False
+
+        version = release["tag_name"]
+        target = release.get("target_commitish")
+        tag_sha = target if _is_full_sha(target) else ""
+        released_at = _parse_iso(release.get("published_at"))
+
+        async with async_session_factory() as db:
+            await _hold_delivery_fence(db, fence)
+            project_id = await _project_id_for_remote(db, normalized)
+            if project_id is None:
+                await db.rollback()
+                return True  # unmapped repo — ignore
+            await releases.record_release(
+                db,
+                project_id=project_id,
+                version=version,
+                tag_sha=tag_sha,
+                released_at=released_at,
+                source="github_release",
+            )
+            return True
+    except _Superseded:
+        return True
+    except Exception as exc:
+        logger.error("Failed to ingest release event: %s", exc)
         return False
 
 

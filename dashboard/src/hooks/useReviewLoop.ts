@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
-import { createReviewLoopApi, type LoopBudgetPatch, type Range } from '../api/reviewLoop';
+import { createReviewLoopApi, type LoopBudgetPatch, type Range, type ShareTarget } from '../api/reviewLoop';
 
 /**
  * Review Loop reads. Light polling only (no websockets): the board refreshes
@@ -46,6 +46,30 @@ export function useStory(projectId: string | undefined, ticketId: string | null)
     enabled: enabled && !!projectId && !!ticketId,
     staleTime: 15_000,
     refetchInterval: 30_000,
+  });
+}
+
+export function useReleases(projectId: string | undefined) {
+  const { api, enabled } = useApi();
+  return useQuery({
+    queryKey: ['loopReleases', projectId],
+    queryFn: () => api!.listReleases(projectId!),
+    enabled: enabled && !!projectId,
+    staleTime: 60_000,
+  });
+}
+
+/** `selection` is a release version, or `month:YYYY-MM` for the monthly report. */
+export function useShipReport(projectId: string | undefined, selection: string | null) {
+  const { api, enabled } = useApi();
+  return useQuery({
+    queryKey: ['loopShipReport', projectId, selection],
+    queryFn: () =>
+      selection!.startsWith('month:')
+        ? api!.getMonthlyShipReport(projectId!, selection!.slice(6))
+        : api!.getShipReport(projectId!, selection!),
+    enabled: enabled && !!projectId && !!selection,
+    staleTime: 60_000,
   });
 }
 
@@ -109,5 +133,56 @@ export function usePatchChecklistItem(projectId: string) {
     mutationFn: (v: { itemId: string; status: 'active' | 'retired' }) =>
       api!.patchChecklistItem(projectId, v.itemId, v.status),
     onSuccess: done,
+  });
+}
+
+/** Sidebar badge: lightly polled, like the notification bell. */
+export function useNeedsYouCount() {
+  const { api, enabled } = useApi();
+  return useQuery({
+    queryKey: ['loopNeedsYouCount'],
+    queryFn: () => api!.getNeedsYouCount(),
+    enabled,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useNeedsYouItems() {
+  const { api, enabled } = useApi();
+  return useQuery({
+    queryKey: ['loopNeedsYou'],
+    queryFn: () => api!.getNeedsYou(),
+    enabled,
+    staleTime: 15_000,
+    refetchInterval: 60_000,
+  });
+}
+
+export function useShareLinks(projectId: string | undefined, enabledFlag = true) {
+  const { api, enabled } = useApi();
+  return useQuery({
+    queryKey: ['loopShareLinks', projectId],
+    queryFn: () => api!.listShareLinks(projectId!),
+    enabled: enabled && !!projectId && enabledFlag,
+  });
+}
+
+export function useCreateShareLink(projectId: string) {
+  const { api } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: { target: ShareTarget; expiresDays: number }) =>
+      api!.createShareLink(projectId, v.target, v.expiresDays),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['loopShareLinks', projectId] }),
+  });
+}
+
+export function useRevokeShareLink(projectId: string) {
+  const { api } = useApi();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (linkId: string) => api!.revokeShareLink(projectId, linkId),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['loopShareLinks', projectId] }),
   });
 }

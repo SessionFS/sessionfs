@@ -113,6 +113,40 @@ class GitLabClient:
             resp.raise_for_status()
             return resp.json()
 
+    async def post_commit_status(
+        self,
+        project_id: int,
+        sha: str,
+        state: str,
+        *,
+        name: str,
+        description: str,
+        target_url: str | None = None,
+    ) -> dict:
+        """Set a commit status (the Review Loop merge-readiness badge).
+
+        The SSRF guard re-validates the instance host right before the request
+        (DNS rebinding protection) and redirects are never followed, matching
+        every other GitLab call.
+        """
+        url = f"{self.base_url}/api/v4/projects/{project_id}/statuses/{sha}"
+        await self._guard()
+        payload: dict[str, str] = {
+            "state": state,
+            "name": name,
+            "description": description,
+        }
+        if target_url:
+            payload["target_url"] = target_url
+        async with self._client(15) as client:
+            resp = await client.post(
+                url,
+                headers={"PRIVATE-TOKEN": self.access_token},
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     async def test_connection(self) -> bool:
         """Verify the access token works."""
         url = f"{self.base_url}/api/v4/user"

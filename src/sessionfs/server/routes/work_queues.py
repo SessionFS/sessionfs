@@ -939,6 +939,12 @@ async def complete_work_queue_step(
             {"error": exc.code, "message": exc.message},
         )
     await db.commit()
+    if body.verdict_content and body.verdict_content.strip():
+        # A reviewer verdict was just settled — re-evaluate the ticket's merge
+        # check on a detached task so it never delays (or fails) the settle.
+        from sessionfs.server.services import merge_checks
+
+        merge_checks.schedule_recheck(body.ticket_id)
     if result.jira_event_ids:
         # A forwarded trusted verdict: deliver its Jira outbox row now (the
         # sweep retries it if this task is lost).

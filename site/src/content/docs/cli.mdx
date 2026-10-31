@@ -1936,7 +1936,7 @@ Only runs with a `reported` or `estimated` cost basis add dollars; `plan` and `u
 
 ## `sfs loop`
 
-Start, watch and budget a [worker review loop](/review-loop/), read its reports, keep its checklist, and check merge readiness. Tier: **Team+** (the checklist is on every plan). From v0.29.2.
+Start, watch and budget a [worker review loop](/review-loop/), run its workers and record its review rounds, read its reports, keep its checklist, check merge readiness and share a ticket's story. Tier: **Team+** (the checklist is on every plan). From v0.29.2.
 
 | Command | Description |
 |---------|-------------|
@@ -1944,6 +1944,9 @@ Start, watch and budget a [worker review loop](/review-loop/), read its reports,
 | `sfs loop status [LOOP_ID]` | One loop's children (status, branch, head, rounds, spend), or every loop when the id is omitted |
 | `sfs loop update LOOP_ID [--token-budget N] [--cost-budget-usd N] [--max-review-rounds N]` | Raise a limit |
 | `sfs loop close-item LOOP_ID TICKET_ID` | Close an item the loop handed back as needing a person. Users only; service keys are refused |
+| `sfs loop run start TICKET_ID [--model M] [--provider P] [--branch B] [--output-id]` | Take the ticket's lease and open a worker run; prints the run id and what is left of the budget (v0.29.3) |
+| `sfs loop run finish RUN_ID --head-sha SHA [--exit-reason finished\|out_of_turns\|crashed] [--branch B] [--input-tokens N] [--output-tokens N] [--cache-read-tokens N] [--cache-write-tokens N] [--cost-usd N] [--cost-basis BASIS] [--summary TEXT]` | Record the commit, how the worker exited and its tokens. Repeating it never counts usage twice (v0.29.3) |
+| `sfs loop review LOOP_ID --ticket TICKET_ID --round N --commit SHA --verdict VERIFIED-CLEAN\|CHANGES-REQUESTED [--findings-file FILE] [--stage code\|design] [--model M] [--provider P] [--input-tokens N] [--output-tokens N] [--cost-usd N]` | Record a review round for an exact commit. The findings file is a JSON list of `{severity, class, harm, title, file?, line?, status?}`. Pass the loop id as `--ticket` for a design round (v0.29.3) |
 | `sfs loop report TICKET_ID` | Per-round findings by harm, known versus new classes and round cost |
 | `sfs loop insights [--from DATE] [--to DATE]` | Findings caught, cost per accepted change and checklist learning |
 | `sfs loop checklist list [--status proposed\|active\|retired]` | Show the project checklist |
@@ -1951,6 +1954,10 @@ Start, watch and budget a [worker review loop](/review-loop/), read its reports,
 | `sfs loop checklist add TITLE [--check TEXT] [--slug SLUG]` | Propose an item |
 | `sfs loop checklist accept SLUG` / `retire SLUG` | Activate or retire an item |
 | `sfs loop ready TICKET_ID --sha HEAD_COMMIT` | Merge readiness (below) |
+| `sfs loop share story TICKET_ID [--expires-days N]` | Mint a public, revocable link to a ticket's story. The raw token is printed once and is never stored |
+| `sfs loop share ship-report VERSION [--expires-days N]` | Mint a public, revocable link to a ship report |
+| `sfs loop share list` | List the project's share links (tokens are never shown) |
+| `sfs loop share revoke LINK_ID` | Revoke a share link |
 
 Dollar figures are shown only to org owners and admins, or the owner of a personal project.
 
@@ -1967,6 +1974,19 @@ sfs loop ready TICKET_ID --sha HEAD_COMMIT
 | `--sha` | string | Full head commit id (40 or 64 lowercase hex characters) |
 
 Prints **READY** only when a trusted strict `VERIFIED-CLEAN` verdict is bound to exactly that commit, the reviewer's identity differs from every implementer identity recorded for the ticket, and no open finding is harmful. Otherwise it prints **NOT READY** with the reasons and exits `1`, so it can gate a script. MCP: `check_merge_readiness`.
+
+---
+
+## `sfs release`
+
+Record releases, their gates and their deployments, and read the Ship Report. Release events also arrive on their own from the GitHub App and the [delivery webhooks](/git-integration/#delivery-webhooks). Tier: **Team+**. From v0.29.3.
+
+| Command | Description |
+|---------|-------------|
+| `sfs release record VERSION --tag-sha SHA [--previous SHA] [--pr N ...] [--gate kind=status ...] [--source SOURCE]` | Record a release at a commit, link the pull requests it shipped and record its gates (for example `--gate ci=passed`). Source is `github_release`, `gitlab_release`, `helm_sync` or `manual` (default) |
+| `sfs release deploy VERSION --env ENV [--source argocd\|helm\|manual]` | Record a deployment of a release to an environment |
+| `sfs release list` | Releases with their gates and deployments |
+| `sfs release ship-report [VERSION] [--month YYYY-MM] [--markdown]` | The Ship Report for a release or a month: loops, review rounds, findings, harmful findings and whether all were fixed before merge, cost per accepted change, checklist classes learned, gates, deploys and pull requests. `--markdown` prints a snippet for release notes. Dollar figures follow the same visibility rule as the rest of the loop |
 
 ---
 
@@ -2113,6 +2133,15 @@ Ask the session helper a question over the sessions and project knowledge you ca
 | `sfs helper conversations show <id>` | One thread with its messages and citations |
 | `sfs helper conversations delete <id> [--yes]` | Permanently delete a thread |
 | `sfs helper status` | Whether the helper is available to you, and which key, provider and model it would use |
+
+## `sfs org delivery-webhook`
+
+Manage the org's inbound GitHub and GitLab webhooks for pull requests, releases and deployments (org owners and admins, v0.29.3). Every org has them; they are not feature-gated. See [Delivery webhooks](/git-integration/#delivery-webhooks).
+
+| Command | Description |
+|---|---|
+| `sfs org delivery-webhook rotate --provider github\|gitlab` | Generate or rotate the provider's secret. The secret and the inbound URL are printed once; the secret is stored encrypted and only its last four characters are shown again |
+| `sfs org delivery-webhook status --provider github\|gitlab` | Whether a secret exists, its last four characters and the inbound URL |
 
 ## `sfs org jira` (Enterprise)
 

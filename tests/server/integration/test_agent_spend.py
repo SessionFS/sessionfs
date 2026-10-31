@@ -255,23 +255,23 @@ async def test_group_by_persona_model_role_day(
                     input_tokens=20, created_at=datetime(2026, 10, 2, tzinfo=timezone.utc))
 
     by_persona = await client.get(
-        f"/api/v1/projects/{project.id}/spend?group_by=persona", headers=_hdrs(key)
+        f"/api/v1/projects/{project.id}/spend?group_by=persona&from=2026-09-15T00:00:00Z&to=2026-10-15T00:00:00Z", headers=_hdrs(key)
     )
     assert by_persona.status_code == 200, by_persona.text
     assert {g["key"] for g in by_persona.json()["groups"]} == {"atlas", "scout"}
 
     by_model = await client.get(
-        f"/api/v1/projects/{project.id}/spend?group_by=model", headers=_hdrs(key)
+        f"/api/v1/projects/{project.id}/spend?group_by=model&from=2026-09-15T00:00:00Z&to=2026-10-15T00:00:00Z", headers=_hdrs(key)
     )
     assert {g["key"] for g in by_model.json()["groups"]} == {"opus", "sonnet"}
 
     by_role = await client.get(
-        f"/api/v1/projects/{project.id}/spend?group_by=role", headers=_hdrs(key)
+        f"/api/v1/projects/{project.id}/spend?group_by=role&from=2026-09-15T00:00:00Z&to=2026-10-15T00:00:00Z", headers=_hdrs(key)
     )
     assert {g["key"] for g in by_role.json()["groups"]} == {"implementer", "reviewer"}
 
     by_day = await client.get(
-        f"/api/v1/projects/{project.id}/spend?group_by=day", headers=_hdrs(key)
+        f"/api/v1/projects/{project.id}/spend?group_by=day&from=2026-09-15T00:00:00Z&to=2026-10-15T00:00:00Z", headers=_hdrs(key)
     )
     assert {g["key"] for g in by_day.json()["groups"]} == {"2026-10-01", "2026-10-02"}
 

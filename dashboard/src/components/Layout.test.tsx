@@ -50,6 +50,11 @@ vi.mock('../hooks/useTicketNotifications', () => ({
   useTicketNotificationUnreadCount: () => ({ data: { count: 0, etag: '' } }),
 }));
 
+const { loopCount } = vi.hoisted(() => ({ loopCount: { value: 0 } }));
+vi.mock('../hooks/useReviewLoop', () => ({
+  useNeedsYouCount: () => ({ data: { count: loopCount.value } }),
+}));
+
 vi.mock('./SearchBar', () => ({
   default: () => <div data-testid="search-bar">Search</div>,
 }));
@@ -108,6 +113,24 @@ beforeEach(() => {
 });
 
 describe('Layout', () => {
+  describe('Review loops nav', () => {
+    it('links to /review-loops and hides the badge at 0', () => {
+      loopCount.value = 0;
+      renderLayout();
+      const link = screen.getAllByRole('link', { name: /Review loops/ })[0];
+      expect(link).toHaveAttribute('href', '/review-loops');
+      expect(within(link).queryByLabelText(/pending/)).not.toBeInTheDocument();
+    });
+
+    it('shows the count from the needs-you endpoint', () => {
+      loopCount.value = 4;
+      renderLayout();
+      const link = screen.getAllByRole('link', { name: /Review loops/ })[0];
+      expect(within(link).getByLabelText('4 pending')).toHaveTextContent('4');
+      loopCount.value = 0;
+    });
+  });
+
   it('renders the branded shell copy and SessionFS home link', () => {
     renderLayout();
 
@@ -257,7 +280,7 @@ describe('Layout', () => {
       expect(order).toEqual([
         'Sessions', 'Projects', 'Handoffs',
         'Marketplace',
-        'Notifications', 'Invites', 'Transfers',
+        'Notifications', 'Review loops', 'Invites', 'Transfers',
         'Organization', 'Billing',
         'Settings', 'Help', 'Admin',
       ]);

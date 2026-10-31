@@ -74,6 +74,7 @@ describe('Mission Control', () => {
     const l = loops();
     l[0].children = l[0].children.map((c) => ({ ...c, ready: false, needs_human: null }));
     hooks.useLoops.mockReturnValue(ok(l));
+    hooks.useChecklist.mockReturnValue(ok(checklist().map((i) => ({ ...i, status: 'active' as const }))));
     renderTab();
     expect(screen.queryByText('Needs you')).not.toBeInTheDocument();
   });

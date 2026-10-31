@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 115 tools in fifteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Review Checklist (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Skills Marketplace, Project Groups (Team+), and Meetings.
+The MCP server exposes 118 tools in fifteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Review Checklist (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Skills Marketplace, Project Groups (Team+), and Meetings.
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -888,7 +888,7 @@ Per-round review-loop rollup for one ticket: findings grouped by harm, how many 
 
 ### Review Loops (Team+)
 
-Start and watch a [worker review loop](/review-loop/) and manage its budgets. Reports and the checklist tools are listed below and under Review Checklist. Added in v0.29.2.
+Start and watch a [worker review loop](/review-loop/), run its workers, record its review rounds and manage its budgets. Reports and the checklist tools are listed below and under Review Checklist. Added in v0.29.2; the worker and review-round tools were added in v0.29.3.
 
 #### `start_review_loop`
 
@@ -925,6 +925,56 @@ Raise or clear a loop's limits. Omitted fields stay as they are; an explicit `nu
 | `token_budget` | integer or null | no | New token budget |
 | `max_review_rounds` | integer or null | no | New review-round cap |
 | `cost_budget_usd` | number or null | no | New dollar budget (org owner or admin only) |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `start_worker_run`
+
+Start a worker run on a loop ticket. Takes the ticket's lease and opens an implementer run linked to the loop's queue item. Refuses with `loop_needs_human` when the item is parked for a person or a budget is already used up. Returns the `run_id`, the `lease_epoch`, the ticket and loop ids and what is left of the budget (dollars only for org owners and admins). Added in v0.29.3.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `ticket_id` | string | yes | Child ticket id (`tk_...`) |
+| `model` | string | no | Model the worker uses |
+| `provider` | string | no | Provider of the model |
+| `branch` | string | no | Working branch |
+| `head_sha` | string | no | Base commit (7-64 hex characters) |
+| `tool` | string | no | Tool name for the run |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `finish_worker_run`
+
+Finish a worker run: record the head commit, how the worker exited and the tokens it used, then check the loop's budgets. Hitting a token budget parks the item for a person. Repeating the call with the same `head_sha` returns the same result and never counts usage twice; a different `head_sha` after the run finished is a `409`. Added in v0.29.3.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `run_id` | string | yes | Run id returned by `start_worker_run` |
+| `head_sha` | string | yes | Head commit the run produced (7-64 hex characters) |
+| `exit_reason` | string | yes | `finished`, `out_of_turns` or `crashed` |
+| `branch` | string | no | Working branch |
+| `input_tokens`, `output_tokens` | integer | no | Tokens the run used |
+| `cache_read_tokens`, `cache_write_tokens` | integer | no | Cache tokens |
+| `cost_usd` | number | no | Cost of the run |
+| `cost_basis` | string | no | `reported`, `estimated`, `plan` or `unknown` |
+| `summary` | string | no | Short result summary |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `record_review_round`
+
+Record one review round on a loop ticket, or a design round on the loop's parent issue. Creates the reviewer's run with its findings and posts the verdict for the exact commit. Whether the verdict is trusted comes only from the credential that sent it and the trusted-reviewers registry. Repeating a round is safe. A finding with class `new` proposes a checklist item. Going past the round cap or the token budget parks the ticket for a person. Added in v0.29.3.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `loop_id` | string | yes | Loop (parent issue) id (`tk_...`) |
+| `ticket_id` | string | yes | Child ticket id, or the loop id for a design round |
+| `round` | integer | yes | Round number, 1 or more |
+| `stage` | string | yes | `design` or `code` |
+| `reviewed_commit` | string | yes | Full commit id (40 or 64 hex characters) that was reviewed |
+| `verdict` | string | yes | `VERIFIED-CLEAN` or `CHANGES-REQUESTED` |
+| `findings` | array | no | `{severity, class, harm, title, file?, line?, status?}` for each finding; severity is `low`, `medium`, `high` or `critical`, class is a checklist slug or `new`, harm is `data-exposed`, `money-spent`, `wrong-actor`, `crash`, `other` or `none` |
+| `model`, `provider` | string | no | Reviewer model and provider |
+| `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` | integer | no | Tokens the reviewer used |
+| `cost_usd` | number | no | Cost of the round |
+| `cost_basis` | string | no | `reported`, `estimated`, `plan` or `unknown` |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 
 ### Review Checklist (Team+)

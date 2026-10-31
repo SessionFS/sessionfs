@@ -933,8 +933,8 @@ async def test_empty_project_insights_and_report_zeros(
 @pytest.mark.asyncio
 async def test_rollups_are_bounded_sql_statements(db_engine, db_session: AsyncSession):
     """A rollup must NOT query agent_runs once per run. The report is one
-    statement; insights is two (window runs + cost join) — constant in the
-    number of rows."""
+    statement; insights is three (window runs + cost join + scoreboard runs) —
+    constant in the number of rows."""
     owner, _ = await _make_user(db_session)
     project = await _make_project(db_session, owner)
     ticket = await _make_ticket(db_session, project, owner)
@@ -943,6 +943,12 @@ async def test_rollups_are_bounded_sql_statements(db_engine, db_session: AsyncSe
             db_session, project, ticket_id=ticket.id, input_tokens=1,
             findings=[{"round": 1, "stage": "code", "harm": "crash", "class": "xss", "title": "x"}],
         )
+    # One done ticket so the scoreboard's fixed-size runs query fires too.
+    done = await _make_ticket(
+        db_session, project, owner,
+        status="done", resolved_at=datetime.now(timezone.utc),
+    )
+    await _make_run(db_session, project, ticket_id=done.id)
 
     captured: list[str] = []
 
@@ -974,4 +980,4 @@ async def test_rollups_are_bounded_sql_statements(db_engine, db_session: AsyncSe
         event.remove(db_engine.sync_engine, "before_cursor_execute", _capture)
 
     insights_queries = [s for s in captured if "agent_runs" in s]
-    assert len(insights_queries) == 2, insights_queries
+    assert len(insights_queries) == 3, insights_queries

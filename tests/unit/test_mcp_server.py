@@ -300,11 +300,11 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_115(self):
+    def test_tool_count_is_118(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 115, (
-            "Expected 115 MCP tools after review-loop start, status and "
-            "update, the project checklist and the loop report, "
+        assert len(_TOOLS) == 118, (
+            "Expected 118 MCP tools after review-loop start, status and "
+            "update, the project checklist, the loop report and the worker run and round tools, "
             f"got {len(_TOOLS)}"
         )
 
@@ -5119,3 +5119,27 @@ class TestProjectGroupTools:
         }
         api_url, api_key, org_id = await mcp_server._group_config({})
         assert (api_url, api_key, org_id) == ("https://api.test", "test-key", "org_default")
+
+
+class TestLoopWorkerTools:
+    def test_registered_and_validate_locally(self):
+        import asyncio
+
+        from sessionfs.mcp.server import (
+            _TOOLS,
+            _handle_finish_worker_run,
+            _handle_record_review_round,
+            _handle_start_worker_run,
+        )
+
+        names = {t.name for t in _TOOLS}
+        assert {"start_worker_run", "finish_worker_run", "record_review_round"} <= names
+        assert "ticket_id is required" in asyncio.run(_handle_start_worker_run({}))["error"]
+        assert "run_id is required" in asyncio.run(_handle_finish_worker_run({}))["error"]
+        bad = asyncio.run(
+            _handle_record_review_round(
+                {"loop_id": "l", "ticket_id": "t", "stage": "code",
+                 "reviewed_commit": "a" * 40, "verdict": "VERIFIED-CLEAN", "round": 0}
+            )
+        )
+        assert "round must be" in bad["error"]

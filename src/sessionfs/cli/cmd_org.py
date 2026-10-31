@@ -993,3 +993,95 @@ def confluence_unmap(
 
 
 org_app.add_typer(org_confluence_app, name="confluence")
+
+
+# ── sfs org delivery-webhook … ──
+
+
+org_delivery_webhook_app = typer.Typer(
+    name="delivery-webhook",
+    help="Manage the org's GitHub/GitLab delivery webhooks.",
+    no_args_is_help=True,
+)
+
+_DELIVERY_PROVIDERS = {"github", "gitlab"}
+
+
+def _delivery_error(status: int, body) -> NoReturn:
+    err_console.print(f"[red]API error ({status}): {format_api_error(body, status)}[/red]")
+    raise typer.Exit(1)
+
+
+def _delivery_provider(provider: str) -> str:
+    normalized = provider.strip().lower()
+    if normalized not in _DELIVERY_PROVIDERS:
+        err_console.print(
+            f"[red]Unsupported provider '{provider}' (choose github or gitlab).[/red]"
+        )
+        raise typer.Exit(1)
+    return normalized
+
+
+def _delivery_path(org_id: str, provider: str, tail: str) -> str:
+    # provider is validated against a fixed set before it reaches the URL.
+    return f"/api/v1/orgs/{quote(org_id, safe='')}/delivery-webhooks/{provider}/{tail}"
+
+
+@org_delivery_webhook_app.command("rotate")
+def delivery_webhook_rotate(
+    provider: str = typer.Option(..., "--provider", help="Provider: github or gitlab"),
+) -> None:
+    """Rotate the org's delivery-webhook secret for a provider (admin only).
+
+    The new secret is returned exactly once; store it in GitHub/GitLab now.
+    """
+    api_url, api_key = _load_api_config()
+    org_id = _org_id(api_url, api_key)
+    provider = _delivery_provider(provider)
+    s, body, _ = asyncio.run(
+        _api_request(
+            "POST",
+            _delivery_path(org_id, provider, "rotate"),
+            api_url, api_key,
+        )
+    )
+    if s >= 400 or not isinstance(body, dict):
+        _delivery_error(s, body)
+    console.print(f"[green]Rotated {provider} delivery-webhook secret.[/green]")
+    console.print(f"  Webhook secret: [bold]{body.get('webhook_secret')}[/bold]")
+    console.print(f"  Webhook URL: {body.get('webhook_url')}")
+    console.print(
+        "[yellow]Store the secret now — it is shown only once.[/yellow]"
+    )
+
+
+@org_delivery_webhook_app.command("status")
+def delivery_webhook_status(
+    provider: str = typer.Option(..., "--provider", help="Provider: github or gitlab"),
+) -> None:
+    """Show delivery-webhook status for a provider (admin only)."""
+    api_url, api_key = _load_api_config()
+    org_id = _org_id(api_url, api_key)
+    provider = _delivery_provider(provider)
+    s, body, _ = asyncio.run(
+        _api_request(
+            "GET",
+            _delivery_path(org_id, provider, "status"),
+            api_url, api_key,
+        )
+    )
+    if s >= 400 or not isinstance(body, dict):
+        _delivery_error(s, body)
+    if body.get("has_secret"):
+        console.print(
+            f"[green]{provider}[/green] delivery webhook is configured "
+            f"(secret …{body.get('secret_last4')})."
+        )
+    else:
+        console.print(
+            f"[yellow]{provider}[/yellow] delivery webhook is not configured."
+        )
+    console.print(f"  Webhook URL: {body.get('webhook_url')}")
+
+
+org_app.add_typer(org_delivery_webhook_app, name="delivery-webhook")

@@ -17,14 +17,23 @@ NOT yet reached a strict ``VERIFIED-CLEAN``.
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterable
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sessionfs.server.db.models import AgentRun, Ticket, TicketComment
+from sessionfs.server.db.models import (
+    AgentRun,
+    Ticket,
+    TicketComment,
+    WorkQueue,
+    WorkQueueItem,
+    WorkQueueRun,
+)
 from sessionfs.server.services.review_state import compute_review_state
 
 # Dollar cost bases that count toward a dollar budget (mirrors agent_spend).
@@ -263,3 +272,65 @@ async def budget_status(db: AsyncSession, ticket: Ticket) -> BudgetStatus:
         rounds_used=rounds_used,
         strict_clean=strict_clean,
     )
+
+
+async def park_item_needs_human(
+    db: AsyncSession,
+    *,
+    queue: WorkQueue,
+    item: WorkQueueItem,
+    ticket: Ticket,
+    budget: BudgetStatus,
+    actor_type: str | None,
+    service_key_name: str | None,
+) -> bool:
+    """Park a loop item for a human and notify, after a budget/round-cap hit.
+
+    Guarded (rowcount 1): only an item still pending/active/waiting is parked,
+    so two concurrent finishes can't both write a run row and notify. Returns
+    True when this call parked it.
+
+    Shared by ``finish_worker_run`` and ``record_review_round``: a cap that
+    only reveals itself once usage or a round lands must still move the item
+    to ``needs_human``. Mirrors the parking block on the claim path in
+    ``services/work_queues.py``; the notification is best-effort (the
+    ``_notify_budget_hit`` import is deferred so ``loop_budget`` never imports
+    ``work_queues`` at module load, which imports this module lazily too).
+    """
+    now = datetime.now(timezone.utc)
+    parked = await db.execute(
+        update(WorkQueueItem)
+        .where(
+            WorkQueueItem.id == item.id,
+            WorkQueueItem.item_status.in_(("pending", "active", "waiting")),
+        )
+        .values(
+            item_status="needs_human",
+            open_directive_run_id=None,
+            next_eligible_at=None,
+            updated_at=now,
+        )
+    )
+    if parked.rowcount != 1:
+        return False
+    db.add(
+        WorkQueueRun(
+            id=f"wqr_{uuid.uuid4().hex[:16]}",
+            work_queue_id=queue.id,
+            work_queue_item_id=item.id,
+            directive_id=None,
+            outcome="needs_human",
+            created_at=now,
+        )
+    )
+    from sessionfs.server.services.work_queues import _notify_budget_hit
+
+    await _notify_budget_hit(
+        db,
+        queue,
+        ticket,
+        budget,
+        actor_type=actor_type,
+        service_key_name=service_key_name,
+    )
+    return True

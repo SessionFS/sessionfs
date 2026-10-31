@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sessionfs"
-version = "0.29.2"
+version = "0.29.3"
 description = "Capture, sync, and resume AI coding sessions across 10 tools — Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, Roo Code, Kilo Code, and Antigravity."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -76,6 +76,9 @@ server = [
     # options); anyio 4.14.2 clears PYSEC-2026-4024/4025.
     "urllib3>=2.8.0,<3.0",
     "google-cloud-storage>=2.14,<4.0",
+    # Transitive via google-auth. 0.6.5 clears CVE-2026-119194/119195/
+    # 119196/119197 (quadratic CPU in BER/CER/DER decoding).
+    "pyasn1>=0.6.5",
     "cryptography>=50.0.0",
     "stripe>=8.0,<16.0",
     # OIDC SSO domain verification resolves DNS TXT records (no stdlib TXT

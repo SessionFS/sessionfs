@@ -1862,6 +1862,36 @@ sfs org confluence unmap proj_abc
 
 ---
 
+### `sfs org delivery-webhook`
+
+Manage the org's GitHub/GitLab delivery webhooks (admin only). These are the
+per-org inbound webhooks that ingest PR / merge request, release and
+deployment events (see `docs/integrations/delivery-webhooks.md`). Available on
+every plan.
+
+```bash
+sfs org delivery-webhook rotate --provider github|gitlab
+sfs org delivery-webhook status --provider github|gitlab
+```
+
+| Command | Description |
+|---------|-------------|
+| `rotate --provider github|gitlab` | Generate (or rotate) the org's delivery-webhook secret for the provider. The new secret is printed **once**; store it in GitHub/GitLab's webhook settings. Also prints the inbound URL. |
+| `status --provider github|gitlab` | Show whether a secret exists, its last-4 hint, and the inbound URL. |
+
+**Example:**
+
+```bash
+$ sfs org delivery-webhook rotate --provider github
+
+Rotated github delivery-webhook secret.
+  Webhook secret: whsec_8f3a…
+  Webhook URL: https://your-sessionfs-domain/api/v1/webhooks/github/org_acme
+  Store the secret now — it is shown only once.
+```
+
+---
+
 ## `sfs mcp serve`
 
 Start the MCP server on stdio transport.
@@ -1870,7 +1900,7 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed (115):
+Tools exposed (118):
 
 - **Sessions:** `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_session_summary`, `get_audit_report`, `get_session_provenance`, `get_session_retrieval_log`, `rename_session`, `checkpoint_session`, `list_checkpoints`, `fork_session`, `ask_session_helper`
 - **Knowledge (read):** `get_project_context`, `get_context_section`, `get_wiki_page`, `get_wiki_page_history`, `search_project_knowledge`, `list_knowledge_entries`, `get_knowledge_entry`, `get_knowledge_health`, `ask_project`
@@ -1880,7 +1910,7 @@ Tools exposed (115):
 - **Tickets:** `list_tickets`, `get_ticket`, `create_ticket`, `update_ticket`, `start_ticket`, `complete_ticket`, `resolve_ticket`, `approve_ticket`, `assign_persona`, `escalate_ticket`, `add_ticket_comment`, `list_ticket_comments`, `get_ticket_review_state`, `watch_ticket`, `get_ticket_updates`
 - **Agent runs and feedback:** `create_agent_run`, `replay_agent_run`, `complete_agent_run`, `list_agent_runs`, `record_agent_feedback`, `list_agent_feedback`, `get_agent_feedback_summary`, `get_loop_report`
 - **Work queues:** `create_work_queue`, `list_work_queues`, `get_work_queue`, `set_work_queue_status`, `run_work_queue_step`, `complete_work_queue_step`
-- **Review loops:** `start_review_loop`, `get_loop_status`, `update_review_loop`, `check_merge_readiness`
+- **Review loops:** `start_review_loop`, `get_loop_status`, `update_review_loop`, `start_worker_run`, `finish_worker_run`, `record_review_round`, `check_merge_readiness`
 - **Handoffs:** `create_handoff`, `get_handoff`, `list_inbox_handoffs`, `list_sent_handoffs`, `claim_handoff`, `decline_handoff`, `revoke_handoff`, `add_handoff_comment`
 - **Marketplace (never writes files or enables executable content):** `search_skill_marketplace`, `get_marketplace_package`, `diff_marketplace_versions`, `get_skill_policy`, `preview_marketplace_skill`, `load_marketplace_skill`, `request_skill_install`, `list_skill_install_requests`, `get_skill_install_request`, `cancel_skill_install_request`
 - **Project groups:** `list_project_groups`, `get_project_group`, `create_project_group`, `update_project_group`, `delete_project_group`, `add_project_to_group`, `remove_project_from_group`, `list_group_members`, `grant_group_access`, `revoke_group_access`, `list_group_access`, `search_group_knowledge`, `get_group_context`, `compile_group_knowledge`, `ask_group`
@@ -3152,14 +3182,21 @@ Start and steer a [review loop](https://sessionfs.dev/review-loop/), read its re
 | `sfs loop status [LOOP_ID]` | Show one loop, or every loop in the project |
 | `sfs loop update LOOP_ID [--token-budget N] [--max-review-rounds N] [--cost-budget-usd X]` | Raise the loop's caps. Only the flags you pass change. |
 | `sfs loop close-item LOOP_ID TICKET_ID` | Settle a child that needs a person as done by a human, so the loop stops waiting. People only: service keys are refused. |
+| `sfs loop run start TICKET_ID [--model M] [--provider P] [--branch B] [--output-id]` | Take the ticket lease and open a worker run linked to the loop. Refused with `loop_needs_human` when the item is parked or a budget is used up. `--output-id` prints only the run id. |
+| `sfs loop run finish RUN_ID --head-sha SHA [--exit-reason finished\|out_of_turns\|crashed] [--input-tokens N] [--output-tokens N] [--cache-read-tokens N] [--cache-write-tokens N] [--cost-usd X] [--cost-basis B] [--summary TEXT]` | Close the run and record its usage. Repeating the same head commit changes nothing; a different one is refused. A budget hit parks the item for a person. |
+| `sfs loop review LOOP_ID --ticket ID --round N --commit SHA --verdict VERIFIED-CLEAN\|CHANGES-REQUESTED [--findings-file F.json] [--stage code\|design] [--model M] [--provider P] [--input-tokens N] [--output-tokens N] [--cost-usd X]` | Record one review round. The verdict is trusted only if your key is a registered trusted reviewer. A design round targets the loop parent. Repeating a round returns the stored one. |
 | `sfs loop report TICKET_ID` | Per-round report: findings by harm, class and design counts, tokens |
 | `sfs loop insights [--from ISO] [--to ISO]` | Project-wide insights: findings caught, cost per accepted change, what the checklist learned |
 | `sfs loop checklist list [--status proposed\|active\|retired]` | The project checklist |
 | `sfs loop checklist seed` | Offer the six generic seed traps as proposed items (safe to rerun) |
 | `sfs loop checklist add TITLE [--check TEXT] [--slug SLUG]` | Propose an item by hand |
 | `sfs loop checklist accept SLUG` / `retire SLUG` | Make a proposed item active, or retire an item |
+| `sfs loop share story TICKET_ID [--expires-days N]` | Create a share link for a ticket's story. The link shows no dollars, emails or user ids; it expires after N days (default 30, at most 90). The token is printed once and not stored. |
+| `sfs loop share ship-report VERSION [--expires-days N]` | Create a share link for a release's Ship Report, with the same limits |
+| `sfs loop share list` | The project's share links (no tokens) |
+| `sfs loop share revoke LINK_ID` | Revoke a share link so it stops working |
 
-Dollar amounts appear only for org owners and admins, or the owner of a personal project. Everyone else sees token counts. MCP: `start_review_loop`, `get_loop_status`, `update_review_loop`, `get_loop_report`, `get_loop_checklist`, `propose_checklist_item`, `check_merge_readiness`.
+Dollar amounts appear only for org owners and admins, or the owner of a personal project. Everyone else sees token counts. MCP: `start_review_loop`, `get_loop_status`, `update_review_loop`, `start_worker_run`, `finish_worker_run`, `record_review_round`, `get_loop_report`, `get_loop_checklist`, `propose_checklist_item`, `check_merge_readiness`.
 
 ### `sfs loop ready`
 
@@ -3174,6 +3211,21 @@ sfs loop ready TICKET_ID --sha HEAD_COMMIT
 | `--sha` | string | Full head commit id (40 or 64 lowercase hex characters) |
 
 Prints **READY** only when a trusted strict `VERIFIED-CLEAN` verdict is bound to exactly that commit, the reviewer's identity differs from every implementer identity recorded for the ticket (a service key counts as the person who minted it), and no open finding is harmful. Otherwise it prints **NOT READY** with the reasons and exits `1`, so it can gate a script. MCP: `check_merge_readiness`.
+
+## `sfs release`
+
+Record pull requests, releases, gates and deployments, then read the **Ship Report** — the per-release and per-month rollup of a review loop's findings, harm, cost per accepted change and checklist learning. Tier: **Team+**. Commands use the project of the current repository.
+
+| Command | Description |
+|---------|-------------|
+| `sfs release record VERSION --tag-sha SHA [--previous SHA --pr N --gate kind=status --source S]` | Record a release (idempotent on version), link its PRs (`--pr`, repeatable) and record its gates (`--gate`, repeatable, e.g. `--gate ci=passed`). |
+| `sfs release deploy VERSION --env ENV [--source S]` | Record a deployment of a release to an environment (`prod`, `staging`, …). |
+| `sfs release list` | The project's releases, newest first. |
+| `sfs release ship-report VERSION` | The Ship Report for one release. |
+| `sfs release ship-report --month YYYY-MM` | The Ship Report for a calendar month. |
+| `sfs release ship-report … --markdown` | Print the markdown release notes instead of the panel. |
+
+Pass exactly one of `VERSION` or `--month` to `ship-report`. Dollar amounts appear only for org owners and admins, or the owner of a personal project; everyone else sees token counts (service keys never see dollars). MCP: `get_loop_report` accepts `release` or `month` in place of `ticket_id`.
 
 ## `sfs resident` (v0.14.0)
 

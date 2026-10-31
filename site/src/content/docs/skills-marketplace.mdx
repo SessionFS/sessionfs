@@ -329,7 +329,7 @@ The public catalog starts with `sessionfs-workflows`, an MIT-licensed package wr
 | `session-handoff` | Hand a session to a teammate or another tool, or pick one up |
 | `ticket-workflow` | Work a SessionFS ticket from start to review |
 | `project-knowledge` | Load project context and record what you learn in the knowledge base |
-| `worker-review-loop` | Run brief-driven workers in isolated worktrees, gated by a trusted reviewer and a re-review before merge (see [Worker Review Loop](/review-loop/)) |
+| `worker-review-loop` | Run brief-driven workers in isolated worktrees, gated by a trusted reviewer and a re-review before merge, recorded with one call per worker run and review round (see [Worker Review Loop](/review-loop/)) |
 
 Find it under **Marketplace** in the dashboard. It reaches your tools the same way as any other package: request it for a project, load it through the target feed, or assign it to your organization. The source is also in the SessionFS repository under `catalog/sessionfs-workflows`, so you can also copy it into a project and run `sfs skill add ./sessionfs-workflows`.
 

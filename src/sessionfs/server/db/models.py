@@ -2875,6 +2875,10 @@ class AgentRun(Base):
     continues_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     work_queue_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     work_queue_item_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # v0.29 — Review Loop R3 track D3: the loop round a reviewer run answered.
+    # Null for implementer/ui runs; (work_queue_item_id, review_round) is the
+    # idempotency key for record_review_round.
+    review_round: Mapped[int | None] = mapped_column(Integer, nullable=True)
     exit_reason: Mapped[str | None] = mapped_column(String(20), nullable=True)
     occurred_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -7047,4 +7051,351 @@ class LoopChecklistItem(Base):
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class PullRequest(Base):
+    """One provider pull request, correlated back to the tickets it changes
+    (Review Loop R3, track F1 — docs/design/review-loop-r3.md §4).
+
+    Unique per ``(project_id, provider, repo, number)`` so a re-ingest upserts
+    instead of duplicating. Tickets link to PRs via ``ticket_pr_links`` with a
+    provenance ``link_source``; the loop auto-links ``tk_…`` ids found in the
+    PR title/body/branch and links PRs whose branch matches an agent run's
+    branch (``link_source='loop'``).
+    """
+
+    __tablename__ = "pull_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "provider", "repo", "number",
+            name="uq_pull_requests_project_provider_repo_number",
+        ),
+        CheckConstraint(
+            "provider IN ('github', 'gitlab')",
+            name="ck_pull_requests_provider",
+        ),
+        CheckConstraint(
+            "state IN ('open', 'closed', 'merged')",
+            name="ck_pull_requests_state",
+        ),
+        Index("idx_pull_requests_project_state", "project_id", "state"),
+        Index("idx_pull_requests_project_created", "project_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # pr_<hex>
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    external_id: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    repo: Mapped[str] = mapped_column(String(200), nullable=False)
+    number: Mapped[int] = mapped_column(Integer, nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="open", server_default="open"
+    )
+    author_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    branch: Mapped[str] = mapped_column(String(200), nullable=False)
+    head_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    merged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    merge_commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    external_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class TicketPrLink(Base):
+    """Correlates a ticket to the PR that shipped its change.
+
+    Composite primary key (ticket_id, pr_id) gives the unique pair; the
+    ``link_source`` records how the link was discovered (auto_parsed from
+    ``tk_…`` ids, manual, commit message, or loop branch). Cascades on both
+    sides so a link never outlives either endpoint.
+    """
+
+    __tablename__ = "ticket_pr_links"
+    __table_args__ = (
+        CheckConstraint(
+            "link_source IN ('auto_parsed', 'manual', 'commit_message', 'loop')",
+            name="ck_ticket_pr_links_link_source",
+        ),
+        Index("idx_ticket_pr_links_pr", "pr_id"),
+    )
+
+    ticket_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tickets.id", ondelete="CASCADE"), primary_key=True
+    )
+    pr_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("pull_requests.id", ondelete="CASCADE"), primary_key=True
+    )
+    link_source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="manual", server_default="manual"
+    )
+
+
+class Release(Base):
+    """A version cut in a project (Review Loop R3, track F1).
+
+    Unique per ``(project_id, version)`` so a re-record upserts instead of
+    duplicating. ``tag_sha`` is the commit the release was tagged at;
+    ``previous_tag_sha`` bounds the diff for the Ship Report's
+    ``classes_learned`` between releases. ``created_at`` is the keyset cursor
+    for ``GET …/releases`` (a manual record with no ``released_at`` still
+    sorts stably).
+    """
+
+    __tablename__ = "releases"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "version", name="uq_releases_project_version"
+        ),
+        CheckConstraint(
+            "source IN ('github_release', 'gitlab_release', 'helm_sync', "
+            "'manual')",
+            name="ck_releases_source",
+        ),
+        Index("idx_releases_project_created", "project_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # rel_<hex>
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    version: Mapped[str] = mapped_column(String(100), nullable=False)
+    tag_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    previous_tag_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="manual", server_default="manual"
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ReleasePr(Base):
+    """Which PRs shipped in a release (pure join, composite primary key)."""
+
+    __tablename__ = "release_prs"
+    __table_args__ = (Index("idx_release_prs_pr", "pr_id"),)
+
+    release_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("releases.id", ondelete="CASCADE"), primary_key=True
+    )
+    pr_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("pull_requests.id", ondelete="CASCADE"), primary_key=True
+    )
+
+
+class ReleaseGate(Base):
+    """One quality gate recorded against a release, unique per (release, kind).
+
+    ``run_id`` points at the CI check-run that produced the gate (nullable for
+    a manual gate); ``status`` is passed/failed/skipped. A re-record of the
+    same kind updates the existing row (idempotent upsert).
+    """
+
+    __tablename__ = "release_gates"
+    __table_args__ = (
+        UniqueConstraint(
+            "release_id", "kind", name="uq_release_gates_release_kind"
+        ),
+        CheckConstraint(
+            "status IN ('passed', 'failed', 'skipped')",
+            name="ck_release_gates_status",
+        ),
+        Index("idx_release_gates_release", "release_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # rg_<hex>
+    release_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("releases.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="passed", server_default="passed"
+    )
+    run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class Deployment(Base):
+    """Where and when a release was deployed to an environment."""
+
+    __tablename__ = "deployments"
+    __table_args__ = (
+        CheckConstraint(
+            "source IN ('argocd', 'helm', 'manual')",
+            name="ck_deployments_source",
+        ),
+        Index("idx_deployments_release", "release_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # dep_<hex>
+    release_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("releases.id", ondelete="CASCADE"), nullable=False
+    )
+    environment: Mapped[str] = mapped_column(String(64), nullable=False)
+    deployed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="manual", server_default="manual"
+    )
+
+
+class LoopShareLink(Base):
+    """A revocable public link to a loop story or ship report (Review Loop R3, C3).
+
+    The raw bearer token is never stored — only its SHA-256 ``token_hash`` —
+    so a DB leak can't mint working links; the raw token is returned exactly
+    once at creation and the public view matches the hash. ``kind`` is
+    ``story`` (one ticket's ordered event stream) or ``ship_report`` (a
+    release/month rollup that the F-track renders once its ``releases``
+    tables land; the public view 404s that kind until then).
+
+    ``ticket_id`` is set for ``story`` and NULL for ``ship_report``. It
+    softens to NULL when the ticket is deleted, which turns the link into a
+    constant 404 rather than a dangling reference. ``expires_at`` is always
+    set (default 30 days, max 90), and ``revoked_at`` records a soft revoke
+    while the row is kept for audit.
+    """
+
+    __tablename__ = "loop_share_links"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_loop_share_links_token_hash"),
+        CheckConstraint(
+            "kind IN ('story', 'ship_report')",
+            name="ck_loop_share_links_kind",
+        ),
+        Index("idx_loop_share_links_project", "project_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # lsl_<hex>
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    ticket_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("tickets.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    release_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    month: Mapped[str | None] = mapped_column(String(7), nullable=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # Actor provenance (review checklist #3): a service key acting as its
+    # minter leaves user_id NULL and records its own key id/name plus
+    # actor_type instead, so the minter never stands in for the key.
+    created_actor_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default="user"
+    )
+    created_service_key_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    created_service_key_name: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    revoked_actor_type: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
+    revoked_service_key_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    revoked_service_key_name: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+
+
+class OrgDeliveryWebhook(Base):
+    """A per-org, per-provider delivery webhook (Review Loop R3, track F2).
+
+    One row per ``(org_id, provider)`` — GitHub and GitLab each carry their
+    own inbound secret. ``encrypted_secret`` is Fernet-encrypted at rest; the
+    plaintext is returned exactly once at rotation time and never stored in
+    the clear. ``secret_last4`` is the write-only display hint.
+    """
+
+    __tablename__ = "org_delivery_webhooks"
+    __table_args__ = (
+        CheckConstraint(
+            "provider IN ('github', 'gitlab')",
+            name="ck_org_delivery_webhooks_provider",
+        ),
+    )
+
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(String(20), primary_key=True)
+    encrypted_secret: Mapped[str] = mapped_column(Text, nullable=False)
+    secret_last4: Mapped[str] = mapped_column(String(4), nullable=False)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    rotated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class DeliveryWebhookEvent(Base):
+    """The idempotency ledger for delivery webhooks (Review Loop R3, track F2).
+
+    The composite primary key ``(provider, org_id, idempotency_key)`` makes a
+    re-delivered event a no-op: the ingest path inserts with ``ON CONFLICT DO
+    NOTHING`` and reports a duplicate when no row was written.
+    """
+
+    __tablename__ = "delivery_webhook_events"
+    __table_args__ = (
+        CheckConstraint(
+            "provider IN ('github', 'gitlab')",
+            name="ck_delivery_webhook_events_provider",
+        ),
+    )
+
+    provider: Mapped[str] = mapped_column(String(20), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), primary_key=True
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

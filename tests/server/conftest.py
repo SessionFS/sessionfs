@@ -44,12 +44,16 @@ async def db_engine():
     import asyncio
 
     from sessionfs.server.routes import webhooks
-    from sessionfs.server.services import jira_sync
+    from sessionfs.server.services import jira_sync, merge_checks
 
     loop = asyncio.get_running_loop()
     pending = [
         t
-        for t in (*jira_sync._background_tasks, *webhooks._background_tasks)
+        for t in (
+            *jira_sync._background_tasks,
+            *webhooks._background_tasks,
+            *merge_checks._background_tasks,
+        )
         if not t.done() and t.get_loop() is loop
     ]
     if pending:

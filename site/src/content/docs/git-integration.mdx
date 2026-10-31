@@ -31,6 +31,39 @@ Options:
 - Include trust scores (on/off)
 - Include session links (on/off)
 
+### Merge check
+
+SessionFS can post a **"SessionFS review loop"** check run on a pull request.
+The check run is green (`success`) only when the ticket's review loop has a
+trusted `VERIFIED-CLEAN` verdict bound to the exact head commit, the reviewer
+is not the implementer, and there are no open harmful findings. Otherwise it
+posts `action_required` or `neutral`, with the reasons in the summary.
+
+To use it:
+
+1. Grant the app the **Checks: Read & Write** permission and subscribe to the
+   **Pull request** and **Release** webhook events. Existing installs must
+   approve the new permission when GitHub asks (organization owners see it
+   under **Settings → GitHub Apps**).
+2. In the repository's branch protection, tick **Require status checks to pass
+   before merging** and add **"SessionFS review loop"**.
+3. A new commit gets its own check run, so the gate re-evaluates on every push.
+   A human still has to click merge — a green check run never merges for you.
+
+If the app hasn't been granted the Checks permission, SessionFS posts the same
+summary as a PR comment instead (visible, but it can't block a merge).
+
+Pull requests are linked to tickets from `tk_` ids in their title, body or branch name, and from loop branches. A pull request only reaches a project through a repository verified through the App.
+
+### Delivery webhooks
+
+Beyond the GitHub App, SessionFS can take pull request, release and deployment events from per-org GitHub and GitLab webhooks. Every org has them; they are managed by org owners and admins.
+
+1. Rotate the provider's secret: `sfs org delivery-webhook rotate --provider github` (or `gitlab`). The secret and the inbound URL are printed once.
+2. Register the webhook with that URL and secret. For GitHub, send the Pull requests, Releases and Deployment statuses events as `application/json` and use the secret as the webhook secret. For GitLab, enable Merge request, Release and Deployment events and use the secret as the Secret token.
+
+The inbound URL is `https://<your-sessionfs-domain>/api/v1/webhooks/github/<org_id>` or `.../gitlab/<org_id>`; `sfs org delivery-webhook status --provider github` prints it. A delivery whose repository belongs to no project in the same org is ignored, and a re-delivery changes nothing. Releases and successful deployments feed the releases ledger, which you can also fill by hand with `sfs release record` and `sfs release deploy` and read as a Ship Report (see [Worker Review Loop](/review-loop/#ship)).
+
 ## GitLab
 
 SessionFS supports GitLab merge request comments for both cloud and self-hosted instances.
@@ -51,6 +84,10 @@ SessionFS supports GitLab merge request comments for both cloud and self-hosted 
 Works with any GitLab instance — set the instance URL to your instance in Settings → Integrations → GitLab (or `instance_url` in the API).
 
 The instance URL must use https and resolve to a public address; a URL pointing at a private, loopback or cloud-metadata address is refused with `422 invalid_gitlab_instance_url`. The host is checked again before every request, so a DNS change after saving can't redirect your token, and redirects are not followed. Self-hosted SessionFS deployments with GitLab on a private network can allow private addresses with `SFS_GITLAB_ALLOW_PRIVATE_HOSTS=true` (the Helm chart's default, `api.gitlab.allowPrivateHosts`); cloud-metadata addresses stay blocked. See [Environment Variables](/environment/#gitlab).
+
+### Merge request status
+
+When a merge request opens or updates and its head commit is linked to a ticket, SessionFS posts a **SessionFS review loop** commit status through the project owner's GitLab integration. It is `success` only when every linked ticket is ready to merge at exactly that commit, and `pending` otherwise. The status carries no emails or dollar amounts, and a failure to post it never fails the webhook.
 
 ## PR/MR comment format
 

@@ -38,6 +38,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   hooks.useUpdateLoop.mockReturnValue(mut());
   hooks.useCloseLoopItem.mockReturnValue(mut());
+  hooks.useChecklist.mockReturnValue({ data: [], isLoading: false, error: null });
+  hooks.usePatchChecklistItem.mockReturnValue(mut());
 });
 
 describe('needs_human actions', () => {

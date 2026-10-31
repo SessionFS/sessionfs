@@ -1,30 +1,34 @@
 ---
 name: worker-review-loop
-description: Build a change with brief-driven coding agents in isolated git worktrees, gated by an independent read-only reviewer, a fix pass, and a re-review by the same reviewer before merge, on a token budget. Uses SessionFS tickets, agent runs, a review_until_clean work queue with a trusted reviewer, handoffs, and the knowledge base. Use when the user wants to split work across worker agents, run a worker/reviewer loop, or gate a merge on an independent review.
+description: Build a change with brief-driven coding agents in isolated git worktrees, gated by an independent reviewer whose verdict is bound to the exact commit, with token and round budgets. Uses SessionFS review loops (start_review_loop, start_worker_run, finish_worker_run, record_review_round, check_merge_readiness), the project's learned checklist, and loop reports. Use when the user wants to split work across worker agents, run a worker/reviewer loop, or gate a merge on an independent review.
 ---
 
 # Worker review loop
 
-You coordinate. Workers write code, one branch each, from a written brief. A
-separate reviewer reads the code and posts a verdict. Nothing merges until
-the same reviewer says the fix pass is clean. SessionFS holds the state, so
-any agent or teammate can see where each piece of work stands.
+You coordinate. Workers write code, one branch each, from a written brief.
+A separate reviewer reads the code and records a verdict bound to the commit
+it reviewed. Nothing merges until that verdict is clean for the exact head
+commit. SessionFS records every run, round, finding and token, so anyone can
+see where each piece of work stands and what the loop caught.
 
-| Piece of the loop | SessionFS primitive |
+Your own agent orchestrates (any tool with MCP or a shell). SessionFS
+records, gates and learns; it never runs a model for you.
+
+| Step | One call |
 | --- | --- |
-| Brief | A ticket with acceptance criteria |
-| Each worker or reviewer launch | An agent run |
-| Review loop | A work queue in `review_until_clean` mode |
-| Reviewer | A registered trusted reviewer posting verdicts |
-| Worker out of turns | A continuation run or a handoff |
-| Discoveries | `add_knowledge` entries |
+| Start a loop | `start_review_loop` (`sfs loop start`) |
+| Worker starts / finishes | `start_worker_run` / `finish_worker_run` (`sfs loop run start|finish`) |
+| Review round | `record_review_round` (`sfs loop review`) |
+| Is it safe to merge? | `check_merge_readiness` (`sfs loop ready`) |
+| Where does it stand? | `get_loop_status` (`sfs loop status`) |
+| Raise a limit | `update_review_loop` (`sfs loop update`) |
+| What did it catch, what did it cost? | `get_loop_report` (`sfs loop report`, `sfs loop insights`) |
+| Traps to check every time | `get_loop_checklist`, `propose_checklist_item` (`sfs loop checklist`) |
 
-## 0. Before any code: design review and the traps checklist
+## 0. Before any code: design review
 
-Two cheap steps catch what code review otherwise finds on round three.
-
-**Design review.** Before the first brief, one reviewer reads the spec (not
-code) and answers four questions in writing:
+One reviewer reads the spec (not code) and answers four questions in
+writing:
 
 1. What happens to access when a step is slow (an LLM call, an external
    API, an upload)? Who could lose or gain access while it runs?
@@ -35,45 +39,62 @@ code) and answers four questions in writing:
 4. Which values come from users or models and end up as identities,
    permissions or stored data?
 
-Fix the spec before writing briefs. A design flaw found here costs one
-edit; found in code review it costs a fix pass and another round.
+Record it as round 0 against the loop's parent issue once the loop exists:
+`record_review_round` with `stage: "design"`. Fix the spec before workers
+start. A design flaw found here costs one edit; found in code review it
+costs a fix pass and another round.
 
-**Traps checklist.** Keep a short project file of bug classes your reviews
-keep finding (for example `.agents/review-checklist.md`): one line for the
-trap, one for the check. Every brief and every review prompt points at it,
-and every new class a review finds is added in the same commit as its fix.
-Reviews should stop rediscovering the same classes; if they don't, the
-checklist or the briefs aren't being read.
+## 1. Start the loop
 
-## 1. Write the brief as a ticket
+Once per project, an org admin registers the reviewer's identity, ideally a
+service key used by nothing else and minted by a different person than the
+implementer's key:
 
-The brief is the worker's only context. If it is not in the ticket, the
-worker does not know it. Create one ticket per branch with `create_ticket`
-(or `sfs ticket create`), using this shape:
+```sh
+sfs admin trusted-reviewers add --org <org_id> --service-key-id <key_id> --persona <reviewer-persona>
+```
+
+A key counts as the person who minted it: two keys minted by the same person
+are one identity, and that person cannot review their own work.
+
+Then one call starts the loop:
+
+```text
+start_review_loop(
+  title: "<feature>",
+  tickets: [{title, description, acceptance_criteria: [...]}, ...],
+  reviewer_persona: "<reviewer-persona>",
+  token_budget: 2000000,         # optional
+  max_review_rounds: 3,          # optional, no default
+  cost_budget_usd: 25            # optional, org owners/admins only
+)
+```
+
+Pass `from_ticket_id` to adopt an existing issue as the loop instead of
+creating one. The result has the `loop_id`, one child ticket per brief with
+its rendered `brief_markdown` (the description, the acceptance criteria and
+a **Known traps** section from the project's active checklist), the
+`queue_id`, whether the reviewer is trusted (with a setup hint if not), and
+the environment for each role (`SESSIONFS_PROFILE=implementer` /
+`reviewer`). Run each role under its own profile, never the reviewer under
+a worker's identity.
+
+Write each brief so it is the worker's only context:
 
 ```markdown
 Goal: <one sentence: what changes and why>
-Spec: <link or path to the spec; quote the parts that matter>
+Spec: <path to the spec; quote the parts that matter>
 Read first: <3-8 files, in order>
-Scope: change only <paths>. Do not touch <paths>. No new dependencies
-  unless listed here.
+Scope: change only <paths>. Do not touch <paths>.
 External APIs: <vendor docs URL per API; request shapes must match them>
-Known traps: check the change against <checklist path> before reporting done
-Required tests: <test files to add or extend>, <command that must pass>,
+Required tests: <test files>, <command that must pass>,
   <migration proof on a real database, if the change has migrations>
 Done means: every acceptance criterion holds, tests pass, work is
   committed on the branch, and your final message contains
   WORKER-STATUS: DONE
 ```
 
-Put each testable outcome in `acceptance_criteria`, not in prose. Agent-made
-tickets start as `suggested`; a person approves them (`approve_ticket` or
-`sfs ticket approve`) before a queue will pick them up.
-
-## 2. Isolate each worker
-
-One worker per branch, each in its own worktree, so workers never see or
-overwrite each other's files:
+## 2. Build: one worker, one worktree, one run
 
 ```sh
 git worktree add ../wt-<branch> -b <branch> <base-branch>
@@ -81,228 +102,139 @@ git worktree add ../wt-<branch> -b <branch> <base-branch>
 
 Never point two workers at the same worktree or branch.
 
-## 3. Launch the worker
+1. `start_worker_run(ticket_id, model, provider, branch)` takes the ticket
+   lease and returns a `run_id` and what is left of the budget. It refuses
+   with `loop_needs_human` when the ticket is parked because a budget or
+   round cap was hit.
+2. Launch your coding agent in the worktree with the brief.
+3. When it exits, confirm with git, not the worker's summary (search the
+   whole log; tools wrap and prefix their last line):
 
-1. Record the run: `create_agent_run` with `persona_name`, `ticket_id` and
-   `start_now: true`, or `sfs agent run <persona> --ticket <ticket_id>
-   --output-id`. The persona must exist (`create_persona` or
-   `sfs persona create`).
-2. Start your coding agent (any tool) inside the worktree with the brief.
-   Tell it to call `start_ticket` first and to record durable findings with
-   `add_knowledge` as it goes.
-3. Write the agent's full output to a log file you keep.
+   ```sh
+   grep -q 'WORKER-STATUS: DONE' worker.log \
+     && [ -z "$(git -C ../wt-<branch> status --porcelain)" ] \
+     && [ "$(git -C ../wt-<branch> rev-list --count <base-branch>..HEAD)" -gt 0 ] \
+     && echo finished
+   ```
 
-Cheap fast models often do well as workers when a stronger model reviews,
-but that split is optional.
+4. `finish_worker_run(run_id, head_sha, exit_reason: "finished",
+   input_tokens, output_tokens, cost_usd)` with the commit the worker left
+   and the tokens it used. Calling it twice with the same `head_sha` is
+   safe and never counts usage twice.
 
-## 4. Detect how the worker exited
+Out of turns: commit what exists, finish the run with
+`exit_reason: "out_of_turns"` (a crash is `"crashed"`), then start a new run on the same ticket with a
+short continuation brief ("the previous worker stopped at <sha>; read its
+diff first; remaining: <unmet criteria>"). Crashed: fix the cause and
+relaunch the same brief in the same worktree.
 
-Do not trust the worker's own summary, and do not anchor the "finished"
-check to the start of a line: tools wrap, indent or prefix their final
-message, and an anchored check has missed real out-of-turns exits. Search
-the whole log, then confirm with git:
+## 3. Review: read-only, code not conclusions
 
-```sh
-log=worker.log; wt=../wt-<branch>
-done_line=$(grep -c 'WORKER-STATUS: DONE' "$log")   # anywhere in a line
-clean=$(git -C "$wt" status --porcelain | wc -l)
-commits=$(git -C "$wt" rev-list --count <base-branch>..HEAD)
-if [ "$done_line" -gt 0 ] && [ "$clean" -eq 0 ] && [ "$commits" -gt 0 ]; then
-  echo finished
-elif grep -qiE 'max[ _-]?turns|turn limit' "$log"; then
-  echo out-of-turns
-else
-  echo crashed
-fi
-```
-
-Adapt the out-of-turns pattern to the message or exit status your tool
-uses. Log only the agent's output: if the tool echoes the prompt, the
-brief's own status line will match.
-
-| Exit | Signs | Do this |
-| --- | --- | --- |
-| Finished | Status line present, tree clean, commits on the branch | `complete_agent_run` with `status: passed`. Call `complete_ticket` (`notes` plus `changed_files`) so the ticket moves `in_progress` → `review` (first pass only: fix-pass workers skip it, the ticket is already in review), then post one ticket comment: branch, commit, test command. Hand it to review (step 5). |
-| Out of turns | Turn-limit message, no status line | Commit what exists on the branch as work in progress. `complete_agent_run` with `status: errored`. Start a continuation (below). |
-| Crashed | Non-zero exit, no turn-limit message | `complete_agent_run` with `status: errored` and the error. Fix the cause, then relaunch the same brief in the same worktree. |
-
-**Continuation.** Write a short continuation brief: "Continue ticket
-<ticket_id>. The spec is the ticket. The previous worker stopped at commit
-<sha> on <branch>; read its diff against the base first. Remaining: <the
-unmet criteria>." Create the run with `replay_agent_run` (or
-`sfs agent replay <run_id> --prompt-file <file> --context-ref <sha>`) so it
-links to the run that stopped, then start it with
-`sfs agent run --run-id <new_run_id>` and launch the worker on the
-continuation brief in the same worktree. The ticket is already
-`in_progress`, so the continuation worker skips `start_ticket`. If a person should continue
-instead, push the session and hand it off with the session-handoff skill,
-passing the ticket id.
-
-## 5. Set up the review loop
-
-Once per project, an org admin registers the reviewer's identity, ideally a
-service key used by nothing else:
-
-```sh
-sfs admin trusted-reviewers add --org <org_id> --service-key-id <key_id> --persona <reviewer-persona>
-```
-
-Run the reviewer under that identity only, never under a worker's: for
-example a separate auth profile (`sfs auth login --profile <name> --key
-<key>`, then `SESSIONFS_PROFILE=<name>` in the reviewer's shell).
-
-Create the queue with `create_work_queue`: `mode: review_until_clean`,
-`selector: {"ticket_ids": [...]}`, and `assigned_persona` equal to the
-registered persona. The server only trusts a verdict when the reviewer's
-identity is registered for exactly that persona.
-
-## 6. Review: read-only, code not conclusions
-
-The reviewer runs in its own checkout, read-only, and never commits. Each
-wake it calls `run_work_queue_step`. A `post_review` directive means a
-worker comment arrived; the directive carries `review_round` and the open
-findings from earlier rounds. Wake no faster than the queue cadence (at
-least 120 seconds).
-
-Give the reviewer this prompt for round 1, with the worker's summary left out:
+The reviewer runs in its own checkout, under the reviewer profile, and
+never commits. Round 1 prompt, with the worker's summary left out:
 
 ```markdown
 Review branch <branch> at commit <sha> against base <base>, for ticket
-<ticket_id>. Read the ticket's acceptance criteria and the diff. Do not
-trust comments or summaries from the author; check the code. Run
-<test command>. Check every external request against the vendor's
-documentation, not against the mocks in the tests. Confirm migrations were
-run on a real database. Go through <checklist path> item by item.
-Re-check each open finding from earlier rounds. You may not edit files.
-For every finding give: severity, class (a checklist item number, or
-"new"), and harm: what a real user or attacker would lose if this
-shipped (data exposed, money spent, wrong person assigned, crash), or
-"none in practice".
+<ticket_id>. Read the acceptance criteria and the diff. Do not trust
+comments or summaries from the author; check the code. Run <test command>.
+Check every external request against the vendor's documentation, not the
+mocks. Go through the brief's Known traps item by item. You may not edit
+files. For every finding give: severity, class (a checklist slug, or
+"new"), and harm: data-exposed, money-spent, wrong-actor, crash, other, or
+none.
 ```
 
 Rounds after the first are narrow: "verify each fix, then review only the
-diff since <sha> against the checklist". Ask for a full re-review only when
-a fix touched access checks, locking or money.
+diff since <sha>". Ask for a full re-review only when a fix touched access
+checks, locking or money.
 
-The reviewer records its own agent run (`create_agent_run`, then
-`complete_agent_run` with `severity` and `findings`), and delivers the
-verdict through `complete_work_queue_step` with the directive's ids,
-`outcome: posted_review`, and `verdict_content`. Post the verdict through
-the queue, not `add_ticket_comment`, so the server writes it with the
-queue's persona and the round the directive tracks. The server parses this
-exact format, with the reviewer's own name in place of `<Reviewer>`
-whichever tool reviews:
+Record each round in one call:
 
 ```text
-<Reviewer> R<review_round> review on <ticket_id>: CHANGES_REQUESTED
-Findings:
-- HIGH — <file>:<line> <what is wrong and why>
-- LOW — <...>
+record_review_round(
+  loop_id, ticket_id, round: 1, stage: "code",
+  reviewed_commit: "<full sha>",
+  verdict: "CHANGES-REQUESTED" | "VERIFIED-CLEAN",
+  findings: [{severity, class, harm, file, line, title}],
+  model, provider, input_tokens, output_tokens, cost_usd
+)
 ```
 
-`<Reviewer>` must start with a letter and use only letters, digits, `.`,
-`_` or `-`, at most 32 characters — a `verdict_content` whose header does
-not parse is rejected with `verdict_header_unparseable` before anything is
-written.
+The server decides whether the verdict is trusted from the credential that
+sent it, never from the request. Repeating a round is safe. A finding with
+class `new` proposes a checklist item, so the next brief warns about it.
+Going past the round cap or the token budget parks the ticket for a person.
 
-## 7. Fix pass and re-review
+## 4. Fix and re-review
 
-1. Read the findings with `get_ticket_review_state` (or
-   `sfs ticket review-state <ticket_id>`).
-2. Launch a fix worker in the same worktree with a brief that lists the open
-   findings and points at the ticket. Same exit handling as step 4, except
-   that the ticket is already in `review`: the fix worker calls neither
-   `start_ticket` nor `complete_ticket`. It works the brief and commits.
-3. The fix worker commits and posts one ticket comment with the new commit.
-   Any comment that is not a trusted verdict hands the turn back to the
-   reviewer, so post one comment per pass, not running chatter.
-4. The same reviewer re-reviews. The loop ends only on a strict
-   `<Reviewer> R<N> review on <ticket_id>: VERIFIED-CLEAN` with no open
-   findings. Close rounds with `Findings: none.`
+Start a fix worker with `start_worker_run` in the same worktree, with a
+brief listing the open findings that have real harm. Finish it with the new
+`head_sha`, then the same reviewer runs the next round against that commit.
 
-## 8. Merge
+Harm decides whether there is another round. A finding with real harm is
+fixed and re-checked. Findings with harm `none` go into one follow-up
+ticket and do not start a round. Fix one-line or wording findings yourself
+and verify them with a targeted test. After three rounds on one branch,
+stop and look at why findings keep coming (the brief, the design, or the
+model) before paying for a fourth.
 
-Merge only when `get_ticket_review_state` shows
-`last_verdict_is_strict_verified_clean: true` and no open findings
-(`sfs ticket review-state` prints `Strict VERIFIED-CLEAN: yes`). Merge
-the branch, run the full test suite on the merged result, then
-`resolve_ticket`. The queue never changes ticket status itself. Remove the
-worktree with `git worktree remove`.
+## 5. Merge
 
-## 9. Spend tokens where they catch bugs
+```text
+check_merge_readiness(ticket_id, sha: "<head commit you are about to merge>")
+```
 
-Most of a loop's cost is context: every turn re-reads the brief, the files
-and the conversation so far. Review rounds are the second biggest cost. The
-habits below keep the loop cheap without weakening the gate.
+It is `ready` only when a trusted VERIFIED-CLEAN verdict is bound to exactly
+that commit, the reviewer is a different identity from every implementer,
+and no harmful finding is open. Any new commit needs a new clean round. With
+the GitHub App installed, the same answer is a "SessionFS review loop" check
+on the pull request that branch protection can require. A person merges.
 
-**Size the work before you launch it.**
+## 6. When something needs you
+
+`get_loop_status` (or the dashboard's Review Loop tab and Inbox) shows what
+is ready to merge, what hit a limit, and which checklist items were
+proposed. Raise a limit with `update_review_loop`; close a parked item with
+`sfs loop close-item` (people only, never a service key); accept or retire
+checklist items with `sfs loop checklist accept|retire`.
+
+## 7. Spend tokens where they catch bugs
+
 - One worker, one brief, one context window. A brief that needs more than
-  roughly 150 turns is two briefs. Split by phase (data and routes, then
-  the logic on top, then interfaces), not by file.
-- Put each phase's new code in new files where you can, so phases can run
-  in parallel worktrees without merge conflicts.
-- Tell workers to commit after each step that works. A worker that runs out
-  of turns then costs a short continuation, not a rebuild.
-
-**Pick the model per job.**
-- Routine build work goes to the cheapest model that passes review. Use a
-  stronger model for UI and design work, for reviewers, and for anything
-  security-sensitive.
-- Check the balance or plan headroom of the worker's provider before every
-  launch, not once per feature. A worker that starts with no credit fails
-  on its first request and wastes the brief.
-
-**Keep context small.**
+  roughly 150 turns is two briefs. Split by phase, and put new code in new
+  files so phases run in parallel worktrees without conflicts.
+- Tell workers to commit after each step that works; running out of turns
+  then costs a short continuation, not a rebuild.
+- Routine build work goes to the cheapest model that passes review; use a
+  stronger model for UI, design, reviewers and security-sensitive work.
+  Check the provider's balance before every launch.
 - Point workers at paths and line ranges; never paste files into a brief.
-  Workers search first (`grep -n`) and read slices.
-- Start workers with a trimmed tool setup: no large instruction files, only
-  the tools the brief needs.
-- Hand a finished worker's next task back to the same session (it already
-  holds the code) instead of starting a fresh one that must re-read
-  everything.
+- Reuse the same reviewer across rounds and keep re-review prompts narrow.
+  A second reviewer gets one final pass over the changed code only.
+- Workers run targeted tests per step; you run the full suite once on the
+  merged result.
 
-**Make every review round count.**
-- Reuse the same reviewer across rounds; it keeps its context. Each re-review
-  prompt is narrow: "verify these fixes, then check what changed since
-  <sha>", not "review the branch again".
-- Harm decides whether there is another round, severity breaks ties. A
-  finding with real harm (data exposed, money spent, wrong person acted
-  on, crash on a normal path) is fixed and re-checked. Findings marked
-  "none in practice" go into one follow-up ticket and do not start a new
-  round, whatever their severity label.
-- Stop when a round's findings are all "none in practice", or when a
-  round's findings are only about code the previous fix added and that
-  fix is small: fix them yourself and run one narrow check.
-- Fix one-line or wording findings yourself and verify them with a
-  targeted test. Resume a worker only when the fix is real work.
-- Cap rounds. After three rounds on one branch, stop and look at why the
-  findings keep coming (the brief, the design, or the model) before paying
-  for a fourth.
-- A second reviewer (another model) gets one final pass, limited to the
-  changed code, after the first reviewer is clean. Do not run two full
-  reviewers round after round.
+Report usage on every run (`finish_worker_run`, `record_review_round`, or
+`report_agent_run_usage` for long runs). `get_loop_report` and
+`sfs loop insights` then show what the loop caught by harm, cost per
+accepted change, how often each checklist class still turns up, and which
+worker/reviewer model pairings do best.
 
-**Run tests where they are cheap.**
-- Workers run targeted tests per step and the full suite once before
-  reporting. You run the full suite once more on the merged result.
-- Do not run several full suites at once on one machine: load makes
-  timing-sensitive tests fail, and the reruns cost more than waiting.
+## 8. Ship
 
-**Measure the loop.** For every worker and review run, record the tokens or
-spend in the agent run's result summary, and record each finding in the
-run's `findings` with its round, severity, class and harm. After two or
-three features, count per round: findings with real harm, findings that
-were checklist classes (the brief failed), findings that were design
-issues (step 0 failed), and tokens spent. That tells you where your loop
-should stop and what to move earlier.
+Record the release with `sfs release record <version> --tag-sha <sha> --pr
+<number>` (or let the GitHub/GitLab webhooks do it), then
+`sfs release ship-report <version> --markdown` gives a factual summary for
+the release notes: rounds, findings, harmful findings fixed before merge,
+cost per accepted change, checklist classes learned.
 
 ## Rules
 
-- The worker's self-report is never the gate. The trusted verdict is.
+- The worker's self-report is never the gate. The commit-bound trusted
+  verdict is.
 - A passing mocked test can encode the wrong external API. Check request
-  shapes against the vendor's documentation, and prove database migrations
-  on a real database.
-- Record what you learn (API quirks, failed approaches, conventions) with
-  `add_knowledge` as you learn it.
-- Never put secrets, keys or credentials in a brief, a comment or a log you
+  shapes against vendor documentation and prove migrations on a real
+  database.
+- Record what you learn with `add_knowledge` as you learn it.
+- Never put secrets, keys or credentials in a brief, a finding or a log you
   share.

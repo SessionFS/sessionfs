@@ -18,7 +18,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         <p class="text-muted text-lg mb-4 leading-relaxed">Every session your team runs is automatically distilled into knowledge entries — architecture decisions, debugging patterns, API contracts, environment quirks. Your codebase builds its own documentation over time.</p>
         <p class="text-muted text-lg mb-6 leading-relaxed">AI agents don't just read the knowledge base — they write back. Discoveries, fixes, and patterns flow in automatically. The next agent picks them up.</p>
         <div class="flex flex-wrap gap-2 mb-8">
-          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">115 MCP tools</span>
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">118 MCP tools</span>
           <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">Auto-summarize</span>
           <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">Agent write-back</span>
         </div>
@@ -163,7 +163,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
   <!-- 12 MCP Tools -->
   <section class="relative py-20 sm:py-28 px-5 noise">
     <div class="max-w-5xl mx-auto">
-      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-4">115 MCP tools. Fifteen categories.</h2>
+      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-4">118 MCP tools. Fifteen categories.</h2>
       <p class="fade-up text-muted text-center mb-14 max-w-lg mx-auto leading-relaxed">Everything your AI agents need to read, search, and contribute to your team's knowledge.</p>
       <div class="grid md:grid-cols-3 gap-5">
 
@@ -369,11 +369,14 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         </div>
 
         <div class="glass fade-up p-6">
-          <h3 class="font-heading font-semibold mb-3">Review Loops <span class="text-muted-dim text-sm font-normal">(6) &middot; Team+</span></h3>
+          <h3 class="font-heading font-semibold mb-3">Review Loops <span class="text-muted-dim text-sm font-normal">(9) &middot; Team+</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">start_review_loop</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_loop_status</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">update_review_loop</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">start_worker_run</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">finish_worker_run</span></li>
+            <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">record_review_round</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_loop_report</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_loop_checklist</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">propose_checklist_item</span></li>

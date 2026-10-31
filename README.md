@@ -139,6 +139,10 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs loop ready` | Is a ticket's work safe to merge at a given commit? (Team+) |
 | `sfs loop start\|status\|update\|close-item` | Run a review loop with token, dollar and round budgets (Team+) |
 | `sfs loop report\|insights\|checklist` | Per-round reports, project insights and the checklist that learns (Team+) |
+| `sfs loop run start\|finish`, `sfs loop review` | Record each worker run and review round in one call, with usage (Team+) |
+| `sfs loop share story\|ship-report\|list\|revoke` | Share a ticket story or Ship Report without dollars or emails |
+| `sfs release record\|deploy\|list\|ship-report` | Record PRs, releases, gates and deployments, then read the per-release or per-month Ship Report |
+| `sfs org delivery-webhook rotate\|status` | Per-org GitHub and GitLab webhooks for pull requests, releases and deploys (Team+) |
 | `sfs agent replay\|compare` | Re-run a recorded agent run with an edited prompt or context, and compare two runs side by side |
 | `sfs agent feedback add\|list\|summary` | Record and summarize whether agent work was useful (Team+) |
 | `sfs resident run\|health` | Run an operator-hosted resident reviewer or implementer against a work queue |
@@ -272,6 +276,8 @@ Sessions are stored as `.sfs` directories:
 All file paths are relative to workspace root. Sessions are append-only — conflict resolution appends both sides rather than merging.
 
 ## Status
+
+**v0.29.3 — Public Beta.** 10600 backend tests + 1950 dashboard tests passing. Database migrations 001–116 (067 and 068 unused). 118 MCP tools. **One call per worker run and per review round,** with usage and commit-bound verdicts (`sfs loop run start|finish`, `sfs loop review`). **A merge check on GitHub and GitLab** that turns green only when every linked ticket is ready at exactly that commit. **Pull requests, releases and deploys** linked to tickets, with a per-release or per-month **Ship Report** and a model scoreboard (`sfs release`), share links that show no dollars or emails (`sfs loop share`), and a Loop Board, Ship Reports and a Review loops inbox in the dashboard. Migrations 113–116.
 
 **v0.29.2 — Public Beta.** 10482 backend tests + 1908 dashboard tests passing. Database migrations 001–112 (067 and 068 unused). 115 MCP tools. **Review loops with budgets:** start a loop on an issue with one child task per brief, cap it by tokens, dollars and review rounds, and let a person settle anything it parks (`sfs loop start|status|update|close-item`). **A checklist that learns** from review findings, plus per-round reports and project insights (`sfs loop checklist|report|insights`), and a Review Loop view in the dashboard. Also: a service key now counts as the person who minted it, so two keys from one person can't review each other's work. Migrations 110–112.
 

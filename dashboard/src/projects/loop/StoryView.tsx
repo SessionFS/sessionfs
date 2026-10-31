@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import RelativeDate from '../../components/RelativeDate';
 import { Alert, Badge, Button, Card } from '../../components/ui';
@@ -7,6 +8,7 @@ import { errorMessage } from '../../utils/errorMessage';
 import { safeHttpUrl } from '../../utils/url';
 import { HARM_LABEL, formatTokens, formatUsd, isHarmful, plural, runHref, shortSha, ticketHref } from './format';
 import { TrustSeal } from './TrustSeal';
+import { ShareLinkDialog } from './ShareLinkDialog';
 
 const KIND_LABEL: Record<StoryEvent['kind'], string> = {
   brief: 'Brief',
@@ -21,9 +23,9 @@ const KIND_LABEL: Record<StoryEvent['kind'], string> = {
   deploy: 'Deploy',
 };
 
-function EventBody({ e, projectId }: { e: StoryEvent; projectId: string }) {
+function EventBody({ e, projectId, publicView }: { e: StoryEvent; projectId: string; publicView: boolean }) {
   const link = safeHttpUrl(e.url);
-  const run = e.run_id ? (
+  const run = e.run_id && !publicView ? (
     <Link className="text-brand underline" to={runHref(projectId, e.run_id)}>
       Run record
     </Link>
@@ -114,15 +116,87 @@ function Dot({ e }: { e: StoryEvent }) {
   );
 }
 
+/** Where this change shipped: PRs, releases and deployments (absent on older servers). */
+export function ShippedContext({ story }: { story: Story }) {
+  const prs = story.prs ?? [];
+  const rels = story.releases ?? [];
+  const deps = story.deployments ?? [];
+  if (prs.length === 0 && rels.length === 0 && deps.length === 0) return null;
+  return (
+    <Card className="space-y-3 p-4" data-testid="story-shipped">
+      <h3 className="text-md font-semibold text-text-primary">Where it shipped</h3>
+      <dl className="grid gap-3 sm:grid-cols-3">
+        {prs.length > 0 && (
+          <div>
+            <dt className="text-2xs uppercase tracking-[0.04em] text-text-tertiary">Pull requests</dt>
+            <dd>
+              <ul className="space-y-0.5 text-sm">
+                {prs.map((p) => {
+                  const href = safeHttpUrl(p.external_url);
+                  const label = `${p.repo ?? p.provider}${p.number ? ` #${p.number}` : ''}${p.state ? ` (${p.state})` : ''}`;
+                  return (
+                    <li key={p.id}>
+                      {href ? (
+                        <a className="text-brand underline" href={href} target="_blank" rel="noopener noreferrer">
+                          {label}<span className="sr-only"> (opens in a new tab)</span>
+                        </a>
+                      ) : (
+                        <span className="text-text-secondary">{label}</span>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </dd>
+          </div>
+        )}
+        {rels.length > 0 && (
+          <div>
+            <dt className="text-2xs uppercase tracking-[0.04em] text-text-tertiary">Releases</dt>
+            <dd>
+              <ul className="space-y-0.5 text-sm text-text-secondary">
+                {rels.map((r) => (
+                  <li key={r.version}>
+                    <span className="font-mono text-text-primary">{r.version}</span>
+                    {r.released_at && <> · <RelativeDate iso={r.released_at} /></>}
+                  </li>
+                ))}
+              </ul>
+            </dd>
+          </div>
+        )}
+        {deps.length > 0 && (
+          <div>
+            <dt className="text-2xs uppercase tracking-[0.04em] text-text-tertiary">Deployments</dt>
+            <dd>
+              <ul className="space-y-0.5 text-sm text-text-secondary">
+                {deps.map((d, i) => (
+                  <li key={`${d.environment}-${i}`}>
+                    {d.environment}
+                    {d.deployed_at && <> · <RelativeDate iso={d.deployed_at} /></>}
+                  </li>
+                ))}
+              </ul>
+            </dd>
+          </div>
+        )}
+      </dl>
+    </Card>
+  );
+}
+
 export function StoryTimeline({
   story,
   projectId,
   readiness,
+  publicView = false,
 }: {
   story: Story;
   projectId: string;
   /** Readiness for the head commit, from the loop board (the story has none). */
   readiness?: Readiness;
+  /** The shared page: no links into the signed-in app. */
+  publicView?: boolean;
 }) {
   const events = [...story.events].sort((a, b) => (a.at ?? '').localeCompare(b.at ?? ''));
   const hasMerge = events.some((e) => e.kind === 'merge');
@@ -135,7 +209,7 @@ export function StoryTimeline({
             <span className="text-2xs uppercase tracking-[0.04em] text-text-tertiary">{KIND_LABEL[e.kind]}</span>
             <span className="text-xs text-text-tertiary">{e.at ? <RelativeDate iso={e.at} /> : 'Time not recorded'}</span>
           </div>
-          <EventBody e={e} projectId={projectId} />
+          <EventBody e={e} projectId={projectId} publicView={publicView} />
           {e.kind === 'merge' && readiness && (
             <div className="mt-2"><TrustSeal readiness={readiness} /></div>
           )}
@@ -158,12 +232,16 @@ export function StoryView({
   ticketId,
   loops = [],
   onBack,
+  canEdit = false,
 }: {
   projectId: string;
   ticketId: string;
   loops?: Loop[];
   onBack: () => void;
+  /** Editors may share the story through a public link. */
+  canEdit?: boolean;
 }) {
+  const [sharing, setSharing] = useState(false);
   const child = loops.flatMap((l) => l.children).find((c) => c.ticket_id === ticketId);
   const readiness: Readiness | undefined = child
     ? { ready: child.ready, reasons: child.not_ready_reasons ?? [], verdict: child.verdict ?? null }
@@ -173,9 +251,15 @@ export function StoryView({
 
   return (
     <section aria-labelledby="story-heading" className="space-y-4">
-      <div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <Button variant="ghost" size="sm" onClick={onBack}>All loops</Button>
+        {canEdit && story && (
+          <Button variant="secondary" size="sm" onClick={() => setSharing(true)}>Share</Button>
+        )}
       </div>
+      {sharing && (
+        <ShareLinkDialog projectId={projectId} target={{ kind: 'story', ticketId }} onClose={() => setSharing(false)} />
+      )}
       {isLoading && <p className="text-text-tertiary">Loading the story…</p>}
       {error && <Alert variant="danger">Could not load this story: {errorMessage(error)}</Alert>}
       {story && (
@@ -195,6 +279,7 @@ export function StoryView({
               )}
             </p>
           </div>
+          <ShippedContext story={story} />
           {story.events.length === 0 ? (
             <Card className="p-6 text-center text-sm text-text-tertiary">Nothing recorded for this change yet.</Card>
           ) : (

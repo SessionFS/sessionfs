@@ -1340,6 +1340,8 @@ const MEETING_SCENARIOS: Scenario[] = [
 const LOOP_PATH = `/projects/${PROJECT_ID}?tab=work&sub=loop`;
 const LOOP_SCENARIOS: Scenario[] = [
   { name: 'loop-mission-control', path: LOOP_PATH },
+  { name: 'loop-board', path: `${LOOP_PATH}&view=board` },
+  { name: 'loop-ship-report', path: `${LOOP_PATH}&view=ship` },
   {
     name: 'loop-empty',
     path: LOOP_PATH,
@@ -1355,6 +1357,25 @@ const LOOP_SCENARIOS: Scenario[] = [
     },
   },
   { name: 'loop-story', path: `${LOOP_PATH}&story=tk_child1` },
+  { name: 'loop-share-dialog', path: `${LOOP_PATH}&story=tk_child1`, prepare: async (page) => {
+      await page.getByRole('button', { name: 'Share', exact: true }).click();
+      await page.getByRole('dialog', { name: 'Share' }).waitFor();
+    },
+  },
+  { name: 'review-loops-inbox', path: '/review-loops' },
+  {
+    name: 'review-loops-inbox-empty',
+    path: '/review-loops',
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === '/api/v1/me/loops/needs-you',
+        (route) => route.fulfill(fulfillJson(200, { items: [], counts: { ready: 0, needs_human: 0, proposed_checklist: 0, total: 0 } })),
+      );
+    },
+  },
+  { name: 'loop-share-public-story', path: '/share/loop/story-token' },
+  { name: 'loop-share-public-report', path: '/share/loop/ship-token' },
+  { name: 'loop-share-public-unavailable', path: '/share/loop/gone-token' },
   {
     name: 'loop-raise-limit',
     path: LOOP_PATH,

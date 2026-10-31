@@ -1853,13 +1853,19 @@ _TOOLS = [
     Tool(
         name="get_loop_report",
         description=(
-            "Get the review-loop report for a single ticket: one row per "
+            "Get the review-loop report for a single ticket (one row per "
             "review round with findings grouped by harm, how many findings "
             "were known checklist classes vs. brand-new, how many were "
-            "design-stage issues, and the tokens (and, for callers with admin "
-            "standing on the project, dollars) the round cost. Token totals "
-            "are always returned; dollar amounts are only returned to org "
-            "owners/admins or the owner of a personal project.\n\n"
+            "design-stage issues, and the tokens — and, for callers with "
+            "admin standing on the project, dollars — the round cost). "
+            "Token totals are always returned; dollar amounts are only "
+            "returned to org owners/admins or the owner of a personal "
+            "project.\n\n"
+            "Pass `release` (a version string) or `month` (YYYY-MM) instead "
+            "of `ticket_id` to fetch the Ship Report for that release or "
+            "month: loops/tickets/review rounds, findings and harmful counts, "
+            "cost per accepted change, checklist classes learned, gates, "
+            "deployments, PRs, and markdown release notes.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs loop report` or any other sfs CLI command."
         ),
@@ -1867,9 +1873,17 @@ _TOOLS = [
             "type": "object",
             "properties": {
                 "ticket_id": {"type": "string", "description": "Ticket id (tk_...)."},
+                "release": {
+                    "type": "string",
+                    "description": "Release version for the Ship Report.",
+                },
+                "month": {
+                    "type": "string",
+                    "description": "YYYY-MM for the Ship Report.",
+                },
                 "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
-            "required": ["ticket_id"],
+            "required": [],
         },
     ),
     Tool(
@@ -3359,6 +3373,98 @@ _TOOLS = [
         },
     ),
     Tool(
+        name="start_worker_run",
+        description=(
+            "Start a worker run on a review-loop ticket: takes the ticket "
+            "lease (lease_epoch is returned) and opens an implementer agent "
+            "run linked to the loop's queue item. Refuses with loop_needs_human "
+            "when the item is parked or a budget is already exhausted. Returns "
+            "run_id, lease_epoch, ticket_id, loop_id and the remaining budget "
+            "(dollars only for org owners/admins).\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs loop run start` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "ticket_id": {"type": "string", "description": "Child ticket id (tk_...)."},
+                "model": {"type": "string"},
+                "provider": {"type": "string"},
+                "branch": {"type": "string"},
+                "head_sha": {"type": "string", "description": "Base commit (7-64 hex), optional."},
+                "tool": {"type": "string", "description": "Tool name for the run (default generic)."},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["ticket_id"],
+        },
+    ),
+    Tool(
+        name="finish_worker_run",
+        description=(
+            "Finish a worker run: record the head commit, exit reason and "
+            "usage, then run the budget check (a hit moves the item to "
+            "needs_human). Idempotent on (run_id, head_sha): a repeat returns "
+            "the same result without counting usage twice; a different "
+            "head_sha after finish is a 409.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs loop run finish` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string", "description": "Run id returned by start_worker_run."},
+                "head_sha": {"type": "string", "description": "Head commit the run produced (7-64 hex)."},
+                "exit_reason": {"type": "string", "enum": ["finished", "out_of_turns", "crashed"]},
+                "branch": {"type": "string"},
+                "input_tokens": {"type": "integer"},
+                "output_tokens": {"type": "integer"},
+                "cache_read_tokens": {"type": "integer"},
+                "cache_write_tokens": {"type": "integer"},
+                "cost_usd": {"type": "number"},
+                "cost_basis": {"type": "string", "enum": ["reported", "estimated", "plan", "unknown"]},
+                "summary": {"type": "string"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["run_id", "head_sha", "exit_reason"],
+        },
+    ),
+    Tool(
+        name="record_review_round",
+        description=(
+            "Record one review round on a loop ticket (or a design round on "
+            "the loop parent). Creates the reviewer run with its findings and "
+            "posts the verdict; trust comes only from your credential and the "
+            "trusted-reviewers registry. Idempotent on (ticket, round, stage). "
+            "`findings` is a list of {severity, class, harm, title, file?, "
+            "line?, status?}; severity low|medium|high|critical, class a slug "
+            "or 'new', harm data-exposed|money-spent|wrong-actor|crash|other|none.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs loop review` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "loop_id": {"type": "string", "description": "Loop (parent issue) ticket id."},
+                "ticket_id": {"type": "string", "description": "Child ticket id, or the loop id for a design round."},
+                "round": {"type": "integer", "minimum": 1},
+                "stage": {"type": "string", "enum": ["design", "code"]},
+                "reviewed_commit": {"type": "string", "description": "Full 40/64 hex commit id reviewed."},
+                "verdict": {"type": "string", "enum": ["VERIFIED-CLEAN", "CHANGES-REQUESTED"]},
+                "findings": {"type": "array", "items": {"type": "object"}},
+                "model": {"type": "string"},
+                "provider": {"type": "string"},
+                "input_tokens": {"type": "integer"},
+                "output_tokens": {"type": "integer"},
+                "cache_read_tokens": {"type": "integer"},
+                "cache_write_tokens": {"type": "integer"},
+                "cost_usd": {"type": "number"},
+                "cost_basis": {"type": "string", "enum": ["reported", "estimated", "plan", "unknown"]},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["loop_id", "ticket_id", "round", "stage", "reviewed_commit", "verdict"],
+        },
+    ),
+    Tool(
         name="get_loop_checklist",
         description=(
             "List a project's review checklist (the traps the loop has learned), "
@@ -3543,6 +3649,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_start_review_loop(arguments)
         elif name == "get_loop_status":
             result = await _handle_get_loop_status(arguments)
+        elif name == "start_worker_run":
+            result = await _handle_start_worker_run(arguments)
+        elif name == "finish_worker_run":
+            result = await _handle_finish_worker_run(arguments)
+        elif name == "record_review_round":
+            result = await _handle_record_review_round(arguments)
         elif name == "get_loop_checklist":
             result = await _handle_get_loop_checklist(arguments)
         elif name == "propose_checklist_item":
@@ -6173,6 +6285,110 @@ async def _handle_get_loop_status(args: dict) -> dict:
     return resp.json()
 
 
+_USAGE_ARGS = (
+    "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+)
+
+
+def _usage_from_args(args: dict) -> dict | None:
+    usage: dict[str, Any] = {}
+    for key in _USAGE_ARGS:
+        val = args.get(key)
+        if isinstance(val, int) and not isinstance(val, bool):
+            usage[key] = val
+    cost = args.get("cost_usd")
+    if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+        usage["cost_usd"] = cost
+    basis = args.get("cost_basis")
+    if isinstance(basis, str) and basis.strip():
+        usage["cost_basis"] = basis.strip().lower()
+    return usage or None
+
+
+async def _loop_worker_post(args: dict, path: str, body: dict, timeout: int = 30) -> dict:
+    git_remote = args.get("git_remote", "")
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(git_remote)
+    except Exception as exc:
+        return {"error": str(exc)}
+    import httpx
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{project_id}/{path}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_start_worker_run(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/agent-runs/start-worker."""
+    ticket_id = args.get("ticket_id", "")
+    if not isinstance(ticket_id, str) or not ticket_id.strip():
+        return {"error": "ticket_id is required"}
+    body: dict[str, Any] = {"ticket_id": ticket_id.strip()}
+    for key in ("model", "provider", "branch", "head_sha", "tool"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            body[key] = val.strip()
+    return await _loop_worker_post(args, "agent-runs/start-worker", body)
+
+
+async def _handle_finish_worker_run(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/agent-runs/{run_id}/finish."""
+    run_id = args.get("run_id", "")
+    head_sha = args.get("head_sha", "")
+    exit_reason = args.get("exit_reason", "")
+    for name, val in (("run_id", run_id), ("head_sha", head_sha), ("exit_reason", exit_reason)):
+        if not isinstance(val, str) or not val.strip():
+            return {"error": f"{name} is required"}
+    body: dict[str, Any] = {"head_sha": head_sha.strip(), "exit_reason": exit_reason.strip()}
+    if isinstance(args.get("branch"), str) and args["branch"].strip():
+        body["branch"] = args["branch"].strip()
+    if isinstance(args.get("summary"), str) and args["summary"].strip():
+        body["summary"] = args["summary"]
+    usage = _usage_from_args(args)
+    if usage:
+        body["usage"] = usage
+    return await _loop_worker_post(
+        args, f"agent-runs/{_path_segment(run_id.strip())}/finish", body
+    )
+
+
+async def _handle_record_review_round(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/loops/{loop_id}/rounds."""
+    for name in ("loop_id", "ticket_id", "stage", "reviewed_commit", "verdict"):
+        val = args.get(name)
+        if not isinstance(val, str) or not val.strip():
+            return {"error": f"{name} is required"}
+    rnd = args.get("round")
+    if isinstance(rnd, bool) or not isinstance(rnd, int) or rnd < 1:
+        return {"error": "round must be an integer >= 1"}
+    findings = args.get("findings", [])
+    if not isinstance(findings, list) or not all(isinstance(f, dict) for f in findings):
+        return {"error": "findings must be a list of objects"}
+    body: dict[str, Any] = {
+        "ticket_id": args["ticket_id"].strip(),
+        "round": rnd,
+        "stage": args["stage"].strip(),
+        "reviewed_commit": args["reviewed_commit"].strip(),
+        "verdict": args["verdict"].strip(),
+        "findings": findings,
+    }
+    for key in ("model", "provider"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            body[key] = val.strip()
+    usage = _usage_from_args(args)
+    if usage:
+        body["usage"] = usage
+    return await _loop_worker_post(
+        args, f"loops/{_path_segment(args['loop_id'].strip())}/rounds", body
+    )
+
+
 async def _handle_get_loop_checklist(args: dict) -> dict:
     """Wrap GET /api/v1/projects/{project_id}/loop-checklist (Review Loop E1).
 
@@ -8077,10 +8293,14 @@ async def _handle_get_spend_summary(args: dict) -> dict:
 
 
 async def _handle_get_loop_report(args: dict) -> dict:
-    """Wrap GET /projects/{p}/tickets/{t}/loop-report."""
+    """Wrap the ticket loop-report or the release/month Ship Report."""
     ticket_id = (args.get("ticket_id") or "").strip()
-    if not ticket_id:
-        return {"error": "ticket_id is required"}
+    release = (args.get("release") or "").strip()
+    month = (args.get("month") or "").strip()
+
+    modes = [bool(ticket_id), bool(release), bool(month)]
+    if sum(modes) != 1:
+        return {"error": "pass exactly one of ticket_id, release, or month"}
 
     git_remote = args.get("git_remote", "")
     try:
@@ -8088,18 +8308,34 @@ async def _handle_get_loop_report(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    path = (
-        f"/api/v1/projects/{project_id}/tickets/"
-        f"{_path_segment(ticket_id)}/loop-report"
-    )
     import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
-        resp = await client.get(
-            f"{api_url}{path}",
-            headers={"Authorization": f"Bearer {api_key}"},
+    if ticket_id:
+        path = (
+            f"/api/v1/projects/{project_id}/tickets/"
+            f"{_path_segment(ticket_id)}/loop-report"
         )
+    elif release:
+        path = (
+            f"/api/v1/projects/{project_id}/releases/"
+            f"{_path_segment(release)}/ship-report"
+        )
+    else:
+        path = f"/api/v1/projects/{project_id}/ship-report"
+
+    async with httpx.AsyncClient(timeout=15) as client:
+        if month:
+            resp = await client.get(
+                f"{api_url}{path}",
+                params={"month": month},
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+        else:
+            resp = await client.get(
+                f"{api_url}{path}",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
     if resp.status_code == 404:
-        return {"error": f"Ticket '{ticket_id}' not found"}
+        return {"error": f"{ticket_id or release or month!r} not found"}
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return resp.json()

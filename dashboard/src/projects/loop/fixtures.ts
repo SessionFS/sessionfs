@@ -1,4 +1,4 @@
-import type { ChecklistItem, Loop, LoopInsights, Story } from '../../api/reviewLoop';
+import type { ChecklistItem, Loop, LoopInsights, NeedsYouResponse, ReleaseList, ScoreboardRow, ShareLink, ShipReport, Story } from '../../api/reviewLoop';
 
 export const loops = (withUsd = true): Loop[] => [
   {
@@ -63,6 +63,7 @@ export const insights = (withUsd = true): LoopInsights => ({
     { period: '2026-09', tokens: 900_000, ...(withUsd ? { cost_usd: 1.4 } : {}) },
     { period: '2026-10', tokens: 250_000, ...(withUsd ? { cost_usd: 0.38 } : {}) },
   ],
+  scoreboard: scoreboard(withUsd),
   learning: [
     {
       class: 'access-recheck',
@@ -149,4 +150,131 @@ export const story = (): Story => ({
     { kind: 'verdict', at: '2026-10-29T10:00:00Z', reviewer: 'codex-reviewer', sha: '3f9a2c1d44aa', title: 'VERIFIED-CLEAN' },
     { kind: 'merge', at: '2026-10-29T11:00:00Z', title: 'Merged' },
   ],
+  prs: [{ id: 'pr_1', provider: 'github', repo: 'acme/app', number: 12, title: 'Record usage', state: 'merged', branch: 'feat/usage', head_sha: '3f9a2c1d44aa', merged_at: '2026-10-29T11:00:00Z', merge_commit_sha: 'ffff', external_url: 'https://github.com/acme/app/pull/12' }],
+  releases: [{ version: 'v0.29.0', released_at: '2026-10-29T12:00:00Z' }],
+  deployments: [{ environment: 'production', deployed_at: '2026-10-29T13:00:00Z', source: 'ci' }],
 });
+
+export const scoreboard = (withUsd = true): ScoreboardRow[] => [
+  {
+    implementer_model: 'deepseek-v4',
+    reviewer_model: 'gpt-5.6',
+    accepted_changes: 6,
+    harmful_findings_per_accepted_change: 1.5,
+    avg_rounds_to_clean: 2.5,
+    cost_per_accepted_change: { tokens: 310_000, ...(withUsd ? { cost_usd: 0.41 } : {}) },
+  },
+  {
+    implementer_model: 'claude-sonnet-5-5',
+    reviewer_model: null,
+    accepted_changes: 2,
+    harmful_findings_per_accepted_change: 0,
+    avg_rounds_to_clean: null,
+    cost_per_accepted_change: { tokens: 520_000, ...(withUsd ? { cost_usd: 1.1 } : {}) },
+  },
+];
+
+export const releaseList = (): ReleaseList => ({
+  project_id: 'proj_1',
+  releases: [
+    { id: 'rel_2', project_id: 'proj_1', version: 'v0.29.0', tag_sha: 'abc', released_at: '2026-10-29T12:00:00Z', source: 'cli', created_at: '2026-10-29T12:00:00Z' },
+    { id: 'rel_1', project_id: 'proj_1', version: 'v0.28.0', tag_sha: 'def', released_at: '2026-10-20T12:00:00Z', source: 'cli', created_at: '2026-10-20T12:00:00Z' },
+  ],
+});
+
+export const shipReport = (withUsd = true): ShipReport => ({
+  project_id: 'proj_1',
+  version: 'v0.29.0',
+  released_at: '2026-10-29T12:00:00Z',
+  loops: 4,
+  tickets: 9,
+  review_rounds: 14,
+  findings: 63,
+  harmful: 19,
+  harmful_by_harm: { 'data-exposed': 7, 'money-spent': 5, 'wrong-actor': 4, crash: 3 },
+  all_fixed_before_merge: true,
+  cost_per_accepted_change: { tokens: 310_000, ...(withUsd ? { cost_usd: 0.41 } : {}) },
+  checklist_classes_learned: [
+    { class: 'access-recheck', title: 'Access rechecked after a slow step', joined_at: '2026-10-14T00:00:00Z' },
+    { class: 'existence-oracles', title: 'Existence oracles', joined_at: '2026-10-15T00:00:00Z' },
+  ],
+  gates: [
+    { kind: 'tests', status: 'passed', url: null },
+    { kind: 'lint', status: 'passed', url: null },
+    { kind: 'security', status: 'failed', url: null },
+    { kind: 'e2e', status: 'skipped', url: null },
+  ],
+  deployments: [{ environment: 'production', deployed_at: '2026-10-29T13:00:00Z', source: 'ci' }],
+  prs: [
+    { id: 'pr_1', provider: 'github', repo: 'acme/app', number: 12, title: 'Record usage', state: 'merged', external_url: 'https://github.com/acme/app/pull/12' },
+    { id: 'pr_2', provider: 'github', repo: 'acme/app', number: 13, title: 'Bad link', state: 'merged', external_url: 'javascript:alert(1)' },
+  ],
+  markdown: '# Ship Report — v0.29.0\n\n- Loops: 4\n',
+});
+
+export const needsYou = (): NeedsYouResponse => ({
+  items: [
+    {
+      kind: 'ready',
+      project_id: 'proj_1',
+      project_name: 'Acme Widgets',
+      loop_id: 'tk_parent',
+      ticket_id: 'tk_child1',
+      ticket_title: 'Record token usage per run',
+      checklist_item_id: null,
+      title: 'Record token usage per run',
+      reason: 'A trusted reviewer cleared commit 3f9a2c1',
+      can_act: true,
+    },
+    {
+      kind: 'needs_human',
+      project_id: 'proj_1',
+      project_name: 'Acme Widgets',
+      loop_id: 'tk_parent',
+      ticket_id: 'tk_child2',
+      ticket_title: 'Expose spend endpoint',
+      checklist_item_id: null,
+      title: 'Expose spend endpoint',
+      reason: 'Token budget hit (410,000 tokens spent)',
+      can_act: false,
+    },
+    {
+      kind: 'proposed_checklist',
+      project_id: 'proj_2',
+      project_name: 'Billing Service',
+      loop_id: null,
+      ticket_id: null,
+      checklist_item_id: 'cl_1',
+      title: 'Recheck access after any slow step',
+      reason: 'Proposed by a reviewer in round 2',
+      can_act: true,
+    },
+  ],
+  counts: { ready: 1, needs_human: 1, proposed_checklist: 1, total: 3 },
+});
+
+export const shareLinks = (): ShareLink[] => [
+  {
+    id: 'lsl_1',
+    kind: 'story',
+    ticket_id: 'tk_child1',
+    release_version: null,
+    month: null,
+    created_at: '2026-10-28T10:00:00Z',
+    expires_at: '2036-11-27T10:00:00Z',
+    revoked_at: null,
+  },
+  {
+    id: 'lsl_2',
+    kind: 'ship_report',
+    ticket_id: null,
+    release_version: 'v0.29.0',
+    month: null,
+    created_at: '2026-10-20T10:00:00Z',
+    expires_at: '2026-10-27T10:00:00Z',
+    revoked_at: null,
+  },
+];
+
+/** The public ship report: no cost_usd, no identities. */
+export const publicShipReport = (): ShipReport => shipReport(false);

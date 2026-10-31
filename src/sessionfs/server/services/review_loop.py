@@ -26,7 +26,16 @@ from typing import Any
 from sqlalchemy import case, func, inspect, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sessionfs.server.db.models import AgentRun, Ticket, TicketComment
+from sessionfs.server.db.models import (
+    AgentRun,
+    Deployment,
+    PullRequest,
+    Release,
+    ReleasePr,
+    Ticket,
+    TicketComment,
+    TicketPrLink,
+)
 from sessionfs.server.services.review_state import VERDICT_CLEAN, compute_review_state
 
 # Same split as agent_spend: only reported/estimated cost bases have dollars.
@@ -342,6 +351,170 @@ async def _cost_per_accepted_change(
     return points
 
 
+async def _scoreboard(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    from_dt: datetime,
+    to_dt: datetime,
+    show_dollars: bool,
+) -> list[dict[str, Any]]:
+    """Model scoreboard: one row per (implementer, reviewer) model pair.
+
+    Rows cover ``done`` tickets resolved in the window (the same "accepted
+    change" denominator as ``_cost_per_accepted_change``). Per ticket the
+    implementer/reviewer model is the most recent run with that role; a
+    missing role/model groups under ``null``. ``avg_rounds_to_clean`` is the
+    mean number of trusted rounds to the first ``VERIFIED-CLEAN`` (tickets
+    that never reached clean are excluded from the mean but still count as
+    accepted changes). Two fixed-size queries (runs + comments) — no N+1.
+    """
+    done_ids = list(
+        (
+            await db.execute(
+                select(Ticket.id).where(
+                    Ticket.project_id == project_id,
+                    Ticket.status == "done",
+                    Ticket.resolved_at.is_not(None),
+                    Ticket.resolved_at >= from_dt,
+                    Ticket.resolved_at < to_dt,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not done_ids:
+        return []
+
+    runs = list(
+        (
+            await db.execute(
+                select(AgentRun)
+                .where(
+                    AgentRun.project_id == project_id,
+                    AgentRun.ticket_id.in_(done_ids),
+                )
+                .order_by(AgentRun.created_at, AgentRun.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    impl_by_ticket: dict[str, str | None] = {}
+    rev_by_ticket: dict[str, str | None] = {}
+    harmful_by_ticket: dict[str, int] = {}
+    tokens_by_ticket: dict[str, int] = {}
+    dollars_by_ticket: dict[str, Decimal] = {}
+    for run in runs:
+        ticket_id = run.ticket_id or ""
+        role = (run.role or "").lower()
+        if role in ("implementer", "ui-implementer") and run.model:
+            impl_by_ticket[ticket_id] = run.model
+        elif role in ("reviewer", "design-reviewer", "security-reviewer") and run.model:
+            rev_by_ticket[ticket_id] = run.model
+        tokens_by_ticket[ticket_id] = (
+            tokens_by_ticket.get(ticket_id, 0) + _total_tokens(run)
+        )
+        dollars_by_ticket[ticket_id] = (
+            dollars_by_ticket.get(ticket_id, Decimal("0")) + _dollar_cost(run)
+        )
+        for finding in _decode_findings(run.findings):
+            if finding.get("harm") not in (None, "none"):
+                harmful_by_ticket[ticket_id] = harmful_by_ticket.get(ticket_id, 0) + 1
+
+    # Trusted rounds → rounds-to-first-clean, per ticket.
+    comments = list(
+        (
+            await db.execute(
+                select(TicketComment)
+                .where(TicketComment.ticket_id.in_(done_ids))
+                .order_by(TicketComment.created_at, TicketComment.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    comments_by_ticket: dict[str, list[TicketComment]] = {}
+    for c in comments:
+        comments_by_ticket.setdefault(c.ticket_id, []).append(c)
+    rounds_by_ticket: dict[str, int | None] = {}
+    for ticket_id, crows in comments_by_ticket.items():
+        state = compute_review_state(
+            [
+                {
+                    "id": c.id,
+                    "author_persona": c.author_persona,
+                    "content": c.content,
+                    "created_at": c.created_at,
+                    "verdict_trusted": c.verdict_trusted,
+                }
+                for c in crows
+            ]
+        )
+        clean_at: int | None = None
+        if state is not None:
+            for index, rnd in enumerate(state.rounds):
+                if rnd.verdict == VERDICT_CLEAN:
+                    clean_at = index + 1
+                    break
+        rounds_by_ticket[ticket_id] = clean_at
+
+    groups: dict[tuple[str | None, str | None], dict[str, Any]] = {}
+    for ticket_id in done_ids:
+        key = (impl_by_ticket.get(ticket_id), rev_by_ticket.get(ticket_id))
+        g = groups.setdefault(
+            key,
+            {
+                "implementer_model": key[0],
+                "reviewer_model": key[1],
+                "accepted_changes": 0,
+                "harmful_findings": 0,
+                "clean_tickets": 0,
+                "clean_rounds": 0,
+                "tokens": 0,
+                "cost_usd": Decimal("0"),
+            },
+        )
+        g["accepted_changes"] += 1
+        g["harmful_findings"] += harmful_by_ticket.get(ticket_id, 0)
+        g["tokens"] += tokens_by_ticket.get(ticket_id, 0)
+        g["cost_usd"] += dollars_by_ticket.get(ticket_id, Decimal("0"))
+        if rounds_by_ticket.get(ticket_id) is not None:
+            g["clean_tickets"] += 1
+            g["clean_rounds"] += rounds_by_ticket[ticket_id]
+
+    rows: list[dict[str, Any]] = []
+    for key in sorted(groups, key=lambda k: (str(k[0]), str(k[1]))):
+        g = groups[key]
+        accepted = g["accepted_changes"]
+        row: dict[str, Any] = {
+            "implementer_model": g["implementer_model"],
+            "reviewer_model": g["reviewer_model"],
+            "accepted_changes": accepted,
+            "harmful_findings_per_accepted_change": (
+                round(g["harmful_findings"] / accepted, 2) if accepted else 0.0
+            ),
+            "avg_rounds_to_clean": (
+                round(g["clean_rounds"] / g["clean_tickets"], 2)
+                if g["clean_tickets"]
+                else None
+            ),
+            "cost_per_accepted_change": {
+                "tokens": round(g["tokens"] / accepted, 2) if accepted else 0.0,
+            },
+        }
+        if show_dollars:
+            row["cost_per_accepted_change"]["cost_usd"] = (
+                round(float(g["cost_usd"]) / accepted, _COST_USD_SCALE)
+                if accepted
+                else 0.0
+            )
+        rows.append(row)
+    return rows
+
+
 async def loop_insights(
     db: AsyncSession,
     *,
@@ -400,6 +573,14 @@ async def loop_insights(
         db, project_id=project_id, from_dt=from_dt, to_dt=to_dt, show_dollars=show_dollars
     )
 
+    scoreboard = await _scoreboard(
+        db,
+        project_id=project_id,
+        from_dt=from_dt,
+        to_dt=to_dt,
+        show_dollars=show_dollars,
+    )
+
     checklist = await _load_checklist_items(db, project_id)
     learning: list[dict[str, Any]] = []
     for cls in sorted(learning_weeks):
@@ -418,6 +599,7 @@ async def loop_insights(
         "caught_total": caught_total,
         "cost_per_accepted_change": cost,
         "learning": learning,
+        "scoreboard": scoreboard,
     }
 
 
@@ -559,4 +741,105 @@ async def ticket_story(
         )
 
     events.sort(key=lambda e: (e["at"] or "", _KIND_ORDER.get(e["kind"], 99)))
-    return {"ticket_id": ticket.id, "title": ticket.title, "events": events}
+
+    # Shipped context (track F1): PRs linked to this ticket, the releases that
+    # carried them, and where those releases deployed. Fixed-size queries only.
+    pr_ids = list(
+        (
+            await db.execute(
+                select(TicketPrLink.pr_id).where(TicketPrLink.ticket_id == ticket.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    prs: list[dict[str, Any]] = []
+    releases_out: list[dict[str, Any]] = []
+    deployments_out: list[dict[str, Any]] = []
+    if pr_ids:
+        pr_rows = list(
+            (
+                await db.execute(
+                    select(PullRequest)
+                    .where(
+                        PullRequest.project_id == project_id,
+                        PullRequest.id.in_(pr_ids),
+                    )
+                    .order_by(PullRequest.created_at, PullRequest.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        prs = [
+            {
+                "id": p.id,
+                "provider": p.provider,
+                "repo": p.repo,
+                "number": p.number,
+                "title": p.title,
+                "state": p.state,
+                "branch": p.branch,
+                "head_sha": p.head_sha,
+                "merged_at": _iso(p.merged_at),
+                "merge_commit_sha": p.merge_commit_sha,
+                "external_url": p.external_url,
+            }
+            for p in pr_rows
+        ]
+        release_ids = list(
+            (
+                await db.execute(
+                    select(ReleasePr.release_id).where(ReleasePr.pr_id.in_(pr_ids))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        if release_ids:
+            rel_rows = list(
+                (
+                    await db.execute(
+                        select(Release)
+                        .where(
+                            Release.project_id == project_id,
+                            Release.id.in_(release_ids),
+                        )
+                        .order_by(Release.released_at, Release.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            releases_out = [
+                {"version": r.version, "released_at": _iso(r.released_at)}
+                for r in rel_rows
+            ]
+            dep_rows = list(
+                (
+                    await db.execute(
+                        select(Deployment)
+                        .where(Deployment.release_id.in_([r.id for r in rel_rows]))
+                        .order_by(Deployment.deployed_at, Deployment.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            deployments_out = [
+                {
+                    "environment": d.environment,
+                    "deployed_at": _iso(d.deployed_at),
+                    "source": d.source,
+                }
+                for d in dep_rows
+            ]
+
+    return {
+        "ticket_id": ticket.id,
+        "title": ticket.title,
+        "events": events,
+        "prs": prs,
+        "releases": releases_out,
+        "deployments": deployments_out,
+    }

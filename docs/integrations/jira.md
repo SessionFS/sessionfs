@@ -100,6 +100,11 @@ The Jira card shows the full URL for your org. The webhook lives under
 `/api/v1` so the same URL works on the hosted service and on a Helm install,
 whose dashboard proxy forwards only `/api`, `/mcp` and `/health`.
 
+The GitHub and GitLab delivery webhooks are sibling public paths under the
+same prefix — `POST /api/v1/webhooks/github/{org_id}` and
+`POST /api/v1/webhooks/gitlab/{org_id}` — see
+`docs/integrations/delivery-webhooks.md`.
+
 Generate a secret in the Jira card, or with
 `POST /api/v1/orgs/{org_id}/integrations/jira/webhook-secret`. The secret is
 returned **once**. The server stores it encrypted, because it has to
@@ -401,6 +406,8 @@ is DLP-redacted against the org's DLP policy before it is sent to the model.
 | GET | `/api/v1/projects/{pid}/tickets/{tid}/jira` | Linked issue + cached status |
 | DELETE | `/api/v1/projects/{pid}/tickets/{tid}/jira` | Unlink (project admin) |
 | POST | `/api/v1/webhooks/jira/{org_id}` | Jira Cloud inbound webhook (HMAC-signed) for two-way sync |
+| POST | `/api/v1/webhooks/github/{org_id}` | GitHub delivery webhook (HMAC-SHA256, idempotency-keyed) for PR / release / deployment ingest |
+| POST | `/api/v1/webhooks/gitlab/{org_id}` | GitLab delivery webhook (token, idempotency-keyed) for MR / release / deployment ingest |
 | POST | `/api/v1/admin/sweeps/jira-sync` | Deliver due outbound sync events and expire old ones (`platform_sweeps:run`) |
 | GET | `/api/v1/projects/{pid}/tickets/{tid}/jira-sync-events` | Sync events for a linked ticket |
 

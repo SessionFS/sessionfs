@@ -47,6 +47,13 @@ export function resolve(method: string, pathname: string): MockResult | null {
   if (!get && /^\/api\/v1\/meetings\/[^/]+\/extract$/.test(path)) return ok({ ...d.meetingDetail, dropped_items: 0 });
   if (!get) return ok({ status: 'ok' });
 
+  // Review Loop org-wide inbox and the public share page.
+  if (path === '/api/v1/me/loops/needs-you') return ok(loop.needsYou());
+  if (path === '/api/v1/me/loops/needs-you/count') return ok({ count: loop.needsYou().counts.total });
+  if (path === '/api/v1/share/loop/story-token') return ok(loop.story());
+  if (path === '/api/v1/share/loop/ship-token') return ok(loop.publicShipReport());
+  if (/^\/api\/v1\/share\/loop\//.test(path)) return { status: 404, body: { detail: 'Share link not found' } };
+
   // ── account ──
   if (path === '/api/v1/auth/me') return ok(d.me);
   if (path === '/api/v1/billing/status') return ok(d.billingStatus);
@@ -86,7 +93,11 @@ export function resolve(method: string, pathname: string): MockResult | null {
     // Review Loop (shapes follow routes/loops.py, review_loop.py, loop_checklist.py, spend.py).
     if (rest === '/loops') return ok(loop.loops());
     if (rest === '/loop-insights') return ok(loop.insights());
+    if (rest === '/releases') return ok(loop.releaseList());
+    if (rest.startsWith('/releases/') && rest.endsWith('/ship-report')) return ok(loop.shipReport());
+    if (rest === '/ship-report') return ok(loop.shipReport());
     if (rest === '/loop-checklist') return ok(loop.checklist());
+    if (rest === '/loop-share-links') return ok(loop.shareLinks());
     const loopTicket = rest.match(/^\/tickets\/(tk_child\d)\/(story|spend)$/);
     if (loopTicket) {
       if (loopTicket[2] === 'story') return ok(loop.story());
