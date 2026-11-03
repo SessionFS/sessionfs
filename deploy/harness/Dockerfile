@@ -24,7 +24,7 @@
 #   root-owned so the tool user cannot self-update it.
 
 # ---- tool CLI (npm ci from the pinned lockfile) ----
-FROM node:22.23.4-bookworm-slim@sha256:5991875dfb80938dd8a6ba3fe3e96fd04929e70792762b3319d8caadbbe229bc AS tool
+FROM node:26.13.0-bookworm-slim@sha256:bc0a2afd3b74ce12222fc8bab99271e66257f021078f5f4a5d687a77d280c1d9 AS tool
 ARG TOOL
 ENV TOOL=${TOOL} \
     NPM_CONFIG_UPDATE_NOTIFIER=false
