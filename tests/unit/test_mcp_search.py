@@ -591,7 +591,8 @@ class TestServerStartup:
 
         reader = SessionSearchIndex(tmp_path / "search.db")
         reader.initialize()
-        for _ in range(100):
+        # Up to 30 s: CI runners under load can take seconds per pass.
+        for _ in range(600):
             if reader.search("platypus"):
                 break
             threading.Event().wait(0.05)
