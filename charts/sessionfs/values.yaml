@@ -279,6 +279,18 @@ api:
       image: curlimages/curl:8.12.1
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3
+  # Reminders due sweep: writes the bell/inbox notification for reminders
+  # that came due (run every 5 minutes; idempotent and bounded).
+  remindersDue:
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "*/5 * * * *"
+      existingSecret: ""
+      secretKey: "reminders-due-api-key"
+      image: curlimages/curl:8.12.1
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
 
 ## MCP Server
 mcp:

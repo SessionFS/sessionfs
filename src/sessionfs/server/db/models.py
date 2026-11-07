@@ -2412,6 +2412,16 @@ class TicketNotification(Base):
             "emailed_at",
             "updated_at",
         ),
+        # Migration 119: one notification table, several subjects.
+        Index("idx_ticket_notifications_subject", "subject_kind", "subject_id"),
+        CheckConstraint(
+            "subject_kind IN ('ticket', 'reminder', 'approval')",
+            name="ck_ticket_notifications_subject_kind",
+        ),
+        CheckConstraint(
+            "subject_kind <> 'ticket' OR ticket_id IS NOT NULL",
+            name="ck_ticket_notifications_ticket_subject",
+        ),
         # SQLite would otherwise reuse a deleted max id, and coalescing deletes
         # and re-inserts rows: the agent delta (id > cursor) needs ids that
         # never repeat.
@@ -2428,15 +2438,22 @@ class TicketNotification(Base):
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
     )
-    ticket_id: Mapped[str] = mapped_column(
+    # ``subject_kind`` says what the row is about (migration 119). Ticket rows
+    # keep ``ticket_id``/``project_id`` set (CHECK); reminder rows carry the
+    # reminder id in ``subject_id`` and the reminder's project, if any.
+    subject_kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="ticket", server_default="ticket"
+    )
+    subject_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ticket_id: Mapped[str | None] = mapped_column(
         String(64),
         ForeignKey("tickets.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
-    project_id: Mapped[str] = mapped_column(
+    project_id: Mapped[str | None] = mapped_column(
         String(64),
         ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
+        nullable=True,
     )
     kind: Mapped[str] = mapped_column(String(20), nullable=False)
     summary: Mapped[str] = mapped_column(Text, nullable=False)
@@ -7428,5 +7445,144 @@ class DeliveryWebhookEvent(Base):
     )
     idempotency_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class Reminder(Base):
+    """A private reminder for one person (migration 119).
+
+    Only ``owner_user_id`` and ``created_by_user_id`` can see it. The scope
+    columns (``org_id``/``project_id``/``group_id``) are derived from the
+    source on write and are hints: every read re-checks the live source.
+    ``due_at`` is UTC; ``timezone`` (IANA) is for display only.
+    ``notified_at`` is set by the due sweep's guarded claim and cleared on
+    snooze or reschedule.
+    """
+
+    __tablename__ = "reminders"
+    __table_args__ = (
+        CheckConstraint(
+            "created_via IN ('manual', 'helper', 'meeting', 'api')",
+            name="ck_reminders_created_via",
+        ),
+        CheckConstraint(
+            "status IN ('open', 'done', 'dismissed')",
+            name="ck_reminders_status",
+        ),
+        CheckConstraint(
+            "actor_type IN ('user', 'service')", name="ck_reminders_actor_type"
+        ),
+        CheckConstraint(
+            "updated_actor_type IN ('user', 'service')",
+            name="ck_reminders_updated_actor_type",
+        ),
+        CheckConstraint(
+            "source_kind IS NULL OR source_kind IN ('meeting_item', 'meeting', "
+            "'ticket', 'session', 'knowledge_entry', 'chat_item')",
+            name="ck_reminders_source_kind",
+        ),
+        CheckConstraint(
+            "(source_kind IS NULL AND source_id IS NULL) "
+            "OR (source_kind IS NOT NULL AND source_id IS NOT NULL)",
+            name="ck_reminders_source_pair",
+        ),
+        CheckConstraint("length(title) <= 200", name="ck_reminders_title_len"),
+        CheckConstraint("snooze_count >= 0", name="ck_reminders_snooze_count"),
+        Index("idx_reminders_owner_status_due", "owner_user_id", "status", "due_at"),
+        Index("idx_reminders_creator", "created_by_user_id"),
+        Index("idx_reminders_source", "source_kind", "source_id"),
+        Index("idx_reminders_due_sweep", "status", "notified_at", "due_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_via: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="manual", server_default="manual"
+    )
+    actor_type: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="user", server_default="user"
+    )
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    closed_by_service_key_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    updated_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_actor_type: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="user", server_default="user"
+    )
+    updated_by_service_key_id: Mapped[str | None] = mapped_column(
+        String(36), nullable=True
+    )
+    org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    project_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_kind: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    source_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_lines: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    linked_ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    original_due_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    timezone: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(12), nullable=False, default="open", server_default="open"
+    )
+    notified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    snooze_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    closed_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ReminderNote(Base):
+    """An append-only note on a reminder (DLP-redacted body, <= 4000 chars)."""
+
+    __tablename__ = "reminder_notes"
+    __table_args__ = (
+        CheckConstraint("length(body) <= 4000", name="ck_reminder_notes_body_len"),
+        CheckConstraint(
+            "actor_type IN ('user', 'service')", name="ck_reminder_notes_actor_type"
+        ),
+        Index("idx_reminder_notes_reminder", "reminder_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reminder_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("reminders.id", ondelete="CASCADE"), nullable=False
+    )
+    author_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_type: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="user", server_default="user"
+    )
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

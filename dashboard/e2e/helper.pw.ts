@@ -172,6 +172,36 @@ const ACTION_FRAMES: Array<[string, unknown]> = [
   ['done', { stop_reason: 'stop', input_tokens: 800, output_tokens: 60, key_source: 'user' }],
 ];
 
+// A pending create_reminder card (confirm-first, owner is the caller).
+const REMINDER_ACTION_ID = 'ha_00000000000000000000cccc';
+const REMINDER_FRAMES: Array<[string, unknown]> = [
+  ['conversation', { conversation_id: 'hc_new' }],
+  ['tool_call', { id: 'tc_r', name: 'propose_reminder', args: { title: 'Send Acme the signed order form' } }],
+  ['tool_result', { id: 'tc_r', name: 'propose_reminder', ok: true, item_count: 1 }],
+  [
+    'action_proposed',
+    {
+      action: {
+        id: REMINDER_ACTION_ID,
+        kind: 'create_reminder',
+        summary: 'Remind you: Send Acme the signed order form',
+        targets: [{ id: 'reminder', name: 'Send Acme the signed order form', change: 'will_change' }],
+        params: {
+          title: 'Send Acme the signed order form',
+          due_at: '2026-11-06T09:00:00+00:00',
+          timezone: 'Europe/London',
+          due_local: 'Fri 6 Nov 2026, 09:00 Europe/London',
+          source: { kind: 'ticket', id: 'tk_008676e806e94bc5', lines: null },
+          project_id: PROJECT_ID,
+        },
+        expires_at: inMins(14),
+      },
+    },
+  ],
+  ['text', { delta: 'I prepared a reminder. Nothing is set until you confirm.' }],
+  ['done', { stop_reason: 'stop', input_tokens: 400, output_tokens: 30, key_source: 'user' }],
+];
+
 const STREAM_FRAMES: Array<[string, unknown]> = [
   ['conversation', { conversation_id: 'hc_new' }],
   ...TOOL_FRAMES.slice(0, 3),
@@ -185,6 +215,8 @@ type Scenario = {
   ask?: string;
   /** Answer with proposed write actions; the Auto Narrative one is confirmed. */
   actions?: boolean;
+  /** Answer with a pending create_reminder confirm card (left unconfirmed). */
+  reminder?: boolean;
   openHistory?: boolean;
   openScope?: boolean;
   scrollUp?: boolean;
@@ -202,6 +234,7 @@ const SCENARIOS: Scenario[] = [
   { name: 'helper-empty' },
   { name: 'helper-answer', turn: 'answer', ask: 'Why did the billing webhook retry twice?' },
   { name: 'helper-action', turn: 'answer', ask: 'Clean up my old sessions and turn on narratives', actions: true },
+  { name: 'helper-reminder', turn: 'answer', ask: 'Remind me on Friday to send Acme the order form', reminder: true },
   { name: 'helper-streaming', turn: 'stream', ask: 'Why did the billing webhook retry twice?' },
   { name: 'helper-history', openHistory: true },
   { name: 'helper-no-key', status: { enabled: true, key_source: null, provider: null, model: null }, meRole: 'member' },
@@ -235,6 +268,13 @@ async function installHelperMocks(page: Page, sc: Scenario) {
             { id: 'm1', role: 'user', content: conversations[0].title, citations: null },
             { id: 'm2', role: 'assistant', content: ANSWER, citations: [{ session_id: S1.id, message_index: 42, title: S1.title }] },
           ],
+        });
+      }
+      if (sc.reminder && p === '/api/v1/helper/turns') {
+        return route.fulfill({
+          status: 200,
+          headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-store' },
+          body: sse(REMINDER_FRAMES),
         });
       }
       if (sc.actions && p === '/api/v1/helper/turns') {

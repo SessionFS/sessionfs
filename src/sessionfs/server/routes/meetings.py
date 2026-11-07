@@ -104,6 +104,22 @@ class MeetingParticipantResponse(BaseModel):
     resolved_by_user_id: str | None
 
 
+class SuggestedReminder(BaseModel):
+    """What "Add reminder" on an item pre-fills (never a stored reminder).
+
+    Present on an action item or decision that carries a due date and is
+    not dismissed: 09:00 UTC on the due date, the item's text as the title,
+    its cited lines, and the item owner's user id when the owner resolved
+    to a person.
+    """
+
+    title: str
+    due_date: date
+    due_at: datetime
+    lines: str
+    owner_user_id: str | None = None
+
+
 class MeetingActionItemResponse(BaseModel):
     id: str
     kind: str
@@ -115,6 +131,7 @@ class MeetingActionItemResponse(BaseModel):
     status: str
     promoted_ticket_id: str | None
     extracted_at: datetime | None
+    suggested_reminder: SuggestedReminder | None = None
 
 
 class MeetingSummaryResponse(BaseModel):
@@ -783,7 +800,28 @@ def _participant_response(p: MeetingParticipant) -> MeetingParticipantResponse:
     )
 
 
-def _action_item_response(item: MeetingActionItem) -> MeetingActionItemResponse:
+def suggested_reminder(
+    item: MeetingActionItem, owner_user_id: str | None = None
+) -> SuggestedReminder | None:
+    if item.due_date is None or item.status == "dismissed":
+        return None
+    title = " ".join(item.description.split())
+    if len(title) > 200:
+        title = title[:199] + "…"
+    return SuggestedReminder(
+        title=title or "Meeting follow-up",
+        due_date=item.due_date,
+        due_at=datetime(
+            item.due_date.year, item.due_date.month, item.due_date.day, 9, tzinfo=timezone.utc
+        ),
+        lines=f"{item.line_start}-{item.line_end}",
+        owner_user_id=owner_user_id,
+    )
+
+
+def _action_item_response(
+    item: MeetingActionItem, owner_user_id: str | None = None
+) -> MeetingActionItemResponse:
     return MeetingActionItemResponse(
         id=item.id,
         kind=item.kind,
@@ -795,6 +833,7 @@ def _action_item_response(item: MeetingActionItem) -> MeetingActionItemResponse:
         status=item.status,
         promoted_ticket_id=item.promoted_ticket_id,
         extracted_at=item.extracted_at,
+        suggested_reminder=suggested_reminder(item, owner_user_id),
     )
 
 
@@ -823,13 +862,19 @@ async def _meeting_detail(
         .scalars()
         .all()
     )
+    owner_users = {p.id: p.user_id for p in participants}
     base = _meeting_summary(meeting, await _meeting_scope_org_id(db, meeting))
     return MeetingDetailResponse(
         **base.model_dump(),
         content=meeting.content,
         content_sha256=meeting.content_sha256,
         participants=[_participant_response(p) for p in participants],
-        action_items=[_action_item_response(i) for i in action_items],
+        action_items=[
+            _action_item_response(
+                i, owner_users.get(i.owner_participant_id) if i.owner_participant_id else None
+            )
+            for i in action_items
+        ],
         warnings=list(warnings or []),
     )
 

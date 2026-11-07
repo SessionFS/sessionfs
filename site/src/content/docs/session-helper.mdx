@@ -57,6 +57,7 @@ Besides answering, the helper can propose these changes for you:
 - **Assign a ticket** to a persona or directly to a teammate. You can name a persona, a teammate's email, or a display name; a display name goes to the persona that represents that person when there is one, otherwise to the person.
 - **Comment on a ticket** with a plain user comment, optionally sent to the linked Jira issue too when the org forwards comments to Jira.
 - **Link a ticket to an existing Jira issue** by its key (v0.27.0).
+- **Set a reminder for you** ("remind me to book a follow-up with Tolu on Thursday"), optionally tied to a meeting, meeting item or ticket you can read. The card shows the absolute date and time in your timezone (for example *Thu 6 Nov 2026, 09:00 Europe/London*). A helper reminder is always for you, never for someone else; the helper can also list your reminders with `list_my_reminders`. See [Reminders](/cli/#sfs-remind).
 - **Overwrite one side of a linked ticket and Jira issue**: replace the Jira issue's summary and description with the ticket's, or the ticket's title and description with the issue's. See [Link an existing issue](/integrations/jira/#link-an-existing-issue).
 
 Jira proposals are refused up front when they can't work, for example when the ticket has no Jira link, you can't edit it, or the org doesn't forward comments to Jira. Every Jira condition is checked again when you confirm.

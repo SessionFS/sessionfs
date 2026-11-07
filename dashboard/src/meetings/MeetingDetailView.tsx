@@ -25,7 +25,9 @@ import {
   parseWarnings,
   type LineRange,
 } from './format';
+import { RemindersStrip } from '../reminders/RemindersStrip';
 import { ItemList } from './Items';
+import { ItemReminderDialog } from './ItemReminderDialog';
 import { Participants } from './Participants';
 import { participantName, useMeetingPeople } from './people';
 import { PromoteDialog } from './PromoteDialog';
@@ -70,6 +72,7 @@ export function MeetingDetailView({
   const [selectedItem, setSelectedItem] = useState<string | null>(null);
   const [scrollKey, setScrollKey] = useState(0);
   const [promoting, setPromoting] = useState<MeetingActionItem | null>(null);
+  const [reminding, setReminding] = useState<MeetingActionItem | null>(null);
   const [extractError, setExtractError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   // Every item with a dismiss/restore in flight (two can run at once).
@@ -234,6 +237,12 @@ export function MeetingDetailView({
         )}
       </div>
 
+      {projectId && (
+        <div className="mt-4">
+          <RemindersStrip kind="meeting" projectId={projectId} sourceId={meetingId} />
+        </div>
+      )}
+
       {/* ── One-time upload notices ── */}
       {(warnings.duplicateOf || (warnings.extractionSkipped && !extractError)) && (
         <div className="mt-4 space-y-2">
@@ -288,6 +297,7 @@ export function MeetingDetailView({
                 canEdit={canEdit}
                 projectId={projectId}
                 onPromote={setPromoting}
+                onRemind={setReminding}
                 onDismiss={(i) => void itemWrite('dismiss', i)}
                 onRestore={(i) => void itemWrite('restore', i)}
                 busyItemIds={busyItems}
@@ -307,6 +317,7 @@ export function MeetingDetailView({
                 onSelect={selectItem}
                 canEdit={canEdit}
                 projectId={projectId}
+                onRemind={setReminding}
                 onDismiss={(i) => void itemWrite('dismiss', i)}
                 onRestore={(i) => void itemWrite('restore', i)}
                 busyItemIds={busyItems}
@@ -358,6 +369,15 @@ export function MeetingDetailView({
           meetingId={m.id}
           item={promoting}
           onClose={() => setPromoting(null)}
+        />
+      )}
+
+      {reminding && (
+        <ItemReminderDialog
+          scope={scope}
+          meetingId={m.id}
+          item={reminding}
+          onClose={() => setReminding(null)}
         />
       )}
 

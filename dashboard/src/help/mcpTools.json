@@ -183,6 +183,15 @@
         { "name": "promote_meeting_action_item", "desc": "Preview, then confirm, turning an item into a ticket" },
         { "name": "search_meetings", "desc": "Search meeting titles and transcript text" }
       ]
+    },
+    {
+      "id": "reminders",
+      "label": "Reminders",
+      "tools": [
+        { "name": "list_my_reminders", "desc": "Your reminders, earliest due first" },
+        { "name": "create_reminder", "desc": "Remind yourself at a time, optionally on a meeting or ticket" },
+        { "name": "update_reminder", "desc": "Add a note, snooze, reschedule or close a reminder" }
+      ]
     }
   ]
 }

@@ -27,6 +27,7 @@ export const ACTION_TOOLS = new Set([
   'propose_comment',
   'propose_jira_link',
   'propose_jira_overwrite',
+  'propose_reminder',
 ]);
 
 const PROPOSED_RE = /^Proposed action (ha_[0-9a-f]{24})\b/;
@@ -62,6 +63,8 @@ export function actionKindForTool(toolName: string | null | undefined): string {
       return 'link_jira';
     case 'propose_jira_overwrite':
       return 'jira_overwrite';
+    case 'propose_reminder':
+      return 'create_reminder';
     default:
       return 'set_auto_narrative';
   }
@@ -91,6 +94,10 @@ export function actionTitle(action: Pick<HelperActionProposal, 'kind' | 'summary
       return `${base} and publish it to Jira${project ? ` ${project}` : ''}`;
     }
     return base;
+  }
+  if (action.kind === 'create_reminder') {
+    const title = paramString(action.params, 'title');
+    return title ? `Remind you: ${title}` : 'Create a reminder';
   }
   if (action.kind === 'assign_ticket') {
     const person = assignedPerson(action.params);

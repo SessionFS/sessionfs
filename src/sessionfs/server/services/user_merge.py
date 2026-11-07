@@ -86,6 +86,9 @@ REASSIGN_COLUMNS: tuple[tuple[str, str], ...] = (
     ("ticket_edits", "edited_by_user_id"),
     ("ticket_events", "actor_user_id"),
     ("ticket_notifications", "user_id"),
+    ("reminders", "owner_user_id"),
+    ("reminders", "created_by_user_id"),
+    ("reminder_notes", "author_user_id"),
     ("wiki_page_revisions", "user_id"),
     ("work_queues", "created_by_user_id"),
     ("work_queue_items", "implementer_user_id"),
@@ -123,7 +126,7 @@ LEFT_ALONE: tuple[str, ...] = (
     "residents", "trusted_reviewers.created_by_user_id", "teams.created_by",
     "sso_exchange_codes", "github_claim_attempts", "sessions.deleted_by",
     "knowledge_entries.dismissed_by", "work_queue_items.closed_by_user_id",
-    "api_keys.created_by_user_id",
+    "api_keys.created_by_user_id", "reminders.closed_by_user_id", "reminders.updated_by_user_id",
 )
 
 # Source-owned marketplace assets block the merge.

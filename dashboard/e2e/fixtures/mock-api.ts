@@ -118,9 +118,11 @@ export function resolve(method: string, pathname: string): MockResult | null {
       if (sub === '/jira') return linked ? ok(d.linkedTicketJiraLink) : notFound();
       if (sub === '/events') return ok(linked ? d.linkedTicketEvents : { events: [], next_before: null });
       if (sub === '/jira/templates') return ok(d.jiraTicketTemplates);
+      if (sub === '/reminders') return ok(tid === d.tickets[1].id ? d.sourceReminders : { items: [], counts: { open: 0, done: 0, dismissed: 0 } });
       return null;
     }
     if (rest === '/meetings') return ok(d.projectMeetings);
+    if (/^\/meetings\/[^/]+\/reminders$/.test(rest)) return ok(d.sourceReminders);
     if (rest === '/agent-runs') return ok(d.agentRuns);
     if (rest === '/rules') return ok(d.rules.rules);
     if (rest === '/rules/versions') return ok(d.rulesVersions);
@@ -231,6 +233,14 @@ export function resolve(method: string, pathname: string): MockResult | null {
   }
   if (path === '/api/v1/transfers') return ok({ transfers: [] });
   if (path === '/api/v1/me/groups') return ok(d.myGroups);
+
+  // ── reminders ──
+  if (path === '/api/v1/me/reminders') {
+    return ok({ items: [d.reminderLater, d.reminderDue], next_cursor: null });
+  }
+  if (path === `/api/v1/me/reminders/${d.REMINDER_ID}`) return ok(d.reminderDue);
+  if (path === `/api/v1/me/reminders/${d.REMINDER_ID}/notes`) return ok(d.reminderNotes);
+  if (/^\/api\/v1\/projects\/[^/]+\/(meetings|tickets)\/[^/]+\/reminders$/.test(path)) return ok(d.sourceReminders);
 
   // ── notifications ──
   if (path === '/api/v1/me/ticket-notifications') return ok(d.ticketNotifications);

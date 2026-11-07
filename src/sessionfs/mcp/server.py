@@ -3539,6 +3539,86 @@ _TOOLS = [
             "required": ["loop_id"],
         },
     ),
+    Tool(
+        name="list_my_reminders",
+        description=(
+            "List your reminders (as the person reminded or their creator), "
+            "earliest due first. Each item says whether it is due now "
+            "(`is_due`). Filter by status (open, done, dismissed, all), "
+            "due_before (ISO 8601) and source (`meeting`, `meeting_item`, "
+            "`ticket`, or `kind:id`).\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs remind list` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["open", "done", "dismissed", "all"],
+                    "description": "Default open.",
+                },
+                "due_before": {"type": "string", "description": "ISO 8601 date-time."},
+                "source": {"type": "string", "description": "kind or kind:id"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+            },
+        },
+    ),
+    Tool(
+        name="create_reminder",
+        description=(
+            "Create a reminder for yourself (never for someone else). "
+            "`due_at` is ISO 8601; without an offset it is read in "
+            "`timezone` (an IANA name such as Europe/London), else UTC. It "
+            "must fall between 1 hour ago and 2 years ahead. Optionally tie "
+            "it to a source you can read: {kind: meeting|meeting_item|ticket|"
+            "session|knowledge_entry, id, lines: \"12-18\"}.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs remind add` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "What to be reminded about (200 chars max)."},
+                "due_at": {"type": "string", "description": "ISO 8601 date-time."},
+                "timezone": {"type": "string", "description": "IANA timezone name."},
+                "source": {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string"},
+                        "id": {"type": "string"},
+                        "lines": {"type": "string"},
+                    },
+                    "required": ["kind", "id"],
+                },
+            },
+            "required": ["title", "due_at"],
+        },
+    ),
+    Tool(
+        name="update_reminder",
+        description=(
+            "Change one reminder with exactly one of: `note` (append a note), "
+            "`snooze` (1h, tomorrow, next_week, or custom with `until`), "
+            "`reschedule` (a new ISO 8601 due_at, optional `timezone`), or "
+            "`close` (done or dismissed).\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs remind note|snooze|done|dismiss` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "reminder_id": {"type": "string", "description": "Reminder id (rem_...)."},
+                "note": {"type": "string"},
+                "snooze": {"type": "string", "enum": ["1h", "tomorrow", "next_week", "custom"]},
+                "until": {"type": "string", "description": "ISO 8601, for snooze=custom."},
+                "reschedule": {"type": "string", "description": "New ISO 8601 due_at."},
+                "timezone": {"type": "string", "description": "IANA timezone for reschedule."},
+                "close": {"type": "string", "enum": ["done", "dismissed"]},
+            },
+            "required": ["reminder_id"],
+        },
+    ),
 ]
 
 
@@ -3665,6 +3745,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_watch_ticket(arguments)
         elif name == "get_ticket_updates":
             result = await _handle_get_ticket_updates(arguments)
+        elif name == "list_my_reminders":
+            result = await _handle_list_my_reminders(arguments)
+        elif name == "create_reminder":
+            result = await _handle_create_reminder(arguments)
+        elif name == "update_reminder":
+            result = await _handle_update_reminder(arguments)
         elif name == "start_ticket":
             result = await _handle_start_ticket(arguments)
         elif name == "create_ticket":
@@ -8621,6 +8707,138 @@ def _handoff_api_config() -> tuple[str, str] | dict:
     if not config.sync.api_key:
         return {"error": "Not authenticated. Run 'sfs auth login' first."}
     return config.sync.api_url.rstrip("/"), config.sync.api_key
+
+
+def _reminder_error(resp: Any, reminder_id: str = "") -> dict:
+    if resp.status_code == 404:
+        return {"error": f"Reminder '{reminder_id}' not found" if reminder_id else "Not found"}
+    return {"error": f"API error {resp.status_code}: {resp.text}"}
+
+
+async def _handle_list_my_reminders(args: dict) -> dict:
+    """Wrap GET /api/v1/me/reminders."""
+    conf = _handoff_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+    params: dict[str, Any] = {}
+    status = args.get("status")
+    if status is not None:
+        if status not in ("open", "done", "dismissed", "all"):
+            return {"error": "status must be open, done, dismissed or all"}
+        params["status"] = status
+    for key in ("due_before", "source"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            params[key] = val.strip()
+    limit = args.get("limit")
+    if limit is not None:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 200:
+            return {"error": "limit must be an integer between 1 and 200"}
+        params["limit"] = limit
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/me/reminders",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
+        )
+    if resp.status_code >= 400:
+        return _reminder_error(resp)
+    return resp.json()
+
+
+async def _handle_create_reminder(args: dict) -> dict:
+    """Wrap POST /api/v1/me/reminders, always for the caller (no owner)."""
+    title = args.get("title")
+    due_at = args.get("due_at")
+    if not isinstance(title, str) or not title.strip():
+        return {"error": "title is required"}
+    if not isinstance(due_at, str) or not due_at.strip():
+        return {"error": "due_at is required (ISO 8601)"}
+    body: dict[str, Any] = {"title": title.strip(), "due_at": due_at.strip()}
+    tz = args.get("timezone")
+    if isinstance(tz, str) and tz.strip():
+        body["timezone"] = tz.strip()
+    source = args.get("source")
+    if source is not None:
+        if not isinstance(source, dict) or not source.get("kind") or not source.get("id"):
+            return {"error": "source needs kind and id"}
+        src: dict[str, Any] = {"kind": source["kind"], "id": source["id"]}
+        if source.get("lines"):
+            src["lines"] = source["lines"]
+        body["source"] = src
+    conf = _handoff_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/me/reminders",
+            json=body,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code >= 400:
+        return _reminder_error(resp)
+    return resp.json()
+
+
+async def _handle_update_reminder(args: dict) -> dict:
+    """One change per call: note, snooze, reschedule or close."""
+    reminder_id = args.get("reminder_id")
+    if not isinstance(reminder_id, str) or not reminder_id.strip():
+        return {"error": "reminder_id is required"}
+    reminder_id = reminder_id.strip()
+    actions = [k for k in ("note", "snooze", "reschedule", "close") if args.get(k) not in (None, "")]
+    if len(actions) != 1:
+        return {"error": "Pass exactly one of note, snooze, reschedule or close"}
+    action = actions[0]
+    base = f"/api/v1/me/reminders/{_path_segment(reminder_id)}"
+    method = "POST"
+    if action == "note":
+        path, body = f"{base}/notes", {"body": str(args["note"])}
+    elif action == "snooze":
+        preset = args["snooze"]
+        if preset not in ("1h", "tomorrow", "next_week", "custom"):
+            return {"error": "snooze must be 1h, tomorrow, next_week or custom"}
+        body = {"preset": preset}
+        if preset == "custom":
+            until = args.get("until")
+            if not isinstance(until, str) or not until.strip():
+                return {"error": "snooze=custom needs until (ISO 8601)"}
+            body["until"] = until.strip()
+        path = f"{base}/snooze"
+    elif action == "reschedule":
+        method, path = "PATCH", base
+        body = {"due_at": str(args["reschedule"]).strip()}
+        tz = args.get("timezone")
+        if isinstance(tz, str) and tz.strip():
+            body["timezone"] = tz.strip()
+    else:
+        if args["close"] not in ("done", "dismissed"):
+            return {"error": "close must be done or dismissed"}
+        method, path, body = "PATCH", base, {"status": args["close"]}
+    conf = _handoff_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        if method == "PATCH":
+            resp = await client.patch(
+                f"{api_url}{path}", json=body, headers={"Authorization": f"Bearer {api_key}"}
+            )
+        else:
+            resp = await client.post(
+                f"{api_url}{path}", json=body, headers={"Authorization": f"Bearer {api_key}"}
+            )
+    if resp.status_code >= 400:
+        return _reminder_error(resp, reminder_id)
+    return resp.json()
 
 
 async def _handle_create_handoff(args: dict) -> dict:

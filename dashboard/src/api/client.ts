@@ -474,6 +474,8 @@ export interface HelperActionTargetResult {
   error: string | null;
   /** create_ticket: the new ticket's id when applied. */
   ticket_id?: string;
+  /** create_reminder: the new reminder's id when applied. */
+  reminder_id?: string;
   /** comment_ticket: the new comment's id when applied. */
   comment_id?: string;
   /** create_ticket with publish_to_jira: the issue it was published as. */
@@ -1911,12 +1913,100 @@ export type TicketNotificationKind =
   | 'status'
   | 'comment'
   | 'assignment'
-  | 'dependency_unblocked';
+  | 'dependency_unblocked'
+  | 'reminder_due';
+
+// ------------------------------------------------------------------
+// Reminders (/api/v1/me/reminders)
+// ------------------------------------------------------------------
+
+export type ReminderStatus = 'open' | 'done' | 'dismissed';
+
+export interface ReminderSource {
+  kind: string;
+  id: string;
+  lines: string | null;
+  title: string | null;
+  project_id: string | null;
+  group_id: string | null;
+  meeting_id: string | null;
+}
+
+export interface Reminder {
+  id: string;
+  title: string;
+  status: ReminderStatus;
+  due_at: string;
+  original_due_at: string;
+  timezone: string | null;
+  is_due: boolean;
+  owner_user_id: string;
+  created_by_user_id: string | null;
+  created_via: string;
+  is_owner: boolean;
+  is_creator: boolean;
+  source: ReminderSource | null;
+  source_hidden: boolean;
+  linked_ticket_id: string | null;
+  notified_at: string | null;
+  snooze_count: number;
+  closed_at: string | null;
+  closed_by_user_id: string | null;
+  note_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ReminderList {
+  items: Reminder[];
+  next_cursor: string | null;
+}
+
+export interface SourceReminders {
+  items: Reminder[];
+  counts: Record<ReminderStatus, number>;
+}
+
+export interface ReminderNote {
+  id: string;
+  reminder_id: string;
+  author_user_id: string | null;
+  body: string;
+  created_at: string;
+}
+
+export interface ReminderCreate {
+  title: string;
+  due_at: string;
+  timezone?: string;
+}
+
+export interface ReminderPatch {
+  title?: string;
+  due_at?: string;
+  timezone?: string;
+  status?: 'done' | 'dismissed';
+}
+
+export type SnoozeRequest =
+  | { preset: '1h' | 'tomorrow' | 'next_week' }
+  | { preset: 'custom'; until: string };
+
+export interface NotificationSubject {
+  kind: 'ticket' | 'reminder' | string;
+  id: string;
+  title?: string | null;
+  due_at?: string | null;
+}
 
 export interface TicketNotification {
   id: number;
-  ticket_id: string;
-  project_id: string;
+  /** Absent on rows written before reminders existed; treat as 'ticket'. */
+  subject_kind?: 'ticket' | 'reminder' | string;
+  subject?: NotificationSubject | null;
+  /** Null on reminder rows. */
+  ticket_id: string | null;
+  project_id: string | null;
   ticket_title: string | null;
   kind: TicketNotificationKind | string;
   summary: string;
@@ -2775,6 +2865,25 @@ export interface MeetingActionItem {
   status: MeetingItemStatus;
   promoted_ticket_id: string | null;
   extracted_at: string | null;
+  /** Present on dated, not-dismissed items; absent otherwise (older servers too). */
+  suggested_reminder?: SuggestedReminder | null;
+}
+
+export interface SuggestedReminder {
+  title: string;
+  /** YYYY-MM-DD */
+  due_date: string;
+  /** 09:00 UTC on the due date. */
+  due_at: string;
+  lines: string | null;
+  owner_user_id: string | null;
+}
+
+/** Body of POST .../meetings/{id}/items/{item}/reminder (every field optional). */
+export interface MeetingItemReminderRequest {
+  title?: string;
+  due_at?: string;
+  timezone?: string;
 }
 
 export interface MeetingSummary {
@@ -4283,6 +4392,67 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'POST',
         body: JSON.stringify(body),
       }),
+
+    // ── Reminders (me-scoped) ──
+    listReminders: (
+      params: {
+        status?: ReminderStatus | 'all';
+        due_before?: string;
+        source?: string;
+        limit?: number;
+        cursor?: string;
+      } = {},
+    ) => {
+      const sp = new URLSearchParams();
+      if (params.status) sp.set('status', params.status);
+      if (params.due_before) sp.set('due_before', params.due_before);
+      if (params.source) sp.set('source', params.source);
+      if (params.limit) sp.set('limit', String(params.limit));
+      if (params.cursor) sp.set('cursor', params.cursor);
+      const qs = sp.toString();
+      return request<ReminderList>(`/api/v1/me/reminders${qs ? `?${qs}` : ''}`);
+    },
+    createReminder: (body: ReminderCreate) =>
+      request<Reminder>('/api/v1/me/reminders', { method: 'POST', body: JSON.stringify(body) }),
+    getReminder: (id: string) =>
+      request<Reminder>(`/api/v1/me/reminders/${encodeURIComponent(id)}`),
+    patchReminder: (id: string, body: ReminderPatch) =>
+      request<Reminder>(`/api/v1/me/reminders/${encodeURIComponent(id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      }),
+    deleteReminder: (id: string) =>
+      request<void>(`/api/v1/me/reminders/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    snoozeReminder: (id: string, body: SnoozeRequest) =>
+      request<Reminder>(`/api/v1/me/reminders/${encodeURIComponent(id)}/snooze`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    listReminderNotes: (id: string) =>
+      request<{ items: ReminderNote[] }>(`/api/v1/me/reminders/${encodeURIComponent(id)}/notes`),
+    addReminderNote: (id: string, body: string) =>
+      request<ReminderNote>(`/api/v1/me/reminders/${encodeURIComponent(id)}/notes`, {
+        method: 'POST',
+        body: JSON.stringify({ body }),
+      }),
+    listMeetingReminders: (projectId: string, meetingId: string) =>
+      request<SourceReminders>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/meetings/${encodeURIComponent(meetingId)}/reminders`,
+      ),
+    createMeetingItemReminder: (
+      scope: MeetingScope,
+      meetingId: string,
+      itemId: string,
+      body: MeetingItemReminderRequest,
+    ) =>
+      request<Reminder>(
+        `/api/v1/${scope.kind === 'project' ? 'projects' : 'groups'}/${encodeURIComponent(scope.id)}/meetings/${encodeURIComponent(meetingId)}/items/${encodeURIComponent(itemId)}/reminder`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+    listTicketReminders: (projectId: string, ticketId: string) =>
+      request<SourceReminders>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/tickets/${encodeURIComponent(ticketId)}/reminders`,
+      ),
 
     getNotificationSettings: () =>
       request<TicketNotificationSettings>('/api/v1/me/notification-settings'),

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.5] - 2026-11-07
+
+**Reminders: nothing that comes up in a meeting, a ticket or a conversation gets lost.** Server migration 119.
+
+### Added
+- **Reminders.** A reminder has a title, a due time with its timezone, the person it is for, an optional link to its source (a meeting or one of its items with the cited lines, a ticket, a session or a knowledge entry) and a thread of notes. When it is due it appears in the bell and Inbox and, if your notification settings allow, in the email digest. Snooze it (an hour, tomorrow, next week or a custom time), reschedule it, add notes, and close it as done or dismissed; closed reminders stay as history on their source.
+- **From meetings.** A meeting action item or decision with a due date offers "Add reminder", pre-filled with the title, the date and the owner. Promoting the item to a ticket links its reminders to the new ticket.
+- **From the session helper.** Ask "remind me to book a follow-up with Tolu on Thursday" and the helper proposes a reminder with the exact local time; nothing is created until you confirm. It can also list your reminders.
+- **Reminders for someone else** when you can both read the source; they can snooze or close it.
+- **Dashboard:** a Reminders page under Inbox with a due count, a reminder drawer, reminder rows in the Inbox, and Reminders strips on meetings and tickets.
+- `sfs remind add|list|show|note|snooze|done|dismiss`; MCP `list_my_reminders`, `create_reminder`, `update_reminder` (121 in total); `GET/POST /api/v1/me/reminders` and friends; API scopes `reminders:read` and `reminders:write`.
+- Self-hosted: an opt-in Helm CronJob (`api.remindersDue`) runs the due sweep every 5 minutes.
+
+### Fixed
+- **Knowledge extraction on sync works again.** With Auto Narrative on, extracting knowledge from a synced session with your saved LLM key failed on every sync because of a broken import. It now uses your saved key for its own provider and endpoint only (the endpoint is re-checked first), and is skipped when you have no saved key.
+- **A crafted meeting transcript can no longer stall the API.** Cleaning transcript and helper text could take over a minute on input like a long run of spaces after `<`; it is now linear.
+- **Merge readiness no longer passes on a very long review thread.** Readiness, the GitHub check, the GitLab status and the review loop's close read at most the first 500 comments, so a newer "changes requested" past that point was missed. They now refuse to report ready when a ticket's review history is too long to evaluate completely, and the review-state, spend and ticket story views say when they show only part of the history.
+
+### Changed
+- Notifications can now carry subjects other than tickets, so reminders share the bell, Inbox, digest and notification settings with tickets.
+- Reminders are private to the person they are for and the person who set them. Everyone else gets the same "not found", and a reminder disappears for its owner if they lose access to its source.
+
 ## [0.29.4] - 2026-10-31
 
 **Self-review can't slip through a rotated key, releases can carry their tickets directly, and release tooling is a Team feature.** Server migrations 117–118.

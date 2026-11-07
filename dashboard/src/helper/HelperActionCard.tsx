@@ -32,6 +32,7 @@ import { renderRefLink } from './refs';
 import { helperActionKey, useDecideHelperAction, useHelperAction } from './useHelper';
 import { LayersIcon, RetryIcon, TrashIcon } from './icons';
 import { PersonAvatar } from '../projects/tickets/AssigneeLabel';
+import { reminderHref, sourceHref } from '../reminders/format';
 
 /** Where Trash lives: the sessions list opened on its Trash view. */
 export const TRASH_HREF = '/?view=trash';
@@ -130,6 +131,47 @@ function JiraIssueLink({ issueKey, issueUrl }: { issueKey: string; issueUrl: str
   );
 }
 
+/** The source a reminder proposal hangs off (params.source), as a link when it opens somewhere. */
+function ReminderSourceLine({
+  params,
+  onNavigate,
+}: {
+  params: Record<string, unknown>;
+  onNavigate?: () => void;
+}) {
+  const src = params.source;
+  if (!src || typeof src !== 'object') return null;
+  const { kind, id, lines } = src as { kind?: unknown; id?: unknown; lines?: unknown };
+  if (typeof kind !== 'string' || typeof id !== 'string') return null;
+  const href = sourceHref({
+    kind,
+    id,
+    lines: typeof lines === 'string' ? lines : null,
+    title: null,
+    project_id: typeof params.project_id === 'string' ? params.project_id : null,
+    group_id: null,
+    meeting_id: null,
+  });
+  const label = kind === 'meeting_item' ? 'meeting item' : kind;
+  return (
+    <p className="text-xs text-text-secondary">
+      Source:{' '}
+      {href ? (
+        <Link
+          to={href}
+          onClick={onNavigate}
+          className="font-medium text-brand underline-offset-2 hover:underline outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] rounded-sm"
+        >
+          {label}
+          {typeof lines === 'string' && lines ? ` (lines ${lines})` : ''}
+        </Link>
+      ) : (
+        <span>{label}{typeof lines === 'string' && lines ? ` (lines ${lines})` : ''}</span>
+      )}
+    </p>
+  );
+}
+
 function TargetRow({
   kind,
   target,
@@ -223,6 +265,7 @@ export default function HelperActionCard({
 
   const isCreate = action.kind === 'create_ticket';
   const isComment = action.kind === 'comment_ticket';
+  const isReminder = action.kind === 'create_reminder';
   const editable = pending && (isCreate || isComment);
   const params = useMemo(() => record?.params ?? action.params ?? {}, [record?.params, action.params]);
   // A create_ticket draft assigned to a person. The confirm body can only
@@ -310,6 +353,7 @@ export default function HelperActionCard({
     return n === 1 ? 'project' : 'projects';
   };
   const createdTicketId = [...results.values()].find((r) => r.ticket_id)?.ticket_id;
+  const createdReminderId = [...results.values()].find((r) => r.reminder_id)?.reminder_id;
   const jira = status === 'confirmed' ? jiraOutcome(action.kind, record?.result, params) : null;
   // Both overwrite directions throw away one side's text: confirm reads as such.
   const destructive = isTrash || action.kind === 'jira_overwrite';
@@ -421,11 +465,13 @@ export default function HelperActionCard({
     if (jira?.kind === 'not_published') announcement += ' The ticket was not published to Jira.';
     footer = (
       <div className="space-y-1.5 text-xs text-text-secondary">
-        <p>
-          {failed > 0
-            ? `Applied ${applied} of ${results.size}; ${failed} failed.`
-            : `Applied to ${appliedCount} ${noun(appliedCount)}.`}
-        </p>
+        {!(isReminder && failed === 0) && (
+          <p>
+            {failed > 0
+              ? `Applied ${applied} of ${results.size}; ${failed} failed.`
+              : `Applied to ${appliedCount} ${noun(appliedCount)}.`}
+          </p>
+        )}
         {isTrash && applied > 0 && (
           <p>
             Moved to Trash — restore from{' '}
@@ -437,6 +483,18 @@ export default function HelperActionCard({
               Trash
             </Link>{' '}
             within {TRASH_RETENTION_DAYS} days.
+          </p>
+        )}
+        {isReminder && createdReminderId && (
+          <p>
+            Reminder set.{' '}
+            <Link
+              to={reminderHref(createdReminderId)}
+              onClick={onNavigate}
+              className="font-medium text-brand underline-offset-2 hover:underline outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] rounded-sm"
+            >
+              Open reminder
+            </Link>
           </p>
         )}
         {isCreate && createdTicketId && jira?.kind !== 'not_published' && (
@@ -520,7 +578,7 @@ export default function HelperActionCard({
         </div>
       </div>
 
-      {targets.length > 0 && (
+      {targets.length > 0 && !isReminder && (
         <ul
           aria-label={`Targets of: ${title}`}
           tabIndex={0}
@@ -536,6 +594,19 @@ export default function HelperActionCard({
             />
           ))}
         </ul>
+      )}
+
+      {isReminder && (
+        <div className="mx-3 mt-2.5 space-y-1 rounded-lg border border-border bg-surface px-3 py-2">
+          <p className="text-sm font-medium text-text-primary [overflow-wrap:anywhere]">{asString(params.title)}</p>
+          {asString(params.due_local) && (
+            <p className="text-xs text-text-secondary">
+              <span className="text-text-tertiary">Due </span>
+              {asString(params.due_local)}
+            </p>
+          )}
+          <ReminderSourceLine params={params} onNavigate={onNavigate} />
+        </div>
       )}
 
       <div className="space-y-2 px-3 py-3">

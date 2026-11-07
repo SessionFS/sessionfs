@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 118 tools in fifteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Review Checklist (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Skills Marketplace, Project Groups (Team+), and Meetings.
+The MCP server exposes 121 tools in sixteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Review Checklist (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Skills Marketplace, Project Groups (Team+), Meetings, and Reminders.
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -1056,6 +1056,16 @@ Stored meeting transcripts for a project (`git_remote` or the workspace) or a pr
 | `extract_meeting_action_items` | Extract participants, action items and decisions with your own LLM key. Re-running keeps promoted and dismissed items |
 | `promote_meeting_action_item` | **Preview only unless `confirm=true`.** The preview returns the ticket draft; with `confirm=true` it creates the ticket, using any edited `title`, `description`, `priority`, `kind`, `assigned_to`, `assigned_user_id`, `due_date`, `target_project_id` you pass, and marks the item promoted. `publish_to_jira=true` also publishes it to Jira |
 | `search_meetings` | Search meeting titles and transcript text (`q`, `limit`) |
+
+### Reminders
+
+Personal reminders on every plan. A reminder is private to the person reminded and the person who set it; anyone else gets the same "not found" as for an id that does not exist. Due reminders reach the notification bell, the Inbox and (if your settings allow) the email digest. Titles and notes are DLP-redacted by the server before storage. Service keys act as their minter, need `reminders:read` / `reminders:write`, and only see reminders on a project inside the key's org and allowlist.
+
+| Tool | Purpose |
+|------|---------|
+| `list_my_reminders` | Your reminders, earliest due first, each with `is_due`. Filters: `status` (`open` default, `done`, `dismissed`, `all`), `due_before` (ISO 8601), `source` (`meeting`, `meeting_item`, `ticket`, or `kind:id`), `limit` (1–200) |
+| `create_reminder` | Remind **yourself** (never someone else): `title`, `due_at` (ISO 8601; without an offset it is read in `timezone`, an IANA name, else UTC; between 1 hour ago and 2 years ahead), optional `source` `{kind, id, lines}` on a meeting, meeting item, ticket, session or knowledge entry you can read |
+| `update_reminder` | Exactly one change per call: `note` (append a note), `snooze` (`1h`, `tomorrow`, `next_week` at 09:00 in the reminder's timezone, or `custom` with `until`), `reschedule` (a new `due_at`, optional `timezone`), or `close` (`done` or `dismissed`) |
 
 ## Agent Knowledge Contribution
 

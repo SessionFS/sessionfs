@@ -25,6 +25,11 @@ VALID_SCOPES = frozenset(
         "tickets:write",
         "meetings:read",
         "meetings:write",
+        # 0.29.5 — reminders (tk_8a858d6354fc4ef3). A service key acts as its
+        # minter: it creates reminders only for the minter and sees only those
+        # whose source project is inside its org and allowlist.
+        "reminders:read",
+        "reminders:write",
         "personas:read",
         "personas:write",
         "knowledge:read",

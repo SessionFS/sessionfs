@@ -7,6 +7,7 @@ export const NOTIFICATION_KIND_LABEL: Record<TicketNotificationKind, string> = {
   assignment: 'Assigned',
   dependency_unblocked: 'Unblocked',
   comment: 'Comment',
+  reminder_due: 'Reminder',
 };
 
 export const NOTIFICATION_KIND_VARIANT: Record<
@@ -19,6 +20,7 @@ export const NOTIFICATION_KIND_VARIANT: Record<
   assignment: 'info',
   dependency_unblocked: 'success',
   comment: 'default',
+  reminder_due: 'warning',
 };
 
 export function notificationKindLabel(kind: string): string {

@@ -30,7 +30,7 @@ from sessionfs.server.auth.project_access import (
     user_can_view_spend_dollars,
 )
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import Project, TicketComment
+from sessionfs.server.db.models import Project
 from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.routes.tickets import _get_ticket_or_404
 from sessionfs.server.services.agent_spend import DEFAULT_RANGE_DAYS, GROUP_BYS, rollup
@@ -180,7 +180,7 @@ async def get_ticket_spend(
         to_dt=None,
         show_dollars=show_dollars,
     )
-    review_rounds = await _review_rounds(db, ticket.id)
+    review_rounds, history_truncated = await _review_rounds(db, ticket.id)
 
     return {
         "project_id": project.id,
@@ -189,30 +189,19 @@ async def get_ticket_spend(
         "per_persona": per_persona["groups"],
         "per_model": per_model["groups"],
         "review_rounds": review_rounds,
+        "history_truncated": history_truncated,
     }
 
 
-async def _review_rounds(db: AsyncSession, ticket_id: str) -> int:
-    """Number of review rounds on a ticket (0 when none were trusted)."""
-    from sessionfs.server.services.review_state import compute_review_state
+async def _review_rounds(db: AsyncSession, ticket_id: str) -> tuple[int, bool]:
+    """(review rounds on a ticket, history truncated). Rounds is 0 when none
+    were trusted; truncated means the count covers only the oldest
+    ``REVIEW_HISTORY_CAP`` comments."""
+    from sessionfs.server.services.review_state import (
+        compute_review_state,
+        load_review_comments,
+    )
 
-    rows = (
-        await db.execute(
-            select(TicketComment)
-            .where(TicketComment.ticket_id == ticket_id)
-            .order_by(TicketComment.created_at, TicketComment.id)
-            .limit(500)
-        )
-    ).scalars().all()
-    comments = [
-        {
-            "id": r.id,
-            "author_persona": r.author_persona,
-            "content": r.content,
-            "created_at": r.created_at,
-            "verdict_trusted": r.verdict_trusted,
-        }
-        for r in rows
-    ]
+    comments, truncated = await load_review_comments(db, ticket_id)
     state = compute_review_state(comments)
-    return len(state.rounds) if state else 0
+    return (len(state.rounds) if state else 0), truncated

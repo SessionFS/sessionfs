@@ -31,7 +31,6 @@ from sessionfs.server.db.models import (
     PullRequest,
     Release,
     Ticket,
-    TicketComment,
     TicketPrLink,
 )
 from sessionfs.server.sanitize import sanitize_archive_string
@@ -469,29 +468,10 @@ async def _ticket_merge_readiness(db: AsyncSession, ticket: Ticket, sha: str) ->
         compute_merge_readiness,
         load_implementer_identities,
         load_key_minters,
+        load_review_comments,
     )
 
-    rows = (
-        await db.execute(
-            select(TicketComment)
-            .where(TicketComment.ticket_id == ticket.id)
-            .order_by(TicketComment.created_at, TicketComment.id)
-            .limit(500)
-        )
-    ).scalars().all()
-    comments = [
-        {
-            "id": r.id,
-            "author_persona": r.author_persona,
-            "content": r.content,
-            "created_at": r.created_at,
-            "verdict_trusted": r.verdict_trusted,
-            "service_key_id": r.service_key_id,
-            "author_user_id": r.author_user_id,
-            "reviewed_commit": r.reviewed_commit,
-        }
-        for r in rows
-    ]
+    comments, truncated = await load_review_comments(db, ticket.id)
     identities = (await load_implementer_identities(db, [ticket]))[ticket.id]
     key_minters = await load_key_minters(db, comments, identities)
     return compute_merge_readiness(
@@ -499,6 +479,7 @@ async def _ticket_merge_readiness(db: AsyncSession, ticket: Ticket, sha: str) ->
         sha=sha,
         implementer_identities=identities,
         key_minters=key_minters,
+        history_truncated=truncated,
     )
 
 

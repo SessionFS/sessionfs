@@ -15,6 +15,7 @@ interface ItemListProps {
   /** Project the meeting belongs to; group meetings look the ticket up. */
   projectId: string | null;
   onPromote?: (item: MeetingActionItem) => void;
+  onRemind?: (item: MeetingActionItem) => void;
   onDismiss?: (item: MeetingActionItem) => void;
   onRestore?: (item: MeetingActionItem) => void;
   /** Items with a dismiss/restore in flight. */
@@ -35,6 +36,7 @@ export function ItemList({
   canEdit,
   projectId,
   onPromote,
+  onRemind,
   onDismiss,
   onRestore,
   busyItemIds,
@@ -94,6 +96,7 @@ export function ItemList({
               projectId={projectId}
               busy={busy}
               onPromote={onPromote}
+              onRemind={onRemind}
               onDismiss={onDismiss}
               onRestore={onRestore}
             />
@@ -110,6 +113,7 @@ function ItemFooter({
   projectId,
   busy,
   onPromote,
+  onRemind,
   onDismiss,
   onRestore,
 }: {
@@ -118,6 +122,7 @@ function ItemFooter({
   projectId: string | null;
   busy: boolean;
   onPromote?: (item: MeetingActionItem) => void;
+  onRemind?: (item: MeetingActionItem) => void;
   onDismiss?: (item: MeetingActionItem) => void;
   onRestore?: (item: MeetingActionItem) => void;
 }) {
@@ -149,6 +154,11 @@ function ItemFooter({
       {onDismiss && (
         <Button variant="ghost" size="sm" onClick={() => onDismiss(item)} disabled={busy} aria-label={`Dismiss: ${item.description}`}>
           Dismiss
+        </Button>
+      )}
+      {onRemind && (
+        <Button variant="ghost" size="sm" onClick={() => onRemind(item)} disabled={busy} aria-label={`Add reminder: ${item.description}`}>
+          Add reminder
         </Button>
       )}
       {onPromote && item.kind === 'action' && (

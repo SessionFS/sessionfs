@@ -37,7 +37,11 @@ from sessionfs.server.db.models import (
     TicketComment,
     TicketPrLink,
 )
-from sessionfs.server.services.review_state import VERDICT_CLEAN, compute_review_state
+from sessionfs.server.services.review_state import (
+    VERDICT_CLEAN,
+    compute_review_state,
+    load_review_comments,
+)
 
 # Same split as agent_spend: only reported/estimated cost bases have dollars.
 _DOLLAR_COST_BASES: tuple[str, ...] = ("reported", "estimated")
@@ -684,35 +688,17 @@ async def ticket_story(
                     }
                 )
 
-    # Review rounds + trusted verdicts from the comment thread.
-    comments = (
-        (
-            await db.execute(
-                select(TicketComment)
-                .where(TicketComment.ticket_id == ticket.id)
-                .order_by(TicketComment.created_at, TicketComment.id)
-                .limit(500)
-            )
-        )
-        .scalars()
-        .all()
-    )
+    # Review rounds + trusted verdicts from the comment thread (oldest
+    # REVIEW_HISTORY_CAP comments; an overflow is reported, not hidden).
+    comments, history_truncated = await load_review_comments(db, ticket.id)
     meta_by_id = {
-        c.id: {"author_persona": c.author_persona, "reviewed_commit": c.reviewed_commit}
+        c["id"]: {
+            "author_persona": c["author_persona"],
+            "reviewed_commit": c["reviewed_commit"],
+        }
         for c in comments
     }
-    state = compute_review_state(
-        [
-            {
-                "id": c.id,
-                "author_persona": c.author_persona,
-                "content": c.content,
-                "created_at": c.created_at,
-                "verdict_trusted": c.verdict_trusted,
-            }
-            for c in comments
-        ]
-    )
+    state = compute_review_state(comments)
     if state is not None:
         for rnd in state.rounds:
             meta = meta_by_id.get(rnd.comment_id, {})
@@ -860,4 +846,5 @@ async def ticket_story(
         "prs": prs,
         "releases": releases_out,
         "deployments": deployments_out,
+        "history_truncated": history_truncated,
     }

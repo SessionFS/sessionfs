@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -204,7 +205,18 @@ def _tool_calls(a: dict, b: dict) -> dict[str, list[dict]]:
             {"ticket_id": b["ticket"].id, "direction": "to_jira"},
             {"ticket_id": b["ticket"].id, "direction": "from_jira"},
         ],
+        "propose_reminder": [
+            {
+                "title": "Chase it",
+                "due_at": _FUTURE_DUE,
+                "source": {"kind": "ticket", "id": b["ticket"].id},
+            }
+        ],
+        "list_my_reminders": [{}, {"status": "all"}],
     }
+
+
+_FUTURE_DUE = (datetime.now(timezone.utc) + timedelta(days=3)).strftime("%Y-%m-%dT09:00")
 
 
 def test_scope_matrix_covers_every_tool():

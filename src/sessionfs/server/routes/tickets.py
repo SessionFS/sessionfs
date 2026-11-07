@@ -1716,7 +1716,10 @@ async def get_ticket_review_state(
     Cross-project access is denied by `_get_project_or_404` before
     we touch the comments table.
     """
-    from sessionfs.server.services.review_state import compute_review_state
+    from sessionfs.server.services.review_state import (
+        compute_review_state,
+        load_review_comments,
+    )
 
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
@@ -1726,36 +1729,17 @@ async def get_ticket_review_state(
     await check_project_feature(ctx, "agent_tickets", project, db)
     ticket = await _get_ticket_or_404(project_id, ticket_id, db)
 
-    # tk_33a25a12a5cf4dc3 — Shield-SR LOW follow-up from v0.10.11.
-    # Cap row count for DoS defense, matching list_ticket_comments
-    # (also 500). Review threads cap at ~20-50 comments in practice;
-    # 500 is a defensive ceiling, not an expected limit. If a thread
-    # ever exceeds it, the oldest comments win — the earliest rounds
-    # are what callers care about for the "open findings" picture.
-    _REVIEW_STATE_COMMENT_LIMIT = 500
-    rows = (
-        await db.execute(
-            select(TicketComment)
-            .where(TicketComment.ticket_id == ticket.id)
-            .order_by(TicketComment.created_at, TicketComment.id)
-            .limit(_REVIEW_STATE_COMMENT_LIMIT)
-        )
-    ).scalars().all()
-
-    comments = [
-        {
-            "id": r.id,
-            "author_persona": r.author_persona,
-            "content": r.content,
-            "created_at": r.created_at,
-            # tk_d42170b4670f4448 — server-stamped trust marker; the
-            # authority signal for verdict derivation (NOT author_persona).
-            "verdict_trusted": r.verdict_trusted,
-        }
-        for r in rows
-    ]
+    # tk_33a25a12a5cf4dc3 — row cap for DoS defense (REVIEW_HISTORY_CAP,
+    # 500). Display-only: on overflow the oldest comments win (the earliest
+    # rounds establish the open-findings picture) and the response says so
+    # with history_truncated instead of silently dropping newer rows.
+    comments, truncated = await load_review_comments(db, ticket.id)
     state = compute_review_state(comments)
-    return {"ticket_id": ticket.id, "review_state": state.to_dict() if state else None}
+    return {
+        "ticket_id": ticket.id,
+        "review_state": state.to_dict() if state else None,
+        "history_truncated": truncated,
+    }
 
 
 @router.get(
@@ -1786,6 +1770,7 @@ async def get_ticket_merge_readiness(
         compute_merge_readiness,
         load_implementer_identities,
         load_key_minters,
+        load_review_comments,
     )
 
     project = await _get_project_for_auth(project_id, db, auth)
@@ -1804,28 +1789,8 @@ async def get_ticket_merge_readiness(
         )
     sha = sha.strip()
 
-    rows = (
-        await db.execute(
-            select(TicketComment)
-            .where(TicketComment.ticket_id == ticket.id)
-            .order_by(TicketComment.created_at, TicketComment.id)
-            .limit(500)
-        )
-    ).scalars().all()
-
-    comments = [
-        {
-            "id": r.id,
-            "author_persona": r.author_persona,
-            "content": r.content,
-            "created_at": r.created_at,
-            "verdict_trusted": r.verdict_trusted,
-            "service_key_id": r.service_key_id,
-            "author_user_id": r.author_user_id,
-            "reviewed_commit": r.reviewed_commit,
-        }
-        for r in rows
-    ]
+    # A thread longer than the cap fails closed (history_truncated).
+    comments, truncated = await load_review_comments(db, ticket.id)
 
     identities = (await load_implementer_identities(db, [ticket]))[ticket.id]
     key_minters = await load_key_minters(db, comments, identities)
@@ -1835,6 +1800,7 @@ async def get_ticket_merge_readiness(
         sha=sha,
         implementer_identities=identities,
         key_minters=key_minters,
+        history_truncated=truncated,
     )
     return {"ticket_id": ticket.id, **readiness}
 

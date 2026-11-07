@@ -330,3 +330,60 @@ async def test_post_commit_status_rechecks_ssrf_and_no_redirects(monkeypatch):
         "description": "Review in progress",
     }
     assert captured["token"] == "glpat-tok"
+
+
+@pytest.mark.asyncio
+async def test_post_gitlab_status_pending_when_history_truncated(
+    db_session: AsyncSession, monkeypatch
+):
+    """A newer trusted CHANGES-REQUESTED past the history cap keeps the badge
+    pending even though the oldest slice holds a clean verdict for SHA."""
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from sessionfs.server.services import review_state
+
+    reviewer = await _make_user(db_session, "reviewer")
+    project, remote = await _setup(db_session, reviewer=reviewer, reviewed_commit=SHA)
+    ticket_id = (
+        await db_session.execute(select(Ticket.id).where(Ticket.project_id == project.id))
+    ).scalar_one()
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    for i in range(3):
+        db_session.add(
+            TicketComment(
+                id=f"tc_fill_{uuid.uuid4().hex[:12]}",
+                ticket_id=ticket_id,
+                author_user_id=reviewer.id,
+                author_persona="atlas",
+                content=f"filler {i}",
+                created_at=later + timedelta(seconds=i),
+            )
+        )
+    db_session.add(
+        TicketComment(
+            id=f"tc_{uuid.uuid4().hex[:16]}",
+            ticket_id=ticket_id,
+            author_user_id=reviewer.id,
+            author_persona="codex-reviewer",
+            content="Codex R2 review on tk_x: CHANGES REQUESTED\n\nFindings:\n\n - HIGH - newer\n",
+            verdict_trusted=True,
+            reviewed_commit=SHA,
+            created_at=later + timedelta(minutes=1),
+        )
+    )
+    await db_session.commit()
+    monkeypatch.setattr(review_state, "REVIEW_HISTORY_CAP", 2)
+
+    calls: list[dict] = []
+
+    async def fake_post(self, project_id, sha, state, *, name, description, target_url=None):
+        calls.append({"state": state})
+        return {"id": 1}
+
+    monkeypatch.setattr(gc.GitLabClient, "post_commit_status", fake_post)
+
+    await delivery_ingest.post_gitlab_status(db_session, project=project, repo=remote, sha=SHA)
+
+    assert calls == [{"state": "pending"}]

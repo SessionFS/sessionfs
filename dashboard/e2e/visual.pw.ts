@@ -12,6 +12,8 @@ import {
   linkedTicketJiraLink,
   ORG_ID,
   PROJECT_ID,
+  REMINDER_ID,
+  reminderDone,
   confluenceDriftError,
   confluenceLink,
   confluencePreview,
@@ -70,6 +72,38 @@ const PAGES: Scenario[] = [
   { name: 'project-settings', path: `/projects/${PROJECT}?tab=settings` },
   { name: 'handoffs', path: '/handoffs' },
   { name: 'ticket-inbox', path: '/inbox' },
+  { name: 'reminders', path: '/reminders' },
+  {
+    name: 'reminders-done-tab',
+    path: '/reminders',
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === '/api/v1/me/reminders' && u.searchParams.get('status') === 'done',
+        (route) => route.fulfill(fulfillJson(200, { items: [reminderDone], next_cursor: null })),
+      );
+    },
+    prepare: async (page) => {
+      await page.getByRole('tab', { name: 'Done' }).click();
+      await page.getByText('Send the signed order form').waitFor();
+    },
+  },
+  { name: 'reminder-drawer', path: `/reminders?reminder=${REMINDER_ID}` },
+  {
+    name: 'reminder-snooze-menu',
+    path: `/reminders?reminder=${REMINDER_ID}`,
+    prepare: async (page) => {
+      await page.getByRole('dialog').getByRole('button', { name: 'Snooze' }).click();
+      await page.getByRole('menu', { name: 'Snooze options' }).waitFor();
+    },
+  },
+  {
+    name: 'reminder-add-dialog',
+    path: '/reminders',
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Add reminder' }).click();
+      await page.getByRole('dialog', { name: 'Add reminder' }).waitFor();
+    },
+  },
   { name: 'invites', path: '/invites' },
   { name: 'transfers', path: '/transfers' },
   { name: 'marketplace', path: '/marketplace' },
@@ -1284,6 +1318,15 @@ const MEETING_SCENARIOS: Scenario[] = [
     prepare: async (page) => {
       await page.getByRole('button', { name: /^Create ticket: Draft the rollout plan/ }).click();
       const dlg = page.getByRole('dialog', { name: 'Create ticket' });
+      await dlg.getByRole('textbox', { name: 'Title' }).waitFor();
+    },
+  },
+  {
+    name: 'meeting-item-reminder-dialog',
+    path: `${MEETINGS}&meeting=${MEETING_ID}`,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: /^Add reminder: Draft the rollout plan/ }).click();
+      const dlg = page.getByRole('dialog', { name: 'Add reminder' });
       await dlg.getByRole('textbox', { name: 'Title' }).waitFor();
     },
   },

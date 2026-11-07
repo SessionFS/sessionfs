@@ -919,3 +919,111 @@ async def test_load_key_minters_cycle_is_unresolvable(db_session: AsyncSession):
     await db_session.commit()
     minters = await load_key_minters(db_session, [], [(a.id, None), (b.id, None)])
     assert minters == {a.id: None, b.id: None}
+
+
+# ── History cap: a truncated thread fails closed ────────────────────
+
+CHANGES_LATER = (
+    "Codex R2 review on tk_x: CHANGES REQUESTED\n\n"
+    "Findings:\n\n"
+    " - HIGH - newer regression\n"
+)
+
+
+async def _seed_overflow_after_clean(
+    db: AsyncSession, ticket_id: str, reviewer: User
+) -> None:
+    """A trusted clean for HEAD, filler, then a NEWER trusted CHANGES-REQUESTED.
+
+    With the history cap patched to 2 only the clean + one filler row are in
+    the oldest slice, so the newer contrary verdict is past the cap.
+    """
+    base = datetime.now(timezone.utc) - timedelta(days=1)
+    await _seed_clean_verdict(
+        db, ticket_id, reviewer, reviewed_commit=HEAD, created_at=base
+    )
+    db.add_all(
+        [
+            TicketComment(
+                id=f"tc_fill_{uuid.uuid4().hex[:12]}",
+                ticket_id=ticket_id,
+                author_user_id=reviewer.id,
+                author_persona="atlas",
+                content=f"filler {i}",
+                created_at=base + timedelta(seconds=i + 1),
+            )
+            for i in range(3)
+        ]
+    )
+    db.add(
+        TicketComment(
+            id=f"tc_{uuid.uuid4().hex[:16]}",
+            ticket_id=ticket_id,
+            author_user_id=reviewer.id,
+            author_persona="codex-reviewer",
+            content=CHANGES_LATER,
+            verdict_trusted=True,
+            reviewed_commit=HEAD,
+            created_at=base + timedelta(minutes=5),
+        )
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_readiness_fails_closed_when_history_truncated(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    from sessionfs.server.services import review_state
+
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    ticket_id = await _make_ticket(client, project, key)
+    reviewer, _ = await _make_user(db_session, name="reviewer")
+    await _seed_implementer(db_session, project, ticket_id, user_id=owner.id)
+    await _seed_overflow_after_clean(db_session, ticket_id, reviewer)
+
+    # Uncapped, the newer CHANGES-REQUESTED makes it not ready on its own.
+    full = (await _readiness(client, project, ticket_id, key, HEAD)).json()
+    assert full["ready"] is False
+    assert review_state.REVIEW_HISTORY_TRUNCATED_REASON not in full["reasons"]
+
+    monkeypatch.setattr(review_state, "REVIEW_HISTORY_CAP", 2)
+    resp = await _readiness(client, project, ticket_id, key, HEAD)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ready"] is False
+    assert review_state.REVIEW_HISTORY_TRUNCATED_REASON in body["reasons"]
+
+    # The display endpoint keeps the oldest slice but says it is partial.
+    rs = await client.get(
+        f"/api/v1/projects/{project.id}/tickets/{ticket_id}/review-state",
+        headers=_hdrs(key),
+    )
+    assert rs.status_code == 200
+    assert rs.json()["history_truncated"] is True
+
+
+def test_compute_merge_readiness_truncated_flag_is_never_ready():
+    from sessionfs.server.services.review_state import (
+        REVIEW_HISTORY_TRUNCATED_REASON,
+        compute_merge_readiness,
+    )
+
+    comments = [
+        {
+            "id": "c1",
+            "author_persona": "codex-reviewer",
+            "content": CLEAN,
+            "created_at": datetime.now(timezone.utc),
+            "verdict_trusted": True,
+            "service_key_id": None,
+            "author_user_id": "rev",
+            "reviewed_commit": HEAD,
+        }
+    ]
+    kwargs = dict(comments=comments, sha=HEAD, implementer_identities=[(None, "impl")])
+    assert compute_merge_readiness(**kwargs)["ready"] is True
+    out = compute_merge_readiness(**kwargs, history_truncated=True)
+    assert out["ready"] is False
+    assert out["reasons"] == [REVIEW_HISTORY_TRUNCATED_REASON]

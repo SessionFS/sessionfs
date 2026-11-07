@@ -2790,14 +2790,26 @@ async def _auto_extract_knowledge(
             if getattr(project, "auto_narrative", False):
                 try:
                     from sessionfs.server.db.models import UserJudgeSettings
-                    from sessionfs.security.encryption import decrypt_api_key
+                    from sessionfs.server.llm_keys import decrypt_llm_key
 
                     judge_result = await db.execute(
                         select(UserJudgeSettings).where(UserJudgeSettings.user_id == user_id)
                     )
                     judge_settings = judge_result.scalar_one_or_none()
-                    if judge_settings:
-                        api_key = decrypt_api_key(judge_settings.encrypted_api_key)
+                    llm_base_url: str | None = None
+                    if judge_settings and judge_settings.base_url:
+                        # The saved key only goes to the endpoint it was saved
+                        # with, and that endpoint is re-checked by the SSRF
+                        # guard before every call (a refusal skips extraction).
+                        import asyncio as _asyncio
+
+                        from sessionfs.server.llm_url_guard import validate_llm_base_url
+
+                        llm_base_url = await _asyncio.to_thread(
+                            validate_llm_base_url, judge_settings.base_url
+                        )
+                    if judge_settings and judge_settings.encrypted_api_key:
+                        api_key = decrypt_llm_key(judge_settings.encrypted_api_key)
                         from sessionfs.server.services.knowledge import extract_knowledge_with_llm
                         await extract_knowledge_with_llm(
                             session_id=session_id,
@@ -2807,7 +2819,7 @@ async def _auto_extract_knowledge(
                             api_key=api_key,
                             model=judge_settings.model,
                             provider=judge_settings.provider,
-                            base_url=judge_settings.base_url,
+                            base_url=llm_base_url,
                             db=db,
                         )
                         logger.info(

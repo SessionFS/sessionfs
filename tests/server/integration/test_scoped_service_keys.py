@@ -1273,7 +1273,11 @@ async def test_service_key_tickets_read_routes_allowed(
         headers=_hdrs(svc_key),
     )
     assert review_resp.status_code == 200, review_resp.text
-    assert review_resp.json() == {"ticket_id": ticket.id, "review_state": None}
+    assert review_resp.json() == {
+        "ticket_id": ticket.id,
+        "review_state": None,
+        "history_truncated": False,
+    }
 
 
 @pytest.mark.asyncio

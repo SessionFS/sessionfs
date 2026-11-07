@@ -51,6 +51,7 @@ from sessionfs.server.db.models import (
 from sessionfs.server.services.review_state import (
     ReviewState,
     compute_review_state,
+    load_review_comments,
     verdict_from_header,
 )
 
@@ -70,13 +71,11 @@ _BACKOFF_SECONDS: tuple[int, ...] = (120, 300, 900, 3600)
 # at list_ticket_comments for the full thread when the delta is insufficient.
 _COMMENT_DELTA_LIMIT = 20
 
-# Cap on how many comments the stop oracle scans when RE-DERIVING review state
-# (WQ-P4). Matches routes/tickets.py:get_ticket_review_state (also 500). Review
-# threads cap at ~20-50 comments in practice; 500 is a defensive ceiling. The
-# whole thread is needed (not a delta) because the verdict/closure derivation
-# spans every round — oldest comments win on overflow so the earliest rounds
-# (which establish the open-findings picture) always survive.
-_REVIEW_ORACLE_COMMENT_LIMIT = 500
+# The stop oracle scans at most review_state.REVIEW_HISTORY_CAP comments when
+# RE-DERIVING review state (WQ-P4). The whole thread is needed (not a delta)
+# because the verdict/closure derivation spans every round. A thread longer
+# than the cap is reported as truncated and NEVER closes an item (a newer
+# trusted CHANGES-REQUESTED could be past the cap).
 
 # Item statuses that the engine treats as a settled-and-parked wait.
 _WAITING_STATUS = "waiting"
@@ -437,8 +436,11 @@ async def _comment_delta(
 
 async def _review_comments_for_oracle(
     db: AsyncSession, *, ticket_id: str
-) -> list[dict]:
+) -> tuple[list[dict], bool]:
     """Load the full comment thread (capped) shaped for compute_review_state.
+
+    Returns ``(comments, truncated)`` via ``review_state.load_review_comments``.
+    Every close decision MUST treat ``truncated`` as not clean.
 
     WQ-P4 stop oracle (design §5.0). Returns ALL comments — trusted AND
     untrusted — as dicts carrying the SERVER-STAMPED `verdict_trusted` flag.
@@ -447,28 +449,9 @@ async def _review_comments_for_oracle(
     `verdict_trusted=false` renders but contributes NOTHING). We never derive
     trust from the caller-supplied `author_persona` string here. Ordered
     oldest-first so an overflow drops the newest, never the foundational
-    rounds.
+    rounds — and the overflow is reported so no close is made on it.
     """
-    rows = (
-        await db.execute(
-            select(TicketComment)
-            .where(TicketComment.ticket_id == ticket_id)
-            .order_by(TicketComment.created_at, TicketComment.id)
-            .limit(_REVIEW_ORACLE_COMMENT_LIMIT)
-        )
-    ).scalars().all()
-    return [
-        {
-            "id": r.id,
-            "author_persona": r.author_persona,
-            "content": r.content,
-            "created_at": r.created_at,
-            # The ONLY authority signal — server-stamped at comment write
-            # (tk_d42170b4670f4448). NOT author_persona.
-            "verdict_trusted": bool(r.verdict_trusted),
-        }
-        for r in rows
-    ]
+    return await load_review_comments(db, ticket_id)
 
 
 async def _implementer_comment_since(
@@ -754,7 +737,9 @@ async def _build_directive(
         # derive the round itself. The oracle only closes a finding when a
         # LATER clean round has a strictly greater round number, so we compute
         # the next round here over the FULL thread and hand it to the client.
-        _full = await _review_comments_for_oracle(db, ticket_id=item.ticket_id)
+        _full, _truncated = await _review_comments_for_oracle(
+            db, ticket_id=item.ticket_id
+        )
         _rs = compute_review_state(_full)
         _max_round = max((r.round for r in _rs.rounds), default=0) if _rs else 0
         review_round = _max_round + 1
@@ -775,6 +760,9 @@ async def _build_directive(
             ],
             "last_verdict": _rs.last_verdict if _rs else None,
             "severity_counts": dict(_rs.severity_counts) if _rs else {},
+            # The thread exceeded the cap: rounds/findings above cover only
+            # the oldest comments and the item cannot auto-close.
+            "history_truncated": _truncated,
         }
     else:  # pragma: no cover - defensive
         intent = "review"
@@ -902,14 +890,18 @@ async def _review_turn(
     STRICT seam (last_verdict_is_strict_verified_clean) additionally rejects
     alias-folded APPROVED / NO CHANGES NEEDED verdicts for unattended close.
     """
-    comments = await _review_comments_for_oracle(db, ticket_id=item.ticket_id)
+    comments, truncated = await _review_comments_for_oracle(
+        db, ticket_id=item.ticket_id
+    )
     rs: ReviewState | None = compute_review_state(comments)
 
     # 1. STOP CHECK — strict literal VERIFIED-CLEAN + no open findings, over
     #    TRUSTED comments only. Aliases (APPROVED / NO CHANGES NEEDED) do NOT
-    #    qualify for an autonomous close (§5.0 strict-only, Sentinel #5).
+    #    qualify for an autonomous close (§5.0 strict-only, Sentinel #5). A
+    #    truncated history never stops the loop (fail closed).
     if (
-        rs is not None
+        not truncated
+        and rs is not None
         and rs.last_verdict_is_strict_verified_clean
         and not rs.open_findings
     ):
@@ -1913,12 +1905,13 @@ async def complete_work_queue_step(
     # condition-(a) marker.
     auto_close_kind: str | None = None
     if queue.mode == "review_until_clean":
-        review_comments = await _review_comments_for_oracle(
+        review_comments, truncated = await _review_comments_for_oracle(
             db, ticket_id=ticket_id
         )
         rs_settle = compute_review_state(review_comments)
         terminal = (
-            rs_settle is not None
+            not truncated
+            and rs_settle is not None
             and rs_settle.last_verdict_is_strict_verified_clean
             and not rs_settle.open_findings
         )
@@ -1946,12 +1939,13 @@ async def complete_work_queue_step(
                 item.implementer_user_id = actor_user_id
 
         # Re-derive review_state over trusted comments (same as review mode).
-        review_comments = await _review_comments_for_oracle(
+        review_comments, truncated = await _review_comments_for_oracle(
             db, ticket_id=ticket_id
         )
         rs_settle = compute_review_state(review_comments)
         review_clean = (
-            rs_settle is not None
+            not truncated
+            and rs_settle is not None
             and rs_settle.last_verdict_is_strict_verified_clean
             and not rs_settle.open_findings
         )

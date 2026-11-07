@@ -706,3 +706,49 @@ async def test_non_sha_head_is_never_sent_to_github(
     )
     assert result["posted"] == "skipped"
     assert gh.requests == []
+
+
+@pytest.mark.asyncio
+async def test_truncated_history_is_never_success(
+    client: AsyncClient, db_session: AsyncSession, gh: _CheckRuns, monkeypatch
+):
+    """A newer trusted CHANGES-REQUESTED past the history cap must not let
+    the oldest slice's clean verdict pass the check."""
+    from datetime import timedelta
+
+    from sessionfs.server.services import review_state
+
+    owner, project, ticket = await _ready_ticket(db_session)
+    later = datetime.now(timezone.utc) + timedelta(minutes=5)
+    for i in range(3):
+        db_session.add(
+            TicketComment(
+                id=f"tc_fill_{uuid.uuid4().hex[:12]}",
+                ticket_id=ticket.id,
+                author_user_id=owner.id,
+                author_persona="atlas",
+                content=f"filler {i}",
+                created_at=later + timedelta(seconds=i),
+            )
+        )
+    db_session.add(
+        TicketComment(
+            id=f"tc_{uuid.uuid4().hex[:16]}",
+            ticket_id=ticket.id,
+            author_user_id=owner.id,
+            author_persona="codex-reviewer",
+            content="Codex R2 review on tk_x: CHANGES REQUESTED\n\nFindings:\n\n - HIGH - newer\n",
+            verdict_trusted=True,
+            reviewed_commit=HEAD,
+            created_at=later + timedelta(minutes=1),
+        )
+    )
+    await db_session.commit()
+    monkeypatch.setattr(review_state, "REVIEW_HISTORY_CAP", 2)
+
+    result = await merge_checks.refresh_merge_check(
+        db_session, ticket_id=ticket.id, project_id=project.id
+    )
+    assert result["ready"] is False
+    posts = [r for r in gh.requests if r.method == "POST" and r.url.path.endswith("/check-runs")]
+    assert posts and json.loads(posts[0].content)["conclusion"] != "success"

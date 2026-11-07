@@ -9,6 +9,7 @@ import RelativeDate from '../components/RelativeDate';
 import { Badge } from '../components/Badge';
 import { Button, Card, PageContainer, PageHeader } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
+import { formatDue, reminderHref } from '../reminders/format';
 import { notificationKindLabel, notificationKindVariant } from './kind';
 
 /**
@@ -52,7 +53,7 @@ export default function TicketInbox() {
     <PageContainer width="narrow" className="space-y-5">
       <PageHeader
         title="Inbox"
-        description="Updates on tickets you follow. Summaries never include comment bodies."
+        description="Updates on tickets you follow and reminders that are due. Summaries never include comment bodies."
         actions={
           <div className="flex items-center gap-2">
             <Button
@@ -118,12 +119,24 @@ export default function TicketInbox() {
                         )}
                         <RelativeDate iso={n.created_at} />
                       </div>
-                      <Link
-                        to={`/projects/${n.project_id}?tab=work&sub=tickets&ticket=${encodeURIComponent(n.ticket_id)}`}
-                        className="mt-1 block font-medium text-text-primary hover:text-brand transition-colors truncate"
-                      >
-                        {n.ticket_title ?? n.ticket_id}
-                      </Link>
+                      {n.subject_kind === 'reminder' && n.subject ? (
+                        <Link
+                          to={reminderHref(n.subject.id)}
+                          className="mt-1 block font-medium text-text-primary hover:text-brand transition-colors truncate"
+                        >
+                          {n.subject.title ?? 'Reminder'}
+                        </Link>
+                      ) : (
+                        <Link
+                          to={`/projects/${n.project_id}?tab=work&sub=tickets&ticket=${encodeURIComponent(n.ticket_id ?? '')}`}
+                          className="mt-1 block font-medium text-text-primary hover:text-brand transition-colors truncate"
+                        >
+                          {n.ticket_title ?? n.ticket_id}
+                        </Link>
+                      )}
+                      {n.subject_kind === 'reminder' && n.subject?.due_at && (
+                        <p className="text-xs text-text-tertiary">due {formatDue(n.subject.due_at)}</p>
+                      )}
                       <p className="mt-0.5 text-sm text-text-secondary">
                         {n.summary}
                       </p>

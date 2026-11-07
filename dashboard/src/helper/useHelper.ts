@@ -118,6 +118,9 @@ export function useDecideHelperAction(id: string) {
         for (const key of ['projects', 'project', 'compileStatus', 'sessions', 'session', 'tickets', 'ticket']) {
           void queryClient.invalidateQueries({ queryKey: [key] });
         }
+        if (action.kind === 'create_reminder') {
+          void queryClient.invalidateQueries({ queryKey: ['reminders'] });
+        }
         // Jira-touching actions also change the ticket's link, its timeline
         // comments and its sync events.
         if (touchesJira(action)) {

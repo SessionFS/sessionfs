@@ -76,7 +76,14 @@ _EXTRACTION_DEADLINE_SECONDS = 120
 # the transcript must not be able to close its own block, so both the
 # ``<transcript>`` delimiter and the helper's instruction delimiters are
 # defanged before the text is wrapped.
-_TRANSCRIPT_DELIMITER_RE = re.compile(r"<\s*/?\s*transcript\b[^>]*>", re.IGNORECASE)
+# Linear on attacker text: ``\s*(?:/\s*)?`` never lets two whitespace runs
+# compete, and the tag tail is bounded and stops at the next ``<`` (an
+# unbounded ``[^>]*>`` rescans to the end of the line from every ``<transcript``
+# with no ``>``). The closing ``>`` is optional: an unclosed tag start is
+# defanged too.
+_TRANSCRIPT_DELIMITER_RE = re.compile(
+    r"<\s*(?:/\s*)?transcript\b[^<>]{0,256}>?", re.IGNORECASE
+)
 
 _EXTRACTION_SYSTEM_PROMPT = """\
 You extract structured action items, decisions and participants from a meeting transcript.

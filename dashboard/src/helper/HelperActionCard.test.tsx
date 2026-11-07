@@ -753,3 +753,86 @@ describe('assign_ticket helpers', () => {
     expect(reasonLabel('assignee_conflict')).toBe('A ticket can have a person or a persona as assignee, not both');
   });
 });
+
+describe('create_reminder card', () => {
+  const REMINDER: TurnAction = {
+    id: ID,
+    kind: 'create_reminder',
+    summary: 'Remind you: Send the order form',
+    expires_at: inMinutes(14),
+    targets: [{ id: 'reminder', name: 'Send the order form', change: 'will_change' }],
+    params: {
+      title: 'Send the order form',
+      due_at: '2026-11-06T09:00:00+00:00',
+      timezone: 'Europe/London',
+      due_local: 'Fri 6 Nov 2026, 09:00 Europe/London',
+      source: { kind: 'ticket', id: 'tk_1', lines: null },
+      project_id: 'proj_1',
+    },
+  };
+
+  function renderCard(action: TurnAction) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <HelperActionCard action={action} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  const confirmed = (extra: Record<string, unknown> = {}) => ({
+    ...REMINDER,
+    status: 'confirmed',
+    params: REMINDER.params,
+    result: { targets: [{ id: 'rem_abc', ok: true, error: null, reminder_id: 'rem_abc' }] },
+    created_at: null,
+    decided_at: null,
+    ...extra,
+  });
+
+  beforeEach(() => {
+    useAuthMock.mockReturnValue({
+      auth: {
+        client: {
+          confirmHelperAction: vi.fn().mockResolvedValue(confirmed()),
+          cancelHelperAction: vi.fn().mockResolvedValue({ ...confirmed(), status: 'cancelled', result: {} }),
+        },
+      },
+    });
+  });
+
+  it('shows the title, the absolute local time and the source', async () => {
+    const { container } = renderCard(REMINDER);
+    expect(screen.getByRole('heading', { name: 'Remind you: Send the order form' })).toBeInTheDocument();
+    expect(screen.getByText('Fri 6 Nov 2026, 09:00 Europe/London')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'ticket' })).toHaveAttribute(
+      'href',
+      '/projects/proj_1?tab=work&sub=tickets&ticket=tk_1',
+    );
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it('confirms through the confirm call and links to the reminder', async () => {
+    renderCard(REMINDER);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+    const link = await screen.findByRole('link', { name: 'Open reminder' });
+    expect(link).toHaveAttribute('href', '/reminders?reminder=rem_abc');
+    const client = useAuthMock.mock.results[0].value.auth.client;
+    expect(client.confirmHelperAction).toHaveBeenCalledWith(ID, undefined);
+    expect(client.cancelHelperAction).not.toHaveBeenCalled();
+  });
+
+  it('cancels through the cancel call', async () => {
+    renderCard(REMINDER);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    await screen.findByText(/Cancelled — nothing was changed/);
+    const client = useAuthMock.mock.results[0].value.auth.client;
+    expect(client.cancelHelperAction).toHaveBeenCalledWith(ID);
+    expect(client.confirmHelperAction).not.toHaveBeenCalled();
+    expect(screen.queryByRole('link', { name: 'Open reminder' })).not.toBeInTheDocument();
+  });
+});

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { RemindersStrip } from '../../reminders/RemindersStrip';
 import { useToast } from '../../hooks/useToast';
 import {
   useAddTicketComment,
@@ -486,6 +487,8 @@ export function TicketDetail({
           )}
         </div>
       )}
+
+      <RemindersStrip kind="ticket" projectId={projectId} sourceId={ticketId} />
 
       {/* ── Activity ── */}
       <section aria-label="Activity">

@@ -500,7 +500,7 @@ Elevate → mint → revert does **not** produce a working key: the minted key i
 still coupled to the account that minted it. Keep the minter a platform admin
 for the life of the key, or re-mint as a user who stays a platform admin.
 
-The chart can create the CronJobs for all five sweeps. They are off by
+The chart can create a CronJob for each scheduled sweep (`meetingRetention` works the same way as the ones below). They are off by
 default and each needs a Secret holding a `platform_sweeps:run` service key
 (`existingSecret` is required when enabled). Enable the ones you run:
 
@@ -536,6 +536,12 @@ api:
       schedule: "*/15 * * * *"        # every 15 minutes
       existingSecret: sessionfs-sweep-key
       secretKey: confluence-publish-api-key
+  remindersDue:
+    enabled: true
+    cronJob:
+      schedule: "*/5 * * * *"         # every 5 minutes
+      existingSecret: sessionfs-sweep-key
+      secretKey: reminders-due-api-key
 ```
 
 The CronJob pod sends one authenticated request to the API sweep endpoint and
@@ -746,7 +752,7 @@ dashboard (**Settings → Preferences**) or with
 - `off` — never email (notifications still appear in the dashboard inbox and
   `sfs ticket inbox`).
 - `your_turn` — the default: email only when at least one pending
-  notification is a "your turn".
+  notification is a "your turn" or a due reminder.
 - `all` — email every batch.
 
 Access is re-checked per row against the ticket's current project, so a user
@@ -756,6 +762,26 @@ resurface. With `email.provider=none` the sweep is a no-op for delivery but
 still marks rows emailed and logs the suppressed send, mirroring the org
 digest. Digest links resolve to `SFS_DASHBOARD_URL` when set, falling back to
 `SFS_APP_URL`, and are omitted when neither is set.
+
+### Reminders due sweep
+
+Reminders (0.29.5) reach the bell, the inbox and the digest email above
+through a sweep that runs every 5 minutes:
+
+```text
+POST /api/v1/admin/sweeps/reminders-due
+```
+
+Authenticate with a platform-admin user key or a `platform_sweeps:run`
+service key. Each run claims every open reminder whose `due_at` has passed
+and that has not been notified yet, with a guarded update on `notified_at`,
+so two overlapping runs never notify the same reminder twice. It re-checks
+that the owner can still see the reminder (through its source) and then
+writes one `reminder_due` notification. Snoozing or rescheduling a reminder
+clears `notified_at`, so it fires again when it next comes due. The reminders
+list computes "due" when it is read, so a late or missing sweep only delays
+the bell and the email, never the list. The ticket-notification digest sends
+`reminder_due` rows without the 10-minute coalescing delay.
 
 ### Jira sync and Confluence publish sweeps
 

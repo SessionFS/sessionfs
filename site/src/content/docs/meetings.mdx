@@ -67,6 +67,10 @@ The target project is the meeting's own project for a project meeting, or an edi
 
 Dismiss a pending item with `POST .../dismiss` (a second dismiss returns `409 item_not_pending`) and bring it back with `POST .../restore` (`409 item_not_dismissed` if it was not dismissed).
 
+## Reminders
+
+Extraction never creates reminders, but an action item or decision with a due date carries a `suggested_reminder` (`title`, `due_date`, `due_at` at 09:00 UTC on that date, the cited `lines`, and `owner_user_id` when the item's owner resolved to a person). `POST /api/v1/projects/{project_id}/meetings/{meeting_id}/items/{item_id}/reminder` (or `/api/v1/groups/{group_id}/…` for a group meeting) creates it, pre-filled from the suggestion; pass `title`, `due_at`, `timezone` or `owner` to change it. The reminder points back at the item and its lines. When the item is later promoted, its reminders are linked to the new ticket and also show on the ticket. `GET …/meetings/{meeting_id}/reminders` lists the reminders on a meeting and its items that you can see (your own, or ones you set for someone else). Group meetings follow the group's visibility rules.
+
 ## CLI
 
 `sfs meeting` is a thin client of the REST routes below; the server enforces every access rule. Without `--project` or `--group` it uses the project of the current repository.
@@ -116,6 +120,10 @@ Participants and action items are deleted with the meeting. Uploads, deletes and
 | POST | `/api/v1/meetings/{meeting_id}/action-items/{item_id}/promote` | `meetings:write` | Promote an action item to a ticket (`agent_tickets`) |
 | POST | `/api/v1/meetings/{meeting_id}/action-items/{item_id}/dismiss` | `meetings:write` | Dismiss a pending action item |
 | POST | `/api/v1/meetings/{meeting_id}/action-items/{item_id}/restore` | `meetings:write` | Restore a dismissed action item |
+| POST | `/api/v1/projects/{project_id}/meetings/{meeting_id}/items/{item_id}/reminder` | `reminders:write` | Create the reminder an item suggests |
+| POST | `/api/v1/groups/{group_id}/meetings/{meeting_id}/items/{item_id}/reminder` | user key, group reader+ | The same for a group meeting |
+| GET | `/api/v1/projects/{project_id}/meetings/{meeting_id}/reminders` | `reminders:read` | Your reminders on a project meeting and its items |
+| GET | `/api/v1/groups/{group_id}/meetings/{meeting_id}/reminders` | user key, group reader+ | Your reminders on a group meeting and its items |
 
 ## Org setting
 

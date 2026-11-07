@@ -40,7 +40,10 @@ COALESCE_WINDOW = timedelta(minutes=15)
 
 # Ordering for kind upgrades when events coalesce. Higher = more urgent.
 _KIND_RANK = {
-    "your_turn": 6,
+    "your_turn": 7,
+    # Reminder rows never coalesce with ticket rows (different subject); the
+    # rank only orders kinds for display and the digest.
+    "reminder_due": 6,
     "review_verdict": 5,
     "status": 4,
     "assignment": 3,
@@ -52,6 +55,7 @@ _KIND_RANK = {
 # so the email template and UI agree without duplicating the mapping.
 KIND_LABELS = {
     "your_turn": "Your turn",
+    "reminder_due": "Reminder due",
     "review_verdict": "Review verdict",
     "status": "Status",
     "assignment": "Assigned",
@@ -269,6 +273,8 @@ async def _coalesce(
         db.add(
             TicketNotification(
                 user_id=existing.user_id,
+                subject_kind="ticket",
+                subject_id=existing.ticket_id,
                 ticket_id=existing.ticket_id,
                 project_id=existing.project_id,
                 kind=kind,
@@ -289,6 +295,8 @@ async def _coalesce(
     db.add(
         TicketNotification(
             user_id=existing.user_id,
+            subject_kind="ticket",
+            subject_id=existing.ticket_id,
             ticket_id=existing.ticket_id,
             project_id=existing.project_id,
             kind=merged_kind,
@@ -379,6 +387,7 @@ async def emit_notifications(
                 await db.execute(
                     select(TicketNotification)
                     .where(
+                        TicketNotification.subject_kind == "ticket",
                         TicketNotification.ticket_id == ticket.id,
                         TicketNotification.user_id.in_(recipient_ids),
                         TicketNotification.read_at.is_(None),
@@ -411,6 +420,8 @@ async def emit_notifications(
                     db.add(
                         TicketNotification(
                             user_id=watcher.user_id,
+                            subject_kind="ticket",
+                            subject_id=ticket.id,
                             ticket_id=ticket.id,
                             project_id=ticket.project_id,
                             kind=recipient_kind,

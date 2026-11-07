@@ -31,6 +31,7 @@ const { hooks, mockAddToast, mockUseMe, mockUseJiraLink, mockUsePersonas } = vi.
   mockUseMe: vi.fn(),
 }));
 
+vi.mock('../reminders/RemindersStrip', () => ({ RemindersStrip: () => null }));
 vi.mock('../hooks/useTickets', () => hooks);
 vi.mock('../hooks/useJiraTickets', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../hooks/useJiraTickets')>()),

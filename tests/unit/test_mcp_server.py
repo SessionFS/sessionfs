@@ -300,11 +300,12 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_118(self):
+    def test_tool_count_is_121(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 118, (
-            "Expected 118 MCP tools after review-loop start, status and "
-            "update, the project checklist, the loop report and the worker run and round tools, "
+        assert len(_TOOLS) == 121, (
+            "Expected 121 MCP tools after review-loop start, status and "
+            "update, the project checklist, the loop report, the worker run and round tools "
+            "and the three reminder tools, "
             f"got {len(_TOOLS)}"
         )
 
@@ -5143,3 +5144,150 @@ class TestLoopWorkerTools:
             )
         )
         assert "round must be" in bad["error"]
+
+
+class TestReminderMcpDispatch:
+    """Reminders (tk_8a858d6354fc4ef3 R2): thin wrappers over /api/v1/me/reminders."""
+
+    @staticmethod
+    def _install(monkeypatch, capture: dict, status: int = 200, body=None):
+        body = body if body is not None else {"id": "rem_x"}
+        monkeypatch.setattr(mcp_server, "_handoff_api_config", lambda: ("https://api.test", "k"))
+        import httpx
+
+        class _Resp:
+            def __init__(self, code, b):
+                self.status_code = code
+                self._b = b
+                self.text = json.dumps(b)
+
+            def json(self):
+                return self._b
+
+        class _Client:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def _do(self, method, url, json=None, params=None):
+                capture.update(method=method, url=url, body=json, params=params)
+                return _Resp(status, body)
+
+            async def get(self, url, *, headers=None, params=None):
+                return await self._do("GET", url, params=params)
+
+            async def post(self, url, *, headers=None, json=None):
+                return await self._do("POST", url, json=json)
+
+            async def patch(self, url, *, headers=None, json=None):
+                return await self._do("PATCH", url, json=json)
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    def test_tools_registered(self):
+        names = {t.name for t in mcp_server._TOOLS}
+        assert {"list_my_reminders", "create_reminder", "update_reminder"} <= names
+
+    @pytest.mark.asyncio
+    async def test_list_dispatch(self, monkeypatch):
+        cap: dict = {}
+        self._install(monkeypatch, cap, body={"items": []})
+        out = await mcp_server._handle_list_my_reminders(
+            {"status": "all", "due_before": "2026-11-06T09:00:00Z", "source": "meeting:mt_1", "limit": 5}
+        )
+        assert cap["method"] == "GET"
+        assert cap["url"] == "https://api.test/api/v1/me/reminders"
+        assert cap["params"] == {
+            "status": "all",
+            "due_before": "2026-11-06T09:00:00Z",
+            "source": "meeting:mt_1",
+            "limit": 5,
+        }
+        assert out == {"items": []}
+
+    @pytest.mark.asyncio
+    async def test_list_rejects_bad_status(self, monkeypatch):
+        cap: dict = {}
+        self._install(monkeypatch, cap)
+        out = await mcp_server._handle_list_my_reminders({"status": "nope"})
+        assert "error" in out and not cap
+
+    @pytest.mark.asyncio
+    async def test_create_dispatch_never_sends_owner(self, monkeypatch):
+        cap: dict = {}
+        self._install(monkeypatch, cap, status=201)
+        out = await mcp_server._handle_create_reminder(
+            {
+                "title": " Book follow-up ",
+                "due_at": "2026-11-06T09:00",
+                "timezone": "Europe/London",
+                "owner": "someone@else.test",
+                "source": {"kind": "meeting_item", "id": "mai_1", "lines": "3-5"},
+            }
+        )
+        assert cap["method"] == "POST"
+        assert cap["url"] == "https://api.test/api/v1/me/reminders"
+        assert cap["body"] == {
+            "title": "Book follow-up",
+            "due_at": "2026-11-06T09:00",
+            "timezone": "Europe/London",
+            "source": {"kind": "meeting_item", "id": "mai_1", "lines": "3-5"},
+        }
+        assert out["id"] == "rem_x"
+
+    @pytest.mark.asyncio
+    async def test_create_requires_fields(self):
+        assert "error" in await mcp_server._handle_create_reminder({"title": "x"})
+        assert "error" in await mcp_server._handle_create_reminder({"due_at": "2026-11-06"})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "args,method,suffix,body",
+        [
+            ({"note": "called them"}, "POST", "/notes", {"body": "called them"}),
+            ({"snooze": "tomorrow"}, "POST", "/snooze", {"preset": "tomorrow"}),
+            (
+                {"snooze": "custom", "until": "2026-11-07T10:00Z"},
+                "POST",
+                "/snooze",
+                {"preset": "custom", "until": "2026-11-07T10:00Z"},
+            ),
+            (
+                {"reschedule": "2026-11-08T09:00", "timezone": "UTC"},
+                "PATCH",
+                "",
+                {"due_at": "2026-11-08T09:00", "timezone": "UTC"},
+            ),
+            ({"close": "done"}, "PATCH", "", {"status": "done"}),
+        ],
+    )
+    async def test_update_dispatch(self, monkeypatch, args, method, suffix, body):
+        cap: dict = {}
+        self._install(monkeypatch, cap)
+        await mcp_server._handle_update_reminder({"reminder_id": "rem_abc", **args})
+        assert cap["method"] == method
+        assert cap["url"] == f"https://api.test/api/v1/me/reminders/rem_abc{suffix}"
+        assert cap["body"] == body
+
+    @pytest.mark.asyncio
+    async def test_update_needs_exactly_one_change(self, monkeypatch):
+        cap: dict = {}
+        self._install(monkeypatch, cap)
+        out = await mcp_server._handle_update_reminder(
+            {"reminder_id": "rem_abc", "note": "x", "close": "done"}
+        )
+        assert "error" in out and not cap
+        out = await mcp_server._handle_update_reminder({"reminder_id": "rem_abc"})
+        assert "error" in out
+
+    @pytest.mark.asyncio
+    async def test_update_404(self, monkeypatch):
+        cap: dict = {}
+        self._install(monkeypatch, cap, status=404, body={"detail": "Reminder not found"})
+        out = await mcp_server._handle_update_reminder({"reminder_id": "rem_zz", "close": "done"})
+        assert out == {"error": "Reminder 'rem_zz' not found"}

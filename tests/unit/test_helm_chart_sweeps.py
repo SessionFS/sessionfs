@@ -21,6 +21,8 @@ SWEEPS = [
     ("kbCompile", "kb-compile", "*/15 * * * *", "/api/v1/admin/sweeps/kb-compile", None),
     ("jiraSync", "jira-sync", "* * * * *", "/api/v1/admin/sweeps/jira-sync", '{"limit":100,"budget_seconds":50}'),
     ("confluencePublish", "confluence-publish", "*/15 * * * *", "/api/v1/admin/sweeps/confluence-publish", None),
+    ("meetingRetention", "meeting-retention", "30 3 * * *", "/api/v1/admin/sweeps/meeting-retention", None),
+    ("remindersDue", "reminders-due", "*/5 * * * *", "/api/v1/admin/sweeps/reminders-due", None),
 ]
 
 

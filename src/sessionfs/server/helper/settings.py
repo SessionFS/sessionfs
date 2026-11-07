@@ -193,8 +193,11 @@ def effective_settings(
 
 # Anything that looks like one of the prompt's delimiter tags, opening or
 # closing, with any spacing / case / attributes.
+# Linear patterns (they also run over uploaded transcripts and chat
+# threads): no two whitespace quantifiers compete, the tail is bounded and
+# stops at the next ``<``, and an unclosed tag start is defanged too.
 _DELIMITER_RE = re.compile(
-    r"<\s*/?\s*(?:org|personal)[\s_-]*instructions\b[^>]*>", re.IGNORECASE
+    r"<\s*(?:/\s*)?(?:org|personal)[\s_-]*instructions\b[^<>]{0,256}>?", re.IGNORECASE
 )
 
 
@@ -202,7 +205,7 @@ _DELIMITER_RE = re.compile(
 # instruction delimiters above: instruction text rejects those tags outright,
 # while compiled group context is neutralised in place.
 _GROUP_CONTEXT_DELIMITER_RE = re.compile(
-    r"<\s*/?\s*group[\s_-]*context\b[^>]*>", re.IGNORECASE
+    r"<\s*(?:/\s*)?group[\s_-]*context\b[^<>]{0,256}>?", re.IGNORECASE
 )
 
 

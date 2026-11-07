@@ -1553,8 +1553,76 @@ export const marketplaceReports = {
 };
 
 // GET /api/v1/me/ticket-notifications — the inbox list (TicketNotificationList).
+export const REMINDER_ID = 'rem_fixture01';
+const reminderBase = {
+  original_due_at: '2026-10-20T09:00:00Z',
+  timezone: 'Europe/London',
+  owner_user_id: me.user_id,
+  created_by_user_id: me.user_id,
+  created_via: 'manual',
+  is_owner: true,
+  is_creator: true,
+  source_hidden: false,
+  linked_ticket_id: null,
+  notified_at: null,
+  snooze_count: 0,
+  closed_at: null,
+  closed_by_user_id: null,
+  created_at: EARLIER,
+  updated_at: EARLIER,
+};
+export const reminderDue = {
+  ...reminderBase,
+  id: REMINDER_ID,
+  title: 'Book the follow-up with Tolu',
+  status: 'open',
+  due_at: '2026-10-20T09:00:00Z',
+  is_due: true,
+  source: { kind: 'meeting', id: 'meet_f1x7ure0000000a1', lines: '7-9', title: 'Rollout sync', project_id: PROJECT_ID, group_id: null, meeting_id: 'meet_f1x7ure0000000a1' },
+  note_count: 2,
+};
+export const reminderLater = {
+  ...reminderBase,
+  id: 'rem_fixture02',
+  title: 'Revisit the pricing decision',
+  status: 'open',
+  due_at: '2026-11-06T09:00:00Z',
+  is_due: false,
+  source: null,
+  note_count: 0,
+};
+export const reminderDone = {
+  ...reminderBase,
+  id: 'rem_fixture03',
+  title: 'Send the signed order form',
+  status: 'done',
+  due_at: '2026-10-15T09:00:00Z',
+  is_due: false,
+  source: null,
+  note_count: 1,
+  closed_at: EARLIER,
+  closed_by_user_id: me.user_id,
+};
+export const reminderNotes = {
+  items: [
+    { id: 'rn_1', reminder_id: REMINDER_ID, author_user_id: me.user_id, body: 'Tolu prefers mornings.', created_at: EARLIER },
+    { id: 'rn_2', reminder_id: REMINDER_ID, author_user_id: me.user_id, body: 'Waiting on the calendar invite.', created_at: NOW },
+  ],
+};
+export const sourceReminders = {
+  items: [reminderDue, reminderDone],
+  counts: { open: 1, done: 1, dismissed: 0 },
+};
+
 export const ticketNotifications = {
   items: [
+    {
+      id: 105, subject_kind: 'reminder',
+      subject: { kind: 'reminder', id: REMINDER_ID, title: reminderDue.title, due_at: reminderDue.due_at },
+      ticket_id: null, project_id: null, ticket_title: null,
+      kind: 'reminder_due', summary: 'Reminder is due', actor_type: 'user', actor_user_id: null,
+      service_key_name: null, event_count: 1, created_at: NOW, updated_at: NOW, read_at: null,
+    },
     {
       id: 104, ticket_id: tickets[4].id, project_id: PROJECT_ID, ticket_title: tickets[4].title,
       kind: 'your_turn', summary: 'Ready for your review', actor_type: 'user', actor_user_id: 'usr_peer01',
@@ -1879,7 +1947,7 @@ export const meetingDetail = {
     { id: 'mp_f5', name_raw: 'Jordan (contractor)', email_raw: null, user_id: null, persona_name: null, resolution_method: 'unresolved', resolved_by_user_id: null },
   ],
   action_items: [
-    { id: 'mai_f1', kind: 'action', description: 'Draft the rollout plan, including the feature-flag stages, rollback steps and who is on call for each stage.', owner_participant_id: 'mp_f2', due_date: '2026-10-31', line_start: 7, line_end: 9, status: 'pending', promoted_ticket_id: null, extracted_at: NOW },
+    { id: 'mai_f1', kind: 'action', description: 'Draft the rollout plan, including the feature-flag stages, rollback steps and who is on call for each stage.', owner_participant_id: 'mp_f2', due_date: '2026-10-31', line_start: 7, line_end: 9, status: 'pending', promoted_ticket_id: null, extracted_at: NOW, suggested_reminder: { title: 'Draft the rollout plan, including the feature-flag stages, rollback steps and who is on call for each stage.', due_date: '2026-10-31', due_at: '2026-10-31T09:00:00Z', lines: '7-9', owner_user_id: 'user_fixture02' } },
     { id: 'mai_f2', kind: 'action', description: 'Update the status page copy to remove the old pricing tiers.', owner_participant_id: 'mp_f5', due_date: null, line_start: 10, line_end: 11, status: 'pending', promoted_ticket_id: null, extracted_at: NOW },
     { id: 'mai_f3', kind: 'action', description: 'Review status page wording that mentions data handling.', owner_participant_id: 'mp_f4', due_date: null, line_start: 12, line_end: 12, status: 'pending', promoted_ticket_id: null, extracted_at: NOW },
     { id: 'mai_f4', kind: 'action', description: 'Send the support team a briefing on the launch date.', owner_participant_id: 'mp_f3', due_date: '2026-11-03', line_start: 14, line_end: 15, status: 'promoted', promoted_ticket_id: 'tk_fixture2', extracted_at: NOW },

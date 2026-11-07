@@ -50,7 +50,11 @@ vi.mock('../hooks/useTicketNotifications', () => ({
   useTicketNotificationUnreadCount: () => ({ data: { count: 0, etag: '' } }),
 }));
 
-const { loopCount } = vi.hoisted(() => ({ loopCount: { value: 0 } }));
+const { loopCount, remindersCount } = vi.hoisted(() => ({ loopCount: { value: 0 }, remindersCount: { value: 0 } }));
+vi.mock('../hooks/useReminders', () => ({
+  useRemindersDueCount: () => ({ data: { count: remindersCount.value } }),
+}));
+
 vi.mock('../hooks/useReviewLoop', () => ({
   useNeedsYouCount: () => ({ data: { count: loopCount.value } }),
 }));
@@ -113,6 +117,24 @@ beforeEach(() => {
 });
 
 describe('Layout', () => {
+  describe('Reminders nav', () => {
+    it('sits in the Inbox section and hides the badge at 0', () => {
+      remindersCount.value = 0;
+      renderLayout();
+      const link = screen.getAllByRole('link', { name: /Reminders/ })[0];
+      expect(link).toHaveAttribute('href', '/reminders');
+      expect(within(link).queryByLabelText(/pending/)).not.toBeInTheDocument();
+    });
+
+    it('shows the due count', () => {
+      remindersCount.value = 2;
+      renderLayout();
+      const link = screen.getAllByRole('link', { name: /Reminders/ })[0];
+      expect(within(link).getByLabelText('2 pending')).toHaveTextContent('2');
+      remindersCount.value = 0;
+    });
+  });
+
   describe('Review loops nav', () => {
     it('links to /review-loops and hides the badge at 0', () => {
       loopCount.value = 0;
@@ -280,7 +302,7 @@ describe('Layout', () => {
       expect(order).toEqual([
         'Sessions', 'Projects', 'Handoffs',
         'Marketplace',
-        'Notifications', 'Review loops', 'Invites', 'Transfers',
+        'Notifications', 'Reminders', 'Review loops', 'Invites', 'Transfers',
         'Organization', 'Billing',
         'Settings', 'Help', 'Admin',
       ]);

@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import (
@@ -25,6 +25,7 @@ from sessionfs.server.auth.dependencies import (
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
     Project,
+    Reminder,
     Ticket,
     TicketNotification,
     TicketWatchCursor,
@@ -48,10 +49,22 @@ _PERSONA_MAX = 50
 _DELTA_HORIZON = timedelta(seconds=5)
 
 
+class NotificationSubject(BaseModel):
+    """What a notification is about: a ticket or a reminder (migration 119)."""
+
+    kind: str
+    id: str
+    title: str | None = None
+    due_at: datetime | None = None
+
+
 class TicketNotificationItem(BaseModel):
     id: int
-    ticket_id: str
-    project_id: str
+    subject_kind: str = "ticket"
+    subject: NotificationSubject | None = None
+    # Set for ticket rows; NULL for reminder rows.
+    ticket_id: str | None = None
+    project_id: str | None = None
     ticket_title: str | None = None
     kind: str
     summary: str
@@ -101,6 +114,8 @@ def _as_aware(dt: datetime) -> datetime:
 def _to_item(notification: TicketNotification, title: str | None) -> TicketNotificationItem:
     return TicketNotificationItem(
         id=notification.id,
+        subject_kind="ticket",
+        subject=NotificationSubject(kind="ticket", id=notification.ticket_id or "", title=title),
         ticket_id=notification.ticket_id,
         project_id=notification.project_id,
         ticket_title=title,
@@ -114,6 +129,39 @@ def _to_item(notification: TicketNotification, title: str | None) -> TicketNotif
         updated_at=notification.updated_at,
         read_at=notification.read_at,
     )
+
+
+def _to_reminder_item(
+    notification: TicketNotification, reminder: Reminder
+) -> TicketNotificationItem:
+    return TicketNotificationItem(
+        id=notification.id,
+        subject_kind="reminder",
+        subject=NotificationSubject(
+            kind="reminder", id=reminder.id, title=reminder.title, due_at=reminder.due_at
+        ),
+        kind=notification.kind,
+        summary=notification.summary,
+        actor_type=notification.actor_type,
+        actor_user_id=notification.actor_user_id,
+        service_key_name=notification.service_key_name,
+        event_count=notification.event_count,
+        created_at=notification.created_at,
+        updated_at=notification.updated_at,
+        read_at=notification.read_at,
+    )
+
+
+async def _visible_reminder_ids(
+    db: AsyncSession, user_id: str, reminders: list[Reminder]
+) -> set[str]:
+    """Reminders the user can still see (owner/creator + live source check)."""
+    from sessionfs.server.services.reminders import reminder_visibility
+
+    if not reminders:
+        return set()
+    vis = await reminder_visibility(db, user_id, reminders)
+    return {rid for rid, v in vis.items() if v.visible}
 
 
 async def _accessible_project_ids(
@@ -190,13 +238,22 @@ async def list_ticket_notifications(
     seen: set[int] = set()
     cursor = before
     # Bounded scan: a long run of rows the caller lost access to can't loop
-    # forever — at most 10 pages of ``limit * 2`` rows are scanned.
+    # forever — at most 10 pages of ``limit * 2`` rows are scanned. Ticket rows
+    # re-check the ticket's current project; reminder rows re-check the
+    # reminder (owner/creator and its live source).
     for _ in range(10):
         if len(items) >= limit:
             break
         stmt = (
-            select(TicketNotification, Ticket.title, Ticket.project_id)
-            .join(Ticket, Ticket.id == TicketNotification.ticket_id)
+            select(TicketNotification, Ticket.title, Ticket.project_id, Reminder)
+            .outerjoin(Ticket, Ticket.id == TicketNotification.ticket_id)
+            .outerjoin(
+                Reminder,
+                and_(
+                    TicketNotification.subject_kind == "reminder",
+                    Reminder.id == TicketNotification.subject_id,
+                ),
+            )
             .where(TicketNotification.user_id == user.id)
             .order_by(TicketNotification.id.desc())
             .limit(limit * 2)
@@ -209,14 +266,29 @@ async def list_ticket_notifications(
         if not rows:
             break
         cursor = rows[-1][0].id
-        accessible = await _accessible_project_ids(db, user.id, {r[2] for r in rows})
-        for notification, title, project_id in rows:
-            if project_id not in accessible or notification.id in seen:
+        accessible = await _accessible_project_ids(
+            db, user.id, {r[2] for r in rows if r[2] is not None}
+        )
+        visible_reminders = await _visible_reminder_ids(
+            db, user.id, [r[3] for r in rows if r[3] is not None]
+        )
+        for notification, title, project_id, reminder in rows:
+            if notification.id in seen:
+                continue
+            if notification.subject_kind == "reminder":
+                if reminder is None or reminder.id not in visible_reminders:
+                    continue
+                item = _to_reminder_item(notification, reminder)
+            elif notification.subject_kind == "ticket":
+                if project_id is None or project_id not in accessible:
+                    continue
+                item = _to_item(notification, title)
+            else:
                 continue
             seen.add(notification.id)
             if len(items) >= limit:
                 break
-            items.append(_to_item(notification, title))
+            items.append(item)
     return NotificationListResponse(
         items=items,
         next_before=items[-1].id if items else None,
@@ -247,6 +319,7 @@ async def ticket_notifications_unread_count(
             .join(Ticket, Ticket.id == TicketNotification.ticket_id)
             .where(
                 TicketNotification.user_id == user.id,
+                TicketNotification.subject_kind == "ticket",
                 TicketNotification.read_at.is_(None),
             )
             .group_by(Ticket.project_id)
@@ -255,6 +328,37 @@ async def ticket_notifications_unread_count(
     accessible = await _accessible_project_ids(db, user.id, {r[2] for r in rows})
     count = sum(r[0] for r in rows if r[2] in accessible)
     max_id = max((r[1] for r in rows if r[2] in accessible), default=0)
+    # Reminder rows: unread rows per reminder, then one bulk visibility check.
+    reminder_rows = (
+        await db.execute(
+            select(
+                func.count(TicketNotification.id),
+                func.max(TicketNotification.id),
+                TicketNotification.subject_id,
+            )
+            .where(
+                TicketNotification.user_id == user.id,
+                TicketNotification.subject_kind == "reminder",
+                TicketNotification.read_at.is_(None),
+            )
+            .group_by(TicketNotification.subject_id)
+        )
+    ).all()
+    if reminder_rows:
+        reminders = list(
+            (
+                await db.execute(
+                    select(Reminder).where(
+                        Reminder.id.in_([r[2] for r in reminder_rows if r[2]])
+                    )
+                )
+            ).scalars()
+        )
+        visible = await _visible_reminder_ids(db, user.id, reminders)
+        for n, top, rid in reminder_rows:
+            if rid in visible:
+                count += n
+                max_id = max(max_id, top)
     etag = f'"{count}-{max_id}"'
     if request.headers.get("if-none-match") == etag:
         return Response(status_code=304)
@@ -330,6 +434,9 @@ async def get_ticket_updates(
                 .join(Ticket, Ticket.id == TicketNotification.ticket_id)
                 .where(
                     TicketNotification.user_id == user.id,
+                    # The agent delta stays tickets-only (reminders reach
+                    # agents through the reminders API).
+                    TicketNotification.subject_kind == "ticket",
                     TicketNotification.id > scanned_cursor,
                 )
                 .order_by(TicketNotification.id.asc())

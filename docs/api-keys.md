@@ -53,11 +53,13 @@ The capability scopes defined for service keys (including `devices:report`). The
 | `loops:write` | ✅ live | `POST /api/v1/projects/{project_id}/loops` (also requires editor standing for user keys; `cost_budget_usd` is org-admin only), `POST /api/v1/projects/{project_id}/loop-checklist`, `POST /api/v1/projects/{project_id}/loop-checklist/seed`, `PATCH /api/v1/projects/{project_id}/loop-checklist/{item_id}` |
 | `work_queues:read` | ✅ live | `GET /api/v1/projects/{project_id}/work-queues`, `GET /api/v1/projects/{project_id}/work-queues/{queue_id}` |
 | `work_queues:write` | ✅ live | `POST /api/v1/projects/{project_id}/work-queues`, `POST .../work-queues/{queue_id}/status`, `POST .../work-queues/{queue_id}/step`, `POST .../work-queues/{queue_id}/step/complete` (acting also requires the downstream `tickets:write` / `agent_runs:write`) |
+| `reminders:read` | ✅ live | `GET /api/v1/me/reminders`, `GET /api/v1/me/reminders/{id}`, `GET /api/v1/me/reminders/{id}/notes`, `GET /api/v1/projects/{project_id}/meetings/{meeting_id}/reminders`, `GET /api/v1/projects/{project_id}/tickets/{ticket_id}/reminders` (only reminders whose source project is in the key's org and allowlist) |
+| `reminders:write` | ✅ live | `POST /api/v1/me/reminders` (for the minter only, on a project source), `PATCH /api/v1/me/reminders/{id}`, `DELETE /api/v1/me/reminders/{id}`, `POST /api/v1/me/reminders/{id}/snooze`, `POST /api/v1/me/reminders/{id}/notes` |
 | `devices:report` | ✅ live | `POST /api/v1/devices/me/policy-report` (skills-policy compliance from `sfs skill pull` / the daemon, CI runners included); `GET /api/v1/devices/me/policy` also accepts `skills:read` |
 | `retrieval_audit:read` | reserved | — |
 | `skills_verify:run` | ✅ live (platform, tier-coupled) | `POST /api/v1/admin/skills/verify/jobs/claim`, `GET /api/v1/admin/skills/verify/jobs/{job_id}/projection`, `POST /api/v1/admin/skills/verify/jobs/{job_id}/result`. The works-in harness credential: only a platform admin may mint or rotate a key with it, a key minted by anyone else is refused, and the key stops working once the user it runs as or the admin who minted or last rotated it is no longer an active platform admin |
 | `skills_registry:poll` | ✅ live (platform, tier-coupled) | `POST /api/v1/admin/skills/registries/poll`. The registry poller's scheduler credential (Cloud Scheduler, the Helm CronJob, `sfs admin registries poll` in cron): only a platform admin may mint or rotate a key with it, a key minted by anyone else is refused, and the key stops working once the user it runs as or the admin who minted or last rotated it is no longer an active platform admin |
-| `platform_sweeps:run` | ✅ live (platform, tier-coupled) | `POST /api/v1/admin/skills/catalogs/regenerate`, `POST /api/v1/admin/skills/verify` (the sweep that queues verification jobs, not the harness protocol), `POST /api/v1/admin/marketplace/freshness/sweep`, `POST /api/v1/admin/skills/rescan`, `POST /api/v1/admin/marketplace/publishers/recheck`, `POST /api/v1/admin/github-webhook-deliveries/sweep` (and its `/purge` alias), `POST /api/v1/admin/sweeps/kb-compile`, `POST /api/v1/admin/sweeps/org-digest`, `POST /api/v1/admin/sweeps/helper-retention`, `POST /api/v1/admin/sweeps/ticket-notifications`, `POST /api/v1/admin/sweeps/jira-sync`, `POST /api/v1/admin/sweeps/confluence-publish`. The scheduled jobs' credential, so they don't need a platform-admin user key: only a platform admin may mint or rotate a key with it, and the key works only while the user it runs as and the admin who minted or last rotated it are both still active platform admins (demote or deactivate either and the key stops). It cannot override the webhook-delivery retention windows (`retention_days`, `tombstone_retention_days`) or run a report-only or forced rescan (`report_only`, `force`): those return `403 sweep_override_not_allowed` and need an admin user key (explicit `false` is accepted). The sweeps' audit rows record `actor_type`, `service_key_id` and `service_key_name` |
+| `platform_sweeps:run` | ✅ live (platform, tier-coupled) | `POST /api/v1/admin/skills/catalogs/regenerate`, `POST /api/v1/admin/skills/verify` (the sweep that queues verification jobs, not the harness protocol), `POST /api/v1/admin/marketplace/freshness/sweep`, `POST /api/v1/admin/skills/rescan`, `POST /api/v1/admin/marketplace/publishers/recheck`, `POST /api/v1/admin/github-webhook-deliveries/sweep` (and its `/purge` alias), `POST /api/v1/admin/sweeps/kb-compile`, `POST /api/v1/admin/sweeps/org-digest`, `POST /api/v1/admin/sweeps/helper-retention`, `POST /api/v1/admin/sweeps/ticket-notifications`, `POST /api/v1/admin/sweeps/jira-sync`, `POST /api/v1/admin/sweeps/confluence-publish`, `POST /api/v1/admin/sweeps/meeting-retention`, `POST /api/v1/admin/sweeps/reminders-due`. The scheduled jobs' credential, so they don't need a platform-admin user key: only a platform admin may mint or rotate a key with it, and the key works only while the user it runs as and the admin who minted or last rotated it are both still active platform admins (demote or deactivate either and the key stops). It cannot override the webhook-delivery retention windows (`retention_days`, `tombstone_retention_days`) or run a report-only or forced rescan (`report_only`, `force`): those return `403 sweep_override_not_allowed` and need an admin user key (explicit `false` is accepted). The sweeps' audit rows record `actor_type`, `service_key_id` and `service_key_name` |
 | `admin_metrics:read` | ✅ live (platform, tier-coupled) | `GET /api/v1/admin/metrics` (Prometheus text exposition 0.0.4, GitHub #90). The operator-metrics scrape credential: only a platform admin may mint or rotate a key with it, and the key works only while the user it runs as and the admin who minted or last rotated it are both still active platform admins (demote or deactivate either and the key stops) |
 | `admin:*` | reserved | — |
 
@@ -126,6 +128,19 @@ sfs admin service-keys create \
 ```
 
 The key will be rejected with `project_not_in_allowlist` if it tries to act on `proj_backend`. Useful for siloing CI jobs to a specific repo cluster within a multi-project org.
+
+### Reminders
+
+A service key acts as the user who minted it. With `reminders:write` it can
+create reminders only for that user (asking for anyone else returns the same
+`422 reminder_owner_not_eligible` as an ineligible teammate), and only on a
+source whose project is inside the key's org and project allowlist; a
+reminder without a source is refused (`422 reminder_source_required`) because
+the key could never see it again. With `reminders:read` it sees only the
+minter's reminders whose live source project passes the same org and
+allowlist check; every other reminder, like any reminder id that doesn't
+exist, is `404 Reminder not found`. Writes share the per-user limit of 60 a
+minute with the minter's own keys.
 
 ### Ticket triage example
 

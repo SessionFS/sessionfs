@@ -326,6 +326,8 @@ def test_tool_specs_exposes_read_and_proposal_tools():
         "propose_comment",
         "propose_jira_link",
         "propose_jira_overwrite",
+        "propose_reminder",
+        "list_my_reminders",
     }
     for s in specs:
         assert isinstance(s.input_schema, dict)

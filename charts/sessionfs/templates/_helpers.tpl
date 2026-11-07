@@ -115,6 +115,12 @@ is the k8s component label; `path` is the admin sweep endpoint; `schedule` and
   schedule: '30 3 * * *'
   envVar: SFS_MEETING_RETENTION_API_KEY
   secretKey: meeting-retention-api-key
+- key: remindersDue
+  component: reminders-due
+  path: /api/v1/admin/sweeps/reminders-due
+  schedule: '*/5 * * * *'
+  envVar: SFS_REMINDERS_DUE_API_KEY
+  secretKey: reminders-due-api-key
 {{- end }}
 
 {{/*

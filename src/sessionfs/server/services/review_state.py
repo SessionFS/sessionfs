@@ -513,7 +513,92 @@ def finding_is_harmful(finding: ReviewFinding) -> bool:
     return finding.severity in ("MEDIUM", "HIGH", "CRITICAL")
 
 
+# Most comments any review-state / readiness derivation loads for ONE ticket.
+# A defensive DoS ceiling (review threads run ~20-50 comments in practice).
+# Read at call time so tests can patch it small.
+REVIEW_HISTORY_CAP = 500
+
+REVIEW_HISTORY_TRUNCATED_REASON = "Review history is too long to evaluate completely"
+
+
+async def load_review_comments(
+    db: Any, ticket_id: str, *, cap: Optional[int] = None
+) -> tuple[list[dict], bool]:
+    """Load a ticket's comment thread for review derivation.
+
+    The one loader every review-state / merge-readiness / loop-close path
+    shares. Oldest-first (``created_at, id``) so the earliest rounds — the
+    ones that establish the open-findings picture — are always in the slice.
+    Loads at most ``cap + 1`` rows in ONE query and returns
+    ``(comments, truncated)``: when the thread is longer than ``cap`` the
+    newest rows are missing, so a newer trusted CHANGES-REQUESTED or finding
+    could be invisible. Decision callers (readiness, merge check, commit
+    status, loop / work-queue close) MUST fail closed when ``truncated`` is
+    true; display callers surface it as ``history_truncated``.
+
+    Each dict carries every key ``compute_review_state`` and
+    ``compute_merge_readiness`` read.
+    """
+    from sqlalchemy import select
+
+    from sessionfs.server.db.models import TicketComment
+
+    limit = REVIEW_HISTORY_CAP if cap is None else cap
+    rows = (
+        await db.execute(
+            select(TicketComment)
+            .where(TicketComment.ticket_id == ticket_id)
+            .order_by(TicketComment.created_at, TicketComment.id)
+            .limit(limit + 1)
+        )
+    ).scalars().all()
+    truncated = len(rows) > limit
+    comments = [
+        {
+            "id": r.id,
+            "author_persona": r.author_persona,
+            "content": r.content,
+            "created_at": r.created_at,
+            # The ONLY verdict authority signal — server-stamped at write
+            # (tk_d42170b4670f4448), never author_persona.
+            "verdict_trusted": bool(r.verdict_trusted),
+            "service_key_id": r.service_key_id,
+            "author_user_id": r.author_user_id,
+            "reviewed_commit": r.reviewed_commit,
+        }
+        for r in rows[:limit]
+    ]
+    return comments, truncated
+
+
 def compute_merge_readiness(
+    *,
+    comments: Iterable[dict],
+    sha: str,
+    implementer_identities: Iterable[tuple[Optional[str], Optional[str]]],
+    key_minters: Optional[Mapping[str, Optional[frozenset[str]]]] = None,
+    history_truncated: bool = False,
+) -> dict:
+    """Merge readiness over pre-fetched comments.
+
+    ``history_truncated`` (from ``load_review_comments``) fails closed: when
+    the loaded thread is incomplete a newer contrary verdict or finding may be
+    missing, so the result is never ready and carries
+    ``REVIEW_HISTORY_TRUNCATED_REASON``.
+    """
+    result = _compute_merge_readiness(
+        comments=comments,
+        sha=sha,
+        implementer_identities=implementer_identities,
+        key_minters=key_minters,
+    )
+    if history_truncated:
+        result["ready"] = False
+        result["reasons"] = [REVIEW_HISTORY_TRUNCATED_REASON, *result["reasons"]]
+    return result
+
+
+def _compute_merge_readiness(
     *,
     comments: Iterable[dict],
     sha: str,

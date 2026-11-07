@@ -3257,6 +3257,19 @@ Store meeting transcripts for a project or a project group, extract action items
 | `sfs meeting promote <id> <item_id> [--title T] [--assignee PERSONA \| --user USER_ID] [--due DATE] [--priority P] [--target-project ID] [--jira] [--yes]` | Show the ticket draft and ask before creating it; a group meeting needs `--target-project` |
 | `sfs meeting dismiss <id> <item_id>` / `restore <id> <item_id>` | Dismiss or restore a pending item |
 
+## `sfs remind`
+
+Personal reminders, optionally tied to a meeting or a ticket. A reminder is private to the person reminded and the person who created it. When it falls due it appears in the notification bell and Inbox, and in the email digest if your notification settings allow it. Titles and notes are DLP-redacted by the server before storage. Reminders are on every plan.
+
+| Command | Description |
+|---------|-------------|
+| `sfs remind add "title" --at "2026-11-06 09:00" [--tz Europe/London] [--meeting MEETING_ID[:LINES] \| --ticket TK] [--for EMAIL]` | Create a reminder. `--at` takes `YYYY-MM-DD HH:MM` (or a bare date, meaning 09:00), read in `--tz` or this machine's timezone; a value with an offset (`…Z`, `…+01:00`) is used as given. It must fall between 1 hour ago and 2 years ahead. `--for` reminds a teammate who can read the meeting or ticket |
+| `sfs remind list [--all \| --done] [--due-before TIME] [--limit N]` | Your reminders, earliest due first (open by default); due ones are marked |
+| `sfs remind show <id>` | A reminder with its source and notes |
+| `sfs remind note <id> "text"` | Add a note (notes are append-only) |
+| `sfs remind snooze <id> 1h\|tomorrow\|next-week` / `--until TIME [--tz ZONE]` | Push it later. `tomorrow` and `next-week` mean 09:00 in the reminder's timezone (next week = Monday) |
+| `sfs remind done <id>` / `dismiss <id>` | Close it as done, or dismiss it |
+
 ## `sfs helper` (Enterprise, BYOK)
 
 Ask the **session helper** a question over the sessions you can read, with a bring-your-own-key (BYOK) model key. The helper answers with citations back to the specific session messages it drew from, so you can verify every claim. See [Session helper](session-helper.md).

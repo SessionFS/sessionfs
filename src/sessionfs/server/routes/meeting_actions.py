@@ -35,6 +35,7 @@ from sessionfs.server.db.models import (
     Project,
     ProjectGroup,
     ProjectGroupAccess,
+    Reminder,
 )
 from sessionfs.server.routes.meetings import (
     MeetingActionItemResponse,
@@ -587,6 +588,14 @@ async def promote_meeting_item(
     )
     if result.rowcount != 1:
         raise _item_not_pending()
+    # Reminders on the promoted item follow it to the new ticket (they then
+    # also list on the ticket's reminders strip).
+    await db.execute(
+        update(Reminder)
+        .where(Reminder.source_kind == "meeting_item", Reminder.source_id == item_id)
+        .values(linked_ticket_id=ticket_id)
+        .execution_options(synchronize_session=False)
+    )
 
     if scope_org_id:
         org = await db.get(Organization, scope_org_id)
@@ -648,6 +657,18 @@ async def promote_meeting_item(
     )
 
 
+async def _item_owner_user_id(db: AsyncSession, item: MeetingActionItem) -> str | None:
+    if not item.owner_participant_id:
+        return None
+    return (
+        await db.execute(
+            select(MeetingParticipant.user_id).where(
+                MeetingParticipant.id == item.owner_participant_id
+            )
+        )
+    ).scalar_one_or_none()
+
+
 @router.post(
     "/meetings/{meeting_id}/action-items/{item_id}/dismiss",
     response_model=MeetingActionItemResponse,
@@ -677,7 +698,7 @@ async def dismiss_meeting_item(
         raise _item_not_pending()
     await db.commit()
     await db.refresh(item)
-    return _action_item_response(item)
+    return _action_item_response(item, await _item_owner_user_id(db, item))
 
 
 @router.post(
@@ -715,4 +736,4 @@ async def restore_meeting_item(
         )
     await db.commit()
     await db.refresh(item)
-    return _action_item_response(item)
+    return _action_item_response(item, await _item_owner_user_id(db, item))

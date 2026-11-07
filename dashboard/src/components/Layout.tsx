@@ -8,6 +8,7 @@ import { useTransfers } from '../transfers/useTransfers';
 import { useMyInvites } from '../invites/useInvites';
 import { useNeedsYouCount } from '../hooks/useReviewLoop';
 import { useTicketNotificationUnreadCount } from '../hooks/useTicketNotifications';
+import { useRemindersDueCount } from '../hooks/useReminders';
 import SearchBar from './SearchBar';
 import ThemeToggle from './ThemeToggle';
 import { Badge } from './Badge';
@@ -64,6 +65,9 @@ const helpIcon = mkIcon(
 const bellIcon = mkIcon(
   <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></>
 );
+const remindersIcon = mkIcon(
+  <><circle cx="12" cy="13" r="8" /><polyline points="12 9 12 13 14.5 14.5" /><path d="M5 3 2 6M22 6l-3-3" /></>
+);
 const adminIcon = mkIcon(
   <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></>
 );
@@ -85,7 +89,7 @@ interface NavItem {
   match: (p: string) => boolean;
   orgOnly?: boolean;
   adminOnly?: boolean;
-  badgeKey?: 'pending' | 'transfers' | 'invites' | 'notifications' | 'loops';
+  badgeKey?: 'pending' | 'transfers' | 'invites' | 'notifications' | 'loops' | 'reminders';
 }
 
 interface NavGroup {
@@ -111,6 +115,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Inbox',
     items: [
       { to: '/inbox', label: 'Notifications', icon: bellIcon, match: (p: string) => p.startsWith('/inbox'), badgeKey: 'notifications' },
+      { to: '/reminders', label: 'Reminders', icon: remindersIcon, match: (p: string) => p.startsWith('/reminders'), badgeKey: 'reminders' },
       { to: '/review-loops', label: 'Review loops', icon: loopsIcon, match: (p: string) => p.startsWith('/review-loops'), badgeKey: 'loops' },
       { to: '/invites', label: 'Invites', icon: invitesIcon, match: (p: string) => p.startsWith('/invites'), badgeKey: 'invites' },
       { to: '/transfers', label: 'Transfers', icon: transfersIcon, match: (p: string) => p.startsWith('/transfers'), badgeKey: 'transfers' },
@@ -219,6 +224,7 @@ export default function Layout() {
   const notificationsUnread = notificationCount.data?.count ?? 0;
 
   const loopsNeedYou = useNeedsYouCount().data?.count ?? 0;
+  const remindersDue = useRemindersDueCount().data?.count ?? 0;
 
   const [drawerOpen, setDrawerOpen] = useState(false);
 
@@ -269,6 +275,7 @@ export default function Layout() {
       case 'invites': return invitesPendingCount;
       case 'notifications': return notificationsUnread;
       case 'loops': return loopsNeedYou;
+      case 'reminders': return remindersDue;
       default: return undefined;
     }
   }

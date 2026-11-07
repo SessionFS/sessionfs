@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, StrictBool, field_validator
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import and_, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,6 +43,7 @@ from sessionfs.server.db.models import (
     Project,
     ProjectGroup,
     ProjectTransfer,
+    Reminder,
     Session,
     SsoExchangeCode,
     Ticket,
@@ -1981,6 +1982,9 @@ _TICKET_SWEEP_LIMIT = 5000
 # a huge backlog can't fill the row limit and starve everyone behind them.
 _TICKET_SWEEP_USER_LIMIT = 500
 _TICKET_RETENTION_DAYS = 90
+# Kinds that pass the ``your_turn`` email preference (spec §6: a due reminder
+# and, later, an approval request count as your turn).
+_YOUR_TURN_EMAIL_KINDS = frozenset({"your_turn", "reminder_due"})
 
 
 async def _mark_notifications_emailed(
@@ -2081,14 +2085,20 @@ async def sweep_ticket_notifications(
     # can't fill the row limit and starve everyone behind them. Ordering by
     # each user's oldest deliverable row preserves global age order at user
     # granularity; each user's rows are then fetched and claimed per user.
+    # Ticket rows wait out the coalescing delay; reminder_due rows are already
+    # final when written (the due sweep emits each one once), so they don't.
+    deliverable = or_(
+        TicketNotification.subject_kind == "reminder",
+        TicketNotification.updated_at <= cutoff,
+    )
     user_ids = (
         await db.execute(
             select(TicketNotification.user_id)
-            .join(Ticket, Ticket.id == TicketNotification.ticket_id)
             .where(
+                TicketNotification.subject_kind.in_(("ticket", "reminder")),
                 TicketNotification.read_at.is_(None),
                 TicketNotification.emailed_at.is_(None),
-                TicketNotification.updated_at <= cutoff,
+                deliverable,
             )
             .group_by(TicketNotification.user_id)
             .order_by(func.min(TicketNotification.id).asc())
@@ -2125,19 +2135,28 @@ async def sweep_ticket_notifications(
                     TicketNotification,
                     Ticket.title,
                     Ticket.project_id,
+                    Reminder,
                 )
-                .join(Ticket, Ticket.id == TicketNotification.ticket_id)
+                .outerjoin(Ticket, Ticket.id == TicketNotification.ticket_id)
+                .outerjoin(
+                    Reminder,
+                    and_(
+                        TicketNotification.subject_kind == "reminder",
+                        Reminder.id == TicketNotification.subject_id,
+                    ),
+                )
                 .where(
                     TicketNotification.user_id == user_id,
+                    TicketNotification.subject_kind.in_(("ticket", "reminder")),
                     TicketNotification.read_at.is_(None),
                     TicketNotification.emailed_at.is_(None),
-                    TicketNotification.updated_at <= cutoff,
+                    deliverable,
                 )
                 .order_by(TicketNotification.id.asc())
                 .limit(_TICKET_SWEEP_LIMIT)
             )
         ).all()
-        ids = [n.id for n, _, _ in items]
+        ids = [row[0].id for row in items]
         try:
             user = users.get(user_id)
             if user is None or not user.is_active or not user.email:
@@ -2147,10 +2166,32 @@ async def sweep_ticket_notifications(
                 continue
 
             # Re-check tenant isolation once per (user, project), not per row.
-            visible: list[tuple[TicketNotification, str | None, str]] = []
+            # Reminder rows re-check the reminder itself (still open, and the
+            # owner can still see it through its live source).
+            visible: list[tuple[TicketNotification, str | None, str | None, Reminder | None]] = []
             invisible_ids: list[int] = []
             project_access: dict[str, bool] = {}
-            for notification, title, project_id in items:
+            reminder_rows = [r[3] for r in items if r[3] is not None]
+            visible_reminders: set[str] = set()
+            if reminder_rows:
+                from sessionfs.server.services.reminders import reminder_visibility
+
+                vis = await reminder_visibility(db, user_id, reminder_rows)
+                visible_reminders = {rid for rid, v in vis.items() if v.visible}
+            for notification, title, project_id, reminder in items:
+                if notification.subject_kind == "reminder":
+                    if (
+                        reminder is not None
+                        and reminder.status == "open"
+                        and reminder.id in visible_reminders
+                    ):
+                        visible.append((notification, reminder.title, None, reminder))
+                    else:
+                        invisible_ids.append(notification.id)
+                    continue
+                if project_id is None:
+                    invisible_ids.append(notification.id)
+                    continue
                 if project_id not in project_access:
                     project = await db.get(Project, project_id)
                     project_access[project_id] = (
@@ -2158,7 +2199,7 @@ async def sweep_ticket_notifications(
                         and await user_can_access_project(db, user_id, project)
                     )
                 if project_access[project_id]:
-                    visible.append((notification, title, project_id))
+                    visible.append((notification, title, project_id, None))
                 else:
                     invisible_ids.append(notification.id)
             # Inaccessible rows are consumed (never delivered) so they do not
@@ -2172,19 +2213,17 @@ async def sweep_ticket_notifications(
 
             mode = settings.get(user_id)
             ticket_email = mode.ticket_email if mode is not None else "your_turn"
+            visible_ids = [row[0].id for row in visible]
             if ticket_email == "off":
-                await _mark_notifications_emailed(
-                    db, user_id, [n.id for n, _, _ in visible], now
-                )
+                await _mark_notifications_emailed(db, user_id, visible_ids, now)
                 await db.commit()
                 skipped_pref += len(visible)
                 continue
+            # ``your_turn`` mode treats a due reminder like a your-turn event.
             if ticket_email == "your_turn" and not any(
-                n.kind == "your_turn" for n, _, _ in visible
+                row[0].kind in _YOUR_TURN_EMAIL_KINDS for row in visible
             ):
-                await _mark_notifications_emailed(
-                    db, user_id, [n.id for n, _, _ in visible], now
-                )
+                await _mark_notifications_emailed(db, user_id, visible_ids, now)
                 await db.commit()
                 skipped_pref += len(visible)
                 continue
@@ -2192,9 +2231,7 @@ async def sweep_ticket_notifications(
             # Claim the visible rows for delivery; ``claimed_ids`` is exactly
             # what this run won, so two overlapping sweeps never both email the
             # same row.
-            claimed_ids = await _claim_notifications(
-                db, user_id, [n.id for n, _, _ in visible], now
-            )
+            claimed_ids = await _claim_notifications(db, user_id, visible_ids, now)
             await db.commit()
             if not claimed_ids:
                 skipped_pref += len(visible)
@@ -2203,13 +2240,16 @@ async def sweep_ticket_notifications(
             claimed_lookup = set(claimed_ids)
             digest = [
                 {
+                    "subject_kind": n.subject_kind,
                     "ticket_title": title,
                     "ticket_id": n.ticket_id,
                     "project_id": project_id,
+                    "reminder_id": reminder.id if reminder is not None else None,
+                    "due_at": reminder.due_at.isoformat() if reminder is not None else None,
                     "kind": n.kind,
                     "summary": n.summary,
                 }
-                for n, title, project_id in visible
+                for n, title, project_id, reminder in visible
                 if n.id in claimed_lookup
             ]
             outcome = await provider.send_ticket_notification(
@@ -2866,6 +2906,42 @@ async def sweep_meeting_retention(
     )
     await db.commit()
     return {"meetings_deleted": meetings_deleted}
+
+
+@router.post("/sweeps/reminders-due")
+async def sweep_reminders_due(
+    body: dict | None = None,
+    batch_size: int = Query(default=500, ge=1, le=5000),
+    auth: AuthContext = Depends(require_platform_sweeper()),
+    db: AsyncSession = Depends(get_db),
+):
+    """Notify owners of reminders that came due (tk_8a858d6354fc4ef3).
+
+    Accepts a platform-admin user key or a ``platform_sweeps:run`` service
+    key (run it every 5 minutes). Each open, un-notified reminder with
+    ``due_at <= now`` is claimed with a rowcount-1 guarded UPDATE that stamps
+    ``notified_at`` (so two overlapping runs never both notify), the owner's
+    access is re-checked through the reminder's live source, and one
+    ``reminder_due`` row is written to the shared notification table (bell,
+    inbox, digest email). Keyset batches; idempotent.
+    """
+    from sessionfs.server.services.reminders import sweep_due_reminders
+
+    admin_id = auth.user.id
+    actor = sweep_actor_details(auth)
+    # End the auth transaction; each batch commits on its own.
+    await db.rollback()
+    result = await sweep_due_reminders(db, batch_size=batch_size)
+    await _log_action(
+        db,
+        admin_id,
+        "reminders_due_sweep",
+        "reminder",
+        "bulk",
+        {**result, **actor},
+    )
+    await db.commit()
+    return result
 
 
 @router.post("/github-webhook-deliveries/{fingerprint}/retry")

@@ -459,3 +459,64 @@ async def test_key_cannot_close_item_implemented_by_its_minter(
     r = await _round(client, e, key=raw, verdict="VERIFIED-CLEAN", findings=[])
     assert r.status_code == 201, r.text
     assert (await _item(db_session, e)).item_status != "done"
+
+
+@pytest.mark.asyncio
+async def test_truncated_history_does_not_close_item(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """The oldest slice holds a clean verdict, but a NEWER trusted
+    CHANGES-REQUESTED sits past the history cap: the clean round must not
+    close the item (fail closed on a truncated thread)."""
+    from datetime import timedelta
+
+    from sessionfs.server.services import review_state
+
+    e = await _env(db_session, client)
+    run_id = (await _start_worker(client, e)).json()["run_id"]
+    await _finish(client, e, run_id)
+
+    old = datetime.now(timezone.utc) - timedelta(days=1)
+    db_session.add(
+        TicketComment(
+            id=f"tc_{uuid.uuid4().hex[:16]}",
+            ticket_id=e.child_id,
+            author_user_id=e.reviewer.id,
+            author_persona="reviewer",
+            content="Reviewer R1 review on tk_x: VERIFIED-CLEAN\n\nFindings: none.",
+            verdict_trusted=True,
+            reviewed_commit=SHA1,
+            created_at=old,
+        )
+    )
+    for i in range(3):
+        db_session.add(
+            TicketComment(
+                id=f"tc_fill_{uuid.uuid4().hex[:12]}",
+                ticket_id=e.child_id,
+                author_user_id=e.owner.id,
+                author_persona="atlas",
+                content=f"filler {i}",
+                created_at=old + timedelta(seconds=i + 1),
+            )
+        )
+    # Newer than the round about to be posted: the true last verdict.
+    db_session.add(
+        TicketComment(
+            id=f"tc_{uuid.uuid4().hex[:16]}",
+            ticket_id=e.child_id,
+            author_user_id=e.reviewer.id,
+            author_persona="reviewer",
+            content="Reviewer R4 review on tk_x: CHANGES REQUESTED\n\nFindings:\n\n - HIGH - newer\n",
+            verdict_trusted=True,
+            reviewed_commit=SHA1,
+            created_at=datetime.now(timezone.utc) + timedelta(days=1),
+        )
+    )
+    await db_session.commit()
+    monkeypatch.setattr(review_state, "REVIEW_HISTORY_CAP", 2)
+
+    r = await _round(client, e, round=3, verdict="VERIFIED-CLEAN", findings=[])
+    assert r.status_code == 201, r.text
+    assert r.json()["verdict_trusted"] is True
+    assert (await _item(db_session, e)).item_status != "done"

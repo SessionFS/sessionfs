@@ -970,11 +970,13 @@ async def record_review_round(
     if item is not None and body.stage == "code":
         closed = False
         if comment.verdict_trusted and body.verdict == "VERIFIED-CLEAN":
-            rs = compute_review_state(
-                await _review_comments_for_oracle(db, ticket_id=ticket.id)
+            oracle_comments, truncated = await _review_comments_for_oracle(
+                db, ticket_id=ticket.id
             )
+            rs = compute_review_state(oracle_comments)
             clean = (
-                rs is not None
+                not truncated
+                and rs is not None
                 and rs.last_verdict_is_strict_verified_clean
                 and not rs.open_findings
             )

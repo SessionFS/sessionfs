@@ -17,6 +17,31 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.29.5 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.29.5</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">November 7, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Reminders</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Reminders.</strong> A title, a due time with its timezone, the person it is for, an optional link to a meeting, ticket, session or knowledge entry, and a thread of notes. Due reminders appear in the bell and Inbox and in the email digest if your settings allow. Snooze, reschedule, add notes, and close as done or dismissed; closed reminders stay as history on their source.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>From meetings.</strong> Action items and decisions with a due date offer &ldquo;Add reminder&rdquo;, pre-filled from the meeting. Promoting an item to a ticket carries its reminders over.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>From the session helper.</strong> &ldquo;Remind me to book a follow-up with Tolu on Thursday&rdquo; proposes a reminder with the exact local time; nothing is created until you confirm.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Private by default.</strong> Only the person it is for and the person who set it can see a reminder. You can set one for a teammate when you can both read the source.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>CLI <span class="font-mono text-accent text-sm">sfs remind add|list|show|note|snooze|done|dismiss</span>; MCP <span class="font-mono text-accent text-sm">list_my_reminders</span>, <span class="font-mono text-accent text-sm">create_reminder</span>, <span class="font-mono text-accent text-sm">update_reminder</span>. See <a href="/meetings/" class="text-brand hover:underline">Meetings</a> and <a href="/mcp/" class="text-brand hover:underline">MCP</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed:</strong> a crafted meeting transcript could stall the API while its text was cleaned; cleaning is now linear.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed:</strong> merge readiness, merge checks and the review loop no longer report ready on a review thread too long to evaluate completely, and the review views say when they show only part of it.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed:</strong> knowledge extraction on sync with Auto Narrative and your saved LLM key failed on every sync. It now uses your saved key for its own provider and endpoint only.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;119 (119 adds reminders and lets notifications carry reminders as well as tickets; additive). Self-hosted: run migration 119 and enable the <span class="font-mono">api.remindersDue</span> Helm CronJob. 121 MCP tools (+3).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
       <!-- v0.29.4 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +49,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.29.4</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">October 31, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Rotated-Key Self-Review &middot; Release Ticket Links &middot; Team Plan for Release Tools</h2>
         <ul class="space-y-2 text-base text-muted">

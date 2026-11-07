@@ -50,6 +50,13 @@ def test_index_loads_and_search_jira_ranks_integrations_first() -> None:
     assert results[0]["slug"] == "integrations/jira"
 
 
+def test_reminder_docs_are_indexed() -> None:
+    results = get_docs_index().search("sfs remind snooze", 5)
+    found = {(r["slug"], r["anchor"]) for r in results}
+    assert ("cli", "sfs-remind") in found
+    assert ("mcp", "reminders") in found
+
+
 def test_search_install_ranks_installation_first() -> None:
     results = get_docs_index().search("install", 3)
     assert results, "expected at least one hit for 'install'"
