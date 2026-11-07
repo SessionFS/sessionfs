@@ -110,6 +110,8 @@ export function describeToolStep(step: Pick<ToolStep, 'name' | 'args' | 'status'
       return `${verb('Preparing', 'Prepared')} to link a Jira issue`;
     case 'propose_jira_overwrite':
       return `${verb('Preparing', 'Prepared')} to sync a ticket with Jira`;
+    case 'propose_jira_publish':
+      return `${verb('Preparing', 'Prepared')} to publish a ticket to Jira`;
     case 'propose_reminder':
       return `${verb('Preparing', 'Prepared')} a reminder`;
     case 'propose_meeting_upload':

@@ -9,7 +9,7 @@ import type {
 } from '../api/client';
 
 /**
- * React-Query hooks for v0.10.1 Personas (Pro+).
+ * React-Query hooks for v0.10.1 Personas (every plan since 0.29.10).
  *
  * Endpoints:
  *   GET    /api/v1/projects/{id}/personas
@@ -19,11 +19,22 @@ import type {
  *   DELETE /api/v1/projects/{id}/personas/{name}[?force=true]
  */
 
-export function usePersonas(projectId: string | undefined) {
+/**
+ * The personas usable in a project. By default this includes the org's
+ * personas (the API default), which the ticket pickers and helper rely on;
+ * `{ includeOrg: false }` asks for the project's own only (the Agents tab,
+ * GitHub #126). Both keys sit under ['personas', projectId], so persona
+ * writes invalidate both.
+ */
+export function usePersonas(projectId: string | undefined, opts: { includeOrg?: boolean } = {}) {
   const { auth } = useAuth();
+  const projectOnly = opts.includeOrg === false;
   return useQuery<Persona[]>({
-    queryKey: ['personas', projectId],
-    queryFn: () => auth!.client.listPersonas(projectId!),
+    queryKey: projectOnly ? ['personas', projectId, 'project-only'] : ['personas', projectId],
+    queryFn: () =>
+      projectOnly
+        ? auth!.client.listPersonas(projectId!, { includeOrg: false })
+        : auth!.client.listPersonas(projectId!),
     enabled: !!auth && !!projectId,
     staleTime: 30_000,
   });

@@ -203,15 +203,16 @@ export function TicketDetail({
     (t.status === 'suggested' || t.status === 'open') && ticketActionAllowed('dismiss', t, viewer);
   const canClose =
     t.kind === 'issue' && t.status === 'in_progress' && ticketActionAllowed('close', t, viewer);
-  // PUT /tickets/{id} admits exactly the ticket's creator or a project
-  // admin (services/ticket_writes.authorize_ticket_edit). Admin standing
-  // comes from the viewer (the project's `can_admin`, resolved by the page);
-  // the Jira surface's flag is only a fallback, and unknown means no.
+  // PUT /tickets/{id} admits the ticket's creator or a project admin for
+  // field edits (services/ticket_writes.authorize_ticket_edit). Admin
+  // standing comes from the viewer (the project's `can_admin`, resolved by
+  // the page); the Jira surface's flag is only a fallback, and unknown means no.
   const isCreator = !!viewer.userId && t.created_by_user_id === viewer.userId;
   const isAdmin = viewer.isProjectAdmin ?? isProjectAdmin ?? false;
-  const canReassign = isCreator || isAdmin;
-  // The due date and estimate go through the same PUT, so the same rule.
-  const canEditFields = canReassign;
+  // The due date and estimate keep the creator-or-admin rule.
+  const canEditFields = isCreator || isAdmin;
+  // Any project editor (`can_edit`) may also assign, reassign or unassign.
+  const canReassign = canEditFields || viewer.canEdit;
   // A non-editor's change to an approved ticket sends it back to suggested
   // (ticket_writes.apply_ticket_update), so those saves confirm first.
   const needsReapproval = !viewer.canEdit && t.status === 'open';

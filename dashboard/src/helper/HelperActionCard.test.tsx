@@ -86,6 +86,15 @@ const LINK_JIRA: TurnAction = {
   params: { ticket_id: 'tk_1', issue_key: 'EMMS-291' },
 };
 
+const PUBLISH_JIRA: TurnAction = {
+  id: ID,
+  kind: 'publish_ticket_jira',
+  summary: 'Publish Fix webhook retry to Jira EMMS',
+  expires_at: inMinutes(14),
+  targets: [{ id: 'tk_1', name: 'Fix webhook retry', change: 'will_change' }],
+  params: { ticket_id: 'tk_1', jira_project_key: 'EMMS' },
+};
+
 const OVERWRITE_TO_JIRA: TurnAction = {
   id: ID,
   kind: 'jira_overwrite',
@@ -544,6 +553,67 @@ describe('HelperActionCard', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
     await screen.findByText('Linked');
     expect(await axe(container)).toHaveNoViolations();
+  });
+});
+
+describe('Jira publish cards', () => {
+  it('maps propose_jira_publish and shows the published issue after confirm', async () => {
+    expect(actionKindForTool('propose_jira_publish')).toBe('publish_ticket_jira');
+    expect(proposedActionId({ tool_name: 'propose_jira_publish', content: `Proposed action ${ID}` })).toBe(ID);
+    client.confirmHelperAction.mockResolvedValue(
+      record(PUBLISH_JIRA, {
+        status: 'confirmed',
+        result: {
+          targets: [
+            {
+              id: 'tk_1',
+              ok: true,
+              error: null,
+              jira_published: true,
+              issue_key: 'EMMS-301',
+              issue_url: 'https://acme.atlassian.net/browse/EMMS-301',
+            },
+          ],
+        },
+      }),
+    );
+    renderCard(PUBLISH_JIRA);
+    expect(screen.getByRole('heading', { name: 'Publish Fix webhook retry to Jira EMMS' })).toBeInTheDocument();
+    expect(within(screen.getByRole('list', { name: /Targets of/ })).getByText('→ Jira EMMS')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(client.confirmHelperAction).toHaveBeenCalledWith(ID, undefined);
+    expect(await screen.findByText('Published')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /EMMS-301/ })).toHaveAttribute(
+      'href',
+      'https://acme.atlassian.net/browse/EMMS-301',
+    );
+  });
+
+  it('explains a publish refused because the ticket was linked meanwhile', async () => {
+    client.confirmHelperAction.mockResolvedValue(
+      record(PUBLISH_JIRA, {
+        status: 'failed',
+        result: { targets: [{ id: 'tk_1', ok: false, error: 'jira_already_linked' }] },
+      }),
+    );
+    renderCard(PUBLISH_JIRA);
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(
+      await screen.findByText('Not applied: The ticket is already linked to a Jira issue.'),
+    ).toBeInTheDocument();
+  });
+
+  it('does not claim nothing changed when Jira timed out', async () => {
+    client.confirmHelperAction.mockResolvedValue(
+      record(PUBLISH_JIRA, {
+        status: 'failed',
+        result: { targets: [{ id: 'tk_1', ok: false, error: 'jira_timeout' }] },
+      }),
+    );
+    renderCard(PUBLISH_JIRA);
+    await userEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect((await screen.findAllByText(/Jira didn’t confirm the publish/)).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/Nothing was changed/)).not.toBeInTheDocument();
   });
 });
 

@@ -1,7 +1,8 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api/client';
 import PersonasTab from './PersonasTab';
+import { includeOrgStorageKey } from './agentsIncludeOrg';
 
 const { hooks, mockAddToast } = vi.hoisted(() => ({
   hooks: {
@@ -118,28 +119,110 @@ describe('PersonasTab', () => {
     expect(mockAddToast).toHaveBeenCalledWith('error', expect.stringMatching(/^Save failed: .*name taken/));
   });
 
-  it('labels org personas and keeps them read-only (GH #70)', () => {
-    hooks.usePersonas.mockReturnValue({
-      data: [
-        persona(),
-        persona({
-          id: 'p_org',
-          project_id: null,
-          org_id: 'org_1',
-          scope: 'org',
-          name: 'gcp-infra',
-          role: 'Terraform engineer',
-        }),
-      ],
-      isLoading: false,
-      error: null,
+  describe('org people (GitHub #126)', () => {
+    const ORG = persona({
+      id: 'p_org',
+      project_id: null,
+      org_id: 'org_1',
+      scope: 'org',
+      name: 'gcp-infra',
+      role: 'Terraform engineer',
     });
-    render(<PersonasTab projectId="proj_1" />);
-    expect(screen.getByText('gcp-infra')).toBeInTheDocument();
-    expect(screen.getByText('Org')).toBeInTheDocument();
-    expect(screen.getByText(/Managed by org/i)).toBeInTheDocument();
-    // Only the project persona row has Edit/Delete.
-    expect(screen.getAllByRole('button', { name: /^Edit$/i })).toHaveLength(1);
-    expect(screen.getAllByRole('button', { name: /^Delete$/i })).toHaveLength(1);
+    const ORG2 = persona({ id: 'p_org2', project_id: null, org_id: 'org_1', scope: 'org', name: 'kemi', role: 'Reviewer' });
+
+    /** Project-only list for include_org=false, the full list otherwise. */
+    function serve(projectList: unknown[], fullList: unknown[]) {
+      hooks.usePersonas.mockImplementation((_id: string, opts?: { includeOrg?: boolean }) => ({
+        data: opts?.includeOrg === false ? projectList : fullList,
+        isLoading: false,
+        error: null,
+      }));
+    }
+
+    beforeEach(() => {
+      localStorage.clear();
+      serve([persona()], [persona(), ORG, ORG2]);
+    });
+
+    it('lists only project agents by default, with a count of org people in the toggle', () => {
+      render(<PersonasTab projectId="proj_1" />);
+      expect(hooks.usePersonas).toHaveBeenCalledWith('proj_1', { includeOrg: false });
+      expect(screen.getByText('atlas')).toBeInTheDocument();
+      expect(screen.queryByText('gcp-infra')).toBeNull();
+      expect(screen.queryByRole('heading', { name: 'Org people (inherited)' })).toBeNull();
+      const toggle = screen.getByRole('switch', { name: 'Include 2 org people' });
+      expect(toggle).toHaveAttribute('aria-checked', 'false');
+      expect(screen.getByText(/1 agent$/)).toBeInTheDocument();
+    });
+
+    it('shows org people in their own read-only section when on, and remembers it per project', () => {
+      render(<PersonasTab projectId="proj_1" />);
+      fireEvent.click(screen.getByRole('switch', { name: 'Include 2 org people' }));
+      const heading = screen.getByRole('heading', { name: 'Org people (inherited)' });
+      const section = heading.closest('section')!;
+      expect(within(section).getByText('gcp-infra')).toBeInTheDocument();
+      expect(within(section).getByText('kemi')).toBeInTheDocument();
+      expect(within(section).queryByRole('button', { name: /Delete|Edit/ })).toBeNull();
+      expect(within(section).getAllByText('Managed by org')).toHaveLength(2);
+      // Only the project agent row has Edit/Delete.
+      expect(screen.getAllByRole('button', { name: /^Edit$/i })).toHaveLength(1);
+      expect(screen.getAllByRole('button', { name: /^Delete$/i })).toHaveLength(1);
+      expect(localStorage.getItem(includeOrgStorageKey('proj_1'))).toBe('1');
+
+      cleanup();
+      render(<PersonasTab projectId="proj_1" />);
+      expect(screen.getByRole('switch', { name: 'Include 2 org people' })).toHaveAttribute('aria-checked', 'true');
+      expect(screen.getByRole('heading', { name: 'Org people (inherited)' })).toBeInTheDocument();
+
+      cleanup();
+      // Another project keeps its own (default off) choice.
+      render(<PersonasTab projectId="proj_2" />);
+      expect(screen.getByRole('switch', { name: 'Include 2 org people' })).toHaveAttribute('aria-checked', 'false');
+    });
+
+    it('turning it off hides the section and forgets the choice', () => {
+      localStorage.setItem(includeOrgStorageKey('proj_1'), '1');
+      render(<PersonasTab projectId="proj_1" />);
+      fireEvent.click(screen.getByRole('switch', { name: 'Include 2 org people' }));
+      expect(screen.queryByRole('heading', { name: 'Org people (inherited)' })).toBeNull();
+      expect(localStorage.getItem(includeOrgStorageKey('proj_1'))).toBeNull();
+    });
+
+    it('hides the toggle when the org has nothing to inherit', () => {
+      serve([persona()], [persona()]);
+      render(<PersonasTab projectId="proj_1" />);
+      expect(screen.queryByRole('switch')).toBeNull();
+    });
+
+    it('uses the singular for one org person', () => {
+      serve([persona()], [persona(), ORG]);
+      render(<PersonasTab projectId="proj_1" />);
+      expect(screen.getByRole('switch', { name: 'Include 1 org person' })).toBeInTheDocument();
+    });
+
+    it('still works when storage is unavailable', () => {
+      const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+        throw new Error('blocked');
+      });
+      const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+        throw new Error('blocked');
+      });
+      try {
+        render(<PersonasTab projectId="proj_1" />);
+        const toggle = screen.getByRole('switch', { name: 'Include 2 org people' });
+        expect(toggle).toHaveAttribute('aria-checked', 'false');
+        fireEvent.click(toggle);
+        expect(screen.getByRole('heading', { name: 'Org people (inherited)' })).toBeInTheDocument();
+      } finally {
+        get.mockRestore();
+        set.mockRestore();
+      }
+    });
+
+    it('keeps org rows out of the project list if an older server returns them anyway', () => {
+      serve([persona(), ORG], [persona(), ORG]);
+      render(<PersonasTab projectId="proj_1" />);
+      expect(screen.queryByText('gcp-infra')).toBeNull();
+    });
   });
 });

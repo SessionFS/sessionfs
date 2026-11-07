@@ -18,6 +18,7 @@ import secrets
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
@@ -367,19 +368,47 @@ async def assert_lease_required_mode(
         )
 
 
-async def authorize_ticket_edit(
-    db: AsyncSession, *, ticket: Ticket, project: Project, user_id: str
-) -> None:
-    """Ticket creator or project admin; persona name is routing, not auth."""
-    if ticket.created_by_user_id != user_id:
-        from sessionfs.server.auth.project_access import user_is_project_admin
+# The assignee fields of a ticket update. A project editor who is neither
+# the creator nor a project admin may change these (and only these).
+ASSIGNEE_FIELDS = frozenset({"assigned_to", "assigned_user_id", "assigned_user"})
 
-        if not await user_is_project_admin(db, user_id, project):
-            raise HTTPException(
-                403,
-                "Only the ticket creator or a project admin may update "
-                "this ticket. Persona name does not grant edit rights.",
-            )
+
+async def authorize_ticket_edit(
+    db: AsyncSession,
+    *,
+    ticket: Ticket,
+    project: Project,
+    user_id: str,
+    fields: Iterable[str] | None = None,
+) -> None:
+    """Ticket creator or project admin; persona name is routing, not auth.
+
+    ``fields`` names what the update changes. When it is non-empty and only
+    touches the assignee (``ASSIGNEE_FIELDS``), a project editor may make the
+    change too: editors can reassign or unassign any ticket, but every other
+    field still needs the creator or a project admin.  ``None`` (the default)
+    means "any field" and keeps the creator-or-admin rule.
+    """
+    if ticket.created_by_user_id == user_id:
+        return
+    from sessionfs.server.auth.project_access import (
+        user_can_edit_project,
+        user_is_project_admin,
+    )
+
+    if await user_is_project_admin(db, user_id, project):
+        return
+    changed = set(fields) if fields is not None else set()
+    if changed and changed <= ASSIGNEE_FIELDS and await user_can_edit_project(
+        db, user_id, project
+    ):
+        return
+    raise HTTPException(
+        403,
+        "Only the ticket creator or a project admin may update "
+        "this ticket (project editors may change its assignee). "
+        "Persona name does not grant edit rights.",
+    )
 
 
 async def assert_ticket_fields_editable(

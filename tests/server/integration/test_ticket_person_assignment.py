@@ -881,3 +881,65 @@ async def test_assignee_email_masked_for_captured_reader(
             else:
                 assert email != assignee.email
                 assert email.startswith(assignee.email[0] + "***@")
+
+
+# ── Project editors may change only the assignee (0.29.10) ────────
+
+
+@pytest.mark.asyncio
+async def test_editor_can_change_only_the_assignee(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, owner_key = await _make_user(db_session, name="owner")
+    editor, editor_key = await _make_user(db_session, name="ed")
+    assignee, _ = await _make_user(db_session, name="jane")
+    org = await _make_org(db_session)
+    await _make_member(db_session, org, owner, role="admin")
+    await _make_member(db_session, org, editor)  # plain member: editor, not admin
+    await _make_member(db_session, org, assignee)
+    project = await _make_project(db_session, owner, org)
+    await _make_persona(db_session, project, owner, "atlas")
+    ticket_id = (await _create_ticket(client, project, owner_key))["id"]
+    url = f"/api/v1/projects/{project.id}/tickets/{ticket_id}"
+
+    resp = await client.put(url, headers=_hdrs(editor_key), json={"assigned_user": assignee.email})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["assigned_user_id"] == assignee.id
+
+    resp = await client.put(url, headers=_hdrs(editor_key), json={"assigned_to": "atlas"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["assigned_to"] == "atlas"
+    assert resp.json()["assigned_user_id"] is None
+
+    resp = await client.put(url, headers=_hdrs(editor_key), json={"assigned_to": None})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["assigned_to"] is None
+    assert resp.json()["assigned_user_id"] is None
+
+    # Any other field still needs the creator or a project admin, alone or
+    # alongside an assignee change.
+    for body in ({"title": "Hijacked"}, {"assigned_to": "atlas", "priority": "high"}):
+        resp = await client.put(url, headers=_hdrs(editor_key), json=body)
+        assert resp.status_code == 403, (body, resp.text)
+    row = await db_session.get(Ticket, ticket_id)
+    await db_session.refresh(row)
+    assert row.title == "Fix the flaky test" and row.assigned_to is None
+
+
+@pytest.mark.asyncio
+async def test_reader_cannot_change_the_assignee(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, owner_key = await _make_user(db_session, name="owner")
+    reader, reader_key = await _make_user(db_session, name="reader")
+    project = await _make_project(db_session, owner)
+    await _make_persona(db_session, project, owner, "atlas")
+    # A captured-session reader can read the project but is not an editor.
+    await _make_session(db_session, reader, project)
+    ticket_id = (await _create_ticket(client, project, owner_key))["id"]
+    url = f"/api/v1/projects/{project.id}/tickets/{ticket_id}"
+    assert (await client.get(url, headers=_hdrs(reader_key))).status_code == 200
+
+    for body in ({"assigned_to": "atlas"}, {"assigned_to": None}):
+        resp = await client.put(url, headers=_hdrs(reader_key), json=body)
+        assert resp.status_code == 403, (body, resp.text)

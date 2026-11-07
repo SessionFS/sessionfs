@@ -1,5 +1,5 @@
 """Release recording, share-link creation, merge-check, the Review loops inbox
-and inbound PR/release webhooks require the Team plan (``agent_tickets``).
+and inbound PR/release webhooks require the Team plan (``review_loop``).
 
 Plan errors only reach callers who can see the project (an outsider keeps the
 plain 404); reads, share list/revoke and the public share view stay open so a
@@ -30,7 +30,7 @@ from tests.server.integration import test_loop_share_links as sl
 
 def _plan_error(resp) -> None:
     assert resp.status_code == 403, resp.text
-    assert "agent_tickets" in resp.text
+    assert "review_loop" in resp.text
 
 
 async def _free_project(db: AsyncSession):
@@ -66,7 +66,7 @@ async def test_release_writes_gated_reads_open(
         base + "/releases", json={"version": "v1", "source": "manual", "tag_sha": "a" * 40}, headers=sl._hdrs(other)
     )
     assert r.status_code == 404, r.text
-    assert "agent_tickets" not in r.text
+    assert "review_loop" not in r.text
 
 
 @pytest.mark.asyncio

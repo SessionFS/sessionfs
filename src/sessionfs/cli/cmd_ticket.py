@@ -21,7 +21,7 @@ Commands:
 
 `start` writes ~/.sessionfs/active_ticket.json so the daemon (Phase 6)
 can tag captured sessions; `complete` removes it only if it points at
-this ticket. Tier-gated TEAM+ via the `agent_tickets` feature flag.
+this ticket. Available on every plan (the `agent_tickets` feature).
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ from sessionfs.cli.common import (
 
 ticket_app = typer.Typer(
     name="ticket",
-    help="Manage agent tickets for this project (TEAM+).",
+    help="Manage agent tickets for this project.",
     no_args_is_help=True,
 )
 
@@ -649,7 +649,7 @@ def update_ticket_cmd(
     if s == 403:
         err_console.print(
             "[red]Not authorized to update this ticket "
-            "(only creator or project admin can edit).[/red]"
+            "(only creator or project admin can edit; editors may change only the assignee).[/red]"
         )
         raise typer.Exit(1)
     if s == 409:

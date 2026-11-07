@@ -698,9 +698,12 @@ async def test_resolve_assignee_email_of_represented_human_resolves_person(
 
 
 @pytest.mark.asyncio
-async def test_propose_assignment_denies_non_creator_non_admin(
+async def test_propose_assignment_allows_project_editor(
     db_session: AsyncSession,
 ):
+    """A project editor (plain org member) may reassign: editors can change
+    a ticket's assignee even when they neither created it nor administer
+    the project. Proposing still changes nothing."""
     owner, _ = await _make_user(db_session, name="owner")
     member, _ = await _make_user(db_session, name="member")
     org = await _make_org_with(db_session, owner, member)
@@ -713,10 +716,32 @@ async def test_propose_assignment_denies_non_creator_non_admin(
         ctx, {"ticket_id": ticket.id, "persona_name": "atlas"}
     )
 
-    assert ctx.pending_actions == []
-    assert "only the ticket creator or a project admin" in output.text.lower()
+    assert len(ctx.pending_actions) == 1, output.text
+    assert ctx.pending_actions[0]["kind"] == "assign_ticket"
     await db_session.refresh(ticket)
     assert ticket.assigned_to is None
+
+
+@pytest.mark.asyncio
+async def test_propose_assignment_denies_non_editor(
+    db_session: AsyncSession,
+):
+    owner, _ = await _make_user(db_session, name="owner")
+    reader, _ = await _make_user(db_session, name="reader")
+    project = await _make_project(db_session, owner)
+    project.git_remote_normalized = f"github.com/acme/{uuid.uuid4().hex[:8]}"
+    await db_session.commit()
+    await _make_session(db_session, reader, project_id=project.id)
+    ticket = await _make_ticket(db_session, owner, project)
+    await _make_persona(db_session, project, owner, "atlas")
+    ctx = _ctx(db_session, reader)
+
+    output = await TOOLS["propose_assignment"].handler(
+        ctx, {"ticket_id": ticket.id, "persona_name": "atlas"}
+    )
+
+    assert ctx.pending_actions == []
+    assert "only the ticket creator or a project admin" in output.text.lower()
 
 
 @pytest.mark.asyncio

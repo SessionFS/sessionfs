@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 130 tools in nineteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Review Checklist (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Workflow Templates, Skills Marketplace, Project Groups (Team+), Meetings and chat, Reminders, Approvals (Enterprise), and For You.
+The MCP server exposes 130 tools in nineteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas, Tickets, AgentRun, Agent Feedback, Review Checklist, Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Workflow Templates, Skills Marketplace, Project Groups (Team+), Meetings and chat, Reminders, Approvals (Enterprise), and For You.
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -324,7 +324,7 @@ Returns the compiled rule text for a requested tool, or for the current tool if 
 | `git_remote` | string | no | Override auto-detected git remote |
 | `audit_session_id` | string | no | Current session id to append this retrieval to its audit log |
 
-### Personas (Pro+)
+### Personas
 
 Tier-gated by the `agent_personas` feature flag. Personas are portable AI roles — each persona has a name (`^[A-Za-z0-9_-]{1,50}$`) and markdown content, and belongs to one project **or** to one organization. Org-level personas are usable from every project in the org. Inside a project, a name resolves to the project's own persona first, then the org's, so a project persona with the same name overrides the org one. `get_persona`, `assign_persona`, `start_ticket`, and agent runs all resolve this way. Names match case-insensitively. Org personas are visible only to current members of the project's current org (and that org's service keys); other callers with project access see project personas only.
 
@@ -401,9 +401,9 @@ Clear the active persona bundle. Refuses when a ticket-owned bundle is in effect
 
 No parameters required.
 
-### Tickets (Team+)
+### Tickets
 
-Tier-gated by the `agent_tickets` feature flag. Tickets are self-contained units of work with a server-enforced FSM (`suggested → open → in_progress → blocked → review → done | cancelled`), dependency graph (BFS cycle detection), comments, and an active-ticket provenance bundle.
+Available on every plan (the `agent_tickets` feature). Tickets are self-contained units of work with a server-enforced FSM (`suggested → open → in_progress → blocked → review → done | cancelled`), dependency graph (BFS cycle detection), comments, and an active-ticket provenance bundle.
 
 #### `list_tickets`
 
@@ -442,7 +442,7 @@ Open a new ticket. Agent-created tickets require ≥1 acceptance criterion + ≥
 
 #### `update_ticket`
 
-Change a ticket's title, description, acceptance criteria, context or file references, dependencies, priority, due date or estimate. Only the fields you pass change. Each update posts a diff comment on the ticket and records one audit row per changed field. Status changes go through the lifecycle tools and persona assignment through `assign_persona`; `assigned_user` assigns the ticket directly to a teammate. Only the ticket's creator or a project admin can edit it.
+Change a ticket's title, description, acceptance criteria, context or file references, dependencies, priority, due date or estimate. Only the fields you pass change. Each update posts a diff comment on the ticket and records one audit row per changed field. Status changes go through the lifecycle tools and persona assignment through `assign_persona`; `assigned_user` assigns the ticket directly to a teammate. Only the ticket's creator or a project admin can edit it; a project editor can change only the assignee (`assigned_user`, or `null` to unassign).
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -725,7 +725,7 @@ In `review_until_clean` mode the reviewer passes its verdict as `verdict_content
 
 The reviewer can also pass `reviewed_commit`, the full commit id (40 or 64 lowercase hex characters) of the head it read, which is stored with the verdict so `check_merge_readiness` can require the clean verdict to be on the current head (v0.29.1). In `implement_until_done` mode the implementer reporting `done` no longer finishes an item on its own: the item finishes only once a trusted strict `VERIFIED-CLEAN` verdict comes from an identity other than the implementer's.
 
-### AgentRun (Team+)
+### AgentRun
 
 Tracked execution records for persona runs, manual or in CI. These tools record that a run happened and evaluate a `fail_on` policy at completion; they never start the model themselves. See [CI Integration](/integrations/ci-integration).
 
@@ -806,9 +806,9 @@ Create a queued copy of an existing run with an edited prompt, ticket, persona, 
 
 List recent runs, newest first. Filter by `persona_name`, `status`, `trigger_source` or `ticket_id`; `limit` defaults to 50 (max 200).
 
-### Agent Feedback (Team+)
+### Agent Feedback
 
-Structured, append-only outcome records on agent work. Each record points at least one target (`agent_run_id`, `ticket_id`, or `comment_id`) — all of which must belong to the same project — and classifies the signal with a `feedback_type` × `verdict` × optional `label`. Tier-gated by the `agent_runs` feature flag (Team+); service keys use the `agent_feedback:read` / `agent_feedback:write` scopes.
+Structured, append-only outcome records on agent work. Each record points at least one target (`agent_run_id`, `ticket_id`, or `comment_id`) — all of which must belong to the same project — and classifies the signal with a `feedback_type` × `verdict` × optional `label`. Available on every plan (the `agent_runs` feature); service keys use the `agent_feedback:read` / `agent_feedback:write` scopes.
 
 The fixed label vocabulary per type:
 
@@ -1028,7 +1028,7 @@ Per step: `state` (`blocked`, `ready`, `running`, `needs_human`, `done`), `gate_
 | `loop_id` | string | yes | Workflow loop (parent issue) id (`tk_...`) |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 
-### Review Checklist (Team+)
+### Review Checklist
 
 The project checklist that learns: a per-project list of review traps. Proposed items are the acceptance inbox; active items render into every brief via the markdown endpoint. Finding-sourced items are proposed automatically when an agent run completes with `class: "new"` findings.
 

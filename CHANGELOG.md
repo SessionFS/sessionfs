@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.10] - 2026-11-07
+
+**Agents, tickets and agent runs on every plan, editors who can reassign, and a session helper that publishes tickets to Jira.** No new server migrations.
+
+### Added
+- **Publish an existing ticket to Jira from the session helper** (Enterprise). Ask "turn these tickets into Jira issues" and the helper proposes one publish per ticket that has no Jira link yet, with the same optional Jira project, template and sprint choices as creating a ticket. Nothing happens until you press **Confirm**; the ticket is then published exactly like **Promote to Jira** on the ticket page, and the outcome names the new issue. A ticket that is already linked, or has a publish in flight, is refused, and the helper offers to overwrite the linked issue instead. Helper prompt v21.
+- **Meeting and chat ranges as helper proposal sources** (GitHub #124). A ticket, comment or other change the helper drafts from a meeting or chat thread can cite `[meeting:<id> L<a>-<b>]` or `[chat:<id> M<a>-<b>]`. A source is checked like an answer citation: a tool returned it earlier in the conversation, you can still read it in this scope, it is the right kind, and the range is inside the transcript.
+- **Unassign in one click.** The ticket's reassign panel in the dashboard has an **Unassign** button.
+
+### Changed
+- **Agents (personas), tickets and agent runs are on every plan**, Free included, with no cap. A solo developer can now run the whole ticket, agent run and review-state lifecycle on a personal project. Agent feedback, merge readiness (`sfs loop ready`, `check_merge_readiness`) and review-state reads follow onto every plan, and so do the ticket, question and collaboration sections of For You.
+- **Review loops stay on Team and Enterprise** under a new `review_loop` plan feature: starting and steering review loops, loop worker runs and review rounds, workflow templates, release, PR, gate and deployment writes, the merge check, creating loop share links, PR and release webhook ingest, the Review loops inbox, and the harmful-findings and weekly-proof sections of For You. Projects that were grandfathered on tickets before v0.17.2 do not carry that grandfathering over to review loops.
+- **Project editors can assign, reassign and unassign tickets.** Any project editor can change a ticket's assignee, persona or person, including clearing it, through the API, MCP `update_ticket` and `assign_persona`, `sfs ticket`, and the dashboard. Every other field still needs the ticket's creator or a project admin, and an editor who sends one gets the same 403.
+- **The project Agents tab shows the project's own agents by default** (GitHub #126). An **Include N org people** switch adds the org's agents in a separate read-only section, and the choice is remembered per project. The API and the ticket pickers still list both.
+
+### Fixed
+- **Meeting extraction on PostgreSQL** (GitHub #124). The first extraction of a meeting failed whenever an action item's owner matched a participant, because the item could be written before the participant it names. Participants are now written first.
+- **After a Jira timeout the helper never says nothing changed.** A timed-out Jira call may still have created or updated the issue, so the helper's note and the dashboard card say it may have reached Jira and point you to the ticket's Jira link.
+
 ## [0.29.9] - 2026-11-07
 
 **Workflow templates: a repeatable multi-agent plan your own orchestrator runs, with every step recorded and gated (GitHub #120).** Server migration 124.

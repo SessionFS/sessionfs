@@ -68,6 +68,7 @@ from sessionfs.server.db.models import (
     RetrievalAuditContext,
     Session,
     Ticket,
+    TicketTrackerLink,
     User,
 )
 from sessionfs.server.dlp import get_org_dlp_policy, well_formed_custom_patterns
@@ -90,9 +91,11 @@ from sessionfs.server.helper.settings import (
     neutralize_group_context_delimiters,
 )
 from sessionfs.server.helper.tools import (
+    MEETING_CITATION_RE,
     MAX_GROUPS_LISTED,
     MAX_TOOL_RESULT_CHARS,
     _group_member_project_names,
+    conversation_marker_shape_ok,
     execute,
     group_effective_project_ids,
     group_session_clause,
@@ -129,6 +132,7 @@ from sessionfs.server.roles import ADMIN_ROLES
 from sessionfs.server.routes.project_groups import _explicit_grant
 from sessionfs.server.tier_gate import (
     UserContext,
+    check_project_feature,
     get_effective_tier,
     get_user_context,
     get_user_org_membership,
@@ -164,7 +168,7 @@ _PG_STATEMENT_TIMEOUT_MS = 10_000
 # into the single ``{scope}`` / ``{date}`` slots; user text and tool output are
 # never part of the system text.  Bump the version when the wording changes so
 # stored behaviour is attributable.
-_HELPER_SYSTEM_PROMPT_VERSION = "v20"
+_HELPER_SYSTEM_PROMPT_VERSION = "v21"
 
 # The prompt's tool routing table.  Every name here must be a real tool in
 # ``TOOLS`` and every tool in ``TOOLS`` must be routed somewhere (a test
@@ -236,6 +240,7 @@ _TOOL_ROUTING: tuple[tuple[str, tuple[str, ...]], ...] = (
             "propose_comment",
             "propose_jira_link",
             "propose_jira_overwrite",
+            "propose_jira_publish",
             "propose_reminder",
             "propose_meeting_upload",
         ),
@@ -332,7 +337,10 @@ _HELPER_SYSTEM_PROMPT = (
     "exists before it is confirmed. Do not invent requirements: a proposed "
     "ticket's fields must be grounded in what the conversation actually "
     "says, and every field must cite a source from the conversation (or "
-    "\"user\"). When you want to act on \"all projects\", call list_projects "
+    "\"user\"), using the same markers as answer citations — a session, "
+    "ticket, wiki page, docs page, or a [meeting:<id> L<first>-<last>] / "
+    "[chat:<id> M<first>-<last>] range from a meeting or chat thread a tool "
+    "returned earlier in this conversation. When you want to act on \"all projects\", call list_projects "
     "first and act only on the projects it returns. To trash every session "
     "that matches a model, provider, project, tool or date range, pass those "
     "filters to trash_sessions so the server resolves the sessions; never "
@@ -348,7 +356,11 @@ _HELPER_SYSTEM_PROMPT = (
     "caller asks for the new ticket to go to Jira. propose_jira_overwrite "
     "replaces one side of a linked ticket↔Jira pair with the other "
     "(direction to_jira overwrites the Jira issue from the ticket, direction "
-    "from_jira overwrites the ticket from the issue). "
+    "from_jira overwrites the ticket from the issue). To publish tickets "
+    "that already exist but have no Jira link (\"turn these tickets into "
+    "Jira issues\"), call propose_jira_publish once per ticket — never for "
+    "a ticket that is already linked (use propose_jira_overwrite) — and at "
+    "most five per turn, since only five proposals can wait at once. "
     "A ticket has one assignee at a time: a persona "
     "(an agent) or a person (a teammate) — never both. An assignee name "
     "resolves in order: an exact persona name; a teammate's email or user id "
@@ -454,21 +466,10 @@ _WIKI_CITATION_RE = re.compile(
 # like a meeting citation.  One pattern matches both; ``_marker_shape_ok``
 # then requires the tag, the id prefix, the range letter and the stored
 # row's kind to agree, so ``[meeting:chat_… L1-2]`` never validates.
-_MEETING_CITATION_RE = re.compile(
-    r"\[(?P<tag>meeting|chat):(?P<id>(?:meet|chat)_[0-9a-f]{16}) "
-    r"(?P<unit>[LM])(?P<first>\d{1,6})-(?P<last>\d{1,6})\]"
-)
-_CONVERSATION_MARKER_SHAPES = {"meeting": ("meet_", "L"), "chat": ("chat_", "M")}
-
-
-def _marker_shape_ok(match: re.Match[str], row_kind: str | None = None) -> bool:
-    """The marker's tag, id prefix and range letter agree (and, when given,
-    match the stored row's kind)."""
-    tag = match.group("tag")
-    prefix, unit = _CONVERSATION_MARKER_SHAPES[tag]
-    if not match.group("id").startswith(prefix) or match.group("unit") != unit:
-        return False
-    return row_kind is None or (row_kind or "meeting") == tag
+# The pattern and the shape rule live in ``helper.tools`` so proposal
+# ``sources`` validation applies exactly the same rule.
+_MEETING_CITATION_RE = MEETING_CITATION_RE
+_marker_shape_ok = conversation_marker_shape_ok
 
 # Control characters that break stored JSON / streams / titles.  We keep \t,
 # \n and \r but strip NUL and every other C0 control (plus DEL) so a provider
@@ -975,7 +976,9 @@ async def _confirmed_action_ticket_ids(db: AsyncSession, conversation_id: str) -
             select(HelperAction.result).where(
                 HelperAction.conversation_id == conversation_id,
                 HelperAction.status == "confirmed",
-                HelperAction.kind.in_(("create_ticket", "assign_ticket", "comment_ticket")),
+                HelperAction.kind.in_(
+                    ("create_ticket", "assign_ticket", "comment_ticket", "publish_ticket_jira")
+                ),
             )
         )
     ).scalars().all()
@@ -3151,6 +3154,7 @@ _ACTION_TOOL_NAMES = {
     "comment_ticket": "propose_comment",
     "link_jira": "propose_jira_link",
     "jira_overwrite": "propose_jira_overwrite",
+    "publish_ticket_jira": "propose_jira_publish",
     "create_reminder": "propose_reminder",
     "create_meeting": "propose_meeting_upload",
 }
@@ -3535,6 +3539,29 @@ def _action_outcome_text(action: HelperAction) -> str:
             )
             if issue_key:
                 return f"{head} confirmed: linked Jira issue {issue_key}]"
+        if action.kind == "publish_ticket_jira":
+            published = next(
+                (t for t in targets if isinstance(t, dict) and t.get("ok")), None
+            )
+            if published:
+                return (
+                    f"{head} confirmed: published ticket [ticket:{published['id']}] "
+                    f"to Jira {published.get('issue_key')}]"
+                )
+            failed_target = next((t for t in targets if isinstance(t, dict)), None)
+            if failed_target and failed_target.get("error") == "jira_timeout":
+                # The issue may exist: the link stays unconfirmed and the next
+                # publish of the ticket adopts it rather than creating another.
+                return (
+                    f"{head} confirmed: Jira didn't confirm publishing ticket "
+                    f"[ticket:{failed_target.get('id')}] — the issue may exist; "
+                    "publishing the ticket again from its page picks it up]"
+                )
+            if failed_target:
+                return (
+                    f"{head} confirmed: publishing ticket [ticket:{failed_target.get('id')}] "
+                    f"to Jira failed ({failed_target.get('error')}) — nothing was linked]"
+                )
         if action.kind in ("assign_ticket", "comment_ticket"):
             tid = next(
                 (t.get("id") for t in targets if isinstance(t, dict) and t.get("ok")),
@@ -3544,6 +3571,13 @@ def _action_outcome_text(action: HelperAction) -> str:
                 return f"{head} confirmed: ticket [ticket:{tid}]]"
         return f"{head} confirmed: {ok} changed, {failed} failed]"
     if action.status == "failed":
+        targets = _loads_dict(action.result).get("targets") or []
+        if any(isinstance(t, dict) and t.get("error") == "jira_timeout" for t in targets):
+            # A Jira call that timed out may have landed; never say it didn't.
+            return (
+                f"{head} confirmed but Jira didn't respond in time: the change "
+                "may have reached Jira — check the ticket's Jira link]"
+            )
         return f"{head} confirmed but failed: nothing changed]"
     if action.status == "cancelled":
         return f"{head} cancelled by the user: nothing changed]"
@@ -3724,6 +3758,107 @@ async def _ticket_target_refusal(
         if expected not in await scope_project_ids(db, user_id, scope):
             return "not_in_scope"
     return None
+
+
+async def _apply_publish_ticket_jira(
+    db: AsyncSession,
+    user_id: str,
+    ctx: UserContext,
+    action: HelperAction,
+    params: dict[str, Any],
+    *,
+    dashboard_url: str,
+) -> dict[str, Any]:
+    """Publish an existing, unlinked ticket to Jira for a confirmed proposal.
+
+    Re-checks the proposal: the ticket still lives in the pinned project and
+    the conversation's scope, every publish gate (``jira_publish_preflight``:
+    editor standing, the ``jira_integration`` plan gate, connection, mapping,
+    overrides and the pinned template version), the ticket plan gate, and
+    that the ticket is still unlinked.  Then it publishes through the same
+    path as the dashboard (``publish_ticket_draft`` via
+    ``publish_ticket_to_jira``), so claim fencing, the retry ladder, the
+    duplicate-proof adopt, its 409s and timeouts behave identically; a link
+    made in the meantime is refused there too (``jira_already_linked``).
+    """
+    action_id = action.id
+    final = _final_params(params)
+    ticket_id = final.get("ticket_id")
+    ticket_id = ticket_id if isinstance(ticket_id, str) else ""
+    refusal = await _ticket_target_refusal(db, user_id, action, final, ticket_id=ticket_id)
+    if refusal is not None:
+        return {"id": ticket_id, "ok": False, "error": refusal}
+    project_id = final.get("project_id")
+    try:
+        project, _conn, _mapping = await jira_publish_preflight(
+            db,
+            user_id=user_id,
+            ctx=ctx,
+            project_id=project_id,
+            jira_project_key=final.get("jira_project_key_override"),
+            jira_template=final.get("jira_template"),
+            jira_template_version=final.get("jira_template_version"),
+            jira_template_builtin=final.get("jira_template_builtin"),
+            jira_sprint_id=final.get("jira_sprint_id"),
+        )
+        await check_project_feature(ctx, "agent_tickets", project, db)
+    except HTTPException as exc:
+        return {"id": ticket_id, "ok": False, "error": _http_error(exc)}
+    link_status = (
+        await db.execute(
+            select(TicketTrackerLink.status).where(TicketTrackerLink.ticket_id == ticket_id)
+        )
+    ).scalar_one_or_none()
+    if link_status is not None:
+        error = "jira_already_linked" if link_status == "linked" else "publish_in_progress"
+        return {"id": ticket_id, "ok": False, "error": error, "jira_published": False, "jira_error": error}
+    # Nothing to write before the outbound publish: end the read transaction
+    # so the publish's own claim commits stand alone.
+    await db.commit()
+    entry: dict[str, Any] = {"id": ticket_id}
+    try:
+        published = await publish_ticket_to_jira(
+            db,
+            project_id=project_id,
+            ticket_id=ticket_id,
+            actor_user_id=user_id,
+            dashboard_url=dashboard_url,
+            jira_project_key=final.get("jira_project_key_override"),
+            template_slug=final.get("jira_template"),
+            template_version=final.get("jira_template_version"),
+            template_builtin=final.get("jira_template_builtin"),
+            sprint_id=final.get("jira_sprint_id"),
+            require_unlinked=True,
+        )
+    except HTTPException as exc:
+        entry.update(ok=False, error=_http_error(exc), jira_published=False)
+        entry["jira_error"] = entry["error"]
+    except ContentTooLarge:
+        entry.update(ok=False, error="content_too_large", jira_published=False)
+        entry["jira_error"] = "content_too_large"
+    except Exception:  # noqa: BLE001
+        # A bug in publish must never 500 the confirm.
+        logger.exception(
+            "publish failed for ticket %s (action %s)", ticket_id, action_id
+        )
+        entry.update(ok=False, error="error", jira_published=False, jira_error="error")
+    else:
+        entry.update(
+            ok=True,
+            error=None,
+            jira_published=True,
+            issue_key=published["issue_key"],
+            issue_url=published["issue_url"],
+        )
+        warnings = published.get("warnings") or []
+        if warnings:
+            entry["warnings"] = warnings
+    finally:
+        # publish_ticket_draft may have rolled back (link_changed /
+        # superseded), expiring this session's ORM objects. Re-load the
+        # action so the confirm handler can still write it.
+        await db.refresh(action)
+    return entry
 
 
 async def _apply_create_reminder(
@@ -4122,6 +4257,12 @@ async def _apply_action(
                     "issue_url": link.issue_url,
                 }
             )
+    elif action.kind == "publish_ticket_jira":
+        results.append(
+            await _apply_publish_ticket_jira(
+                db, user_id, ctx, action, params, dashboard_url=dashboard_url
+            )
+        )
     elif action.kind == "create_reminder":
         results.append(await _apply_create_reminder(db, user_id, action, params))
     elif action.kind == "create_meeting":

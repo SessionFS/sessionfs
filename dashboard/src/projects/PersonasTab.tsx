@@ -5,17 +5,17 @@
  * the AI roles. The URL key stays `personas` so existing links keep working.
  *
  * Lists agent personas for the project; supports create / edit / delete.
- * Personas are scoped per project (Pro+ tier) and used to give ticketed
+ * Personas are scoped per project (every plan) and used to give ticketed
  * agent work a stable role + content profile.
  *
  * Phase 3 restyle: migrated onto ui/ primitives (Table, Dialog, Button,
  * Input, Textarea).
  *
- * GH #70: the list also carries the project's org-level personas
- * (scope === 'org'). They are labelled "Org" and read-only here — org
- * admins manage them on the Organization page. A project persona with the
- * same name overrides the org one (the server then returns only the
- * project row).
+ * GH #70 / GH #126: the list shows the project's own agents
+ * (include_org=false). A header toggle, remembered per project, adds the
+ * org's inherited personas in a separate read-only section — org admins
+ * manage them on the Organization page. A project persona with the same
+ * name overrides the org one (the server then omits the org row).
  */
 
 import { useState } from 'react';
@@ -28,8 +28,10 @@ import {
 } from '../hooks/usePersonas';
 import RelativeDate from '../components/RelativeDate';
 import { type Persona } from '../api/client';
-import { Button, Dialog, DialogHeader, DialogFooter, Input, Table, Textarea } from '../components/ui';
+import { Button, Dialog, DialogHeader, DialogFooter, Input, Switch, Table, Textarea } from '../components/ui';
+import type { TableColumn } from '../components/ui/Table';
 import { errorMessage } from '../utils/errorMessage';
+import { readIncludeOrg, writeIncludeOrg } from './agentsIncludeOrg';
 
 interface PersonasTabProps {
   projectId: string;
@@ -47,7 +49,12 @@ export interface EditState {
 }
 
 export default function PersonasTab({ projectId, canEdit = true }: PersonasTabProps) {
-  const { data, isLoading, error } = usePersonas(projectId);
+  // The project's own agents (include_org=false) are the list. The org's
+  // inherited personas come from the default, org-inclusive list — the same
+  // cached query the ticket pickers and helper use — which gives the count
+  // for the toggle and fills the inherited section when it is on.
+  const { data, isLoading, error } = usePersonas(projectId, { includeOrg: false });
+  const withOrg = usePersonas(projectId);
   const create = useCreatePersona(projectId);
   const update = useUpdatePersona(projectId);
   const remove = useDeletePersona(projectId);
@@ -55,32 +62,142 @@ export default function PersonasTab({ projectId, canEdit = true }: PersonasTabPr
 
   const [edit, setEdit] = useState<EditState | null>(null);
   const [deleting, setDeleting] = useState<Persona | null>(null);
+  const [includeOrg, setIncludeOrgState] = useState(() => readIncludeOrg(projectId));
+  // Another project's choice applies when the tab is reused for it.
+  const [storedFor, setStoredFor] = useState(projectId);
+  if (storedFor !== projectId) {
+    setStoredFor(projectId);
+    setIncludeOrgState(readIncludeOrg(projectId));
+  }
+  function setIncludeOrg(on: boolean) {
+    setIncludeOrgState(on);
+    writeIncludeOrg(projectId, on);
+  }
 
   if (isLoading) return <p>Loading agents…</p>;
   if (error) return <p role="alert">Failed to load agents: {errorMessage(error)}</p>;
   if (!data) return null;
 
+  // An older server ignores include_org and returns org rows too; keep them
+  // out of the project list either way.
+  const projectAgents = data.filter((p) => !isOrgPersona(p));
+  const orgPeople = (withOrg.data ?? []).filter(isOrgPersona);
+  const orgCount = orgPeople.length;
+  const showOrg = includeOrg && orgCount > 0;
+
+  const baseColumns: TableColumn<Persona>[] = [
+    {
+      key: 'name',
+      header: 'Name',
+      render: (p) => <span className="font-mono text-text-primary">{p.name}</span>,
+    },
+    { key: 'role', header: 'Role', render: (p) => <>{p.role}</> },
+    {
+      key: 'specs',
+      header: 'Specializations',
+      render: (p) => (
+        <span className="text-text-tertiary">
+          {p.specializations.length === 0
+            ? '—'
+            : p.specializations.slice(0, 3).join(', ') +
+              (p.specializations.length > 3 ? ` +${p.specializations.length - 3}` : '')}
+        </span>
+      ),
+    },
+    {
+      key: 'updated',
+      header: 'Updated',
+      render: (p) => (
+        <span className="text-text-tertiary">
+          <RelativeDate iso={p.updated_at} />
+        </span>
+      ),
+    },
+  ];
+
+  const projectColumns: TableColumn<Persona>[] = [
+    ...baseColumns,
+    {
+      key: 'actions',
+      header: '',
+      width: 'w-0',
+      render: (p) =>
+        !canEdit ? null : (
+          <div className="flex items-center gap-1 justify-end whitespace-nowrap">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={(e) => {
+                (e as React.MouseEvent).stopPropagation();
+                setEdit({ mode: 'edit', persona: p });
+              }}
+            >
+              Edit
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={(e) => {
+                (e as React.MouseEvent).stopPropagation();
+                setDeleting(p);
+              }}
+            >
+              Delete
+            </Button>
+          </div>
+        ),
+    },
+  ];
+
+  // Inherited rows are read-only here: org admins manage them on the
+  // Organization page, and a project agent with the same name overrides one.
+  const orgColumns: TableColumn<Persona>[] = [
+    ...baseColumns,
+    {
+      key: 'actions',
+      header: '',
+      width: 'w-0',
+      render: () => (
+        <span
+          className="block text-right text-xs text-text-tertiary whitespace-nowrap"
+          title="Org admins manage this on the Organization page. Create a project agent with the same name to override it here."
+        >
+          Managed by org
+        </span>
+      ),
+    },
+  ];
+
   return (
     <section aria-labelledby="personas-heading" className="space-y-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 id="personas-heading" className="text-lg font-semibold">
           Agents
           <span className="ml-2 text-sm text-text-tertiary">
-            {data.length} {data.length === 1 ? 'agent' : 'agents'}
+            {projectAgents.length} {projectAgents.length === 1 ? 'agent' : 'agents'}
           </span>
         </h2>
-        {canEdit && (
-          <Button
-            variant="primary"
-            size="sm"
-            onClick={() => setEdit({ mode: 'create' })}
-          >
-            New agent
-          </Button>
-        )}
+        <div className="flex flex-wrap items-center gap-3">
+          {orgCount > 0 && (
+            <Switch
+              checked={includeOrg}
+              onChange={setIncludeOrg}
+              label={`Include ${orgCount} org ${orgCount === 1 ? 'person' : 'people'}`}
+            />
+          )}
+          {canEdit && (
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => setEdit({ mode: 'create' })}
+            >
+              New agent
+            </Button>
+          )}
+        </div>
       </div>
 
-      {data.length === 0 ? (
+      {projectAgents.length === 0 ? (
         <div className="border border-border rounded-lg p-6 text-center text-sm text-text-tertiary space-y-1">
           <p className="font-medium text-md text-text-secondary">No agents yet.</p>
           <p>
@@ -89,88 +206,21 @@ export default function PersonasTab({ projectId, canEdit = true }: PersonasTabPr
           </p>
         </div>
       ) : (
-        <Table<Persona>
-          data={data}
-          rowKey={(p) => p.id}
-          columns={[
-            {
-              key: 'name',
-              header: 'Name',
-              render: (p) => (
-                <span className="inline-flex items-center gap-2">
-                  <span className="font-mono text-text-primary">{p.name}</span>
-                  {isOrgPersona(p) && (
-                    <span
-                      className="rounded px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide bg-bg-tertiary text-text-secondary border border-border"
-                      title="Org-level — shared by every project in the organization"
-                    >
-                      Org
-                    </span>
-                  )}
-                </span>
-              ),
-            },
-            { key: 'role', header: 'Role', render: (p) => <>{p.role}</> },
-            {
-              key: 'specs',
-              header: 'Specializations',
-              render: (p) => (
-                <span className="text-text-tertiary">
-                  {p.specializations.length === 0
-                    ? '—'
-                    : p.specializations.slice(0, 3).join(', ') +
-                      (p.specializations.length > 3 ? ` +${p.specializations.length - 3}` : '')}
-                </span>
-              ),
-            },
-            {
-              key: 'updated',
-              header: 'Updated',
-              render: (p) => (
-                <span className="text-text-tertiary">
-                  <RelativeDate iso={p.updated_at} />
-                </span>
-              ),
-            },
-            {
-              key: 'actions',
-              header: '',
-              width: 'w-0',
-              render: (p) =>
-                !canEdit ? null : isOrgPersona(p) ? (
-                  <span
-                    className="block text-right text-xs text-text-tertiary whitespace-nowrap"
-                    title="Org admins manage this on the Organization page. Create a project agent with the same name to override it here."
-                  >
-                    Managed by org
-                  </span>
-                ) : (
-                <div className="flex items-center gap-1 justify-end whitespace-nowrap">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={(e) => {
-                      (e as React.MouseEvent).stopPropagation();
-                      setEdit({ mode: 'edit', persona: p });
-                    }}
-                  >
-                    Edit
-                  </Button>
-                  <Button
-                    variant="danger"
-                    size="sm"
-                    onClick={(e) => {
-                      (e as React.MouseEvent).stopPropagation();
-                      setDeleting(p);
-                    }}
-                  >
-                    Delete
-                  </Button>
-                </div>
-                ),
-            },
-          ]}
-        />
+        <Table<Persona> data={projectAgents} rowKey={(p) => p.id} columns={projectColumns} />
+      )}
+
+      {showOrg && (
+        <section aria-labelledby="org-people-heading" className="space-y-2 pt-2">
+          <div>
+            <h3 id="org-people-heading" className="text-md font-semibold text-text-primary">
+              Org people (inherited)
+            </h3>
+            <p className="text-xs text-text-tertiary">
+              Shared by every project in the organization. Org admins manage them on the Organization page.
+            </p>
+          </div>
+          <Table<Persona> data={orgPeople} rowKey={(p) => p.id} columns={orgColumns} />
+        </section>
       )}
 
       {edit && (

@@ -1757,7 +1757,9 @@ async def get_ticket_merge_readiness(
 ) -> dict:
     """Review Loop B2 (docs/design/review-loop-r3.md §4, §5) — merge readiness.
 
-    Pure read; same access as GET ticket. Ready only when ALL of these hold:
+    Pure read; same access as GET ticket, on every plan like review-state
+    (posting the merge check itself is the Team+ review_loop feature).
+    Ready only when ALL of these hold:
       - a trusted STRICT literal VERIFIED-CLEAN verdict exists;
       - its reviewed_commit equals ``sha`` exactly (full-string equality — a
         prefix match is NOT accepted);
@@ -2194,8 +2196,12 @@ async def update_ticket(
     # local active-ticket bundle (~/.sessionfs/active_ticket.json) and
     # is not durably reflected on the Ticket row — so server-side we
     # admit ticket creator + project admin. Future work could persist
-    # a current-lease-holder column and admit that too.
-    await authorize_ticket_edit(db, ticket=ticket, project=project, user_id=user.id)
+    # a current-lease-holder column and admit that too. A project editor may
+    # change only the assignee (an explicit null unassigns).
+    changed_fields = sorted(set(body.model_fields_set) - {"lease_epoch"})
+    await authorize_ticket_edit(
+        db, ticket=ticket, project=project, user_id=user.id, fields=changed_fields
+    )
 
     # GH #70 — EVERY mutation needs the project scope lock (serializes with
     # transfers, merges and org-persona deletes), not just reassignment. A
@@ -2218,7 +2224,9 @@ async def update_ticket(
     await db.refresh(ticket)
     if ticket.project_id != project_id:
         raise HTTPException(404, "Ticket not found")
-    await authorize_ticket_edit(db, ticket=ticket, project=project, user_id=user.id)
+    await authorize_ticket_edit(
+        db, ticket=ticket, project=project, user_id=user.id, fields=changed_fields
+    )
 
     # Edit-access rules for non-editors, the lease fence, per-field audit
     # rows, the re-approval rule, the system diff comment and reassignment

@@ -243,15 +243,15 @@ async def test_comment_on_missing_ticket_returns_404(
 async def test_tier_gating_on_comments(
     client: AsyncClient, db_session: AsyncSession
 ):
-    """Comments inherit agent_tickets tier gate (TEAM+)."""
-    user, key = await _make_user(db_session, tier="pro")
+    """Comments follow the agent_tickets gate, which is on every plan."""
+    user, key = await _make_user(db_session, tier="free")
     project = await _make_project(db_session, user)
-    # Even reading the empty list fails on Pro.
+    # No plan error on Free: an unknown ticket is a plain 404.
     resp = await client.get(
         f"/api/v1/projects/{project.id}/tickets/tk_x/comments",
         headers=_hdrs(key),
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 404, resp.text
 
 
 # ── start_ticket compiled context ──────────────────────────

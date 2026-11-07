@@ -371,7 +371,7 @@ async def _refresh_for_target(
     from sessionfs.server.tier_gate import project_plan_has_feature
 
     project = await db.get(Project, project_id)
-    if not await project_plan_has_feature(project, "agent_tickets", db):
+    if not await project_plan_has_feature(project, "review_loop", db):
         return _skipped(repo, head_sha, False, "plan")
 
     all_ready = True

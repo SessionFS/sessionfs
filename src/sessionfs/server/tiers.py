@@ -23,7 +23,8 @@ TIER_ORDER = {
 
 TIER_FEATURES: dict[Tier, dict] = {
     Tier.FREE: {
-        "features": {"meetings"},
+        # 0.29.10 — agents, tickets and agent runs are on every plan.
+        "features": {"meetings", "agent_personas", "agent_tickets", "agent_runs"},
         "storage_bytes": 0,
         "description": "Capture + resume + local search only",
     },
@@ -39,6 +40,9 @@ TIER_FEATURES: dict[Tier, dict] = {
             "oidc_sso",
             "marketplace_access",
             "meetings",
+            "agent_personas",
+            "agent_tickets",
+            "agent_runs",
         },
         "storage_bytes": 500 * 1024 * 1024,  # 500 MB
         "description": "Cloud sync + dashboard + manual judge",
@@ -64,6 +68,8 @@ TIER_FEATURES: dict[Tier, dict] = {
             "dlp_secrets",
             "custom_base_url",
             "agent_personas",
+            "agent_tickets",
+            "agent_runs",
             "oidc_sso",
             "marketplace_access",
             "meetings",
@@ -97,6 +103,9 @@ TIER_FEATURES: dict[Tier, dict] = {
             "agent_personas",
             "agent_tickets",
             "agent_runs",
+            # Review loops, workflows, releases, merge checks and loop share
+            # links stay Team+ even though tickets and runs are on every plan.
+            "review_loop",
             "team_handoff",
             "oidc_sso",
             "marketplace_access",
@@ -133,6 +142,9 @@ TIER_FEATURES: dict[Tier, dict] = {
             "agent_personas",
             "agent_tickets",
             "agent_runs",
+            # Review loops, workflows, releases, merge checks and loop share
+            # links stay Team+ even though tickets and runs are on every plan.
+            "review_loop",
             "team_handoff",
             "dlp_hipaa",
             "security_dashboard",

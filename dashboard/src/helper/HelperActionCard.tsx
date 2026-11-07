@@ -214,6 +214,9 @@ function TargetRow({
     }
   } else if (kind === 'link_jira' && target.change === 'will_change') {
     meta.push(`→ ${issueKey}`);
+  } else if (kind === 'publish_ticket_jira' && target.change === 'will_change') {
+    const key = typeof params.jira_project_key === 'string' ? params.jira_project_key : '';
+    meta.push(key ? `→ Jira ${key}` : '→ Jira');
   } else if (kind === 'jira_overwrite' && target.change === 'will_change') {
     meta.push(overwriteDirection(params) === 'from_jira' ? `${issueKey} → ticket` : `ticket → ${issueKey}`);
   }
@@ -348,7 +351,8 @@ export default function HelperActionCard({
       action.kind === 'assign_ticket' ||
       action.kind === 'comment_ticket' ||
       action.kind === 'link_jira' ||
-      action.kind === 'jira_overwrite'
+      action.kind === 'jira_overwrite' ||
+      action.kind === 'publish_ticket_jira'
     ) {
       return n === 1 ? 'ticket' : 'tickets';
     }

@@ -9,7 +9,7 @@ Commands:
 - sfs persona represent <name>     — set/clear the member an org persona represents
 
 Personas are portable AI roles (atlas/prism/scribe/...). Tier-gated to
-Pro+ (`agent_personas` feature flag).
+Every plan (`agent_personas` feature flag).
 
 Org-level personas (GH #70): pass `--org <org_id>` to list/show/create/
 edit/delete personas of an organization instead of the current project.
@@ -47,7 +47,7 @@ from sessionfs.cli.cmd_rules import (
 
 persona_app = typer.Typer(
     name="persona",
-    help="Manage agent personas for this project (Pro+).",
+    help="Manage agent personas for this project.",
     no_args_is_help=True,
 )
 

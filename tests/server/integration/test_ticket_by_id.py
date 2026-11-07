@@ -221,9 +221,9 @@ async def test_service_key_matches_project_scoped_route(
 
 
 @pytest.mark.asyncio
-async def test_plan_gate_still_applies_for_readers(client: AsyncClient, db_session: AsyncSession):
-    """A reader whose project plan lacks tickets gets the same upgrade error as
-    the project-scoped route (they can see the project, so nothing leaks)."""
+async def test_by_id_matches_project_route_on_a_lower_plan(client: AsyncClient, db_session: AsyncSession):
+    """Tickets are on every plan (0.29.10): the by-id route answers exactly
+    like the project-scoped route for a Pro project."""
     owner, _owner_key = await _make_user(db_session, "owner", tier="pro")
     project = await _make_project(db_session, owner)
     from sessionfs.server.db.models import Ticket
@@ -242,5 +242,5 @@ async def test_plan_gate_still_applies_for_readers(client: AsyncClient, db_sessi
 
     scoped = await client.get(f"/api/v1/projects/{project.id}/tickets/{ticket.id}", headers=_hdrs(_owner_key))
     by_id = await client.get(f"/api/v1/tickets/{ticket.id}", headers=_hdrs(_owner_key))
-    assert scoped.status_code == by_id.status_code == 403
-    assert by_id.json() == scoped.json()
+    assert scoped.status_code == by_id.status_code == 200
+    assert by_id.json()["id"] == scoped.json()["id"] == ticket.id

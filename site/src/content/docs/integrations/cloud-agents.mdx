@@ -15,9 +15,9 @@ This is a **control-plane** integration: cloud agents can participate in your te
 
 | Capability | Endpoint(s) | Tier |
 |---|---|---|
-| List + load personas (atlas, prism, scribe, ...) | `GET /api/v1/projects/{project_id}/personas[/{name}]` | Pro+ |
-| List, create, start, complete tickets | `GET/POST /api/v1/projects/{project_id}/tickets[/{ticket_id}/{start,complete}]` | Team+ |
-| Get the compiled persona + ticket context for a started ticket | Returned by `POST /tickets/{ticket_id}/start` | Team+ |
+| List + load personas (atlas, prism, scribe, ...) | `GET /api/v1/projects/{project_id}/personas[/{name}]` | All plans |
+| List, create, start, complete tickets | `GET/POST /api/v1/projects/{project_id}/tickets[/{ticket_id}/{start,complete}]` | All plans |
+| Get the compiled persona + ticket context for a started ticket | Returned by `POST /tickets/{ticket_id}/start` | All plans |
 | Add knowledge entries (decisions, patterns, bugs, ...) | `POST /api/v1/projects/{project_id}/entries/add` | Paid |
 | Search knowledge | `GET /api/v1/projects/{project_id}/entries?search=...` | Paid |
 | Fetch canonical project rules | `GET /api/v1/projects/{project_id}/rules` | Paid |

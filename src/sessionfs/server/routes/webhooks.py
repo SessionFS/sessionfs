@@ -1453,7 +1453,7 @@ async def _project_has_loop_plan(db, project_id: str) -> bool:
     from sessionfs.server.tier_gate import project_plan_has_feature
 
     project = await db.get(Project, project_id)
-    return await project_plan_has_feature(project, "agent_tickets", db)
+    return await project_plan_has_feature(project, "review_loop", db)
 
 
 async def _handle_pr_ingest(payload: dict, fence: tuple[str, int] | None = None) -> bool:
@@ -1492,7 +1492,7 @@ async def _handle_pr_ingest(payload: dict, fence: tuple[str, int] | None = None)
             project_id = await _project_id_for_remote(db, normalized)
             if project_id is None or not await _project_has_loop_plan(db, project_id):
                 await db.rollback()
-                return True  # unmapped repo or plan without agent_tickets — ignore
+                return True  # unmapped repo or plan without review_loop — ignore
             result = await releases.upsert_pull_request(
                 db,
                 project_id=project_id,
@@ -1552,7 +1552,7 @@ async def _handle_release_event(payload: dict, fence: tuple[str, int] | None = N
             project_id = await _project_id_for_remote(db, normalized)
             if project_id is None or not await _project_has_loop_plan(db, project_id):
                 await db.rollback()
-                return True  # unmapped repo or plan without agent_tickets — ignore
+                return True  # unmapped repo or plan without review_loop — ignore
             await releases.record_release(
                 db,
                 project_id=project_id,

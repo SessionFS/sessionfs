@@ -27,6 +27,7 @@ export const ACTION_TOOLS = new Set([
   'propose_comment',
   'propose_jira_link',
   'propose_jira_overwrite',
+  'propose_jira_publish',
   'propose_reminder',
 ]);
 
@@ -63,6 +64,8 @@ export function actionKindForTool(toolName: string | null | undefined): string {
       return 'link_jira';
     case 'propose_jira_overwrite':
       return 'jira_overwrite';
+    case 'propose_jira_publish':
+      return 'publish_ticket_jira';
     case 'propose_reminder':
       return 'create_reminder';
     default:
@@ -130,6 +133,12 @@ export function actionTitle(action: Pick<HelperActionProposal, 'kind' | 'summary
     const name = typeof target?.name === 'string' && target.name ? target.name : 'ticket';
     const key = paramString(action.params, 'issue_key');
     return key ? `Link ${name} to Jira ${key}` : `Link ${name} to a Jira issue`;
+  }
+  if (action.kind === 'publish_ticket_jira') {
+    const target = changing[0] ?? action.targets[0];
+    const name = typeof target?.name === 'string' && target.name ? target.name : 'ticket';
+    const key = paramString(action.params, 'jira_project_key');
+    return key ? `Publish ${name} to Jira ${key}` : `Publish ${name} to Jira`;
   }
   if (action.kind === 'jira_overwrite') {
     const target = changing[0] ?? action.targets[0];
@@ -242,9 +251,11 @@ export function targetState(
                 ? 'Commented'
                 : kind === 'link_jira'
                   ? 'Linked'
-                  : kind === 'jira_overwrite'
-                    ? 'Replaced'
-                    : 'Changed';
+                  : kind === 'publish_ticket_jira'
+                    ? 'Published'
+                    : kind === 'jira_overwrite'
+                      ? 'Replaced'
+                      : 'Changed';
       return { tone: 'success', label };
     }
     return { tone: 'danger', label: 'Failed', reason: reasonLabel(result.error) };
@@ -305,7 +316,7 @@ export function jiraOutcome(
     // code in `error`), so an applied target here always reached Jira.
     return issueKey ? { kind: 'replaced', issueKey, issueUrl: applied.issue_url ?? null } : null;
   }
-  if (kind === 'link_jira') {
+  if (kind === 'link_jira' || kind === 'publish_ticket_jira') {
     if (!applied?.issue_key) return null;
     return { kind: 'issue', issueKey: applied.issue_key, issueUrl: applied.issue_url ?? null };
   }
@@ -338,11 +349,19 @@ export function failedSummary(
   results: { ok: boolean; error: string | null }[],
 ): string {
   const error = results.find((r) => !r.ok)?.error ?? null;
-  const jiraKind = kind === 'link_jira' || kind === 'jira_overwrite' || (error ?? '').startsWith('jira_');
+  const jiraKind =
+    kind === 'link_jira' ||
+    kind === 'jira_overwrite' ||
+    kind === 'publish_ticket_jira' ||
+    (error ?? '').startsWith('jira_');
   if (!jiraKind) return 'Nothing was changed — every target failed its access check.';
   if (kind === 'jira_overwrite' && overwriteDirection(params) === 'to_jira' && error === 'jira_timeout') {
     const key = paramString(params, 'issue_key');
     return `Jira didn’t confirm the update; check ${key || 'the issue'} in Jira.`;
+  }
+  if (kind === 'publish_ticket_jira' && error === 'jira_timeout') {
+    // The issue may exist; the next publish of this ticket adopts it.
+    return 'Jira didn’t confirm the publish; publishing the ticket again picks up the issue if it was created.';
   }
   return `Not applied: ${reasonLabel(error)}.`;
 }

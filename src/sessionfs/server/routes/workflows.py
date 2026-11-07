@@ -418,13 +418,13 @@ async def _project_write_gated(
     project_id: str, db: AsyncSession, auth: AuthContext, ctx: UserContext
 ) -> Project:
     """Template writes are Review Loop writes: visibility (one 404 body),
-    editor standing, the ``agent_tickets`` plan gate on the project's plan,
+    editor standing, the ``review_loop`` plan gate on the project's plan,
     then the project scope lock (re-authorized) so the active-template cap
     is checked serially."""
     project = await _project_for_write(project_id, db, auth, _TEMPLATE_NOT_FOUND)
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
     await lock_project_scope_authorized(
-        db, project, auth=auth, ctx=ctx, feature="agent_tickets"
+        db, project, auth=auth, ctx=ctx, feature="review_loop"
     )
     return project
 
@@ -562,11 +562,11 @@ async def _org_admin(db: AsyncSession, auth: AuthContext, org_id: str) -> None:
 
 async def _org_write_gated(db: AsyncSession, auth: AuthContext, org_id: str) -> None:
     """Org admin standing, then the org's own plan must include
-    ``agent_tickets``, then the org row lock for the active-template cap."""
+    ``review_loop``, then the org row lock for the active-template cap."""
     await _org_admin(db, auth, org_id)
     plan = await resolve_org_plan_tier(org_id, db)
-    if "agent_tickets" not in get_features_for_tier(plan):
-        raise_project_upgrade_required("agent_tickets", plan, None)
+    if "review_loop" not in get_features_for_tier(plan):
+        raise_project_upgrade_required("review_loop", plan, None)
     await db.execute(
         select(Organization.id).where(Organization.id == org_id).with_for_update()
     )
@@ -688,16 +688,16 @@ async def start_workflow(
     """Start a workflow: a loop pinned to the template version, one child
     ticket per step slot, briefs rendered from the template + checklist.
 
-    A loop write: same standing, scopes, plan gate (Team+, ``agent_tickets``)
+    A loop write: same standing, scopes, plan gate (Team+, ``review_loop``)
     and scope lock as ``start_review_loop``. ``ticket_id`` adopts an existing
     issue; otherwise ``title`` names a new one. Nothing is started.
     """
     project = await _project_for_write(project_id, db, auth, _TEMPLATE_NOT_FOUND)
     template = await _usable_template(db, auth, project, body.template_id)
     _require_loop_downstream_scopes(auth)
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
     await lock_project_scope_authorized(
-        db, project, auth=auth, ctx=ctx, feature="agent_tickets"
+        db, project, auth=auth, ctx=ctx, feature="review_loop"
     )
     # Re-read the template under the lock: a concurrent edit or disable
     # since the visibility check must not start a superseded version.
@@ -838,7 +838,7 @@ async def get_workflow_plan(
     config = _load_loop_config(loop.loop_config) if loop is not None else {}
     if loop is None or wf.workflow_pin(config) is None:
         raise HTTPException(404, _LOOP_NOT_FOUND)
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
     plan = await wf.compute_plan(
         db, loop, config, checklist_items=await _active_checklist_items(db, project_id)
     )

@@ -10,6 +10,8 @@ interface Column<T> {
   align?: 'left' | 'right';
 }
 
+export type TableColumn<T> = Column<T>;
+
 interface TableProps<T> {
   columns: Column<T>[];
   data: T[];

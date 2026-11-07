@@ -427,7 +427,7 @@ async def upsert_pr(
 ) -> dict[str, Any]:
     """Upsert a PR and auto-link tickets from ``tk_…`` ids / loop branches."""
     project = await _write_project(project_id, auth, db)
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
     return await releases.upsert_pull_request(
         db,
         project_id=project.id,
@@ -458,7 +458,7 @@ async def record_release(
     """Record a release and link its PRs and tickets (idempotent per project +
     version)."""
     project = await _write_project(project_id, auth, db)
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
     ticket_ids = await _ticket_ids_or_404(db, project.id, body.ticket_ids or [])
     return await releases.record_release(
         db,
@@ -487,7 +487,7 @@ async def link_tickets(
 ) -> dict[str, Any]:
     """Link tickets directly to a release (PR-less release flow, idempotent)."""
     project = await _write_project(project_id, auth, db)
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
     release = await _get_release_or_404(db, project.id, version)
     ticket_ids = await _ticket_ids_or_404(db, project.id, body.ticket_ids)
     linked = await releases.link_release_tickets(
@@ -515,7 +515,7 @@ async def record_gate(
 ) -> dict[str, Any]:
     """Record a quality gate against a release (upsert per release + kind)."""
     project = await _write_project(project_id, auth, db)
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
     release = await _get_release_or_404(db, project.id, version)
     return await releases.record_gate(
         db,
@@ -538,7 +538,7 @@ async def record_deployment(
 ) -> dict[str, Any]:
     """Record a deployment of a release (append-only)."""
     project = await _write_project(project_id, auth, db)
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
     release = await _get_release_or_404(db, project.id, version)
     return await releases.record_deployment(
         db,

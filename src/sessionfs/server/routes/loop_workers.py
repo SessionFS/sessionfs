@@ -347,9 +347,9 @@ async def start_worker_run(
     ).scalar_one_or_none()
     if ticket is None:
         raise _nf()
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
     await lock_project_scope_authorized(
-        db, project, auth=auth, ctx=ctx, feature="agent_tickets"
+        db, project, auth=auth, ctx=ctx, feature="review_loop"
     )
 
     parent, _config, queue, item = await _loop_for_ticket(db, ticket)
@@ -576,7 +576,7 @@ async def finish_worker_run(
     ).scalar_one_or_none()
     if run is None:
         raise _nf()
-    await check_project_feature(ctx, "agent_runs", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
     dollars = await _show_dollars(db, auth, project)
 
     ticket = await db.get(Ticket, run.ticket_id) if run.ticket_id else None
@@ -923,9 +923,9 @@ async def record_review_round(
             raise _nf()
         ticket = child
 
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
     await lock_project_scope_authorized(
-        db, project, auth=auth, ctx=ctx, feature="agent_tickets"
+        db, project, auth=auth, ctx=ctx, feature="review_loop"
     )
     dollars = await _show_dollars(db, auth, project)
 

@@ -205,6 +205,7 @@ def _tool_calls(a: dict, b: dict) -> dict[str, list[dict]]:
             {"ticket_id": b["ticket"].id, "direction": "to_jira"},
             {"ticket_id": b["ticket"].id, "direction": "from_jira"},
         ],
+        "propose_jira_publish": [{"ticket_id": b["ticket"].id}],
         "propose_reminder": [
             {
                 "title": "Chase it",
@@ -668,31 +669,30 @@ async def test_wiki_editor_never_falls_back_to_email(db_session, test_user):
 
 @pytest.mark.asyncio
 async def test_plan_gated_project_returns_no_data(db_session, test_user):
-    test_user.tier = "pro"  # tickets + agent runs need Team; personas need Pro
+    # Agents, tickets and agent runs are on every plan (0.29.10): a Free
+    # project's owner reads all of them.
+    test_user.tier = "free"
     await db_session.commit()
     project = await _make_project(db_session, owner=test_user)
-    ticket = await _make_ticket(db_session, project, title="GATED ticket")
-    run = await _make_agent_run(db_session, project, persona="gated-scout")
+    ticket = await _make_ticket(db_session, project, title="Solo ticket")
+    run = await _make_agent_run(db_session, project, persona="solo-scout")
 
     ctx = _ctx(db_session, test_user, audit=RecordingSink())
     listed = await _run(ctx, "list_tickets", {"project_id": project.id})
-    assert listed.content == "Tickets are not available on this project's plan."
-    unscoped = await _run(ctx, "list_tickets", {})
-    assert unscoped.content == "No tickets accessible."
+    assert "Solo ticket" in listed.content
     got = await _run(ctx, "get_ticket", {"ticket_id": ticket.id})
-    assert got.content == "Ticket not found."
+    assert "Solo ticket" in got.content
     runs = await _run(ctx, "list_agent_runs", {"project_id": project.id})
-    assert runs.content == "Agent runs are not available on this project's plan."
+    assert "not available" not in runs.content
     one = await _run(ctx, "get_agent_run", {"project_id": project.id, "run_id": run.id})
-    assert one.content == "Agent runs are not available on this project's plan."
-    assert ctx.seen_ticket_ids == set()
+    assert "not available" not in one.content
+    assert ticket.id in ctx.seen_ticket_ids
 
-    test_user.tier = "free"
     await db_session.commit()
     ctx = _ctx(db_session, test_user, audit=RecordingSink())
     await _make_persona(db_session, project, name="gated-persona")
     personas = await _run(ctx, "list_personas", {"project_id": project.id})
-    assert personas.content == "Personas are not available on this project's plan."
+    assert "gated-persona" in personas.content
 
 
 @pytest.mark.asyncio

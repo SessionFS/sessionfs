@@ -389,6 +389,8 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 
 **Upgrading to v0.29.2** runs migrations 110 (review loop settings on the parent issue and service-key attribution on work queues), 111 (the `needs_human` work-queue item status) and 112 (the review checklist); all are additive. API keys gain the `loops:read` and `loops:write` scopes. No new settings are needed.
 
+**Upgrading to v0.29.10** needs no migration. Agents (personas), tickets and agent runs are available on every plan; review loops, loop worker runs, workflow templates, releases, the merge check, loop share links and PR/release webhook ingest need a Team or Enterprise plan (the new `review_loop` feature).
+
 **Upgrading to v0.29.9** runs migration 124 (the `workflow_templates` and `workflow_step_children` tables and the `agent_runs.workflow_step_id` column behind [Workflow Templates](/workflows/)); it is additive, and a downgrade deletes every stored template and the link between workflow loops and their step tickets (the loops and tickets themselves stay). Workflows use the existing `loops:read` / `loops:write` scopes. No new settings are needed.
 
 **Upgrading to v0.29.8** runs migration 123 (the `attention_hides` table behind For You's Hide and Snooze); it is additive, and a downgrade only forgets which items people hid. API keys gain the `attention:read` scope for service keys that read their minter's For You feed. The dashboard home moves from the session list to [For You](/for-you/); the session list is at `/sessions`. To delete hides older than 90 days, call `POST /api/v1/admin/sweeps/attention-hides` daily with a `platform_sweeps:run` key; see [Scheduled sweeps](#scheduled-sweeps). No new settings are needed.

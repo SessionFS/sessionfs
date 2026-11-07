@@ -679,7 +679,7 @@ async def provide_harmful_findings(ctx: _Ctx) -> tuple[list[Item], int]:
     from ``services.loops.load_loops`` (grouped, no per-child N+1)."""
     from sessionfs.server.services.loops import load_loops
 
-    pids = await ctx.feature_project_ids("agent_tickets")
+    pids = await ctx.feature_project_ids("review_loop")
     if not pids:
         return [], 0
     by_project, _ = await ctx.personas()
@@ -1726,7 +1726,7 @@ async def provide_proof(ctx: _Ctx) -> tuple[list[Item], int]:
     caller may see them on EVERY contributing project."""
     from sessionfs.server.services.review_loop import decode_findings, is_caught
 
-    pids = await ctx.feature_project_ids("agent_runs")
+    pids = await ctx.feature_project_ids("review_loop")
     if not pids:
         return [], 0
     by_project, _ = await ctx.personas()

@@ -217,6 +217,29 @@ _SOURCE_DOC_RE = re.compile(r"\[doc:(?P<slug>[a-z0-9][a-z0-9/_-]*)(?:#(?P<anchor
 _SOURCE_TICKET_RE = re.compile(r"\[ticket:(?P<id>tk_[0-9a-f]{16})\]")
 _SOURCE_WIKI_RE = re.compile(r"\[wiki:(?P<project_id>proj_[0-9a-f]{16})/(?P<slug>[^\]\s]+)\]")
 
+# A meeting citation is ``[meeting:<id> L<first>-<last>]`` and a chat
+# citation ``[chat:<id> M<first>-<last>]`` (message N is line N of the stored
+# thread).  One pattern matches both; ``conversation_marker_shape_ok`` then
+# requires the tag, the id prefix, the range letter and (when given) the
+# stored row's kind to agree, so ``[meeting:chat_… L1-2]`` never validates.
+# The turn handler's answer-citation check and proposal ``sources`` both use
+# these.
+MEETING_CITATION_RE = re.compile(
+    r"\[(?P<tag>meeting|chat):(?P<id>(?:meet|chat)_[0-9a-f]{16}) "
+    r"(?P<unit>[LM])(?P<first>\d{1,6})-(?P<last>\d{1,6})\]"
+)
+_CONVERSATION_MARKER_SHAPES = {"meeting": ("meet_", "L"), "chat": ("chat_", "M")}
+
+
+def conversation_marker_shape_ok(match: re.Match[str], row_kind: str | None = None) -> bool:
+    """The marker's tag, id prefix and range letter agree (and, when given,
+    match the stored row's kind)."""
+    tag = match.group("tag")
+    prefix, unit = _CONVERSATION_MARKER_SHAPES[tag]
+    if not match.group("id").startswith(prefix) or match.group("unit") != unit:
+        return False
+    return row_kind is None or (row_kind or "meeting") == tag
+
 # Plan features the routes gate these read tools on (``check_project_feature``).
 # The wiki read routes have no plan gate, so the wiki tools have none either.
 FEATURE_TICKETS = "agent_tickets"
@@ -2330,8 +2353,19 @@ def _not_seen(src: str) -> ToolArgumentError:
     return ToolArgumentError(f"source {src!r} was not returned by a tool this conversation")
 
 
+def _conversation_source_invalid(src: str) -> ToolArgumentError:
+    # One message for every miss (wrong kind, unreadable, deleted, range
+    # outside the transcript) so the refusal is no existence oracle.
+    return ToolArgumentError(
+        f"source {src!r} is not a readable meeting or chat range in this scope"
+    )
+
+
 def _validate_source_list(
-    ctx: HelperContext, field: str, raw: list[Any]
+    ctx: HelperContext,
+    field: str,
+    raw: list[Any],
+    conversation_refs: list[tuple[str, re.Match[str]]] | None = None,
 ) -> list[str]:
     """Validate one field's citations; every marker must have been seen.
 
@@ -2340,6 +2374,12 @@ def _validate_source_list(
     tool result's content, which a ticket, wiki page or session could carry.
     A ``[session:<id> msg:<n>]`` source needs that exact (session, message)
     pair; a message index surfaced for another session doesn't count.
+
+    ``[meeting:<id> L<a>-<b>]`` / ``[chat:<id> M<a>-<b>]`` sources need a
+    seen conversation id and a marker whose tag, id prefix and range letter
+    agree; they are appended to ``conversation_refs`` so ``_validate_sources``
+    can check them against the stored rows (readable in scope, matching kind,
+    range inside the transcript) in one query.
     """
     if not all(isinstance(r, str) and r.strip() for r in raw):
         raise ToolArgumentError(
@@ -2379,11 +2419,21 @@ def _validate_source_list(
                 raise _not_seen(src)
             cleaned.append(src)
             continue
+        m = MEETING_CITATION_RE.fullmatch(src)
+        if m:
+            if m.group("id") not in ctx.seen_meeting_ids:
+                raise _not_seen(src)
+            if not conversation_marker_shape_ok(m):
+                raise _conversation_source_invalid(src)
+            if conversation_refs is not None:
+                conversation_refs.append((src, m))
+            cleaned.append(src)
+            continue
         raise ToolArgumentError(f"unrecognized source {src!r}")
     return cleaned
 
 
-def _validate_sources(
+async def _validate_sources(
     ctx: HelperContext,
     sources: Any,
     *,
@@ -2395,22 +2445,26 @@ def _validate_sources(
     ``sources`` maps each field to the citations that back it ("the
     conversation citations each field came from").  Every required field must
     carry at least one citation; every citation must be one of the markers
-    (``[session:…]``, ``[ticket:…]``, ``[wiki:…]``, ``[doc:…]``) or ``user``,
-    and a marker's id/ref must be in the conversation's seen sets: the
-    structured refs ``execute`` records as results are delivered, seeded by
-    the turn handler from prior turns' stored tool refs and confirmed
-    helper-action results.
+    (``[session:…]``, ``[ticket:…]``, ``[wiki:…]``, ``[doc:…]``,
+    ``[meeting:<id> L<a>-<b>]``, ``[chat:<id> M<a>-<b>]``) or ``user``, and a
+    marker's id/ref must be in the conversation's seen sets: the structured
+    refs ``execute`` records as results are delivered, seeded by the turn
+    handler from prior turns' stored tool refs and confirmed helper-action
+    results.  Meeting and chat sources are then checked exactly like answer
+    citations: still a live row of the marker's kind the caller can read in
+    the turn's scope, with ``1 <= a <= b <= line_count``.
     """
     if not isinstance(sources, dict):
         raise ToolArgumentError(
             "'sources' must be an object mapping each field to a list of citations"
         )
     cleaned: dict[str, list[str]] = {}
+    conversation_refs: list[tuple[str, re.Match[str]]] = []
     for fname in required_fields:
         raw = sources.get(fname)
         if not isinstance(raw, list) or not raw:
             raise ToolArgumentError(f"field {fname!r} needs at least one source")
-        cleaned[fname] = _validate_source_list(ctx, fname, raw)
+        cleaned[fname] = _validate_source_list(ctx, fname, raw, conversation_refs)
     for fname, raw in sources.items():
         if fname in cleaned:
             continue
@@ -2418,8 +2472,181 @@ def _validate_sources(
             raise ToolArgumentError(f"unknown source field {fname!r}")
         if not isinstance(raw, list) or not raw:
             raise ToolArgumentError(f"field {fname!r} needs at least one source")
-        cleaned[fname] = _validate_source_list(ctx, fname, raw)
+        cleaned[fname] = _validate_source_list(ctx, fname, raw, conversation_refs)
+    if conversation_refs:
+        meetings = await readable_meetings(
+            ctx.db,
+            ctx.user.id,
+            ctx.scope,
+            list(dict.fromkeys(m.group("id") for _, m in conversation_refs)),
+        )
+        for src, m in conversation_refs:
+            meeting = meetings.get(m.group("id"))
+            if meeting is None or not conversation_marker_shape_ok(m, meeting.kind):
+                raise _conversation_source_invalid(src)
+            first, last = int(m.group("first")), int(m.group("last"))
+            if not 1 <= first <= last <= (meeting.line_count or 0):
+                raise _conversation_source_invalid(src)
     return cleaned
+
+
+@dataclass
+class _JiraPublishPlan:
+    """The checked destination of a helper Jira publish (create or existing)."""
+
+    jira_project_key: str
+    jira_project_key_override: str | None = None
+    jira_template: str | None = None
+    jira_template_version: int | None = None
+    jira_template_builtin: bool | None = None
+    jira_sprint_id: int | None = None
+
+    def params(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"jira_project_key": self.jira_project_key}
+        if self.jira_project_key_override is not None:
+            out["jira_project_key_override"] = self.jira_project_key_override
+        if self.jira_template is not None:
+            out["jira_template"] = self.jira_template
+            out["jira_template_version"] = self.jira_template_version
+            out["jira_template_builtin"] = self.jira_template_builtin
+        if self.jira_sprint_id is not None:
+            out["jira_sprint_id"] = self.jira_sprint_id
+        return out
+
+    def summary_suffix(self) -> str:
+        parts = [f"and publish it to Jira {self.jira_project_key}"]
+        if self.jira_template is not None:
+            parts.append(f"with template {self.jira_template}")
+        if self.jira_sprint_id is not None:
+            parts.append(f"into sprint {self.jira_sprint_id}")
+        return " ".join(parts)
+
+
+async def _jira_publish_preconditions(
+    ctx: HelperContext,
+    project: Project,
+    args: dict[str, Any],
+    *,
+    refs: dict[str, Any],
+) -> "_JiraPublishPlan | ToolOutput":
+    """The proposal-time gates for publishing a ticket of ``project`` to Jira.
+
+    Shared by ``propose_ticket`` (publish_to_jira=true) and
+    ``propose_jira_publish``: editor access, the ``jira_integration`` plan
+    gate, an org-scoped project, an enabled connection, a project mapping,
+    and the optional ``jira_project_key`` / ``jira_template`` /
+    ``jira_sprint_id`` overrides from ``args`` (the template version is
+    pinned).  Returns the checked plan, or a refusal ``ToolOutput`` (no
+    proposal row).  Confirm re-checks all of it (``jira_publish_preflight``).
+    """
+    if not await user_can_edit_project(ctx.db, ctx.user.id, project):
+        return ToolOutput(
+            "Cannot publish to Jira: publishing requires editor access to "
+            "the project.",
+            refs=refs,
+        )
+    if not await _feature_allowed(ctx, FEATURE_JIRA, project):
+        return ToolOutput(
+            "Cannot publish to Jira: the organization's plan does not "
+            "include Jira integration.",
+            refs=refs,
+        )
+    if project.org_id is None:
+        return ToolOutput(
+            "Cannot publish to Jira: this project is not org-scoped.",
+            refs=refs,
+        )
+    conn = (
+        await ctx.db.execute(
+            select(OrgTrackerConnection).where(
+                OrgTrackerConnection.org_id == project.org_id
+            )
+        )
+    ).scalar_one_or_none()
+    if conn is None or not conn.enabled:
+        return ToolOutput(
+            "Cannot publish to Jira: this organization has not connected "
+            "Jira.",
+            refs=refs,
+        )
+    mapping = (
+        await ctx.db.execute(
+            select(TrackerProjectMapping).where(
+                TrackerProjectMapping.project_id == project.id,
+                TrackerProjectMapping.org_id == project.org_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if mapping is None:
+        return ToolOutput(
+            "Cannot publish to Jira: this project has no Jira mapping. Ask "
+            "an admin to add a mapping.",
+            refs=refs,
+        )
+    jira_project_key = mapping.jira_project_key
+    jira_project_key_override: str | None = None
+    jira_template: str | None = None
+    jira_template_version: int | None = None
+    jira_template_builtin: bool | None = None
+
+    # Optional publish overrides (GitHub #113 C).  A project-key override
+    # must name a Jira project some SessionFS project in this org maps to,
+    # AND the caller must be able to edit at least one such project.  An
+    # invalid override refuses with no proposal row.
+    override_key = _optional_str(args, "jira_project_key")
+    if override_key is not None and override_key.upper() != jira_project_key.upper():
+        err = await jira_project_key_override_error(
+            ctx.db,
+            org_id=project.org_id,
+            jira_project_key=override_key,
+            user_id=ctx.user.id,
+        )
+        if err is not None:
+            return ToolOutput(
+                f"Cannot publish to Jira: {err}",
+                refs=refs,
+            )
+        jira_project_key_override = override_key.strip().upper()
+        jira_project_key = jira_project_key_override
+
+    template_slug = _optional_str(args, "jira_template")
+    if template_slug is not None:
+        err = await jira_template_override_error(
+            ctx.db, org_id=project.org_id, slug=template_slug
+        )
+        if err is not None:
+            return ToolOutput(
+                f"Cannot publish to Jira: {err}",
+                refs=refs,
+            )
+        jira_template = template_slug
+        jira_template_version = await jira_template_override_version(
+            ctx.db, org_id=project.org_id, slug=template_slug
+        )
+        # Record whether the slug resolved to a built-in (no org custom row,
+        # hence no version) so confirm can keep publishing the built-in even
+        # if a custom template later shadows it — and, conversely, a pinned
+        # custom template never falls back to a same-slug built-in (L-c).
+        jira_template_builtin = jira_template_version is None
+
+    jira_sprint_id = _optional_int(args, "jira_sprint_id")
+    if jira_sprint_id is not None and jira_sprint_id <= 0:
+        raise ToolArgumentError("'jira_sprint_id' must be a positive integer")
+    if jira_sprint_id is not None and not conn.sprint_field_id:
+        return ToolOutput(
+            "Cannot publish to Jira: this connection has no sprint field "
+            "discovered; ask an org admin to save the connection or set a "
+            "sprint field id.",
+            refs=refs,
+        )
+    return _JiraPublishPlan(
+        jira_project_key=jira_project_key,
+        jira_project_key_override=jira_project_key_override,
+        jira_template=jira_template,
+        jira_template_version=jira_template_version,
+        jira_template_builtin=jira_template_builtin,
+        jira_sprint_id=jira_sprint_id,
+    )
 
 
 async def _propose_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
@@ -2446,7 +2673,7 @@ async def _propose_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
         )
     except HelperDraftError as exc:
         raise ToolArgumentError(str(exc)) from None
-    sources = _validate_sources(
+    sources = await _validate_sources(
         ctx,
         args.get("sources"),
         required_fields=("title", "description", "acceptance_criteria"),
@@ -2463,109 +2690,14 @@ async def _propose_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
     # Publishing to Jira is an optional extension of the create: only when the
     # caller asks for it do we gate on the same preconditions the confirm will
     # re-check.  Any refusal here returns no proposal row.
-    jira_project_key: str | None = None
-    jira_project_key_override: str | None = None
-    jira_template: str | None = None
-    jira_template_version: int | None = None
-    jira_template_builtin: bool | None = None
-    jira_sprint_id: int | None = None
+    jira_plan: _JiraPublishPlan | None = None
     if publish_to_jira:
-        if not await user_can_edit_project(ctx.db, ctx.user.id, project):
-            return ToolOutput(
-                "Cannot publish to Jira: publishing requires editor access to "
-                "the project.",
-                refs=_refs(project_ids=[project_id]),
-            )
-        if not await _feature_allowed(ctx, FEATURE_JIRA, project):
-            return ToolOutput(
-                "Cannot publish to Jira: the organization's plan does not "
-                "include Jira integration.",
-                refs=_refs(project_ids=[project_id]),
-            )
-        if project.org_id is None:
-            return ToolOutput(
-                "Cannot publish to Jira: this project is not org-scoped.",
-                refs=_refs(project_ids=[project_id]),
-            )
-        conn = (
-            await ctx.db.execute(
-                select(OrgTrackerConnection).where(
-                    OrgTrackerConnection.org_id == project.org_id
-                )
-            )
-        ).scalar_one_or_none()
-        if conn is None or not conn.enabled:
-            return ToolOutput(
-                "Cannot publish to Jira: this organization has not connected "
-                "Jira.",
-                refs=_refs(project_ids=[project_id]),
-            )
-        mapping = (
-            await ctx.db.execute(
-                select(TrackerProjectMapping).where(
-                    TrackerProjectMapping.project_id == project.id,
-                    TrackerProjectMapping.org_id == project.org_id,
-                )
-            )
-        ).scalar_one_or_none()
-        if mapping is None:
-            return ToolOutput(
-                "Cannot publish to Jira: this project has no Jira mapping. Ask "
-                "an admin to add a mapping.",
-                refs=_refs(project_ids=[project_id]),
-            )
-        jira_project_key = mapping.jira_project_key
-
-        # Optional publish overrides (GitHub #113 C).  A project-key override
-        # must name a Jira project some SessionFS project in this org maps to,
-        # AND the caller must be able to edit at least one such project.  An
-        # invalid override refuses with no proposal row.
-        override_key = _optional_str(args, "jira_project_key")
-        if override_key is not None and override_key.upper() != jira_project_key.upper():
-            err = await jira_project_key_override_error(
-                ctx.db,
-                org_id=project.org_id,
-                jira_project_key=override_key,
-                user_id=ctx.user.id,
-            )
-            if err is not None:
-                return ToolOutput(
-                    f"Cannot publish to Jira: {err}",
-                    refs=_refs(project_ids=[project_id]),
-                )
-            jira_project_key_override = override_key.strip().upper()
-            jira_project_key = jira_project_key_override
-
-        template_slug = _optional_str(args, "jira_template")
-        if template_slug is not None:
-            err = await jira_template_override_error(
-                ctx.db, org_id=project.org_id, slug=template_slug
-            )
-            if err is not None:
-                return ToolOutput(
-                    f"Cannot publish to Jira: {err}",
-                    refs=_refs(project_ids=[project_id]),
-                )
-            jira_template = template_slug
-            jira_template_version = await jira_template_override_version(
-                ctx.db, org_id=project.org_id, slug=template_slug
-            )
-            # Record whether the slug resolved to a built-in (no org custom row,
-            # hence no version) so confirm can keep publishing the built-in even
-            # if a custom template later shadows it — and, conversely, a pinned
-            # custom template never falls back to a same-slug built-in (L-c).
-            jira_template_builtin = jira_template_version is None
-
-        jira_sprint_id = _optional_int(args, "jira_sprint_id")
-        if jira_sprint_id is not None and jira_sprint_id <= 0:
-            raise ToolArgumentError("'jira_sprint_id' must be a positive integer")
-        if jira_sprint_id is not None and not conn.sprint_field_id:
-            return ToolOutput(
-                "Cannot publish to Jira: this connection has no sprint field "
-                "discovered; ask an org admin to save the connection or set a "
-                "sprint field id.",
-                refs=_refs(project_ids=[project_id]),
-            )
+        checked = await _jira_publish_preconditions(
+            ctx, project, args, refs=_refs(project_ids=[project_id])
+        )
+        if isinstance(checked, ToolOutput):
+            return checked
+        jira_plan = checked
 
     # A drafted assignee resolves exactly like propose_assignment: a persona
     # name, or a human org member to the persona representing them, or a
@@ -2602,30 +2734,17 @@ async def _propose_ticket(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
         "estimated_effort": draft.estimated_effort,
         "sources": sources,
     }
-    if publish_to_jira:
+    if jira_plan is not None:
         params["publish_to_jira"] = True
-        params["jira_project_key"] = jira_project_key
-        if jira_project_key_override is not None:
-            params["jira_project_key_override"] = jira_project_key_override
-        if jira_template is not None:
-            params["jira_template"] = jira_template
-            params["jira_template_version"] = jira_template_version
-            params["jira_template_builtin"] = jira_template_builtin
-        if jira_sprint_id is not None:
-            params["jira_sprint_id"] = jira_sprint_id
+        params.update(jira_plan.params())
     summary = redact(
         f"Create {_article(draft.kind)} {draft.kind} ticket in {project.name}",
         ctx.dlp_policy,
     )
-    if publish_to_jira:
-        parts = [f"and publish it to Jira {jira_project_key}"]
-        if jira_template is not None:
-            parts.append(f"with template {jira_template}")
-        if jira_sprint_id is not None:
-            parts.append(f"into sprint {jira_sprint_id}")
+    if jira_plan is not None:
         summary = redact(
             f"Create {_article(draft.kind)} {draft.kind} ticket in {project.name} "
-            + " ".join(parts),
+            + jira_plan.summary_suffix(),
             ctx.dlp_policy,
         )
     return _propose_action(
@@ -2740,7 +2859,7 @@ async def _propose_comment(ctx: HelperContext, args: dict[str, Any]) -> ToolOutp
         body = check_comment_body(args.get("body"))
     except HelperDraftError as exc:
         raise ToolArgumentError(str(exc)) from None
-    sources = _validate_sources(
+    sources = await _validate_sources(
         ctx, args.get("sources"), required_fields=("body",)
     )
     send_to_jira = _optional_bool(args, "send_to_jira")
@@ -3007,6 +3126,75 @@ async def _propose_jira_overwrite(ctx: HelperContext, args: dict[str, Any]) -> T
             "issue_key": issue_key,
             "direction": direction,
         },
+        targets=[{"id": ticket.id, "name": ticket.title, "change": "will_change"}],
+        summary=summary,
+        refs=refs,
+    )
+
+
+async def _propose_jira_publish(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    """Propose publishing an existing, not-yet-linked ticket to Jira.
+
+    The same gates as ``propose_ticket``'s publish branch
+    (``_jira_publish_preconditions``) on the ticket's project; a ticket that
+    already has a Jira link (or a publish in flight) is refused and pointed at
+    ``propose_jira_overwrite``.  Confirm re-checks everything and publishes
+    through the dashboard's publish path (``publish_ticket_draft``).
+    """
+    ticket_id = _require_str(args, "ticket_id")
+    ticket = (
+        await ctx.db.execute(select(Ticket).where(Ticket.id == ticket_id))
+    ).scalar_one_or_none()
+    if ticket is None:
+        return ToolOutput("Ticket not found.", refs=_refs())
+    project = await _accessible_project(ctx, ticket.project_id)
+    if project is None or not await _feature_allowed(ctx, FEATURE_TICKETS, project):
+        return ToolOutput("Ticket not found.", refs=_refs())
+    refs = _refs(project_ids=[ticket.project_id], ticket_ids=[ticket.id])
+
+    checked = await _jira_publish_preconditions(ctx, project, args, refs=refs)
+    if isinstance(checked, ToolOutput):
+        return checked
+
+    # Checked after the editor/plan/connection gates so a reader learns
+    # nothing about the ticket's Jira state from the refusal.
+    link = (
+        await ctx.db.execute(
+            select(TicketTrackerLink).where(TicketTrackerLink.ticket_id == ticket.id)
+        )
+    ).scalar_one_or_none()
+    if link is not None:
+        if link.status == "linked":
+            return ToolOutput(
+                f"Cannot publish to Jira: ticket {ticket.title} is already "
+                f"linked to Jira {link.issue_key}. To replace that issue's "
+                "summary and description from the ticket, use "
+                "propose_jira_overwrite with direction to_jira.",
+                refs=refs,
+            )
+        return ToolOutput(
+            f"Cannot publish to Jira: a publish of ticket {ticket.title} is "
+            "already in progress or unconfirmed. Check the ticket page and "
+            "publish from there if it did not complete.",
+            refs=refs,
+        )
+
+    params: dict[str, Any] = {
+        "ticket_id": ticket.id,
+        # Pins the ticket's project: confirm refuses if the ticket has moved.
+        "project_id": ticket.project_id,
+        **checked.params(),
+    }
+    summary = redact(
+        f"Publish {ticket.title} to Jira {checked.jira_project_key}"
+        + (f" with template {checked.jira_template}" if checked.jira_template else "")
+        + (f" into sprint {checked.jira_sprint_id}" if checked.jira_sprint_id else ""),
+        ctx.dlp_policy,
+    )
+    return _propose_action(
+        ctx,
+        kind="publish_ticket_jira",
+        params=params,
         targets=[{"id": ticket.id, "name": ticket.title, "change": "will_change"}],
         summary=summary,
         refs=refs,
@@ -6055,7 +6243,7 @@ TOOLS: dict[str, HelperTool] = {
                 "assignment); a teammate's display name to the persona "
                 "representing them when exactly one does; otherwise a display "
                 "name to that teammate. Nothing changes until the user "
-                "confirms. Only the ticket creator or a project admin may "
+                "confirms. Only the ticket creator, a project admin or a project editor may "
                 "assign, and only a project editor may reassign a ticket that "
                 "is in progress or held by a work queue."
             ),
@@ -6356,6 +6544,32 @@ TOOLS: dict[str, HelperTool] = {
                 "additionalProperties": False,
             },
             handler=_propose_jira_overwrite,
+        ),
+        HelperTool(
+            name="propose_jira_publish",
+            description=(
+                "PROPOSE publishing an EXISTING sessionfs ticket that has no "
+                "Jira link yet as a new Jira issue (\"turn these tickets into "
+                "Jira issues\"): one proposal per ticket. Nothing changes until "
+                "the user confirms. The issue text is rendered from the ticket "
+                "by the server's template, never written by you. A ticket that "
+                "is already linked is refused — use propose_jira_overwrite with "
+                "direction to_jira for that. Optional jira_project_key, "
+                "jira_template and jira_sprint_id override the destination like "
+                "propose_ticket's publish options."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "ticket_id": {"type": "string"},
+                    "jira_project_key": {"type": "string", "description": "Publish into this Jira project key instead of the ticket's project mapping. Must be a key some project in the org maps to."},
+                    "jira_template": {"type": "string", "description": "Publish with this built-in or org-custom Jira template slug instead of the inherited template."},
+                    "jira_sprint_id": {"type": "integer", "description": "Place the issue into this Agile sprint id."},
+                },
+                "required": ["ticket_id"],
+                "additionalProperties": False,
+            },
+            handler=_propose_jira_publish,
         ),
     ]
 }

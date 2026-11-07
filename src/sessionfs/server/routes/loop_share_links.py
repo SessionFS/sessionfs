@@ -241,7 +241,7 @@ async def create_loop_share_link(
 ) -> dict[str, Any]:
     """Mint a share link; the raw token is returned once and never stored."""
     project = await _editor_scope(project_id, auth, db)
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
 
     ticket_id: str | None = None
     if body.kind == "story":

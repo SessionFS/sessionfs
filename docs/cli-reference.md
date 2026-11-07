@@ -2622,7 +2622,7 @@ sfs security fix
 
 Manage agent personas for the current project. Personas are portable AI roles (e.g. `atlas`, `prism`, `scribe`) shared by humans and AI agents working on the same codebase. Personas can also be defined at the org level and shared by every project in the org — see [Org-level personas](#org-level-personas).
 
-**Tier:** Pro+. Persona names must be ASCII (1–50 chars: letters, digits, `_`, `-`).
+**Tier:** every plan (Pro+ before v0.29.10). Persona names must be ASCII (1–50 chars: letters, digits, `_`, `-`).
 
 ### `sfs persona list`
 
@@ -2712,7 +2712,7 @@ How names resolve inside a project: the project's own persona wins, then the org
 - Org personas are only visible to current members of the project's current org (and to that org's service keys). Someone who can reach the project another way — its owner, or someone with an earlier captured session — sees only the project's own personas, for example after the project moves to an org they don't belong to.
 - Deleting an org persona refuses (409) while non-terminal tickets in the org's projects are assigned to it and the project has no same-named project persona to fall back to; `--force` overrides.
 - Service keys use the same `personas:read` / `personas:write` scopes and only reach their own org. A service key limited to specific projects can read org personas but not write them.
-- Tier: the org's own plan must include personas (Team and Enterprise do).
+- Tier: personas are on every plan.
 
 #### A persona that represents a person
 
@@ -2740,7 +2740,7 @@ sfs persona represent kelvin --org org_abc123 --clear                     # stop
 
 Manage agent tickets for the current project. Tickets are self-contained units of work assigned to a persona.
 
-**Tier:** Team+.
+**Tier:** every plan (Team+ before v0.29.10).
 
 **Status FSM (Task, default):** `suggested → open → in_progress → blocked → review → done` (terminal). `suggested/open → cancelled` (terminal).
 **Status FSM (Issue, v0.10.24):** `suggested → open → in_progress → closed` (terminal). Issues never enter review; they are PM rollups closed manually with `sfs ticket close`.
@@ -2838,7 +2838,7 @@ sfs ticket update tk_abc123 --due none                   # clear the due date
 | `--acceptance-criteria-file` | File with one acceptance criterion per line; replaces the whole list |
 | `--lease-epoch` | The lease epoch from `sfs ticket show`; the update is refused (409) if another worker has since started the ticket |
 
-Only the ticket's creator or a project admin can update it.
+Only the ticket's creator or a project admin can update it; a project editor can change only the assignee (`--user`).
 
 ### `sfs ticket review-state`
 
@@ -2980,7 +2980,7 @@ sfs ticket jira pull tk_abc123 --yes
 
 Record auditable runs of an agent persona against a ticket, with policy enforcement at completion. CI-first design — every flag has a stdin/stdout contract suitable for shell scripting and `gh`/`gitlab-ci` workflows.
 
-**Tier:** Team+.
+**Tier:** every plan (Team+ before v0.29.10).
 
 **Status FSM:** `queued → running → passed | failed | errored | cancelled` (all terminal).
 
@@ -3138,7 +3138,7 @@ sfs agent compare <a> <b> [--format text|json]
 
 ### `sfs agent feedback …` (v0.17.0)
 
-Append-only structured feedback/outcome records on agent work. A record points at least one target (`--agent-run`, `--ticket`, or `--comment`), all within the same project, and classifies the signal by `--type` × `--verdict` × optional `--label`. **Tier:** Team+.
+Append-only structured feedback/outcome records on agent work. A record points at least one target (`--agent-run`, `--ticket`, or `--comment`), all within the same project, and classifies the signal by `--type` × `--verdict` × optional `--label`. **Tier:** every plan.
 
 The label vocabulary is fixed per `--type`:
 
@@ -3178,7 +3178,7 @@ sfs agent feedback summary [--persona NAME] [--since ISO] [--format text|json]
 
 ## `sfs loop`
 
-Start and steer a [review loop](https://sessionfs.dev/review-loop/), read its reports, keep the project checklist and check merge readiness. Tier: **Team+**. Commands use the project of the current repository.
+Start and steer a [review loop](https://sessionfs.dev/review-loop/), read its reports, keep the project checklist and check merge readiness. Tier: **Team+** (the checklist and `sfs loop ready` are on every plan). Commands use the project of the current repository.
 
 | Command | Description |
 |---------|-------------|

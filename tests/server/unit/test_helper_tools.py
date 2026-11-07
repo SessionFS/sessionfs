@@ -326,6 +326,7 @@ def test_tool_specs_exposes_read_and_proposal_tools():
         "propose_comment",
         "propose_jira_link",
         "propose_jira_overwrite",
+        "propose_jira_publish",
         "propose_reminder",
         "propose_meeting_upload",
         "list_my_reminders",

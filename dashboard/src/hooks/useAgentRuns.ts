@@ -8,7 +8,7 @@ import {
 } from '../api/client';
 
 /**
- * React-Query hooks for v0.10.2 AgentRuns (Team+).
+ * React-Query hooks for v0.10.2 AgentRuns (every plan from 0.29.10; Team+ before).
  *
  * Read-only on the dashboard. AgentRuns are CI-driven — they're
  * created and completed by `sfs agent run` / `sfs agent complete`

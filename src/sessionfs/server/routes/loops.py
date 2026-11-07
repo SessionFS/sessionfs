@@ -513,11 +513,11 @@ async def start_review_loop(
     project = await _get_project_for_editor(project_id, db, auth)
     await assert_service_key_can_access_project(db, auth, project)
     _require_loop_downstream_scopes(auth)
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
     # GH #70 — serialize with project merge / persona-delete guards, then
     # re-authorize against the re-read project (same as ticket create).
     await lock_project_scope_authorized(
-        db, project, auth=auth, ctx=ctx, feature="agent_tickets"
+        db, project, auth=auth, ctx=ctx, feature="review_loop"
     )
 
     if body.cost_budget_usd is not None:
@@ -675,7 +675,7 @@ async def list_loops(
 ) -> list[dict]:
     """Every loop in the project (parent tickets with a ``loop_config``)."""
     project = await _readable_project(project_id, db, auth)
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
     loops = (
         await db.execute(
             select(Ticket)
@@ -715,7 +715,7 @@ async def get_loop(
     ).scalar_one_or_none()
     if loop is None:
         raise HTTPException(404, _LOOP_NOT_FOUND)
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
     results = await load_loops(
         db, loop_tickets=[loop], show_dollars=await _show_dollars(db, auth, project),
         show_policy_names=await _show_policy_names(db, auth, project),
@@ -767,7 +767,7 @@ async def update_loop(
     # #2): a missing loop 404s first, so the plan and dollar standing never
     # leak ahead of the loop oracle.
     loop = await _load_loop_for_editor(db, project_id, loop_id)
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
 
     fields = body.model_fields_set
     if "cost_budget_usd" in fields:
@@ -853,7 +853,7 @@ async def close_loop_item(
     if item is None:
         raise HTTPException(404, _LOOP_NOT_FOUND)
 
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
 
     # Guarded settle (checklist #11): the UPDATE only lands while the item is
     # still needs_human, so two concurrent closes cannot both append a run.

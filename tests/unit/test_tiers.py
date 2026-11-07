@@ -13,8 +13,25 @@ from sessionfs.server.tiers import (
 
 class TestTierFeatures:
     def test_free_has_meetings(self):
-        # GitHub #116 — meetings is available on every tier, including free.
-        assert get_features_for_tier(Tier.FREE) == {"meetings"}
+        # GitHub #116 — meetings is available on every tier, including free;
+        # agents, tickets and agent runs are on every tier since 0.29.10.
+        assert get_features_for_tier(Tier.FREE) == {
+            "meetings", "agent_personas", "agent_tickets", "agent_runs"
+        }
+
+    def test_tickets_and_runs_on_every_tier_review_loop_team_plus(self):
+        for tier in Tier:
+            features = get_features_for_tier(tier)
+            assert {"agent_personas", "agent_tickets", "agent_runs"} <= features, tier
+        for tier in (Tier.FREE, Tier.STARTER, Tier.PRO):
+            assert "review_loop" not in get_features_for_tier(tier), tier
+        for tier in (Tier.TEAM, Tier.ENTERPRISE):
+            assert "review_loop" in get_features_for_tier(tier), tier
+        assert get_minimum_tier_for_feature("agent_tickets") == "free"
+        assert get_minimum_tier_for_feature("review_loop") == "team"
+        # Org-only features stay where they were.
+        for feature in ("team_handoff", "org_settings", "team_management"):
+            assert get_minimum_tier_for_feature(feature) == "team", feature
 
     def test_starter_has_cloud_sync(self):
         features = get_features_for_tier(Tier.STARTER)

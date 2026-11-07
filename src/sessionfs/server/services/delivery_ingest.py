@@ -241,7 +241,7 @@ async def ingest_event(
     )
     if project is None:
         return {"status": "ignored", "reason": "unmapped"}
-    if not await project_plan_has_feature(project, "agent_tickets", db):
+    if not await project_plan_has_feature(project, "review_loop", db):
         return {"status": "ignored", "reason": "plan"}
 
     try:

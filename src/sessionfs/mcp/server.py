@@ -8561,7 +8561,7 @@ async def _handle_update_ticket(args: dict) -> dict:
         except Exception:
             return {"error": f"stale_lease_epoch: {resp.text}"}
     if resp.status_code == 403:
-        return {"error": "Not authorized to update this ticket (need creator or project admin)"}
+        return {"error": "Not authorized to update this ticket (need creator or project admin; project editors may change only the assignee)"}
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
     return resp.json()

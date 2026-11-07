@@ -449,12 +449,15 @@ async def check_reassignment_allowed(
 ) -> str | None:
     """Why ``user_id`` can't reassign ``ticket`` now, else ``None``.
 
-    The proposal-time form of the assign route's rules: the ticket creator
-    or a project admin, and a non-editor can't change the assignee once the
-    ticket is past suggested/open or while a work queue holds it.
+    The proposal-time form of the assign route's rules: the ticket creator,
+    a project admin or a project editor (editors may change only the
+    assignee), and a non-editor can't change the assignee once the ticket is
+    past suggested/open or while a work queue holds it.
     """
     try:
-        await authorize_ticket_edit(db, ticket=ticket, project=project, user_id=user_id)
+        await authorize_ticket_edit(
+            db, ticket=ticket, project=project, user_id=user_id, fields=["assigned_to"]
+        )
         await assert_ticket_fields_editable(
             db, ticket=ticket, project=project, user_id=user_id, fields=["assigned_to"]
         )
@@ -750,7 +753,8 @@ async def assign_ticket_action(
 ) -> None:
     """Assign a ticket as the confirming user; caller commits.
 
-    Exactly the PUT route's assignment path: creator-or-admin authorization,
+    Exactly the PUT route's assignment path: creator, admin or (assignee
+    only) project-editor authorization,
     the project scope lock with a re-read and re-authorization under it, then
     ``apply_ticket_update`` (non-editor edit-access rules and re-approval,
     ``TicketEdit`` audit rows, the system diff comment, route feedback and
@@ -766,7 +770,10 @@ async def assign_ticket_action(
 
     project = await load_project_for_user(ticket.project_id, db, user_id)
     await check_project_feature(ctx, "agent_tickets", project, db)
-    await authorize_ticket_edit(db, ticket=ticket, project=project, user_id=user_id)
+    fields = ["assigned_user_id"] if assigned_user_id else ["assigned_to"]
+    await authorize_ticket_edit(
+        db, ticket=ticket, project=project, user_id=user_id, fields=fields
+    )
 
     from sessionfs.server.services.scope_locks import lock_project_scope_authorized
 
@@ -777,7 +784,9 @@ async def assign_ticket_action(
     await db.refresh(ticket)
     if ticket.project_id != project.id:
         raise HTTPException(404, "Ticket not found")
-    await authorize_ticket_edit(db, ticket=ticket, project=project, user_id=user_id)
+    await authorize_ticket_edit(
+        db, ticket=ticket, project=project, user_id=user_id, fields=fields
+    )
 
     update = (
         TicketUpdate(assigned_user_id=assigned_user_id)
@@ -1243,8 +1252,12 @@ async def publish_ticket_to_jira(
     template_builtin: bool | None = None,
     sprint_id: int | None = None,
     auth=None,
+    require_unlinked: bool = False,
 ) -> dict:
-    """Publish a just-created ticket to Jira through the shared publish path.
+    """Publish a ticket to Jira through the shared publish path.
+
+    Used for a just-created ticket and, with ``require_unlinked=True``, for
+    the helper's publish of an existing ticket that must still be unlinked.
 
     Loads the project/connection/mapping fresh (the caller committed the ticket
     before this runs), resolves the ticket's template the way the publish route
@@ -1355,6 +1368,7 @@ async def publish_ticket_to_jira(
         jira_project_key=jira_project_key,
         sprint_id=sprint_id,
         auth=auth,
+        require_unlinked=require_unlinked,
     )
 
 

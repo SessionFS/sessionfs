@@ -831,6 +831,10 @@ async def run_meeting_extraction(
         db.add(participant)
         name_to_participant_id[key] = participant.id
         inserted += 1
+    # The two models have no relationship(), so the unit of work does not
+    # order these inserts by the owner foreign key: flush the participants
+    # first or PostgreSQL rejects items that point at them (GitHub #124).
+    await db.flush()
 
     kept_items = 0
     for spec in item_specs:

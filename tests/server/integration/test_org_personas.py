@@ -321,12 +321,12 @@ async def test_org_persona_name_is_unicode_case_insensitive_unique(
 
 
 @pytest.mark.asyncio
-async def test_org_plan_without_personas_is_gated(client: AsyncClient, db_session: AsyncSession):
+async def test_free_org_can_create_org_personas(client: AsyncClient, db_session: AsyncSession):
+    # Agents are on every plan (0.29.10), org agents included.
     org = await _org(db_session, tier="free")
     _, key = await _member(db_session, org, "owner")
     resp = await client.post(f"/api/v1/orgs/{org.id}/personas", headers=_hdrs(key), json=_BODY)
-    assert resp.status_code == 403
-    assert "upgrade_required" in resp.text
+    assert resp.status_code == 201, resp.text
 
 
 @pytest.mark.asyncio
@@ -1554,7 +1554,8 @@ async def test_transfer_to_lower_plan_while_waiting_hits_tier_gate(
     client: AsyncClient, db_session: AsyncSession, monkeypatch
 ):
     """The caller is a member of both orgs, but the destination org's plan
-    lacks agent_tickets: the feature gate re-runs under the lock."""
+    lacks project_context: the feature gate re-runs under the lock (tickets
+    are on every plan since 0.29.10, so a wiki write is the gated example)."""
     org_a = await _org(db_session)
     org_free = await _org(db_session, tier="free")
     owner, _ = await _member(db_session, org_a, "admin")
@@ -1566,9 +1567,9 @@ async def test_transfer_to_lower_plan_while_waiting_hits_tier_gate(
     await db_session.commit()
     project = await _project(db_session, owner, org_a)
     _land_transfer_while_waiting(monkeypatch, project.id, org_free.id)
-    resp = await client.post(
-        f"/api/v1/projects/{project.id}/tickets", headers=_hdrs(member_key),
-        json={"title": "Late"},
+    resp = await client.put(
+        f"/api/v1/projects/{project.id}/pages/notes", headers=_hdrs(member_key),
+        json={"title": "Late", "content": "hello"},
     )
     assert resp.status_code == 403, resp.text
     assert "upgrade_required" in resp.text
@@ -1684,7 +1685,8 @@ async def test_reassignment_reauthorizes_after_waiting_for_lock(
 ):
     """An org admin (not the ticket's creator) is demoted while their
     reassignment waits for the project lock: the creator/admin check
-    re-runs under the lock and refuses (403)."""
+    re-runs under the lock and refuses (403). A demoted admin is still an
+    editor, who may change only the assignee, so the edit includes priority."""
     from sqlalchemy import update as sa_update
 
     from sessionfs.server.services import scope_locks
@@ -1715,7 +1717,7 @@ async def test_reassignment_reauthorizes_after_waiting_for_lock(
     monkeypatch.setattr(scope_locks, "lock_project_scope", demote_while_waiting)
     resp = await client.put(
         f"/api/v1/projects/{project.id}/tickets/{tk.json()['id']}", headers=_hdrs(admin_key),
-        json={"assigned_to": "someone"},
+        json={"assigned_to": "someone", "priority": "high"},
     )
     assert fired["n"] == 1
     assert resp.status_code == 403, resp.text

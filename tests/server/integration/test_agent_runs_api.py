@@ -463,15 +463,44 @@ async def test_list_filters_by_persona_status_trigger(
 
 
 @pytest.mark.asyncio
-async def test_pro_tier_blocked(client: AsyncClient, db_session: AsyncSession):
-    """Pro user without team tier gets 403 on agent-runs routes."""
+async def test_pro_tier_lists_runs(client: AsyncClient, db_session: AsyncSession):
+    """Agent runs are on every plan since 0.29.10."""
     user, key = await _make_user(db_session, tier="pro")
     project = await _make_project(db_session, user)
     resp = await client.get(
         f"/api/v1/projects/{project.id}/agent-runs",
         headers=_hdrs(key),
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_free_tier_completes_an_agent_run(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A Free user creates, starts and completes a run on a personal project.
+
+    Creating personas is still a Pro+ feature, so the persona row is seeded
+    directly (as a project that kept its personas after a downgrade would).
+    """
+    user, key = await _make_user(db_session, tier="free")
+    project = await _make_project(db_session, user)
+    await _make_persona(db_session, project, user, "atlas")
+    base = f"/api/v1/projects/{project.id}/agent-runs"
+    cr = await client.post(base, headers=_hdrs(key), json={"persona_name": "atlas"})
+    assert cr.status_code == 201, cr.text
+    run_id = cr.json()["id"]
+    st = await client.post(f"{base}/{run_id}/start", headers=_hdrs(key))
+    assert st.status_code == 200, st.text
+    cp = await client.post(
+        f"{base}/{run_id}/complete",
+        headers=_hdrs(key),
+        json={"status": "passed", "severity": "none", "result_summary": "ok"},
+    )
+    assert cp.status_code == 200, cp.text
+    assert cp.json()["status"] == "passed"
+    listed = await client.get(base, headers=_hdrs(key))
+    assert listed.status_code == 200 and listed.json()
 
 
 # ── Concurrent transitions (atomic guard) ────────────────────────

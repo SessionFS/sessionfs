@@ -47,7 +47,7 @@ from sessionfs.cli.common import console, err_console, handle_errors
 
 agent_app = typer.Typer(
     name="agent",
-    help="Track ephemeral agent execution runs (Team+).",
+    help="Track ephemeral agent execution runs.",
     no_args_is_help=True,
 )
 

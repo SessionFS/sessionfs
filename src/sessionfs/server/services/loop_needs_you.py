@@ -70,13 +70,13 @@ async def needs_you(db: AsyncSession, *, user_id: str) -> dict[str, Any]:
     if not projects:
         return {"items": [], "counts": _empty_counts()}
 
-    # Only projects whose plan includes agent_tickets (Team+) contribute;
+    # Only projects whose plan includes review_loop (Team+) contribute;
     # one batched plan resolution, never a per-project query loop.
     tiers = await resolve_project_plan_tiers(list(projects), db)
     projects = [
         p
         for p in projects
-        if "agent_tickets" in get_features_for_tier(tiers.get(p.id, Tier.FREE))
+        if "review_loop" in get_features_for_tier(tiers.get(p.id, Tier.FREE))
     ]
     if not projects:
         return {"items": [], "counts": _empty_counts()}

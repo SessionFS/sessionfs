@@ -1704,7 +1704,7 @@ export interface RepresentedPersona {
 }
 
 // ------------------------------------------------------------------
-// Tickets (v0.10.1, Team+)
+// Tickets (v0.10.1; every plan from 0.29.10)
 // ------------------------------------------------------------------
 
 export type TicketStatus =
@@ -2194,7 +2194,7 @@ export interface TicketNotificationSettings {
 }
 
 // ------------------------------------------------------------------
-// AgentRuns (v0.10.2, Team+)
+// AgentRuns (v0.10.2; every plan from 0.29.10)
 // ------------------------------------------------------------------
 
 export type AgentRunStatus =
@@ -4531,8 +4531,12 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       }),
 
     // ── v0.10.1 Personas (Pro+) ──
-    listPersonas: (projectId: string) =>
-      request<Persona[]>(`/api/v1/projects/${projectId}/personas`),
+    /** `includeOrg: false` lists only the project's own personas; the server
+     *  default (and every caller that omits it) includes the org's. */
+    listPersonas: (projectId: string, opts: { includeOrg?: boolean } = {}) =>
+      request<Persona[]>(
+        `/api/v1/projects/${projectId}/personas${opts.includeOrg === false ? '?include_org=false' : ''}`,
+      ),
 
     getPersona: (projectId: string, name: string) =>
       request<Persona>(`/api/v1/projects/${projectId}/personas/${encodeURIComponent(name)}`),
@@ -4593,7 +4597,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         `/api/v1/projects/${projectId}/personas/${encodeURIComponent(name)}/rollup`,
       ),
 
-    // ── v0.10.1 Tickets (Team+) ──
+    // ── v0.10.1 Tickets (every plan from 0.29.10) ──
     listTickets: (
       projectId: string,
       params: {
@@ -4935,7 +4939,7 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         `/api/v1/projects/${projectId}/tickets/${ticketId}/watchers`,
       ),
 
-    // ── v0.10.2 AgentRuns (Team+) ──
+    // ── v0.10.2 AgentRuns (every plan from 0.29.10) ──
     listAgentRuns: (
       projectId: string,
       params: {

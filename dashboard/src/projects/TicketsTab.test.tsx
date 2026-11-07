@@ -1113,16 +1113,74 @@ describe('TicketsTab', () => {
       expect(screen.getByRole('button', { name: 'Assign' })).toBeInTheDocument();
     });
 
-    it('hides Reassign from an editor who is neither the creator nor a project admin', () => {
+    it('lets an editor who is neither the creator nor a project admin assign and save', async () => {
+      const user = userEvent.setup();
+      const update = makeMutation();
+      hooks.useUpdateTicket.mockReturnValue(update);
+      hooks.useTickets.mockReturnValue({ data: [ticket({ assigned_to: null })], isLoading: false, error: null });
       render(
         <TicketsTab
           projectId="proj_1"
-          viewer={{ canEdit: true, userId: 'u9' }}
+          viewer={{ canEdit: true, userId: 'u9', isProjectAdmin: false }}
           jira={{ orgId: 'org_1', isProjectAdmin: false, isEnterprise: false }}
         />,
       );
       fireEvent.click(screen.getByText('Add session export'));
+      await user.click(screen.getByRole('button', { name: 'Assign' }));
+      // Nothing to clear on an unassigned ticket.
+      expect(screen.queryByRole('button', { name: 'Unassign' })).toBeNull();
+      await user.click(screen.getByRole('button', { name: 'Assignee' }));
+      await user.click(screen.getByRole('option', { name: /Sam Rivera/ }));
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+      expect(update.mutateAsync).toHaveBeenCalledWith({
+        ticketId: 'tk_1',
+        body: { assigned_user_id: 'u2', assigned_to: null },
+      });
+      expect(mockAddToast).toHaveBeenCalledWith('success', 'Assignee updated');
+      // Field edits keep the creator-or-admin rule.
+      expect(screen.queryByRole('button', { name: /due date/ })).toBeNull();
+    });
+
+    it('unassigns in one click with explicit nulls', async () => {
+      const user = userEvent.setup();
+      const update = makeMutation();
+      hooks.useUpdateTicket.mockReturnValue(update);
+      hooks.useTickets.mockReturnValue({ data: [ticket(PERSON_TICKET)], isLoading: false, error: null });
+      render(<TicketsTab projectId="proj_1" viewer={{ canEdit: true, userId: 'u9', isProjectAdmin: false }} />);
+      fireEvent.click(screen.getByText('Add session export'));
+      await user.click(screen.getByRole('button', { name: 'Reassign' }));
+      await user.click(screen.getByRole('button', { name: 'Unassign' }));
+      expect(update.mutateAsync).toHaveBeenCalledTimes(1);
+      expect(update.mutateAsync).toHaveBeenCalledWith({
+        ticketId: 'tk_1',
+        body: { assigned_to: null, assigned_user_id: null },
+      });
+      expect(mockAddToast).toHaveBeenCalledWith('success', 'Unassigned');
+      expect(screen.queryByRole('group', { name: 'Reassign ticket' })).toBeNull();
+    });
+
+    it('asks before a non-editor creator unassigns an approved ticket', async () => {
+      const user = userEvent.setup();
+      const update = makeMutation();
+      hooks.useUpdateTicket.mockReturnValue(update);
+      hooks.useTickets.mockReturnValue({ data: [ticket({ status: 'open' })], isLoading: false, error: null });
+      render(<TicketsTab projectId="proj_1" viewer={{ canEdit: false, userId: 'u1' }} />);
+      fireEvent.click(screen.getByText('Add session export'));
+      await user.click(screen.getByRole('button', { name: 'Reassign' }));
+      await user.click(screen.getByRole('button', { name: 'Unassign' }));
+      expect(update.mutateAsync).not.toHaveBeenCalled();
+      await user.click(screen.getByRole('button', { name: 'Save and send back for approval' }));
+      expect(update.mutateAsync).toHaveBeenCalledWith({
+        ticketId: 'tk_1',
+        body: { assigned_to: null, assigned_user_id: null },
+      });
+    });
+
+    it('hides Assign from a reader who is neither the creator nor a project admin', () => {
+      render(<TicketsTab projectId="proj_1" viewer={{ canEdit: false, userId: 'u9', isProjectAdmin: false }} />);
+      fireEvent.click(screen.getByText('Add session export'));
       expect(screen.queryByRole('button', { name: 'Reassign' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Assign' })).toBeNull();
     });
 
     it('offers Reassign to the ticket creator even without edit rights', () => {

@@ -1075,30 +1075,39 @@ async def test_concurrent_accept_returns_409_no_duplicate_enrichment(
 
 
 @pytest.mark.asyncio
-async def test_pro_tier_blocked_from_tickets(
+async def test_pro_tier_lists_tickets(
     client: AsyncClient, db_session: AsyncSession
 ):
-    """agent_tickets is TEAM+; Pro gets 403."""
+    """Tickets are on every plan since 0.29.10."""
     user, key = await _make_user(db_session, tier="pro")
     project = await _make_project(db_session, user)
     resp = await client.get(
         f"/api/v1/projects/{project.id}/tickets", headers=_hdrs(key)
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 200, resp.text
 
 
 @pytest.mark.asyncio
-async def test_free_tier_blocked_from_tickets(
+async def test_free_tier_ticket_lifecycle_and_review_state(
     client: AsyncClient, db_session: AsyncSession
 ):
+    """A Free user runs the full ticket lifecycle on a personal project."""
     user, key = await _make_user(db_session, tier="free")
     project = await _make_project(db_session, user)
+    base = f"/api/v1/projects/{project.id}/tickets"
     resp = await client.post(
-        f"/api/v1/projects/{project.id}/tickets",
-        headers=_hdrs(key),
-        json={"title": "nope"},
+        base, headers=_hdrs(key), json={"title": "Solo work", "description": "do it"}
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 201, resp.text
+    tk = resp.json()
+    assert (await client.get(base, headers=_hdrs(key))).status_code == 200
+    resp = await client.post(
+        f"{base}/{tk['id']}/comments", headers=_hdrs(key), json={"content": "note"}
+    )
+    assert resp.status_code in (200, 201), resp.text
+    resp = await client.get(f"{base}/{tk['id']}/review-state", headers=_hdrs(key))
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["ticket_id"] == tk["id"]
 
 
 # ── v0.10.10 list_ticket_comments (tk_32f3dacf1c9749bc) ──

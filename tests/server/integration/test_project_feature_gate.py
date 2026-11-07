@@ -1,11 +1,14 @@
 """Project-scoped feature gates use the project's plan (tk_a90e4015ad984cde).
 
 Inside a project, project_context / agent_personas / agent_tickets /
-agent_runs are paid for by the project's owner — the owning org, or the
+agent_runs / review_loop are paid for by the project's owner — the owning org, or the
 owner's own plan for personal projects — not by whichever org the caller
 happens to belong to. Existing usage is grandfathered: a project that
 already used a feature before v0.17.2 (migration 065) keeps it for any
 caller whose own plan includes it.
+
+Agents, tickets and agent runs are on every plan since 0.29.10, so the
+paid-feature cases below use project context (Pro+) through a wiki write.
 """
 
 from __future__ import annotations
@@ -144,6 +147,14 @@ def _personas(project: Project) -> str:
     return f"/api/v1/projects/{project.id}/personas"
 
 
+async def _wiki_put(client: AsyncClient, project: Project, key: str):
+    return await client.put(
+        f"/api/v1/projects/{project.id}/pages/notes",
+        json={"title": "Notes", "content": "hello"},
+        headers=_hdrs(key),
+    )
+
+
 # ── paid org project: members get what the org pays for ──────────
 
 
@@ -192,13 +203,16 @@ async def test_free_org_project_denies_new_usage_through_callers_plan(
     await _set_primary(db_session, user, team_org)
     project = await _project(db_session, user, free_org)
 
-    resp = await client.get(_tickets(project), headers=_hdrs(key))
+    resp = await _wiki_put(client, project, key)
     assert resp.status_code == 403
     err = _error(resp.json())
     assert err.get("error") == "upgrade_required"
     assert err.get("plan_scope") == "project"
     assert err.get("current_tier") == "free"
-    assert err.get("feature") == "agent_tickets"
+    assert err.get("feature") == "project_context"
+    # Agents, tickets and runs are on every plan, the free org's included.
+    for url in (_tickets(project), _runs(project), _personas(project)):
+        assert (await client.get(url, headers=_hdrs(key))).status_code == 200, url
 
 
 @pytest.mark.asyncio
@@ -210,14 +224,14 @@ async def test_grandfathered_project_keeps_feature_for_paid_caller(
     free_org = await _org(db_session, "free", user)
     await _set_primary(db_session, user, team_org)
     project = await _project(db_session, user, free_org)
-    await _grandfather(db_session, project, "agent_tickets")
-
-    resp = await client.get(_tickets(project), headers=_hdrs(key))
-    assert resp.status_code == 200, resp.text
-    # Grandfathering is per feature: tickets do not unlock agent runs.
-    resp = await client.get(_runs(project), headers=_hdrs(key))
+    # Grandfathering is per feature: another feature never unlocks project context.
+    await _grandfather(db_session, project, "review_loop")
+    resp = await _wiki_put(client, project, key)
     assert resp.status_code == 403
-    assert _error(resp.json()).get("feature") == "agent_runs"
+    assert _error(resp.json()).get("feature") == "project_context"
+    await _grandfather(db_session, project, "project_context")
+    resp = await _wiki_put(client, project, key)
+    assert resp.status_code == 200, resp.text
 
 
 @pytest.mark.asyncio
@@ -228,9 +242,9 @@ async def test_grandfathered_project_still_needs_callers_own_plan(
     user, key = await _user(db_session)
     free_org = await _org(db_session, "free", user)
     project = await _project(db_session, user, free_org)
-    await _grandfather(db_session, project, "agent_tickets")
+    await _grandfather(db_session, project, "project_context")
 
-    resp = await client.get(_tickets(project), headers=_hdrs(key))
+    resp = await _wiki_put(client, project, key)
     assert resp.status_code == 403
 
 
@@ -262,11 +276,23 @@ async def test_personal_project_uses_owner_plan(
 ):
     owner, key = await _user(db_session, tier="pro")
     project = await _project(db_session, owner)
-    # Pro includes personas but not tickets.
-    assert (await client.get(_personas(project), headers=_hdrs(key))).status_code == 200
-    resp = await client.get(_tickets(project), headers=_hdrs(key))
+    # Pro includes project context; review loops stay Team+.
+    assert (await _wiki_put(client, project, key)).status_code == 200
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/releases",
+        json={"version": "v1", "source": "manual", "tag_sha": "a" * 40},
+        headers=_hdrs(key),
+    )
     assert resp.status_code == 403
     assert _error(resp.json()).get("current_tier") == "pro"
+    assert _error(resp.json()).get("feature") == "review_loop"
+
+    free_owner, free_key = await _user(db_session, tier="free")
+    free_project = await _project(db_session, free_owner)
+    resp = await _wiki_put(client, free_project, free_key)
+    assert resp.status_code == 403
+    assert _error(resp.json()).get("current_tier") == "free"
+    assert (await client.get(_personas(free_project), headers=_hdrs(free_key))).status_code == 200
 
 
 @pytest.mark.asyncio
@@ -313,7 +339,7 @@ async def _service_key(db: AsyncSession, org: Organization, minter: User) -> str
             is_active=True,
             key_kind="service",
             org_id=org.id,
-            scopes=json.dumps(["tickets:read"]),
+            scopes=json.dumps(["tickets:read", "personas:read", "knowledge:write"]),
             created_by_user_id=minter.id,
             service_key_name="svc",
             created_at=datetime.now(timezone.utc),
@@ -334,10 +360,10 @@ async def test_service_key_of_free_org_gated_on_project_plan(
     project = await _project(db_session, minter, free_org)
     key = await _service_key(db_session, free_org, minter)
 
-    resp = await client.get(_tickets(project), headers=_hdrs(key))
+    resp = await _wiki_put(client, project, key)
     assert resp.status_code == 403
-    await _grandfather(db_session, project, "agent_tickets")
-    resp = await client.get(_tickets(project), headers=_hdrs(key))
+    await _grandfather(db_session, project, "project_context")
+    resp = await _wiki_put(client, project, key)
     assert resp.status_code == 200, resp.text
 
 

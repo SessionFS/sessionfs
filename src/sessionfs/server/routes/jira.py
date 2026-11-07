@@ -3757,6 +3757,7 @@ async def publish_ticket_draft(
     sprint_id: int | None = None,
     jira_project_key: str | None = None,
     auth: AuthContext | None = None,
+    require_unlinked: bool = False,
 ) -> dict:
     """Publish an already-rendered draft to Jira (shared publish path).
 
@@ -3773,6 +3774,13 @@ async def publish_ticket_draft(
     ``warnings`` and the publish still succeeds.  ``jira_project_key`` is the
     helper's optional destination override (C); when None the mapping's key is
     used, and the caller has already validated any override belongs to this org.
+
+    ``require_unlinked`` (the helper's publish-an-existing-ticket confirm)
+    refuses 409 ``jira_already_linked`` when the claim finds the ticket
+    already linked, so a link made between proposal and confirm is never
+    overwritten.  The helper refuses a pending/unknown row before it gets
+    here (``publish_in_progress``), so an unconfirmed publish is resumed from
+    the ticket page, whose publish takes the duplicate-proof adopt path.
     """
     # Pin the ticket id up front: a rollback on the superseded path expires the
     # ORM object, so ``ticket.id`` must not be read again after one.
@@ -3849,6 +3857,19 @@ async def publish_ticket_draft(
         site_url=conn.site_url,
         jira_project_key=effective_project_key,
     )
+    if require_unlinked and action == "update":
+        # A linked row holds no claim token and nothing was written, so
+        # refusing here leaves the link exactly as it was.
+        raise HTTPException(
+            409,
+            {
+                "error": "jira_already_linked",
+                "message": (
+                    f"This ticket is already linked to Jira {link.issue_key}; "
+                    "overwrite that issue instead of publishing a new one."
+                ),
+            },
+        )
 
     # A ticket that was merely attached to an existing Jira issue (never
     # published from SessionFS) has no publish payload of ours to update from;

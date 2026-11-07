@@ -3,7 +3,7 @@ import { useAuth } from '../auth/AuthContext';
 import { ApiError, type AssignableUser, type JiraSyncEventsPage, type Ticket, type TicketComment, type TicketCreate, type TicketEventsPage, type TicketPreview, type TicketReviewState, type TicketUpdate, type TicketWatcher } from '../api/client';
 
 /**
- * React-Query hooks for v0.10.1 Tickets (Team+).
+ * React-Query hooks for v0.10.1 Tickets (every plan from 0.29.10; Team+ before).
  *
  * Read-mostly surface for the dashboard. The FSM lifecycle transitions
  * (start, complete, resolve, block/unblock) live behind the CLI / MCP

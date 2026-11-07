@@ -33,7 +33,7 @@ async def post_ticket_merge_check(
 ) -> dict[str, Any]:
     """Recompute and post a ticket's merge check. Returns the posted outcome."""
     project = await _write_scope(project_id, auth, db)
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    await check_project_feature(ctx, "review_loop", project, db)
     return await merge_checks.refresh_merge_check(
         db, ticket_id=ticket_id, project_id=project.id
     )

@@ -491,12 +491,13 @@ async def test_summary_grouping(client: AsyncClient, db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_pro_tier_blocked(client: AsyncClient, db_session: AsyncSession):
-    user, key = await _make_user(db_session, tier="pro")
-    project = await _make_project(db_session, user)
-    resp = await client.get(_url(project.id), headers=_hdrs(key))
-    assert resp.status_code == 403
-    assert _structured_error(resp.json()).get("error") == "upgrade_required"
+async def test_pro_and_free_tiers_allowed(client: AsyncClient, db_session: AsyncSession):
+    # Agent feedback follows agent runs onto every plan (0.29.10).
+    for tier in ("pro", "free"):
+        user, key = await _make_user(db_session, tier=tier)
+        project = await _make_project(db_session, user)
+        resp = await client.get(_url(project.id), headers=_hdrs(key))
+        assert resp.status_code == 200, (tier, resp.text)
 
 
 # ── service-key scope enforcement ────────────────────────────────

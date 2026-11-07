@@ -333,13 +333,13 @@ async def _meeting_action_for(db: AsyncSession, project: Project, creator: User,
 
 
 async def test_ticket_plan_gate(client: AsyncClient, db_session: AsyncSession):
-    """Tickets only surface from projects whose plan has tickets."""
+    """Tickets are on every plan: a Free user's own tickets surface."""
     me, key = await _user(db_session, tier="free")
     p = await _project(db_session, me)
     await _ticket(db_session, p, me, assigned_user_id=me.id)
     await _meeting_action(db_session, p, me)
     kinds = _kinds(await _feed(client, key))
-    assert "ticket" not in kinds and "meeting_action" in kinds
+    assert "ticket" in kinds and "meeting_action" in kinds
 
 
 # ── hides ──

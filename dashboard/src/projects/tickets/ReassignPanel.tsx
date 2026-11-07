@@ -6,15 +6,15 @@ import { useUpdateTicket } from '../../hooks/useTickets';
 import { errorMessage } from '../../utils/errorMessage';
 import { AssigneePicker } from './AssigneePicker';
 import { ReapprovalConfirm } from './ReapprovalConfirm';
-import { assigneeErrorFrom, assigneePayload, sameAssignee, ticketAssignee, type Assignee } from './assignee';
+import { UNASSIGNED, assigneeErrorFrom, assigneePayload, sameAssignee, ticketAssignee, type Assignee } from './assignee';
 
 /* ── Reassign ──
  *
  * Inline editor under the ticket header. The choice is staged so the
  * notification note can be read before saving; Save sends the whole
- * assignee (the chosen field plus an explicit null for the other). A
- * non-editor's change to an approved ticket sends it back for approval, so
- * that Save asks first. */
+ * assignee (the chosen field plus an explicit null for the other).
+ * Unassign clears both fields in one click. A non-editor's change to an
+ * approved ticket sends it back for approval, so those saves ask first. */
 
 export function ReassignPanel({
   projectId,
@@ -49,8 +49,10 @@ export function ReassignPanel({
     wasConfirming.current = confirming;
   }, [confirming, pickerId]);
 
-  function save() {
-    if (unchanged) {
+  const hasAssignee = current.kind !== 'none';
+
+  function save(target: Assignee = value) {
+    if (sameAssignee(target, current)) {
       onDone();
       return;
     }
@@ -58,7 +60,15 @@ export function ReassignPanel({
       setConfirming(true);
       return;
     }
-    void commit();
+    void commit(target);
+  }
+
+  // One click: stage "Unassigned" (so the picker shows what is being saved)
+  // and save it, through the re-approval confirm when that applies.
+  function unassign() {
+    setValue(UNASSIGNED);
+    setError(undefined);
+    save(UNASSIGNED);
   }
 
   // Escape while confirming backs out of the confirm only, and never
@@ -70,11 +80,11 @@ export function ReassignPanel({
     if (!update.isPending) setConfirming(false);
   }
 
-  async function commit() {
+  async function commit(target: Assignee = value) {
     setError(undefined);
     try {
-      await update.mutateAsync({ ticketId: ticket.id, body: assigneePayload(value) });
-      addToast('success', value.kind === 'none' ? 'Unassigned' : 'Assignee updated');
+      await update.mutateAsync({ ticketId: ticket.id, body: assigneePayload(target) });
+      addToast('success', target.kind === 'none' ? 'Unassigned' : 'Assignee updated');
       onDone();
     } catch (exc) {
       setConfirming(false);
@@ -108,12 +118,17 @@ export function ReassignPanel({
         <ReapprovalConfirm onConfirm={() => void commit()} onCancel={() => setConfirming(false)} pending={update.isPending} />
       ) : (
         <div className="mt-3 flex items-center gap-2">
-          <Button variant="primary" size="sm" onClick={save} loading={update.isPending} disabled={unchanged}>
+          <Button variant="primary" size="sm" onClick={() => save()} loading={update.isPending} disabled={unchanged}>
             Save
           </Button>
           <Button variant="ghost" size="sm" onClick={onDone} disabled={update.isPending}>
             Cancel
           </Button>
+          {hasAssignee && (
+            <Button variant="ghost" size="sm" className="ml-auto" onClick={unassign} disabled={update.isPending}>
+              Unassign
+            </Button>
+          )}
         </div>
       )}
     </div>

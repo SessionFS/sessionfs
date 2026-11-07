@@ -465,8 +465,8 @@ async def test_invalid_persona_name_rejected(
 
 
 @pytest.mark.asyncio
-async def test_free_tier_gets_403(client: AsyncClient, db_session: AsyncSession):
-    """agent_personas feature is Pro+ — free users get 403 on every route."""
+async def test_free_tier_creates_and_lists_personas(client: AsyncClient, db_session: AsyncSession):
+    """agent_personas is on every plan (0.29.10): a free user runs the loop."""
     user, key = await _make_user(db_session, "free", tier="free")
     project = await _make_project(db_session, user)
     resp = await client.post(
@@ -474,20 +474,22 @@ async def test_free_tier_gets_403(client: AsyncClient, db_session: AsyncSession)
         headers=_hdrs(key),
         json={"name": "atlas", "role": "Backend"},
     )
-    assert resp.status_code == 403, resp.text
+    assert resp.status_code == 201, resp.text
+    resp = await client.get(f"/api/v1/projects/{project.id}/personas", headers=_hdrs(key))
+    assert resp.status_code == 200
+    assert [p["name"] for p in resp.json()] == ["atlas"]
 
 
 @pytest.mark.asyncio
-async def test_starter_tier_gets_403(
+async def test_starter_tier_lists_personas(
     client: AsyncClient, db_session: AsyncSession
 ):
-    """Starter tier doesn't include agent_personas either."""
     user, key = await _make_user(db_session, "starter", tier="starter")
     project = await _make_project(db_session, user)
     resp = await client.get(
         f"/api/v1/projects/{project.id}/personas", headers=_hdrs(key)
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 200
 
 
 # ── project access ──────────────────────────────────────────

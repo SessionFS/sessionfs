@@ -17,6 +17,30 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.29.10 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.29.10</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">November 7, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Agents, tickets and runs on every plan</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Agents, tickets and agent runs on every plan.</strong> Personas, tickets, agent runs and agent feedback are now on Free and every paid plan, with no cap, so a solo developer can run the whole ticket, run and review lifecycle on a personal project. Merge readiness (<span class="font-mono text-accent text-sm">sfs loop ready</span>) and review-state reads are on every plan too. See <a href="/pricing/" class="text-brand hover:underline">Pricing</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Review loops stay on Team and Enterprise.</strong> Review loops, loop worker runs and review rounds, workflow templates, releases, PRs, gates and deployments, the merge check, loop share links, webhook ingest, the Review loops inbox and the For You findings and proof sections need Team+. Projects grandfathered on tickets before v0.17.2 do not carry that over to review loops.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Editors can reassign.</strong> Any project editor can assign, reassign or unassign a ticket from the API, MCP, CLI or dashboard, where the reassign panel gains a one-click Unassign. Other fields still need the ticket&rsquo;s creator or a project admin.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>The session helper publishes tickets to Jira.</strong> Ask it to turn tickets into Jira issues and it proposes one publish per unlinked ticket; on Confirm each is published exactly like Promote to Jira on the ticket page. Linked tickets are refused with an offer to overwrite instead, and after a Jira timeout the helper never claims nothing changed.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Meetings and chats as helper sources</strong> (GitHub #124). Tickets and comments the helper drafts can cite <span class="font-mono text-accent text-sm">[meeting:&lt;id&gt; L&lt;a&gt;-&lt;b&gt;]</span> and <span class="font-mono text-accent text-sm">[chat:&lt;id&gt; M&lt;a&gt;-&lt;b&gt;]</span> ranges, checked like answer citations.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Agents tab shows your project&rsquo;s agents</strong> (GitHub #126). An Include N org people switch adds the org&rsquo;s agents in a separate read-only section.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed:</strong> meeting extraction on PostgreSQL failed when an action item&rsquo;s owner matched a participant (GitHub #124); participants are now written first.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">No new migrations (still 001&ndash;124). 130 MCP tools (unchanged).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
       <!-- v0.29.9 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +48,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.29.9</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">November 7, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Workflow templates</h2>
         <ul class="space-y-2 text-base text-muted">
