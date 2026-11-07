@@ -2907,6 +2907,9 @@ class AgentRun(Base):
     # Null for implementer/ui runs; (work_queue_item_id, review_round) is the
     # idempotency key for record_review_round.
     review_round: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Workflow templates (migration 124): the template step this run reports
+    # for. Null for runs outside a workflow loop.
+    workflow_step_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     exit_reason: Mapped[str | None] = mapped_column(String(20), nullable=True)
     occurred_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -7647,6 +7650,110 @@ class ReminderNote(Base):
     service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class WorkflowTemplate(Base):
+    """One immutable version of a record-only workflow template (migration 124).
+
+    Scope is exactly one of ``org_id`` / ``project_id``. An edit inserts a new
+    row in the same ``lineage_id`` (``version`` + 1, ``supersedes_id`` = the
+    previous row); only ``active`` changes on an existing row. SessionFS never
+    runs a template: the caller's own orchestrator runs the steps and reports
+    them through the loop tools.
+    """
+
+    __tablename__ = "workflow_templates"
+    __table_args__ = (
+        CheckConstraint(
+            "(org_id IS NOT NULL AND project_id IS NULL) "
+            "OR (org_id IS NULL AND project_id IS NOT NULL)",
+            name="ck_workflow_templates_scope",
+        ),
+        CheckConstraint(
+            "length(definition) <= 32768", name="ck_workflow_templates_definition_len"
+        ),
+        CheckConstraint("version >= 1", name="ck_workflow_templates_version"),
+        CheckConstraint(
+            "actor_type IN ('user', 'service_key')", name="ck_workflow_templates_actor_type"
+        ),
+        UniqueConstraint(
+            "lineage_id", "version", name="uq_workflow_templates_lineage_version"
+        ),
+        Index("idx_workflow_templates_project", "project_id"),
+        Index("idx_workflow_templates_org", "org_id"),
+        Index(
+            "uq_workflow_templates_lineage_active",
+            "lineage_id",
+            unique=True,
+            postgresql_where=text("active = true"),
+            sqlite_where=text("active = 1"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=True
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    lineage_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    definition: Mapped[str] = mapped_column(Text, nullable=False)
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    supersedes_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default="user"
+    )
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class WorkflowStepChild(Base):
+    """A workflow loop's child ticket for one step and fan-out slot (migration 124).
+
+    ``(loop_ticket_id, step_id, step_index)`` is unique so a step slot is
+    created at most once; a ticket belongs to at most one slot.
+    """
+
+    __tablename__ = "workflow_step_children"
+    __table_args__ = (
+        CheckConstraint(
+            "step_index >= 0 AND step_index < 10", name="ck_workflow_step_children_index"
+        ),
+        UniqueConstraint(
+            "loop_ticket_id",
+            "step_id",
+            "step_index",
+            name="uq_workflow_step_children_slot",
+        ),
+        UniqueConstraint("ticket_id", name="uq_workflow_step_children_ticket"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    loop_ticket_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tickets.id", ondelete="CASCADE"), nullable=False
+    )
+    ticket_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("tickets.id", ondelete="CASCADE"), nullable=False
+    )
+    step_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    step_index: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

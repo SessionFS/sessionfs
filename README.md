@@ -143,8 +143,9 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs loop ready` | Is a ticket's work safe to merge at a given commit? (Team+) |
 | `sfs loop start\|status\|update\|close-item` | Run a review loop with token, dollar and round budgets (Team+) |
 | `sfs loop report\|insights\|checklist` | Per-round reports, project insights and the checklist that learns (Team+) |
-| `sfs loop run start\|finish`, `sfs loop review` | Record each worker run and review round in one call, with usage (Team+) |
+| `sfs loop run start\|finish`, `sfs loop review` | Record each worker run and review round in one call, with usage and an optional workflow `--step` (Team+) |
 | `sfs loop share story\|ship-report\|list\|revoke` | Share a ticket story or Ship Report without dollars or emails (Team+) |
+| `sfs workflow list\|show\|create\|update\|disable\|start\|plan` | Record-only workflow templates: start a loop from a template, read the ready steps and briefs, report each step with `--step` (Team+) |
 | `sfs release record\|link\|deploy\|list\|ship-report` | Record PRs, releases, gates and deployments, link tickets directly, then read the per-release or per-month Ship Report (Team+) |
 | `sfs org delivery-webhook rotate\|status` | Per-org GitHub and GitLab webhooks for pull requests, releases and deploys (Team+) |
 | `sfs agent replay\|compare` | Re-run a recorded agent run with an edited prompt or context, and compare two runs side by side |
@@ -165,7 +166,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs auth use\|profiles\|whoami` | Switch between named account profiles |
 | `sfs auth keys list\|create\|revoke` | Manage your personal API keys |
 | `sfs config show\|set\|default-org` | Manage configuration and your default organization |
-| `sfs mcp serve` | Start MCP server (126 tools) for AI tool integration |
+| `sfs mcp serve` | Start MCP server (130 tools) for AI tool integration |
 | `sfs mcp install\|uninstall --for TOOL` | Add or remove the MCP registration for any of the 10 supported tools |
 | `sfs mcp index` | Rebuild the local full-text search index |
 | `sfs init` | Interactive setup wizard — auto-detects tools, optional sync |
@@ -281,7 +282,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.29.8 — Public Beta.** 11089 backend tests + 2069 dashboard tests passing. Database migrations 001–123 (067 and 068 unused). 126 MCP tools. **For You is the dashboard home:** one ranked list of what needs you across reminders, approvals, assigned tickets, Review Loop items, handoffs, questions on your tickets, meeting and chat action items and what changed this week, in sections from On your radar to Working with others. Every card says why it is there; approve or reject, raise a paused loop's limit, claim a handoff, acknowledge a meeting item into a ticket, or mark done, hide and snooze with a real Undo, all from the card. Working with others shows who your work waits on and sends them a reminder. Access is re-checked on every item. Sessions moved to `/sessions` (or keep it as home). `sfs attention`, MCP `get_my_attention`, the helper's `list_my_attention` and API scope `attention:read`. Migration 123.
+**v0.29.9 — Public Beta.** 11190 backend tests + 2140 dashboard tests passing. Database migrations 001–124 (067 and 068 unused). 130 MCP tools. **Workflow templates (Team+):** store a repeatable multi-agent plan (dispatch, fan-out implement, review, verify, document) as a project or org template, versioned; each step names a role, an agent, its dependencies, a fan-out of up to 10 tickets, an exit gate (`trusted_clean`, an approval policy or none) and a brief. Start one on an issue or a new title to create a review loop with a child ticket per step, then read the plan: step lanes, why each step waits, and the ready tickets with their agents and briefs. Record-only: your own orchestrator starts every agent and reports with `step_id`; every reviewer step needs its own independent trusted clean, and approval-policy gates wait for an approved request at the current commit. `sfs workflow`, `--step` on loop commands, MCP `list_workflow_templates`, `get_workflow_template`, `start_workflow` and `get_workflow_plan`, a templates editor with a step graph, step lanes on the Loop Board and org templates under Organization → Governance. Migration 124.
 
 **v0.29.6 — Public Beta.** 10860 backend tests + 2018 dashboard tests passing. Database migrations 001–121 (067 and 068 unused). 124 MCP tools. **Approvals (Enterprise):** approval policies hold merges (readiness, the GitHub check and the GitLab status) and knowledge-base promotion until the right people approve, bound to the exact commit or entry content; nobody approves their own work, agents only read, and every decision lands in an exportable approval log. `sfs approval`, three read-only MCP tools, an Approvals page and Org → Governance in the dashboard. **Meetings:** pasted transcripts get a title and have caption timing stripped, extraction finishes on long transcripts and dates items from the meeting day, items with an unknown owner are kept, and the session helper can save a pasted transcript as a meeting. Migrations 120–121.
 
@@ -413,7 +414,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### MCP and dashboard
 
-- **MCP server** (local, stdio) with 126 tools — sessions, knowledge read and write, rules, personas, tickets, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), meetings and chat threads, reminders, read-only approvals, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
+- **MCP server** (local, stdio) with 130 tools — sessions, knowledge read and write, rules, personas, tickets, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), meetings and chat threads, reminders, read-only approvals, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
 - **`sfs mcp install --for <tool>`** for all 10 tools (stale registration repair, malformed config handling)
 - **Web dashboard** with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, command palette (Cmd+K), mobile nav, accessibility (focus trapping, ARIA live regions), product identity
 - **`/help` page** — MCP-first guidance, 10-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference

@@ -278,6 +278,24 @@ Tier: **Team+** for every write below (including merge checks, release recording
 | GET | `/api/v1/orgs/{org_id}/delivery-webhooks/{provider}/status` | Bearer (org owner or admin) | Whether a secret exists, its last four characters and the inbound URL |
 | POST | `/api/v1/webhooks/github/{org_id}`, `/api/v1/webhooks/gitlab/{org_id}` | Provider signature or token | Inbound delivery webhooks. Unknown orgs and bad signatures get the same `401`; bodies over 1 MiB are refused |
 
+### Workflow Templates (v0.29.9)
+
+Record-only [workflow templates](/workflows/): SessionFS stores templates, starts a review loop from one and computes the plan; your own orchestrator launches every agent. Reads need project read access (org templates: org members); template writes and starting a workflow are Review Loop writes (**Team+**).
+
+| Method | Path | Auth | Description |
+| --- | --- | --- | --- |
+| GET | `/api/v1/projects/{id}/workflow-templates` | Bearer (`loops:read`) | Active templates usable in the project: its own plus its org's |
+| POST | `/api/v1/projects/{id}/workflow-templates` | Bearer (`loops:write`, editor) | Create a project template (`name`, `definition`). Validated, DLP-scanned under the strictest policy before storage; at most 100 active templates per scope (`409 template_limit`) |
+| GET | `/api/v1/projects/{id}/workflow-templates/{template_id}` | Bearer (`loops:read`) | Any version by id: the project's own, or its org's when visible |
+| PUT | `/api/v1/projects/{id}/workflow-templates/{template_id}` | Bearer (`loops:write`, editor) | Save a new version; the old one is deactivated and started loops keep their pinned version |
+| DELETE | `/api/v1/projects/{id}/workflow-templates/{template_id}` | Bearer (`loops:write`, editor) | Deactivate a version so it can no longer be started |
+| GET, POST | `/api/v1/orgs/{org_id}/workflow-templates` | Bearer (org member to read, org admin to write) | The org's templates, usable in the org's projects. Service keys limited to some projects read org templates only through those projects |
+| GET, PUT, DELETE | `/api/v1/orgs/{org_id}/workflow-templates/{template_id}` | Bearer (org member to read, org admin to write) | Read, version or deactivate an org template |
+| POST | `/api/v1/projects/{id}/workflows` | Bearer (`loops:write`, Team+) | Start a workflow from a template (`template_id`) on an issue (`ticket_id`) or a new one (`title`): a review loop pinned to the template version with one child ticket per step slot. Same budgets and rules as starting a loop |
+| GET | `/api/v1/projects/{id}/workflows/{loop_id}/plan` | Bearer (`loops:read`) | Each step's state (`blocked`, `ready`, `running`, `needs_human`, `done`), its gate and the reason it is not ready, plus the ready child tickets with their agent and rendered brief |
+
+The worker-run, finish and review-round routes above take an optional `step_id`; a report that does not match the pinned template is `422 workflow_step_mismatch`.
+
 ### Meetings (v0.29.0)
 
 Stored meeting transcripts (GitHub #116). A meeting belongs to exactly one project or one group; project meetings admit service keys via `meetings:read` / `meetings:write`, while group meetings require a user key (Team+). Uploads are DLP-scanned under the strictest union of the caller's orgs and the scope org; a block-mode policy rejects with `422 dlp_blocked`, and every other mode (redact, warn, or no policy) redacts secrets before storage. See [Meetings](/meetings/).

@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 import math
 import uuid
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -331,6 +333,168 @@ async def _load_loop_ticket(db: AsyncSession, project_id: str, ticket_id: str) -
     return ticket
 
 
+@dataclass
+class LoopChildSpec:
+    """One child task of a new loop: its title, rendered brief and criteria."""
+
+    title: str
+    brief_markdown: str
+    acceptance_criteria: list[str] = field(default_factory=list)
+    assigned_to: str | None = None
+
+
+async def create_loop_records(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    auth: AuthContext,
+    from_ticket_id: str | None,
+    title: str,
+    description: str,
+    reviewer_persona: str,
+    loop_extra: dict[str, Any],
+    build_children: Callable[[Ticket], list[LoopChildSpec]],
+) -> tuple[Ticket, list[Ticket], WorkQueue]:
+    """Create (or adopt) a loop parent, its child tasks and its review queue.
+
+    Shared by ``start_review_loop`` and workflow start. The caller has
+    already authorized the write, taken the project scope lock and
+    sanitized ``title``/``description``; this flushes but never commits so
+    the caller can add rows in the same transaction. ``loop_extra`` is merged
+    into ``loop_config`` (budgets, ``workflow``). Raises 404/422/409 like the
+    route (unknown ticket, not an issue, already a loop).
+    """
+    if from_ticket_id is not None:
+        parent = await _load_loop_ticket(db, project_id, from_ticket_id)
+        if parent.kind != "issue":
+            raise HTTPException(
+                422,
+                "from_ticket_id must reference an issue ticket (a loop parent "
+                "is an issue that rolls up its child tasks).",
+            )
+    else:
+        if not title.strip():
+            raise HTTPException(
+                422, "title is required when from_ticket_id is not supplied"
+            )
+        parent = Ticket(
+            id=f"tk_{uuid.uuid4().hex[:16]}",
+            project_id=project_id,
+            title=title.strip(),
+            description=description,
+            priority="medium",
+            kind="issue",
+            status="open",
+            created_by_user_id=auth.user.id,
+            actor_type=auth.actor_type,
+            service_key_id=auth.service_key_id,
+            service_key_name=auth.service_key_name,
+        )
+        db.add(parent)
+        await db.flush()
+        await _record_create_events(
+            db, parent, auth=auth, assigned_to=None, assigned_user_id=None
+        )
+        # Same creator auto-subscribe as the standalone create route: the
+        # creator follows the loop parent; a service key's minter is not.
+        if auth.key_kind != "service":
+            await ticket_watchers.subscribe_guarded(
+                db, ticket_id=parent.id, user_id=auth.user.id, source="creator"
+            )
+
+    # Claim the parent atomically BEFORE any child/queue rows are created
+    # (review checklist #11): the queue id is pre-assigned so loop_config can
+    # be written now. The conditional UPDATE only lands while loop_config is
+    # still NULL, so two concurrent adopters can't both stand up children and
+    # a queue — the loser sees rowcount 0 and aborts with 409.
+    queue_id = f"wq_{uuid.uuid4().hex[:16]}"
+    loop_config: dict[str, Any] = {
+        "queue_id": queue_id,
+        "reviewer_persona": reviewer_persona,
+    }
+    loop_config.update(loop_extra)
+    claimed = await db.execute(
+        update(Ticket)
+        .where(Ticket.id == parent.id, Ticket.loop_config.is_(None))
+        .values(loop_config=json.dumps(loop_config))
+    )
+    if claimed.rowcount != 1:
+        raise HTTPException(
+            409, f"Ticket {parent.id!r} is already a review loop."
+        )
+
+    # Child tasks (one per spec, in order). Specs are built after the parent
+    # is resolved so a caller can render briefs from it.
+    children: list[Ticket] = []
+    for spec in build_children(parent):
+        child = Ticket(
+            id=f"tk_{uuid.uuid4().hex[:16]}",
+            project_id=project_id,
+            title=spec.title,
+            description=spec.brief_markdown,
+            priority="medium",
+            kind="task",
+            parent_ticket_id=parent.id,
+            acceptance_criteria=json.dumps(spec.acceptance_criteria),
+            assigned_to=spec.assigned_to,
+            status="open",
+            created_by_user_id=auth.user.id,
+            actor_type=auth.actor_type,
+            service_key_id=auth.service_key_id,
+            service_key_name=auth.service_key_name,
+        )
+        db.add(child)
+        children.append(child)
+        # Child tickets get the same create event and creator auto-subscribe
+        # as the parent (and as the standalone ticket-create route): the
+        # event shares the loop's transaction, and a service key's minter is
+        # NOT auto-subscribed (the key acts on the minter's behalf).
+        await _record_create_events(
+            db, child, auth=auth, assigned_to=spec.assigned_to, assigned_user_id=None
+        )
+        if auth.key_kind != "service":
+            await ticket_watchers.subscribe_guarded(
+                db, ticket_id=child.id, user_id=auth.user.id, source="creator"
+            )
+
+    # review_until_clean queue for the reviewer persona over the children.
+    # Reuses the queue_id recorded in loop_config at claim time.
+    queue = WorkQueue(
+        id=queue_id,
+        project_id=project_id,
+        name=f"Review loop {parent.id}",
+        mode="review_until_clean",
+        assigned_persona=reviewer_persona,
+        selector=json.dumps({"ticket_ids": [c.id for c in children]}),
+        auto_adopt=True,
+        max_adopt_per_wake=5,
+        stop_condition=_STOP_ALL_CLEAN,
+        cadence_seconds=300,
+        max_tickets_per_run=1,
+        max_attempts_per_item=3,
+        status="active",
+        lease_epoch=0,
+        created_by_user_id=auth.user.id,
+        actor_type=auth.actor_type,
+        service_key_id=auth.service_key_id,
+        service_key_name=auth.service_key_name,
+    )
+    db.add(queue)
+    await db.flush()
+    for child in children:
+        db.add(
+            WorkQueueItem(
+                id=f"wqi_{uuid.uuid4().hex[:16]}",
+                work_queue_id=queue.id,
+                ticket_id=child.id,
+                item_status="pending",
+                attempts=0,
+            )
+        )
+
+    return parent, children, queue
+
+
 @router.post("/{project_id}/loops", status_code=201)
 async def start_review_loop(
     project_id: str,
@@ -364,149 +528,51 @@ async def start_review_loop(
     body.title = _sanitize_text(body.title)
     body.description = _sanitize_text(body.description)
 
-    if body.from_ticket_id is not None:
-        parent = await _load_loop_ticket(db, project_id, body.from_ticket_id)
-        if parent.kind != "issue":
-            raise HTTPException(
-                422,
-                "from_ticket_id must reference an issue ticket (a loop parent "
-                "is an issue that rolls up its child tasks).",
-            )
-    else:
-        if not body.title.strip():
-            raise HTTPException(
-                422, "title is required when from_ticket_id is not supplied"
-            )
-        parent = Ticket(
-            id=f"tk_{uuid.uuid4().hex[:16]}",
-            project_id=project_id,
-            title=body.title.strip(),
-            description=body.description,
-            priority="medium",
-            kind="issue",
-            status="open",
-            created_by_user_id=auth.user.id,
-            actor_type=auth.actor_type,
-            service_key_id=auth.service_key_id,
-            service_key_name=auth.service_key_name,
-        )
-        db.add(parent)
-        await db.flush()
-        await _record_create_events(
-            db, parent, auth=auth, assigned_to=None, assigned_user_id=None
-        )
-        # Same creator auto-subscribe as the standalone create route: the
-        # creator follows the loop parent; a service key's minter is not.
-        if auth.key_kind != "service":
-            await ticket_watchers.subscribe_guarded(
-                db, ticket_id=parent.id, user_id=auth.user.id, source="creator"
-            )
-
-    # Claim the parent atomically BEFORE any child/queue rows are created
-    # (review checklist #11): the queue id is pre-assigned so loop_config can
-    # be written now. The conditional UPDATE only lands while loop_config is
-    # still NULL, so two concurrent adopters can't both stand up children and
-    # a queue — the loser sees rowcount 0 and aborts with 409.
-    queue_id = f"wq_{uuid.uuid4().hex[:16]}"
-    loop_config = {
-        "queue_id": queue_id,
-        "reviewer_persona": body.reviewer_persona,
-    }
-    if body.token_budget is not None:
-        loop_config["token_budget"] = body.token_budget
-    if body.cost_budget_usd is not None:
-        loop_config["cost_budget_usd"] = body.cost_budget_usd
-    if body.max_review_rounds is not None:
-        loop_config["max_review_rounds"] = body.max_review_rounds
-    claimed = await db.execute(
-        update(Ticket)
-        .where(Ticket.id == parent.id, Ticket.loop_config.is_(None))
-        .values(loop_config=json.dumps(loop_config))
-    )
-    if claimed.rowcount != 1:
-        raise HTTPException(
-            409, f"Ticket {parent.id!r} is already a review loop."
-        )
-
-    # Child tasks + their briefs (one pass; checklist fetched once).
     checklist_items = await _active_checklist_items(db, project_id)
-    children: list[Ticket] = []
-    briefs: list[dict[str, Any]] = []
-    for spec in body.tickets:
-        spec.title = _sanitize_text(spec.title)
-        spec.description = _sanitize_text(spec.description)
-        spec.acceptance_criteria = [_sanitize_text(c) for c in spec.acceptance_criteria]
-        brief_markdown = _render_brief(
-            description=spec.description,
-            acceptance_criteria=spec.acceptance_criteria,
-            checklist_items=checklist_items,
-        )
-        child = Ticket(
-            id=f"tk_{uuid.uuid4().hex[:16]}",
-            project_id=project_id,
-            title=spec.title,
-            description=brief_markdown,
-            priority="medium",
-            kind="task",
-            parent_ticket_id=parent.id,
-            acceptance_criteria=json.dumps(spec.acceptance_criteria),
-            status="open",
-            created_by_user_id=auth.user.id,
-            actor_type=auth.actor_type,
-            service_key_id=auth.service_key_id,
-            service_key_name=auth.service_key_name,
-        )
-        db.add(child)
-        children.append(child)
-        briefs.append(
-            {"id": child.id, "title": child.title, "brief_markdown": brief_markdown}
-        )
-        # Child tickets get the same create event and creator auto-subscribe
-        # as the parent (and as the standalone ticket-create route): the
-        # event shares the loop's transaction, and a service key's minter is
-        # NOT auto-subscribed (the key acts on the minter's behalf).
-        await _record_create_events(
-            db, child, auth=auth, assigned_to=None, assigned_user_id=None
-        )
-        if auth.key_kind != "service":
-            await ticket_watchers.subscribe_guarded(
-                db, ticket_id=child.id, user_id=auth.user.id, source="creator"
-            )
 
-    # review_until_clean queue for the reviewer persona over the children.
-    # Reuses the queue_id recorded in loop_config at claim time.
-    queue = WorkQueue(
-        id=queue_id,
-        project_id=project_id,
-        name=f"Review loop {parent.id}",
-        mode="review_until_clean",
-        assigned_persona=body.reviewer_persona,
-        selector=json.dumps({"ticket_ids": [c.id for c in children]}),
-        auto_adopt=True,
-        max_adopt_per_wake=5,
-        stop_condition=_STOP_ALL_CLEAN,
-        cadence_seconds=300,
-        max_tickets_per_run=1,
-        max_attempts_per_item=3,
-        status="active",
-        lease_epoch=0,
-        created_by_user_id=auth.user.id,
-        actor_type=auth.actor_type,
-        service_key_id=auth.service_key_id,
-        service_key_name=auth.service_key_name,
-    )
-    db.add(queue)
-    await db.flush()
-    for child in children:
-        db.add(
-            WorkQueueItem(
-                id=f"wqi_{uuid.uuid4().hex[:16]}",
-                work_queue_id=queue.id,
-                ticket_id=child.id,
-                item_status="pending",
-                attempts=0,
+    def _children(_parent: Ticket) -> list[LoopChildSpec]:
+        specs: list[LoopChildSpec] = []
+        for spec in body.tickets:
+            spec.title = _sanitize_text(spec.title)
+            spec.description = _sanitize_text(spec.description)
+            spec.acceptance_criteria = [
+                _sanitize_text(c) for c in spec.acceptance_criteria
+            ]
+            specs.append(
+                LoopChildSpec(
+                    title=spec.title,
+                    brief_markdown=_render_brief(
+                        description=spec.description,
+                        acceptance_criteria=spec.acceptance_criteria,
+                        checklist_items=checklist_items,
+                    ),
+                    acceptance_criteria=spec.acceptance_criteria,
+                )
             )
-        )
+        return specs
+
+    budgets: dict[str, Any] = {}
+    if body.token_budget is not None:
+        budgets["token_budget"] = body.token_budget
+    if body.cost_budget_usd is not None:
+        budgets["cost_budget_usd"] = body.cost_budget_usd
+    if body.max_review_rounds is not None:
+        budgets["max_review_rounds"] = body.max_review_rounds
+    parent, children, queue = await create_loop_records(
+        db,
+        project_id=project_id,
+        auth=auth,
+        from_ticket_id=body.from_ticket_id,
+        title=body.title,
+        description=body.description,
+        reviewer_persona=body.reviewer_persona,
+        loop_extra=budgets,
+        build_children=_children,
+    )
+    briefs = [
+        {"id": c.id, "title": c.title, "brief_markdown": c.description}
+        for c in children
+    ]
 
     await db.commit()
 

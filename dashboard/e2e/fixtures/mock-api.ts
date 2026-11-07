@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test';
 import * as d from './data';
 import * as loop from '../../src/projects/loop/fixtures';
+import * as wf from '../../src/projects/workflows/fixtures';
 import * as fy from '../../src/foryou/fixtures';
 
 export interface MockResult {
@@ -102,6 +103,8 @@ export function resolve(method: string, pathname: string): MockResult | null {
     if (rest === '/tickets') return ok(d.tickets.map((t) => (t.id === d.LINKED_TICKET_ID ? d.linkedTicket : t)));
     // Review Loop (shapes follow routes/loops.py, review_loop.py, loop_checklist.py, spend.py).
     if (rest === '/loops') return ok(loop.loops());
+    if (rest === '/workflow-templates') return ok(wf.templates());
+    if (/^\/workflows\/[^/]+\/plan$/.test(rest)) return ok(wf.plan());
     if (rest === '/loop-insights') return ok(loop.insights());
     if (rest === '/releases') return ok(loop.releaseList());
     if (rest.startsWith('/releases/') && rest.endsWith('/ship-report')) return ok(loop.shipReport());
@@ -184,6 +187,7 @@ export function resolve(method: string, pathname: string): MockResult | null {
   if (org) {
     const rest = org[2] ?? '';
     if (rest === '/settings') return ok(d.orgSettings);
+    if (rest === '/workflow-templates') return ok([wf.orgTemplate()]);
     if (rest === '/groups') return ok(d.projectGroups);
     if (/^\/groups\/[^/]+$/.test(rest)) return ok(d.projectGroupDetail);
     if (rest === '/personas') return ok(d.orgPersonas);

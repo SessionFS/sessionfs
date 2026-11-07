@@ -7,6 +7,8 @@ import { ShipReports } from './ShipReport';
 import { LoopBoard } from './LoopBoard';
 import { StoryView } from './StoryView';
 import { DOCS_URL } from './format';
+import { planAllowsWorkflows } from '../workflows/TemplatesPanel';
+import { StartWorkflowButton } from '../workflows/StartWorkflowButton';
 
 export interface ReviewLoopTabProps {
   projectId: string;
@@ -18,6 +20,10 @@ export interface ReviewLoopTabProps {
   /** `board` shows the Loop Board, `ship` the Ship Reports (URL `view=`); anything else is Mission Control. */
   view?: string | null;
   onChangeView?: (view: 'home' | 'board' | 'ship') => void;
+  /** The project's plan tier; Team and above shows "Start workflow" to editors. */
+  workflowTier?: string | null;
+  /** Called after a workflow starts, so the page can show the board. */
+  onWorkflowStarted?: () => void;
 }
 
 export function LoopEmptyState() {
@@ -43,7 +49,7 @@ export function LoopEmptyState() {
  * Review Loop → Mission Control. Everything here is a count of stored
  * records; nothing is estimated. Harm is the only loud colour.
  */
-export default function ReviewLoopTab({ projectId, storyId, onOpenStory, canEdit = false, view = null, onChangeView }: ReviewLoopTabProps) {
+export default function ReviewLoopTab({ projectId, storyId, onOpenStory, canEdit = false, view = null, onChangeView, workflowTier = null, onWorkflowStarted }: ReviewLoopTabProps) {
   const loops = useLoops(projectId);
   const insights = useLoopInsights(projectId);
 
@@ -66,11 +72,16 @@ export default function ReviewLoopTab({ projectId, storyId, onOpenStory, canEdit
 
   return (
     <div className="space-y-8">
-      <div>
-        <h2 className="text-lg font-semibold text-text-primary">Review Loop</h2>
-        <p className="text-sm text-text-tertiary">
-          What your agents wrote, what the reviewers caught, and what it cost.
-        </p>
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-lg font-semibold text-text-primary">Review Loop</h2>
+          <p className="text-sm text-text-tertiary">
+            What your agents wrote, what the reviewers caught, and what it cost.
+          </p>
+        </div>
+        {canEdit && planAllowsWorkflows(workflowTier) && (
+          <StartWorkflowButton projectId={projectId} onStarted={onWorkflowStarted} />
+        )}
       </div>
       {!hasAnything ? (
         <LoopEmptyState />

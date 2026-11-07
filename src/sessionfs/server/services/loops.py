@@ -248,7 +248,7 @@ async def load_loops(
     """Return Loop dicts for the given parent issue tickets (no per-child N+1).
 
     ``loop_tickets`` are the loop parent issues (``loop_config`` set). Each
-    returned dict is ``{"id", "title", "children": [LoopChild, ...]}`` matching
+    returned dict is ``{"id", "title", "workflow", "children": [LoopChild, ...]}`` matching
     ``dashboard/src/api/reviewLoop.ts``.
     """
     loop_ids = [t.id for t in loop_tickets]
@@ -356,6 +356,23 @@ async def load_loops(
                 show_names=show_policy_names,
             )
             children_out.append(child_out)
-        loops.append({"id": loop.id, "title": loop.title, "children": children_out})
+        pin = config.get("workflow")
+        workflow = (
+            {
+                "template_id": pin["template_id"],
+                "lineage_id": pin.get("lineage_id"),
+                "version": pin.get("version"),
+            }
+            if isinstance(pin, dict) and isinstance(pin.get("template_id"), str)
+            else None
+        )
+        loops.append(
+            {
+                "id": loop.id,
+                "title": loop.title,
+                "workflow": workflow,
+                "children": children_out,
+            }
+        )
 
     return loops

@@ -72,6 +72,7 @@ export default defineConfig({
             { label: 'Chat threads', slug: 'chat' },
             { label: 'Skills Marketplace', slug: 'skills-marketplace' },
             { label: 'Worker Review Loop', slug: 'review-loop' },
+            { label: 'Workflow Templates', slug: 'workflows' },
             { label: 'Session Helper', slug: 'session-helper' },
           ],
         },

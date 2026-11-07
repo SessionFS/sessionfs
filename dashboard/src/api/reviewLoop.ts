@@ -87,6 +87,8 @@ export interface LoopChild {
 export interface Loop {
   id: string;
   title: string;
+  /** Set for a loop started from a workflow template (the pinned version); absent or null otherwise. */
+  workflow?: { template_id: string; lineage_id?: string | null; version?: number | null } | null;
   children: LoopChild[];
 }
 

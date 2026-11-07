@@ -32,6 +32,8 @@ import {
   skillRegistries,
   tickets,
 } from './fixtures/data';
+import * as loop from '../src/projects/loop/fixtures';
+import { workflowLoop } from '../src/projects/workflows/fixtures';
 
 const overdueTickets = tickets.filter(
   (t) => t.due_date && t.due_date < '2026-10-20' && !['done', 'closed', 'cancelled'].includes(t.status),
@@ -101,6 +103,14 @@ const PAGES: Scenario[] = [
     prepare: async (page) => {
       await page.getByRole('tab', { name: 'Approval log' }).click();
       await page.getByText('Checked the token handling').waitFor();
+    },
+  },
+  {
+    name: 'org-workflow-templates',
+    path: '/settings/organization?tab=governance',
+    prepare: async (page) => {
+      await page.getByRole('tab', { name: 'Workflow templates' }).click();
+      await page.getByRole('button', { name: 'New template' }).waitFor();
     },
   },
   { name: 'reminder-drawer', path: `/reminders?reminder=${REMINDER_ID}` },
@@ -1507,6 +1517,59 @@ const LOOP_SCENARIOS: Scenario[] = [
   },
 ];
 
+// Workflow templates: the project Workflows sub-tab, its dialogs, and a
+// workflow loop's step lanes on the Loop Board.
+const WORKFLOW_PATH = `/projects/${PROJECT_ID}?tab=config&sub=workflows`;
+const WORKFLOW_SCENARIOS: Scenario[] = [
+  { name: 'workflow-templates', path: WORKFLOW_PATH },
+  {
+    name: 'workflow-template-graph',
+    path: WORKFLOW_PATH,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: /Show graph for Ship a change/ }).click();
+      await page.getByRole('region', { name: 'Ship a change graph' }).waitFor();
+    },
+  },
+  {
+    name: 'workflow-template-editor',
+    path: WORKFLOW_PATH,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'New template' }).click();
+      await page.getByRole('dialog', { name: 'New workflow template' }).waitFor();
+    },
+  },
+  {
+    name: 'workflow-start-dialog',
+    path: WORKFLOW_PATH,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Start workflow' }).first().click();
+      await page.getByRole('dialog', { name: 'Start workflow' }).waitFor();
+    },
+  },
+  {
+    name: 'workflow-templates-empty',
+    path: WORKFLOW_PATH,
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/workflow-templates`,
+        (route) => route.fulfill(fulfillJson(200, [])),
+      );
+    },
+  },
+  {
+    name: 'workflow-loop-board',
+    path: `${LOOP_PATH}&view=board`,
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/loops`,
+        (route) => route.fulfill(fulfillJson(200, [...loop.loops(), workflowLoop()])),
+      );
+    },
+    prepare: async (page) => {
+      await page.getByTestId('workflow-lanes').waitFor();
+    },
+  },
+];
 // For You, the dashboard home (tk_dc118ffd6e804a9a): full, caught up,
 // loading, error, reduced motion, and its open disclosures and panels.
 const FY_FEED = (u: URL) => u.pathname === '/api/v1/me/for-you';
@@ -1702,6 +1765,7 @@ const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: TEMPLATE_EDITOR_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: MEETING_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: LOOP_SCENARIOS })),
+  ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: WORKFLOW_SCENARIOS })),
   ...FOR_YOU_WIDTHS.map((width) => ({ width, scenarios: FOR_YOU_SCENARIOS })),
 ];
 

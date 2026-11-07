@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 126 tools in eighteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Review Checklist (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Skills Marketplace, Project Groups (Team+), Meetings and chat, Reminders, Approvals (Enterprise), and For You.
+The MCP server exposes 130 tools in nineteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Review Checklist (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Workflow Templates, Skills Marketplace, Project Groups (Team+), Meetings and chat, Reminders, Approvals (Enterprise), and For You.
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -939,6 +939,7 @@ Start a worker run on a loop ticket. Takes the ticket's lease and opens an imple
 | `branch` | string | no | Working branch |
 | `head_sha` | string | no | Base commit (7-64 hex characters) |
 | `tool` | string | no | Tool name for the run |
+| `step_id` | string | no | Workflow step this report is for, from `get_workflow_plan` ([workflow](/workflows/) loops only; a mismatch is a `422`) |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 
 #### `finish_worker_run`
@@ -956,6 +957,7 @@ Finish a worker run: record the head commit, how the worker exited and the token
 | `cost_usd` | number | no | Cost of the run |
 | `cost_basis` | string | no | `reported`, `estimated`, `plan` or `unknown` |
 | `summary` | string | no | Short result summary |
+| `step_id` | string | no | Workflow step this report is for, from `get_workflow_plan` ([workflow](/workflows/) loops only; a mismatch is a `422`) |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 
 #### `record_review_round`
@@ -975,6 +977,55 @@ Record one review round on a loop ticket, or a design round on the loop's parent
 | `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` | integer | no | Tokens the reviewer used |
 | `cost_usd` | number | no | Cost of the round |
 | `cost_basis` | string | no | `reported`, `estimated`, `plan` or `unknown` |
+| `step_id` | string | no | Workflow step this report is for, from `get_workflow_plan` ([workflow](/workflows/) loops only; a mismatch is a `422`) |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+### Workflow Templates
+
+Record-only [workflow templates](/workflows/). A template is a small graph of steps; starting one creates a review loop with one child ticket per step slot. SessionFS never starts an agent: your orchestrator reads the plan, launches the agents and reports each step through `start_worker_run`, `finish_worker_run` and `record_review_round` with `step_id`. Reading templates works for project readers (org templates for org members); starting a workflow is a loop write (Team+). Added in v0.29.9.
+
+#### `list_workflow_templates`
+
+Active templates: the project's own plus its org's, newest first.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `org_id` | string | no | List only this org's templates |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `get_workflow_template`
+
+One template version by id, with its definition.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `template_id` | string | yes | Template id (`wft_...`) |
+| `org_id` | string | no | Read through the org instead of the project |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `start_workflow`
+
+Start a workflow: a loop pinned to the template version, one child ticket per step slot, briefs rendered from the template and the project checklist. Same rules and budgets as `start_review_loop`. Nothing is started.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `template_id` | string | yes | Template id (`wft_...`) |
+| `ticket_id` | string | one of | Existing issue (`tk_...`) to adopt as the loop parent |
+| `title` | string | one of | Title for a new loop parent issue |
+| `description` | string | no | Parent issue description |
+| `reviewer_persona` | string | no | Reviewer persona for the loop queue |
+| `token_budget` | integer | no | Token budget |
+| `cost_budget_usd` | number | no | Dollar budget (org owner or admin only) |
+| `max_review_rounds` | integer | no | Review-round cap |
+| `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
+
+#### `get_workflow_plan`
+
+Per step: `state` (`blocked`, `ready`, `running`, `needs_human`, `done`), `gate_status`, a `reason` when it is not ready, the tickets a reviewer step reviews, and `ready_children` with each ticket's agent and brief. `ready_steps` lists the steps you can run now and `done` is true when every step is done. A step's gate is its exit gate: nothing after it is ready until it passes. Read-only; computed on every call.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `loop_id` | string | yes | Workflow loop (parent issue) id (`tk_...`) |
 | `git_remote` | string | no | Git remote URL (auto-detected if omitted) |
 
 ### Review Checklist (Team+)

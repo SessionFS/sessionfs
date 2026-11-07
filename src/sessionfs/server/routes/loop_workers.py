@@ -164,6 +164,79 @@ async def _loop_for_ticket(
     return parent, config, queue, item
 
 
+def _step_mismatch(message: str) -> HTTPException:
+    return HTTPException(422, {"error": "workflow_step_mismatch", "message": message})
+
+
+async def _resolve_step(
+    db: AsyncSession,
+    *,
+    loop: Ticket | None,
+    config: dict[str, Any],
+    ticket: Ticket,
+    step_id: str | None,
+    kind: Literal["worker", "round"],
+    check_dependencies: bool = True,
+) -> tuple[str | None, Any]:
+    """Validate a workflow ``step_id`` (or infer a worker step from the
+    ticket's slot). Returns (step id to store, StepDefinition), both None
+    outside a workflow. 422 ``workflow_step_mismatch`` on any mismatch."""
+    from sessionfs.server.services import workflows as wf
+
+    in_workflow = loop is not None and wf.workflow_pin(config) is not None
+    if step_id is None:
+        if not in_workflow or kind != "worker":
+            return None, None
+        from sessionfs.server.db.models import WorkflowStepChild
+
+        step_id = (
+            await db.execute(
+                select(WorkflowStepChild.step_id).where(
+                    WorkflowStepChild.ticket_id == ticket.id,
+                    WorkflowStepChild.loop_ticket_id == loop.id,  # type: ignore[union-attr]
+                )
+            )
+        ).scalar_one_or_none()
+        if step_id is None:
+            return None, None
+    try:
+        step = await wf.check_step_report(
+            db,
+            loop=loop,
+            loop_config=config,
+            ticket=ticket,
+            step_id=step_id,
+            kind=kind,
+            check_dependencies=check_dependencies,
+        )
+    except wf.WorkflowStepMismatch as exc:
+        raise _step_mismatch(exc.message)
+    return step_id, step
+
+
+async def _check_step(
+    db: AsyncSession,
+    *,
+    loop: Ticket | None,
+    config: dict[str, Any],
+    ticket: Ticket,
+    step_id: str | None,
+    kind: Literal["worker", "round"],
+    check_dependencies: bool = True,
+) -> str | None:
+    """``_resolve_step`` returning only the step id to store."""
+    resolved, _step = await _resolve_step(
+        db,
+        loop=loop,
+        config=config,
+        ticket=ticket,
+        step_id=step_id,
+        kind=kind,
+        check_dependencies=check_dependencies,
+    )
+    return resolved
+
+
 def _budget_view(status: BudgetStatus, *, dollars: bool) -> dict[str, Any]:
     cfg = status.config
     out: dict[str, Any] = {
@@ -228,6 +301,9 @@ class StartWorker(BaseModel):
     branch: str | None = Field(default=None, max_length=200)
     head_sha: str | None = None
     tool: str = Field(default="generic", max_length=30)
+    # Workflow loops: the template step this run belongs to. Inferred from
+    # the ticket's step slot when omitted.
+    step_id: str | None = Field(default=None, min_length=1, max_length=64)
 
     _clean_model = field_validator("model", mode="before")(classmethod(lambda c, v: _clean_text(100)(v)))
     _clean_provider = field_validator("provider", mode="before")(classmethod(lambda c, v: _clean_text(40)(v)))
@@ -277,6 +353,9 @@ async def start_worker_run(
     )
 
     parent, _config, queue, item = await _loop_for_ticket(db, ticket)
+    step_id = await _check_step(
+        db, loop=parent, config=_config, ticket=ticket, step_id=body.step_id, kind="worker"
+    )
     dollars = await _show_dollars(db, auth, project)
     if item is not None:
         if item.item_status == "needs_human":
@@ -368,6 +447,7 @@ async def start_worker_run(
         continues_run_id=continues_run_id,
         work_queue_id=queue.id if queue is not None else None,
         work_queue_item_id=item.id if item is not None else None,
+        workflow_step_id=step_id,
     )
     db.add(run)
     await db.commit()
@@ -381,6 +461,7 @@ async def start_worker_run(
         "lease_epoch": ticket.lease_epoch,
         "ticket_id": ticket.id,
         "loop_id": parent.id if parent is not None else None,
+        "step_id": step_id,
         "budget": view,
     }
 
@@ -410,6 +491,7 @@ class FinishWorker(BaseModel):
     exit_reason: str
     usage: FinishUsage | None = None
     summary: str | None = Field(default=None, max_length=20_000)
+    step_id: str | None = Field(default=None, min_length=1, max_length=64)
 
     _clean_branch = field_validator("branch", mode="before")(classmethod(lambda c, v: _clean_text(200)(v)))
 
@@ -454,6 +536,7 @@ async def _finish_view(
         "item_status": item.item_status if item is not None else None,
         "needs_human": bool(item is not None and item.item_status == "needs_human"),
         "idempotent": idempotent,
+        "step_id": run.workflow_step_id,
     }
     if ticket is not None and ticket.parent_ticket_id:
         parent = await db.get(Ticket, ticket.parent_ticket_id)
@@ -497,6 +580,25 @@ async def finish_worker_run(
     dollars = await _show_dollars(db, auth, project)
 
     ticket = await db.get(Ticket, run.ticket_id) if run.ticket_id else None
+    step_values: dict[str, Any] = {}
+    if body.step_id is not None:
+        if run.workflow_step_id is not None:
+            if body.step_id != run.workflow_step_id:
+                raise _step_mismatch(
+                    f"this run reports for step {run.workflow_step_id!r}, not {body.step_id!r}"
+                )
+        elif run.status in ("queued", "running"):
+            if ticket is None:
+                raise _step_mismatch("step_id was given but this run has no ticket")
+            loop_parent, loop_cfg, _q, _i = await _loop_for_ticket(db, ticket)
+            step_values["workflow_step_id"] = await _check_step(
+                db,
+                loop=loop_parent,
+                config=loop_cfg,
+                ticket=ticket,
+                step_id=body.step_id,
+                kind="worker",
+            )
 
     def _replay_or_conflict(current: AgentRun) -> bool:
         if current.head_sha == body.head_sha:
@@ -559,6 +661,7 @@ async def finish_worker_run(
             occurred_at=now,
             **extra,
             **values,
+            **step_values,
         )
     )
     if result.rowcount != 1:
@@ -641,6 +744,7 @@ class ReviewRound(BaseModel):
     model: str | None = Field(default=None, max_length=120)
     provider: str | None = Field(default=None, max_length=40)
     usage: FinishUsage | None = None
+    step_id: str | None = Field(default=None, min_length=1, max_length=64)
 
     _clean_model = field_validator("model", mode="before")(classmethod(lambda c, v: _clean_text(100)(v)))
     _clean_provider = field_validator("provider", mode="before")(classmethod(lambda c, v: _clean_text(40)(v)))
@@ -715,6 +819,7 @@ async def _round_view(
         "needs_human": bool(item is not None and item.item_status == "needs_human"),
         "idempotent": idempotent,
         "tokens": _run_tokens(run),
+        "step_id": run.workflow_step_id,
     }
     if ticket.parent_ticket_id:
         out["budget"] = _budget_view(await budget_status(db, ticket), dollars=dollars)
@@ -857,6 +962,13 @@ async def record_review_round(
                 AgentRun.ticket_id == ticket.id,
                 AgentRun.role == role,
                 AgentRun.review_round == body.round,
+                # Each workflow step keeps its own rounds: a second reviewer
+                # step's round 1 is not the first reviewer's round 1.
+                (
+                    AgentRun.workflow_step_id == body.step_id
+                    if body.step_id is not None
+                    else AgentRun.workflow_step_id.is_(None)
+                ),
             )
         )
     ).scalars().first()
@@ -865,10 +977,25 @@ async def record_review_round(
         await db.rollback()
         return out
 
+    step_id, step = await _resolve_step(
+        db, loop=loop, config=config, ticket=ticket, step_id=body.step_id, kind="round"
+    )
+    # A workflow reviewer/verifier step's round is attributed to (and its
+    # trust checked against) the agent pinned for that step, so one
+    # reviewer's verdict never stands in for another step's.
+    round_persona = queue.assigned_persona
+    if step is not None:
+        from sessionfs.server.services import workflows as wf
+
+        round_persona = wf.step_agent(config, step)
+
     if item is not None:
         if item.item_status == "needs_human":
             raise _needs_human("This loop item is parked for a human.")
-        if item.item_status in ("done", "failed"):
+        # A later workflow review step still reviews an item an earlier
+        # step's clean already closed; it never reopens or re-closes it.
+        closed_ok = step_id is not None and item.item_status == "done"
+        if item.item_status in ("done", "failed") and not closed_ok:
             raise HTTPException(
                 409, {"error": "loop_item_closed", "message": "This loop item is closed."}
             )
@@ -910,6 +1037,7 @@ async def record_review_round(
             actor_type=auth.actor_type,
             service_key_name=auth.service_key_name,
             now=now,
+            reviewer_persona=round_persona,
         )
     except StepEngineError as exc:
         raise HTTPException(exc.http_status, exc.message)
@@ -933,7 +1061,7 @@ async def record_review_round(
     run = AgentRun(
         id=f"run_{uuid.uuid4().hex[:16]}",
         project_id=project_id,
-        persona_name=(queue.assigned_persona or "reviewer")[:50],
+        persona_name=(round_persona or "reviewer")[:50],
         tool="generic",
         trigger_source="manual",
         status="passed",
@@ -960,6 +1088,7 @@ async def record_review_round(
         work_queue_id=queue.id,
         work_queue_item_id=item.id if item is not None else None,
         review_round=body.round,
+        workflow_step_id=step_id,
         **usage_vals,
     )
     db.add(run)
@@ -967,7 +1096,11 @@ async def record_review_round(
 
     # Item bookkeeping for code rounds: close on a trusted strict clean from
     # an identity other than the implementer; otherwise enforce the caps.
-    if item is not None and body.stage == "code":
+    if (
+        item is not None
+        and body.stage == "code"
+        and item.item_status in _OPEN_ITEM_STATUSES
+    ):
         closed = False
         if comment.verdict_trusted and body.verdict == "VERIFIED-CLEAN":
             oracle_comments, truncated = await _review_comments_for_oracle(

@@ -30,6 +30,8 @@ import ContextDocument from './ContextDocument';
 import KnowledgeEntriesTab from './knowledge/EntriesTab';
 import PagesTab from './knowledge/PagesTab';
 import HistoryTab from './knowledge/HistoryTab';
+import { TemplatesPanel } from './workflows/TemplatesPanel';
+import { displayTier } from '../utils/tier';
 import { Card, Button, Textarea, Dialog, DialogHeader, DialogFooter, Tabs, TabPanel, Alert } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
 import { ApiError } from '../api/client';
@@ -69,6 +71,7 @@ const SUB_TABS: Partial<Record<Section, { key: string; label: string }[]>> = {
     // Not "Marketplace": that is the org-wide catalog in the sidebar; this
     // sub-tab is the project's own skill installs and requests (GitHub #87).
     { key: 'marketplace', label: 'Skills' },
+    { key: 'workflows', label: 'Workflows' },
   ],
 };
 
@@ -199,6 +202,18 @@ export default function ProjectDetail() {
       params.delete('sub');
       params.delete('story');
       params.delete('run');
+      return params;
+    });
+  }, [setSearchParams]);
+
+  // After a workflow starts, land on the Loop Board where its step lanes live.
+  const openLoopBoard = useCallback(() => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      params.set('tab', 'work');
+      params.set('sub', 'loop');
+      params.set('view', 'board');
+      params.delete('story');
       return params;
     });
   }, [setSearchParams]);
@@ -600,7 +615,7 @@ export default function ProjectDetail() {
       )}
       {section === 'work' && sub === 'loop' && (
         <Panel padded sub={sub}>
-          <ReviewLoopTab projectId={project.id} storyId={searchParams.get('story')} onOpenStory={openStory} canEdit={canEdit} view={searchParams.get('view')} onChangeView={setLoopView} />
+          <ReviewLoopTab projectId={project.id} storyId={searchParams.get('story')} onOpenStory={openStory} canEdit={canEdit} view={searchParams.get('view')} onChangeView={setLoopView} workflowTier={project.effective_tier || displayTier(me)} onWorkflowStarted={openLoopBoard} />
         </Panel>
       )}
       {section === 'work' && sub === 'agent-runs' && (
@@ -615,6 +630,17 @@ export default function ProjectDetail() {
       )}
       {section === 'config' && sub === 'marketplace' && (
         <Panel padded sub={sub}><MarketplaceTab projectId={project.id} canEdit={canEdit} /></Panel>
+      )}
+
+      {section === 'config' && sub === 'workflows' && (
+        <Panel padded sub={sub}>
+          <TemplatesPanel
+            target={{ kind: 'project', id: project.id }}
+            tier={project.effective_tier || displayTier(me)}
+            canEdit={canEdit}
+            onStarted={openLoopBoard}
+          />
+        </Panel>
       )}
 
       {section === 'settings' && (

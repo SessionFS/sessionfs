@@ -17,9 +17,9 @@ Commands:
 - sfs loop checklist add <title> [--check]   — propose an item by hand
 - sfs loop checklist accept <slug>           — accept a proposed item
 - sfs loop checklist retire <slug>           — retire an item
-- sfs loop run start <ticket>                — take the lease and open a worker run
-- sfs loop run finish <run_id> --head-sha S  — close the run with usage
-- sfs loop review <loop_id> --ticket T …     — record one review round
+- sfs loop run start <ticket> [--step S]    — take the lease and open a worker run
+- sfs loop run finish <run_id> --head-sha S [--step S] — close the run with usage
+- sfs loop review <loop_id> --ticket T … [--step S] — record one review round
 - sfs loop share story <ticket> [--expires-days N] — mint a public story link
 - sfs loop share ship-report <version> [--expires-days N] — mint a public ship-report link
 - sfs loop share list                        — list the project's share links
@@ -436,6 +436,9 @@ def loop_run_start(
     model: str | None = typer.Option(None, "--model", help="Model name for the run."),
     provider: str | None = typer.Option(None, "--provider", help="Provider name."),
     branch: str | None = typer.Option(None, "--branch", help="Working branch."),
+    step: str | None = typer.Option(
+        None, "--step", help="Workflow step id this report is for (workflow loops)."
+    ),
     output_id: bool = typer.Option(
         False, "--output-id", help="Print only the run id (for scripts)."
     ),
@@ -445,6 +448,8 @@ def loop_run_start(
     for key, val in (("model", model), ("provider", provider), ("branch", branch)):
         if val:
             body[key] = val
+    if step and step.strip():
+        body["step_id"] = step.strip()
     result = _loop_post(
         "agent-runs/start-worker", body, not_found="Ticket or project not found."
     )
@@ -480,9 +485,14 @@ def loop_run_finish(
         None, "--cost-basis", help="reported | estimated | plan | unknown."
     ),
     summary: str | None = typer.Option(None, "--summary", help="Short result summary."),
+    step: str | None = typer.Option(
+        None, "--step", help="Workflow step id this report is for (workflow loops)."
+    ),
 ) -> None:
     """Close a worker run: head commit, exit reason and usage (idempotent on head)."""
     body: dict = {"head_sha": head_sha.strip().lower(), "exit_reason": exit_reason}
+    if step and step.strip():
+        body["step_id"] = step.strip()
     if branch:
         body["branch"] = branch
     if summary:
@@ -530,6 +540,9 @@ def loop_review(
     input_tokens: int | None = typer.Option(None, "--input-tokens"),
     output_tokens: int | None = typer.Option(None, "--output-tokens"),
     cost_usd: float | None = typer.Option(None, "--cost-usd"),
+    step: str | None = typer.Option(
+        None, "--step", help="Workflow step id this report is for (workflow loops)."
+    ),
 ) -> None:
     """Record one review round (idempotent per ticket, round and stage)."""
     findings: list = []
@@ -551,6 +564,8 @@ def loop_review(
         "verdict": verdict.strip().upper(),
         "findings": findings,
     }
+    if step and step.strip():
+        body["step_id"] = step.strip()
     if model:
         body["model"] = model
     if provider:

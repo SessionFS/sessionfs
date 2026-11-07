@@ -5,6 +5,7 @@ import type { Loop, LoopChild } from '../../api/reviewLoop';
 import { BudgetBar } from './Panels';
 import { designProblem, forecast, isRunning, laneStages, type Stage } from './boardModel';
 import { plural, storyHref } from './format';
+import { WorkflowLanes } from '../workflows/WorkflowLanes';
 
 /** One ring per review round: size scales with harmful findings, empty is clean. */
 export function Ring({ round, harmful }: { round: number; harmful: number }) {
@@ -92,11 +93,13 @@ function Lane({ projectId, child }: { projectId: string; child: LoopChild }) {
 
 export function LoopBoard({ projectId, loops }: { projectId: string; loops: Loop[] }) {
   const lanes = loops.flatMap((l) => l.children.map((c) => ({ loop: l, child: c })));
-  if (lanes.length === 0) return <p className="text-sm text-text-tertiary">No tickets in a loop yet.</p>;
+  if (lanes.length === 0 && !loops.some((l) => l.workflow)) return <p className="text-sm text-text-tertiary">No tickets in a loop yet.</p>;
   return (
     <section aria-label="Loop board" className="space-y-3">
       {loops.map((l) =>
-        l.children.length === 0 ? null : (
+        l.workflow ? (
+          <WorkflowLanes key={l.id} projectId={projectId} loopId={l.id} title={l.title} />
+        ) : l.children.length === 0 ? null : (
           <div key={l.id} className="space-y-2">
             <p className="text-sm text-text-secondary">{l.title}</p>
             {l.children.map((c) => (

@@ -69,6 +69,10 @@
         { "name": "get_loop_checklist", "desc": "The project's review checklist" },
         { "name": "propose_checklist_item", "desc": "Propose a recurring trap for the review checklist" },
         { "name": "update_review_loop", "desc": "Raise or clear a review loop's budget caps" },
+        { "name": "list_workflow_templates", "desc": "Workflow templates for the project or an org" },
+        { "name": "get_workflow_template", "desc": "One workflow template version with its steps" },
+        { "name": "start_workflow", "desc": "Start a workflow loop from a template" },
+        { "name": "get_workflow_plan", "desc": "Ready steps, gates and briefs for a workflow loop" },
         { "name": "watch_ticket", "desc": "Follow, mute or unfollow a ticket" },
         { "name": "get_ticket_updates", "desc": "Changes on the tickets you follow since you last checked" }
       ]

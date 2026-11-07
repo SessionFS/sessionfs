@@ -1525,7 +1525,7 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed: 125, covering sessions (including `ask_session_helper`), knowledge, rules, personas, tickets (including `watch_ticket` and `get_ticket_updates`), agent runs (including `replay_agent_run`, `report_agent_run_usage` and `get_spend_summary`), review-loop rollups (`get_loop_report`), merge readiness (`check_merge_readiness`), review loops (`start_review_loop`, `get_loop_status` and `update_review_loop`), the review checklist (`get_loop_checklist` and `propose_checklist_item`), agent feedback, handoffs, work queues, the skills marketplace, project groups, meetings and chat threads (`upload_chat_thread`), and reminders. See [MCP Server](/mcp/) for the full catalogue.
+Tools exposed: 130, covering sessions (including `ask_session_helper`), knowledge, rules, personas, tickets (including `watch_ticket` and `get_ticket_updates`), agent runs (including `replay_agent_run`, `report_agent_run_usage` and `get_spend_summary`), review-loop rollups (`get_loop_report`), merge readiness (`check_merge_readiness`), review loops (`start_review_loop`, `get_loop_status` and `update_review_loop`), workflow templates (`list_workflow_templates`, `get_workflow_template`, `start_workflow` and `get_workflow_plan`), the review checklist (`get_loop_checklist` and `propose_checklist_item`), agent feedback, handoffs, work queues, the skills marketplace, project groups, meetings and chat threads (`upload_chat_thread`), reminders, approvals (read only) and For You (`get_my_attention`). See [MCP Server](/mcp/) for the full catalogue.
 
 ---
 
@@ -1944,9 +1944,9 @@ Start, watch and budget a [worker review loop](/review-loop/), run its workers a
 | `sfs loop status [LOOP_ID]` | One loop's children (status, branch, head, rounds, spend), or every loop when the id is omitted |
 | `sfs loop update LOOP_ID [--token-budget N] [--cost-budget-usd N] [--max-review-rounds N]` | Raise a limit |
 | `sfs loop close-item LOOP_ID TICKET_ID` | Close an item the loop handed back as needing a person. Users only; service keys are refused |
-| `sfs loop run start TICKET_ID [--model M] [--provider P] [--branch B] [--output-id]` | Take the ticket's lease and open a worker run; prints the run id and what is left of the budget (v0.29.3) |
-| `sfs loop run finish RUN_ID --head-sha SHA [--exit-reason finished\|out_of_turns\|crashed] [--branch B] [--input-tokens N] [--output-tokens N] [--cache-read-tokens N] [--cache-write-tokens N] [--cost-usd N] [--cost-basis BASIS] [--summary TEXT]` | Record the commit, how the worker exited and its tokens. Repeating it never counts usage twice (v0.29.3) |
-| `sfs loop review LOOP_ID --ticket TICKET_ID --round N --commit SHA --verdict VERIFIED-CLEAN\|CHANGES-REQUESTED [--findings-file FILE] [--stage code\|design] [--model M] [--provider P] [--input-tokens N] [--output-tokens N] [--cost-usd N]` | Record a review round for an exact commit. The findings file is a JSON list of `{severity, class, harm, title, file?, line?, status?}`. Pass the loop id as `--ticket` for a design round (v0.29.3) |
+| `sfs loop run start TICKET_ID [--model M] [--provider P] [--branch B] [--step STEP_ID] [--output-id]` | Take the ticket's lease and open a worker run; prints the run id and what is left of the budget (v0.29.3) |
+| `sfs loop run finish RUN_ID --head-sha SHA [--exit-reason finished\|out_of_turns\|crashed] [--branch B] [--input-tokens N] [--output-tokens N] [--cache-read-tokens N] [--cache-write-tokens N] [--cost-usd N] [--cost-basis BASIS] [--summary TEXT] [--step STEP_ID]` | Record the commit, how the worker exited and its tokens. Repeating it never counts usage twice (v0.29.3) |
+| `sfs loop review LOOP_ID --ticket TICKET_ID --round N --commit SHA --verdict VERIFIED-CLEAN\|CHANGES-REQUESTED [--findings-file FILE] [--stage code\|design] [--model M] [--provider P] [--input-tokens N] [--output-tokens N] [--cost-usd N] [--step STEP_ID]` | Record a review round for an exact commit. The findings file is a JSON list of `{severity, class, harm, title, file?, line?, status?}`. Pass the loop id as `--ticket` for a design round (v0.29.3) |
 | `sfs loop report TICKET_ID` | Per-round findings by harm, known versus new classes and round cost |
 | `sfs loop insights [--from DATE] [--to DATE]` | Findings caught, cost per accepted change and checklist learning |
 | `sfs loop checklist list [--status proposed\|active\|retired]` | Show the project checklist |
@@ -1958,6 +1958,8 @@ Start, watch and budget a [worker review loop](/review-loop/), run its workers a
 | `sfs loop share ship-report VERSION [--expires-days N]` | Mint a public, revocable link to a ship report |
 | `sfs loop share list` | List the project's share links (tokens are never shown) |
 | `sfs loop share revoke LINK_ID` | Revoke a share link |
+
+In a [workflow](/workflows/) loop, `--step` names the template step the report is for. The server checks that the step exists, its dependencies are done and its role matches, and refuses a mismatch with `422`.
 
 Dollar figures are shown only to org owners and admins, or the owner of a personal project.
 
@@ -1974,6 +1976,24 @@ sfs loop ready TICKET_ID --sha HEAD_COMMIT
 | `--sha` | string | Full head commit id (40 or 64 lowercase hex characters) |
 
 Prints **READY** only when a trusted strict `VERIFIED-CLEAN` verdict is bound to exactly that commit, the reviewer's identity differs from every implementer identity recorded for the ticket, and no open finding is harmful. Otherwise it prints **NOT READY** with the reasons and exits `1`, so it can gate a script. MCP: `check_merge_readiness`.
+
+---
+
+## `sfs workflow`
+
+Record-only [workflow templates](/workflows/): store a multi-agent plan, start a loop from it, and read which steps are ready with their agents and briefs. SessionFS never starts an agent; your orchestrator does, and reports each step with `--step`. Tier: **Team+** to start a workflow. Commands use the project of the current repository; `--org` works on the org's templates.
+
+| Command | Description |
+|---------|-------------|
+| `sfs workflow list [--org ORG] [--json]` | Active templates: the project's own plus its org's |
+| `sfs workflow show TEMPLATE_ID [--org ORG] [--json]` | One template version with its steps and brief templates |
+| `sfs workflow create FILE [--name NAME] [--org ORG]` | Create a template from a YAML or JSON file, validated locally before anything is sent |
+| `sfs workflow update TEMPLATE_ID FILE [--name NAME] [--org ORG]` | Save a new version; the old one is deactivated and running loops keep their pinned version |
+| `sfs workflow disable TEMPLATE_ID [--org ORG]` | Deactivate a version |
+| `sfs workflow start TEMPLATE_ID --ticket TK \| --title TEXT [--description TEXT] [--reviewer-persona NAME] [--token-budget N] [--cost-budget-usd N] [--max-review-rounds N] [--output-id]` | Start a workflow loop. `--output-id` prints only the loop id |
+| `sfs workflow plan LOOP_ID [--json]` | Each step's state, gate and reason, then the ready tickets with their agents and briefs |
+
+Project editors write project templates and org admins write org templates. See [Workflow templates](/workflows/) for the file format.
 
 ---
 

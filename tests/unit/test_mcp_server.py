@@ -300,13 +300,13 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_126(self):
+    def test_tool_count_is_130(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 126, (
-            "Expected 126 MCP tools after review-loop start, status and "
+        assert len(_TOOLS) == 130, (
+            "Expected 130 MCP tools after review-loop start, status and "
             "update, the project checklist, the loop report, the worker run and round tools, "
-            "the three reminder tools, the three read-only approval tools and "
-            "upload_chat_thread and get_my_attention, "
+            "the three reminder tools, the three read-only approval tools, "
+            "upload_chat_thread and get_my_attention, and the four workflow tools, "
             f"got {len(_TOOLS)}"
         )
 
@@ -5145,6 +5145,172 @@ class TestLoopWorkerTools:
             )
         )
         assert "round must be" in bad["error"]
+
+
+class TestWorkflowMcpDispatch:
+    """Workflow templates (tk_3f0c9f7f19f8476e W2): thin wrappers over the
+    workflow routes, plus step_id passthrough on the loop worker tools."""
+
+    @staticmethod
+    def _install(monkeypatch, capture: list, status: int = 200, body=None):
+        body = body if body is not None else {"ok": True}
+
+        async def _resolve(git_remote=""):
+            return ("https://api.test", "k", "proj_1")
+
+        monkeypatch.setattr(mcp_server, "_resolve_project_id", _resolve)
+        monkeypatch.setattr(mcp_server, "_group_api_config", lambda: ("https://api.test", "k"))
+        import httpx
+
+        class _Resp:
+            def __init__(self, code, b):
+                self.status_code = code
+                self._b = b
+                self.text = json.dumps(b)
+
+            def json(self):
+                return self._b
+
+        class _Client:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, *, headers=None, params=None):
+                capture.append({"method": "GET", "url": url})
+                return _Resp(status, body)
+
+            async def post(self, url, *, headers=None, json=None):
+                capture.append({"method": "POST", "url": url, "body": json})
+                return _Resp(status, body)
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    def test_tools_registered(self):
+        names = {t.name for t in mcp_server._TOOLS}
+        assert {
+            "list_workflow_templates",
+            "get_workflow_template",
+            "start_workflow",
+            "get_workflow_plan",
+        } <= names
+        for t in mcp_server._TOOLS:
+            if t.name in ("start_worker_run", "finish_worker_run", "record_review_round"):
+                assert "step_id" in t.inputSchema["properties"], t.name
+
+    @pytest.mark.asyncio
+    async def test_list_project_and_org(self, monkeypatch):
+        cap: list = []
+        self._install(monkeypatch, cap, body=[{"id": "wft_1"}])
+        out = await mcp_server._handle_list_workflow_templates({})
+        assert out == {"templates": [{"id": "wft_1"}]}
+        assert cap[-1]["url"] == "https://api.test/api/v1/projects/proj_1/workflow-templates"
+        await mcp_server._handle_list_workflow_templates({"org_id": "org_a"})
+        assert cap[-1]["url"] == "https://api.test/api/v1/orgs/org_a/workflow-templates"
+        before = len(cap)
+        bad = await mcp_server._handle_list_workflow_templates({"org_id": "org_a/../x"})
+        assert "error" in bad and len(cap) == before
+
+    @pytest.mark.asyncio
+    async def test_get_template(self, monkeypatch):
+        cap: list = []
+        self._install(monkeypatch, cap, body={"id": "wft_1"})
+        assert "template_id is required" in (
+            await mcp_server._handle_get_workflow_template({})
+        )["error"]
+        assert not cap
+        out = await mcp_server._handle_get_workflow_template({"template_id": " wft_1 "})
+        assert out == {"id": "wft_1"}
+        assert cap[-1]["url"] == (
+            "https://api.test/api/v1/projects/proj_1/workflow-templates/wft_1"
+        )
+        await mcp_server._handle_get_workflow_template({"template_id": "wft_1", "org_id": "org_1"})
+        assert cap[-1]["url"] == "https://api.test/api/v1/orgs/org_1/workflow-templates/wft_1"
+
+    @pytest.mark.asyncio
+    async def test_get_template_404(self, monkeypatch):
+        cap: list = []
+        self._install(monkeypatch, cap, status=404, body={"detail": "x"})
+        out = await mcp_server._handle_get_workflow_template({"template_id": "wft_9"})
+        assert out == {"error": "Workflow template 'wft_9' not found"}
+
+    @pytest.mark.asyncio
+    async def test_start_workflow(self, monkeypatch):
+        cap: list = []
+        self._install(monkeypatch, cap, body={"loop_id": "tk_l"})
+        assert "template_id is required" in (await mcp_server._handle_start_workflow({}))["error"]
+        assert "ticket_id or title" in (
+            await mcp_server._handle_start_workflow({"template_id": "wft_1"})
+        )["error"]
+        assert "token_budget" in (
+            await mcp_server._handle_start_workflow(
+                {"template_id": "wft_1", "title": "t", "token_budget": True}
+            )
+        )["error"]
+        assert "cost_budget_usd" in (
+            await mcp_server._handle_start_workflow(
+                {"template_id": "wft_1", "title": "t", "cost_budget_usd": -1}
+            )
+        )["error"]
+        assert not cap
+        out = await mcp_server._handle_start_workflow(
+            {
+                "template_id": "wft_1",
+                "ticket_id": "tk_1",
+                "reviewer_persona": "codex-reviewer",
+                "token_budget": 1000,
+                "cost_budget_usd": 2.5,
+                "max_review_rounds": 3,
+                "description": "  ",
+            }
+        )
+        assert out == {"loop_id": "tk_l"}
+        assert cap[-1]["method"] == "POST"
+        assert cap[-1]["url"] == "https://api.test/api/v1/projects/proj_1/workflows"
+        assert cap[-1]["body"] == {
+            "template_id": "wft_1",
+            "ticket_id": "tk_1",
+            "reviewer_persona": "codex-reviewer",
+            "token_budget": 1000,
+            "cost_budget_usd": 2.5,
+            "max_review_rounds": 3,
+        }
+
+    @pytest.mark.asyncio
+    async def test_get_plan(self, monkeypatch):
+        cap: list = []
+        self._install(monkeypatch, cap, body={"ready_steps": ["dispatch"]})
+        assert "loop_id is required" in (await mcp_server._handle_get_workflow_plan({}))["error"]
+        out = await mcp_server._handle_get_workflow_plan({"loop_id": "tk_l"})
+        assert out == {"ready_steps": ["dispatch"]}
+        assert cap[-1]["url"] == "https://api.test/api/v1/projects/proj_1/workflows/tk_l/plan"
+
+    @pytest.mark.asyncio
+    async def test_step_id_passthrough(self, monkeypatch):
+        cap: list = []
+        self._install(monkeypatch, cap)
+        await mcp_server._handle_start_worker_run({"ticket_id": "tk_c", "step_id": " implement "})
+        assert cap[-1]["body"]["step_id"] == "implement"
+        await mcp_server._handle_start_worker_run({"ticket_id": "tk_c"})
+        assert "step_id" not in cap[-1]["body"]
+        await mcp_server._handle_finish_worker_run(
+            {"run_id": "run_1", "head_sha": "a" * 40, "exit_reason": "finished", "step_id": "implement"}
+        )
+        assert cap[-1]["url"].endswith("/agent-runs/run_1/finish")
+        assert cap[-1]["body"]["step_id"] == "implement"
+        await mcp_server._handle_record_review_round(
+            {
+                "loop_id": "tk_l", "ticket_id": "tk_c", "round": 1, "stage": "code",
+                "reviewed_commit": "a" * 40, "verdict": "VERIFIED-CLEAN", "step_id": "review",
+            }
+        )
+        assert cap[-1]["url"].endswith("/loops/tk_l/rounds")
+        assert cap[-1]["body"]["step_id"] == "review"
 
 
 class TestReminderMcpDispatch:

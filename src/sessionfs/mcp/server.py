@@ -3499,6 +3499,7 @@ _TOOLS = [
                 "branch": {"type": "string"},
                 "head_sha": {"type": "string", "description": "Base commit (7-64 hex), optional."},
                 "tool": {"type": "string", "description": "Tool name for the run (default generic)."},
+                "step_id": {"type": "string", "description": "Workflow step id this report is for (workflow loops only; checked against the pinned template)."},
                 "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["ticket_id"],
@@ -3529,6 +3530,7 @@ _TOOLS = [
                 "cost_usd": {"type": "number"},
                 "cost_basis": {"type": "string", "enum": ["reported", "estimated", "plan", "unknown"]},
                 "summary": {"type": "string"},
+                "step_id": {"type": "string", "description": "Workflow step id this report is for (workflow loops only; checked against the pinned template)."},
                 "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["run_id", "head_sha", "exit_reason"],
@@ -3565,9 +3567,96 @@ _TOOLS = [
                 "cache_write_tokens": {"type": "integer"},
                 "cost_usd": {"type": "number"},
                 "cost_basis": {"type": "string", "enum": ["reported", "estimated", "plan", "unknown"]},
+                "step_id": {"type": "string", "description": "Workflow step id this report is for (workflow loops only; checked against the pinned template)."},
                 "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
             "required": ["loop_id", "ticket_id", "round", "stage", "reviewed_commit", "verdict"],
+        },
+    ),
+    Tool(
+        name="list_workflow_templates",
+        description=(
+            "List active workflow templates: the project's own plus its org's "
+            "(pass org_id to list only that org's). Record-only: a template "
+            "is a DAG of steps (id, title, role, agent, depends_on, fan_out, "
+            "gate, brief_template); SessionFS never starts agents.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs workflow list` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "org_id": {"type": "string", "description": "List this org's templates instead of the project's."},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+        },
+    ),
+    Tool(
+        name="get_workflow_template",
+        description=(
+            "Read one workflow template version by id, with its definition. "
+            "Project scope sees the project's templates and its org's; pass "
+            "org_id to read an org template directly.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs workflow show` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "template_id": {"type": "string", "description": "Template id (wft_...)."},
+                "org_id": {"type": "string", "description": "Read through the org instead of the project."},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["template_id"],
+        },
+    ),
+    Tool(
+        name="start_workflow",
+        description=(
+            "Start a workflow from a template: creates a review loop pinned "
+            "to the template version with one child ticket per step slot and "
+            "briefs rendered from the template and the project checklist. "
+            "Adopt an existing issue with ticket_id, or name a new one with "
+            "title. Nothing is started: your orchestrator launches the agents "
+            "for the ready steps (see get_workflow_plan) and reports with "
+            "step_id. `cost_budget_usd` is org owner/admin only.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs workflow start` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "template_id": {"type": "string", "description": "Template id (wft_...)."},
+                "ticket_id": {"type": "string", "description": "Existing issue (tk_...) to adopt as the loop parent."},
+                "title": {"type": "string", "description": "Title for a new loop parent issue (when ticket_id is not set)."},
+                "description": {"type": "string"},
+                "reviewer_persona": {"type": "string", "description": "Reviewer persona for the loop queue (optional)."},
+                "token_budget": {"type": "integer"},
+                "cost_budget_usd": {"type": "number"},
+                "max_review_rounds": {"type": "integer"},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["template_id"],
+        },
+    ),
+    Tool(
+        name="get_workflow_plan",
+        description=(
+            "The plan for a workflow loop: per step its state "
+            "(blocked|ready|running|needs_human|done), gate status, why it is "
+            "not ready, and the ready child tickets with their agents and "
+            "briefs. A step's gate is its exit gate: nothing downstream is "
+            "ready until it passes. Read-only; computed on every call.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs workflow plan` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "loop_id": {"type": "string", "description": "Workflow loop (parent issue) ticket id."},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["loop_id"],
         },
     ),
     Tool(
@@ -3920,6 +4009,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_finish_worker_run(arguments)
         elif name == "record_review_round":
             result = await _handle_record_review_round(arguments)
+        elif name == "list_workflow_templates":
+            result = await _handle_list_workflow_templates(arguments)
+        elif name == "get_workflow_template":
+            result = await _handle_get_workflow_template(arguments)
+        elif name == "start_workflow":
+            result = await _handle_start_workflow(arguments)
+        elif name == "get_workflow_plan":
+            result = await _handle_get_workflow_plan(arguments)
         elif name == "get_loop_checklist":
             result = await _handle_get_loop_checklist(arguments)
         elif name == "propose_checklist_item":
@@ -6614,6 +6711,7 @@ async def _handle_start_worker_run(args: dict) -> dict:
         val = args.get(key)
         if isinstance(val, str) and val.strip():
             body[key] = val.strip()
+    _add_step_id(args, body)
     return await _loop_worker_post(args, "agent-runs/start-worker", body)
 
 
@@ -6633,6 +6731,7 @@ async def _handle_finish_worker_run(args: dict) -> dict:
     usage = _usage_from_args(args)
     if usage:
         body["usage"] = usage
+    _add_step_id(args, body)
     return await _loop_worker_post(
         args, f"agent-runs/{_path_segment(run_id.strip())}/finish", body
     )
@@ -6665,8 +6764,119 @@ async def _handle_record_review_round(args: dict) -> dict:
     usage = _usage_from_args(args)
     if usage:
         body["usage"] = usage
+    _add_step_id(args, body)
     return await _loop_worker_post(
         args, f"loops/{_path_segment(args['loop_id'].strip())}/rounds", body
+    )
+
+
+def _add_step_id(args: dict, body: dict) -> None:
+    """Forward an optional workflow ``step_id`` (validated server-side)."""
+    step_id = args.get("step_id")
+    if isinstance(step_id, str) and step_id.strip():
+        body["step_id"] = step_id.strip()
+
+
+async def _workflow_get(url: str, api_key: str, *, missing: str) -> dict:
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
+    if resp.status_code == 404:
+        return {"error": missing}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_list_workflow_templates(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{p}/workflow-templates, or
+    GET /api/v1/orgs/{org_id}/workflow-templates when org_id is passed."""
+    org_id = _org_id_arg(args)
+    try:
+        if org_id:
+            api_url, api_key = _group_api_config()
+            url = f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/workflow-templates"
+        else:
+            api_url, api_key, project_id = await _resolve_project_id(args.get("git_remote", ""))
+            url = f"{api_url}/api/v1/projects/{project_id}/workflow-templates"
+    except Exception as exc:
+        return {"error": str(exc)}
+    out = await _workflow_get(url, api_key, missing="Not found")
+    if isinstance(out, list):
+        return {"templates": out}
+    return out
+
+
+async def _handle_get_workflow_template(args: dict) -> dict:
+    """Wrap GET .../workflow-templates/{template_id} (project or org)."""
+    template_id = args.get("template_id", "")
+    if not isinstance(template_id, str) or not template_id.strip():
+        return {"error": "template_id is required"}
+    template_id = template_id.strip()
+    org_id = _org_id_arg(args)
+    try:
+        if org_id:
+            api_url, api_key = _group_api_config()
+            base = f"{api_url}/api/v1/orgs/{_path_segment(org_id)}"
+        else:
+            api_url, api_key, project_id = await _resolve_project_id(args.get("git_remote", ""))
+            base = f"{api_url}/api/v1/projects/{project_id}"
+    except Exception as exc:
+        return {"error": str(exc)}
+    return await _workflow_get(
+        f"{base}/workflow-templates/{_path_segment(template_id)}",
+        api_key,
+        missing=f"Workflow template '{template_id}' not found",
+    )
+
+
+async def _handle_start_workflow(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{project_id}/workflows."""
+    template_id = args.get("template_id", "")
+    if not isinstance(template_id, str) or not template_id.strip():
+        return {"error": "template_id is required"}
+    body: dict[str, Any] = {"template_id": template_id.strip()}
+    ticket_id = args.get("ticket_id")
+    title = args.get("title")
+    if isinstance(ticket_id, str) and ticket_id.strip():
+        body["ticket_id"] = ticket_id.strip()
+    elif not (isinstance(title, str) and title.strip()):
+        return {"error": "ticket_id or title is required"}
+    if isinstance(title, str) and title.strip():
+        body["title"] = title.strip()
+    for key in ("description", "reviewer_persona"):
+        val = args.get(key)
+        if isinstance(val, str) and val.strip():
+            body[key] = val.strip()
+    for key in ("token_budget", "max_review_rounds"):
+        val = args.get(key)
+        if val is None:
+            continue
+        if isinstance(val, bool) or not isinstance(val, int) or val < 1:
+            return {"error": f"{key} must be an integer >= 1"}
+        body[key] = val
+    cost = args.get("cost_budget_usd")
+    if cost is not None:
+        if isinstance(cost, bool) or not isinstance(cost, (int, float)) or cost <= 0:
+            return {"error": "cost_budget_usd must be a number > 0"}
+        body["cost_budget_usd"] = cost
+    return await _loop_worker_post(args, "workflows", body)
+
+
+async def _handle_get_workflow_plan(args: dict) -> dict:
+    """Wrap GET /api/v1/projects/{project_id}/workflows/{loop_id}/plan."""
+    loop_id = args.get("loop_id", "")
+    if not isinstance(loop_id, str) or not loop_id.strip():
+        return {"error": "loop_id is required"}
+    loop_id = loop_id.strip()
+    try:
+        api_url, api_key, project_id = await _resolve_project_id(args.get("git_remote", ""))
+    except Exception as exc:
+        return {"error": str(exc)}
+    return await _workflow_get(
+        f"{api_url}/api/v1/projects/{project_id}/workflows/{_path_segment(loop_id)}/plan",
+        api_key,
+        missing=f"Workflow loop '{loop_id}' not found",
     )
 
 

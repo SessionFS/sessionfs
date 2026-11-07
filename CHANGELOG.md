@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.9] - 2026-11-07
+
+**Workflow templates: a repeatable multi-agent plan your own orchestrator runs, with every step recorded and gated (GitHub #120).** Server migration 124.
+
+### Added
+- **Workflow templates (Team+).** Store a repeatable plan for a review loop, such as dispatch → implement ×3 → review → verify → document. Each step has a role (`dispatcher`, `implementer`, `reviewer`, `verifier` or `documenter`), the agent that does it, `depends_on`, a `fan_out` of 1 to 10 child tickets, an exit gate (`none`, `trusted_clean` or `approval_policy:<policy>`) and a brief template with `{ticket.title}`, `{ticket.description}` and `{checklist}`. At most 30 steps, no cycles, briefs up to 8 KiB and the definition up to 32 KiB. See [Workflow Templates](https://sessionfs.dev/workflows/).
+- **Record-only by design.** SessionFS stores the template, creates the loop and computes the plan. Your own orchestrator (Claude Code, Codex, Cursor, a script or a CI job) starts every agent and reports back. SessionFS never calls a model, holds a model key or runs a job for a workflow.
+- **Project and org templates, versioned.** A template belongs to a project (written by project editors) or to an org (written by org admins, usable in the org's projects). Templates are immutable: an update saves a new version and deactivates the old one, and a running loop keeps the version it started with. Disable a version to stop it being started. A scope holds at most 100 active templates.
+- **Start a workflow** on an existing issue or a new title: it creates a review loop pinned to the template version with one child ticket per step slot, with the same token, dollar and round budgets as any loop.
+- **The plan.** `GET /api/v1/projects/{id}/workflows/{loop_id}/plan` returns each step's lane (`blocked`, `ready`, `running`, `needs_human`, `done`) with the reason it is not ready or which gate is closed, then the ready child tickets with their agent and rendered brief.
+- **Steps on worker runs and review rounds.** `start_worker_run`, `finish_worker_run` and `record_review_round` take a `step_id`; a report that doesn't match the pinned template (unknown step, dependencies not done, wrong role, ticket outside the step) is `422 workflow_step_mismatch`.
+- MCP `list_workflow_templates`, `get_workflow_template`, `start_workflow` and `get_workflow_plan` (130 tools in total).
+- `sfs workflow list|show|create|update|disable|start|plan`, with templates written in YAML or JSON and checked locally with the server's rules before anything is sent; `--step` on `sfs loop run start|finish` and `sfs loop review`.
+- The `worker-review-loop` skill gains a section on following a workflow template (plugin 2.1.0).
+- **Dashboard:** a template list and editor with a graph of the steps under Project → Config → Workflows, a **Start workflow** dialog on the Review Loop page, step lanes on the Loop Board, and org templates under Organization → Governance → Workflow templates.
+
+### Changed
+- **Every reviewer step gives its own verdict.** A ticket passes a reviewer step only on that step's own latest trusted strict `VERIFIED-CLEAN` round at the ticket's latest commit, from a reviewer independent of every implementer of the ticket under the merge-readiness rules (an implementer's own user, a key they minted or a key rotated from one of theirs never passes). One reviewer's clean never passes another reviewer step, and an unresolvable implementer or minter fails closed.
+- **A gate is an exit gate.** A step whose work is done but whose gate has not passed is not done, so nothing after it becomes ready. Dependencies are checked transitively. `trusted_clean` uses merge readiness and is allowed only on reviewer and verifier steps. `approval_policy:<id>` passes only with an approved request for each subject ticket at its current head commit under an active policy of the template's org; the gate only reads approvals and the template never grants trust.
+- **Templates are scanned before storage.** The name, step titles and briefs go through the strictest union of your orgs' DLP policies; a block-mode finding refuses the save and a template is never stored unscanned.
+- **YAML that could be read two ways is refused**, in the CLI and the dashboard editor alike: anchors, aliases, tags, block indentation indicators, more-indented folded lines and plain values YAML reads as something other than text, a whole number, `true`, `false` or `null` (`yes`, `no`, `on`, `off`, `1.5`, dates). Quote them.
+- **Access.** Reading templates and plans needs project read access (`loops:read`); writes follow the Review Loop plan gate. Disabling a version is never plan-gated, so a team that left Team can still stop a template. A service key limited to some projects reads org templates only through those projects, and someone who can read a project but not its org sees a plan's state and their own briefs without the org template's details.
+
 ## [0.29.8] - 2026-11-07
 
 **For You: one ranked page of what needs you, and the new dashboard home.** Server migration 123.

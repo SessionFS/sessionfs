@@ -422,7 +422,7 @@ export default function OrgPage() {
 
       </>
     ),
-    governance: org?.id ? <GovernanceSection orgId={org.id} isAdmin={isAdmin} /> : null,
+    governance: org?.id ? <GovernanceSection orgId={org.id} isAdmin={isAdmin} tier={org.tier ?? null} /> : null,
     security: (
       <>
       {/* v0.13.x — SSO (OIDC) admin configuration. */}

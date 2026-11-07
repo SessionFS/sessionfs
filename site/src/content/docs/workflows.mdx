@@ -1,0 +1,150 @@
+---
+title: "Workflow Templates"
+description: "Store a repeatable multi-agent plan (dispatch, fan-out implement, review, verify, document), start a review loop from it, and let your own orchestrator run the ready steps. SessionFS records and gates; it never starts an agent."
+---
+
+A workflow template is a repeatable plan for a [worker review loop](/review-loop/): a small graph of steps such as dispatch → implement ×3 → review → verify → document. Each step names a role, the agent that does it, how many copies run in parallel, an exit gate and a brief.
+
+Templates are **record-only**. SessionFS stores the template, creates the loop and computes the plan: which steps are ready, which agent each ready ticket is for, and the brief to give it. **Your own orchestrator starts every agent** (Claude Code, Codex, Cursor, a shell script, a CI job) and reports back through the same calls as any loop. SessionFS never calls a model, holds a model key or runs a job for a workflow.
+
+| What you want | MCP tool | CLI |
+| --- | --- | --- |
+| List or read templates | `list_workflow_templates`, `get_workflow_template` | `sfs workflow list`, `sfs workflow show` |
+| Write a template | REST | `sfs workflow create`, `sfs workflow update`, `sfs workflow disable` |
+| Start a workflow | `start_workflow` | `sfs workflow start` |
+| What can run now? | `get_workflow_plan` | `sfs workflow plan` |
+| Report a step | `start_worker_run`, `finish_worker_run`, `record_review_round` with `step_id` | `sfs loop run start\|finish --step`, `sfs loop review --step` |
+
+The `worker-review-loop` skill in the [launch catalog](/skills-marketplace/#launch-catalog) (2.1.0 and later) teaches an agent to follow a template. Added in v0.29.9 (Team and above).
+
+## A full example
+
+Save this as `ship-a-change.yaml`:
+
+```yaml
+name: Ship a change
+version: 1
+steps:
+  - id: dispatch
+    title: Split the change into briefs
+    role: dispatcher
+    agent: scout
+    brief_template: |
+      Read {ticket.title} and split it into independent briefs,
+      one per worker, each with acceptance criteria.
+
+      {ticket.description}
+
+  - id: implement
+    title: Implement one brief
+    role: implementer
+    agent: atlas
+    depends_on: [dispatch]
+    fan_out: 3
+    brief_template: |
+      Implement your part of {ticket.title} in your own worktree.
+      Commit when the tests pass.
+
+      Check every one of these before you finish:
+      {checklist}
+
+  - id: review
+    title: Independent code review
+    role: reviewer
+    agent: codex-reviewer
+    depends_on: [implement]
+    gate: trusted_clean
+    brief_template: |
+      Review each implementer's branch for {ticket.title}. Read the code,
+      not the summary. Record a verdict bound to the commit you reviewed.
+
+  - id: verify
+    title: Security verification
+    role: verifier
+    agent: sentinel
+    depends_on: [review]
+    gate: approval_policy:security
+    brief_template: |
+      Verify {ticket.title} against the threat model and record your round.
+
+  - id: document
+    title: Update the docs
+    role: documenter
+    agent: scribe
+    depends_on: [verify]
+    brief_template: |
+      Update the user docs and changelog for {ticket.title}.
+```
+
+Create it, start it on an issue and read the plan:
+
+```bash
+sfs workflow create ship-a-change.yaml
+sfs workflow list                       # note the template id (wft_...)
+LOOP=$(sfs workflow start wft_... --ticket tk_... \
+  --reviewer-persona codex-reviewer --token-budget 2000000 --output-id)
+sfs workflow plan "$LOOP"
+```
+
+The plan starts with only `dispatch` ready. Once the dispatcher's run finishes, the three `implement` tickets become ready together. `review` becomes ready when all three are done, and stays the gate in front of `verify` until every implementer ticket has an independent trusted `VERIFIED-CLEAN` at its latest commit. `verify` must then pass the `security` approval policy before `document` is ready.
+
+## The template format
+
+| Field | Rules |
+| --- | --- |
+| `name` | 1 to 100 characters |
+| `version` | `1` (optional) |
+| `steps` | 1 to 30 steps; step ids unique; no cycles |
+| `steps[].id` | Lowercase slug: `a-z`, `0-9`, `-`, up to 64 characters |
+| `steps[].title` | 1 to 200 characters |
+| `steps[].role` | `dispatcher`, `implementer`, `reviewer`, `verifier` or `documenter` |
+| `steps[].agent` | A persona visible in the project (checked when the workflow starts) |
+| `steps[].depends_on` | Ids of earlier steps; no step may depend on itself |
+| `steps[].fan_out` | 1 to 10 child tickets for the step (default 1). A reviewer step with dependencies reviews their tickets and takes no fan-out. A reviewer step that depends on another reviewer step reviews the same tickets that step reviews |
+| `steps[].gate` | `none` (default), `trusted_clean` or `approval_policy:<policy id>`. `trusted_clean` is only allowed on reviewer and verifier steps. An approval policy must belong to the template's org |
+| `steps[].brief_template` | Markdown up to 8 KiB |
+
+The whole definition is at most 32 KiB. Unknown fields are refused. The CLI checks a file with the same rules as the server before it sends anything, so a bad template never reaches the API.
+
+**YAML that could be read two ways is refused.** The CLI and the dashboard editor read a template file the same way, so both refuse anchors (`&`), aliases (`*`), tags (`!`), block indentation indicators such as `|2`, more-indented lines inside a folded (`>`) block, and plain values YAML reads as something other than text, a whole number, `true`, `false` or `null`: `yes`, `no`, `on`, `off`, `y`, `n`, `True`, `NULL`, `1.5`, `0x1f`, `012` and dates. Quote such values (`title: "yes"`).
+
+**Brief placeholders.** `{ticket.title}` and `{ticket.description}` come from the loop's parent issue, and `{checklist}` is the project's active [review checklist](/review-loop/). When a brief does not place `{checklist}`, the checklist is appended as "Known traps". Values are inserted as plain text and nothing else in the brief is interpreted. Step titles, briefs and the template name go through your org's DLP policy before they are stored (secrets are always redacted; a block-mode finding refuses the save), and a template is never saved unscanned.
+
+**Versions.** Templates are immutable. `sfs workflow update` saves a new version and deactivates the old one; a loop keeps the version it was started with. `sfs workflow disable` stops a version from being started.
+
+**Scope.** A template belongs to a project or to an org. Project templates are read by anyone who can read the project and written by project editors. Org templates are read by org members, are usable in the org's projects, and are written by org admins; in the dashboard they live under **Organization → Governance → Workflow templates**. A scope holds at most 100 active templates (`409 template_limit`); disable one to add another. A service key limited to some projects reads org templates only through those projects. Someone who can read a project but not its org sees a workflow plan's state and their own ticket briefs, without the org template's name, step titles, agents or gates.
+
+## How the plan works
+
+`get_workflow_plan` is computed from stored rows on every call. Each step has a state:
+
+| State | Meaning |
+| --- | --- |
+| `blocked` | A dependency is not done yet (the `reason` says which) |
+| `ready` | Every dependency is done and nothing has been reported for the step yet. Its tickets are in `ready_children` with their agent and brief |
+| `running` | A run, round or ticket start exists for the step |
+| `needs_human` | One of its loop items is parked, usually because a budget or round cap was hit |
+| `done` | Its work is finished **and** its gate has passed |
+
+**Every reviewer step gives its own verdict.** A ticket passes a reviewer step only when that step's own latest code round on it is a trusted strict `VERIFIED-CLEAN` at the ticket's latest commit, recorded with the step's `step_id` (or, without a `step_id`, by the step's agent), and the loop has closed the ticket's item. The round's reviewer must be independent of every implementer of that ticket, by the same rules as merge readiness: an implementer's own user, a key they minted, or a key rotated from one of theirs never passes a reviewer step. One reviewer's clean never passes another reviewer step: a `security-review` step by `sentinel` still needs the sentinel's own round after `codex-reviewer` closed the item. A round recorded for a step is attributed to that step's agent, and its trust is checked against that agent in the trusted-reviewer registry.
+
+**A gate is an exit gate.** A step whose work is finished but whose gate has not passed is not done, so nothing after it becomes ready. `trusted_clean` uses merge readiness: an independent trusted `VERIFIED-CLEAN` bound to each reviewed ticket's latest commit, from a reviewer who is not any of the implementers. `approval_policy:<id>` passes only when that [approval policy](/approvals/) has an approved request for each subject ticket at its current head commit: it stays closed while the request is pending, the implementer can never approve their own work, and a missing, deactivated or other-org policy never passes. The gate only reads approvals; the request itself is raised by merge readiness once the review is clean. The template itself never grants trust: the [trusted-reviewer registry](/review-loop/) and the approval rules decide.
+
+## Running the steps
+
+Your orchestrator repeats one loop until the plan says `done`:
+
+1. Call `get_workflow_plan(loop_id)`.
+2. For each ticket in `ready_children`, launch the named agent with the brief, in its own git worktree for worker roles.
+3. Report with the step's id: `start_worker_run(ticket_id, step_id)` then `finish_worker_run(run_id, head_sha, exit_reason, step_id, usage)` for dispatcher, implementer, verifier and documenter steps, and `record_review_round(loop_id, ticket_id, round, stage, reviewed_commit, verdict, step_id)` for reviewer and verifier rounds.
+4. Ask for the plan again.
+
+The server checks every report against the pinned template: the step must exist, its dependencies must be done, its role must make that kind of report, and the ticket must belong to the step. A mismatch is a `422 workflow_step_mismatch`. A worker run on one of a step's own tickets is matched to that step even without `step_id`.
+
+Budgets work exactly as in a review loop: token, dollar and round caps from `start_workflow` apply to the whole workflow, and a hit cap parks the item as `needs_human` until a person raises the limit or settles it.
+
+## Access and plans
+
+Reading templates and plans needs read access to the project (service keys: `loops:read`). Writing project templates needs edit access and the project's plan to include the Review Loop (**Team** and above); writing org templates needs an org admin and the org's plan to include it. Starting a workflow is a loop write: **Team** and above, with the same rules as `start_review_loop` (service keys: `loops:write` plus the ticket and queue scopes). Approval-policy gates work with the approval policies of the template's org (approval policies are an Enterprise feature; the gate never passes in a personal project or without a matching policy).
+
+Out of scope by design: SessionFS-run agents, cron triggers that start work, branching on model output, sub-workflows and cross-project workflows.

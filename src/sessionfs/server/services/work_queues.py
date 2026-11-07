@@ -1570,8 +1570,12 @@ async def post_server_verdict(
     actor_type: str | None,
     service_key_name: str | None,
     now: datetime,
+    reviewer_persona: str | None = None,
 ) -> tuple[TicketComment, list[str]]:
     """Create the server-derived reviewer verdict comment for a queue.
+
+    ``reviewer_persona`` overrides the queue's persona for a workflow
+    review step (server-derived from the template pin, never a body field).
 
     Shared by the directive settle path and the loop round endpoint so trust
     NEVER comes from a request body: ``author_persona`` is the queue's
@@ -1606,7 +1610,7 @@ async def post_server_verdict(
             http_status=422,
         )
     # The verdict's author identity is server-derived from queue config.
-    reviewer_persona = queue.assigned_persona or "codex-reviewer"
+    reviewer_persona = reviewer_persona or queue.assigned_persona or "codex-reviewer"
     # Trust is derived from the AUTHENTICATED actor — never the body.
     from sessionfs.server.routes.tickets import (
         is_registered_trusted_reviewer,

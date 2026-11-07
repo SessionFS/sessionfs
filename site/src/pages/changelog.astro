@@ -17,6 +17,30 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.29.9 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.29.9</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">November 7, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Workflow templates</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Repeatable multi-agent plans (Team+).</strong> Store a workflow such as dispatch &rarr; implement &times;3 &rarr; review &rarr; verify &rarr; document. Each step names a role, an agent, its dependencies, a fan-out of up to 10 tickets, an exit gate and a brief. See <a href="/workflows/" class="text-brand hover:underline">Workflow Templates</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Record-only.</strong> SessionFS stores the template, creates the review loop and computes the plan; your own orchestrator starts every agent and reports back. SessionFS never calls a model or runs a job for a workflow.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Project and org templates, versioned.</strong> Project editors write project templates, org admins write org templates for every project in the org. An update saves a new version, and a running loop keeps the version it started with.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>A plan you can follow.</strong> Start a workflow on an issue or a new title, then ask for the plan: every step&rsquo;s lane (blocked, ready, running, needs a person, done), why it is waiting, and the ready tickets with their agent and brief.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Gates that mean something.</strong> Every reviewer step needs its own independent trusted <span class="font-mono text-accent text-sm">VERIFIED-CLEAN</span> at each ticket&rsquo;s latest commit, and an implementer can never pass their own review. <span class="font-mono text-accent text-sm">approval_policy:&lt;id&gt;</span> gates wait for an approved request at the current commit. Templates are DLP-scanned before storage and ambiguous YAML is refused.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Dashboard.</strong> Template editor with a step graph under Project &rarr; Config &rarr; Workflows, a Start workflow dialog, step lanes on the Loop Board, and org templates under Organization &rarr; Governance.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>CLI <span class="font-mono text-accent text-sm">sfs workflow list|show|create|update|disable|start|plan</span> and <span class="font-mono text-accent text-sm">--step</span> on loop commands; MCP <span class="font-mono text-accent text-sm">list_workflow_templates</span>, <span class="font-mono text-accent text-sm">get_workflow_template</span>, <span class="font-mono text-accent text-sm">start_workflow</span> and <span class="font-mono text-accent text-sm">get_workflow_plan</span>; <span class="font-mono text-accent text-sm">step_id</span> on worker runs and review rounds.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;124 (124 adds workflow templates, step children and the agent run step id; additive). Self-hosted: run migration 124. 130 MCP tools (+4).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
       <!-- v0.29.8 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +48,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.29.8</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">November 7, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">For You</h2>
         <ul class="space-y-2 text-base text-muted">
