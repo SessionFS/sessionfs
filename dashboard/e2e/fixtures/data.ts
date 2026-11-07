@@ -1894,6 +1894,7 @@ export const linkedTicketEvents = {
 // ── meeting transcripts (GitHub #116) ──
 export const MEETING_ID = 'meet_f1x7ure0000000a1';
 export const GROUP_MEETING_ID = 'meet_f1x7ure0000000b2';
+export const CHAT_ID = 'chat_f1x7ure0000000c1';
 
 const meetingLines = [
   'Dev Fixture: Thanks for joining. Three things today: the launch date, the rollout plan and the status page.',
@@ -1937,8 +1938,45 @@ export const projectMeetings = {
       source: 'manual_paste', line_count: 48, dlp_findings: 0, extraction_status: 'none',
       created_by_user_id: 'user_fixture01', created_at: OLD, updated_at: OLD, deleted_at: null,
     },
+    {
+      id: CHAT_ID, org_id: ORG_ID, project_id: PROJECT_ID, group_id: null,
+      kind: 'chat', provider: 'slack', channel_name: '#infra',
+      title: 'LB certificate decision', meeting_at: null, duration_minutes: null,
+      source: 'chat_export', line_count: 5, dlp_findings: 0, extraction_status: 'done',
+      pending_action_count: 1, decision_count: 1,
+      created_by_user_id: 'user_fixture01', created_at: EARLIER, updated_at: EARLIER, deleted_at: null,
+    },
   ],
   next_cursor: null,
+};
+
+export const chatDetail = {
+  ...projectMeetings.meetings[3],
+  content: [
+    '[2026-10-29 14:02] Tolu: The LB cert expires on Friday. Do we renew it or move to managed certs?',
+    '[2026-10-29 14:03] Sam: Managed certs. We keep hitting this every year.',
+    '[2026-10-29 14:05] Tolu: Agreed, we are going with managed certs. Sam, can you own the ticket?',
+    '[2026-10-29 14:06] Sam: Yes, I will file it today. ⏎ Renewing this one by hand first.',
+    '[2026-10-29 14:07] Peer Fixture: <b>Thanks</b>, I will review the terraform.',
+  ].join('\n'),
+  content_sha256: 'e'.repeat(64),
+  warnings: [],
+  messages: [
+    { line_no: 1, author_raw: 'Tolu', posted_at: '2026-10-29T14:02:00Z' },
+    { line_no: 2, author_raw: 'Sam', posted_at: '2026-10-29T14:03:00Z' },
+    { line_no: 3, author_raw: 'Tolu', posted_at: '2026-10-29T14:05:00Z' },
+    { line_no: 4, author_raw: 'Sam', posted_at: '2026-10-29T14:06:00Z' },
+    { line_no: 5, author_raw: 'Peer Fixture', posted_at: '2026-10-29T14:07:00Z' },
+  ],
+  participants: [
+    { id: 'mp_c1', name_raw: 'Tolu', email_raw: null, user_id: null, persona_name: null, resolution_method: 'unresolved', resolved_by_user_id: null },
+    { id: 'mp_c2', name_raw: 'Sam', email_raw: null, user_id: null, persona_name: null, resolution_method: 'unresolved', resolved_by_user_id: null },
+    { id: 'mp_c3', name_raw: 'Peer Fixture', email_raw: null, user_id: 'user_fixture02', persona_name: null, resolution_method: 'display_name', resolved_by_user_id: null },
+  ],
+  action_items: [
+    { id: 'mai_c1', kind: 'action', description: 'File the managed-certs ticket for the load balancer.', owner_participant_id: 'mp_c2', due_date: null, line_start: 3, line_end: 4, status: 'pending', promoted_ticket_id: null, extracted_at: NOW },
+    { id: 'mai_c2', kind: 'decision', description: 'Move the load balancer to managed certs.', owner_participant_id: null, due_date: null, line_start: 2, line_end: 3, status: 'pending', promoted_ticket_id: null, extracted_at: NOW },
+  ],
 };
 
 export const meetingDetail = {

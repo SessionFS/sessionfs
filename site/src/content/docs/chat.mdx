@@ -1,0 +1,73 @@
+---
+title: "Chat threads"
+description: "Upload a Slack, Discord or pasted chat thread, extract its action items and decisions, cite its messages in the session helper, and promote items to tickets."
+---
+
+Most decisions start in a chat thread: "we're going with Dataproc", "please own this ticket". Chat threads let a project or group store one channel's (or one thread's) conversation next to its [meetings](/meetings/). A chat thread behaves exactly like a meeting: it is DLP-redacted before storage, extraction turns it into action items and decisions, items can be promoted to tickets or carry reminders, and the session helper can cite it.
+
+Chat threads follow the meeting plans: project threads on every plan (extraction uses your own LLM key), group threads on **Team+**, promotion to tickets on **Team+**, and the session helper on **Enterprise**.
+
+## What you can upload
+
+| Provider | What to upload |
+|----------|----------------|
+| `slack` | The message array of one channel or one thread from a Slack workspace export (a channel's day file, or a `conversations.history` / `conversations.replies` response). Optionally the export's `users.json`, so `U…` ids show as names; without it the raw id is shown |
+| `discord` | A [DiscordChatExporter](https://github.com/Tyrrrz/DiscordChatExporter) JSON export of one channel or thread |
+| `paste` / `teams_paste` | Plain text from any tool, including Teams: `Name: text` lines, or blank-line-separated blocks |
+
+Every thread needs a **channel name** (up to 80 characters, for example `#infra`). It is a label only and grants nothing.
+
+**Direct messages are refused.** Slack and Discord exports marked as direct or group DMs are rejected with `422 dm_not_supported`: a Slack `im` / `mpim` channel, a `D…` channel id, a channel object that names a `user`, or a private / group conversation without a channel name; a Discord `DirectTextChat` or `DirectGroupTextChat` channel. A paste can't be checked, so a paste upload must carry an attestation that the text is from a channel, not a direct message. The same goes for a Slack export with **no channel object** (a bare message array, or a response with only `messages`): and for a Discord export that doesn't prove it is a server channel: it needs both `guild` and `channel` objects, with a guild channel type (a text, news, voice, stage, forum or media channel, or a public, private or news thread; DiscordChatExporter names or Discord's numeric types). Without `attestation: true` either one is refused with `422 attestation_required`.
+
+Out of scope: live bots and the Slack, Teams and Discord APIs, reactions, files, DMs, threads within threads and cross-workspace search.
+
+## How a thread is stored
+
+The server writes **one message per line**: `[2026-10-29 14:02] Tolu: text`. Newlines inside a message become ` ⏎ `, so message N is line N. Extracted items, citations and ticket quotes refer to message ranges, shown as `M12-15`. The author and time of each message are kept alongside the text for participant matching.
+
+Caps match meetings: the raw upload is limited to **2 MiB** (JSON is verbose) and parsed off the request thread, and the normalised thread to **512 KiB** and **10 000 messages**. Before storage the text, title, channel name and authors are scanned under the strictest union of your orgs' DLP policies; a `block`-mode finding refuses the upload, and in every other mode secrets are redacted. Re-uploading identical content stores a new thread with a `duplicate_of` warning.
+
+**Participants are evidence-gated.** An exported author name or email resolves to an org member or persona only if it occurs in the thread. The exporter's own `users.json` never resolves anyone who did not post, and its emails are kept per user id: when two people who posted share a display name, neither keeps an email. An exporter email is only ever used to match an existing org member by exact email; one that matches nobody is not stored on the participant. A ticket draft whose owner was matched this way says so ("matched by exporter email").
+
+Messages that carry no usable time keep their place in the export: they sort right after the message before them.
+
+## Extraction and promotion
+
+Extraction is the meeting extraction with a chat prompt: one LLM call with **your own** key (your key, else your org's; never a SessionFS key) returns participants, action items and decisions, each tied to a message range. Usage is recorded as `chat_extract` on every path, including cancellation, and counts against the org's helper budget. Promotion works exactly like a [meeting item](/meetings/#promote-to-a-ticket): a preview of the ticket draft quoting the cited messages, then an explicit confirm.
+
+## Reminders
+
+A chat thread's items carry reminders like a meeting's: **Add reminder** on an item creates a reminder whose source is `chat_item` (the item and its message range), and the thread's reminder strip lists them. A reminder on the whole thread uses the `meeting` source with the thread's id. `chat_item` follows the meeting rules: you must be able to read the thread, and a `meeting_item` id that belongs to a chat thread (or the reverse) is "not found". From the CLI, `sfs remind add "…" --at … --chat chat_…:M3-5` ties a reminder to a thread and its messages.
+
+## CLI
+
+```bash
+# Slack export (format detected), with names from users.json
+sfs chat upload infra.json --channel "#infra" --users users.json --extract
+
+# A paste from Teams needs the attestation (so does a bare Slack message array)
+sfs chat upload thread.txt --group pg_… --channel "#platform" --provider teams_paste --attest
+
+sfs chat list
+sfs chat show chat_…        # numbered messages M1, M2, …
+sfs chat promote chat_… mi_…
+```
+
+Without `--provider` the CLI detects the format: Slack JSON, DiscordChatExporter JSON, otherwise a paste (which then needs `--attest`). A Slack file with no channel object, or a Discord file without guild channel details, needs `--attest` too. Files over 2 MiB are refused before anything is sent. `list`, `search`, `show`, `delete`, `extract`, `participants`, `resolve-participant`, `action-items`, `promote`, `dismiss` and `restore` are the [`sfs meeting`](/cli/#sfs-meeting) commands run against chat threads. See [`sfs chat`](/cli/#sfs-chat).
+
+## MCP tools
+
+`upload_chat_thread` stores a thread (`provider`, `channel_name`, `content`, optional `attestation`, `users`, `title`, `extract`, and `git_remote` or `group_id`). Content over 2 MiB, and a paste, a Slack export with no channel object or a Discord export without guild channel details sent without `attestation: true`, are refused before the request. `create_reminder` accepts a `chat_item` source. The meeting tools then work on chat threads: `list_meeting_transcripts` and `search_meetings` take `kind` (`meeting` by default, `chat` or `all`), `get_meeting_transcript` and `extract_meeting_action_items` take an optional `kind` that must match the row, and `promote_meeting_action_item` takes `conversation_kind` (its `kind` is the ticket kind). See [MCP Server](/mcp/#meetings-and-chat).
+
+## Session helper
+
+The helper's meeting tools read chat threads too (`kind` = `meeting`, `chat` or `all`, default `all`). A chat thread is shown as numbered messages (`M12| [time] author: text`), and its text is untrusted data exactly like a transcript. Messages are cited as `[chat:<id> M<first>-<last>]`, validated like a meeting citation: a tool must have returned the thread earlier in the conversation, you must still be able to read it, and the range must lie inside the thread. A streaming turn sends a kept citation as a `chat_citation` event (`{"kind": "chat", "meeting_id", "line_start", "line_end", "title", "channel_name", "project_id", "group_id", "at"}`). `list_my_meeting_actions` lists your conversation actions from both meetings and chat threads. See [Session Helper](/session-helper/).
+
+## REST API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/projects/{project_id}/chat-threads` | Upload a chat thread to a project |
+| `POST` | `/api/v1/groups/{group_id}/chat-threads` | Upload a chat thread to a group |
+
+Body: `provider`, `channel_name`, `content` (the export as a string, or the pasted text), optional `attestation` (required `true` for a paste, a Slack export with no channel object and a Discord export without guild channel details), `users` (Slack `users.json` as a string), `title`, `extract`. Everything else uses the [meeting routes](/meetings/#rest-api) with `?kind=chat`: list and search default to `kind=meeting`, and an id route given a `kind` returns the same "not found" for a row of the other kind. Access rules, the uniform 404, the `meetings:read` / `meetings:write` scopes, deletion and retention are exactly the meeting rules.

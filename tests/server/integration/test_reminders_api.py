@@ -810,3 +810,113 @@ async def test_list_filters_and_cursor(client: AsyncClient, db_session: AsyncSes
         if not cursor:
             break
     assert seen == [on_ticket["id"], *[p["id"] for p in plain]]
+
+
+async def _chat(db: AsyncSession, project: Project, user: User) -> tuple[str, str]:
+    """A chat thread (kind='chat') with one action item."""
+    content = "Ada: we should follow up\nTolu: agreed"
+    chat = MeetingTranscript(
+        id=f"chat_{uuid.uuid4().hex[:16]}",
+        org_id=project.org_id,
+        project_id=project.id,
+        kind="chat",
+        provider="slack",
+        channel_name="#infra",
+        title="#infra",
+        source="chat_export",
+        content=content,
+        content_sha256=hashlib.sha256(content.encode()).hexdigest(),
+        line_count=2,
+        created_by_user_id=user.id,
+    )
+    db.add(chat)
+    await db.flush()
+    item = MeetingActionItem(
+        id=f"mai_{uuid.uuid4().hex[:16]}",
+        transcript_id=chat.id,
+        kind="action",
+        description="Book the follow-up",
+        line_start=1,
+        line_end=2,
+        status="pending",
+        due_date=(datetime.now(timezone.utc) + timedelta(days=3)).date(),
+        extracted_at=datetime.now(timezone.utc),
+    )
+    db.add(item)
+    await db.commit()
+    return chat.id, item.id
+
+
+async def test_chat_item_source(client: AsyncClient, db_session: AsyncSession):
+    lead, lead_key, mate, mate_key, _, project = await _team(db_session)
+    chat_id, chat_item = await _chat(db_session, project, lead)
+    meeting_id, meeting_item = await _meeting(db_session, project, lead)
+
+    on_item = await _create(
+        client, lead_key, owner=mate.id,
+        source={"kind": "chat_item", "id": chat_item, "lines": "1-2"},
+    )
+    assert on_item["source"]["kind"] == "chat_item"
+    assert on_item["source"]["meeting_id"] == chat_id
+    assert on_item["source"]["title"] == "Book the follow-up"
+    # The owner (a project reader) sees it with its source.
+    got = await client.get(f"/api/v1/me/reminders/{on_item['id']}", headers=_hdrs(mate_key))
+    assert got.status_code == 200 and got.json()["source"]["id"] == chat_item
+
+    # The thread's reminders strip lists chat_item reminders too.
+    listed = await client.get(
+        f"/api/v1/projects/{project.id}/meetings/{chat_id}/reminders", headers=_hdrs(lead_key)
+    )
+    assert [r["id"] for r in listed.json()["items"]] == [on_item["id"]]
+
+    # A meeting_item id on a chat thread, a chat_item id on a meeting, and an
+    # id that doesn't exist are all the same 404.
+    async def _miss(source: dict):
+        resp = await client.post(
+            "/api/v1/me/reminders", headers=_hdrs(lead_key),
+            json={"title": "x", "due_at": _soon(), "source": source},
+        )
+        assert resp.status_code == 404
+        return resp.json()
+
+    a = await _miss({"kind": "meeting_item", "id": chat_item})
+    b = await _miss({"kind": "chat_item", "id": meeting_item})
+    c = await _miss({"kind": "chat_item", "id": "mai_missing"})
+    assert a == b == c
+
+    # An outsider can't use a chat item as a source.
+    _, outsider_key = await _make_user(db_session, "outsider")
+    resp = await client.post(
+        "/api/v1/me/reminders", headers=_hdrs(outsider_key),
+        json={"title": "x", "due_at": _soon(), "source": {"kind": "chat_item", "id": chat_item}},
+    )
+    assert resp.status_code == 404 and resp.json() == a
+
+    # A deleted thread hides the source from the owner who didn't create it.
+    await db_session.execute(
+        update(MeetingTranscript)
+        .where(MeetingTranscript.id == chat_id)
+        .values(deleted_at=datetime.now(timezone.utc))
+    )
+    await db_session.commit()
+    gone = await client.get(f"/api/v1/me/reminders/{on_item['id']}", headers=_hdrs(mate_key))
+    assert gone.status_code == 404
+
+
+async def test_item_reminder_route_on_chat_thread_uses_chat_item(
+    client: AsyncClient, db_session: AsyncSession
+):
+    lead, lead_key, _, _, _, project = await _team(db_session)
+    chat_id, chat_item = await _chat(db_session, project, lead)
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/meetings/{chat_id}/items/{chat_item}/reminder",
+        headers=_hdrs(lead_key),
+        json={},
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["source"]["kind"] == "chat_item"
+    assert resp.json()["source"]["lines"] == "1-2"
+    row = (
+        await db_session.execute(select(Reminder).where(Reminder.id == resp.json()["id"]))
+    ).scalar_one()
+    assert (row.source_kind, row.source_id, row.created_via) == ("chat_item", chat_item, "meeting")

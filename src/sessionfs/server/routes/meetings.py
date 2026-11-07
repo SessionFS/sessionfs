@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.concurrency import run_in_threadpool
 
 from sessionfs.security.secrets import scan_dlp as scan_dlp_full
 from sessionfs.server.auth.dependencies import (
@@ -39,6 +40,7 @@ from sessionfs.server.auth.dependencies import (
 )
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
+    ConversationMessageMeta,
     MeetingActionItem,
     MeetingParticipant,
     MeetingTranscript,
@@ -57,6 +59,10 @@ from sessionfs.server.dlp import (
 )
 from sessionfs.server.helper.redaction import union_dlp_policies
 from sessionfs.server.sanitize import sanitize_archive_string
+from sessionfs.server.services.chat_threads import (
+    NormalisedThread,
+    parse_chat_thread,
+)
 from sessionfs.server.services.personas import (
     find_org_persona,
     resolve_persona,
@@ -73,6 +79,15 @@ group_router = APIRouter(prefix="/api/v1/groups", tags=["meetings"])
 _MAX_BODY_BYTES = 1024 * 1024
 _MAX_CONTENT_BYTES = 512 * 1024
 _MAX_LINES = 10_000
+# A chat upload carries up to 2 MiB of raw export JSON (plus an optional
+# users.json) as JSON strings, so its body cap leaves room for the escaping.
+_MAX_CHAT_BODY_BYTES = 5 * 1024 * 1024
+
+# ``?kind=`` on list/search: meetings by default so existing clients see no
+# change; ``chat`` or ``all`` opt in. Id-level routes accept any kind unless
+# ``?kind=`` names one, in which case a row of the other kind is a 404.
+ListKind = Literal["meeting", "chat", "all"]
+RowKind = Literal["meeting", "chat"]
 
 _PARTICIPANT_NOT_ELIGIBLE = {
     "error": "participant_not_eligible",
@@ -86,6 +101,20 @@ class MeetingCreate(BaseModel):
     meeting_at: datetime | None = None
     duration_minutes: int | None = Field(None, ge=0)
     source: Literal["manual_paste", "file_upload"] = "manual_paste"
+    extract: bool = False
+
+
+class ChatThreadCreate(BaseModel):
+    provider: Literal["slack", "discord", "teams_paste", "paste"]
+    channel_name: str = Field(..., min_length=1, max_length=80)
+    # Required true for a paste, and for a Slack export with no channel
+    # object (a bare message array): neither can be told apart from a DM.
+    attestation: bool = False
+    # The raw export (Slack / Discord JSON as a string) or the pasted text.
+    content: str
+    # Slack only: the export's users.json, as a JSON string.
+    users: str | None = None
+    title: str | None = Field(None, max_length=200)
     extract: bool = False
 
 
@@ -137,11 +166,21 @@ class MeetingActionItemResponse(BaseModel):
     suggested_reminder: SuggestedReminder | None = None
 
 
+class ChatMessageResponse(BaseModel):
+    line_no: int
+    author_raw: str
+    posted_at: datetime | None
+
+
 class MeetingSummaryResponse(BaseModel):
     id: str
     org_id: str | None
     project_id: str | None
     group_id: str | None
+    # ``meeting`` or ``chat``; chat rows also carry provider + channel_name.
+    kind: str = "meeting"
+    provider: str | None = None
+    channel_name: str | None = None
     title: str
     meeting_at: datetime | None
     duration_minutes: int | None
@@ -165,6 +204,8 @@ class MeetingDetailResponse(MeetingSummaryResponse):
     content_sha256: str
     participants: list[MeetingParticipantResponse] = []
     action_items: list[MeetingActionItemResponse] = []
+    # Chat rows: one entry per message line (author label + posted time).
+    messages: list[ChatMessageResponse] = []
     warnings: list[str] = []
 
 
@@ -332,28 +373,29 @@ def _normalise_content(raw: str, *, source: str = "manual_paste") -> tuple[str, 
     return "\n".join(lines), len(lines)
 
 
-async def _read_meeting_body(request: Request) -> dict:
-    """Stream the request body, refusing (413) past 1 MiB — a chunked body is
-    never buffered beyond the cap (the Jira inbound pattern)."""
+async def _read_meeting_body(
+    request: Request,
+    *,
+    max_bytes: int = _MAX_BODY_BYTES,
+    too_large: dict | None = None,
+) -> dict:
+    """Stream the request body, refusing (413) past ``max_bytes`` (1 MiB for a
+    meeting) — a chunked body is never buffered beyond the cap (the Jira
+    inbound pattern)."""
+    too_large = too_large or {"error": "meeting_too_large", "message": "Transcript is too large"}
     length = request.headers.get("content-length")
     if length is not None:
         try:
-            if int(length) > _MAX_BODY_BYTES:
-                raise HTTPException(
-                    413,
-                    {"error": "meeting_too_large", "message": "Transcript is too large"},
-                )
+            if int(length) > max_bytes:
+                raise HTTPException(413, too_large)
         except ValueError:
             pass
     chunks: list[bytes] = []
     size = 0
     async for chunk in request.stream():
         size += len(chunk)
-        if size > _MAX_BODY_BYTES:
-            raise HTTPException(
-                413,
-                {"error": "meeting_too_large", "message": "Transcript is too large"},
-            )
+        if size > max_bytes:
+            raise HTTPException(413, too_large)
         chunks.append(chunk)
     raw = b"".join(chunks)
     if not raw:
@@ -395,6 +437,55 @@ async def _parse_meeting_body(request: Request) -> MeetingCreate:
                 "errors": sanitized,
             },
         ) from exc
+
+
+async def _parse_chat_body(request: Request) -> ChatThreadCreate:
+    """Read + validate a chat upload body (same rules as a meeting body)."""
+    from pydantic import ValidationError
+
+    body = await _read_meeting_body(
+        request,
+        max_bytes=_MAX_CHAT_BODY_BYTES,
+        too_large={
+            "error": "chat_too_large",
+            "code": "chat_too_large",
+            "message": "Chat thread is too large",
+        },
+    )
+    for key in ("title", "channel_name"):
+        if isinstance(body.get(key), str):
+            body[key], _ = sanitize_archive_string(body[key])
+    try:
+        payload = ChatThreadCreate.model_validate(body)
+    except ValidationError as exc:
+        sanitized = [
+            {k: v for k, v in err.items() if k not in ("input", "ctx")}
+            for err in exc.errors()
+        ]
+        raise HTTPException(
+            422,
+            {
+                "code": "validation_error",
+                "message": "Invalid chat thread body",
+                "errors": sanitized,
+            },
+        ) from exc
+    if payload.provider in ("paste", "teams_paste") and payload.attestation is not True:
+        raise HTTPException(
+            422,
+            {
+                "code": "attestation_required",
+                "error": "attestation_required",
+                "message": (
+                    "Confirm this paste is from a channel, not a direct message."
+                ),
+            },
+        )
+    channel = " ".join(payload.channel_name.split())
+    if not channel:
+        raise HTTPException(422, "channel_name must not be blank")
+    payload.channel_name = channel[:80]
+    return payload
 
 
 async def _upload_dlp_policy(
@@ -495,12 +586,15 @@ def _dlp_scan_content(content: str, policy: dict | None) -> tuple[str, int]:
 # ── Scope resolution / authorization ──
 
 
-async def _get_meeting(db: AsyncSession, meeting_id: str) -> MeetingTranscript:
-    meeting = (
-        await db.execute(
-            select(MeetingTranscript).where(MeetingTranscript.id == meeting_id)
-        )
-    ).scalar_one_or_none()
+async def _get_meeting(
+    db: AsyncSession, meeting_id: str, kind: str | None = None
+) -> MeetingTranscript:
+    """Load a conversation row by id; ``kind`` (when given) must match, and a
+    mismatch is the same "Meeting not found" 404 as a missing row."""
+    stmt = select(MeetingTranscript).where(MeetingTranscript.id == meeting_id)
+    if kind is not None:
+        stmt = stmt.where(MeetingTranscript.kind == kind)
+    meeting = (await db.execute(stmt)).scalar_one_or_none()
     if meeting is None:
         raise HTTPException(404, "Meeting not found")
     return meeting
@@ -733,6 +827,9 @@ def _meeting_summary(
         org_id=org_id,
         project_id=meeting.project_id,
         group_id=meeting.group_id,
+        kind=meeting.kind or "meeting",
+        provider=meeting.provider,
+        channel_name=meeting.channel_name,
         title=meeting.title,
         meeting_at=meeting.meeting_at,
         duration_minutes=meeting.duration_minutes,
@@ -868,11 +965,26 @@ async def _meeting_detail(
         .all()
     )
     owner_users = {p.id: p.user_id for p in participants}
+    messages: list[ChatMessageResponse] = []
+    if meeting.kind == "chat":
+        messages = [
+            ChatMessageResponse(
+                line_no=m.line_no, author_raw=m.author_raw, posted_at=m.posted_at
+            )
+            for m in (
+                await db.execute(
+                    select(ConversationMessageMeta)
+                    .where(ConversationMessageMeta.source_id == meeting.id)
+                    .order_by(ConversationMessageMeta.line_no.asc())
+                )
+            ).scalars().all()
+        ]
     base = _meeting_summary(meeting, await _meeting_scope_org_id(db, meeting))
     return MeetingDetailResponse(
         **base.model_dump(),
         content=meeting.content,
         content_sha256=meeting.content_sha256,
+        messages=messages,
         participants=[_participant_response(p) for p in participants],
         action_items=[
             _action_item_response(
@@ -890,10 +1002,23 @@ async def _store_meeting(
     *,
     project: Project | None,
     group: ProjectGroup | None,
-    payload: MeetingCreate,
+    payload: MeetingCreate | ChatThreadCreate,
+    thread: NormalisedThread | None = None,
 ) -> MeetingDetailResponse:
-    """Normalise, DLP-scan, then persist a meeting (project OR group scope)."""
-    title = payload.title.strip()
+    """Normalise, DLP-scan, then persist a meeting (project OR group scope).
+
+    A chat thread passes its ``ChatThreadCreate`` and the already parsed +
+    normalised ``thread`` (one message per line); it then goes through the
+    same caps, DLP and duplicate check, and also stores the per-line author
+    rows (DLP'd under the same policy).
+    """
+    chat = isinstance(payload, ChatThreadCreate)
+    if isinstance(payload, ChatThreadCreate):
+        assert thread is not None
+        raw_title = payload.title or payload.channel_name
+    else:
+        raw_title = payload.title
+    title = raw_title.strip()
     title, _ = sanitize_archive_string(title)
     title = title.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
     title = title.strip()
@@ -909,13 +1034,21 @@ async def _store_meeting(
         scope_org_id = group.org_id
     policy = await _upload_dlp_policy(db, auth, scope_org_id)
 
-    content, line_count = _normalise_content(payload.content, source=payload.source)
+    if isinstance(payload, ChatThreadCreate):
+        assert thread is not None
+        content, line_count = thread.content, thread.line_count
+        source = "chat_export"
+        too_large_code = "chat_too_large"
+    else:
+        content, line_count = _normalise_content(payload.content, source=payload.source)
+        source = payload.source
+        too_large_code = "meeting_too_large"
     if not content.strip():
         raise HTTPException(422, "content must not be empty")
     if len(content.encode("utf-8")) > _MAX_CONTENT_BYTES:
-        raise HTTPException(413, {"error": "meeting_too_large", "message": "Transcript is too large"})
+        raise HTTPException(413, {"error": too_large_code, "message": "Transcript is too large"})
     if line_count > _MAX_LINES:
-        raise HTTPException(413, {"error": "meeting_too_large", "message": "Transcript has too many lines"})
+        raise HTTPException(413, {"error": too_large_code, "message": "Transcript has too many lines"})
 
     # DLP-scan title and content under the same policy: a block finding in
     # either refuses the upload, otherwise both are redacted before storage.
@@ -923,18 +1056,52 @@ async def _store_meeting(
     title = title[:200]
     content, content_findings = _dlp_scan_content(content, policy)
     dlp_findings = title_findings + content_findings
+    channel_name: str | None = None
+    meta_rows: list[tuple[int, str, str | None, datetime | None]] = []
+    if isinstance(payload, ChatThreadCreate):
+        assert thread is not None
+        # Cap BEFORE the scan so DLP sees exactly the label that is stored.
+        # A redaction marker longer than the label it replaced is the only
+        # way past 80 afterwards; the stored value keeps the column bound.
+        channel_name, channel_findings = _dlp_scan_content(
+            payload.channel_name.strip()[:80], policy
+        )
+        channel_name = channel_name.strip()[:80] or "redacted"
+        dlp_findings += channel_findings
+        # Per-line authors and exporter emails are stored too, so they pass
+        # the same policy (scanned once per distinct value).
+        scanned: dict[str, str] = {}
+
+        def _scan_value(value: str) -> str:
+            nonlocal dlp_findings
+            if value not in scanned:
+                redacted, found = _dlp_scan_content(value, policy)
+                dlp_findings += found
+                scanned[value] = redacted
+            return scanned[value]
+
+        for meta in thread.meta:
+            author = _scan_value(meta.author_raw)[:200] or "unknown"
+            email = _scan_value(meta.email_raw)[:320] if meta.email_raw else None
+            meta_rows.append((meta.line_no, author, email, meta.posted_at))
     content_sha256 = hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     now = datetime.now(timezone.utc)
     meeting = MeetingTranscript(
-        id=f"meet_{uuid.uuid4().hex[:16]}",
+        id=(f"chat_{uuid.uuid4().hex[:16]}" if chat else f"meet_{uuid.uuid4().hex[:16]}"),
         org_id=scope_org_id,
         project_id=project.id if project is not None else None,
         group_id=group.id if group is not None else None,
+        kind="chat" if chat else "meeting",
+        provider=payload.provider if isinstance(payload, ChatThreadCreate) else None,
+        channel_name=channel_name,
         title=title,
-        meeting_at=payload.meeting_at,
-        duration_minutes=payload.duration_minutes,
-        source=payload.source,
+        meeting_at=(
+            thread.first_posted_at if thread is not None
+            else getattr(payload, "meeting_at", None)
+        ),
+        duration_minutes=getattr(payload, "duration_minutes", None),
+        source=source,
         content=content,
         content_sha256=content_sha256,
         line_count=line_count,
@@ -945,6 +1112,19 @@ async def _store_meeting(
         updated_at=now,
     )
     db.add(meeting)
+    if meta_rows:
+        # The FK needs the parent row first (no ORM relationship orders them).
+        await db.flush()
+        db.add_all([
+            ConversationMessageMeta(
+                source_id=meeting.id,
+                line_no=line_no,
+                author_raw=author,
+                email_raw=email,
+                posted_at=posted_at,
+            )
+            for line_no, author, email, posted_at in meta_rows
+        ])
 
     warnings: list[str] = []
     if project is not None:
@@ -989,12 +1169,14 @@ async def _store_meeting(
         _meeting_audit_event(
             meeting=meeting,
             org=org,
-            event_type="meeting_uploaded",
+            event_type="chat_thread_uploaded" if chat else "meeting_uploaded",
             actor_user_id=auth.user.id,
             actor_email=auth.user.email if auth.key_kind == "user" else None,
             actor_role=actor_role,
             after={
                 "meeting_id": meeting.id,
+                "kind": meeting.kind,
+                "provider": meeting.provider,
                 "source": meeting.source,
                 "line_count": meeting.line_count,
                 "dlp_findings": meeting.dlp_findings,
@@ -1174,6 +1356,7 @@ async def _paginate_meetings(
     q: str | None,
     before: str | None,
     limit: int,
+    kind: str = "meeting",
 ) -> tuple[list[MeetingTranscript], str | None]:
     """Search + keyset page over a project's or group's live meetings.
 
@@ -1186,6 +1369,8 @@ async def _paginate_meetings(
         scope_column == scope_id,
         MeetingTranscript.deleted_at.is_(None),
     )
+    if kind != "all":
+        stmt = stmt.where(MeetingTranscript.kind == kind)
     if q:
         pattern = f"%{_escape_like(q)}%"
         stmt = stmt.where(
@@ -1246,6 +1431,7 @@ async def list_project_meetings(
     q: str | None = Query(default=None),
     before: str | None = Query(default=None, max_length=200),
     limit: int = Query(default=100, ge=1, le=200),
+    kind: ListKind = Query(default="meeting"),
     auth: AuthContext = Depends(require_scope("meetings:read")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1258,6 +1444,7 @@ async def list_project_meetings(
         q=q,
         before=before,
         limit=limit,
+        kind=kind,
     )
     return MeetingListResponse(
         meetings=_summaries_with_counts(
@@ -1270,15 +1457,13 @@ async def list_project_meetings(
 # ── Group routes ──
 
 
-async def authorize_group_meeting_upload(
-    db: AsyncSession, user: User, group_id: str
+async def _group_for_upload(
+    db: AsyncSession, user: User, group_id: str, *, what: str
 ) -> ProjectGroup:
-    """The group upload route's checks, shared with the helper's confirm.
-
-    Membership + grant first so a non-member never leaks the plan tier; every
-    miss is the same "Project group not found" 404; a reader gets 403
-    ``group_edit_forbidden``.
-    """
+    """The group an upload targets, with visibility checked before the plan
+    gate (every miss is the same "Project group not found" 404) and the
+    caller's editor/admin grant required (a reader gets 403
+    ``group_edit_forbidden``)."""
     from sessionfs.server.auth.project_access import GROUP_EDIT_ROLES
     from sessionfs.server.routes.project_groups import _require_group_feature
 
@@ -1302,11 +1487,18 @@ async def authorize_group_meeting_upload(
             403,
             {
                 "code": "group_edit_forbidden",
-                "message": "You cannot upload meetings to this group.",
+                "message": f"You cannot upload {what} to this group.",
             },
         )
-
     return group
+
+
+async def authorize_group_meeting_upload(
+    db: AsyncSession, user: User, group_id: str
+) -> ProjectGroup:
+    """The group meeting upload route's checks, shared with the helper's
+    confirm (see ``_group_for_upload``)."""
+    return await _group_for_upload(db, user, group_id, what="meetings")
 
 
 async def authorize_meeting_upload(
@@ -1350,12 +1542,60 @@ async def upload_group_meeting(
     return await _store_meeting(db, ctx, project=None, group=group, payload=payload)
 
 
+async def _parse_thread(payload: ChatThreadCreate) -> NormalisedThread:
+    """Parse + normalise the raw export off the event loop."""
+    return await run_in_threadpool(
+        parse_chat_thread,
+        payload.provider,
+        payload.content,
+        payload.users,
+        attestation=payload.attestation is True,
+    )
+
+
+@project_router.post("/{project_id}/chat-threads", response_model=MeetingDetailResponse)
+async def upload_project_chat_thread(
+    project_id: str,
+    request: Request,
+    auth: AuthContext = Depends(require_scope("meetings:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a Slack / Discord export or a pasted thread (GitHub #118).
+
+    Exactly the project meeting upload rules; the thread is stored as a
+    ``kind='chat'`` conversation row.
+    """
+    project = await _load_project_for_meetings(db, project_id, auth, write=True)
+    payload = await _parse_chat_body(request)
+    thread = await _parse_thread(payload)
+    return await _store_meeting(
+        db, auth, project=project, group=None, payload=payload, thread=thread
+    )
+
+
+@group_router.post("/{group_id}/chat-threads", response_model=MeetingDetailResponse)
+async def upload_group_chat_thread(
+    group_id: str,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    group = await _group_for_upload(db, user, group_id, what="chat threads")
+    payload = await _parse_chat_body(request)
+    thread = await _parse_thread(payload)
+    ctx = AuthContext(user=user, api_key_id="", key_kind="user")
+    return await _store_meeting(
+        db, ctx, project=None, group=group, payload=payload, thread=thread
+    )
+
+
 @group_router.get("/{group_id}/meetings", response_model=MeetingListResponse)
 async def list_group_meetings(
     group_id: str,
     q: str | None = Query(default=None),
     before: str | None = Query(default=None, max_length=200),
     limit: int = Query(default=100, ge=1, le=200),
+    kind: ListKind = Query(default="meeting"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1383,6 +1623,7 @@ async def list_group_meetings(
         q=q,
         before=before,
         limit=limit,
+        kind=kind,
     )
     return MeetingListResponse(
         meetings=_summaries_with_counts(
@@ -1398,10 +1639,11 @@ async def list_group_meetings(
 @router.get("/meetings/{meeting_id}", response_model=MeetingDetailResponse)
 async def get_meeting(
     meeting_id: str,
+    kind: RowKind | None = Query(default=None),
     auth: AuthContext = Depends(require_scope("meetings:read")),
     db: AsyncSession = Depends(get_db),
 ):
-    meeting = await _get_meeting(db, meeting_id)
+    meeting = await _get_meeting(db, meeting_id, kind)
     if meeting.deleted_at is not None:
         raise HTTPException(404, "Meeting not found")
     await _meeting_scope(db, meeting, auth, write=False)
@@ -1411,6 +1653,7 @@ async def get_meeting(
 @router.delete("/meetings/{meeting_id}", response_model=MeetingDetailResponse)
 async def delete_meeting(
     meeting_id: str,
+    kind: RowKind | None = Query(default=None),
     auth: AuthContext = Depends(require_scope("meetings:write")),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1424,7 +1667,7 @@ async def delete_meeting(
     )
     from sessionfs.server.roles import ADMIN_ROLES
 
-    meeting = await _get_meeting(db, meeting_id)
+    meeting = await _get_meeting(db, meeting_id, kind)
     if meeting.deleted_at is not None:
         raise HTTPException(404, "Meeting not found")
 
@@ -1507,10 +1750,11 @@ async def override_meeting_participant(
     meeting_id: str,
     participant_id: str,
     body: ParticipantOverride,
+    kind: RowKind | None = Query(default=None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    meeting = await _get_meeting(db, meeting_id)
+    meeting = await _get_meeting(db, meeting_id, kind)
     if meeting.deleted_at is not None:
         raise HTTPException(404, "Meeting not found")
 

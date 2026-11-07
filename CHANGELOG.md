@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.7] - 2026-11-07
+
+**Chat threads: the decisions made in Slack, Discord and Teams land next to your meetings.** Server migration 122.
+
+### Added
+- **Chat threads.** Upload one channel's or one thread's conversation to a project or group: a Slack export (a channel's message array or a thread, optionally with the export's `users.json` so `U…` ids show as names), a DiscordChatExporter JSON export, or a plain paste from any tool, including Teams (`Name: text` lines or blank-line-separated blocks). Every thread carries a channel name such as `#infra` (a label only; it grants nothing). See [Chat threads](https://sessionfs.dev/chat/).
+- **One message per line.** The server stores a thread as `[2026-10-29 14:02] Tolu: text`, one message per line with internal newlines folded, so message N is line N. Extracted items, citations and ticket quotes refer to message ranges such as `M12-15`, and each message's author and time are kept for participant matching.
+- **Extraction, promotion and reminders work like meetings.** One LLM call with your own key (or your org's; never a SessionFS key) returns participants, action items and decisions, each citing a message range; usage is recorded as `chat_extract`. Items are promoted to tickets through the same preview and confirm, and an item can carry a reminder (`chat_item` source).
+- **The session helper cites chat.** Its meeting tools read chat threads too (`kind` = `meeting`, `chat` or `all`), a thread is shown as numbered messages, and messages are cited as `[chat:<id> M<a>-<b>]`; a kept citation streams as a `chat_citation` event and opens the highlighted messages. `list_my_meeting_actions` lists your conversation actions from both. Helper prompt v19.
+- **Dashboard:** the project and group Meetings sub-tab becomes **Conversations** with a Meetings / Chat / All filter, a chat view with numbered messages, authors and times, an upload dialog with a provider picker and the channel attestation, and chat citations in the helper drawer.
+- `POST /api/v1/projects/{p}/chat-threads` and `POST /api/v1/groups/{g}/chat-threads`; everything else uses the meeting routes with `?kind=chat`.
+- `sfs chat upload <file> --channel "#infra" [--provider slack|discord|paste|teams_paste] [--users users.json] [--attest] [--extract]` (format detected when `--provider` is omitted), and `sfs chat list|search|show|delete|extract|participants|resolve-participant|action-items|promote|dismiss|restore`. `sfs remind add --chat chat_…:M3-5` ties a reminder to a thread and its messages.
+- MCP `upload_chat_thread` (125 tools in total); `list_meeting_transcripts` and `search_meetings` take `kind`, `get_meeting_transcript` and `extract_meeting_action_items` take an optional `kind` that must match the row, `promote_meeting_action_item` takes `conversation_kind`, and `create_reminder` accepts a `chat_item` source.
+
+### Changed
+- **Direct messages are refused.** Slack and Discord exports marked as direct or group DMs are rejected with `422 dm_not_supported`. A paste can't be checked, so it needs an attestation that it came from a channel; so does a Slack export with no channel object and a Discord export that doesn't prove it is a server channel (`422 attestation_required` without one). The same checks run in the dashboard, the CLI and MCP before anything is sent.
+- **Chat follows the meeting rules exactly:** the project read predicate, group visibility before the plan gate, one "not found" for every miss including service keys, the `meetings:read` / `meetings:write` scopes, deletion and retention. An id route given a `kind` returns the same "not found" for a row of the other kind, and list and search default to meetings.
+- **DLP before storage, with tighter caps for exports.** The text, title, channel name and authors are scanned under the strictest union of your orgs' policies before storage. A raw export is capped at 2 MiB and parsed off the request thread; the stored thread at 512 KiB and 10,000 messages.
+- **Exporter data never names anyone who didn't post.** An exported name or email resolves to a member only if it occurs in the thread, an exporter email only matches an existing org member by exact email (and is not stored otherwise), two posters who share a display name lose their emails, and a ticket draft whose owner was matched that way says so.
+
+### Fixed
+- **Crafted transcripts and threads can no longer stall extraction.** The delimiter neutralisers on uploaded transcripts, chat threads and helper instructions could backtrack quadratically on repeated unclosed tags (a 350 KB thread blocked the event loop for over 12 seconds); they are now linear, and so are the chat parsers.
+
 ## [0.29.6] - 2026-11-07
 
 **Approvals: the sign-offs regulated teams need, enforced and on the record. Plus meeting extraction that finishes on long transcripts.** Server migrations 120–121.

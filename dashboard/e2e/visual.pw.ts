@@ -6,6 +6,7 @@ import { mockApi } from './fixtures/mock-api';
 import {
   agentRuns,
   GROUP_ID,
+  CHAT_ID,
   GROUP_MEETING_ID,
   MEETING_ID,
   LINKED_TICKET_ID,
@@ -1381,6 +1382,29 @@ const MEETING_SCENARIOS: Scenario[] = [
       await dlg.getByRole('textbox', { name: 'Transcript' }).fill('Lead: the key is AKIA…');
       await dlg.getByRole('button', { name: 'Add meeting' }).click();
       await dlg.getByText(/data protection policy blocked/).waitFor();
+    },
+  },
+  { name: 'chat-detail', path: `${MEETINGS}&meeting=${CHAT_ID}&lines=2-3` },
+  {
+    name: 'chat-upload-dialog',
+    path: MEETINGS,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Add chat thread' }).click();
+      const dlg = page.getByRole('dialog', { name: 'Add a chat thread' });
+      await dlg.getByRole('textbox', { name: 'Channel name' }).fill('#infra');
+      await dlg.getByRole('textbox', { name: 'Export' }).fill('[{"user":"U1","text":"We are going with managed certs.","ts":"1761746520.0"}]');
+    },
+  },
+  {
+    name: 'chat-upload-paste-attest',
+    path: MEETINGS,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Add chat thread' }).click();
+      const dlg = page.getByRole('dialog', { name: 'Add a chat thread' });
+      await dlg.getByRole('button', { name: /Source/ }).click();
+      await dlg.getByRole('option', { name: 'Pasted from Teams' }).click();
+      await dlg.getByRole('textbox', { name: 'Channel name' }).fill('#platform');
+      await dlg.getByRole('textbox', { name: 'Thread' }).fill('Tolu: We are going with managed certs.');
     },
   },
   { name: 'group-meetings', path: `/settings/organization/groups/${GROUP_ID}?org=${ORG_ID}` },

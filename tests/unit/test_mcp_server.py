@@ -300,12 +300,13 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_124(self):
+    def test_tool_count_is_125(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 124, (
-            "Expected 124 MCP tools after review-loop start, status and "
+        assert len(_TOOLS) == 125, (
+            "Expected 125 MCP tools after review-loop start, status and "
             "update, the project checklist, the loop report, the worker run and round tools, "
-            "the three reminder tools and the three read-only approval tools, "
+            "the three reminder tools, the three read-only approval tools and "
+            "upload_chat_thread, "
             f"got {len(_TOOLS)}"
         )
 
@@ -5239,6 +5240,28 @@ class TestReminderMcpDispatch:
             "source": {"kind": "meeting_item", "id": "mai_1", "lines": "3-5"},
         }
         assert out["id"] == "rem_x"
+
+    @pytest.mark.asyncio
+    async def test_create_chat_item_source_and_kind_enum(self, monkeypatch):
+        cap: dict = {}
+        self._install(monkeypatch, cap, status=201)
+        await mcp_server._handle_create_reminder(
+            {"title": "x", "due_at": "2026-11-06T09:00",
+             "source": {"kind": "chat_item", "id": "mai_c", "lines": "2-2"}}
+        )
+        assert cap["body"]["source"] == {"kind": "chat_item", "id": "mai_c", "lines": "2-2"}
+        tool = next(t for t in mcp_server._TOOLS if t.name == "create_reminder")
+        enum = tool.inputSchema["properties"]["source"]["properties"]["kind"]["enum"]
+        assert "chat_item" in enum and "meeting_item" in enum
+
+    @pytest.mark.asyncio
+    async def test_create_rejects_unknown_source_kind_locally(self, monkeypatch):
+        cap: dict = {}
+        self._install(monkeypatch, cap, status=201)
+        out = await mcp_server._handle_create_reminder(
+            {"title": "x", "due_at": "2026-11-06T09:00", "source": {"kind": "chat", "id": "c"}}
+        )
+        assert "source.kind" in out["error"] and not cap
 
     @pytest.mark.asyncio
     async def test_create_requires_fields(self):

@@ -61,7 +61,8 @@ export function sourceHref(src: ReminderSource): string | null {
   switch (src.kind) {
     case 'meeting':
       return `/meetings/${encodeURIComponent(src.id)}${src.lines ? `?lines=${encodeURIComponent(src.lines)}` : ''}`;
-    case 'meeting_item': {
+    case 'meeting_item':
+    case 'chat_item': {
       if (!src.meeting_id) return null;
       return `/meetings/${encodeURIComponent(src.meeting_id)}${src.lines ? `?lines=${encodeURIComponent(src.lines)}` : ''}`;
     }

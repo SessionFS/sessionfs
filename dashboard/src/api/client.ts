@@ -397,7 +397,9 @@ export interface HelperWikiCitation {
 
 /** Lines of a stored meeting transcript, cited with `[meeting:<id> L<a>-<b>]`. */
 export interface HelperMeetingCitation {
-  kind?: 'meeting';
+  kind?: 'meeting' | 'chat';
+  /** Chat citations only (`chat_citation` event). */
+  channel_name?: string | null;
   meeting_id: string;
   title: string | null;
   line_start?: number | null;
@@ -2998,7 +3000,18 @@ export interface ProjectGroupUpdate {
 
 // ── Meeting transcripts (GitHub #116) ──
 
-export type MeetingSource = 'manual_paste' | 'file_upload';
+export type MeetingSource = 'manual_paste' | 'file_upload' | 'chat_export';
+export type ConversationKind = 'meeting' | 'chat';
+/** The list filter: the server's `?kind=` values. */
+export type ConversationKindFilter = ConversationKind | 'all';
+export type ChatProvider = 'slack' | 'discord' | 'paste' | 'teams_paste';
+
+/** Per-message author and time of a chat thread; message N is `line_no` N. */
+export interface ChatMessageMeta {
+  line_no: number;
+  author_raw: string;
+  posted_at: string | null;
+}
 export type MeetingExtractionStatus = 'none' | 'done' | 'failed';
 export type MeetingResolutionMethod = 'exact_email' | 'display_name' | 'persona' | 'manual' | 'unresolved';
 export type MeetingItemKind = 'action' | 'decision';
@@ -3056,6 +3069,11 @@ export interface MeetingSummary {
   org_id: string | null;
   project_id: string | null;
   group_id: string | null;
+  /** Absent on older servers (= meeting). */
+  kind?: ConversationKind;
+  /** Chat threads only. */
+  provider?: ChatProvider | null;
+  channel_name?: string | null;
   title: string;
   meeting_at: string | null;
   duration_minutes: number | null;
@@ -3078,6 +3096,8 @@ export interface MeetingDetail extends MeetingSummary {
   /** DLP-redacted, newline-normalised; line numbers refer to this text. */
   content: string;
   content_sha256: string;
+  /** Chat threads only: one entry per message. */
+  messages?: ChatMessageMeta[];
   participants: MeetingParticipant[];
   action_items: MeetingActionItem[];
   /** e.g. `duplicate_of: meet_…`, `extraction_skipped: llm_key_required`. */
@@ -3102,6 +3122,21 @@ export interface MeetingCreate {
   extract?: boolean;
 }
 
+/** Body of POST .../chat-threads (routes/meetings.py ChatThreadCreate). */
+export interface ChatThreadCreate {
+  provider: ChatProvider;
+  /** 1-80 characters. */
+  channel_name: string;
+  /** Required true for a paste / teams_paste. */
+  attestation?: boolean;
+  /** The raw export (Slack / Discord JSON as a string) or the pasted text. */
+  content: string;
+  /** Slack only: the export's users.json as a string. */
+  users?: string | null;
+  title?: string | null;
+  extract?: boolean;
+}
+
 export interface MeetingPromotePreview {
   meeting_id: string;
   item_id: string;
@@ -3120,6 +3155,9 @@ export interface MeetingPromotePreview {
    *  standing, connection, mapping) — for a group meeting, for the target
    *  passed as `target_project_id`. Older servers omit it. */
   jira_publish_available?: boolean;
+  /** Chat threads: "matched by exporter email" when the owner matched a
+   *  member only through the email in the export's users.json. */
+  owner_match_note?: string | null;
 }
 
 export interface MeetingPromoteRequest {
@@ -5173,8 +5211,12 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     listMyGroups: () => request<ProjectGroupSummary[]>('/api/v1/me/groups'),
 
     // ── Meeting transcripts (GitHub #116) ──
-    listMeetings: (scope: MeetingScope, params: { q?: string; before?: string; limit?: number } = {}) => {
+    listMeetings: (
+      scope: MeetingScope,
+      params: { q?: string; before?: string; limit?: number; kind?: ConversationKindFilter } = {},
+    ) => {
       const sp = new URLSearchParams();
+      if (params.kind) sp.set('kind', params.kind);
       if (params.q) sp.set('q', params.q);
       if (params.before) sp.set('before', params.before);
       if (params.limit) sp.set('limit', String(params.limit));
@@ -5188,6 +5230,14 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     uploadMeeting: (scope: MeetingScope, body: MeetingCreate) => {
       const base = scope.kind === 'project' ? 'projects' : 'groups';
       return request<MeetingDetail>(`/api/v1/${base}/${encodeURIComponent(scope.id)}/meetings`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    },
+
+    uploadChatThread: (scope: MeetingScope, body: ChatThreadCreate) => {
+      const base = scope.kind === 'project' ? 'projects' : 'groups';
+      return request<MeetingDetail>(`/api/v1/${base}/${encodeURIComponent(scope.id)}/chat-threads`, {
         method: 'POST',
         body: JSON.stringify(body),
       });

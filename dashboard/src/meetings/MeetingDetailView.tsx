@@ -32,6 +32,8 @@ import { Participants } from './Participants';
 import { participantName, useMeetingPeople } from './people';
 import { PromoteDialog } from './PromoteDialog';
 import { Transcript } from './Transcript';
+import { ChatMessages } from './ChatMessages';
+import { messagesLabel, providerLabel } from './chat';
 
 interface MeetingDetailViewProps {
   meetingId: string;
@@ -102,7 +104,7 @@ export function MeetingDetailView({
       <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <polyline points="15 18 9 12 15 6" />
       </svg>
-      All meetings
+      All conversations
     </Button>
   );
 
@@ -110,7 +112,7 @@ export function MeetingDetailView({
     return (
       <div>
         {back}
-        <p className="py-10 text-center text-sm text-text-tertiary">Loading meeting…</p>
+        <p className="py-10 text-center text-sm text-text-tertiary">Loading conversation…</p>
       </div>
     );
   }
@@ -119,7 +121,7 @@ export function MeetingDetailView({
     return (
       <div>
         {back}
-        <p className="py-10 text-center text-sm text-text-tertiary">Opening meeting…</p>
+        <p className="py-10 text-center text-sm text-text-tertiary">Opening conversation…</p>
       </div>
     );
   }
@@ -129,7 +131,7 @@ export function MeetingDetailView({
     return (
       <div className="space-y-3">
         {back}
-        <Alert variant={gone ? 'info' : 'danger'} title={gone ? 'Meeting not found' : 'Couldn’t load this meeting'}>
+        <Alert variant={gone ? 'info' : 'danger'} title={gone ? 'Conversation not found' : 'Couldn’t load this conversation'}>
           {gone
             ? 'It may have been deleted, or you don’t have access to it.'
             : meetingActionError(meeting.error)}
@@ -194,6 +196,9 @@ export function MeetingDetailView({
 
   const ownerName = (p: Parameters<typeof participantName>[0]) => participantName(p, people);
   const projectId = scope.kind === 'project' ? scope.id : null;
+  const chat = m.kind === 'chat';
+  const noun = chat ? 'chat thread' : 'meeting';
+  const unit = chat ? (m.line_count === 1 ? 'message' : 'messages') : m.line_count === 1 ? 'line' : 'lines';
   const keyMissing = extractError === extractionReason('llm_key_required') || warnings.extractionSkipped === 'llm_key_required';
 
   return (
@@ -205,6 +210,13 @@ export function MeetingDetailView({
         <div className="min-w-0 flex-[1_1_20rem]">
           <h2 className="text-lg font-semibold text-text-primary [overflow-wrap:anywhere]">{m.title}</h2>
           <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-text-tertiary">
+            {chat && (
+              <>
+                <span className="text-text-secondary">{providerLabel(m.provider)}</span>
+                {m.channel_name && <span className="[overflow-wrap:anywhere]">{m.channel_name}</span>}
+                <Dot />
+              </>
+            )}
             <span>{meetingDateLabel(m)}</span>
             {m.duration_minutes ? (
               <>
@@ -214,7 +226,7 @@ export function MeetingDetailView({
             ) : null}
             <Dot />
             <span>
-              {m.line_count.toLocaleString()} {m.line_count === 1 ? 'line' : 'lines'}
+              {m.line_count.toLocaleString()} {unit}
             </span>
             <Dot />
             <span>
@@ -223,7 +235,7 @@ export function MeetingDetailView({
             {m.dlp_findings > 0 && (
               <>
                 <Dot />
-                <span title="Removed by your data protection policy before the transcript was stored">
+                <span title="Removed by your data protection policy before it was stored">
                   {m.dlp_findings} {m.dlp_findings === 1 ? 'item' : 'items'} redacted
                 </span>
               </>
@@ -248,7 +260,7 @@ export function MeetingDetailView({
         <div className="mt-4 space-y-2">
           {warnings.duplicateOf && (
             <Alert variant="info">
-              This transcript matches one already here:{' '}
+              This {chat ? 'thread' : 'transcript'} matches one already here:{' '}
               <Link to={meetingHref(warnings.duplicateOf)} className="text-brand underline-offset-2 hover:underline">
                 open the earlier copy
               </Link>
@@ -271,8 +283,9 @@ export function MeetingDetailView({
 
       <div className="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_22rem]">
         {/* ── Side panel (first on phones: the items are what people came for) ── */}
-        <aside aria-label="Meeting notes" className="min-w-0 space-y-6 lg:order-2">
+        <aside aria-label={chat ? 'Chat thread notes' : 'Meeting notes'} className="min-w-0 space-y-6 lg:order-2">
           <ExtractionStatus
+            chat={chat}
             status={status}
             reason={extractError ?? (status === 'failed' ? extractionReason(m.extraction_error) : null)}
             keyMissing={keyMissing}
@@ -301,9 +314,10 @@ export function MeetingDetailView({
                 onDismiss={(i) => void itemWrite('dismiss', i)}
                 onRestore={(i) => void itemWrite('restore', i)}
                 busyItemIds={busyItems}
+                chat={chat}
               />
             ) : (
-              <EmptyNote>{status === 'done' ? 'No action items in this meeting.' : 'None yet.'}</EmptyNote>
+              <EmptyNote>{status === 'done' ? `No action items in this ${noun}.` : 'None yet.'}</EmptyNote>
             )}
           </PanelSection>
 
@@ -321,6 +335,7 @@ export function MeetingDetailView({
                 onDismiss={(i) => void itemWrite('dismiss', i)}
                 onRestore={(i) => void itemWrite('restore', i)}
                 busyItemIds={busyItems}
+                chat={chat}
               />
             ) : (
               <EmptyNote>{status === 'done' ? 'No decisions recorded.' : 'None yet.'}</EmptyNote>
@@ -337,11 +352,13 @@ export function MeetingDetailView({
           <div className="overflow-hidden rounded-xl border border-border bg-bg-primary">
             <div className="flex items-center justify-between gap-3 border-b border-border px-4 py-2.5">
               <h3 id="meeting-transcript-heading" className="text-sm font-semibold text-text-primary">
-                Transcript
+                {chat ? 'Messages' : 'Transcript'}
               </h3>
               {highlight ? (
                 <span className="flex items-center gap-2 text-xs text-text-tertiary">
-                  <span className="font-mono text-brand">{linesLabel(highlight)}</span>
+                  <span className="font-mono text-brand">
+                    {chat ? messagesLabel(highlight) : linesLabel(highlight)}
+                  </span>
                   <button
                     type="button"
                     onClick={() => {
@@ -358,7 +375,11 @@ export function MeetingDetailView({
               )}
             </div>
             <div className="lg:max-h-[calc(100vh-13rem)] lg:overflow-y-auto">
-              <Transcript content={m.content} highlight={highlight} scrollKey={scrollKey} />
+              {chat ? (
+                <ChatMessages thread={m} highlight={highlight} scrollKey={scrollKey} />
+              ) : (
+                <Transcript content={m.content} highlight={highlight} scrollKey={scrollKey} />
+              )}
             </div>
           </div>
         </section>
@@ -368,6 +389,7 @@ export function MeetingDetailView({
         <PromoteDialog
           meetingId={m.id}
           item={promoting}
+          chat={chat}
           onClose={() => setPromoting(null)}
         />
       )}
@@ -377,6 +399,7 @@ export function MeetingDetailView({
           scope={scope}
           meetingId={m.id}
           item={reminding}
+          chat={chat}
           onClose={() => setReminding(null)}
         />
       )}
@@ -389,7 +412,7 @@ export function MeetingDetailView({
         }}
         titleId="meeting-delete-title"
       >
-        <DialogHeader titleId="meeting-delete-title">Delete this meeting?</DialogHeader>
+        <DialogHeader titleId="meeting-delete-title">Delete this {noun}?</DialogHeader>
         <p className="mb-4 text-sm text-text-tertiary">
           <span className="font-medium text-text-secondary">{m.title}</span>, its action items and participants are
           removed. Tickets already created from it stay.
@@ -405,7 +428,7 @@ export function MeetingDetailView({
             onClick={() =>
               del.mutate(undefined, {
                 onSuccess: () => {
-                  addToast('success', 'Meeting deleted');
+                  addToast('success', chat ? 'Chat thread deleted' : 'Meeting deleted');
                   setConfirmDelete(false);
                   onBack();
                 },
@@ -462,6 +485,7 @@ function PanelSection({
 }
 
 function ExtractionStatus({
+  chat,
   status,
   reason,
   keyMissing,
@@ -470,6 +494,7 @@ function ExtractionStatus({
   onExtract,
   itemCount,
 }: {
+  chat: boolean;
   status: string;
   reason: string | null;
   keyMissing: boolean;
@@ -505,7 +530,7 @@ function ExtractionStatus({
       </div>
       <p className="mt-2 text-xs text-text-tertiary" role={failed ? 'alert' : undefined}>
         {pending
-          ? 'Reading the transcript. This can take a few minutes.'
+          ? `Reading the ${chat ? 'thread' : 'transcript'}. This can take a few minutes.`
           : failed
             ? (
               <>
@@ -521,10 +546,10 @@ function ExtractionStatus({
             : status === 'done'
               ? itemCount > 0 && canEdit
                 ? 'Re-extracting replaces open items. Tickets, dismissed items and hand-made matches stay.'
-                : 'Every item links to the lines it came from.'
+                : chat ? 'Every item links to the messages it came from.' : 'Every item links to the lines it came from.'
               : canEdit
                 ? 'Pull out action items, decisions and who was there, using your AI key or your organization’s.'
-                : 'No one has extracted action items from this meeting yet.'}
+                : `No one has extracted action items from this ${chat ? 'chat thread' : 'meeting'} yet.`}
       </p>
     </div>
   );

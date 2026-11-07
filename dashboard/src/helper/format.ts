@@ -200,7 +200,7 @@ export function usageFrom(src: {
  * can't swallow the prose or citations after it.
  */
 const MARKER_RE =
-  /\[session:([A-Za-z0-9_-]+)(?:\s+msg:(\d+))?\]|\[doc:([a-z0-9][a-z0-9/_-]*)(?:#([a-z0-9_-]+))?\]|\[ticket:(tk_[0-9a-f]{16})\]|\[wiki:(proj_[0-9a-f]{16})\/([^\]\s]+)\]|\[meeting:(meet_[0-9a-f]{16})(?:\s+L(\d{1,6})(?:-L?(\d{1,6}))?)?\]/g;
+  /\[session:([A-Za-z0-9_-]+)(?:\s+msg:(\d+))?\]|\[doc:([a-z0-9][a-z0-9/_-]*)(?:#([a-z0-9_-]+))?\]|\[ticket:(tk_[0-9a-f]{16})\]|\[wiki:(proj_[0-9a-f]{16})\/([^\]\s]+)\]|\[meeting:(meet_[0-9a-f]{16})(?:\s+L(\d{1,6})(?:-L?(\d{1,6}))?)?\]|\[chat:(chat_[0-9a-f]{16})(?:\s+M(\d{1,6})(?:-M?(\d{1,6}))?)?\]/g;
 
 export interface SessionSource {
   kind: 'session';
@@ -266,6 +266,9 @@ export interface MeetingSource {
   n: number;
   meetingId: string;
   title: string | null;
+  /** A chat thread (`[chat:<id> M<a>-<b>]`): ranges are message numbers. */
+  chat?: boolean;
+  channelName?: string | null;
   /** Every line range cited for this meeting, in order of first appearance. */
   ranges: { start: number; end: number }[];
   /** False when the server dropped the citation (not seen this turn). */
@@ -343,7 +346,9 @@ function stripPartialMarker(text: string): string {
     '[wiki:'.startsWith(tail) ||
     /^\[wiki:(?:proj_[0-9a-f]{0,16}\/[^\]\s]*)?$/.test(tail) ||
     '[meeting:'.startsWith(tail) ||
-    /^\[meeting:(?:meet_[0-9a-f]{0,16}(?:\s+(?:L(?:\d{0,6}(?:-L?\d{0,6})?)?)?)?)?$/.test(tail)
+    /^\[meeting:(?:meet_[0-9a-f]{0,16}(?:\s+(?:L(?:\d{0,6}(?:-L?\d{0,6})?)?)?)?)?$/.test(tail) ||
+    '[chat:'.startsWith(tail) ||
+    /^\[chat:(?:chat_[0-9a-f]{0,16}(?:\s+(?:M(?:\d{0,6}(?:-M?\d{0,6})?)?)?)?)?$/.test(tail)
   ) {
     return text.slice(0, i);
   }
@@ -482,6 +487,8 @@ export function processCitations(
         n: sources.length + 1,
         meetingId,
         title: k?.title ?? null,
+        chat: meetingId.startsWith('chat_') || k?.kind === 'chat',
+        channelName: k?.channel_name ?? null,
         ranges: [],
         verified: k !== undefined || !opts.settled,
         at: k?.at ?? null,
@@ -513,7 +520,18 @@ export function processCitations(
       meetingId?: string,
       lineStart?: string,
       lineEnd?: string,
+      chatId?: string,
+      msgStart?: string,
+      msgEnd?: string,
     ) => {
+      if (chatId !== undefined) {
+        const s = meetingSourceFor(chatId);
+        if (msgStart !== undefined) {
+          const r = addRange(s, Number(msgStart), Number(msgEnd ?? msgStart));
+          return `[${s.n}](${citeHref(s.n, undefined, r)})`;
+        }
+        return `[${s.n}](${citeHref(s.n)})`;
+      }
       if (meetingId !== undefined) {
         const s = meetingSourceFor(meetingId);
         if (lineStart !== undefined) {
@@ -576,9 +594,13 @@ export function answerAsPlainText(text: string, citations: HelperCitationRef[]):
       wikiProject?: string,
       wikiSlug?: string,
       meetingId?: string,
+      _ls?: string,
+      _le?: string,
+      chatId?: string,
     ) => {
-      if (meetingId !== undefined) {
-        const s = sources.find((x): x is MeetingSource => x.kind === 'meeting' && x.meetingId === meetingId);
+      if (meetingId !== undefined || chatId !== undefined) {
+        const id = (meetingId ?? chatId)!;
+        const s = sources.find((x): x is MeetingSource => x.kind === 'meeting' && x.meetingId === id);
         return s?.verified ? `[${s.n}]` : '';
       }
       if (sid !== undefined) {
@@ -610,8 +632,9 @@ export function answerAsPlainText(text: string, citations: HelperCitationRef[]):
     if (s.kind === 'ticket') return `[${s.n}] ${s.title || s.ticketId} (ticket ${s.ticketId})`;
     if (s.kind === 'wiki') return `[${s.n}] ${s.title || s.slug} (wiki ${s.projectId}/${s.slug})`;
     if (s.kind === 'meeting') {
-      const where = s.ranges.map((r) => (r.start === r.end ? `L${r.start}` : `L${r.start}-${r.end}`)).join(', ');
-      return `[${s.n}] ${s.title || s.meetingId} (meeting ${s.meetingId}${where ? ` ${where}` : ''})`;
+      const u = s.chat ? 'M' : 'L';
+      const where = s.ranges.map((r) => (r.start === r.end ? `${u}${r.start}` : `${u}${r.start}-${r.end}`)).join(', ');
+      return `[${s.n}] ${s.title || s.meetingId} (${s.chat ? 'chat' : 'meeting'} ${s.meetingId}${where ? ` ${where}` : ''})`;
     }
     return `[${s.n}] ${s.title || s.sessionId} (session ${s.sessionId})`;
   });

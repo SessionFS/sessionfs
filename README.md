@@ -132,7 +132,8 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs ticket status\|block\|unblock\|reopen\|approve\|close\|dismiss` | Ticket lifecycle transitions and active-bundle inspection |
 | `sfs meeting upload\|list\|search\|show\|delete` | Store meeting transcripts on a project or group (DLP-redacted before storage) |
 | `sfs meeting extract\|participants\|resolve-participant\|action-items\|promote\|dismiss\|restore` | Extract action items and decisions with your own AI key, match participants, turn items into tickets |
-| `sfs remind add\|list\|show\|note\|snooze\|done\|dismiss` | Personal reminders at a time, optionally tied to a meeting or ticket; due ones reach the bell, Inbox and digest |
+| `sfs chat upload\|list\|search\|show\|extract\|promote\|delete` | Store Slack, Discord or pasted chat threads on a project or group and work their action items like a meeting's |
+| `sfs remind add\|list\|show\|note\|snooze\|done\|dismiss` | Personal reminders at a time, optionally tied to a meeting, chat thread (`--chat`) or ticket; due ones reach the bell, Inbox and digest |
 | `sfs approval policy list\|create\|update\|disable` / `sfs approval list\|show\|approve\|reject` | Approval policies on merges and KB promotion, and the requests waiting on you (Enterprise) |
 | `sfs ticket follow\|unfollow\|inbox\|updates` | Follow tickets, list your notifications, and poll the agent delta (Ticket Watchers) |
 | `sfs ticket jira preview\|publish\|status\|unlink` | Promote a ticket to a Jira Cloud issue with a reviewable preview (Enterprise) |
@@ -163,7 +164,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs auth use\|profiles\|whoami` | Switch between named account profiles |
 | `sfs auth keys list\|create\|revoke` | Manage your personal API keys |
 | `sfs config show\|set\|default-org` | Manage configuration and your default organization |
-| `sfs mcp serve` | Start MCP server (109 tools) for AI tool integration |
+| `sfs mcp serve` | Start MCP server (125 tools) for AI tool integration |
 | `sfs mcp install\|uninstall --for TOOL` | Add or remove the MCP registration for any of the 10 supported tools |
 | `sfs mcp index` | Rebuild the local full-text search index |
 | `sfs init` | Interactive setup wizard — auto-detects tools, optional sync |
@@ -278,6 +279,8 @@ Sessions are stored as `.sfs` directories:
 All file paths are relative to workspace root. Sessions are append-only — conflict resolution appends both sides rather than merging.
 
 ## Status
+
+**v0.29.7 — Public Beta.** 11026 backend tests + 2042 dashboard tests passing. Database migrations 001–122 (067 and 068 unused). 125 MCP tools. **Chat threads:** upload a Slack export, a DiscordChatExporter export or a pasted thread (any tool, including Teams) to a project or group, next to its meetings. Direct messages are refused, and a paste needs an attestation that it came from a channel. Each message is stored as one numbered line (`M1`, `M2`, …), redacted before storage; extraction pulls out action items and decisions citing message ranges, items become tickets or carry reminders, and the session helper cites `[chat:<id> M12-15]`. `sfs chat`, `sfs remind add --chat`, MCP `upload_chat_thread` plus a `kind` filter on the meeting tools, and a Conversations tab (Meetings / Chat / All) in the dashboard. Migration 122.
 
 **v0.29.6 — Public Beta.** 10860 backend tests + 2018 dashboard tests passing. Database migrations 001–121 (067 and 068 unused). 124 MCP tools. **Approvals (Enterprise):** approval policies hold merges (readiness, the GitHub check and the GitLab status) and knowledge-base promotion until the right people approve, bound to the exact commit or entry content; nobody approves their own work, agents only read, and every decision lands in an exportable approval log. `sfs approval`, three read-only MCP tools, an Approvals page and Org → Governance in the dashboard. **Meetings:** pasted transcripts get a title and have caption timing stripped, extraction finishes on long transcripts and dates items from the meeting day, items with an unknown owner are kept, and the session helper can save a pasted transcript as a meeting. Migrations 120–121.
 
@@ -409,7 +412,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### MCP and dashboard
 
-- **MCP server** (local, stdio) with 109 tools — sessions, knowledge read and write, rules, personas, tickets, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
+- **MCP server** (local, stdio) with 125 tools — sessions, knowledge read and write, rules, personas, tickets, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), meetings and chat threads, reminders, read-only approvals, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
 - **`sfs mcp install --for <tool>`** for all 10 tools (stale registration repair, malformed config handling)
 - **Web dashboard** with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, command palette (Cmd+K), mobile nav, accessibility (focus trapping, ARIA live regions), product identity
 - **`/help` page** — MCP-first guidance, 10-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference

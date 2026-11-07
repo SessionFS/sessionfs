@@ -153,7 +153,7 @@ function ReminderSourceLine({
     group_id: null,
     meeting_id: null,
   });
-  const label = kind === 'meeting_item' ? 'meeting item' : kind;
+  const label = kind === 'meeting_item' ? 'meeting item' : kind === 'chat_item' ? 'chat thread item' : kind;
   return (
     <p className="text-xs text-text-secondary">
       Source:{' '}

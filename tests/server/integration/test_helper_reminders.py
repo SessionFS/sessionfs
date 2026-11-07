@@ -249,3 +249,28 @@ async def test_list_my_reminders_reads_visible_only_and_respects_scope(
     stranger, _ = await _make_user(db_session, "eve")
     out = await TOOLS["list_my_reminders"].handler(_ctx(db_session, stranger), {})
     assert out.text == "No reminders match."
+
+
+@pytest.mark.asyncio
+async def test_propose_accepts_chat_item_source(db_session: AsyncSession):
+    from tests.server.integration.test_reminders_api import _chat, _meeting
+
+    alice, _ = await _make_user(db_session, "alice")
+    project = await _make_project(db_session, alice)
+    _, chat_item = await _chat(db_session, project, alice)
+    _, meeting_item = await _meeting(db_session, project, alice)
+    assert "chat_item" in TOOLS["propose_reminder"].input_schema["properties"]["source"][
+        "properties"]["kind"]["enum"]
+    ctx = _ctx(db_session, alice)
+    out = await TOOLS["propose_reminder"].handler(
+        ctx, {"title": "x", "due_at": _due(), "source": {"kind": "chat_item", "id": chat_item}}
+    )
+    assert "Proposed action" in out.text
+    assert ctx.pending_actions[0]["params"]["source"]["kind"] == "chat_item"
+    # A meeting item id under chat_item (and the reverse) is not found.
+    for kind, sid in (("chat_item", meeting_item), ("meeting_item", chat_item)):
+        miss = _ctx(db_session, alice)
+        out = await TOOLS["propose_reminder"].handler(
+            miss, {"title": "x", "due_at": _due(), "source": {"kind": kind, "id": sid}}
+        )
+        assert out.text == "Source not found." and miss.pending_actions == []

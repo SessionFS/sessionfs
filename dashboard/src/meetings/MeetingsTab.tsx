@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
-import type { MeetingDetail, MeetingScope, MeetingSummary } from '../api/client';
-import { Badge, Button, Input } from '../components/ui';
+import type { ConversationKindFilter, MeetingDetail, MeetingScope, MeetingSummary } from '../api/client';
+import { Badge, Button, Input, TabPanel, Tabs } from '../components/ui';
 import { useMeetings } from '../hooks/useMeetings';
 import { useToast } from '../hooks/useToast';
 import { errorMessage } from '../utils/errorMessage';
+import { providerLabel } from './chat';
 import { meetingDateLabel } from './format';
+import { UploadChatDialog } from './UploadChatDialog';
 import { MeetingDetailView } from './MeetingDetailView';
 import { UploadMeetingDialog } from './UploadMeetingDialog';
 
@@ -43,20 +45,21 @@ export default function MeetingsTab({
   onLinesChange,
   headingId = 'meetings-heading',
 }: MeetingsTabProps) {
-  const [uploading, setUploading] = useState(false);
+  const [uploading, setUploading] = useState<'meeting' | 'chat' | null>(null);
   // Warnings from the upload that created the open meeting (dup / skipped extraction).
   const [justUploaded, setJustUploaded] = useState<{ id: string; warnings: string[] } | null>(null);
   const { addToast } = useToast();
 
   function uploaded(meeting: MeetingDetail) {
-    setUploading(false);
+    setUploading(null);
     setJustUploaded({ id: meeting.id, warnings: meeting.warnings ?? [] });
     const items = meeting.action_items.filter((i) => i.kind === 'action').length;
+    const noun = meeting.kind === 'chat' ? 'Chat thread' : 'Meeting';
     addToast(
       'success',
       meeting.extraction_status === 'done'
-        ? `Meeting added with ${items} action ${items === 1 ? 'item' : 'items'}`
-        : 'Meeting added',
+        ? `${noun} added with ${items} action ${items === 1 ? 'item' : 'items'}`
+        : `${noun} added`,
     );
     onOpenMeeting(meeting.id);
   }
@@ -84,14 +87,22 @@ export default function MeetingsTab({
         scope={scope}
         canEdit={canEdit}
         onOpen={onOpenMeeting}
-        onAdd={() => setUploading(true)}
+        onAdd={setUploading}
         headingId={headingId}
       />
-      {uploading && (
+      {uploading === 'meeting' && (
         <UploadMeetingDialog
           scope={scope}
           scopeLabel={scopeLabel}
-          onClose={() => setUploading(false)}
+          onClose={() => setUploading(null)}
+          onUploaded={uploaded}
+        />
+      )}
+      {uploading === 'chat' && (
+        <UploadChatDialog
+          scope={scope}
+          scopeLabel={scopeLabel}
+          onClose={() => setUploading(null)}
           onUploaded={uploaded}
         />
       )}
@@ -118,21 +129,23 @@ function MeetingList({
   scope: MeetingScope;
   canEdit: boolean;
   onOpen: (id: string) => void;
-  onAdd: () => void;
+  onAdd: (kind: 'meeting' | 'chat') => void;
   headingId: string;
 }) {
   const [query, setQuery] = useState('');
+  const [kind, setKind] = useState<ConversationKindFilter>('all');
   const q = useDebounced(query.trim());
-  const list = useMeetings(scope, q);
+  const list = useMeetings(scope, q, kind);
   const meetings = list.data?.pages.flatMap((p) => p.meetings) ?? [];
   const searching = q.length > 0;
   const noneAtAll = !list.isLoading && !list.isError && meetings.length === 0 && !searching;
+  const noun = kind === 'chat' ? 'chat threads' : kind === 'meeting' ? 'meetings' : 'conversations';
 
   return (
     <section aria-labelledby={headingId} className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 id={headingId} className="flex-1 text-lg font-semibold text-text-primary">
-          Meetings
+          Conversations
           {!list.isLoading && meetings.length > 0 && (
             <span className="ml-2 text-sm font-normal text-text-tertiary">
               {meetings.length}
@@ -140,30 +153,50 @@ function MeetingList({
             </span>
           )}
         </h2>
-        {!noneAtAll && (
+        {(!noneAtAll || kind !== 'all') && (
           <>
             <div className="relative order-last w-full sm:order-none sm:w-64">
               <SearchIcon />
               <Input
                 type="search"
-                aria-label="Search meetings"
-                placeholder="Search titles and transcripts"
+                aria-label="Search conversations"
+                placeholder="Search titles and text"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 className="!pl-8"
               />
             </div>
             {canEdit && (
-              <Button variant="primary" size="sm" onClick={onAdd}>
-                Add meeting
-              </Button>
+              <span className="flex items-center gap-2">
+                <Button variant="primary" size="sm" onClick={() => onAdd('meeting')}>
+                  Add meeting
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => onAdd('chat')}>
+                  Add chat thread
+                </Button>
+              </span>
             )}
           </>
         )}
       </div>
 
+      <Tabs
+        bare
+        variant="subtle"
+        aria-label="Filter conversations"
+        idPrefix="conversation-kind"
+        tabs={[
+          { key: 'all', label: 'All' },
+          { key: 'meeting', label: 'Meetings' },
+          { key: 'chat', label: 'Chat' },
+        ]}
+        activeKey={kind}
+        onChange={(k) => setKind(k as ConversationKindFilter)}
+      />
+      <TabPanel idPrefix="conversation-kind" tabKey={kind} className="space-y-4 outline-none">
+
       {list.isLoading ? (
-        <ul className="divide-y divide-[var(--border)] rounded-lg border border-border" aria-busy="true" aria-label="Loading meetings">
+        <ul className="divide-y divide-[var(--border)] rounded-lg border border-border" aria-busy="true" aria-label="Loading conversations">
           {[0, 1, 2].map((i) => (
             <li key={i} className="px-4 py-3">
               <div className="h-4 w-1/2 rounded bg-bg-elevated animate-pulse" />
@@ -173,13 +206,13 @@ function MeetingList({
         </ul>
       ) : list.isError ? (
         <p role="alert" className="text-sm text-danger">
-          Couldn’t load meetings: {errorMessage(list.error)}
+          Couldn’t load {noun}: {errorMessage(list.error)}
         </p>
-      ) : noneAtAll ? (
+      ) : noneAtAll && kind === 'all' ? (
         <MeetingsEmptyState canEdit={canEdit} onAdd={onAdd} group={scope.kind === 'group'} />
       ) : meetings.length === 0 ? (
         <div className="rounded-lg border border-border px-6 py-8 text-center text-sm text-text-tertiary">
-          No meetings match “{q}”.
+          {searching ? <>No {noun} match “{q}”.</> : <>No {noun} yet.</>}
         </div>
       ) : (
         <>
@@ -203,6 +236,7 @@ function MeetingList({
           )}
         </>
       )}
+      </TabPanel>
     </section>
   );
 }
@@ -210,6 +244,7 @@ function MeetingList({
 function MeetingRow({ meeting: m, onOpen }: { meeting: MeetingSummary; onOpen: (id: string) => void }) {
   const pending = m.pending_action_count;
   const decisions = m.decision_count;
+  const chat = m.kind === 'chat';
   return (
     <li>
       <button
@@ -217,17 +252,29 @@ function MeetingRow({ meeting: m, onOpen }: { meeting: MeetingSummary; onOpen: (
         onClick={() => onOpen(m.id)}
         className="group flex w-full items-center gap-4 px-4 py-3 text-left transition-colors hover:bg-surface cursor-pointer outline-none focus-visible:shadow-[inset_0_0_0_2px_var(--brand-glow)]"
       >
-        <MeetingGlyph />
+        <MeetingGlyph chat={chat} />
         <span className="min-w-0 flex-1">
           <span className="block font-medium text-text-primary line-clamp-2 [overflow-wrap:anywhere] sm:truncate sm:[display:block]">{m.title}</span>
           <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-text-tertiary">
             <span className="sm:hidden">
               <ExtractionBadge status={m.extraction_status} />
             </span>
+            {chat && (
+              <>
+                <span className="text-text-secondary">{providerLabel(m.provider)}</span>
+                {m.channel_name && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <span className="[overflow-wrap:anywhere]">{m.channel_name}</span>
+                  </>
+                )}
+                <span aria-hidden="true">·</span>
+              </>
+            )}
             <span>{meetingDateLabel(m)}</span>
             <span aria-hidden="true">·</span>
             <span>
-              {m.line_count.toLocaleString()} {m.line_count === 1 ? 'line' : 'lines'}
+              {m.line_count.toLocaleString()} {chat ? (m.line_count === 1 ? 'message' : 'messages') : m.line_count === 1 ? 'line' : 'lines'}
             </span>
             {pending != null && pending > 0 && (
               <>
@@ -264,7 +311,15 @@ export function ExtractionBadge({ status }: { status: string }) {
   return <Badge label="Not extracted" />;
 }
 
-function MeetingsEmptyState({ canEdit, onAdd, group }: { canEdit: boolean; onAdd: () => void; group: boolean }) {
+function MeetingsEmptyState({
+  canEdit,
+  onAdd,
+  group,
+}: {
+  canEdit: boolean;
+  onAdd: (kind: 'meeting' | 'chat') => void;
+  group: boolean;
+}) {
   return (
     <div className="rounded-xl border border-dashed border-border px-6 py-10 text-center">
       <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-bg-elevated text-text-tertiary">
@@ -274,24 +329,37 @@ function MeetingsEmptyState({ canEdit, onAdd, group }: { canEdit: boolean; onAdd
           <line x1="8" y1="13" x2="13" y2="13" />
         </svg>
       </div>
-      <p className="text-md font-medium text-text-primary">No meetings yet</p>
+      <p className="text-md font-medium text-text-primary">No conversations yet</p>
       <p className="mx-auto mt-1 max-w-md text-sm text-text-tertiary">
-        Add a meeting transcript and SessionFS pulls out the action items, decisions and who was there — each one
-        linked to the lines it came from. Turn an action item into a ticket in one step.
-        {group ? ' Group meetings can file tickets in any of the group’s projects.' : ''}
+        Add a meeting transcript or a Slack, Discord or pasted chat thread and SessionFS pulls out the action items,
+        decisions and who was there — each one linked to the lines or messages it came from. Turn an action item into
+        a ticket in one step.
+        {group ? ' Group conversations can file tickets in any of the group’s projects.' : ''}
       </p>
       {canEdit ? (
-        <Button variant="primary" size="sm" className="mt-4" onClick={onAdd}>
-          Add meeting
-        </Button>
+        <div className="mt-4 flex flex-wrap justify-center gap-2">
+          <Button variant="primary" size="sm" onClick={() => onAdd('meeting')}>
+            Add meeting
+          </Button>
+          <Button variant="secondary" size="sm" onClick={() => onAdd('chat')}>
+            Add chat thread
+          </Button>
+        </div>
       ) : (
-        <p className="mt-3 text-xs text-text-tertiary">People who can edit here can add meetings.</p>
+        <p className="mt-3 text-xs text-text-tertiary">People who can edit here can add meetings and chat threads.</p>
       )}
     </div>
   );
 }
 
-function MeetingGlyph() {
+function MeetingGlyph({ chat }: { chat?: boolean }) {
+  if (chat) {
+    return (
+      <span aria-hidden="true" className="hidden sm:inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-bg-elevated text-text-tertiary">
+        <span className="text-sm font-semibold">#</span>
+      </span>
+    );
+  }
   return (
     <span aria-hidden="true" className="hidden sm:inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-bg-elevated text-text-tertiary">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

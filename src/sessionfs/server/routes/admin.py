@@ -34,6 +34,7 @@ from sessionfs.server.db.models import (
     HelperUsage,
     MeetingActionItem,
     MeetingParticipant,
+    ConversationMessageMeta,
     MeetingTranscript,
     OidcLoginAttempt,
     Organization,
@@ -2904,6 +2905,11 @@ async def sweep_meeting_retention(
             )
             await db.execute(
                 delete(MeetingParticipant).where(MeetingParticipant.transcript_id.in_(doomed))
+            )
+            await db.execute(
+                delete(ConversationMessageMeta).where(
+                    ConversationMessageMeta.source_id.in_(doomed)
+                )
             )
             result = await db.execute(
                 delete(MeetingTranscript).where(MeetingTranscript.id.in_(doomed))

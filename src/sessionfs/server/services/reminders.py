@@ -19,8 +19,11 @@ Source predicates (for a user id):
 - ``meeting`` / ``meeting_item``: a live (not deleted) meeting whose project
   the user can read, or whose group the user has standing on (org admin or an
   explicit grant) while the group's org plan includes project groups.
+  ``meeting`` is the whole conversation (a meeting or a chat thread).
+- ``chat_item``: an item of a live chat thread (``kind='chat'``), with the
+  same readability rules. A ``meeting_item`` id that belongs to a chat thread
+  (or a ``chat_item`` id on a meeting) does not exist as far as callers see.
 - ``session``: the user owns the (not deleted) session.
-- ``chat_item``: not readable yet (chat threads land in a later release).
 
 Visibility is computed in bulk: sources are loaded with one query per kind,
 projects and groups with one query each, and access is cached per
@@ -56,9 +59,14 @@ from sessionfs.server.db.models import (
 logger = logging.getLogger("sessionfs.reminders")
 
 SOURCE_KINDS = ("meeting_item", "meeting", "ticket", "session", "knowledge_entry", "chat_item")
-READABLE_SOURCE_KINDS = frozenset(
-    {"meeting_item", "meeting", "ticket", "session", "knowledge_entry"}
-)
+READABLE_SOURCE_KINDS = frozenset(SOURCE_KINDS)
+# Item source kind -> the conversation kind its transcript must have.
+ITEM_SOURCE_KINDS = {"meeting_item": "meeting", "chat_item": "chat"}
+
+
+def item_source_kind(conversation_kind: str | None) -> str:
+    """The reminder source kind for an item of a conversation of this kind."""
+    return "chat_item" if conversation_kind == "chat" else "meeting_item"
 STATUSES = ("open", "done", "dismissed")
 
 MAX_OPEN_PER_USER = 500
@@ -145,20 +153,21 @@ async def load_sources(
         cache.sources[(kind, sid)] = SourceInfo(kind=kind, id=sid)
 
     meeting_ids: set[str] = set(by_kind.get("meeting", set()))
-    item_rows: list = []
-    if by_kind.get("meeting_item"):
-        item_rows = list(
-            (
-                await db.execute(
-                    select(
-                        MeetingActionItem.id,
-                        MeetingActionItem.transcript_id,
-                        MeetingActionItem.description,
-                    ).where(MeetingActionItem.id.in_(list(by_kind["meeting_item"])))
-                )
-            ).all()
-        )
-        meeting_ids.update(r[1] for r in item_rows)
+    item_rows: list[tuple[str, str, str, str]] = []  # (source kind, id, transcript, text)
+    for item_kind in ITEM_SOURCE_KINDS:
+        if not by_kind.get(item_kind):
+            continue
+        for item_id, transcript_id, description in (
+            await db.execute(
+                select(
+                    MeetingActionItem.id,
+                    MeetingActionItem.transcript_id,
+                    MeetingActionItem.description,
+                ).where(MeetingActionItem.id.in_(list(by_kind[item_kind])))
+            )
+        ).all():
+            item_rows.append((item_kind, item_id, transcript_id, description))
+            meeting_ids.add(transcript_id)
     meetings: dict[str, tuple] = {}
     if meeting_ids:
         for row in (
@@ -168,6 +177,7 @@ async def load_sources(
                     MeetingTranscript.project_id,
                     MeetingTranscript.group_id,
                     MeetingTranscript.title,
+                    MeetingTranscript.kind,
                 ).where(
                     MeetingTranscript.id.in_(list(meeting_ids)),
                     MeetingTranscript.deleted_at.is_(None),
@@ -182,10 +192,12 @@ async def load_sources(
             info.exists = True
             info.project_id, info.group_id, info.title = m[1], m[2], _short(m[3])
             info.meeting_id = mid
-    for item_id, transcript_id, description in item_rows:
+    for item_kind, item_id, transcript_id, description in item_rows:
         m = meetings.get(transcript_id)
-        if m is not None:
-            info = cache.sources[("meeting_item", item_id)]
+        # A meeting_item id on a chat thread (or the reverse) stays missing:
+        # the same opaque "not found" as an id that doesn't exist.
+        if m is not None and (m[4] or "meeting") == ITEM_SOURCE_KINDS[item_kind]:
+            info = cache.sources[(item_kind, item_id)]
             info.exists = True
             info.project_id, info.group_id = m[1], m[2]
             info.title = _short(description)

@@ -3,6 +3,7 @@ import type { MeetingActionItem, MeetingParticipant } from '../api/client';
 import { Button } from '../components/ui';
 import { useTicketPreview } from '../hooks/useTickets';
 import { ticketHref } from '../helper/format';
+import { messagesLabel } from './chat';
 import { dueLabel, linesLabel } from './format';
 
 interface ItemListProps {
@@ -20,6 +21,8 @@ interface ItemListProps {
   onRestore?: (item: MeetingActionItem) => void;
   /** Items with a dismiss/restore in flight. */
   busyItemIds?: ReadonlySet<string>;
+  /** Items cite chat messages (M12-15) instead of transcript lines. */
+  chat?: boolean;
 }
 
 /**
@@ -40,6 +43,7 @@ export function ItemList({
   onDismiss,
   onRestore,
   busyItemIds,
+  chat = false,
 }: ItemListProps) {
   const owners = new Map(participants.map((p) => [p.id, p]));
   return (
@@ -84,7 +88,7 @@ export function ItemList({
                   </span>
                 )}
                 {unknownOwner && (
-                  <span className="inline-flex items-center gap-1 min-w-0" title={item.owner_hint ? `The transcript named “${item.owner_hint}”, who isn’t matched to anyone` : undefined}>
+                  <span className="inline-flex items-center gap-1 min-w-0" title={item.owner_hint ? `The ${chat ? 'thread' : 'transcript'} named “${item.owner_hint}”, who isn’t matched to anyone` : undefined}>
                     <span className="text-warning">Owner unknown</span>
                     {item.owner_hint && <span className="truncate">(“{item.owner_hint}”)</span>}
                   </span>
@@ -96,7 +100,7 @@ export function ItemList({
                   </>
                 )}
                 {(owner || unknownOwner || item.due_date) && <span aria-hidden="true">·</span>}
-                <span className={`font-mono ${selected ? 'text-brand' : ''}`}>{linesLabel(range)}</span>
+                <span className={`font-mono ${selected ? 'text-brand' : ''}`}>{chat ? messagesLabel(range) : linesLabel(range)}</span>
               </span>
             </button>
             <ItemFooter

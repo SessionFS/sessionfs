@@ -47,7 +47,7 @@ describe('Group meetings', () => {
     authState.client.getMeeting.mockResolvedValue({ ...stored, warnings: [] });
     renderWith(<GroupDetailPage />, { route: ROUTE, path: PATH });
     const user = userEvent.setup();
-    await screen.findByText('No meetings yet');
+    await screen.findByText('No conversations yet');
     await user.click(screen.getByRole('button', { name: 'Add meeting' }));
     const dialog = await screen.findByRole('dialog', { name: 'Add a meeting' });
     await user.type(within(dialog).getByLabelText('Title'), 'Program review');
@@ -70,7 +70,7 @@ describe('Group meetings', () => {
 
   it('lists meetings after the projects when none is open', async () => {
     renderWith(<GroupDetailPage />, { route: ROUTE, path: PATH });
-    const meetings = await screen.findByRole('heading', { name: 'Meetings' });
+    const meetings = await screen.findByRole('heading', { name: 'Conversations' });
     const projects = screen.getByRole('heading', { name: 'Projects' });
     expect(projects.compareDocumentPosition(meetings) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });

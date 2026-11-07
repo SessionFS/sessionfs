@@ -1037,7 +1037,10 @@ async def meeting_reminders(
         auth,
         or_(
             and_(Reminder.source_kind == "meeting", Reminder.source_id == meeting_id),
-            and_(Reminder.source_kind == "meeting_item", Reminder.source_id.in_(items)),
+            and_(
+                Reminder.source_kind.in_(("meeting_item", "chat_item")),
+                Reminder.source_id.in_(items),
+            ),
         ),
     )
 
@@ -1160,7 +1163,9 @@ async def _create_item_reminder(
         tz_name=body.timezone,
         owner=owner,
         source=ReminderSourceIn(
-            kind="meeting_item", id=item.id, lines=f"{item.line_start}-{item.line_end}"
+            kind=svc.item_source_kind(meeting.kind),
+            id=item.id,
+            lines=f"{item.line_start}-{item.line_end}",
         ),
         created_via="meeting",
         linked_ticket_id=item.promoted_ticket_id,
@@ -1223,7 +1228,10 @@ async def group_meeting_reminders(
         auth,
         or_(
             and_(Reminder.source_kind == "meeting", Reminder.source_id == meeting_id),
-            and_(Reminder.source_kind == "meeting_item", Reminder.source_id.in_(items)),
+            and_(
+                Reminder.source_kind.in_(("meeting_item", "chat_item")),
+                Reminder.source_id.in_(items),
+            ),
         ),
     )
 

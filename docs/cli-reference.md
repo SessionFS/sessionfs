@@ -1900,7 +1900,7 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed (118):
+Tools exposed (125):
 
 - **Sessions:** `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_session_summary`, `get_audit_report`, `get_session_provenance`, `get_session_retrieval_log`, `rename_session`, `checkpoint_session`, `list_checkpoints`, `fork_session`, `ask_session_helper`
 - **Knowledge (read):** `get_project_context`, `get_context_section`, `get_wiki_page`, `get_wiki_page_history`, `search_project_knowledge`, `list_knowledge_entries`, `get_knowledge_entry`, `get_knowledge_health`, `ask_project`
@@ -1908,13 +1908,15 @@ Tools exposed (118):
 - **Rules (read-only):** `get_rules`, `get_compiled_rules`
 - **Personas:** `list_personas`, `get_persona`, `create_persona`, `update_persona`, `delete_persona`, `assume_persona`, `forget_persona`
 - **Tickets:** `list_tickets`, `get_ticket`, `create_ticket`, `update_ticket`, `start_ticket`, `complete_ticket`, `resolve_ticket`, `approve_ticket`, `assign_persona`, `escalate_ticket`, `add_ticket_comment`, `list_ticket_comments`, `get_ticket_review_state`, `watch_ticket`, `get_ticket_updates`
-- **Agent runs and feedback:** `create_agent_run`, `replay_agent_run`, `complete_agent_run`, `list_agent_runs`, `record_agent_feedback`, `list_agent_feedback`, `get_agent_feedback_summary`, `get_loop_report`
+- **Agent runs and feedback:** `create_agent_run`, `replay_agent_run`, `complete_agent_run`, `list_agent_runs`, `record_agent_feedback`, `list_agent_feedback`, `get_agent_feedback_summary`, `get_loop_report`, `report_agent_run_usage`, `get_spend_summary`
 - **Work queues:** `create_work_queue`, `list_work_queues`, `get_work_queue`, `set_work_queue_status`, `run_work_queue_step`, `complete_work_queue_step`
-- **Review loops:** `start_review_loop`, `get_loop_status`, `update_review_loop`, `start_worker_run`, `finish_worker_run`, `record_review_round`, `check_merge_readiness`
+- **Review loops:** `start_review_loop`, `get_loop_status`, `update_review_loop`, `start_worker_run`, `finish_worker_run`, `record_review_round`, `check_merge_readiness`, `get_loop_checklist`, `propose_checklist_item`
 - **Handoffs:** `create_handoff`, `get_handoff`, `list_inbox_handoffs`, `list_sent_handoffs`, `claim_handoff`, `decline_handoff`, `revoke_handoff`, `add_handoff_comment`
 - **Marketplace (never writes files or enables executable content):** `search_skill_marketplace`, `get_marketplace_package`, `diff_marketplace_versions`, `get_skill_policy`, `preview_marketplace_skill`, `load_marketplace_skill`, `request_skill_install`, `list_skill_install_requests`, `get_skill_install_request`, `cancel_skill_install_request`
 - **Project groups:** `list_project_groups`, `get_project_group`, `create_project_group`, `update_project_group`, `delete_project_group`, `add_project_to_group`, `remove_project_from_group`, `list_group_members`, `grant_group_access`, `revoke_group_access`, `list_group_access`, `search_group_knowledge`, `get_group_context`, `compile_group_knowledge`, `ask_group`
-- **Meetings:** `upload_meeting_transcript`, `list_meeting_transcripts`, `get_meeting_transcript`, `extract_meeting_action_items`, `promote_meeting_action_item` (preview only unless `confirm=true`), `search_meetings`
+- **Meetings and chat:** `upload_meeting_transcript`, `upload_chat_thread`, `list_meeting_transcripts`, `get_meeting_transcript`, `extract_meeting_action_items`, `promote_meeting_action_item` (preview only unless `confirm=true`), `search_meetings`
+- **Reminders:** `list_my_reminders`, `create_reminder`, `update_reminder`
+- **Approvals (read only):** `list_my_approvals`, `get_approval_request`, `list_approval_policies`
 
 If you are an agent or have the MCP server installed, prefer the MCP tools over the CLI equivalents listed in this reference — they are faster, run in-process, and avoid hitting API rate limits.
 
@@ -3257,13 +3259,30 @@ Store meeting transcripts for a project or a project group, extract action items
 | `sfs meeting promote <id> <item_id> [--title T] [--assignee PERSONA \| --user USER_ID] [--due DATE] [--priority P] [--target-project ID] [--jira] [--yes]` | Show the ticket draft and ask before creating it; a group meeting needs `--target-project` |
 | `sfs meeting dismiss <id> <item_id>` / `restore <id> <item_id>` | Dismiss or restore a pending item |
 
+## `sfs chat`
+
+Store chat threads (a Slack export, a DiscordChatExporter export, or a plain paste from any tool, including Teams) for a project or a project group. A thread is stored one message per line, so message N is line N, and extracted items cite message ranges such as `M12-15`. The server refuses direct-message exports, redacts the text with your DLP policy before storage and enforces every access rule. The commands after `upload` are the `sfs meeting` commands run against chat threads. See [Chat threads](https://sessionfs.dev/chat/).
+
+| Command | Description |
+|---------|-------------|
+| `sfs chat upload <file> --channel "#infra" [--project proj_… \| --group pg_…] [--provider slack\|discord\|paste\|teams_paste] [--users users.json] [--attest] [--title T] [--extract]` | Upload a thread (2 MiB max). Without `--provider` the format is detected: Slack JSON, DiscordChatExporter JSON, otherwise a paste. A paste needs `--attest` to confirm it is from a channel, not a direct message. `--users` (Slack only) passes the export's `users.json` so ids show as names |
+| `sfs chat list [--project \| --group] [-q TEXT] [-n N] [--before ID]` | Chat threads, newest first |
+| `sfs chat search <q> [--project \| --group]` | Search titles and message text |
+| `sfs chat show <id> [--no-messages]` | Numbered messages (`M1`, `M2`, …), participants, action items and decisions |
+| `sfs chat delete <id> [--yes]` | Delete a chat thread |
+| `sfs chat extract <id>` | Extract participants, action items and decisions with your own LLM key |
+| `sfs chat participants <id>` / `resolve-participant <id> <participant_id> --user USER_ID \| --persona NAME` | Participants, and resolving one manually |
+| `sfs chat action-items <id>` | Action items and decisions |
+| `sfs chat promote <id> <item_id> [same options as sfs meeting promote]` | Show the ticket draft and ask before creating it |
+| `sfs chat dismiss <id> <item_id>` / `restore <id> <item_id>` | Dismiss or restore a pending item |
+
 ## `sfs remind`
 
 Personal reminders, optionally tied to a meeting or a ticket. A reminder is private to the person reminded and the person who created it. When it falls due it appears in the notification bell and Inbox, and in the email digest if your notification settings allow it. Titles and notes are DLP-redacted by the server before storage. Reminders are on every plan.
 
 | Command | Description |
 |---------|-------------|
-| `sfs remind add "title" --at "2026-11-06 09:00" [--tz Europe/London] [--meeting MEETING_ID[:LINES] \| --ticket TK] [--for EMAIL]` | Create a reminder. `--at` takes `YYYY-MM-DD HH:MM` (or a bare date, meaning 09:00), read in `--tz` or this machine's timezone; a value with an offset (`…Z`, `…+01:00`) is used as given. It must fall between 1 hour ago and 2 years ahead. `--for` reminds a teammate who can read the meeting or ticket |
+| `sfs remind add "title" --at "2026-11-06 09:00" [--tz Europe/London] [--meeting MEETING_ID[:LINES] \| --chat CHAT_ID[:M<a>-<b>] \| --ticket TK] [--for EMAIL]` | Create a reminder. `--chat` ties it to a chat thread and, optionally, a message range (`chat_…:M3-5`). `--at` takes `YYYY-MM-DD HH:MM` (or a bare date, meaning 09:00), read in `--tz` or this machine's timezone; a value with an offset (`…Z`, `…+01:00`) is used as given. It must fall between 1 hour ago and 2 years ahead. `--for` reminds a teammate who can read the meeting or ticket |
 | `sfs remind list [--all \| --done] [--due-before TIME] [--limit N]` | Your reminders, earliest due first (open by default); due ones are marked |
 | `sfs remind show <id>` | A reminder with its source and notes |
 | `sfs remind note <id> "text"` | Add a note (notes are append-only) |

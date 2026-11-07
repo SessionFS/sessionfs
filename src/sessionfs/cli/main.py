@@ -78,6 +78,7 @@ from sessionfs.cli.cmd_dlp import dlp_app
 from sessionfs.cli.cmd_rules import rules_app
 from sessionfs.cli.cmd_hooks import hooks_app
 from sessionfs.cli.cmd_persona import persona_app
+from sessionfs.cli.cmd_chat import chat_app
 from sessionfs.cli.cmd_meeting import meeting_app
 from sessionfs.cli.cmd_remind import remind_app
 from sessionfs.cli.cmd_approval import approval_app
@@ -123,6 +124,7 @@ app.add_typer(hooks_app, name="hooks")
 app.add_typer(persona_app, name="persona")
 app.add_typer(ticket_app, name="ticket")
 app.add_typer(meeting_app, name="meeting")
+app.add_typer(chat_app, name="chat")
 app.add_typer(remind_app, name="remind")
 app.add_typer(approval_app, name="approval")
 app.add_typer(agent_app, name="agent")

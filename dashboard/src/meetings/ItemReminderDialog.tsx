@@ -5,12 +5,15 @@ import { useCreateMeetingItemReminder } from '../hooks/useReminders';
 import { useToast } from '../hooks/useToast';
 import { fromLocalInput, userTimezone } from '../reminders/format';
 import { errorMessage } from '../utils/errorMessage';
+import { messagesLabel } from './chat';
 import { linesLabel } from './format';
 
 interface Props {
   scope: MeetingScope;
   meetingId: string;
   item: MeetingActionItem;
+  /** A chat thread's item cites messages, not lines. */
+  chat?: boolean;
   onClose: () => void;
 }
 
@@ -26,7 +29,7 @@ function initialWhen(item: MeetingActionItem): string {
  * suggestion (title, the due date at 09:00 in the viewer's time zone) and
  * editable. The viewer's IANA zone is sent so the server doesn't assume UTC.
  */
-export function ItemReminderDialog({ scope, meetingId, item, onClose }: Props) {
+export function ItemReminderDialog({ scope, meetingId, item, chat = false, onClose }: Props) {
   const tz = userTimezone();
   const create = useCreateMeetingItemReminder(scope, meetingId);
   const { addToast } = useToast();
@@ -63,7 +66,7 @@ export function ItemReminderDialog({ scope, meetingId, item, onClose }: Props) {
       <form onSubmit={submit} className="space-y-4">
         <DialogHeader titleId="item-reminder-title">Add reminder</DialogHeader>
         <p className="-mt-2 text-sm text-text-tertiary">
-          From {item.kind === 'decision' ? 'a decision' : 'an action item'}, {linesLabel(range).toLowerCase()}.
+          From {item.kind === 'decision' ? 'a decision' : 'an action item'}, {(chat ? messagesLabel(range) : linesLabel(range)).toLowerCase()}.
         </p>
         <Input title="Title" value={title} maxLength={200} autoFocus onChange={(e) => setTitle(e.target.value)} />
         <Input

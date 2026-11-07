@@ -248,7 +248,7 @@ describe('MeetingsTab list', () => {
     client.listMeetings.mockResolvedValue({ meetings: [summary()], next_cursor: null });
     wrap(tab());
     await screen.findByRole('button', { name: /Weekly platform sync/ });
-    await userEvent.type(screen.getByRole('searchbox', { name: 'Search meetings' }), 'launch');
+    await userEvent.type(screen.getByRole('searchbox', { name: 'Search conversations' }), 'launch');
     await waitFor(() =>
       expect(client.listMeetings).toHaveBeenLastCalledWith({ kind: 'project', id: 'proj_1' }, expect.objectContaining({ q: 'launch' })),
     );
@@ -257,12 +257,12 @@ describe('MeetingsTab list', () => {
   it('explains meetings when there are none, with Add for editors only', async () => {
     client.listMeetings.mockResolvedValue({ meetings: [], next_cursor: null });
     const { unmount } = wrap(tab());
-    expect(await screen.findByText('No meetings yet')).toBeInTheDocument();
+    expect(await screen.findByText('No conversations yet')).toBeInTheDocument();
     expect(screen.getByText(/pulls out the action items, decisions/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add meeting' })).toBeInTheDocument();
     unmount();
     wrap(tab({ canEdit: false }));
-    expect(await screen.findByText('No meetings yet')).toBeInTheDocument();
+    expect(await screen.findByText('No conversations yet')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Add meeting' })).not.toBeInTheDocument();
   });
 });
@@ -525,9 +525,9 @@ describe('MeetingDetailView', () => {
   });
 
   it('shows a friendly not-found for a deleted or unknown meeting', async () => {
-    client.getMeeting.mockRejectedValue(apiError(404, { message: 'Meeting not found' }));
+    client.getMeeting.mockRejectedValue(apiError(404, { message: 'Conversation not found' }));
     wrap(detailView());
-    expect(await screen.findByText('Meeting not found')).toBeInTheDocument();
+    expect(await screen.findByText('Conversation not found')).toBeInTheDocument();
     expect(screen.getByText(/deleted, or you don’t have access/)).toBeInTheDocument();
   });
 

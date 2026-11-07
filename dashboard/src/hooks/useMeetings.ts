@@ -2,6 +2,8 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { useAuth } from '../auth/AuthContext';
 import {
   ApiError,
+  type ChatThreadCreate,
+  type ConversationKindFilter,
   type MeetingActionItem,
   type MeetingCreate,
   type MeetingDetail,
@@ -32,13 +34,14 @@ const detailKey = (meetingId: string | undefined) => ['meeting', meetingId];
 const retryServerErrors = (count: number, err: unknown) =>
   !(err instanceof ApiError && err.status < 500) && count < 2;
 
-export function useMeetings(scope: MeetingScope | undefined, q: string) {
+export function useMeetings(scope: MeetingScope | undefined, q: string, kind: ConversationKindFilter = 'meeting') {
   const { auth } = useAuth();
   return useInfiniteQuery<MeetingList>({
-    queryKey: [...listKey(scope), q],
+    queryKey: [...listKey(scope), q, kind],
     queryFn: ({ pageParam }) =>
       auth!.client.listMeetings(scope!, {
         q: q || undefined,
+        kind,
         before: (pageParam as string | undefined) || undefined,
         limit: PAGE_SIZE,
       }),
@@ -68,6 +71,18 @@ export function useUploadMeeting(scope: MeetingScope | undefined) {
     mutationFn: (body: MeetingCreate) => auth!.client.uploadMeeting(scope!, body),
     onSuccess: (meeting) => {
       qc.setQueryData(detailKey(meeting.id), meeting);
+      void qc.invalidateQueries({ queryKey: listKey(scope) });
+    },
+  });
+}
+
+export function useUploadChatThread(scope: MeetingScope | undefined) {
+  const { auth } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: ChatThreadCreate) => auth!.client.uploadChatThread(scope!, body),
+    onSuccess: (thread) => {
+      qc.setQueryData(detailKey(thread.id), thread);
       void qc.invalidateQueries({ queryKey: listKey(scope) });
     },
   });

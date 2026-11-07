@@ -343,3 +343,174 @@ async def test_group_id_and_git_remote_together_are_rejected(http):
     http["responses"][("GET", f"{API}/api/v1/groups/pg_1/meetings")] = (200, {"meetings": []})
     ok = await mcp_server._handle_list_meeting_transcripts({"group_id": "pg_1", "git_remote": " "})
     assert "error" not in ok
+
+
+# ── Chat threads (GitHub #118, C2) ──
+
+
+def test_upload_chat_thread_registered_with_kind_on_meeting_tools():
+    tools = {t.name: t for t in mcp_server._TOOLS}
+    chat = tools["upload_chat_thread"]
+    assert set(chat.inputSchema["required"]) == {"provider", "channel_name", "content"}
+    assert chat.inputSchema["properties"]["provider"]["enum"] == [
+        "slack", "discord", "paste", "teams_paste",
+    ]
+    for name in ("list_meeting_transcripts", "search_meetings", "get_meeting_transcript",
+                 "extract_meeting_action_items"):
+        assert tools[name].inputSchema["properties"]["kind"]["enum"] == ["meeting", "chat", "all"]
+    promote = tools["promote_meeting_action_item"].inputSchema["properties"]
+    # ``kind`` stays the ticket kind; the row filter has its own name.
+    assert promote["kind"]["enum"] == ["task", "issue"]
+    assert promote["conversation_kind"]["enum"] == ["meeting", "chat", "all"]
+
+
+_SLACK_CHANNEL = '{"channel": {"id": "C1", "name": "infra"}, "messages": []}'
+
+
+@pytest.mark.asyncio
+async def test_upload_chat_thread_project_and_group(http):
+    url = f"{API}/api/v1/projects/proj_1/chat-threads"
+    http["responses"][("POST", url)] = (200, {"id": "chat_1", "kind": "chat"})
+    res = await mcp_server._handle_upload_chat_thread({
+        "provider": "slack", "channel_name": " #infra ", "content": _SLACK_CHANNEL,
+        "users": "[]", "title": " T ", "extract": True,
+    })
+    assert res["id"] == "chat_1"
+    assert "untrusted_content_notice" in res
+    call = http["calls"][0]
+    assert call["url"] == url
+    assert call["json"] == {
+        "provider": "slack", "channel_name": "#infra", "content": _SLACK_CHANNEL,
+        "attestation": False, "users": "[]", "title": "T", "extract": True,
+    }
+    await mcp_server._handle_upload_chat_thread({
+        "provider": "paste", "channel_name": "#x", "content": "A: hi",
+        "attestation": True, "group_id": "pg_1",
+    })
+    assert http["calls"][1]["url"] == f"{API}/api/v1/groups/pg_1/chat-threads"
+
+
+@pytest.mark.asyncio
+async def test_upload_chat_thread_validates_locally(http):
+    base = {"provider": "slack", "channel_name": "#c", "content": _SLACK_CHANNEL}
+    up = mcp_server._handle_upload_chat_thread
+    assert "provider" in (await up({**base, "provider": "irc"}))["error"]
+    assert "channel_name" in (await up({**base, "channel_name": " "}))["error"]
+    assert "80" in (await up({**base, "channel_name": "#" + "x" * 80}))["error"]
+    assert "content" in (await up({**base, "content": ""}))["error"]
+    for provider in ("paste", "teams_paste"):
+        err = (await up({**base, "provider": provider, "content": "A: hi"}))["error"]
+        assert "attestation" in err
+    big = "x" * (2 * 1024 * 1024 + 1)
+    err = (await up({**base, "content": big}))["error"]
+    assert "2 MiB" in err
+    assert "attestation" in (await up({**base, "attestation": "yes"}))["error"]
+    assert "users" in (await up({**base, "users": 5}))["error"]
+    assert http["calls"] == []
+
+
+@pytest.mark.asyncio
+async def test_upload_chat_thread_surfaces_api_error(http):
+    http["responses"][("POST", f"{API}/api/v1/projects/proj_1/chat-threads")] = (
+        422, {"detail": {"code": "dm_not_supported"}},
+    )
+    res = await mcp_server._handle_upload_chat_thread(
+        {"provider": "slack", "channel_name": "#c", "content": _SLACK_CHANNEL}
+    )
+    assert "422" in res["error"] and "dm_not_supported" in res["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["[]", '{"messages": []}', '{"channel": "C1", "messages": []}'])
+async def test_upload_chat_thread_slack_without_channel_object_needs_attestation(http, content):
+    up = mcp_server._handle_upload_chat_thread
+    base = {"provider": "slack", "channel_name": "#c", "content": content}
+    err = (await up(base))["error"]
+    assert "attestation=true" in err and "channel object" in err
+    assert http["calls"] == []
+    http["responses"][("POST", f"{API}/api/v1/projects/proj_1/chat-threads")] = (200, {"id": "chat_1"})
+    assert (await up({**base, "attestation": True}))["id"] == "chat_1"
+    assert http["calls"][0]["json"]["attestation"] is True
+
+
+@pytest.mark.asyncio
+async def test_kind_filter_on_list_search_get_extract_promote(http):
+    http["responses"][("GET", f"{API}/api/v1/projects/proj_1/meetings")] = (200, {"meetings": []})
+    await mcp_server._handle_list_meeting_transcripts({"kind": "chat"})
+    assert http["calls"][-1]["params"] == {"limit": "100", "kind": "chat"}
+    await mcp_server._handle_search_meetings({"q": "cert", "kind": "all"})
+    assert http["calls"][-1]["params"] == {"q": "cert", "limit": "25", "kind": "all"}
+    await mcp_server._handle_list_meeting_transcripts({})
+    assert "kind" not in http["calls"][-1]["params"]
+    assert "kind" in (await mcp_server._handle_list_meeting_transcripts({"kind": "x"}))["error"]
+
+    await mcp_server._handle_get_meeting_transcript({"meeting_id": "chat_1", "kind": "chat"})
+    assert http["calls"][-1]["params"] == {"kind": "chat"}
+    await mcp_server._handle_get_meeting_transcript({"meeting_id": "chat_1", "kind": "all"})
+    assert http["calls"][-1]["params"] == {}
+    await mcp_server._handle_extract_meeting_action_items({"meeting_id": "chat_1", "kind": "chat"})
+    assert http["calls"][-1]["url"].endswith("/meetings/chat_1/extract")
+    assert http["calls"][-1]["params"] == {"kind": "chat"}
+    n = len(http["calls"])
+    bad = await mcp_server._handle_get_meeting_transcript({"meeting_id": "chat_1", "kind": "x"})
+    assert "kind" in bad["error"]
+    assert len(http["calls"]) == n
+
+    root = f"{API}/api/v1/meetings/chat_1/action-items/mi_1/promote"
+    http["responses"][("POST", f"{root}/preview")] = (200, dict(_DRAFT, meeting_id="chat_1"))
+    http["responses"][("POST", root)] = (200, {"ticket_id": "tk_1"})
+    await mcp_server._handle_promote_meeting_action_item({
+        "meeting_id": "chat_1", "item_id": "mi_1", "conversation_kind": "chat",
+        "confirm": True, "kind": "issue",
+    })
+    preview, create = http["calls"][-2], http["calls"][-1]
+    assert preview["params"] == {"kind": "chat"} and create["params"] == {"kind": "chat"}
+    assert create["json"]["kind"] == "issue"
+    bad = await mcp_server._handle_promote_meeting_action_item(
+        {"meeting_id": "chat_1", "item_id": "mi_1", "conversation_kind": "x"}
+    )
+    assert "conversation_kind" in bad["error"]
+
+
+@pytest.mark.asyncio
+async def test_call_tool_dispatches_upload_chat_thread(http):
+    http["responses"][("POST", f"{API}/api/v1/projects/proj_1/chat-threads")] = (200, {"id": "chat_1"})
+    out = await mcp_server.call_tool(
+        "upload_chat_thread", {"provider": "discord", "channel_name": "#c", "content": "{}"}
+    )
+    assert json.loads(out[0].text)["id"] == "chat_1"
+
+
+_DISCORD_MSGS = [{"type": "Default", "content": "hi", "author": {"name": "tolu"}}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"messages": _DISCORD_MSGS},
+        {"channel": {"type": "GuildTextChat"}, "messages": _DISCORD_MSGS},
+        {"guild": {"id": "1"}, "channel": {"type": "Mystery"}, "messages": _DISCORD_MSGS},
+        {"guild": {"id": "1"}, "channel": {"name": "x"}, "messages": _DISCORD_MSGS},
+    ],
+)
+async def test_upload_chat_thread_discord_without_guild_channel_needs_attestation(http, body):
+    up = mcp_server._handle_upload_chat_thread
+    base = {"provider": "discord", "channel_name": "#c", "content": json.dumps(body)}
+    err = (await up(base))["error"]
+    assert "attestation=true" in err and "Discord" in err
+    assert http["calls"] == []
+    http["responses"][("POST", f"{API}/api/v1/projects/proj_1/chat-threads")] = (200, {"id": "chat_1"})
+    assert (await up({**base, "attestation": True}))["id"] == "chat_1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ctype", ["GuildTextChat", "GuildPublicThread", 0, 11])
+async def test_upload_chat_thread_discord_guild_channel_needs_no_attestation(http, ctype):
+    http["responses"][("POST", f"{API}/api/v1/projects/proj_1/chat-threads")] = (200, {"id": "chat_1"})
+    content = json.dumps({"guild": {"id": "1"}, "channel": {"type": ctype}, "messages": _DISCORD_MSGS})
+    out = await mcp_server._handle_upload_chat_thread(
+        {"provider": "discord", "channel_name": "#c", "content": content}
+    )
+    assert out["id"] == "chat_1"
+    assert http["calls"][0]["json"]["attestation"] is False

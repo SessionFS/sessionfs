@@ -225,6 +225,7 @@ export function resolve(method: string, pathname: string): MockResult | null {
     const mid = decodeURIComponent(meeting[1]);
     if (mid === d.MEETING_ID) return ok(d.meetingDetail);
     if (mid === d.GROUP_MEETING_ID) return ok(d.groupMeetingDetail);
+    if (mid === d.CHAT_ID) return ok(d.chatDetail);
     return { status: 404, body: { error: { code: '404', message: 'Meeting not found' } } };
   }
   // A promoted item in a group meeting looks its ticket up to link it.

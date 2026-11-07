@@ -69,6 +69,7 @@ export default defineConfig({
             { label: 'Project Groups', slug: 'project-groups' },
             { label: 'Meetings', slug: 'meetings' },
             { label: 'Approvals', slug: 'approvals' },
+            { label: 'Chat threads', slug: 'chat' },
             { label: 'Skills Marketplace', slug: 'skills-marketplace' },
             { label: 'Worker Review Loop', slug: 'review-loop' },
             { label: 'Session Helper', slug: 'session-helper' },

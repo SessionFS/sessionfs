@@ -57,6 +57,16 @@ def test_reminder_docs_are_indexed() -> None:
     assert ("mcp", "reminders") in found
 
 
+def test_chat_thread_docs_are_indexed() -> None:
+    index = get_docs_index()
+    results = index.search("upload slack chat thread", 8)
+    found = {(r["slug"], r["anchor"]) for r in results}
+    assert any(slug == "chat" for slug, _ in found)
+    assert index.resolve_citation("cli", "sfs-chat") is not None
+    assert index.resolve_citation("mcp", "meetings-and-chat") is not None
+    assert index.resolve_citation("chat", "session-helper") is not None
+
+
 def test_approval_docs_are_indexed() -> None:
     index = get_docs_index()
     results = index.search("approval policy self-approval author", 5)

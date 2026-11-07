@@ -129,7 +129,7 @@ function sourceLabel(s: Source, messageIndex?: number): string {
   if (s.kind === 'doc') return s.title;
   if (s.kind === 'ticket') return s.title || `Ticket ${s.ticketId}`;
   if (s.kind === 'wiki') return s.title || `Wiki ${s.slug}`;
-  if (s.kind === 'meeting') return `${s.title || `Meeting ${s.meetingId}`}${meetingLinesText(s.ranges)}`;
+  if (s.kind === 'meeting') return `${meetingSourceName(s)}${meetingLinesText(s.ranges, s.chat)}`;
   const indexes = messageIndex !== undefined ? [messageIndex] : s.messageIndexes;
   const msgs = indexes.length
     ? `, message${indexes.length > 1 ? 's' : ''} ${indexes.join(', ')}`
@@ -140,11 +140,21 @@ function sourceLabel(s: Source, messageIndex?: number): string {
 const NEW_TAB = ' (opens in new tab)';
 
 /** ", lines 12–15" / ", lines 3–4 and 9" for a meeting source's ranges. */
-function meetingLinesText(ranges: { start: number; end: number }[]): string {
+function meetingLinesText(ranges: { start: number; end: number }[], chat = false): string {
   if (ranges.length === 0) return '';
   const parts = ranges.map((r) => (r.start === r.end ? `${r.start}` : `${r.start}–${r.end}`));
   const single = ranges.length === 1 && ranges[0].start === ranges[0].end;
-  return `, line${single ? '' : 's'} ${parts.join(', ')}`;
+  const noun = chat ? 'message' : 'line';
+  return `, ${noun}${single ? '' : 's'} ${parts.join(', ')}`;
+}
+
+/** A meeting's title, or a chat thread's title with its channel. */
+function meetingSourceName(s: { title: string | null; meetingId: string; chat?: boolean; channelName?: string | null }): string {
+  if (s.chat) {
+    const base = s.title || `Chat ${s.meetingId}`;
+    return s.channelName && !base.includes(s.channelName) ? `${base} (${s.channelName})` : base;
+  }
+  return s.title || `Meeting ${s.meetingId}`;
 }
 
 /**
@@ -230,7 +240,7 @@ export function CitationChip({
   }
   if (source.kind === 'meeting') {
     const range = lines ?? source.ranges[0] ?? null;
-    const label = `${source.title || `Meeting ${source.meetingId}`}${range ? meetingLinesText([range]) : ''}`;
+    const label = `${meetingSourceName(source)}${range ? meetingLinesText([range], source.chat) : ''}`;
     return (
       <Link
         to={meetingCiteHref(source.meetingId, range)}
@@ -379,12 +389,15 @@ function Sources({ sources, onNavigate }: { sources: Source[]; onNavigate: () =>
                 >
                   <SourceNumber n={s.n} />
                   <MeetingIcon />
-                  <span className="min-w-0 truncate">{s.title || 'Meeting'}</span>
+                  <span className="min-w-0 truncate">{s.chat ? s.title || s.channelName || 'Chat' : s.title || 'Meeting'}</span>
                   {first && (
                     <span className="shrink-0 font-mono text-2xs text-text-tertiary">
                       {s.ranges
                         .slice(0, 2)
-                        .map((r) => (r.start === r.end ? `L${r.start}` : `L${r.start}–${r.end}`))
+                        .map((r) => {
+                          const u = s.chat ? 'M' : 'L';
+                          return r.start === r.end ? `${u}${r.start}` : `${u}${r.start}–${r.end}`;
+                        })
                         .join(', ')}
                       {s.ranges.length > 2 ? '…' : ''}
                     </span>

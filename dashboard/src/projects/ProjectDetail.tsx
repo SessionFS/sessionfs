@@ -59,7 +59,7 @@ const SUB_TABS: Partial<Record<Section, { key: string; label: string }[]>> = {
   ],
   work: [
     { key: 'tickets', label: 'Tickets' },
-    { key: 'meetings', label: 'Meetings' },
+    { key: 'meetings', label: 'Conversations' },
     { key: 'loop', label: 'Review Loop' },
     { key: 'agent-runs', label: 'Agent runs' },
     { key: 'personas', label: 'Agents' },

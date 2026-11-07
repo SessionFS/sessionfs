@@ -17,6 +17,30 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.29.7 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.29.7</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">November 7, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Chat Threads</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Chat threads.</strong> Upload a Slack export, a DiscordChatExporter export or a pasted thread from any tool, including Teams, to a project or group, next to its meetings. Every thread carries a channel name such as <span class="font-mono text-accent text-sm">#infra</span>. See <a href="/chat/" class="text-brand hover:underline">Chat threads</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>One message per line.</strong> Each message is stored as a numbered line (<span class="font-mono text-accent text-sm">M1</span>, <span class="font-mono text-accent text-sm">M2</span>, &hellip;) with its author and time, so items, citations and ticket quotes point at exact message ranges.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Works like meetings.</strong> Extract action items and decisions with your own AI key, promote items to tickets through the same preview and confirm, and add reminders to items.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Direct messages are refused.</strong> Slack and Discord DM exports are rejected; a paste, a Slack export without a channel object and a Discord export without server channel details need an attestation that they came from a channel. Text is DLP-redacted before storage.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>The session helper cites chat.</strong> Ask &ldquo;what did we decide about the LB cert in #infra?&rdquo; and the answer cites <span class="font-mono text-accent text-sm">[chat:&lt;id&gt; M12-15]</span>, which opens the highlighted messages. See <a href="/session-helper/" class="text-brand hover:underline">Session Helper</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>CLI <span class="font-mono text-accent text-sm">sfs chat upload|list|show|extract|promote|&hellip;</span> and <span class="font-mono text-accent text-sm">sfs remind add --chat</span>; MCP <span class="font-mono text-accent text-sm">upload_chat_thread</span> plus a <span class="font-mono text-accent text-sm">kind</span> filter on the meeting tools. Dashboard Conversations tab with a Meetings / Chat / All filter, a chat view and an upload dialog.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed:</strong> a crafted transcript or chat thread full of unclosed tags could stall extraction for seconds while its text was cleaned; cleaning is now linear.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;122 (122 adds the conversation kind, provider and channel name to meetings and a per-message author table; additive). Self-hosted: run migration 122. 125 MCP tools (+1).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
       <!-- v0.29.6 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +48,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.29.6</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">November 7, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Approvals &middot; Meeting Extraction Fixes</h2>
         <ul class="space-y-2 text-base text-muted">

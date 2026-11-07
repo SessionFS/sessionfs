@@ -111,25 +111,40 @@ def _scope_base(project: str | None, group: str | None) -> tuple[tuple[str, str]
     return api, f"/api/v1/projects/{project_id}"
 
 
-def _meeting_table(rows: list[dict]) -> None:
+def _kind_params(kind: str | None) -> dict[str, str]:
+    """``?kind=`` for the shared meeting routes (``sfs chat`` passes chat)."""
+    return {"kind": kind} if kind else {}
+
+
+def _noun(kind: str | None) -> str:
+    return "chat thread" if kind == "chat" else "meeting"
+
+
+def _meeting_table(rows: list[dict], kind: str | None = None) -> None:
     if not rows:
-        console.print("[dim]No meetings match.[/dim]")
+        console.print(f"[dim]No {_noun(kind)}s match.[/dim]")
         return
+    chat = kind == "chat"
     table = Table()
     table.add_column("ID", style="cyan")
+    if chat:
+        table.add_column("Channel")
     table.add_column("Title")
     table.add_column("Date", style="dim")
-    table.add_column("Lines", justify="right")
+    table.add_column("Messages" if chat else "Lines", justify="right")
     table.add_column("Extraction", style="dim")
     for m in rows:
         when = (m.get("meeting_at") or m.get("created_at") or "")[:10]
-        table.add_row(
-            m.get("id", ""),
+        cells = [m.get("id", "")]
+        if chat:
+            cells.append(escape(str(m.get("channel_name") or "")))
+        cells += [
             escape(str(m.get("title", ""))),
             when,
             str(m.get("line_count", "")),
             str(m.get("extraction_status", "")),
-        )
+        ]
+        table.add_row(*cells)
     console.print(table)
 
 
@@ -161,7 +176,7 @@ def _print_participants(participants: list[dict]) -> None:
     console.print(table)
 
 
-def _print_items(items: list[dict], participants: list[dict]) -> None:
+def _print_items(items: list[dict], participants: list[dict], kind: str | None = None) -> None:
     if not items:
         console.print("[dim]No action items or decisions.[/dim]")
         return
@@ -172,7 +187,7 @@ def _print_items(items: list[dict], participants: list[dict]) -> None:
     table.add_column("Status")
     table.add_column("Owner", style="dim")
     table.add_column("Due", style="dim")
-    table.add_column("Lines", style="dim")
+    table.add_column("Messages" if kind == "chat" else "Lines", style="dim")
     table.add_column("Description")
     for it in items:
         table.add_row(
@@ -186,7 +201,7 @@ def _print_items(items: list[dict], participants: list[dict]) -> None:
                 )
             ),
             str(it.get("due_date") or "—"),
-            f"L{it.get('line_start')}-{it.get('line_end')}",
+            f"{'M' if kind == 'chat' else 'L'}{it.get('line_start')}-{it.get('line_end')}",
             escape(str(it.get("description", ""))),
         )
     console.print(table)
@@ -272,18 +287,29 @@ def list_meetings(
     before: str | None = typer.Option(None, "--before", help="Cursor: the id printed after the previous page."),
 ) -> None:
     """List meetings, newest first."""
+    list_impl(project, group, query, limit, before)
+
+
+def list_impl(
+    project: str | None,
+    group: str | None,
+    query: str | None,
+    limit: int,
+    before: str | None,
+    kind: str | None = None,
+) -> None:
     api, base = _scope_base(project, group)
-    params: dict[str, str] = {"limit": str(limit)}
+    params: dict[str, str] = {"limit": str(limit), **_kind_params(kind)}
     if query:
         params["q"] = query
     if before:
         params["before"] = before
     body = _call("GET", f"{base}/meetings", params=params, api=api)
-    _meeting_table(body.get("meetings", []) if isinstance(body, dict) else [])
+    _meeting_table(body.get("meetings", []) if isinstance(body, dict) else [], kind)
     if isinstance(body, dict) and body.get("next_cursor"):
         import shlex
 
-        parts = ["sfs", "meeting", "list"]
+        parts = ["sfs", "chat" if kind == "chat" else "meeting", "list"]
         if project:
             parts += ["--project", project]
         if group:
@@ -306,13 +332,22 @@ def search_meetings(
     limit: int = typer.Option(25, "--limit", "-n", min=1, max=200),
 ) -> None:
     """Search meetings by title and transcript text."""
+    search_impl(q, project, group, limit)
+
+
+def search_impl(
+    q: str, project: str | None, group: str | None, limit: int, kind: str | None = None
+) -> None:
     api, base = _scope_base(project, group)
-    body = _call("GET", f"{base}/meetings", params={"q": q, "limit": str(limit)}, api=api)
-    _meeting_table(body.get("meetings", []) if isinstance(body, dict) else [])
+    body = _call(
+        "GET", f"{base}/meetings",
+        params={"q": q, "limit": str(limit), **_kind_params(kind)}, api=api,
+    )
+    _meeting_table(body.get("meetings", []) if isinstance(body, dict) else [], kind)
 
 
-def _get_meeting(meeting_id: str) -> dict:
-    body = _call("GET", f"/api/v1/meetings/{meeting_id}")
+def _get_meeting(meeting_id: str, kind: str | None = None) -> dict:
+    body = _call("GET", f"/api/v1/meetings/{meeting_id}", params=_kind_params(kind) or None)
     if not isinstance(body, dict):
         err_console.print("[red]Unexpected API response.[/red]")
         raise typer.Exit(1)
@@ -326,23 +361,33 @@ def show_meeting(
     no_transcript: bool = typer.Option(False, "--no-transcript", help="Hide the transcript text."),
 ) -> None:
     """Print a meeting: numbered transcript, participants, action items."""
-    m = _get_meeting(meeting_id)
+    show_impl(meeting_id, no_transcript)
+
+
+def show_impl(meeting_id: str, no_transcript: bool, kind: str | None = None) -> None:
+    m = _get_meeting(meeting_id, kind)
+    chat = m.get("kind") == "chat"
     when = (m.get("meeting_at") or m.get("created_at") or "")[:16]
+    unit = "messages" if chat else "lines"
+    channel = f"  {escape(str(m.get('channel_name') or ''))}" if chat else ""
     console.print(Panel(
         f"[bold]{escape(str(m.get('title', '')))}[/bold]\n"
-        f"[dim]{m['id']}[/dim]  {when}  {m.get('line_count', '?')} lines  "
+        f"[dim]{m['id']}[/dim]{channel}  {when}  {m.get('line_count', '?')} {unit}  "
         f"extraction: {m.get('extraction_status')}",
         expand=False,
     ))
     if not no_transcript:
         lines = str(m.get("content", "")).split("\n")
-        width = len(str(len(lines)))
+        width = len(str(len(lines))) + (1 if chat else 0)
         for i, line in enumerate(lines, 1):
-            console.print(f"[dim]{i:>{width}}[/dim]  {escape(line)}", soft_wrap=True)
+            num = f"M{i}" if chat else str(i)
+            console.print(f"[dim]{num:>{width}}[/dim]  {escape(line)}", soft_wrap=True)
     console.print("\n[bold]Participants[/bold]")
     _print_participants(m.get("participants") or [])
     console.print("\n[bold]Items[/bold]")
-    _print_items(m.get("action_items") or [], m.get("participants") or [])
+    _print_items(
+        m.get("action_items") or [], m.get("participants") or [], "chat" if chat else None
+    )
 
 
 @meeting_app.command("delete")
@@ -352,10 +397,14 @@ def delete_meeting(
     yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation."),
 ) -> None:
     """Delete a meeting (soft-delete; the retention sweep removes it later)."""
-    if not confirm_or_exit(f"Delete meeting {meeting_id}?", yes=yes):
+    delete_impl(meeting_id, yes)
+
+
+def delete_impl(meeting_id: str, yes: bool, kind: str | None = None) -> None:
+    if not confirm_or_exit(f"Delete {_noun(kind)} {meeting_id}?", yes=yes):
         console.print("[dim]Cancelled.[/dim]")
         raise typer.Exit(0)
-    _call("DELETE", f"/api/v1/meetings/{meeting_id}")
+    _call("DELETE", f"/api/v1/meetings/{meeting_id}", params=_kind_params(kind) or None)
     console.print(f"[green]Deleted[/green] {meeting_id}")
 
 
@@ -363,16 +412,27 @@ def delete_meeting(
 @handle_errors
 def extract_meeting(meeting_id: str = typer.Argument(...)) -> None:
     """Extract participants, action items and decisions with your own LLM key."""
-    body = _call("POST", f"/api/v1/meetings/{meeting_id}/extract", timeout=_LONG_TIMEOUT)
+    extract_impl(meeting_id)
+
+
+def extract_impl(meeting_id: str, kind: str | None = None) -> None:
+    body = _call(
+        "POST", f"/api/v1/meetings/{meeting_id}/extract",
+        params=_kind_params(kind) or None, timeout=_LONG_TIMEOUT,
+    )
     _print_extraction_summary(body)
-    _print_items(body.get("action_items") or [], body.get("participants") or [])
+    _print_items(body.get("action_items") or [], body.get("participants") or [], kind)
 
 
 @meeting_app.command("participants")
 @handle_errors
 def list_participants(meeting_id: str = typer.Argument(...)) -> None:
     """List a meeting's participants and how each was resolved."""
-    _print_participants(_get_meeting(meeting_id).get("participants") or [])
+    participants_impl(meeting_id)
+
+
+def participants_impl(meeting_id: str, kind: str | None = None) -> None:
+    _print_participants(_get_meeting(meeting_id, kind).get("participants") or [])
 
 
 @meeting_app.command("resolve-participant")
@@ -384,12 +444,23 @@ def resolve_participant(
     persona: str | None = typer.Option(None, "--persona", help="Persona name to resolve to."),
 ) -> None:
     """Resolve a participant to an org member or a persona (exactly one)."""
+    resolve_participant_impl(meeting_id, participant_id, user, persona)
+
+
+def resolve_participant_impl(
+    meeting_id: str,
+    participant_id: str,
+    user: str | None,
+    persona: str | None,
+    kind: str | None = None,
+) -> None:
     if bool(user) == bool(persona):
         err_console.print("[red]Give exactly one of --user or --persona.[/red]")
         raise typer.Exit(1)
     payload = {"user_id": user} if user else {"persona_name": persona}
     body = _call(
-        "PUT", f"/api/v1/meetings/{meeting_id}/participants/{participant_id}", json_data=payload
+        "PUT", f"/api/v1/meetings/{meeting_id}/participants/{participant_id}",
+        json_data=payload, params=_kind_params(kind) or None,
     )
     console.print(
         f"[green]Resolved[/green] {escape(str(body.get('name_raw', participant_id)))} → "
@@ -401,8 +472,12 @@ def resolve_participant(
 @handle_errors
 def list_action_items(meeting_id: str = typer.Argument(...)) -> None:
     """List a meeting's action items, decisions."""
-    m = _get_meeting(meeting_id)
-    _print_items(m.get("action_items") or [], m.get("participants") or [])
+    action_items_impl(meeting_id)
+
+
+def action_items_impl(meeting_id: str, kind: str | None = None) -> None:
+    m = _get_meeting(meeting_id, kind)
+    _print_items(m.get("action_items") or [], m.get("participants") or [], kind)
 
 
 def _item_path(meeting_id: str, item_id: str) -> str:
@@ -425,12 +500,35 @@ def promote_item(
     yes: bool = typer.Option(False, "--yes", "-y", help="Create the ticket without asking."),
 ) -> None:
     """Turn an action item into a ticket. Shows the draft first and asks to confirm."""
+    promote_impl(
+        meeting_id, item_id, title=title, description=description, assignee=assignee,
+        user=user, due=due, priority=priority, target_project=target_project, jira=jira,
+        yes=yes,
+    )
+
+
+def promote_impl(
+    meeting_id: str,
+    item_id: str,
+    *,
+    title: str | None,
+    description: str | None,
+    assignee: str | None,
+    user: str | None,
+    due: str | None,
+    priority: str | None,
+    target_project: str | None,
+    jira: bool,
+    yes: bool,
+    kind: str | None = None,
+) -> None:
+    kp = _kind_params(kind) or None
     if assignee and user:
         err_console.print("[red]Use either --assignee or --user, not both.[/red]")
         raise typer.Exit(1)
     api = _get_api_config()
     root = _item_path(meeting_id, item_id)
-    draft = _call("POST", f"{root}/promote/preview", api=api)
+    draft = _call("POST", f"{root}/promote/preview", params=kp, api=api)
 
     if target_project:
         draft["target_project_id"] = target_project
@@ -451,7 +549,7 @@ def promote_item(
     if not draft.get("target_project_id"):
         listing = ", ".join(f"{o['id']} ({o['name']})" for o in options or []) or "none editable"
         err_console.print(
-            "[red]This is a group meeting: pass --target-project.[/red] "
+            f"[red]This is a group {_noun(kind)}: pass --target-project.[/red] "
             f"Choices: {escape(listing)}"
         )
         raise typer.Exit(1)
@@ -481,7 +579,7 @@ def promote_item(
     }
     payload["publish_to_jira"] = jira
     body = _call(
-        "POST", root + "/promote", json_data=payload, api=api,
+        "POST", root + "/promote", json_data=payload, params=kp, api=api,
         timeout=_LONG_TIMEOUT if jira else 30,
     )
     console.print(f"[green]Created ticket[/green] [cyan]{body['ticket_id']}[/cyan]")
@@ -496,8 +594,17 @@ def dismiss_item(
     item_id: str = typer.Argument(...),
 ) -> None:
     """Dismiss a pending action item."""
-    _call("POST", f"{_item_path(meeting_id, item_id)}/dismiss")
-    console.print(f"[green]Dismissed[/green] {item_id}")
+    item_action_impl(meeting_id, item_id, "dismiss")
+
+
+def item_action_impl(meeting_id: str, item_id: str, action: str, kind: str | None = None) -> None:
+    """POST .../action-items/<item>/dismiss|restore."""
+    _call(
+        "POST", f"{_item_path(meeting_id, item_id)}/{action}",
+        params=_kind_params(kind) or None,
+    )
+    label = "Dismissed" if action == "dismiss" else "Restored"
+    console.print(f"[green]{label}[/green] {item_id}")
 
 
 @meeting_app.command("restore")
@@ -507,5 +614,4 @@ def restore_item(
     item_id: str = typer.Argument(...),
 ) -> None:
     """Bring a dismissed action item back to pending."""
-    _call("POST", f"{_item_path(meeting_id, item_id)}/restore")
-    console.print(f"[green]Restored[/green] {item_id}")
+    item_action_impl(meeting_id, item_id, "restore")

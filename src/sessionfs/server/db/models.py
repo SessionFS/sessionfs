@@ -6718,7 +6718,8 @@ class HelperUsage(Base):
             "key_source IN ('user', 'org')", name="ck_helper_usage_key_source"
         ),
         CheckConstraint(
-            "source IN ('helper', 'meeting_extract')", name="ck_helper_usage_source"
+            "source IN ('helper', 'meeting_extract', 'chat_extract')",
+            name="ck_helper_usage_source",
         ),
         Index("idx_helper_usage_org_created", "org_id", "created_at"),
         Index("idx_helper_usage_user_created", "user_id", "created_at"),
@@ -6799,8 +6800,14 @@ _register_facet_listeners()
 # v0.28 — meeting transcripts (GitHub #116, migration 104).
 
 
-class MeetingTranscript(Base):
-    """A stored, scoped meeting transcript.
+class ConversationSource(Base):
+    """A stored, scoped conversation: a meeting transcript or a chat thread.
+
+    The table keeps its original name (``meeting_transcripts``); ``kind`` is
+    ``meeting`` or ``chat`` (migration 121). A chat row also carries the
+    exporter ``provider`` and a ``channel_name`` label (required for chat,
+    grants nothing), and its normalised content has one message per line so
+    message N is line N (``ConversationMessageMeta`` keeps per-line authors).
 
     Exactly one of ``project_id`` / ``group_id`` is set
     (ck_meeting_transcripts_scope). ``org_id`` is the owning org of the
@@ -6841,8 +6848,21 @@ class MeetingTranscript(Base):
             name="ck_meeting_transcripts_scope",
         ),
         CheckConstraint(
-            "source IN ('manual_paste', 'file_upload')",
+            "source IN ('manual_paste', 'file_upload', 'chat_export')",
             name="ck_meeting_transcripts_source",
+        ),
+        CheckConstraint(
+            "kind IN ('meeting', 'chat')", name="ck_meeting_transcripts_kind"
+        ),
+        CheckConstraint(
+            "provider IS NULL OR provider IN "
+            "('slack', 'discord', 'teams_paste', 'paste')",
+            name="ck_meeting_transcripts_provider",
+        ),
+        CheckConstraint(
+            "kind <> 'chat' OR (provider IS NOT NULL AND channel_name IS NOT NULL "
+            "AND length(channel_name) BETWEEN 1 AND 80)",
+            name="ck_meeting_transcripts_chat_fields",
         ),
         CheckConstraint(
             "extraction_status IN ('none', 'done', 'failed')",
@@ -6866,6 +6886,11 @@ class MeetingTranscript(Base):
     )
     duration_minutes: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source: Mapped[str] = mapped_column(String(20), nullable=False)
+    kind: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="meeting", server_default=text("'meeting'")
+    )
+    provider: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    channel_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     line_count: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -6890,6 +6915,34 @@ class MeetingTranscript(Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+# Existing imports keep working: the class was renamed in code only.
+MeetingTranscript = ConversationSource
+
+
+class ConversationMessageMeta(Base):
+    """Per-message metadata for a chat thread (migration 121).
+
+    One row per normalised message line: ``line_no`` is the 1-based line in
+    the stored content, ``author_raw`` the exporter's (or paste's) author
+    label and ``email_raw`` an exporter-supplied email for that author. Used
+    only as participant evidence; never an identity on its own.
+    """
+
+    __tablename__ = "conversation_message_meta"
+
+    source_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("meeting_transcripts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    line_no: Mapped[int] = mapped_column(Integer, primary_key=True)
+    author_raw: Mapped[str] = mapped_column(String(200), nullable=False)
+    email_raw: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    posted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

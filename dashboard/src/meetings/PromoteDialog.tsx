@@ -5,12 +5,15 @@ import { usePromoteMeetingItem, usePromotePreview } from '../hooks/useMeetings';
 import { useToast } from '../hooks/useToast';
 import { AssigneePicker } from '../projects/tickets/AssigneePicker';
 import { UNASSIGNED, assigneePayload, type Assignee } from '../projects/tickets/assignee';
+import { messagesLabel } from './chat';
 import { linesLabel, meetingActionError, meetingErrorCode } from './format';
 
 interface PromoteDialogProps {
   meetingId: string;
   item: MeetingActionItem;
   onClose: () => void;
+  /** The item cites chat messages, not transcript lines. */
+  chat?: boolean;
 }
 
 const PRIORITIES = [
@@ -19,6 +22,10 @@ const PRIORITIES = [
   { value: 'high', label: 'High' },
   { value: 'critical', label: 'Critical' },
 ];
+
+function sameAssignee(a: Assignee, b: Assignee): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
 
 function draftAssignee(p: MeetingPromotePreview): Assignee {
   if (p.assigned_to) return { kind: 'persona', name: p.assigned_to };
@@ -31,7 +38,7 @@ function draftAssignee(p: MeetingPromotePreview): Assignee {
  * text with its quoted lines, the matched owner, the due date) shown editable,
  * then Confirm. A group meeting picks the project to file it in.
  */
-export function PromoteDialog({ meetingId, item, onClose }: PromoteDialogProps) {
+export function PromoteDialog({ meetingId, item, onClose, chat = false }: PromoteDialogProps) {
   const preview = usePromotePreview(meetingId, item.id);
   // While the ticket is being created the dialog stays: closing it would
   // look like a cancel of a write that still lands.
@@ -45,7 +52,7 @@ export function PromoteDialog({ meetingId, item, onClose }: PromoteDialogProps) 
     <Dialog open onClose={close} titleId="meeting-promote-title" className="max-w-2xl">
       <DialogHeader titleId="meeting-promote-title">Create ticket</DialogHeader>
       <p className="-mt-2 mb-4 text-sm text-text-tertiary">
-        From an action item, {linesLabel(range).toLowerCase()}. Edit anything before you create it.
+        From an action item, {(chat ? messagesLabel(range) : linesLabel(range)).toLowerCase()}. Edit anything before you create it.
       </p>
 
       {preview.isLoading && (
@@ -72,6 +79,7 @@ export function PromoteDialog({ meetingId, item, onClose }: PromoteDialogProps) 
           meetingId={meetingId}
           itemId={item.id}
           ownerHint={item.owner_participant_id ? null : (item.owner_hint ?? null)}
+          chat={chat}
           draft={preview.data}
           onClose={onClose}
           onPendingChange={setCreating}
@@ -85,6 +93,7 @@ function PromoteForm({
   meetingId,
   itemId,
   ownerHint,
+  chat,
   draft,
   onClose,
   onPendingChange,
@@ -92,6 +101,7 @@ function PromoteForm({
   meetingId: string;
   itemId: string;
   ownerHint: string | null;
+  chat: boolean;
   draft: MeetingPromotePreview;
   onClose: () => void;
   onPendingChange: (pending: boolean) => void;
@@ -207,7 +217,7 @@ function PromoteForm({
         rows={9}
         required
         className="font-mono text-xs leading-5"
-        hint="Includes the quoted transcript lines, so the ticket keeps its context."
+        hint="Includes the quoted text, so the ticket keeps its context."
       />
 
       {target ? (
@@ -222,9 +232,12 @@ function PromoteForm({
             }}
             error={assigneeError}
           />
+          {draft.owner_match_note && sameAssignee(assignee, draftAssignee(draft)) && (
+            <p className="mt-1 text-xs text-text-tertiary">Owner {draft.owner_match_note}.</p>
+          )}
           {ownerHint && assignee.kind === 'none' && (
             <p className="mt-1 text-xs text-text-tertiary">
-              Owner unknown: the transcript named “{ownerHint}”, who isn’t matched to anyone. Choose who should do it.
+              Owner unknown: the {chat ? 'thread' : 'transcript'} named “{ownerHint}”, who isn’t matched to anyone. Choose who should do it.
             </p>
           )}
         </div>

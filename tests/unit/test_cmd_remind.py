@@ -117,6 +117,32 @@ def test_add_refuses_meeting_and_ticket(api):
     assert res.exit_code != 0 and not api.calls
 
 
+@pytest.mark.parametrize(
+    "value,source",
+    [
+        ("chat_abc", {"kind": "meeting", "id": "chat_abc"}),
+        ("chat_abc:M3-5", {"kind": "meeting", "id": "chat_abc", "lines": "3-5"}),
+        ("chat_abc:M3-M5", {"kind": "meeting", "id": "chat_abc", "lines": "3-5"}),
+        ("chat_abc:4", {"kind": "meeting", "id": "chat_abc", "lines": "4-4"}),
+    ],
+)
+def test_add_with_chat_thread_and_messages(api, value, source):
+    res = _run(["add", "Follow up", "--at", "2026-11-06 09:00", "--tz", "UTC", "--chat", value])
+    assert res.exit_code == 0, res.output
+    assert api.calls[0]["json"]["source"] == source
+
+
+@pytest.mark.parametrize("value", ["chat abc", "chat_abc:X3", "chat_abc:M3-"])
+def test_add_bad_chat_makes_no_call(api, value):
+    res = _run(["add", "x", "--at", "2026-11-06 09:00", "--chat", value])
+    assert res.exit_code != 0 and not api.calls
+
+
+def test_add_refuses_chat_with_meeting(api):
+    res = _run(["add", "x", "--at", "2026-11-06 09:00", "--meeting", "mt_1", "--chat", "chat_1"])
+    assert res.exit_code != 0 and not api.calls
+
+
 def test_add_bad_at_makes_no_call(api):
     res = _run(["add", "x", "--at", "soon"])
     assert res.exit_code != 0 and not api.calls

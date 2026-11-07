@@ -2,7 +2,8 @@
 
 Commands:
 - sfs remind add "title" --at "2026-11-06 09:00" [--tz Europe/London]
-                 [--meeting MEETING_ID[:LINES]] [--ticket TK] [--for EMAIL]
+                 [--meeting MEETING_ID[:LINES] | --chat CHAT_ID[:M<a>-<b>]]
+                 [--ticket TK] [--for EMAIL]
 - sfs remind list [--all | --done] [--due-before TIME]
 - sfs remind show <id>
 - sfs remind note <id> "text"
@@ -34,7 +35,7 @@ from sessionfs.cli.common import console, err_console, format_api_error, handle_
 
 remind_app = typer.Typer(
     name="remind",
-    help="Personal reminders, optionally tied to a meeting or a ticket.",
+    help="Personal reminders, optionally tied to a meeting, a chat thread or a ticket.",
     no_args_is_help=True,
 )
 
@@ -46,6 +47,11 @@ def _item(reminder_id: str) -> str:
     return f"{_BASE}/{quote(reminder_id.strip(), safe='')}"
 
 _MEETING_RE = re.compile(r"^(?P<id>[A-Za-z0-9_-]{1,64})(?::(?P<lines>\d{1,6}(?:-\d{1,6})?))?$")
+# A chat thread and an optional message range: chat_x, chat_x:M3, chat_x:M3-M5
+# (the M is optional; message N is stored line N).
+_CHAT_RE = re.compile(
+    r"^(?P<id>[A-Za-z0-9_-]{1,64})(?::[Mm]?(?P<start>\d{1,6})(?:-[Mm]?(?P<end>\d{1,6}))?)?$"
+)
 _SNOOZE_PRESETS = {"1h": "1h", "tomorrow": "tomorrow", "next-week": "next_week", "next_week": "next_week"}
 _TIME_FORMATS = ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S")
 
@@ -179,12 +185,15 @@ def add(
     at: str = typer.Option(..., "--at", help='When, e.g. "2026-11-06 09:00".'),
     tz: str | None = typer.Option(None, "--tz", help="IANA timezone, e.g. Europe/London."),
     meeting: str | None = typer.Option(None, "--meeting", help="MEETING_ID or MEETING_ID:LINES (e.g. 12-18)."),
+    chat: str | None = typer.Option(
+        None, "--chat", help="CHAT_ID or CHAT_ID:M<a>-<b> (a chat thread and its messages, e.g. M3-5)."
+    ),
     ticket: str | None = typer.Option(None, "--ticket", help="Ticket id to tie the reminder to."),
     for_: str | None = typer.Option(None, "--for", help="Remind a teammate (email) who can read the source."),
 ) -> None:
     """Create a reminder."""
-    if meeting and ticket:
-        raise typer.BadParameter("use either --meeting or --ticket, not both")
+    if sum(1 for opt in (meeting, chat, ticket) if opt) > 1:
+        raise typer.BadParameter("use only one of --meeting, --chat or --ticket")
     due_at, zone = parse_at(at, tz)
     body: dict[str, Any] = {"title": title, "due_at": due_at}
     if zone:
@@ -197,6 +206,16 @@ def add(
         lines = m.group("lines")
         if lines:
             source["lines"] = lines if "-" in lines else f"{lines}-{lines}"
+        body["source"] = source
+    elif chat:
+        c = _CHAT_RE.match(chat.strip())
+        if not c:
+            raise typer.BadParameter("--chat must look like CHAT_ID or CHAT_ID:M3-5")
+        # The whole thread is a ``meeting`` source (chat threads share the
+        # conversation routes); the message range rides in ``lines``.
+        source = {"kind": "meeting", "id": c.group("id")}
+        if c.group("start"):
+            source["lines"] = f"{c.group('start')}-{c.group('end') or c.group('start')}"
         body["source"] = source
     elif ticket:
         body["source"] = {"kind": "ticket", "id": ticket.strip()}

@@ -458,7 +458,7 @@ export default function HelperPanel({
               { kind: 'wiki', project_id: c.project_id, slug: c.slug, title: c.title, at: c.at ?? null },
             ],
           }));
-        } else if (ev.event === 'meeting_citation') {
+        } else if (ev.event === 'meeting_citation' || ev.event === 'chat_citation') {
           const c = JSON.parse(ev.data) as HelperMeetingCitation;
           if (!c.meeting_id) return;
           citationCount += 1;
@@ -467,7 +467,8 @@ export default function HelperPanel({
             citations: [
               ...t.citations,
               {
-                kind: 'meeting',
+                kind: ev.event === 'chat_citation' ? 'chat' : 'meeting',
+                ...(ev.event === 'chat_citation' ? { channel_name: c.channel_name ?? null } : {}),
                 meeting_id: c.meeting_id,
                 title: c.title ?? null,
                 line_start: c.line_start ?? null,

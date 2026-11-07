@@ -16,7 +16,7 @@ import re
 from datetime import date
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select, update
@@ -28,6 +28,7 @@ from sessionfs.server.auth.dependencies import (
     require_scope,
 )
 from sessionfs.server.db.models import (
+    ConversationMessageMeta,
     MeetingActionItem,
     MeetingParticipant,
     MeetingTranscript,
@@ -40,6 +41,7 @@ from sessionfs.server.db.models import (
 from sessionfs.server.routes.meetings import (
     MeetingActionItemResponse,
     MeetingDetailResponse,
+    RowKind,
     _action_item_response,
     _get_meeting,
     _meeting_audit_event,
@@ -88,6 +90,9 @@ class PromotePreviewResponse(BaseModel):
     # True only when publishing this ticket to Jira would pass every
     # database-side gate (plan, caller standing, connection, mapping).
     jira_publish_available: bool = False
+    # Chat threads: "matched by exporter email" when the owner was matched to
+    # a member only through the email the chat export recorded for them.
+    owner_match_note: str | None = None
 
 
 class PromoteRequest(BaseModel):
@@ -129,10 +134,18 @@ def _promote_description(meeting: MeetingTranscript, item: MeetingActionItem) ->
     end = min(item.line_end, len(lines))
     quoted = "\n".join(f"> {line}" for line in lines[start:end][:40])
 
-    header = f"From meeting *{meeting.title}*"
-    if meeting.meeting_at is not None:
-        header += f" ({meeting.meeting_at.date().isoformat()})"
-    header += f", lines {item.line_start}-{item.line_end}:"
+    if meeting.kind == "chat":
+        header = f"From chat thread *{meeting.title}*"
+        if meeting.channel_name and meeting.channel_name != meeting.title:
+            header += f" in {meeting.channel_name}"
+        if meeting.meeting_at is not None:
+            header += f" ({meeting.meeting_at.date().isoformat()})"
+        header += f", messages {item.line_start}-{item.line_end}:"
+    else:
+        header = f"From meeting *{meeting.title}*"
+        if meeting.meeting_at is not None:
+            header += f" ({meeting.meeting_at.date().isoformat()})"
+        header += f", lines {item.line_start}-{item.line_end}:"
     return f"{item.description}\n\n{header}\n{quoted}"
 
 
@@ -154,6 +167,40 @@ async def _draft_assignee(
     if participant.user_id:
         return None, participant.user_id
     return None, None
+
+
+EXPORTER_EMAIL_NOTE = "matched by exporter email"
+
+
+async def _owner_match_note(
+    db: AsyncSession, meeting: MeetingTranscript, item: MeetingActionItem
+) -> str | None:
+    """``matched by exporter email`` when a chat item's owner resolved to a
+    member by an email that only the export's users.json supplied (it isn't
+    written anywhere in the thread itself)."""
+    if meeting.kind != "chat" or item.owner_participant_id is None:
+        return None
+    participant = await db.get(MeetingParticipant, item.owner_participant_id)
+    if (
+        participant is None
+        or participant.resolution_method != "exact_email"
+        or not participant.email_raw
+    ):
+        return None
+    email = participant.email_raw.casefold()
+    if email in meeting.content.casefold():
+        return None
+    exporter_emails = (
+        await db.execute(
+            select(ConversationMessageMeta.email_raw).where(
+                ConversationMessageMeta.source_id == meeting.id,
+                ConversationMessageMeta.email_raw.is_not(None),
+            )
+        )
+    ).scalars().all()
+    if any(e and e.casefold() == email for e in exporter_emails):
+        return EXPORTER_EMAIL_NOTE
+    return None
 
 
 # ── Target project resolution (§7 group meetings) ──
@@ -385,10 +432,11 @@ def _item_not_pending() -> HTTPException:
 @router.post("/meetings/{meeting_id}/extract", response_model=ExtractionResponse)
 async def extract_meeting(
     meeting_id: str,
+    kind: RowKind | None = Query(default=None),
     auth: AuthContext = Depends(require_scope("meetings:write")),
     db: AsyncSession = Depends(get_db),
 ):
-    meeting = await _get_meeting(db, meeting_id)
+    meeting = await _get_meeting(db, meeting_id, kind)
     if meeting.deleted_at is not None:
         raise HTTPException(404, "Meeting not found")
     await _meeting_scope(db, meeting, auth, write=True)
@@ -406,10 +454,11 @@ async def preview_promote(
     meeting_id: str,
     item_id: str,
     target_project_id: str | None = None,
+    kind: RowKind | None = Query(default=None),
     auth: AuthContext = Depends(require_scope("meetings:write")),
     db: AsyncSession = Depends(get_db),
 ):
-    meeting = await _get_meeting(db, meeting_id)
+    meeting = await _get_meeting(db, meeting_id, kind)
     if meeting.deleted_at is not None:
         raise HTTPException(404, "Meeting not found")
     scope = await _meeting_scope(db, meeting, auth, write=True)
@@ -470,6 +519,7 @@ async def preview_promote(
         target_project_id=resolved_target_id,
         target_project_options=target_project_options,
         jira_publish_available=jira_publish_available,
+        owner_match_note=await _owner_match_note(db, meeting, item),
     )
 
 
@@ -481,10 +531,11 @@ async def promote_meeting_item(
     meeting_id: str,
     item_id: str,
     body: PromoteRequest,
+    kind: RowKind | None = Query(default=None),
     auth: AuthContext = Depends(require_scope("meetings:write")),
     db: AsyncSession = Depends(get_db),
 ):
-    meeting = await _get_meeting(db, meeting_id)
+    meeting = await _get_meeting(db, meeting_id, kind)
     if meeting.deleted_at is not None:
         raise HTTPException(404, "Meeting not found")
     scope = await _meeting_scope(db, meeting, auth, write=True)
@@ -592,7 +643,10 @@ async def promote_meeting_item(
     # also list on the ticket's reminders strip).
     await db.execute(
         update(Reminder)
-        .where(Reminder.source_kind == "meeting_item", Reminder.source_id == item_id)
+        .where(
+            Reminder.source_kind.in_(("meeting_item", "chat_item")),
+            Reminder.source_id == item_id,
+        )
         .values(linked_ticket_id=ticket_id)
         .execution_options(synchronize_session=False)
     )
@@ -676,10 +730,11 @@ async def _item_owner_user_id(db: AsyncSession, item: MeetingActionItem) -> str 
 async def dismiss_meeting_item(
     meeting_id: str,
     item_id: str,
+    kind: RowKind | None = Query(default=None),
     auth: AuthContext = Depends(require_scope("meetings:write")),
     db: AsyncSession = Depends(get_db),
 ):
-    meeting = await _get_meeting(db, meeting_id)
+    meeting = await _get_meeting(db, meeting_id, kind)
     if meeting.deleted_at is not None:
         raise HTTPException(404, "Meeting not found")
     await _meeting_scope(db, meeting, auth, write=True)
@@ -708,10 +763,11 @@ async def dismiss_meeting_item(
 async def restore_meeting_item(
     meeting_id: str,
     item_id: str,
+    kind: RowKind | None = Query(default=None),
     auth: AuthContext = Depends(require_scope("meetings:write")),
     db: AsyncSession = Depends(get_db),
 ):
-    meeting = await _get_meeting(db, meeting_id)
+    meeting = await _get_meeting(db, meeting_id, kind)
     if meeting.deleted_at is not None:
         raise HTTPException(404, "Meeting not found")
     await _meeting_scope(db, meeting, auth, write=True)
