@@ -3,6 +3,7 @@ import { appendFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { mockApi } from './fixtures/mock-api';
+import { fyCaughtUpFeed, fyLoops, FY_PROJECT } from '../src/foryou/fixtures';
 import {
   agentRuns,
   GROUP_ID,
@@ -56,6 +57,8 @@ interface Scenario {
   prepare?: (page: Page) => Promise<void>;
   /** Extra API overrides, registered after the shared mocks so they win. */
   mock?: (page: Page) => Promise<void>;
+  /** Load state to wait for before capture (a loading state can't wait for network idle). */
+  waitUntil?: 'load' | 'networkidle';
 }
 
 const fulfillJson = (status: number, body: unknown) => ({
@@ -65,7 +68,7 @@ const fulfillJson = (status: number, body: unknown) => ({
 });
 
 const PAGES: Scenario[] = [
-  { name: 'sessions', path: '/' },
+  { name: 'sessions', path: '/sessions' },
   { name: 'projects', path: '/projects' },
   { name: 'project-overview', path: `/projects/${PROJECT}` },
   { name: 'project-knowledge', path: `/projects/${PROJECT}?tab=knowledge` },
@@ -174,7 +177,7 @@ const SHELL_WIDTHS = [375, 768, 900, 1024, 1280];
 const OVERLAY_SCENARIOS: Scenario[] = [
   {
     name: 'sessions-model-filter',
-    path: '/?model=gpt-5&model=retired-model-x',
+    path: '/sessions?model=gpt-5&model=retired-model-x',
     prepare: async (page) => {
       await page.getByRole('button', { name: 'Filter by model' }).click();
       await page.getByRole('dialog', { name: 'Filter by model' }).waitFor();
@@ -1504,6 +1507,184 @@ const LOOP_SCENARIOS: Scenario[] = [
   },
 ];
 
+// For You, the dashboard home (tk_dc118ffd6e804a9a): full, caught up,
+// loading, error, reduced motion, and its open disclosures and panels.
+const FY_FEED = (u: URL) => u.pathname === '/api/v1/me/for-you';
+const FOR_YOU_SCENARIOS: Scenario[] = [
+  { name: 'for-you', path: '/' },
+  {
+    name: 'for-you-caught-up',
+    path: '/',
+    mock: async (page) => {
+      await page.route(FY_FEED, (route) => route.fulfill(fulfillJson(200, fyCaughtUpFeed())));
+    },
+    prepare: async (page) => {
+      await page.getByRole('heading', { name: /all caught up/ }).waitFor();
+      await page.waitForTimeout(1800);
+    },
+  },
+  {
+    name: 'for-you-loading',
+    path: '/',
+    waitUntil: 'load',
+    mock: async (page) => {
+      // Never answered: the page stays on its loading skeleton.
+      await page.route(FY_FEED, () => undefined);
+    },
+    prepare: async (page) => {
+      await page.getByRole('status').filter({ hasText: 'Loading what needs you' }).waitFor();
+    },
+  },
+  {
+    name: 'for-you-error',
+    path: '/',
+    mock: async (page) => {
+      await page.route(FY_FEED, (route) =>
+        route.fulfill(fulfillJson(503, { error: { code: 'unavailable', message: 'The feed is temporarily unavailable.' } })),
+      );
+    },
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Try again' }).waitFor();
+    },
+  },
+  {
+    name: 'for-you-reduced-motion',
+    path: '/',
+    mock: async (page) => {
+      await page.emulateMedia({ reducedMotion: 'reduce' });
+    },
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Next item' }).waitFor();
+    },
+  },
+  {
+    name: 'for-you-more-context',
+    path: '/',
+    prepare: async (page) => {
+      await page.getByRole('button', { name: /More context/ }).first().click();
+      await page.getByText('Why it ranks here').first().waitFor();
+      await page.waitForTimeout(400);
+    },
+  },
+  {
+    name: 'for-you-acknowledge',
+    path: '/',
+    prepare: async (page) => {
+      await page.getByRole('button', { name: /Acknowledge/ }).first().click();
+      await page.getByRole('button', { name: 'Create ticket' }).waitFor();
+    },
+  },
+  {
+    name: 'for-you-snooze-menu',
+    path: '/',
+    prepare: async (page) => {
+      // Phones keep Snooze behind "More actions".
+      const more = page.getByRole('button', { name: 'More actions' }).first();
+      if (await more.isVisible()) await more.click();
+      await page.getByRole('button', { name: /^Snooze/ }).filter({ visible: true }).first().click();
+      await page.getByRole('menu', { name: 'Snooze until' }).waitFor();
+    },
+  },
+  {
+    name: 'for-you-remind-composer',
+    path: '/',
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Send a reminder to Kemi' }).click();
+      await page.getByRole('textbox', { name: 'Message' }).waitFor();
+    },
+  },
+  {
+    name: 'for-you-before-you-start',
+    path: '/',
+    prepare: async (page) => {
+      await page.getByRole('button', { name: /Before you start/ }).first().click();
+      await page.getByText(/A service key is its minter/).waitFor();
+    },
+  },
+  {
+    name: 'for-you-shortcuts',
+    path: '/',
+    prepare: async (page) => {
+      await page.getByRole('heading', { name: 'On your radar' }).waitFor();
+      await page.keyboard.press('?');
+      await page.getByRole('dialog', { name: 'Keyboard shortcuts' }).waitFor();
+    },
+  },
+];
+// Approval cards: the inline Approve / Reject panels and the stamp.
+const FY_APPROVAL = (page: import('@playwright/test').Page) => page.locator('[data-key="fy_appr1"]');
+FOR_YOU_SCENARIOS.push(
+  {
+    name: 'for-you-approval-card',
+    path: '/',
+    prepare: async (page) => {
+      await FY_APPROVAL(page).waitFor();
+      await FY_APPROVAL(page).scrollIntoViewIfNeeded();
+    },
+  },
+  {
+    name: 'for-you-approve-panel',
+    path: '/',
+    prepare: async (page) => {
+      await FY_APPROVAL(page).getByRole('button', { name: /^Approve/ }).click();
+      await page.getByRole('textbox', { name: 'Reason' }).waitFor();
+      await page.getByRole('textbox', { name: 'Reason' }).fill('Secret read path reviewed; the value is never logged.');
+    },
+  },
+  {
+    name: 'for-you-reject-error',
+    path: '/',
+    prepare: async (page) => {
+      const more = FY_APPROVAL(page).getByRole('button', { name: 'More actions' });
+      if (await more.isVisible()) await more.click();
+      await FY_APPROVAL(page).getByRole('button', { name: /^Reject$/ }).click();
+      await page.getByRole('button', { name: 'Reject with this reason' }).click();
+      await page.getByRole('alert').filter({ hasText: 'Add a reason' }).waitFor();
+    },
+  },
+  {
+    name: 'for-you-approved-stamp',
+    path: '/',
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === '/api/v1/approval-requests/apr_19f2c4/decide',
+        (route) => route.fulfill(fulfillJson(200, {
+          id: 'apr_19f2c4', state: 'approved', approved_count: 2, required_count: 2, decisions: [],
+        })),
+      );
+    },
+    prepare: async (page) => {
+      await FY_APPROVAL(page).getByRole('button', { name: /^Approve/ }).click();
+      await page.getByRole('textbox', { name: 'Reason' }).fill('Reviewed.');
+      await FY_APPROVAL(page).locator('.panel').getByRole('button', { name: 'Approve', exact: true }).click();
+      await page.getByText('Approved · 2 of 2').first().waitFor();
+    },
+  },
+  {
+    name: 'for-you-raise-limit',
+    path: '/',
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${FY_PROJECT}/loops`,
+        (route) => route.fulfill(fulfillJson(200, fyLoops)),
+      );
+    },
+    prepare: async (page) => {
+      await page.locator('[data-key="fy_loop1"]').getByRole('button', { name: /^Raise limit/ }).click();
+      await page.getByRole('radiogroup', { name: 'New limit' }).waitFor();
+    },
+  },
+);
+FOR_YOU_SCENARIOS.push({
+  name: 'for-you-more-actions',
+  path: '/',
+  prepare: async (page) => {
+    const more = page.getByRole('button', { name: 'More actions' }).first();
+    if (await more.isVisible()) await more.click();
+  },
+});
+const FOR_YOU_WIDTHS = [400, 768, 1280];
+
 const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...WIDTHS.map((width) => ({ width, scenarios: PAGES })),
   ...SHELL_WIDTHS.map((width) => ({ width, scenarios: SHELL_SCENARIOS })),
@@ -1521,6 +1702,7 @@ const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: TEMPLATE_EDITOR_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: MEETING_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: LOOP_SCENARIOS })),
+  ...FOR_YOU_WIDTHS.map((width) => ({ width, scenarios: FOR_YOU_SCENARIOS })),
 ];
 
 for (const theme of THEMES) {
@@ -1550,7 +1732,7 @@ for (const theme of THEMES) {
             { key: FAKE_KEY, base: BASE_URL, theme },
           );
 
-          await page.goto(pg.path, { waitUntil: 'networkidle' });
+          await page.goto(pg.path, { waitUntil: pg.waitUntil ?? 'networkidle' });
           // Lazy chunks and react-query settle after the network goes quiet.
           await page.waitForTimeout(400);
           if (pg.prepare) {

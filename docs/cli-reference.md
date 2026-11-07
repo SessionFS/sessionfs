@@ -1900,7 +1900,7 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed (125):
+Tools exposed (126):
 
 - **Sessions:** `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_session_summary`, `get_audit_report`, `get_session_provenance`, `get_session_retrieval_log`, `rename_session`, `checkpoint_session`, `list_checkpoints`, `fork_session`, `ask_session_helper`
 - **Knowledge (read):** `get_project_context`, `get_context_section`, `get_wiki_page`, `get_wiki_page_history`, `search_project_knowledge`, `list_knowledge_entries`, `get_knowledge_entry`, `get_knowledge_health`, `ask_project`
@@ -1917,6 +1917,7 @@ Tools exposed (125):
 - **Meetings and chat:** `upload_meeting_transcript`, `upload_chat_thread`, `list_meeting_transcripts`, `get_meeting_transcript`, `extract_meeting_action_items`, `promote_meeting_action_item` (preview only unless `confirm=true`), `search_meetings`
 - **Reminders:** `list_my_reminders`, `create_reminder`, `update_reminder`
 - **Approvals (read only):** `list_my_approvals`, `get_approval_request`, `list_approval_policies`
+- **For You:** `get_my_attention`
 
 If you are an agent or have the MCP server installed, prefer the MCP tools over the CLI equivalents listed in this reference — they are faster, run in-process, and avoid hitting API rate limits.
 
@@ -3288,6 +3289,14 @@ Personal reminders, optionally tied to a meeting or a ticket. A reminder is priv
 | `sfs remind note <id> "text"` | Add a note (notes are append-only) |
 | `sfs remind snooze <id> 1h\|tomorrow\|next-week` / `--until TIME [--tz ZONE]` | Push it later. `tomorrow` and `next-week` mean 09:00 in the reminder's timezone (next week = Monday) |
 | `sfs remind done <id>` / `dismiss <id>` | Close it as done, or dismiss it |
+
+## `sfs attention`
+
+What needs you right now: one ranked list (For You) across your reminders, approvals, the tickets assigned to you or to a persona you represent, Review Loop items, meeting and chat-thread action items you own, knowledge changes in projects you work in and the weekly proof card. The server builds it from each source with that source's own access rules on every call, so a card disappears as soon as you lose access to its source. Every plan; each section appears only when its source is in your plan.
+
+| Command | Description |
+|---------|-------------|
+| `sfs attention [--band now\|your_turn\|upcoming\|lately] [--limit N] [--json]` | Print the feed grouped by band (Now, Your turn, Coming up, Lately), each item with why it is there and its dashboard link. Counts are the full totals; `--limit` (1–100, default 100) caps the items. A source that couldn't load is named at the end. `--json` prints the raw response |
 
 ## `sfs approval` (Enterprise)
 

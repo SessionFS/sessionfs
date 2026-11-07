@@ -12,6 +12,8 @@ import { HelperProvider } from './helper/HelperProvider';
 const LoginPage = React.lazy(() => import('./auth/LoginPage'));
 const SsoCallback = React.lazy(() => import('./auth/SsoCallback'));
 const SessionList = React.lazy(() => import('./sessions/SessionList'));
+const HomeRoute = React.lazy(() => import('./foryou/HomeRoute'));
+const ForYouPage = React.lazy(() => import('./foryou/ForYouPage'));
 const SessionDetail = React.lazy(() => import('./sessions/SessionDetail'));
 const SearchResults = React.lazy(() => import('./sessions/SearchResults'));
 const SettingsPage = React.lazy(() => import('./settings/SettingsPage'));
@@ -90,7 +92,9 @@ export default function App() {
               }
             >
               <Route path="/getting-started" element={<GettingStartedPage />} />
-              <Route path="/" element={<OnboardingGate><SessionList /></OnboardingGate>} />
+              <Route path="/" element={<OnboardingGate><HomeRoute /></OnboardingGate>} />
+              <Route path="/sessions" element={<SessionList />} />
+              <Route path="/for-you" element={<ForYouPage />} />
               <Route path="/search" element={<SearchResults />} />
               <Route path="/sessions/:id" element={<SessionDetail />} />
               <Route path="/projects" element={<ProjectsPage />} />

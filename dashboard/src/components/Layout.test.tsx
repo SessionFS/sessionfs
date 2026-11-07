@@ -55,6 +55,10 @@ vi.mock('../hooks/useReminders', () => ({
   useRemindersDueCount: () => ({ data: { count: remindersCount.value } }),
 }));
 
+vi.mock('../hooks/useForYou', () => ({
+  useForYouCount: () => ({ data: { actionable: 0 } }),
+}));
+
 vi.mock('../hooks/useApprovals', () => ({
   useMyApprovalsCount: () => ({ data: { count: 0 } }),
 }));
@@ -304,7 +308,7 @@ describe('Layout', () => {
       expect(labels).toEqual(['Library', 'Inbox', 'Manage']);
       const order = Array.from(sidebar.querySelectorAll('a')).map((a) => a.textContent?.replace(/\d+$/, '').trim());
       expect(order).toEqual([
-        'Sessions', 'Projects', 'Handoffs',
+        'For You', 'Sessions', 'Projects', 'Handoffs',
         'Marketplace',
         'Notifications', 'Reminders', 'Approvals', 'Review loops', 'Invites', 'Transfers',
         'Organization', 'Billing',

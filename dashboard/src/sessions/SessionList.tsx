@@ -50,7 +50,7 @@ export default function SessionList() {
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [selectMode, setSelectMode] = useState(false);
-  // `/?view=trash` opens straight on Trash (linked from the session helper).
+  // `/sessions?view=trash` opens straight on Trash (linked from the session helper).
   const wantTrash = searchParams.get('view') === 'trash';
   const [showTrash, setShowTrash] = useState(wantTrash);
   const [trashParam, setTrashParam] = useState(wantTrash);

@@ -205,6 +205,20 @@ async def loop_report(
 # ── loop insights ──────────────────────────────────────────────────
 
 
+def decode_findings(value: str | None) -> list[dict[str, Any]]:
+    """Public alias of the findings decoder (For You's proof card)."""
+    return _decode_findings(value)
+
+
+def is_caught(finding: dict[str, Any]) -> bool:
+    """A "caught" finding: harmful (harm set and not ``none``) AND fixed.
+
+    The one rule behind ``loop_insights.caught`` and the For You proof card.
+    """
+    fixed = finding.get("status") == "fixed" or finding.get("fixed_in_sha") is not None
+    return finding.get("harm") not in (None, "none") and fixed
+
+
 def _caught(run: Any, finding: dict[str, Any]) -> dict[str, Any]:
     return {
         "finding": str(finding.get("title") or finding.get("text") or ""),
@@ -557,12 +571,7 @@ async def loop_insights(
         at = run.occurred_at or run.created_at
         week = _iso_monday(at)
         for finding in _decode_findings(run.findings):
-            harm = finding.get("harm")
-            fixed = (
-                finding.get("status") == "fixed"
-                or finding.get("fixed_in_sha") is not None
-            )
-            if harm not in (None, "none") and fixed:
+            if is_caught(finding):
                 caught_all.append(_caught(run, finding))
             cls = finding.get("class")
             if cls is not None and str(cls) != "new":

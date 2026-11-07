@@ -32,6 +32,10 @@ vi.mock('../hooks/useReminders', () => ({
   useRemindersDueCount: () => ({ data: { count: 1 } }),
 }));
 
+vi.mock('../hooks/useForYou', () => ({
+  useForYouCount: () => ({ data: { actionable: 0 } }),
+}));
+
 vi.mock('../hooks/useReviewLoop', () => ({
   useNeedsYouCount: () => ({ data: { count: 2 } }),
 }));

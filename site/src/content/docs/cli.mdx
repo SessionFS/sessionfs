@@ -2139,6 +2139,14 @@ Store [chat threads](/chat/) (a Slack export, a DiscordChatExporter export, or a
 | `sfs chat promote <id> <item_id> [same options as sfs meeting promote]` | Show the ticket draft and ask before creating it |
 | `sfs chat dismiss <id> <item_id>` / `restore <id> <item_id>` | Dismiss or restore a pending item |
 
+## `sfs attention`
+
+What needs you right now: your [For You](/for-you/) list across reminders, approvals, the tickets assigned to you or to a persona you represent, Review Loop items, meeting and chat action items you own, knowledge changes in projects you work in and the weekly proof card. The server applies each source's own access rules on every call. Every plan; each section appears only when its source is in your plan.
+
+| Command | Description |
+|---------|-------------|
+| `sfs attention [--band now\|your_turn\|upcoming\|lately] [--limit N] [--json]` | Print the feed grouped by band (Now, Your turn, Coming up, Lately), each item with why it is there and its dashboard link. Counts are the full totals; `--limit` (1–100, default 100) caps the items. A source that couldn't load is named at the end. `--json` prints the raw response |
+
 ## `sfs remind`
 
 Personal reminders, optionally tied to a meeting, a chat thread or a ticket. A reminder is private to the person reminded and the person who set it. When it falls due it shows in the notification bell and Inbox, and in the email digest if your notification settings allow it. Titles and notes are DLP-redacted by the server before storage. Reminders are on every plan.

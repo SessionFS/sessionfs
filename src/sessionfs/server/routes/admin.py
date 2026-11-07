@@ -3858,3 +3858,32 @@ async def merge_user_into(
         "source_id": source_id, "target_id": target_id,
         "reason": body.reason, "plan": plan, "admin_action_id": entry.id,
     }
+
+
+@router.post("/sweeps/attention-hides")
+async def sweep_attention_hides_route(
+    batch_size: int = Query(default=1000, ge=1, le=5000),
+    auth: AuthContext = Depends(require_platform_sweeper()),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete For You hides older than 90 days (tk_dc118ffd6e804a9a).
+
+    Accepts a platform-admin user key or a ``platform_sweeps:run`` service
+    key (run it daily). Bounded keyset batches, each committed; idempotent.
+    """
+    from sessionfs.server.services.attention import sweep_attention_hides
+
+    admin_id = auth.user.id
+    actor = sweep_actor_details(auth)
+    await db.rollback()
+    result = await sweep_attention_hides(db, batch_size=batch_size)
+    await _log_action(
+        db,
+        admin_id,
+        "attention_hides_sweep",
+        "attention_hide",
+        "bulk",
+        {**result, **actor},
+    )
+    await db.commit()
+    return result

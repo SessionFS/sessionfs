@@ -189,6 +189,7 @@
       "id": "reminders",
       "label": "Reminders",
       "tools": [
+        { "name": "get_my_attention", "desc": "What needs you: the ranked For You feed (now, your turn, lately)" },
         { "name": "list_my_reminders", "desc": "Your reminders, earliest due first" },
         { "name": "create_reminder", "desc": "Remind yourself at a time, optionally on a meeting or ticket" },
         { "name": "update_reminder", "desc": "Add a note, snooze, reschedule or close a reminder" }

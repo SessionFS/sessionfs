@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test';
 import * as d from './data';
 import * as loop from '../../src/projects/loop/fixtures';
+import * as fy from '../../src/foryou/fixtures';
 
 export interface MockResult {
   status: number;
@@ -45,7 +46,16 @@ export function resolve(method: string, pathname: string): MockResult | null {
     return ok({ ticket_id: 'tk_fixture7', item_id: 'mai_f1', status: 'promoted', published_to_jira: false, warnings: [] });
   }
   if (!get && /^\/api\/v1\/meetings\/[^/]+\/extract$/.test(path)) return ok({ ...d.meetingDetail, dropped_items: 0 });
+  // For You: reminding a collaborator answers with the new reminder.
+  if (!get && path === '/api/v1/me/for-you/collaboration/remind') {
+    return { status: 201, body: { reminder_id: 'rem_fixture_nudge', due_at: new Date().toISOString(), to: 'Kemi Ade' } };
+  }
   if (!get) return ok({ status: 'ok' });
+
+  // For You (the dashboard home).
+  if (path === '/api/v1/me/for-you') return ok(fy.fyFeed());
+  if (path === '/api/v1/me/for-you/count') return ok(fy.fyFeed().counts);
+  if (/^\/api\/v1\/me\/for-you\/items\/[^/]+\/context$/.test(path)) return ok(fy.fyItemContext);
 
   // Review Loop org-wide inbox and the public share page.
   if (path === '/api/v1/me/loops/needs-you') return ok(loop.needsYou());

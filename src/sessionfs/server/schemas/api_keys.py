@@ -35,6 +35,9 @@ VALID_SCOPES = frozenset(
         # in the key's org and allowlist, list what the minter could decide.
         # Deciding is people-only (user keys).
         "approvals:read",
+        # 0.29.8 — For You (tk_dc118ffd6e804a9a). The minter's attention feed,
+        # limited to the key's org and project allowlist.
+        "attention:read",
         "personas:read",
         "personas:write",
         "knowledge:read",

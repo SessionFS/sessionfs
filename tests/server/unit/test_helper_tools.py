@@ -330,6 +330,7 @@ def test_tool_specs_exposes_read_and_proposal_tools():
         "propose_meeting_upload",
         "list_my_reminders",
         "list_my_approvals",
+        "list_my_attention",
     }
     for s in specs:
         assert isinstance(s.input_schema, dict)

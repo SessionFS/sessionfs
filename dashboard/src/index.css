@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..800&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..800&family=Bricolage+Grotesque:opsz,wght@12..96,500..700&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
 /* === Tab Panel Transitions === */
@@ -41,6 +41,32 @@
   --brand:       #5ca6f9;
   --brand-hover: #4793ec;
   --text-on-brand: oklch(16% 0 0);        /* white on #4f9cf7 is only 2.8:1 */
+
+  /* For You (glossy cards, category accents). Text tokens alias the
+     ladder above so contrast stays AA. */
+  --fy-surface-2:   oklch(19.4% 0.012 255);
+  --fy-border-soft: oklch(25% 0.012 255);
+  --fy-glass-top:   oklch(23% 0.015 255);
+  --fy-glass-bot:   oklch(20.4% 0.012 255);
+  --fy-sheen:       oklch(100% 0 0 / 0.075);
+  --fy-shimmer:     oklch(100% 0 0 / 0.06);
+  --fy-edge:        oklch(100% 0 0 / 0.05);
+  --fy-track:       oklch(28% 0.013 255);
+  --fy-dot:         color-mix(in oklch, oklch(66% 0.008 255) 16%, transparent);
+  --fy-skeleton-a:  oklch(24% 0.012 255);
+  --fy-skeleton-b:  oklch(28% 0.012 255);
+  --fy-shadow-card: 0 1px 0 oklch(0% 0 0 / 0.25), 0 12px 26px -14px oklch(0% 0 0 / 0.6);
+  --fy-shadow-lift: 0 2px 0 oklch(0% 0 0 / 0.25), 0 26px 46px -18px oklch(0% 0 0 / 0.75);
+  --fy-shadow-pop:  0 0 0 1px oklch(100% 0 0 / 0.05), 0 16px 36px oklch(0% 0 0 / 0.5);
+  --fy-av-l: 42%; --fy-av-c: 0.09; --fy-av-text: oklch(97% 0 0);
+  --cat-urgent:    #fc7189;
+  --cat-ticket:    #5ca6f9;
+  --cat-mention:   #b9a2ff;
+  --cat-approval:  #e8c15a;
+  --cat-reminder:  #4fd1c5;
+  --cat-forgotten: #f5a35b;
+  --cat-meeting:   #ee9be0;
+  --on-danger:     #ffffff;
 }
 
 /* ── Light override — OKLCH inverted ── */
@@ -73,6 +99,29 @@
 
   /* Light-mode overlays: edge highlight is negative (shadow at top) */
   --edge-highlight: rgba(0, 0, 0, 0.05);
+
+  --fy-surface-2:   oklch(98.3% 0.005 255);
+  --fy-border-soft: oklch(92.8% 0.005 255);
+  --fy-glass-top:   oklch(100% 0 0);
+  --fy-glass-bot:   oklch(98.4% 0.005 255);
+  --fy-sheen:       oklch(100% 0 0 / 0.95);
+  --fy-shimmer:     oklch(55% 0.14 255 / 0.10);
+  --fy-edge:        oklch(0% 0 0 / 0.04);
+  --fy-track:       oklch(92% 0.007 255);
+  --fy-dot:         color-mix(in oklch, oklch(45% 0.01 255) 14%, transparent);
+  --fy-skeleton-a:  oklch(94% 0.005 255);
+  --fy-skeleton-b:  oklch(90% 0.006 255);
+  --fy-shadow-card: 0 1px 2px oklch(25% 0.02 255 / 0.06), 0 8px 20px -10px oklch(25% 0.04 255 / 0.16);
+  --fy-shadow-lift: 0 2px 4px oklch(25% 0.02 255 / 0.06), 0 22px 40px -16px oklch(25% 0.05 255 / 0.28);
+  --fy-shadow-pop:  0 0 0 1px oklch(0% 0 0 / 0.05), 0 14px 34px oklch(25% 0.03 255 / 0.16);
+  --fy-av-l: 88%; --fy-av-c: 0.075; --fy-av-text: oklch(27% 0.03 255);
+  --cat-urgent:    #ac1333;
+  --cat-ticket:    #1558ae;
+  --cat-mention:   #5b3cc4;
+  --cat-approval:  #7c5100;
+  --cat-reminder:  #0a6464;
+  --cat-forgotten: #9a3d0c;
+  --cat-meeting:   #8a2c7a;
 }
 
 /* ── Shared tokens (theme-independent) ── */
@@ -80,6 +129,8 @@
   --font-sans:   'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-display:'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono:   'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* For You headings (the approved prototype's display face). */
+  --font-fy-display: 'Bricolage Grotesque', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
 
   --accent: #3ddc84;
   --success: #3ddc84;

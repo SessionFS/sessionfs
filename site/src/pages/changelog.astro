@@ -17,6 +17,30 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.29.8 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.29.8</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">November 7, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">For You</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>For You is the dashboard home.</strong> One ranked page of what needs you: reminders, approvals, assigned tickets, Review Loop items, handoffs, questions on your tickets, meeting and chat action items and what changed this week. Sessions moved to <span class="font-mono text-accent text-sm">/sessions</span> (old links redirect), and you can keep Sessions as your home. See <a href="/for-you/" class="text-brand hover:underline">For You</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Sections that read like a briefing.</strong> A Right now ticker, then On your radar, Waiting on you, Your team is asking, From your meetings and chats, Coming up, Worth a second look, What changed this week and Working with others. Ranking is deterministic and explainable; success is &ldquo;You&rsquo;re all caught up&rdquo;.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Context on every card.</strong> Each card says why it is there (&ldquo;Assigned to you &middot; due today &middot; priority high&rdquo;), More context explains its rank, and assigned tickets open Before you start with related knowledge and past sessions.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Act without leaving the page.</strong> Approve or Reject approvals with a reason, Raise limit on a paused loop, Claim a handoff, acknowledge a meeting or chat action item into a project or group ticket, and Done, Hide or Snooze the rest, each with a real Undo. Keyboard shortcuts (<span class="font-mono text-accent text-sm">j</span>/<span class="font-mono text-accent text-sm">k</span>, <span class="font-mono text-accent text-sm">e</span>, <span class="font-mono text-accent text-sm">s</span>, <span class="font-mono text-accent text-sm">h</span>, <span class="font-mono text-accent text-sm">u</span>, <span class="font-mono text-accent text-sm">?</span>) and reduced motion are supported.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Working with others.</strong> See who your work is waiting on, the reviewer or the owner of a blocking ticket, and send them a reminder with your own message. One open reminder per person and ticket, at most one an hour. Reminders you close can be reopened within an hour.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Access checked on every item.</strong> Each section uses its source&rsquo;s own read rules on every request, so losing access removes the card on the next poll. Service keys see their minter&rsquo;s feed within the key&rsquo;s org and project allowlist, section by section with the matching scope. A slow source shows &ldquo;couldn&rsquo;t load&rdquo; instead of holding up the page.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>CLI <span class="font-mono text-accent text-sm">sfs attention</span>; MCP <span class="font-mono text-accent text-sm">get_my_attention</span>; the session helper answers &ldquo;what needs my attention?&rdquo;; REST <span class="font-mono text-accent text-sm">GET /api/v1/me/for-you</span> (ETag) with count, hide, context and remind routes; API scope <span class="font-mono text-accent text-sm">attention:read</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;123 (123 adds the For You hides table; additive). Self-hosted: run migration 123. 126 MCP tools (+1).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
       <!-- v0.29.7 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +48,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.29.7</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">November 7, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Chat Threads</h2>
         <ul class="space-y-2 text-base text-muted">

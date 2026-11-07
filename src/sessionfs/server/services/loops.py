@@ -200,16 +200,26 @@ async def _fold_approvals(
 async def _approval_context(
     db: AsyncSession, children: list[Ticket]
 ) -> tuple[dict[str, Project], dict[str, list]]:
-    """The children's projects (one identity-map lookup per distinct project,
-    not per child) and each org's active merge policies (one query for the
-    whole call)."""
+    """The children's projects (from the session's identity map, then at
+    most one query for the rest) and each org's active merge policies (one
+    query for the whole call)."""
+    from sqlalchemy.orm.util import identity_key
+
     from sessionfs.server.db.models import ApprovalPolicy
 
     projects: dict[str, Project] = {}
+    missing: list[str] = []
     for pid in sorted({c.project_id for c in children}):
-        project = await db.get(Project, pid)
-        if project is not None:
-            projects[pid] = project
+        cached = db.sync_session.identity_map.get(identity_key(Project, pid))
+        if cached is not None:
+            projects[pid] = cached
+        else:
+            missing.append(pid)
+    if missing:
+        for p in (
+            await db.execute(select(Project).where(Project.id.in_(missing)))
+        ).scalars().all():
+            projects[p.id] = p
     org_ids = {p.org_id for p in projects.values() if p.org_id}
     policies: dict[str, list] = {o: [] for o in org_ids}
     if org_ids:

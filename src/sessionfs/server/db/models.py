@@ -7806,3 +7806,36 @@ class ApprovalDecision(Base):
     decided_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class AttentionHide(Base):
+    """A hidden For You item for one user (migration 123).
+
+    ``item_key`` is the opaque aggregator key; ``version_key`` is the source
+    version at hide time. The hide applies only while the item's live
+    version_key matches (and ``hidden_until`` has not passed), so the item
+    comes back when its source changes. Swept after 90 days.
+    """
+
+    __tablename__ = "attention_hides"
+    __table_args__ = (
+        CheckConstraint(
+            "length(item_key) <= 200", name="ck_attention_hides_item_key_len"
+        ),
+        CheckConstraint(
+            "length(version_key) <= 200", name="ck_attention_hides_version_key_len"
+        ),
+        Index("idx_attention_hides_created", "created_at"),
+    )
+
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True
+    )
+    item_key: Mapped[str] = mapped_column(String(200), primary_key=True)
+    version_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    hidden_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

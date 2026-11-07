@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 125 tools in seventeen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Review Checklist (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Skills Marketplace, Project Groups (Team+), Meetings and chat, Reminders, and Approvals (Enterprise).
+The MCP server exposes 126 tools in eighteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Review Checklist (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Skills Marketplace, Project Groups (Team+), Meetings and chat, Reminders, Approvals (Enterprise), and For You.
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -1077,6 +1077,12 @@ Read-only views of [approval policies](/approvals/) (Enterprise). Agents cannot 
 | `list_my_approvals` | Pending requests you could decide now (merges at one commit, KB entries waiting to become claims), newest first, with approvals so far |
 | `get_approval_request` | One request by id (`ar_…`): policy version and requirements, target and fingerprint (commit sha or content sha256), state and every decision |
 | `list_approval_policies` | An org's active policies (`org_id`, else your default org). Members see names and requirements; owners and admins also see filters |
+
+### For You
+
+| Tool | Purpose |
+|------|---------|
+| `get_my_attention` | What needs you: the ranked For You feed across reminders, approvals, assigned tickets, Review Loop items, meeting and chat action items, knowledge changes and the weekly proof card. Filters: `band` (`now`, `your_turn`, `upcoming`, `lately`), `limit` (1–100). Service keys need `attention:read` and see only their org and project allowlist; each section also needs its own read scope (approvals need `approvals:read`) |
 
 ## Agent Knowledge Contribution
 

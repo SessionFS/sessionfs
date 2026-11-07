@@ -1,0 +1,86 @@
+---
+title: "For You"
+description: "For You is the dashboard home: one ranked list of what needs you across reminders, approvals, tickets, Review Loop items, handoffs, meeting and chat actions and knowledge changes."
+---
+
+What needs your attention used to be spread across the bell, the Inbox, Review Loop "Needs you", meeting action items, reminders and approvals. For You puts it in one ranked list. It is not an engagement feed: success is reaching **You're all caught up**.
+
+For You is the dashboard home at `/`. Sessions moved to `/sessions`, one click away in the sidebar, and old `/?view=…` and `/?model=…` links redirect there with the same query. If you would rather land on your sessions, choose **Sessions as home** under For You → **Home**; For You then lives at `/for-you`. The sidebar shows For You first, with a count of the items waiting on you.
+
+For You is on every plan. Each section only appears when its source is in your plan: tickets, questions and Review Loop items need **Team+**, approvals need **Enterprise**.
+
+## What it shows
+
+At the top, the **Right now** ticker scrolls through the most important items on the page. It pauses on hover and on focus, and stays still when your system asks for reduced motion. Below it:
+
+| Section | What lands there |
+|---------|------------------|
+| **On your radar** | Harmful open findings on your Review Loop work, overdue or due-today reminders, blocking approvals waiting on you, overdue tickets |
+| **Waiting on you** | Tickets assigned to you or to a persona you represent, Review Loop items that need a person, advisory approvals and pending handoffs sent to you |
+| **Your team is asking** | The newest unanswered question or `@mention` from someone else on a ticket you own or created (in the last week), and reminders other people set for you |
+| **From your meetings and chats** | Action items from [meetings](/meetings/) and [chat threads](/chat/) that you own. Acknowledge a suggested item to turn it into a ticket in the project or group |
+| **Coming up** | Reminders and ticket due dates in the next week |
+| **Worth a second look** | Assigned tickets that went quiet for a week, and handoffs that have waited two days |
+| **What changed this week** | Decisions and knowledge that changed in projects you worked in, grouped per project, and a weekly proof card for the Review Loop (dollars only for org owners and admins) |
+| **Working with others** | Per project, who you work with and what your work is waiting for |
+
+Ranking is deterministic and explainable, with no model and no learned weighting: band (Now, Your turn, Coming up, Lately), then your involvement (owner or assignee before watcher), then urgency (overdue, then due soonest, then harm, then priority), then recency.
+
+## Every card says why
+
+Each card links to its record and carries a "why" line, for example "Assigned to you · due today · priority high". **More context** shows the details, related items and why the card ranks where it does. Cards for tickets assigned to you also have **Before you start**: related knowledge and your past sessions for that area, fetched only when you open it.
+
+## Acting from the card
+
+- **Approve** or **Reject** an [approval](/approvals/) with a reason. One reject rejects the whole request.
+- **Raise limit** on a Review Loop item that stopped at its token, cost or round budget, and resume it. See [Worker Review Loop](/review-loop/).
+- **Claim** a handoff sent to you. See [Team Handoff](/handoff/).
+- **Done** where the source supports it (a reminder, a meeting action item, a question you answered), **Hide until it changes**, or **Snooze** for an hour, until tomorrow or until next week.
+
+Every action takes effect at once and shows an **Undo**. A hidden card comes back as soon as something about it changes, and a done or dismissed reminder can be reopened within an hour.
+
+## Working with others
+
+For each project you share with others, this section shows who your work waits on: the reviewer of your branch, or the owner of the ticket that blocks yours. **Send a reminder** writes an editable message to that person, delivered now or at 09:00 tomorrow in your time zone, as a [reminder](/cli/#sfs-remind) tied to the ticket.
+
+SessionFS works out the recipient itself from your current feed and re-checks it as it sends, so a reassignment while you were writing returns "That changed while you were writing". You can have one open reminder per person and ticket, and send at most one an hour about the same ticket. The recipient must be able to read the ticket, and the reminder's title never copies the ticket title, for example "Reminder from Ola: waiting for your review".
+
+## Keyboard shortcuts
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Next and previous card |
+| `1`–`8` | Jump to a section, in the order above |
+| `e` | Done, where the source supports it |
+| `s` | Snooze |
+| `h` | Hide until it changes |
+| `m` | More context |
+| `b` | Before you start |
+| `a` | The card's main action (acknowledge, reply, open) |
+| `Enter` | Open the record |
+| `u` | Undo the last action |
+| `?` | Show all shortcuts |
+
+Shortcuts are ignored while you type in a field and while a menu or dialog is open.
+
+## Access and privacy
+
+Every section uses its source's own read rules on every request: the projects you can read, group visibility, reminder privacy and approver eligibility. Losing access removes the card on the next refresh; nothing is cached across requests. Item keys are opaque, so hiding an unknown key behaves exactly like hiding a real one.
+
+Sections load at the same time, each with a two-second limit. A section that times out shows "couldn't load" and the rest of the page still renders.
+
+## For agents and scripts
+
+The same list is available outside the dashboard:
+
+```bash
+sfs attention                 # grouped by band, each item with why and a link
+sfs attention --band now
+sfs attention --json
+```
+
+- **MCP:** `get_my_attention` (`band`, `limit`). See [MCP Server](/mcp/#for-you).
+- **Session helper:** ask "what needs my attention?" and it calls `list_my_attention`. See [Session Helper](/session-helper/).
+- **REST:** `GET /api/v1/me/for-you` (ETag; `band`, `limit` up to 100, with full counts), `GET /api/v1/me/for-you/count`, `POST /api/v1/me/for-you/hide` (optional `until` for a snooze) and `/unhide`, `GET /api/v1/me/for-you/items/{key}/context`, and `POST /api/v1/me/for-you/collaboration/remind`.
+
+Service keys need the `attention:read` scope and see their minter's feed, limited to the key's org and project allowlist. Each section also needs the scope its content needs (`tickets:read`, `meetings:read`, `knowledge:read`, `reminders:read`, `agent_runs:read`, `approvals:read`). Handoffs never appear for service keys, and hiding items or reminding teammates needs a user key. See [API keys](/api/).

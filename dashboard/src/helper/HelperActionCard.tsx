@@ -36,7 +36,7 @@ import { reminderHref, sourceHref } from '../reminders/format';
 import { extractionReason, meetingHref } from '../meetings/format';
 
 /** Where Trash lives: the sessions list opened on its Trash view. */
-export const TRASH_HREF = '/?view=trash';
+export const TRASH_HREF = '/sessions?view=trash';
 
 /** Sessions stay in Trash this long (`TRASH_RETENTION_DAYS` in services/session_trash.py). */
 const TRASH_RETENTION_DAYS = 30;

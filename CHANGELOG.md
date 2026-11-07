@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.8] - 2026-11-07
+
+**For You: one ranked page of what needs you, and the new dashboard home.** Server migration 123.
+
+### Added
+- **For You is the dashboard home.** `/` now opens For You; the session list moved to `/sessions`, and old `/?view=…` and `/?model=…` links redirect there with the same query. Anyone who prefers the old home can choose **Sessions as home** under For You → Home; For You is then at `/for-you`. The sidebar shows For You first with a count of the items waiting on you. See [For You](https://sessionfs.dev/for-you/).
+- **One ranked list instead of five places.** For You gathers your reminders, approvals waiting on you, tickets assigned to you or to a persona you represent, Review Loop items that need you, harmful open findings on your loop work, pending handoffs, questions on your tickets, meeting and chat action items you own, knowledge changes in projects you work in and a weekly proof card. Ranking is deterministic and explainable: band, then your involvement, then urgency, then recency. Success is "You're all caught up".
+- **Sections:** a **Right now** ticker with the top items, then **On your radar** (harmful findings, overdue work, blocking approvals), **Waiting on you**, **Your team is asking** (unanswered questions and @mentions on your tickets, reminders others set for you), **From your meetings and chats** (acknowledge a suggested action item into a project or group ticket), **Coming up**, **Worth a second look** (tickets and handoffs that went quiet), **What changed this week** and **Working with others**.
+- **Every card says why it is there**, for example "Assigned to you · due today · priority high", and **More context** shows the details, related items and why it ranks where it does. Assigned ticket cards open **Before you start** with related knowledge and past sessions, fetched only when you open it.
+- **Act from the card.** Approve or Reject an approval with a reason, **Raise limit** on a paused Review Loop item, **Claim** a handoff, and **Done**, **Hide until it changes** or **Snooze** (1 hour, tomorrow, next week) everything else. Every action takes effect at once with a real **Undo**; a done or dismissed reminder can be reopened within an hour.
+- **Working with others.** Per project, who you work with and what your work is waiting for: the reviewer on your branch or the owner of the ticket that blocks yours. **Send a reminder** writes an editable message to that person, now or at 09:00 tomorrow; you can have one open reminder per person and ticket, and send at most one an hour.
+- **Keyboard and motion.** `j` / `k` move between cards, `1`–`8` jump to a section, `e` Done, `s` Snooze, `h` Hide, `m` More context, `b` Before you start, `a` the card's main action, `u` Undo, `?` lists them all. The ticker and card animations respect reduced motion. The page works on phones.
+- `GET /api/v1/me/for-you` (ETag and 304; `band`, `limit` up to 100, full counts), `GET /me/for-you/count`, `POST /me/for-you/hide` (optional `until` for a snooze) and `/unhide`, `GET /me/for-you/items/{key}/context`, `POST /me/for-you/collaboration/remind`; platform sweep `POST /api/v1/admin/sweeps/attention-hides` deletes hides older than 90 days.
+- `sfs attention [--band now|your_turn|upcoming|lately] [--limit N] [--json]`; MCP `get_my_attention` (126 tools in total); the session helper's `list_my_attention` answers "what needs my attention?" (helper prompt v20). API scope `attention:read` for service keys.
+
+### Changed
+- **Access is checked on every item, every time.** Each section uses its source's own read rules on every request (projects you can read, group visibility, reminder privacy, approver eligibility), so losing access removes the card on the next poll. Item keys are opaque: hiding an unknown or invisible key is the same silent no-op as a real one, and every miss on the context route is the same 404.
+- **Service keys see their minter's feed**, limited to the key's org and project allowlist, and each section only with the scope its content needs (`tickets:read`, `meetings:read`, `knowledge:read`, `reminders:read`, `agent_runs:read`, `approvals:read`). Handoffs never appear for service keys, hides and reminders to teammates need a user key, and dollars appear only on the proof card for org owners and admins, never for service keys.
+- **A slow source never blocks the page.** Sections load concurrently, each with its own database session and a 2-second limit; a section that times out shows "couldn't load" and the rest still render. The ETag only changes when the items do, the count behind the sidebar badge comes from the last build (30 s), and the Working with others queries are bounded.
+- **Reminders to teammates are checked under locks.** The route re-derives the recipient from your live feed, locks both tickets and refuses if the flow moved (`409 flow_changed`), already has an open reminder (`409 reminder_exists`) or was reminded in the last hour (`429 reminder_cooldown`). The reminder's title never copies the ticket title ("Reminder from Ola: waiting for your review"), and the recipient must be able to read the ticket.
+- `PATCH /api/v1/reminders/{id}` accepts `status: "open"` to reopen a reminder you closed in the last hour (`409 reminder_not_reopenable` otherwise); the open-reminder limits apply.
+
 ## [0.29.7] - 2026-11-07
 
 **Chat threads: the decisions made in Slack, Discord and Teams land next to your meetings.** Server migration 122.

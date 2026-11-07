@@ -3646,6 +3646,34 @@ _TOOLS = [
         },
     ),
     Tool(
+        name="get_my_attention",
+        description=(
+            "What needs my attention? Returns the caller's For You feed: one "
+            "ranked list across reminders, approvals, assigned tickets, "
+            "Review Loop items, meeting and chat-thread action items, "
+            "knowledge changes and "
+            "the weekly proof card. Bands: `now` (overdue/due-today "
+            "reminders, approvals), `your_turn` (tickets, loops, actions you "
+            "own), `upcoming` (due in the next week), `lately` (knowledge "
+            "changes, proof). Each item says why it "
+            "is there and links to its record; `counts` holds the full "
+            "per-band totals.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs attention` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "band": {
+                    "type": "string",
+                    "enum": ["now", "your_turn", "upcoming", "lately"],
+                    "description": "Only this band (default all).",
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            },
+        },
+    ),
+    Tool(
         name="list_my_reminders",
         description=(
             "List your reminders (as the person reminded or their creator), "
@@ -3902,6 +3930,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_watch_ticket(arguments)
         elif name == "get_ticket_updates":
             result = await _handle_get_ticket_updates(arguments)
+        elif name == "get_my_attention":
+            result = await _handle_get_my_attention(arguments)
         elif name == "list_my_reminders":
             result = await _handle_list_my_reminders(arguments)
         elif name == "create_reminder":
@@ -9118,6 +9148,36 @@ def _reminder_error(resp: Any, reminder_id: str = "") -> dict:
     if resp.status_code == 404:
         return {"error": f"Reminder '{reminder_id}' not found" if reminder_id else "Not found"}
     return {"error": f"API error {resp.status_code}: {resp.text}"}
+
+
+async def _handle_get_my_attention(args: dict) -> dict:
+    """Wrap GET /api/v1/me/for-you (For You, tk_dc118ffd6e804a9a)."""
+    params: dict[str, Any] = {}
+    band = args.get("band")
+    if band is not None:
+        if band not in ("now", "your_turn", "upcoming", "lately"):
+            return {"error": "band must be now, your_turn, upcoming or lately"}
+        params["band"] = band
+    limit = args.get("limit")
+    if limit is not None:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            return {"error": "limit must be an integer between 1 and 100"}
+        params["limit"] = limit
+    conf = _handoff_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+
+    import httpx
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/me/for-you",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
 
 
 async def _handle_list_my_reminders(args: dict) -> dict:

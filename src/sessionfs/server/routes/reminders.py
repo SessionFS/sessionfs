@@ -76,6 +76,8 @@ group_router = APIRouter(
     prefix="/api/v1/groups", tags=["reminders"], dependencies=[Depends(_clean_path_ids)]
 )
 
+REOPEN_WINDOW = timedelta(hours=1)
+
 _write_limiter = SlidingWindowRateLimiter(
     max_requests=svc.WRITES_PER_MINUTE, window_seconds=60.0
 )
@@ -131,7 +133,8 @@ class ReminderPatch(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=svc.TITLE_MAX)
     due_at: datetime | None = None
     timezone: str | None = Field(default=None, max_length=64)
-    status: Literal["done", "dismissed"] | None = None
+    # "open" reopens a reminder you closed in the last hour (Undo).
+    status: Literal["done", "dismissed", "open"] | None = None
 
 
 class SnoozeRequest(BaseModel):
@@ -756,6 +759,61 @@ async def patch_reminder(
             values["due_at"] = due_at
             values["notified_at"] = None
             state_change = True
+    if "status" in fields and body.status == "open":
+        if fields != {"status"}:
+            raise HTTPException(
+                422, {"code": "reopen_alone", "error": "reopen_alone", "message": "Reopen on its own."}
+            )
+        # Reopening adds an open reminder, so the create caps apply (checked
+        # under the owner lock, like create).
+        await _lock_user(db, r.owner_user_id)
+        open_count = (
+            await db.execute(
+                select(func.count(Reminder.id)).where(
+                    Reminder.owner_user_id == r.owner_user_id, Reminder.status == "open"
+                )
+            )
+        ).scalar_one()
+        if open_count >= svc.MAX_OPEN_PER_USER:
+            await db.rollback()
+            raise _limit_reached()
+        if is_creator and not is_owner:
+            created_for_other = (
+                await db.execute(
+                    select(func.count(Reminder.id)).where(
+                        Reminder.owner_user_id == r.owner_user_id,
+                        Reminder.created_by_user_id == me,
+                        Reminder.status == "open",
+                    )
+                )
+            ).scalar_one()
+            if created_for_other >= svc.MAX_OPEN_PER_CREATOR_FOR_OTHER:
+                await db.rollback()
+                raise _limit_reached()
+        reopened = await db.execute(
+            update(Reminder)
+            .where(
+                Reminder.id == r.id,
+                Reminder.status.in_(("done", "dismissed")),
+                Reminder.closed_by_user_id == me,
+                Reminder.closed_at >= now - REOPEN_WINDOW,
+            )
+            .values(status="open", closed_at=None, closed_by_user_id=None,
+                    closed_by_service_key_id=None, **values)
+            .execution_options(synchronize_session=False)
+        )
+        if reopened.rowcount != 1:
+            await db.rollback()
+            raise HTTPException(
+                409,
+                {"code": "reminder_not_reopenable", "error": "reminder_not_reopenable",
+                 "message": "Only a reminder you closed in the last hour can be reopened."},
+            )
+        await db.commit()
+        r, vis, _ = await _load_visible(db, auth, reminder_id)
+        await db.refresh(r)
+        counts = await _note_counts(db, [r.id])
+        return _response(r, me, vis, now, counts.get(r.id, 0))
     if "status" in fields:
         if body.status is None:
             raise HTTPException(

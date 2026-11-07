@@ -173,7 +173,7 @@ describe('HelperActionCard', () => {
     expect(screen.getByText('In Trash')).toBeInTheDocument();
     expect(screen.getByText('Failed')).toBeInTheDocument();
     expect(screen.getByText(/Not your session/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Trash' })).toHaveAttribute('href', '/?view=trash');
+    expect(screen.getByRole('link', { name: 'Trash' })).toHaveAttribute('href', '/sessions?view=trash');
     expect(screen.queryByRole('button', { name: 'Move to Trash' })).not.toBeInTheDocument();
     const keys = invalidate.mock.calls.map((c) => (c[0] as { queryKey: string[] }).queryKey[0]);
     expect(keys).toEqual(expect.arrayContaining(['projects', 'project', 'sessions']));

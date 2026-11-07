@@ -164,7 +164,7 @@ export default function SessionDetail() {
   if (error || !session) {
     return (
       <div className="p-8">
-        <Button variant="ghost" size="sm" onClick={() => navigate('/')} className="mb-4 text-brand hover:text-brand">
+        <Button variant="ghost" size="sm" onClick={() => navigate('/sessions')} className="mb-4 text-brand hover:text-brand">
           &larr; Back
         </Button>
         <p className="text-danger">Failed to load session: {errorMessage(error)}</p>
@@ -233,7 +233,7 @@ export default function SessionDetail() {
         <Button
           variant="ghost"
           size="sm"
-          onClick={() => navigate('/')}
+          onClick={() => navigate('/sessions')}
           className="gap-1 text-brand hover:text-brand"
         >
           <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -523,7 +523,7 @@ export default function SessionDetail() {
               {
                 onSuccess: () => {
                   addToast('success', 'Session deleted');
-                  navigate('/');
+                  navigate('/sessions');
                 },
                 onError: (err) => {
                   addToast('error', `Delete failed: ${errorMessage(err)}`);

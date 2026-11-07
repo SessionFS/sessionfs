@@ -79,6 +79,7 @@ export default defineConfig({
           label: 'Platform',
           items: [
             { label: 'Dashboard', slug: 'dashboard' },
+            { label: 'For You', slug: 'for-you' },
             { label: 'Organizations', slug: 'organizations' },
             { label: 'Plans & Billing', slug: 'billing' },
           ],

@@ -406,6 +406,7 @@ All package versions are immutable and addressed by `content_hash`. Visibility f
 | POST | `/api/v1/admin/sweeps/org-digest` | Bearer (admin or `platform_sweeps:run`) | Send the weekly org activity digest, once per org per week (v0.23.0) |
 | POST | `/api/v1/admin/sweeps/helper-retention` | Bearer (admin or `platform_sweeps:run`) | Delete expired session helper messages (v0.23.0) and token-usage ledger rows older than 400 days |
 | POST | `/api/v1/admin/sweeps/ticket-notifications` | Bearer (admin or `platform_sweeps:run`) | Send the ticket notification email digest (v0.24.0) |
+| POST | `/api/v1/admin/sweeps/attention-hides` | Bearer (admin or `platform_sweeps:run`) | Delete For You hides older than 90 days (v0.29.8) |
 | POST | `/api/v1/admin/projects/{project_id}/restore-from-compilation` | Bearer (admin) | Restore `project.context_document` from a prior `ContextCompilation.context_after`; restore `compiled_at` on participating entries. Body: `{compilation_id: int, dry_run: bool = true}`. Single atomic transaction. Audit-logged. (v0.10.13) |
 
 ### Billing

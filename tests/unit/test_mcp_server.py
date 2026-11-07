@@ -300,13 +300,13 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_125(self):
+    def test_tool_count_is_126(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 125, (
-            "Expected 125 MCP tools after review-loop start, status and "
+        assert len(_TOOLS) == 126, (
+            "Expected 126 MCP tools after review-loop start, status and "
             "update, the project checklist, the loop report, the worker run and round tools, "
             "the three reminder tools, the three read-only approval tools and "
-            "upload_chat_thread, "
+            "upload_chat_thread and get_my_attention, "
             f"got {len(_TOOLS)}"
         )
 
@@ -5406,3 +5406,37 @@ class TestApprovalMcpDispatch:
         self._install(monkeypatch, cap)
         await mcp_server.call_tool("list_my_approvals", {})
         assert cap["url"] == "https://api.test/api/v1/me/approvals"
+
+
+class TestGetMyAttention:
+    """For You (tk_dc118ffd6e804a9a): get_my_attention wraps /api/v1/me/for-you."""
+
+    def test_registered(self):
+        names = {t.name for t in mcp_server._TOOLS}
+        assert "get_my_attention" in names
+
+    @pytest.mark.asyncio
+    async def test_dispatch(self, monkeypatch):
+        cap: dict = {}
+        TestReminderMcpDispatch._install(monkeypatch, cap, body={"items": [], "counts": {}})
+        out = await mcp_server._handle_get_my_attention({"band": "now", "limit": 5})
+        assert cap["method"] == "GET"
+        assert cap["url"] == "https://api.test/api/v1/me/for-you"
+        assert cap["params"] == {"band": "now", "limit": 5}
+        assert out == {"items": [], "counts": {}}
+
+    @pytest.mark.asyncio
+    async def test_dispatch_through_call_tool(self, monkeypatch):
+        cap: dict = {}
+        TestReminderMcpDispatch._install(monkeypatch, cap, body={"items": []})
+        await mcp_server.call_tool("get_my_attention", {})
+        assert cap["url"] == "https://api.test/api/v1/me/for-you"
+        assert cap["params"] == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("args", [{"band": "soon"}, {"limit": 0}, {"limit": True}, {"limit": 101}])
+    async def test_rejects_bad_args(self, monkeypatch, args):
+        cap: dict = {}
+        TestReminderMcpDispatch._install(monkeypatch, cap)
+        out = await mcp_server._handle_get_my_attention(args)
+        assert "error" in out and not cap

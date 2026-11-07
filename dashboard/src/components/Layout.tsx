@@ -9,6 +9,8 @@ import { useMyInvites } from '../invites/useInvites';
 import { useNeedsYouCount } from '../hooks/useReviewLoop';
 import { useTicketNotificationUnreadCount } from '../hooks/useTicketNotifications';
 import { useRemindersDueCount } from '../hooks/useReminders';
+import { useForYouCount } from '../hooks/useForYou';
+import { prefersSessionsHome } from '../foryou/model';
 import { useMyApprovalsCount } from '../hooks/useApprovals';
 import SearchBar from './SearchBar';
 import ThemeToggle from './ThemeToggle';
@@ -30,6 +32,9 @@ function mkIcon(d: ReactNode) {
 }
 
 // ── Sidebar nav item icons ──
+const forYouIcon = mkIcon(
+  <><path d="M12 3l2.6 5.6 6 .7-4.5 4.1 1.2 6L12 16.4 6.7 19.4l1.2-6L3.4 9.3l6-.7z" /></>
+);
 const sessionsIcon = mkIcon(
   <><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></>
 );
@@ -93,7 +98,7 @@ interface NavItem {
   match: (p: string) => boolean;
   orgOnly?: boolean;
   adminOnly?: boolean;
-  badgeKey?: 'pending' | 'transfers' | 'invites' | 'notifications' | 'loops' | 'reminders' | 'approvals';
+  badgeKey?: 'pending' | 'transfers' | 'invites' | 'notifications' | 'loops' | 'reminders' | 'foryou' | 'approvals';
 }
 
 interface NavGroup {
@@ -104,7 +109,19 @@ interface NavGroup {
 const NAV_GROUPS: NavGroup[] = [
   {
     items: [
-      { to: '/', label: 'Sessions', icon: sessionsIcon, match: (p: string) => p === '/' },
+      {
+        to: '/',
+        label: 'For You',
+        icon: forYouIcon,
+        match: (p: string) => p === '/for-you' || (p === '/' && !prefersSessionsHome()),
+        badgeKey: 'foryou',
+      },
+      {
+        to: '/sessions',
+        label: 'Sessions',
+        icon: sessionsIcon,
+        match: (p: string) => p === '/sessions' || p.startsWith('/sessions/') || (p === '/' && prefersSessionsHome()),
+      },
       { to: '/projects', label: 'Projects', icon: projectsIcon, match: (p: string) => p.startsWith('/projects') },
       { to: '/handoffs', label: 'Handoffs', icon: handoffsIcon, match: (p: string) => p.startsWith('/handoffs'), badgeKey: 'pending' },
     ],
@@ -147,6 +164,11 @@ const BOTTOM_ITEMS: NavItem[] = [
   { to: '/admin', label: 'Admin', icon: adminIcon, match: (p: string) => p === '/admin', adminOnly: true },
 ];
 
+/** For You lives at "/" unless the person chose Sessions as home. */
+function navHref(item: NavItem): string {
+  return item.badgeKey === 'foryou' && prefersSessionsHome() ? '/for-you' : item.to;
+}
+
 function siteHref(path: string): string {
   const theme = typeof document !== 'undefined'
     ? document.documentElement.getAttribute('data-theme') || 'dark'
@@ -171,7 +193,7 @@ function SidebarLink({
 }) {
   const link = (
     <Link
-      to={item.to}
+      to={navHref(item)}
       onClick={onClick}
       className={`flex items-center gap-2.5 rounded-md text-sm font-medium transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
         collapsed ? 'justify-center w-9 h-9 mx-auto' : 'px-3 py-1.5'
@@ -230,6 +252,7 @@ export default function Layout() {
 
   const loopsNeedYou = useNeedsYouCount().data?.count ?? 0;
   const remindersDue = useRemindersDueCount().data?.count ?? 0;
+  const forYouCount = useForYouCount().data?.actionable ?? 0;
   const approvalsWaiting = useMyApprovalsCount().data?.count ?? 0;
 
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -282,6 +305,7 @@ export default function Layout() {
       case 'notifications': return notificationsUnread;
       case 'loops': return loopsNeedYou;
       case 'reminders': return remindersDue;
+      case 'foryou': return forYouCount;
       case 'approvals': return approvalsWaiting;
       default: return undefined;
     }
@@ -597,7 +621,7 @@ export default function Layout() {
                     return (
                       <Link
                         key={item.to}
-                        to={item.to}
+                        to={navHref(item)}
                         onClick={() => setDrawerOpen(false)}
                         className={`flex items-center gap-2.5 px-3 py-2.5 rounded-md text-base transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
                           active

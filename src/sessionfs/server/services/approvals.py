@@ -1995,6 +1995,19 @@ async def attention_items(
                 "project_id": r.project_id,
                 "actions": ["snooze", "hide"],
                 "source": {"type": "approval_request", "id": r.id},
+                # The decision panel's facts (additive; no names or emails).
+                "approval": {
+                    "request_id": r.id,
+                    "policy_name": name,
+                    "policy_version": p.version if p is not None else None,
+                    "blocking": blocking,
+                    "approved_count": got,
+                    "required_count": need,
+                    "target_kind": r.target_kind,
+                    "target_id": r.target_id,
+                    "target_fingerprint": r.target_fingerprint,
+                    "expires_at": _iso(r.expires_at),
+                },
             }
         )
     return items

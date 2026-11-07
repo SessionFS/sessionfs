@@ -1993,7 +1993,8 @@ export interface ReminderPatch {
   title?: string;
   due_at?: string;
   timezone?: string;
-  status?: 'done' | 'dismissed';
+  /** 'open' reopens a reminder you closed in the last hour (Undo). */
+  status?: 'done' | 'dismissed' | 'open';
 }
 
 export type SnoozeRequest =
@@ -3181,6 +3182,209 @@ export interface MeetingPromoteResult {
 }
 
 export type MeetingScope = { kind: 'project'; id: string } | { kind: 'group'; id: string };
+
+// ── For You (/api/v1/me/for-you) ──
+
+export type AttentionBand = 'now' | 'your_turn' | 'upcoming' | 'lately';
+export type AttentionGroup =
+  | 'radar'
+  | 'waiting'
+  | 'asking'
+  | 'meetings'
+  | 'coming'
+  | 'second'
+  | 'lately';
+
+export interface AttentionPerson {
+  name: string;
+  role: string;
+  agent: boolean;
+  you: boolean;
+}
+
+export interface AttentionRelated {
+  item_key: string;
+  title: string;
+  ref: string;
+  group: AttentionGroup;
+}
+
+export interface AttentionProgress {
+  label: string;
+  value: number | null;
+  max: number;
+  text: string;
+}
+
+export interface AttentionSuggest {
+  level: 1 | 2 | 3;
+  wording: string;
+  owner: string;
+  due: string | null;
+  destination: { kind: 'project' | 'group'; id: string | null; name: string };
+  title: string;
+}
+
+export interface AttentionMeetingRef {
+  id: string;
+  item_id: string;
+  title: string;
+  lines: string;
+  /** "L18-20" for a meeting, "M3-5" (message numbers) for a chat thread. */
+  range?: string;
+  kind: 'meeting' | 'chat';
+  /** A chat thread's channel, e.g. "#release-train". */
+  channel?: string | null;
+  project_id: string | null;
+  group_id: string | null;
+  meeting_at: string | null;
+}
+
+export interface AttentionContext {
+  source_label?: string;
+  ref?: string;
+  project_name?: string | null;
+  quote?: { by: string; text: string } | null;
+  speaker?: string | null;
+  facts?: [string, string][];
+  people?: AttentionPerson[];
+  related?: AttentionRelated[];
+  progress?: AttentionProgress[];
+  quiet_days?: number;
+  harm?: string;
+  suggest?: AttentionSuggest;
+  meeting?: AttentionMeetingRef;
+  reply?: { project_id: string; ticket_id: string; to: string };
+  /** Approval cards: the decision panel's facts (no approver names). */
+  approval?: {
+    request_id: string;
+    policy_name: string;
+    target_kind: 'merge' | 'kb_promote' | string;
+    target_label: string;
+    target_title: string | null;
+    approved_count: number;
+    required_count: number;
+    blocking: boolean;
+  };
+  /** A Review Loop item paused on a limit the caller can raise. */
+  loop?: { id: string; project_id: string; ticket_id: string | null; limit: 'tokens' | 'rounds' };
+  reminder?: { id: string; timezone: string | null };
+  ticket?: { id: string; project_id: string; status: string };
+  entries?: { type: string; text: string; by: string | null; at: string | null }[];
+  proof?: {
+    caught: number;
+    accepted_changes: number;
+    rounds: number;
+    days: { date: string; rounds: number; caught: number }[];
+    tokens_per_accepted_change?: number;
+    cost_usd_per_accepted_change?: number;
+  };
+  dollars_visible?: boolean;
+}
+
+export interface AttentionRankRow {
+  factor: 'band' | 'involvement' | 'urgency' | 'recency';
+  text: string;
+  decides?: boolean;
+  due_at?: string | null;
+  at?: string | null;
+}
+
+export interface AttentionItem {
+  item_key: string;
+  kind: string;
+  band: AttentionBand;
+  group: AttentionGroup;
+  involvement: string;
+  occurred_at: string | null;
+  due_at: string | null;
+  title: string;
+  why: string;
+  link: string;
+  project_id: string | null;
+  actions: string[];
+  source: { type: string; id: string };
+  detail?: Record<string, unknown> | null;
+  context: AttentionContext;
+  rank: AttentionRankRow[];
+}
+
+export interface AttentionCounts {
+  now: number;
+  your_turn: number;
+  upcoming: number;
+  lately: number;
+  total: number;
+  actionable: number;
+}
+
+export interface ChyronEntry {
+  item_key: string;
+  category: 'urgent' | 'approval' | 'mention' | 'meeting' | 'reminder' | 'ticket' | 'forgotten';
+  text: string;
+  ref: string;
+}
+
+export interface CollabNode {
+  kind: 'mine' | 'dep' | 'dep2' | 'rev';
+  ref: string;
+  title: string;
+  status: string;
+  since: string | null;
+  stale: boolean;
+  who: { name: string; agent: boolean; you: boolean };
+}
+
+export interface CollabFlow {
+  flow_key: string;
+  state: 'dependency' | 'review';
+  label: string;
+  ticket: { id: string; title: string; status: string; link: string };
+  blocking?: { id: string; title: string; status: string; since: string | null; owner_role: string; link: string };
+  round?: number;
+  last_verdict?: string | null;
+  open_findings?: number;
+  reviewer_persona?: string | null;
+  since: string | null;
+  chain: CollabNode[];
+  to: { name: string; first: string } | null;
+  can_remind: boolean;
+  default_message: string;
+}
+
+export interface CollabProject {
+  project_id: string;
+  project_name: string;
+  group_name: string | null;
+  people: AttentionPerson[];
+  people_count: number;
+  agent_count: number;
+  flows: CollabFlow[];
+}
+
+export interface AttentionFeed {
+  items: AttentionItem[];
+  counts: AttentionCounts;
+  groups: Record<AttentionGroup, number>;
+  sections: Record<string, { count: number; error: string | null }>;
+  truncated: boolean;
+  chyron: ChyronEntry[];
+  collaboration?: { projects: CollabProject[]; waiting: number; error: string | null } | null;
+}
+
+export interface AttentionItemContext {
+  item_key: string;
+  ticket: { id: string; project_id: string; title: string; status: string };
+  knowledge: { id: number; entry_type: string; content: string; created_at: string | null }[];
+  sessions: { id: string; title: string; source_tool: string; updated_at: string | null; link: string }[];
+}
+
+export interface CollaborationRemindRequest {
+  flow_key: string;
+  message: string;
+  when: 'now' | 'tomorrow';
+  timezone?: string;
+}
 
 export class ApiError extends Error {
   status: number;
@@ -5290,6 +5494,44 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       request<MeetingActionItem>(
         `/api/v1/meetings/${encodeURIComponent(meetingId)}/action-items/${encodeURIComponent(itemId)}/restore`,
         { method: 'POST' },
+      ),
+
+
+    // ── For You (tk_dc118ffd6e804a9a) ──
+    /** The ranked feed. Sends If-None-Match; a 304 resolves to `notModified`. */
+    getForYou: async (
+      etag?: string,
+    ): Promise<{ data: AttentionFeed | null; etag: string; notModified: boolean }> => {
+      const resp = await fetch(`${baseUrl}/api/v1/me/for-you`, {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          ...(etag ? { 'If-None-Match': etag } : {}),
+        },
+      });
+      if (resp.status === 304) return { data: null, etag: etag ?? '', notModified: true };
+      if (!resp.ok) throw new ApiError(resp.status, await resp.text());
+      const data = (await resp.json()) as AttentionFeed;
+      return { data, etag: resp.headers.get('ETag') || resp.headers.get('etag') || '', notModified: false };
+    },
+    getForYouCount: () => request<AttentionCounts>('/api/v1/me/for-you/count'),
+    hideForYouItem: (itemKey: string, until?: string) =>
+      request<void>('/api/v1/me/for-you/hide', {
+        method: 'POST',
+        body: JSON.stringify(until ? { item_key: itemKey, until } : { item_key: itemKey }),
+      }),
+    unhideForYouItem: (itemKey: string) =>
+      request<void>('/api/v1/me/for-you/unhide', {
+        method: 'POST',
+        body: JSON.stringify({ item_key: itemKey }),
+      }),
+    getForYouItemContext: (itemKey: string) =>
+      request<AttentionItemContext>(
+        `/api/v1/me/for-you/items/${encodeURIComponent(itemKey)}/context`,
+      ),
+    remindCollaborator: (body: CollaborationRemindRequest) =>
+      request<{ reminder_id: string; due_at: string; to: string }>(
+        '/api/v1/me/for-you/collaboration/remind',
+        { method: 'POST', body: JSON.stringify(body) },
       ),
 
     // ── Share Links (v0.14.0) ──
