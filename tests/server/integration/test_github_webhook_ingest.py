@@ -366,14 +366,20 @@ async def test_replayed_pr_delivery_processed_once(
     )
     assert first.json()["status"] == "ok"
     # The pull_request path runs in a background task; let it finish.
-    for _ in range(100):
+    # Loaded CI runners can take seconds; wait for the refresh, then until the
+    # first delivery is marked done (a replay meanwhile answers "in_progress").
+    for _ in range(500):
         if pr_ingest_refresh:
             break
         await asyncio.sleep(0.01)
 
-    replay = await client.post(
-        "/webhooks/github", content=body, headers=_signed(body, "pull_request", "d-2")
-    )
+    for _ in range(500):
+        replay = await client.post(
+            "/webhooks/github", content=body, headers=_signed(body, "pull_request", "d-2")
+        )
+        if replay.json()["status"] != "in_progress":
+            break
+        await asyncio.sleep(0.01)
     assert replay.json()["status"] == "duplicate"
 
     assert len(pr_ingest_refresh) == 1
