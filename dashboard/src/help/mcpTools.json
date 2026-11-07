@@ -192,6 +192,15 @@
         { "name": "create_reminder", "desc": "Remind yourself at a time, optionally on a meeting or ticket" },
         { "name": "update_reminder", "desc": "Add a note, snooze, reschedule or close a reminder" }
       ]
+    },
+    {
+      "id": "approvals",
+      "label": "Approvals",
+      "tools": [
+        { "name": "list_my_approvals", "desc": "Approval requests you could decide now (read only)" },
+        { "name": "get_approval_request", "desc": "One request with its policy, target and decisions" },
+        { "name": "list_approval_policies", "desc": "An org's active approval policies" }
+      ]
     }
   ]
 }

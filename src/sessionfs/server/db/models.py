@@ -1707,6 +1707,14 @@ class KnowledgeEntry(Base):
     )
     service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Approval policies A2 (migration 120): a note held back by a blocking
+    # kb_promote policy until its approval request is approved.
+    approval_pending: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    # An entity_ref upsert held for approval: the JSON list of the entry ids
+    # it will supersede once it is actually promoted (NULL otherwise).
+    pending_supersede_ids: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ContextCompilation(Base):
@@ -6962,6 +6970,9 @@ class MeetingActionItem(Base):
         ForeignKey("meeting_participants.id", ondelete="SET NULL"),
         nullable=True,
     )
+    # Migration 121: the model's owner text (DLP-redacted) when it matched no
+    # participant. A hint for whoever assigns the item; never resolved.
+    owner_hint: Mapped[str | None] = mapped_column(String(200), nullable=True)
     due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     line_start: Mapped[int] = mapped_column(Integer, nullable=False)
     line_end: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -7584,5 +7595,161 @@ class ReminderNote(Base):
     service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ApprovalPolicy(Base):
+    """An immutable approval policy version (migration 120, GitHub #123).
+
+    An edit inserts a new row (``version`` + 1, ``supersedes_id`` = the old
+    row, same ``lineage_id``) and deactivates the old one. ``filter`` and
+    ``requirements`` are JSON validated by ``services/approvals.py``.
+    """
+
+    __tablename__ = "approval_policies"
+    __table_args__ = (
+        CheckConstraint(
+            "target_kind IN ('merge', 'kb_promote')",
+            name="ck_approval_policies_target_kind",
+        ),
+        CheckConstraint("version >= 1", name="ck_approval_policies_version"),
+        CheckConstraint(
+            "length(filter) <= 8192", name="ck_approval_policies_filter_len"
+        ),
+        CheckConstraint("length(name) <= 120", name="ck_approval_policies_name_len"),
+        Index("idx_approval_policies_org_active", "org_id", "active", "target_kind"),
+        Index("idx_approval_policies_lineage", "lineage_id", "version"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    lineage_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    target_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    filter: Mapped[str] = mapped_column(
+        Text, nullable=False, default="{}", server_default="{}"
+    )
+    requirements: Mapped[str] = mapped_column(Text, nullable=False)
+    blocking: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    supersedes_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("approval_policies.id", ondelete="SET NULL"), nullable=True
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    deactivated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class ApprovalRequest(Base):
+    """One approval request per (policy version, target, fingerprint).
+
+    The fingerprint is the full head sha for a merge and the content sha256
+    for a KB promotion, so an approval never carries over to other content.
+    Only one request per key may be PENDING (partial unique index); once one
+    is rejected, expired or superseded a new one can be raised for the same
+    key, and the old rows stay as history.
+    """
+
+    __tablename__ = "approval_requests"
+    __table_args__ = (
+        Index(
+            "uq_approval_requests_pending_target",
+            "policy_id", "target_kind", "target_id", "target_fingerprint",
+            unique=True,
+            postgresql_where=text("state = 'pending'"),
+            sqlite_where=text("state = 'pending'"),
+        ),
+        CheckConstraint(
+            "target_kind IN ('merge', 'kb_promote')",
+            name="ck_approval_requests_target_kind",
+        ),
+        CheckConstraint(
+            "state IN ('pending', 'approved', 'rejected', 'expired', 'superseded')",
+            name="ck_approval_requests_state",
+        ),
+        Index(
+            "idx_approval_requests_target",
+            "target_kind", "target_id", "target_fingerprint",
+        ),
+        Index("idx_approval_requests_org_state", "org_id", "state"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    policy_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("approval_policies.id", ondelete="CASCADE"), nullable=False
+    )
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    project_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(12), nullable=False, default="pending", server_default="pending"
+    )
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class ApprovalDecision(Base):
+    """One person's decision on a request (unique per request + approver)."""
+
+    __tablename__ = "approval_decisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "request_id", "approver_user_id", name="uq_approval_decisions_request_approver"
+        ),
+        CheckConstraint(
+            "decision IN ('approve', 'reject')", name="ck_approval_decisions_decision"
+        ),
+        CheckConstraint(
+            "length(reason) <= 2000", name="ck_approval_decisions_reason_len"
+        ),
+        CheckConstraint(
+            "requirement_index >= 0", name="ck_approval_decisions_requirement_index"
+        ),
+        Index("idx_approval_decisions_approver", "approver_user_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("approval_requests.id", ondelete="CASCADE"), nullable=False
+    )
+    # NULL once the approver's user row is deleted: the decision still
+    # counts toward quorum and renders as "former member".
+    approver_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    requirement_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    decision: Mapped[str] = mapped_column(String(10), nullable=False)
+    reason: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    decided_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

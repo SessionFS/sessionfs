@@ -9,6 +9,7 @@ import OrgSettingsTab from './OrgSettingsTab';
 import OrgHelperKeyCard from './OrgHelperKeyCard';
 import OrgAssistantSection from './OrgAssistantSection';
 import SsoTab from './SsoTab';
+import GovernanceSection from '../approvals/GovernanceSection';
 import OrgPersonasSection, { type OrgPersonaMember } from './OrgPersonasSection';
 import SecondaryOrgPage from './SecondaryOrgPage';
 import ActivateLicensePanel from './ActivateLicensePanel';
@@ -17,7 +18,7 @@ import IntegrationsTab from './integrations/IntegrationsTab';
 import GroupsTab from './groups/GroupsTab';
 import { errorMessage } from '../utils/errorMessage';
 
-type OrgTab = 'members' | 'groups' | 'personas' | 'policies' | 'security' | 'integrations';
+type OrgTab = 'members' | 'groups' | 'personas' | 'policies' | 'governance' | 'security' | 'integrations';
 
 export default function OrgPage() {
   const { auth } = useAuth();
@@ -173,6 +174,7 @@ export default function OrgPage() {
   if (org.id) visibleTabs.push('groups');
   if (org.id && (isAdmin || myUserId)) visibleTabs.push('personas');
   if (org.id) visibleTabs.push('policies');
+  if (org.id) visibleTabs.push('governance');
   if (org.id && isAdmin) visibleTabs.push('security');
   if (org.id && isAdmin) visibleTabs.push('integrations');
   const requestedTab = searchParams.get('tab');
@@ -196,6 +198,7 @@ export default function OrgPage() {
     groups: 'Groups',
     personas: 'Personas',
     policies: 'Policies',
+    governance: 'Governance',
     security: 'Security',
     integrations: 'Integrations',
   };
@@ -419,6 +422,7 @@ export default function OrgPage() {
 
       </>
     ),
+    governance: org?.id ? <GovernanceSection orgId={org.id} isAdmin={isAdmin} /> : null,
     security: (
       <>
       {/* v0.13.x — SSO (OIDC) admin configuration. */}

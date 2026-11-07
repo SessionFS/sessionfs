@@ -30,6 +30,11 @@ VALID_SCOPES = frozenset(
         # whose source project is inside its org and allowlist.
         "reminders:read",
         "reminders:write",
+        # 0.29.6 — approval policies (GitHub #123). Read-only for service
+        # keys: list the key's own org policies, read a request on a project
+        # in the key's org and allowlist, list what the minter could decide.
+        # Deciding is people-only (user keys).
+        "approvals:read",
         "personas:read",
         "personas:write",
         "knowledge:read",

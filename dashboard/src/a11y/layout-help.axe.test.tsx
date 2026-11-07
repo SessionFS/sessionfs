@@ -27,6 +27,7 @@ vi.mock('../components/SearchBar', () => ({
 vi.mock('../hooks/useTicketNotifications', () => ({
   useTicketNotificationUnreadCount: () => ({ data: { count: 3, etag: '' } }),
 }));
+vi.mock('../hooks/useApprovals', () => ({ useMyApprovalsCount: () => ({ data: { count: 1 } }) }));
 vi.mock('../hooks/useReminders', () => ({
   useRemindersDueCount: () => ({ data: { count: 1 } }),
 }));

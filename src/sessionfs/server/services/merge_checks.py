@@ -2,8 +2,9 @@
 
 ``refresh_merge_check`` posts a single "SessionFS review loop" check run on the
 exact head commit a ticket's trusted verdict is bound to. Readiness reuses
-``review_state.compute_merge_readiness`` (the same function the
-``GET …/readiness`` route uses), so the two surfaces can never drift:
+``approvals.ticket_readiness`` (the same function the ``GET …/readiness``
+route uses: ``review_state.compute_merge_readiness`` plus approval policies),
+so the two surfaces can never drift:
 
 - a check run is looked up by ``(repo, head_sha, name)`` — a new head commit
   gets its own run, and an older run is never flipped green after the fact;
@@ -39,12 +40,6 @@ from sessionfs.server.db.models import (
 from sessionfs.server.github_app import (
     _find_installation_repo,
     get_installation_token,
-)
-from sessionfs.server.services.review_state import (
-    compute_merge_readiness,
-    load_implementer_identities,
-    load_key_minters,
-    load_review_comments,
 )
 
 _FULL_SHA_RE = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
@@ -278,16 +273,11 @@ async def _repo_verified(db: AsyncSession, project_id: str, repo: str) -> bool:
 async def _compute_readiness(
     db: AsyncSession, ticket: Ticket, head_sha: str
 ) -> dict[str, Any]:
-    comments, truncated = await load_review_comments(db, ticket.id)
-    identities = (await load_implementer_identities(db, [ticket]))[ticket.id]
-    key_minters = await load_key_minters(db, comments, identities)
-    return compute_merge_readiness(
-        comments=comments,
-        sha=head_sha,
-        implementer_identities=identities,
-        key_minters=key_minters,
-        history_truncated=truncated,
-    )
+    # The same function the readiness route uses: pure review readiness plus
+    # approval policies (a pending blocking approval keeps the check not green).
+    from sessionfs.server.services.approvals import ticket_readiness
+
+    return await ticket_readiness(db, ticket, head_sha)
 
 
 def _skipped(repo: str, head_sha: str, ready: bool, reason: str) -> dict[str, Any]:
@@ -526,10 +516,13 @@ async def _post_comment(
 
 
 async def on_verdict_recorded(db: AsyncSession, ticket_id: str) -> None:
-    """Re-evaluate a ticket's merge check after a verdict is recorded.
+    """Re-evaluate a ticket's merge check after a verdict, an approval
+    decision or a policy change.
 
-    The review-round path calls this directly; it is best-effort and never
-    raises (a failing check run must not fail the settle request).
+    Provider-aware: the GitHub check run (``refresh_merge_check``) and the
+    GitLab commit status of every open GitLab merge request the ticket is
+    linked to (``delivery_ingest.post_gitlab_status``). Best-effort and never
+    raises (a failing check must not fail the settle request).
     """
     try:
         await refresh_merge_check(db, ticket_id=ticket_id)
@@ -537,6 +530,45 @@ async def on_verdict_recorded(db: AsyncSession, ticket_id: str) -> None:
         logger.warning(
             "merge check re-evaluation failed for ticket %s", ticket_id, exc_info=True
         )
+    try:
+        await refresh_gitlab_statuses(db, ticket_id)
+    except Exception:
+        logger.warning(
+            "GitLab status re-evaluation failed for ticket %s", ticket_id, exc_info=True
+        )
+
+
+async def refresh_gitlab_statuses(db: AsyncSession, ticket_id: str) -> int:
+    """Re-post the GitLab commit status for each open GitLab merge request
+    linked to ``ticket_id`` (one post per distinct (repo, head sha)). Returns
+    the number of posts attempted."""
+    from sessionfs.server.services.delivery_ingest import post_gitlab_status
+
+    rows = (
+        await db.execute(
+            select(PullRequest.project_id, PullRequest.repo, PullRequest.head_sha)
+            .join(TicketPrLink, TicketPrLink.pr_id == PullRequest.id)
+            .join(Ticket, Ticket.id == TicketPrLink.ticket_id)
+            .where(
+                TicketPrLink.ticket_id == ticket_id,
+                PullRequest.provider == "gitlab",
+                PullRequest.state == "open",
+                PullRequest.head_sha.is_not(None),
+                PullRequest.project_id == Ticket.project_id,
+            )
+            .distinct()
+        )
+    ).all()
+    posted = 0
+    for project_id, repo, sha in sorted(rows):
+        if not _FULL_SHA_RE.fullmatch(sha or ""):
+            continue
+        project = await db.get(Project, project_id)
+        if project is None:
+            continue
+        await post_gitlab_status(db, project=project, repo=repo, sha=sha)
+        posted += 1
+    return posted
 
 
 _background_tasks: set[asyncio.Task] = set()
@@ -556,6 +588,8 @@ async def _recheck_with_fresh_session(ticket_id: str) -> None:
     try:
         async with _session_factory() as db:
             await on_verdict_recorded(db, ticket_id)
+            # Keep any approval request raised while computing readiness.
+            await db.commit()
     except Exception:
         logger.warning(
             "merge check re-evaluation failed for ticket %s", ticket_id, exc_info=True
@@ -564,5 +598,71 @@ async def _recheck_with_fresh_session(ticket_id: str) -> None:
 
 def schedule_recheck(ticket_id: str) -> None:
     """Spawn a detached re-evaluation (the work-queue settle path calls this
-    after its commit so a merge check never delays the request)."""
+    after its commit so a merge check never delays the request). Refreshes
+    both the GitHub check and the GitLab commit status."""
     _spawn(_recheck_with_fresh_session(ticket_id))
+
+
+# ── Org-wide recheck (approval policy writes) ──────────────────────
+
+ORG_RECHECK_PAGE = 200
+
+
+async def org_open_pr_ticket_page(
+    db: AsyncSession, org_id: str, *, after: Optional[str] = None,
+    limit: int = ORG_RECHECK_PAGE,
+) -> list[str]:
+    """One keyset page (ordered by ticket id) of the tickets linked to an
+    open PR or MR in ``org_id``'s projects."""
+    stmt = (
+        select(TicketPrLink.ticket_id)
+        .join(PullRequest, PullRequest.id == TicketPrLink.pr_id)
+        .join(Project, Project.id == PullRequest.project_id)
+        .where(Project.org_id == org_id, PullRequest.state == "open")
+        .distinct()
+        .order_by(TicketPrLink.ticket_id)
+        .limit(limit)
+    )
+    if after is not None:
+        stmt = stmt.where(TicketPrLink.ticket_id > after)
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def recheck_org(
+    org_id: str, *, session_factory: Any, page_size: int = ORG_RECHECK_PAGE
+) -> int:
+    """Re-evaluate every open-PR ticket of ``org_id`` (GitHub + GitLab),
+    page by page: each page runs in its own short session and is committed
+    before the next, so the work per transaction stays bounded while no
+    ticket is dropped. Returns the number of tickets rechecked."""
+    after: Optional[str] = None
+    done = 0
+    while True:
+        async with session_factory() as db:
+            page = await org_open_pr_ticket_page(db, org_id, after=after, limit=page_size)
+            if not page:
+                return done
+            for ticket_id in page:
+                await on_verdict_recorded(db, ticket_id)
+            await db.commit()
+        done += len(page)
+        after = page[-1]
+        if len(page) < page_size:
+            return done
+
+
+async def _recheck_org_with_fresh_session(org_id: str) -> None:
+    from sessionfs.server.db.engine import _session_factory
+
+    if _session_factory is None:
+        return
+    try:
+        await recheck_org(org_id, session_factory=_session_factory)
+    except Exception:
+        logger.warning("org merge check re-evaluation failed for %s", org_id, exc_info=True)
+
+
+def schedule_org_recheck(org_id: str) -> None:
+    """Spawn ONE detached task that rechecks every open-PR ticket in the org
+    (an approval policy was created, edited or deactivated)."""
+    _spawn(_recheck_org_with_fresh_session(org_id))

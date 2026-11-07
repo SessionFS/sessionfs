@@ -70,7 +70,11 @@ _MAX_DESCRIPTION_CHARS = 2000
 _DUE_DATE_RANGE_DAYS = 730  # ±2 years
 _MAX_OUTPUT_TOKENS = 16000
 _FALLBACK_OUTPUT_TOKENS = 8192
-_EXTRACTION_DEADLINE_SECONDS = 120
+# Reasoning models (deepseek-v4-pro, o-series, extended thinking) take over two
+# minutes on an hour-long transcript, so the deadline leaves room for them while
+# staying under the 300 s dashboard proxy timeout the Helm chart ships. The CLI
+# and MCP clients wait longer than this.
+_EXTRACTION_DEADLINE_SECONDS = 240
 
 # The data block delimiter. Kept separate from the helper's instruction tags:
 # the transcript must not be able to close its own block, so both the
@@ -95,8 +99,9 @@ Respond with JSON only, matching this schema exactly:
 
 Rules:
 - participants: the people speaking or named in the transcript. name is required; email is optional and only when the text shows it.
-- items: kind is "action" or "decision". description is one concise sentence. owner_name must match one of the returned participant names (omit when there is no owner). due_date is an ISO date only when the transcript mentions one. line_start/line_end are 1-based line numbers citing the text the item came from, with line_start <= line_end and at most 40 lines apart.
-- Output only the JSON object, nothing else."""
+- items: kind is "action" or "decision". description is one concise sentence. owner_name is the person responsible, written as one of the returned participant names when they are one (omit when there is no owner). due_date is an ISO date only when the transcript mentions one. line_start/line_end are 1-based line numbers citing the text the item came from, with line_start <= line_end and at most 40 lines apart.
+- due_date: resolve relative dates ("Friday", "next week", "end of month") against the meeting date given before the transcript; omit due_date when the transcript names no date.
+- Output only the JSON object on a single line, with no indentation and nothing else."""
 
 
 def _neutralize_transcript(text: str) -> str:
@@ -114,21 +119,60 @@ def _neutralize_transcript(text: str) -> str:
     return _TRANSCRIPT_DELIMITER_RE.sub("[tag removed]", folded)
 
 
-def _build_extraction_prompt(content: str) -> str:
-    """Numbered lines inside a delimited data block."""
+def _reference_date(meeting: MeetingTranscript) -> date | None:
+    """The date relative due dates are resolved against: the meeting's own
+    date when known, else the day it was stored."""
+    when = meeting.meeting_at or meeting.created_at
+    return when.date() if when is not None else None
+
+
+def _build_extraction_prompt(content: str, reference_date: date | None = None) -> str:
+    """The meeting date line, then numbered lines inside a delimited data block.
+
+    Without the date the model guesses the year and week for "by Friday",
+    so a due date could land a week (or a year) off.
+    """
     lines = content.split("\n")
     numbered = "\n".join(
         f"{i + 1:>6}\t{_neutralize_transcript(line)}" for i, line in enumerate(lines)
     )
-    return f"<transcript>\n{numbered}\n</transcript>"
+    block = f"<transcript>\n{numbered}\n</transcript>"
+    if reference_date is None:
+        return block
+    return (
+        f"Meeting date: {reference_date.isoformat()} ({reference_date.strftime('%A')})\n\n"
+        + block
+    )
 
 
 def _strip_fences(raw: str) -> str:
+    """The JSON text of the answer: the whole answer, or its one fenced block.
+
+    Some models put a sentence before the fenced JSON ("Here are the items:")
+    despite the instruction; exactly one fenced block is taken as the answer.
+    Plain string operations only: the answer is model output steered by the
+    transcript, so a backtracking regex over it (long runs of whitespace or
+    unclosed fences) could block the event loop for seconds.
+    """
     text = raw.strip()
     if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*", "", text)
-        text = re.sub(r"\s*```$", "", text)
-    return text.strip()
+        text = text[3:]
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.lstrip()
+        if text.endswith("```"):
+            text = text[:-3]
+        return text.strip()
+    if not text.startswith("{") and text.count("```") == 2:
+        _, block, _ = text.split("```")
+        header, newline, body = block.partition("\n")
+        if (
+            newline
+            and header.strip(" \t") in ("", "json", "JSON")
+            and body.rstrip(" \t").endswith("\n")
+        ):
+            return body.strip()
+    return text
 
 
 def _as_int(value: Any) -> int | None:
@@ -314,6 +358,10 @@ async def _collect_extraction(
         temperature=0,
         max_tokens=max_tokens,
         timeout=120,
+        # Extraction is a one-shot structured task: default-on thinking
+        # (DeepSeek v4) spent the whole 16k output budget and the deadline on
+        # reasoning for an hour-long transcript, leaving no answer.
+        disable_thinking=True,
     ):
         if isinstance(event, TextDelta):
             acc.text_parts.append(event.text)
@@ -520,7 +568,7 @@ async def run_meeting_extraction(
                 )
 
     policy = await _upload_dlp_policy(db, auth, scope_org_id)
-    prompt = _build_extraction_prompt(meeting.content)
+    prompt = _build_extraction_prompt(meeting.content, _reference_date(meeting))
     meeting_id = meeting.id
     content = meeting.content
     line_count = meeting.line_count
@@ -704,19 +752,22 @@ async def run_meeting_extraction(
     kept_items = 0
     for spec in item_specs:
         owner_participant_id: str | None = None
+        owner_hint: str | None = None
         if spec["owner_name"] is not None:
-            owner_key = (
-                _norm(_redact_extracted_text(spec["owner_name"], policy))
-            )
-            owner_participant_id = name_to_participant_id.get(owner_key)
-            if owner_participant_id is None:
-                dropped_items += 1
-                continue
+            redacted_owner = _redact_extracted_text(spec["owner_name"], policy).strip()
+            owner_participant_id = name_to_participant_id.get(_norm(redacted_owner))
             # The owner must be named in the cited lines (or the line just
             # before, for a speaker label); otherwise keep the item ownerless.
             window = content_lines[max(spec["line_start"] - 2, 0) : spec["line_end"]]
-            if not name_in_text(spec["owner_name"], "\n".join(window)):
+            if owner_participant_id is not None and not name_in_text(
+                spec["owner_name"], "\n".join(window)
+            ):
                 owner_participant_id = None
+            # An owner that matches no participant (or isn't evidenced in the
+            # cited lines) leaves the item with no owner, keeping the redacted
+            # text as a hint for whoever assigns it. Never an assignee.
+            if owner_participant_id is None:
+                owner_hint = redacted_owner[:200] or None
         db.add(
             MeetingActionItem(
                 id=f"mai_{uuid.uuid4().hex[:12]}",
@@ -724,6 +775,7 @@ async def run_meeting_extraction(
                 kind=spec["kind"],
                 description=_redact_extracted_text(spec["description"], policy),
                 owner_participant_id=owner_participant_id,
+                owner_hint=owner_hint,
                 due_date=spec["due_date"],
                 line_start=spec["line_start"],
                 line_end=spec["line_end"],

@@ -57,6 +57,15 @@ def test_reminder_docs_are_indexed() -> None:
     assert ("mcp", "reminders") in found
 
 
+def test_approval_docs_are_indexed() -> None:
+    index = get_docs_index()
+    results = index.search("approval policy self-approval author", 5)
+    assert results and results[0]["slug"] == "approvals"
+    found = {(r["slug"], r["anchor"]) for r in index.search("sfs approval policy create", 8)}
+    assert ("cli", "sfs-approval-enterprise") in found
+    assert index.resolve_citation("mcp", "approvals") is not None
+
+
 def test_search_install_ranks_installation_first() -> None:
     results = get_docs_index().search("install", 3)
     assert results, "expected at least one hit for 'install'"

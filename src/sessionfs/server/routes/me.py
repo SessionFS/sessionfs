@@ -32,6 +32,10 @@ from sessionfs.server.db.models import (
     User,
     UserNotificationSettings,
 )
+from sessionfs.server.services.approvals import (
+    MAX_NOTIFICATION_SUBJECTS,
+    approval_notification_subjects,
+)
 
 router = APIRouter(prefix="/api/v1/me", tags=["me"])
 
@@ -50,7 +54,8 @@ _DELTA_HORIZON = timedelta(seconds=5)
 
 
 class NotificationSubject(BaseModel):
-    """What a notification is about: a ticket or a reminder (migration 119)."""
+    """What a notification is about: a ticket, a reminder (migration 119) or
+    an approval request (migration 120)."""
 
     kind: str
     id: str
@@ -58,10 +63,20 @@ class NotificationSubject(BaseModel):
     due_at: datetime | None = None
 
 
+class ApprovalNotificationSubject(NotificationSubject):
+    """Approval rows (approval policies A2): the request's project, state and
+    target, derived at read time after the reader's eligibility is re-checked."""
+
+    project_id: str | None = None
+    state: str | None = None
+    target_kind: str | None = None
+    target_id: str | None = None
+
+
 class TicketNotificationItem(BaseModel):
     id: int
     subject_kind: str = "ticket"
-    subject: NotificationSubject | None = None
+    subject: ApprovalNotificationSubject | NotificationSubject | None = None
     # Set for ticket rows; NULL for reminder rows.
     ticket_id: str | None = None
     project_id: str | None = None
@@ -140,6 +155,34 @@ def _to_reminder_item(
         subject=NotificationSubject(
             kind="reminder", id=reminder.id, title=reminder.title, due_at=reminder.due_at
         ),
+        kind=notification.kind,
+        summary=notification.summary,
+        actor_type=notification.actor_type,
+        actor_user_id=notification.actor_user_id,
+        service_key_name=notification.service_key_name,
+        event_count=notification.event_count,
+        created_at=notification.created_at,
+        updated_at=notification.updated_at,
+        read_at=notification.read_at,
+    )
+
+
+def _to_approval_item(
+    notification: TicketNotification, subject: dict
+) -> TicketNotificationItem:
+    return TicketNotificationItem(
+        id=notification.id,
+        subject_kind="approval",
+        subject=ApprovalNotificationSubject(
+            kind="approval",
+            id=subject["id"],
+            title=subject["title"],
+            project_id=subject["project_id"],
+            state=subject["state"],
+            target_kind=subject["target_kind"],
+            target_id=subject["target_id"],
+        ),
+        project_id=subject["project_id"],
         kind=notification.kind,
         summary=notification.summary,
         actor_type=notification.actor_type,
@@ -272,6 +315,12 @@ async def list_ticket_notifications(
         visible_reminders = await _visible_reminder_ids(
             db, user.id, [r[3] for r in rows if r[3] is not None]
         )
+        # Approval rows re-check the reader's eligibility for the request
+        # (approval_requested: can still decide it; approval_decided: can
+        # still read the target's project).
+        approval_subjects = await approval_notification_subjects(
+            db, user, [r[0] for r in rows if r[0].subject_kind == "approval"]
+        )
         for notification, title, project_id, reminder in rows:
             if notification.id in seen:
                 continue
@@ -279,6 +328,11 @@ async def list_ticket_notifications(
                 if reminder is None or reminder.id not in visible_reminders:
                     continue
                 item = _to_reminder_item(notification, reminder)
+            elif notification.subject_kind == "approval":
+                subject = approval_subjects.get(notification.id)
+                if subject is None:
+                    continue
+                item = _to_approval_item(notification, subject)
             elif notification.subject_kind == "ticket":
                 if project_id is None or project_id not in accessible:
                     continue
@@ -357,6 +411,37 @@ async def ticket_notifications_unread_count(
         visible = await _visible_reminder_ids(db, user.id, reminders)
         for n, top, rid in reminder_rows:
             if rid in visible:
+                count += n
+                max_id = max(max_id, top)
+    # Approval rows: one probe row per (request, kind), then one eligibility
+    # check for them all.
+    approval_rows = (
+        await db.execute(
+            select(
+                func.count(TicketNotification.id),
+                func.max(TicketNotification.id),
+                TicketNotification.subject_id,
+                TicketNotification.kind,
+            )
+            .where(
+                TicketNotification.user_id == user.id,
+                TicketNotification.subject_kind == "approval",
+                TicketNotification.read_at.is_(None),
+            )
+            .group_by(TicketNotification.subject_id, TicketNotification.kind)
+            # Bounded: only the newest groups are re-checked for the badge.
+            .order_by(func.max(TicketNotification.id).desc())
+            .limit(MAX_NOTIFICATION_SUBJECTS)
+        )
+    ).all()
+    if approval_rows:
+        probes = [
+            TicketNotification(id=top, subject_kind="approval", subject_id=sid, kind=kind)
+            for _n, top, sid, kind in approval_rows
+        ]
+        subjects = await approval_notification_subjects(db, user, probes)
+        for n, top, _sid, _kind in approval_rows:
+            if top in subjects:
                 count += n
                 max_id = max(max_id, top)
     etag = f'"{count}-{max_id}"'

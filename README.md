@@ -133,6 +133,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs meeting upload\|list\|search\|show\|delete` | Store meeting transcripts on a project or group (DLP-redacted before storage) |
 | `sfs meeting extract\|participants\|resolve-participant\|action-items\|promote\|dismiss\|restore` | Extract action items and decisions with your own AI key, match participants, turn items into tickets |
 | `sfs remind add\|list\|show\|note\|snooze\|done\|dismiss` | Personal reminders at a time, optionally tied to a meeting or ticket; due ones reach the bell, Inbox and digest |
+| `sfs approval policy list\|create\|update\|disable` / `sfs approval list\|show\|approve\|reject` | Approval policies on merges and KB promotion, and the requests waiting on you (Enterprise) |
 | `sfs ticket follow\|unfollow\|inbox\|updates` | Follow tickets, list your notifications, and poll the agent delta (Ticket Watchers) |
 | `sfs ticket jira preview\|publish\|status\|unlink` | Promote a ticket to a Jira Cloud issue with a reviewable preview (Enterprise) |
 | `sfs agent run\|complete\|status\|list` | Record agent runs (e.g. CI reviews) with findings (Team+) |
@@ -278,7 +279,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.29.5 — Public Beta.** 10721 backend tests + 1978 dashboard tests passing. Database migrations 001–119 (067 and 068 unused). 121 MCP tools. **Reminders:** set a reminder from a meeting item, a ticket or the session helper, for yourself or a teammate who can read the source; it lands in the bell, the Inbox and the email digest when due, and you can snooze, reschedule, add notes or close it. `sfs remind`, three MCP tools, an opt-in Helm CronJob for the due sweep. Migration 119.
+**v0.29.6 — Public Beta.** 10860 backend tests + 2018 dashboard tests passing. Database migrations 001–121 (067 and 068 unused). 124 MCP tools. **Approvals (Enterprise):** approval policies hold merges (readiness, the GitHub check and the GitLab status) and knowledge-base promotion until the right people approve, bound to the exact commit or entry content; nobody approves their own work, agents only read, and every decision lands in an exportable approval log. `sfs approval`, three read-only MCP tools, an Approvals page and Org → Governance in the dashboard. **Meetings:** pasted transcripts get a title and have caption timing stripped, extraction finishes on long transcripts and dates items from the meeting day, items with an unknown owner are kept, and the session helper can save a pasted transcript as a meeting. Migrations 120–121.
 
 **v0.29.3 — Public Beta.** 10600 backend tests + 1950 dashboard tests passing. Database migrations 001–116 (067 and 068 unused). 118 MCP tools. **One call per worker run and per review round,** with usage and commit-bound verdicts (`sfs loop run start|finish`, `sfs loop review`). **A merge check on GitHub and GitLab** that turns green only when every linked ticket is ready at exactly that commit. **Pull requests, releases and deploys** linked to tickets, with a per-release or per-month **Ship Report** and a model scoreboard (`sfs release`), share links that show no dollars or emails (`sfs loop share`), and a Loop Board, Ship Reports and a Review loops inbox in the dashboard. Migrations 113–116.
 

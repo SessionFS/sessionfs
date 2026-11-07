@@ -690,6 +690,7 @@ async def _stream_openai_compatible(
     reasoning_object: bool = False,
     echo_reasoning: bool = False,
     thinking_disable_on_replay: bool = False,
+    disable_thinking: bool = False,
     top_p: float | None = None,
     reasoning_effort_value: str | None = None,
     custom_base_url: str | None = None,
@@ -716,7 +717,9 @@ async def _stream_openai_compatible(
             "stream_options": {"include_usage": True},
             token_field: max_tokens,
         }
-        if thinking_disable_on_replay and _replayed_without_reasoning(messages):
+        if thinking_disable_on_replay and (
+            disable_thinking or _replayed_without_reasoning(messages)
+        ):
             # DeepSeek rejects a replayed tool-loop turn whose assistant messages
             # carry no reasoning_content while thinking is on; disable it for this
             # request (the conversation history cannot reconstruct the reasoning).
@@ -1065,13 +1068,17 @@ async def stream_chat(
     top_p: float | None = None,
     reasoning_effort_value: str | None = None,
     max_response_bytes: int | None = None,
+    disable_thinking: bool = False,
 ) -> AsyncIterator[StreamEvent]:
     """Stream a single model turn, translating neutral messages/tools and back.
 
     ``base_url`` forces the OpenAI-compatible chat-completions format (matching
     ``_call_openai_compatible``). Otherwise the provider is auto-detected from
     the model name when not given. Reasoning models omit temperature. ``top_p``
-    and ``reasoning_effort_value`` are only sent when set.
+    and ``reasoning_effort_value`` are only sent when set. ``disable_thinking``
+    turns off default-on thinking for a one-shot structured task, only on
+    providers known to accept ``thinking: {type: disabled}`` (DeepSeek); it is
+    ignored everywhere else.
     """
     if provider is None:
         provider = _detect_provider(model)
@@ -1154,6 +1161,7 @@ async def stream_chat(
                 reasoning_object=profile.reasoning_object,
                 echo_reasoning=profile.echo_reasoning,
                 thinking_disable_on_replay=profile.thinking_disable_on_replay,
+                disable_thinking=disable_thinking,
                 top_p=top_p,
                 reasoning_effort_value=reasoning_effort_value,
                 max_response_bytes=max_response_bytes,

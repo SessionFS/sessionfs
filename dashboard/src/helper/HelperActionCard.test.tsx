@@ -836,3 +836,70 @@ describe('create_reminder card', () => {
     expect(screen.queryByRole('link', { name: 'Open reminder' })).not.toBeInTheDocument();
   });
 });
+
+describe('create_meeting card', () => {
+  const MEETING: TurnAction = {
+    id: ID,
+    kind: 'create_meeting',
+    summary: 'Save meeting “Platform sync” (3 lines) to project Widgets and extract its action items',
+    expires_at: inMinutes(14),
+    targets: [{ id: 'meeting', name: 'Platform sync — 3 lines', change: 'will_change' }],
+    params: { project_id: 'proj_1', group_id: null, title: 'Platform sync', extract: true, line_count: 3 },
+  };
+
+  function renderCard(action: TurnAction) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    return render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <HelperActionCard action={action} />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+  }
+
+  const confirmed = (target: Record<string, unknown>) => ({
+    ...MEETING,
+    status: 'confirmed',
+    result: { targets: [{ id: 'meet_0123456789abcdef', ok: true, error: null, meeting_id: 'meet_0123456789abcdef', ...target }] },
+    created_at: null,
+    decided_at: null,
+  });
+
+  it('confirms and links to the saved meeting with its item counts', async () => {
+    useAuthMock.mockReturnValue({
+      auth: {
+        client: {
+          confirmHelperAction: vi.fn().mockResolvedValue(
+            confirmed({ extraction_status: 'done', action_item_count: 2, decision_count: 1 }),
+          ),
+          cancelHelperAction: vi.fn(),
+        },
+      },
+    });
+    renderCard(MEETING);
+    expect(screen.getByRole('heading', { name: /Save meeting “Platform sync”/ })).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(await screen.findByText(/Meeting saved with 2 action items and 1 decision/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open meeting' })).toHaveAttribute('href', '/meetings/meet_0123456789abcdef');
+  });
+
+  it('says why extraction did not run when the meeting was still saved', async () => {
+    useAuthMock.mockReturnValue({
+      auth: {
+        client: {
+          confirmHelperAction: vi.fn().mockResolvedValue(
+            confirmed({ extraction_status: 'none', extraction_error: 'llm_key_required' }),
+          ),
+          cancelHelperAction: vi.fn(),
+        },
+      },
+    });
+    renderCard(MEETING);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(await screen.findByText(/No AI key is set up for you or your organization/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open meeting' })).toBeInTheDocument();
+  });
+});

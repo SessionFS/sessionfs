@@ -55,6 +55,10 @@ vi.mock('../hooks/useReminders', () => ({
   useRemindersDueCount: () => ({ data: { count: remindersCount.value } }),
 }));
 
+vi.mock('../hooks/useApprovals', () => ({
+  useMyApprovalsCount: () => ({ data: { count: 0 } }),
+}));
+
 vi.mock('../hooks/useReviewLoop', () => ({
   useNeedsYouCount: () => ({ data: { count: loopCount.value } }),
 }));
@@ -302,7 +306,7 @@ describe('Layout', () => {
       expect(order).toEqual([
         'Sessions', 'Projects', 'Handoffs',
         'Marketplace',
-        'Notifications', 'Reminders', 'Review loops', 'Invites', 'Transfers',
+        'Notifications', 'Reminders', 'Approvals', 'Review loops', 'Invites', 'Transfers',
         'Organization', 'Billing',
         'Settings', 'Help', 'Admin',
       ]);

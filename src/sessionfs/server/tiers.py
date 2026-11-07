@@ -151,6 +151,8 @@ TIER_FEATURES: dict[Tier, dict] = {
             "confluence_integration",
             "project_groups",
             "meetings",
+            # 0.29.6 — approval policies (GitHub #123), Enterprise only.
+            "approval_policies",
         },
         "storage_bytes": 0,  # Unlimited (self-hosted)
         "description": "Self-hosted + HIPAA + governance",

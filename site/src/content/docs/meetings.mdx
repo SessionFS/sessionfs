@@ -29,7 +29,7 @@ Group meetings always require a user key. There are no org-wide meetings.
 
 ## Upload and DLP
 
-`POST` uploads a meeting with a `title` (1–200 chars), `content` (the transcript text), an optional `meeting_at` / `duration_minutes`, and a `source` (`manual_paste` or `file_upload`). Set `extract: true` to run action-item extraction in the same request.
+`POST` uploads a meeting with a `title` (1–200 chars), `content` (the transcript text), an optional `meeting_at` / `duration_minutes`, and a `source` (`manual_paste` or `file_upload`). Set `extract: true` to run action-item extraction in the same request. WebVTT and SRT content has its cue timing stripped to `Speaker: text` lines whichever `source` it arrives with, so a caption file pasted as text is stored the same as one uploaded as a file (the signature check is exact; plain text is never changed). In the dashboard, a pasted transcript you don't name gets its first line as the title when that reads like a heading, otherwise *Meeting on &lt;date&gt;*; you can edit it before saving.
 
 The request body is streamed with a hard cap of **1 MiB**; the normalised content is capped at **512 KiB** and **10 000 lines**. Over the cap the upload is refused with `413 meeting_too_large`.
 
@@ -53,9 +53,9 @@ A project or group editor can override any participant manually with exactly one
 
 Extraction turns a stored transcript into a list of `participants` and `items` (each an `action` or `decision`) with one LLM call. Run it on upload with `extract: true`, or later with `POST /api/v1/meetings/{meeting_id}/extract`.
 
-The model is asked for names, owners, due dates and 1-based line citations, but everything it returns is validated against the stored text before it is persisted: participants are resolved server-side (same order as [participant resolution](#participant-resolution)), and each item must cite a valid line range (at most 40 lines apart). An item whose owner matches no resolved participant is dropped and counted in the response's `dropped_items`.
+The model is given the meeting date (its `meeting_at`, else the day it was stored) so relative due dates such as "by Friday" resolve to the right day, and is asked for names, owners, due dates and 1-based line citations, but everything it returns is validated against the stored text before it is persisted: participants are resolved server-side (same order as [participant resolution](#participant-resolution)), and each item must cite a valid line range (at most 40 lines apart). An item whose owner matches no participant (or whose owner isn't named in the cited lines) is kept with no owner: `owner_participant_id` is null and `owner_hint` carries the owner text the model gave (DLP-redacted, never used to assign anyone). The dashboard shows it as **Owner unknown** and asks you to choose an assignee when you create a ticket from it. `dropped_items` counts only entries that fail validation (bad kind, line range, date or field types).
 
-Extraction uses the same LLM key resolution and monthly token budget as the session helper. With no key configured it returns `409 llm_key_required`; an exhausted org budget returns `429 helper_budget_exceeded`. AI usage is recorded as `meeting_extract`, separately from helper chats, and counts against the same org budget. A provider failure or an unparseable response marks the meeting `extraction_status: "failed"` with a classified `extraction_error` and leaves existing items untouched.
+Extraction uses the same LLM key resolution and monthly token budget as the session helper. With no key configured it returns `409 llm_key_required`; an exhausted org budget returns `429 helper_budget_exceeded`. AI usage is recorded as `meeting_extract`, separately from helper chats, and counts against the same org budget. The provider call has a 240-second deadline (reasoning models can need over two minutes on an hour-long transcript); past it the meeting is marked failed with `timeout`. A provider failure or an unparseable response marks the meeting `extraction_status: "failed"` with a classified `extraction_error` and leaves existing items untouched.
 
 Re-running replaces **pending** items and every **non-manual** participant; **promoted** / **dismissed** items and manually overridden participants are kept, so a re-extract never undoes a promotion or a dismissal.
 
@@ -85,7 +85,7 @@ sfs meeting promote meet_… mi_… --assignee atlas --due 2026-11-05   # shows 
 sfs meeting promote meet_… mi_… --target-project proj_… --yes       # group meeting, no prompt
 ```
 
-A file upload is stored with `source=file_upload` (`.vtt` and `.srt` cue timing is stripped server-side); `--stdin` uses `manual_paste`. `promote` always prints the ticket draft first and asks before creating it unless `--yes` is given. See the [CLI reference](/cli/#sfs-meeting) for every command.
+A file upload is stored with `source=file_upload`; `--stdin` uses `manual_paste`. `.vtt` and `.srt` cue timing is stripped server-side either way. `promote` always prints the ticket draft first and asks before creating it unless `--yes` is given. See the [CLI reference](/cli/#sfs-meeting) for every command.
 
 ## MCP tools
 

@@ -1764,14 +1764,14 @@ async def get_ticket_merge_readiness(
       - the reviewer's identity differs from EVERY implementer identity
         recorded for the ticket (self-review is never ready);
       - no open finding is harmful (harm != 'none'; an untagged finding of
-        MEDIUM or higher fails closed).
+        MEDIUM or higher fails closed);
+      - every matching BLOCKING approval policy has an approved request for
+        this exact sha (advisory policies add ``warnings`` only). The response
+        carries ``approvals: [{request_id, policy_id, policy_name, state,
+        blocking, approved_count, required_count}]`` and ``warnings``;
+        ``policy_name`` (and names in the reasons) only for org members.
     """
-    from sessionfs.server.services.review_state import (
-        compute_merge_readiness,
-        load_implementer_identities,
-        load_key_minters,
-        load_review_comments,
-    )
+    from sessionfs.server.services.approvals import ticket_readiness
 
     project = await _get_project_for_auth(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
@@ -1789,19 +1789,18 @@ async def get_ticket_merge_readiness(
         )
     sha = sha.strip()
 
-    # A thread longer than the cap fails closed (history_truncated).
-    comments, truncated = await load_review_comments(db, ticket.id)
+    # Approval policies (GitHub #123) fold in after the pure readiness check:
+    # ready also needs every matching blocking request approved for this sha.
+    # Policy names are for active members of the project's org; other
+    # readers (captured-session readers, service keys) get generic reasons.
+    from sessionfs.server.services.approvals import is_active_org_member
 
-    identities = (await load_implementer_identities(db, [ticket]))[ticket.id]
-    key_minters = await load_key_minters(db, comments, identities)
-
-    readiness = compute_merge_readiness(
-        comments=comments,
-        sha=sha,
-        implementer_identities=identities,
-        key_minters=key_minters,
-        history_truncated=truncated,
+    show_names = auth.key_kind != "service" and await is_active_org_member(
+        db, project.org_id, auth.user.id
     )
+    readiness = await ticket_readiness(db, ticket, sha, show_names=show_names)
+    # A newly raised approval request is a pending row: persist it.
+    await db.commit()
     return {"ticket_id": ticket.id, **readiness}
 
 

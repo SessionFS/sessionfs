@@ -505,7 +505,7 @@ function ExtractionStatus({
       </div>
       <p className="mt-2 text-xs text-text-tertiary" role={failed ? 'alert' : undefined}>
         {pending
-          ? 'Reading the transcript. This can take up to two minutes.'
+          ? 'Reading the transcript. This can take a few minutes.'
           : failed
             ? (
               <>

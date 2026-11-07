@@ -83,6 +83,13 @@ class KnowledgeEntryResponse(BaseModel):
     dismissed_at: datetime | None = None
     dismissed_by: str | None = None
     dismissed_reason: str | None = None
+    # Approval policies (A2): held back from promotion by a blocking
+    # kb_promote policy. ``approvals`` and ``warnings`` are only filled on
+    # the promote response.
+    approval_pending: bool = False
+    approvals: list[dict] = Field(default_factory=list)
+    approval_reasons: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
 
 
 def _entry_to_response(entry: KnowledgeEntry) -> "KnowledgeEntryResponse":
@@ -121,6 +128,7 @@ def _entry_to_response(entry: KnowledgeEntry) -> "KnowledgeEntryResponse":
         dismissed_at=getattr(entry, "dismissed_at", None),
         dismissed_by=getattr(entry, "dismissed_by", None),
         dismissed_reason=getattr(entry, "dismissed_reason", None),
+        approval_pending=bool(getattr(entry, "approval_pending", False)),
     )
 
 
@@ -259,6 +267,10 @@ class AddEntryResponse(BaseModel):
     # previous version was rolled forward; agents that wrote a distinct
     # claim see an empty list and know they did not silently overwrite.
     upserted_from: list[int] = Field(default_factory=list)
+    # Approval policies (A2): a claim-worthy entry held as a note until a
+    # blocking kb_promote policy approves it.
+    approval_pending: bool = False
+    warnings: list[str] = Field(default_factory=list)
 
 
 class DismissRequest(BaseModel):
@@ -960,6 +972,27 @@ async def add_entry(
     db.add(entry)
     await db.flush()  # populate entry.id for the supersede update
 
+    # Approval policies (A2): classifying a new entry as a claim is a
+    # promotion too, so a matching blocking kb_promote policy holds it as a
+    # note until approved (advisory policies only warn).
+    approval_warnings: list[str] = []
+    if claim_class == "claim":
+        from sessionfs.server.services.approvals import kb_promotion_gate
+
+        gate = await kb_promotion_gate(db, entry, user.id, project=project)
+        approval_warnings = gate.warnings
+        if gate.blocked:
+            entry.claim_class = "note"
+            classification_reason = "Held for approval: " + "; ".join(gate.reasons)
+            tip = "An approver must approve this entry before it becomes a claim"
+            # The replacement is not a claim yet, so the slot keeps its
+            # current active entries; they are superseded only once this
+            # entry is actually promoted (services.approvals
+            # .apply_pending_supersede on the approval / promote paths).
+            if prior_active_ids:
+                entry.pending_supersede_ids = json.dumps(prior_active_ids)
+                prior_active_ids = []
+
     # v0.10.23 tk_49db8d2b6c424d35 — atomic upsert finalisation. Use
     # synchronize_session=False so the ORM doesn't try to evaluate the
     # WHERE clause client-side (same SQLite-naive-vs-PG-tz pattern used
@@ -1019,6 +1052,8 @@ async def add_entry(
         classification_reason=classification_reason,
         tip=tip,
         upserted_from=superseded_ids,
+        approval_pending=bool(entry.approval_pending),
+        warnings=approval_warnings,
     )
 
 
@@ -1955,10 +1990,16 @@ async def supersede_entry(
 async def promote_entry(
     project_id: str,
     entry_id: int,
+    response: Response,
     auth: AuthContext = Depends(require_scope("knowledge:write")),
     db: AsyncSession = Depends(get_db),
 ) -> KnowledgeEntryResponse:
-    """Promote a note to claim if quality gates pass."""
+    """Promote a note to claim if quality gates pass.
+
+    A matching blocking kb_promote approval policy holds the entry instead:
+    202 with ``approval_pending=true`` and the request(s) in ``approvals``;
+    the entry is promoted when the request is approved. Advisory policies
+    only add ``warnings``."""
     user = auth.user
     project = await _get_project_for_editor(project_id, db, auth)
     from sessionfs.server.auth.dependencies import (
@@ -2016,17 +2057,40 @@ async def promote_entry(
             422, f"Cannot promote: {'; '.join(failures)}"
         )
 
+    from sessionfs.server.services.approvals import (
+        apply_pending_supersede,
+        kb_promotion_gate,
+    )
+
+    # A person's explicit promote may raise a rejected request again.
+    gate = await kb_promotion_gate(
+        db, entry, user.id, project=project, reraise_rejected=True
+    )
+    if gate.blocked:
+        await db.commit()
+        await db.refresh(entry)
+        response.status_code = 202
+        held = _entry_to_response(entry)
+        held.approvals = gate.approvals
+        held.approval_reasons = gate.reasons
+        held.warnings = gate.warnings
+        return held
+
     now = datetime.now(timezone.utc)
     entry.claim_class = "claim"
     entry.promoted_at = now
     entry.promoted_by = user.id
+    entry.approval_pending = False
     entry.actor_type = auth.actor_type
     entry.service_key_id = auth.service_key_id
     entry.service_key_name = auth.service_key_name
+    await apply_pending_supersede(db, entry, actor_id=user.id)
     await db.commit()
     await db.refresh(entry)
 
-    return _entry_to_response(entry)
+    promoted = _entry_to_response(entry)
+    promoted.warnings = gate.warnings
+    return promoted
 
 
 class BulkPromoteRequest(BaseModel):

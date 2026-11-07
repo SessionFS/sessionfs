@@ -60,9 +60,10 @@ _EXTRACT_ONE = json.dumps({
             "line_end": 3,
         },
         {
-            # owner_name matches no participant -> the server drops it.
+            # owner_name matches no participant -> kept with no owner and the
+            # owner text as a hint.
             "kind": "action",
-            "description": "This one is dropped.",
+            "description": "Owner unknown here.",
             "owner_name": "Nobody",
             "line_start": 1,
             "line_end": 1,
@@ -283,12 +284,17 @@ async def test_extract_success_and_dropped_items(
     body = resp.json()
 
     assert body["extraction_status"] == "done"
-    assert body["dropped_items"] == 1
+    assert body["dropped_items"] == 0
     assert sorted(p["name_raw"] for p in body["participants"]) == ["Alice", "Bob"]
-    assert sorted(i["kind"] for i in body["action_items"]) == ["action", "decision"]
-    action = next(i for i in body["action_items"] if i["kind"] == "action")
+    assert sorted(i["kind"] for i in body["action_items"]) == ["action", "action", "decision"]
+    action = next(i for i in body["action_items"] if i["description"] == "Ship the release.")
     assert action["due_date"] == "2026-11-15"
     assert action["status"] == "pending"
+    assert action["owner_hint"] is None
+    unknown = next(i for i in body["action_items"] if i["description"] == "Owner unknown here.")
+    assert unknown["owner_participant_id"] is None
+    assert unknown["owner_hint"] == "Nobody"
+    assert unknown["status"] == "pending"
 
     await db_session.refresh(meeting)
     assert meeting.extraction_model == "openai/gpt-4o"
@@ -361,7 +367,7 @@ async def test_extract_rerun_replaces_pending_keeps_dismissed_and_manual(
     remaining_items = await _items(db_session, meeting.id)
     remaining_participants = await _participants(db_session, meeting.id)
 
-    # The dismissed decision survives; the pending action is replaced.
+    # The dismissed decision survives; the pending actions are replaced.
     assert sorted((i.status, i.description) for i in remaining_items) == [
         ("dismissed", "Use Postgres."),
         ("pending", "New task."),
@@ -390,7 +396,7 @@ async def test_upload_with_extract_true(
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["extraction_status"] == "done"
-    assert sorted(i["kind"] for i in body["action_items"]) == ["action", "decision"]
+    assert sorted(i["kind"] for i in body["action_items"]) == ["action", "action", "decision"]
 
 
 # ── Promote preview + promote ──
@@ -1748,8 +1754,12 @@ async def test_owner_must_appear_in_cited_lines(
     items = {i["description"]: i for i in resp.json()["action_items"]}
     assert items["Far away."]["owner_participant_id"] is None
     assert items["On the line."]["owner_participant_id"] is not None
-    # Bob is not a returned participant -> dropped, as before.
-    assert "Label before." not in items
+    # Bob is not a returned participant -> kept, owner unknown, hint "Bob".
+    assert items["Label before."]["owner_participant_id"] is None
+    assert items["Label before."]["owner_hint"] == "Bob"
+    # A participant not evidenced in the cited lines keeps the name as a hint.
+    assert items["Far away."]["owner_hint"] == "Alice"
+    assert items["On the line."]["owner_hint"] is None
 
 
 async def test_service_key_promote_works_when_minter_is_not_a_member(
@@ -2362,3 +2372,91 @@ async def test_group_promote_org_member_lock_is_scoped_to_the_group_org(
     by_user = [s for s, _ in seen if "org_members.user_id" in _where(s)]
     assert by_user
     assert all("org_members.org_id" in _where(s) for s in by_user)
+
+
+# ═══ Extraction reliability (relative dates, fenced answers, deadline) ═══
+
+
+def _capturing_stream(text: str, seen: list[dict]) -> object:
+    async def _stream(**kwargs):
+        seen.append(kwargs)
+        yield Usage(input_tokens=1, output_tokens=1)
+        yield TextDelta(text)
+        yield Done("stop")
+
+    return _stream
+
+
+async def test_extract_prompt_carries_meeting_date(
+    client: AsyncClient, db_session: AsyncSession, test_user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a reference date the model guessed the week for "by Friday"."""
+    project = await _project(db_session, test_user)
+    meeting = await _meeting(db_session, project=project)
+    meeting.meeting_at = datetime(2026, 11, 3, 15, 0, tzinfo=timezone.utc)
+    await db_session.commit()
+    headers = await _headers(db_session, test_user)
+    seen: list[dict] = []
+    monkeypatch.setattr(extraction_mod, "resolve_helper_llm", _fake_resolve())
+    monkeypatch.setattr(extraction_mod, "stream_chat", _capturing_stream(_EXTRACT_ONE, seen))
+
+    resp = await _extract(client, meeting, headers)
+    assert resp.status_code == 200, resp.text
+    prompt = seen[0]["messages"][0]["content"]
+    assert prompt.startswith("Meeting date: 2026-11-03 (Tuesday)\n\n<transcript>\n")
+    assert "relative dates" in seen[0]["system"]
+    # One-shot structured task: thinking is switched off where supported.
+    assert seen[0]["disable_thinking"] is True
+
+
+def test_extract_prompt_falls_back_to_upload_day() -> None:
+    meeting = MeetingTranscript(
+        content="A: hi", meeting_at=None, created_at=datetime(2026, 11, 6, 23, 0, tzinfo=timezone.utc)
+    )
+    assert extraction_mod._reference_date(meeting).isoformat() == "2026-11-06"
+    prompt = extraction_mod._build_extraction_prompt("A: hi", extraction_mod._reference_date(meeting))
+    assert prompt.splitlines()[0] == "Meeting date: 2026-11-06 (Friday)"
+    # The date line sits outside the data block; the block itself is unchanged.
+    assert prompt.endswith(extraction_mod._build_extraction_prompt("A: hi"))
+
+
+def test_parser_reads_one_fenced_block_after_prose() -> None:
+    parse = extraction_mod._parse_extraction_output
+    body = json.dumps({
+        "participants": [{"name": "Alice"}],
+        "items": [{"kind": "action", "description": "x", "line_start": 1, "line_end": 1}],
+    })
+    got = parse(f"Here are the action items:\n\n```json\n{body}\n```\n", line_count=3)
+    assert got is not None and len(got[1]) == 1
+    # Two candidate blocks are ambiguous: refused, not guessed.
+    assert parse(f"```json\n{body}\n```\nor\n```json\n{body}\n```", line_count=3) is None
+    assert parse(f"Prose then {body}", line_count=3) is None
+
+
+def test_fence_stripping_is_linear_on_hostile_output() -> None:
+    """Model output is steered by the transcript: unclosed fences and long
+    whitespace runs must not make the parser backtrack quadratically."""
+    import time
+
+    strip = extraction_mod._strip_fences
+    started = time.monotonic()
+    strip("```\na" * 40000)
+    strip("```" + " " * 200000 + "x")
+    strip("prose " + "```\n" * 40000)
+    assert time.monotonic() - started < 1.0
+    assert strip("Here:\n```json\n{\"a\": 1}\n```\n") == '{"a": 1}'
+    assert strip("```json\n{\"a\": 1}\n```") == '{"a": 1}'
+    assert strip("Here: ```{\"a\": 1}```") == 'Here: ```{"a": 1}```'
+
+
+def test_extraction_deadline_fits_reasoning_models_and_clients() -> None:
+    """A 700-line transcript took deepseek-v4-pro ~130 s; the old 120 s
+    deadline failed every such run with ``timeout``. Clients must outwait it,
+    and the Helm dashboard proxy (300 s) must outwait it too."""
+    from sessionfs.cli import cmd_meeting
+    from sessionfs.mcp import server as mcp_server
+
+    deadline = extraction_mod._EXTRACTION_DEADLINE_SECONDS
+    assert 180 <= deadline < 300
+    assert cmd_meeting._LONG_TIMEOUT > deadline
+    assert mcp_server._MEETING_EXTRACT_TIMEOUT > deadline

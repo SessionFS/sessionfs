@@ -213,6 +213,8 @@ def _tool_calls(a: dict, b: dict) -> dict[str, list[dict]]:
             }
         ],
         "list_my_reminders": [{}, {"status": "all"}],
+        "list_my_approvals": [{}, {"limit": 5}],
+        "propose_meeting_upload": [{"title": "Sync"}],
     }
 
 

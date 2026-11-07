@@ -302,5 +302,8 @@ class HelperContext:
     seen_meeting_ids: set[str] = field(default_factory=set)
     # Plan-gate results for this turn, keyed (feature, project_id), and the
     # caller's tier context they are resolved against (built lazily).
+    # This turn's user message as stored (DLP-redacted). propose_meeting_upload
+    # saves a transcript the caller pasted from here, never from model output.
+    turn_message: str | None = None
     feature_cache: dict[tuple[str, str], bool] = field(default_factory=dict)
     user_context: Any = None

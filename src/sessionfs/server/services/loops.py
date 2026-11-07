@@ -18,12 +18,12 @@ keys never see dollars — same rule as the spend rollups).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from sessionfs.server.db.models import AgentRun, Ticket, TicketComment
+from sessionfs.server.db.models import AgentRun, Project, Ticket, TicketComment
 from sessionfs.server.services.loop_budget import usage_for_runs
 from sessionfs.server.services.review_state import (
     ReviewFinding,
@@ -163,11 +163,77 @@ def _build_child(
     return out
 
 
+async def _fold_approvals(
+    db: AsyncSession,
+    child: Ticket,
+    out: dict,
+    comments: list[dict],
+    *,
+    project: Optional[Project],
+    policies: list,
+    show_names: bool,
+) -> None:
+    """Approval policies (GitHub #123) on top of the pure readiness: a child is
+    ready only when every matching blocking request for its head is approved.
+    Requests are raised only once the child is otherwise ready; the calling
+    route commits them. Adds ``warnings`` and ``approvals``. ``project`` and
+    ``policies`` (the org's active merge policies) are loaded once per call
+    of ``load_loops``, so a policy-free org costs no query per child."""
+    from sessionfs.server.services.approvals import evaluate_approvals
+
+    head = out.get("head_sha")
+    if not head or project is None or not policies:
+        out["warnings"] = []
+        out["approvals"] = []
+        return
+    approvals = await evaluate_approvals(
+        db, child, head, create=bool(out["ready"]), comments=comments,
+        show_names=show_names, project=project, policies=policies,
+    )
+    if approvals["blocking_pending"]:
+        out["ready"] = False
+        out["not_ready_reasons"] = list(out["not_ready_reasons"]) + approvals["blocking_pending"]
+    out["warnings"] = approvals["warnings"]
+    out["approvals"] = approvals["approvals"]
+
+
+async def _approval_context(
+    db: AsyncSession, children: list[Ticket]
+) -> tuple[dict[str, Project], dict[str, list]]:
+    """The children's projects (one identity-map lookup per distinct project,
+    not per child) and each org's active merge policies (one query for the
+    whole call)."""
+    from sessionfs.server.db.models import ApprovalPolicy
+
+    projects: dict[str, Project] = {}
+    for pid in sorted({c.project_id for c in children}):
+        project = await db.get(Project, pid)
+        if project is not None:
+            projects[pid] = project
+    org_ids = {p.org_id for p in projects.values() if p.org_id}
+    policies: dict[str, list] = {o: [] for o in org_ids}
+    if org_ids:
+        for pol in (
+            await db.execute(
+                select(ApprovalPolicy)
+                .where(
+                    ApprovalPolicy.org_id.in_(org_ids),
+                    ApprovalPolicy.active.is_(True),
+                    ApprovalPolicy.target_kind == "merge",
+                )
+                .order_by(ApprovalPolicy.created_at, ApprovalPolicy.id)
+            )
+        ).scalars().all():
+            policies[pol.org_id].append(pol)
+    return projects, policies
+
+
 async def load_loops(
     db: AsyncSession,
     *,
     loop_tickets: list[Ticket],
     show_dollars: bool,
+    show_policy_names: bool = False,
 ) -> list[dict]:
     """Return Loop dicts for the given parent issue tickets (no per-child N+1).
 
@@ -246,6 +312,8 @@ async def load_loops(
             )
         )
 
+    projects, merge_policies = await _approval_context(db, list(children))
+
     loops: list[dict] = []
     for loop in loop_tickets:
         config = _loads_config(loop.loop_config)
@@ -258,8 +326,9 @@ async def load_loops(
             budget["max_rounds"] = int(config[_MAX_REVIEW_ROUNDS])
 
         loop_children = children_by_parent.get(loop.id, [])
-        children_out = [
-            _build_child(
+        children_out = []
+        for c in loop_children:
+            child_out = _build_child(
                 child=c,
                 runs=runs_by_ticket.get(c.id, []),
                 comments=comments_by_ticket.get(c.id, []),
@@ -268,8 +337,15 @@ async def load_loops(
                 budget=budget,
                 show_dollars=show_dollars,
             )
-            for c in loop_children
-        ]
+            child_project = projects.get(c.project_id)
+            await _fold_approvals(
+                db, c, child_out, comments_by_ticket.get(c.id, []),
+                project=child_project,
+                policies=merge_policies.get(child_project.org_id or "", [])
+                if child_project is not None else [],
+                show_names=show_policy_names,
+            )
+            children_out.append(child_out)
         loops.append({"id": loop.id, "title": loop.title, "children": children_out})
 
     return loops

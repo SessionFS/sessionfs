@@ -7,6 +7,7 @@ import { useStory, useTicketSpend } from '../../hooks/useReviewLoop';
 import { errorMessage } from '../../utils/errorMessage';
 import { safeHttpUrl } from '../../utils/url';
 import { HARM_LABEL, formatTokens, formatUsd, isHarmful, plural, runHref, shortSha, ticketHref } from './format';
+import { ApprovalsPanel } from '../../approvals/PendingApprovals';
 import { TrustSeal } from './TrustSeal';
 import { ShareLinkDialog } from './ShareLinkDialog';
 
@@ -244,7 +245,13 @@ export function StoryView({
   const [sharing, setSharing] = useState(false);
   const child = loops.flatMap((l) => l.children).find((c) => c.ticket_id === ticketId);
   const readiness: Readiness | undefined = child
-    ? { ready: child.ready, reasons: child.not_ready_reasons ?? [], verdict: child.verdict ?? null }
+    ? {
+        ready: child.ready,
+        reasons: child.not_ready_reasons ?? [],
+        verdict: child.verdict ?? null,
+        approvals: child.approvals,
+        warnings: child.warnings,
+      }
     : undefined;
   const { data: story, isLoading, error } = useStory(projectId, ticketId);
   const { data: spend } = useTicketSpend(projectId, ticketId);
@@ -280,6 +287,7 @@ export function StoryView({
             </p>
           </div>
           <ShippedContext story={story} />
+          {child && <ApprovalsPanel approvals={child.approvals} warnings={child.warnings} />}
           {story.events.length === 0 ? (
             <Card className="p-6 text-center text-sm text-text-tertiary">Nothing recorded for this change yet.</Card>
           ) : (

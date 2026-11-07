@@ -389,6 +389,8 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 
 **Upgrading to v0.29.2** runs migrations 110 (review loop settings on the parent issue and service-key attribution on work queues), 111 (the `needs_human` work-queue item status) and 112 (the review checklist); all are additive. API keys gain the `loops:read` and `loops:write` scopes. No new settings are needed.
 
+**Upgrading to v0.29.6** runs migrations 120 (approval policies, requests and decisions, plus the approval-pending and deferred-supersede columns on knowledge entries) and 121 (the owner text kept on meeting action items whose owner matched nobody); both are additive. API keys gain the `approvals:read` scope. No new settings are needed; approval policies need the Enterprise plan.
+
 **Upgrading to v0.29.5** runs migration 119 (reminders, and notifications that can carry reminders as well as tickets); it is additive. To deliver due reminders, enable the `api.remindersDue` CronJob in the Helm chart (it calls the reminders due sweep every 5 minutes with a `platform_sweeps:run` key).
 
 **Upgrading to v0.29.4** runs migrations 117 and 118 (direct release–ticket links, and the link from a rotated service key to the key it replaced); both are additive. No new settings are needed.

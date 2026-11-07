@@ -709,6 +709,55 @@ async def test_non_sha_head_is_never_sent_to_github(
 
 
 @pytest.mark.asyncio
+async def test_pending_approval_keeps_check_not_green(
+    client: AsyncClient, db_session: AsyncSession, gh: _CheckRuns
+):
+    """GitHub #123: a matching blocking approval policy holds the check until
+    quorum, even though the review is trusted-clean at the head."""
+    from sessionfs.server.db.models import ApprovalRequest
+    from sessionfs.server.services import approvals
+    from tests.server.integration.approvals_helpers import make_policy
+
+    owner, _ = await _make_user(db_session)
+    org = await _make_org(db_session)
+    org.tier = "enterprise"
+    await db_session.commit()
+    await _add_org_member(db_session, org, owner, "owner")
+    admin, _ = await _make_user(db_session, name="approver")
+    await _add_org_member(db_session, org, admin, "admin")
+    project = await _make_project(db_session, owner, org)
+    ticket = await _make_ticket(db_session, project, owner)
+    reviewer, _ = await _make_user(db_session, name="reviewer")
+    await _seed_clean_verdict(db_session, ticket.id, reviewer, reviewed_commit=HEAD)
+    await _seed_implementer(db_session, project, ticket.id, owner.id)
+    await _seed_installation(db_session, owner)
+    await _seed_pr(db_session, project, ticket, head_sha=HEAD)
+    await make_policy(db_session, org)
+
+    result = await merge_checks.refresh_merge_check(
+        db_session, ticket_id=ticket.id, project_id=project.id
+    )
+    assert result["ready"] is False
+    run = gh.runs_by_sha[HEAD][-1]
+    assert run["conclusion"] == "action_required"
+    # The check summary never names the policy.
+    assert "Needs approval (0 of 1)" in json.dumps(run["output"])
+    assert "Auth changes" not in json.dumps(run["output"])
+    await db_session.commit()
+
+    req = (await db_session.execute(select(ApprovalRequest))).scalar_one()
+    await approvals.decide(
+        db_session, request_id=req.id, approver=admin, decision="approve", reason="ok"
+    )
+    await db_session.commit()
+    result = await merge_checks.refresh_merge_check(
+        db_session, ticket_id=ticket.id, project_id=project.id
+    )
+    assert result["ready"] is True
+    assert gh.runs_by_sha[HEAD][-1]["conclusion"] == "success"
+
+
+@pytest.mark.asyncio
 async def test_truncated_history_is_never_success(
     client: AsyncClient, db_session: AsyncSession, gh: _CheckRuns, monkeypatch
 ):

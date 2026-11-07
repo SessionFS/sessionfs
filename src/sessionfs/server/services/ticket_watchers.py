@@ -44,6 +44,9 @@ _KIND_RANK = {
     # Reminder rows never coalesce with ticket rows (different subject); the
     # rank only orders kinds for display and the digest.
     "reminder_due": 6,
+    # Approval rows (subject_kind='approval') never coalesce either.
+    "approval_requested": 6,
+    "approval_decided": 5,
     "review_verdict": 5,
     "status": 4,
     "assignment": 3,
@@ -56,6 +59,8 @@ _KIND_RANK = {
 KIND_LABELS = {
     "your_turn": "Your turn",
     "reminder_due": "Reminder due",
+    "approval_requested": "Approval requested",
+    "approval_decided": "Approval decided",
     "review_verdict": "Review verdict",
     "status": "Status",
     "assignment": "Assigned",

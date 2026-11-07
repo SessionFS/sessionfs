@@ -1,7 +1,7 @@
 ---
 import BaseLayout from '../layouts/BaseLayout.astro';
 ---
-<BaseLayout title="Enterprise — SessionFS" activeNav="enterprise" description="AI session portability, governance, and coordination for enterprise. Capture, resume, handoff, personas, tickets, AgentRuns, a session helper, Jira and Confluence, project groups, and the audit trail your compliance team needs.">
+<BaseLayout title="Enterprise — SessionFS" activeNav="enterprise" description="AI session portability, governance, and coordination for enterprise. Capture, resume, handoff, personas, tickets, AgentRuns, a session helper, approval policies, Jira and Confluence, project groups, and the audit trail your compliance team needs.">
 
   <!-- Section 1: Hero -->
   <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
@@ -346,6 +346,13 @@ import BaseLayout from '../layouts/BaseLayout.astro';
               <div>
                 <div class="font-semibold text-sm mb-1">Governed skills &amp; plugins</div>
                 <div class="text-muted text-base">Organization skill registries, exact-version assignments to the org, a member or a device, per-project install approvals, and one org skills policy enforced on the server and compiled into each tool&rsquo;s own managed settings for MDM deployment. Agents can request a package but never approve one.</div>
+              </div>
+            </div>
+            <div class="border-t border-border pt-4 flex items-start gap-3">
+              <span class="text-accent text-lg mt-0.5">&#10003;</span>
+              <div>
+                <div class="font-semibold text-sm mb-1">Approval policies</div>
+                <div class="text-muted text-base">Declarative sign-offs on merges and knowledge-base promotion: &ldquo;auth changes need one security approver&rdquo;, &ldquo;compliance decisions need an admin&rdquo;. A blocking policy holds merge readiness, the GitHub check and the GitLab status at the exact commit, or keeps an entry out of project truth, until enough of the right people approve. Nobody approves their own work, including through a service key they minted; agents can read requests but never decide. Every decision, with its reason, lands in an approval log you can export as CSV. See <a href="/approvals/" class="text-brand hover:underline">Approvals</a>.</div>
               </div>
             </div>
             <div class="border-t border-border pt-4 flex items-start gap-3">

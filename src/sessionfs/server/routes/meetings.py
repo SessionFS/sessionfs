@@ -125,6 +125,9 @@ class MeetingActionItemResponse(BaseModel):
     kind: str
     description: str
     owner_participant_id: str | None
+    # The model's owner text when it matched no participant (DLP-redacted,
+    # untrusted): shown as "Owner unknown" with this as a hint.
+    owner_hint: str | None = None
     due_date: date | None
     line_start: int
     line_end: int
@@ -315,15 +318,16 @@ def _strip_cue_timing(raw: str) -> str:
 def _normalise_content(raw: str, *, source: str = "manual_paste") -> tuple[str, int]:
     """CRLF→LF, strip NULs/lone surrogates, trim trailing whitespace per line.
 
-    For ``source=file_upload``, VTT/SRT cue timing is stripped to
+    For either source, VTT/SRT cue timing is stripped to
     ``Speaker: text`` lines (spec §4) before DLP and line numbering. Returns
     ``(normalised_text, line_count)``; line numbers in citations and action
     items refer to this stored text.
     """
     raw = raw.replace("\r\n", "\n").replace("\r", "\n")
     raw, _ = sanitize_archive_string(raw)
-    if source == "file_upload":
-        raw = _strip_cue_timing(raw)
+    # Pasted captions get the same treatment as an uploaded .vtt/.srt: the
+    # signature check is exact, so ordinary pasted text is never touched.
+    raw = _strip_cue_timing(raw)
     lines = [line.rstrip() for line in raw.split("\n")]
     return "\n".join(lines), len(lines)
 
@@ -827,6 +831,7 @@ def _action_item_response(
         kind=item.kind,
         description=item.description,
         owner_participant_id=item.owner_participant_id,
+        owner_hint=item.owner_hint if item.owner_participant_id is None else None,
         due_date=item.due_date,
         line_start=item.line_start,
         line_end=item.line_end,
@@ -1265,13 +1270,15 @@ async def list_project_meetings(
 # ── Group routes ──
 
 
-@group_router.post("/{group_id}/meetings", response_model=MeetingDetailResponse)
-async def upload_group_meeting(
-    group_id: str,
-    request: Request,
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
+async def authorize_group_meeting_upload(
+    db: AsyncSession, user: User, group_id: str
+) -> ProjectGroup:
+    """The group upload route's checks, shared with the helper's confirm.
+
+    Membership + grant first so a non-member never leaks the plan tier; every
+    miss is the same "Project group not found" 404; a reader gets 403
+    ``group_edit_forbidden``.
+    """
     from sessionfs.server.auth.project_access import GROUP_EDIT_ROLES
     from sessionfs.server.routes.project_groups import _require_group_feature
 
@@ -1298,6 +1305,38 @@ async def upload_group_meeting(
                 "message": "You cannot upload meetings to this group.",
             },
         )
+
+    return group
+
+
+async def authorize_meeting_upload(
+    db: AsyncSession,
+    auth: AuthContext,
+    *,
+    project_id: str | None = None,
+    group_id: str | None = None,
+) -> tuple[Project | None, ProjectGroup | None]:
+    """Authorize an upload to exactly one scope with the upload routes' rules
+    (project: ``meetings:write`` standing via ``_load_project_for_meetings``;
+    group: user keys only, editor role, ``project_groups`` plan)."""
+    if (project_id is None) == (group_id is None):
+        raise HTTPException(422, "Exactly one of project_id or group_id is required")
+    if project_id is not None:
+        return await _load_project_for_meetings(db, project_id, auth, write=True), None
+    if auth.key_kind == "service":
+        raise HTTPException(404, "Project group not found")
+    assert group_id is not None
+    return None, await authorize_group_meeting_upload(db, auth.user, group_id)
+
+
+@group_router.post("/{group_id}/meetings", response_model=MeetingDetailResponse)
+async def upload_group_meeting(
+    group_id: str,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    group = await authorize_group_meeting_upload(db, user, group_id)
 
     payload = await _parse_meeting_body(request)
 

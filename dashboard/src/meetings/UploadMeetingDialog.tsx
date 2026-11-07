@@ -7,10 +7,12 @@ import {
   MAX_TITLE,
   byteLength,
   contentTooLarge,
+  defaultMeetingTitle,
   fileTooLarge,
   hasAcceptedExtension,
   isCaptionFile,
   lineCount,
+  looksLikeCaptions,
   meetingAtFromDate,
   readFileText,
   sizeLabel,
@@ -52,6 +54,16 @@ export function UploadMeetingDialog({ scope, scopeLabel, onClose, onUploaded }: 
   const [dragging, setDragging] = useState(false);
 
   const content = file ? file.text : text;
+  // Captions are sized like an uploaded .vtt/.srt whether picked or pasted:
+  // the server strips their cue timing before its text caps apply.
+  const captions = file ? isCaptionFile(file.name) : looksLikeCaptions(text);
+
+  function changeText(value: string) {
+    setText(value);
+    // A pasted transcript gets a title the way a picked file does, until the
+    // user types their own.
+    if (!titleTouched) setTitle(value.trim() ? defaultMeetingTitle(value, date) : '');
+  }
 
   async function takeFile(f: File | undefined) {
     if (!f) return;
@@ -90,15 +102,16 @@ export function UploadMeetingDialog({ scope, scopeLabel, onClose, onUploaded }: 
 
   function submit(e: FormEvent) {
     e.preventDefault();
-    if (!title.trim()) {
-      setError('Give the meeting a title.');
-      return;
-    }
     if (!content.trim()) {
       setError('Paste the transcript or choose a file.');
       return;
     }
-    const tooLarge = contentTooLarge(content, !!file && isCaptionFile(file.name));
+    const finalTitle = title.trim() || (titleTouched ? '' : defaultMeetingTitle(content, date));
+    if (!finalTitle) {
+      setError('Give the meeting a title.');
+      return;
+    }
+    const tooLarge = contentTooLarge(content, captions);
     if (tooLarge) {
       setError(tooLarge);
       return;
@@ -106,7 +119,7 @@ export function UploadMeetingDialog({ scope, scopeLabel, onClose, onUploaded }: 
     setError(null);
     upload.mutate(
       {
-        title: title.trim().slice(0, MAX_TITLE),
+        title: finalTitle.slice(0, MAX_TITLE),
         content,
         source: file ? 'file_upload' : 'manual_paste',
         meeting_at: meetingAtFromDate(date),
@@ -114,7 +127,7 @@ export function UploadMeetingDialog({ scope, scopeLabel, onClose, onUploaded }: 
       },
       {
         onSuccess: (meeting) => onUploaded(meeting),
-        onError: (err) => setError(uploadErrorMessage(err, !!file && isCaptionFile(file.name))),
+        onError: (err) => setError(uploadErrorMessage(err, captions)),
       },
     );
   }
@@ -124,7 +137,7 @@ export function UploadMeetingDialog({ scope, scopeLabel, onClose, onUploaded }: 
   return (
     <Dialog
       open
-      // While saving (and extracting, up to two minutes) the dialog stays:
+      // While saving (and extracting, up to four minutes) the dialog stays:
       // closing it would look like a cancel of an upload that still lands.
       onClose={() => {
         if (!upload.isPending) onClose();
@@ -207,13 +220,13 @@ export function UploadMeetingDialog({ scope, scopeLabel, onClose, onUploaded }: 
               <Textarea
                 id="meeting-content"
                 value={text}
-                onChange={(e) => setText(e.target.value)}
+                onChange={(e) => changeText(e.target.value)}
                 rows={10}
                 className="font-mono text-xs leading-5"
                 placeholder={'Priya: Let’s lock the launch date today.\nSam: I’ll draft the rollout plan by Friday.'}
                 hint={
                   text
-                    ? `${lines.toLocaleString()} ${lines === 1 ? 'line' : 'lines'} · ${sizeLabel(byteLength(text))} of 512 KB`
+                    ? `${lines.toLocaleString()} ${lines === 1 ? 'line' : 'lines'} · ${sizeLabel(byteLength(text))} of ${captions ? '1 MB (caption timings are removed when saved)' : '512 KB'}`
                     : 'Paste the text, or drop a file here. Speaker names at the start of lines help match people.'
                 }
               />

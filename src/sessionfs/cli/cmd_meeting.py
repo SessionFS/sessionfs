@@ -51,9 +51,9 @@ meeting_app = typer.Typer(
     no_args_is_help=True,
 )
 
-# Extraction has a 120 s server deadline (and a Jira publish up to a minute),
+# Extraction has a 240 s server deadline (and a Jira publish up to a minute),
 # so those calls must outlast the default 30 s request timeout.
-_LONG_TIMEOUT = 150
+_LONG_TIMEOUT = 270
 
 # A meeting file is capped server-side at 512 KiB after normalisation and the
 # request at 1 MiB; refuse an obviously oversized file before reading it all.
@@ -179,7 +179,12 @@ def _print_items(items: list[dict], participants: list[dict]) -> None:
             it.get("id", ""),
             it.get("kind", ""),
             it.get("status", ""),
-            escape(str(names.get(it.get("owner_participant_id")) or "—")),
+            escape(
+                str(
+                    names.get(it.get("owner_participant_id"))
+                    or (f"unknown ({it['owner_hint']})" if it.get("owner_hint") else "—")
+                )
+            ),
             str(it.get("due_date") or "—"),
             f"L{it.get('line_start')}-{it.get('line_end')}",
             escape(str(it.get("description", ""))),

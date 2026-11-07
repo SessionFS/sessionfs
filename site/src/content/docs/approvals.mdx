@@ -1,0 +1,69 @@
+---
+title: "Approvals"
+description: "Approval policies: declarative, enforced and auditable sign-offs on merges and knowledge-base promotion."
+---
+
+Approval policies turn "someone from security signs off on auth changes" into a rule SessionFS enforces and records. A policy names what it covers, who must approve and how many approvals it needs. A matching **blocking** policy holds the work until enough of the right people approve. An **advisory** policy only adds a warning.
+
+Approval policies are an **Enterprise** feature. Personal projects have no policies.
+
+## What a policy covers
+
+Every policy has one target:
+
+| Target | What waits | Filter keys |
+|---|---|---|
+| `merge` | Merge readiness for a ticket at one commit, the GitHub check and loop status | `project_ids` (empty means every project in the org), `priority_at_least`, `ticket_kind`, `finding_harm_any` (harm classes from review findings), `checklist_class_any` |
+| `kb_promote` | A knowledge entry becoming a claim | `project_ids`, `entry_type_any`, `entity_ref_prefix_any` |
+
+Every key in a filter must match. Example: "decisions under `docs/compliance/` need an admin" is `{"entry_type_any": ["decision"], "entity_ref_prefix_any": ["docs/compliance/"]}`.
+
+Requirements are a list of `{who: "org_role", role: "owner"|"admin", count}` or `{who: "users", user_ids: [...], count}`. Every requirement must be met. Named users must be active org members when the policy is saved, and they are checked again when they decide.
+
+## Merges
+
+Once a matching ticket is trusted-clean at a commit, readiness reports `Waiting on approval: Auth changes (0 of 1)` and the GitHub check stays pending. Ready means trusted strict clean **and** every matching blocking request is approved.
+
+An approval binds to the exact commit. A new commit creates a new request, and approvals never carry over.
+
+## Knowledge-base promotion
+
+Every way an entry becomes a claim checks the policies: promoting one entry, bulk promote, adding an entry that would be classified as a claim, and auto-promotion at compile. A matching entry stays a note with `approval_pending: true`, and compile leaves it out.
+
+- **Manual promote** returns `202` with `approval_pending`, the reasons and the request(s).
+- **Bulk promote** reports held entries in `approval_pending_ids`. A dry run reports them without creating requests.
+- **Compile** leaves held entries out of the compiled context and creates (or reuses) their requests.
+
+When the request is approved, the entry is promoted under the project lock, but only if its content still has the same sha256 as when the request was raised. If the entry changed, the request becomes `superseded` and a new attempt raises a new request.
+
+## Who can approve
+
+- Only people with a user key decide. Service keys and agents can read requests but never decide (MCP and the session helper are read only).
+- An approver must fit a requirement and still be an active org member who can read the target's project.
+- **No self-approval.** The ticket's implementers can't approve its merge, and the entry's author can't approve its promotion. A service key counts as everyone who minted or rotated it. If the implementer or author can't be resolved, nobody can approve (it fails closed).
+- One reject rejects the whole request. Requests expire after 14 days.
+
+## Notifications
+
+Every eligible approver gets an **Approval requested** notification in the bell and Inbox, and in the email digest (it counts as "your turn"). When a request is approved or rejected, the requester side (the ticket's creator and assignee, or the entry's author) gets **Approval decided**. Eligibility is checked again each time a notification is read: once you can no longer decide a request, or lose access to its project, its notification disappears.
+
+## Approval log
+
+Org owners and admins can read every decision with `GET /api/v1/orgs/{org}/approval-log`, newest first. Filters: `project_id`, `policy_id` (any version; it matches the whole policy), `target_kind`, `decision`, `approver`, `since`, `until`. Pages use `next_before`. Add `format=csv` to export up to 10,000 rows; cells that a spreadsheet would read as a formula are prefixed with `'`.
+
+## Plans and downgrades
+
+Creating and editing policies needs the Enterprise plan. Reading policies, disabling them and deciding requests keep working after a downgrade, so an enforced gate can always be cleared.
+
+## Limits
+
+50 active policies per org, a filter of at most 8 KiB, 20 open requests per target and decision reasons up to 2,000 characters (DLP-redacted before storage).
+
+## Commands and tools
+
+| Surface | |
+|---|---|
+| CLI | `sfs approval policy list\|create\|update\|disable`, `sfs approval list\|show\|approve\|reject --reason "…"`. See the [CLI reference](/cli/#sfs-approval-enterprise) |
+| MCP (read only) | `list_my_approvals`, `get_approval_request`, `list_approval_policies`. See [MCP Server](/mcp/#approvals) |
+| Session helper | `list_my_approvals` (read only) |
+| REST | `GET/POST /api/v1/orgs/{org}/approval-policies`, `PUT` (new version), `DELETE` (deactivate), `GET /api/v1/me/approvals`, `GET /api/v1/approval-requests/{id}`, `POST /api/v1/approval-requests/{id}/decide`, `GET /api/v1/orgs/{org}/approval-log` |

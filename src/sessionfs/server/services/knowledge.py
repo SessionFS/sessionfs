@@ -53,6 +53,8 @@ def auto_promotable_evidence_clauses() -> list:
         KnowledgeEntry.dismissed == False,  # noqa: E712
         KnowledgeEntry.confidence >= 0.5,
         func.length(KnowledgeEntry.content) >= 30,
+        # Held by an approval policy: not new compile work until approved.
+        KnowledgeEntry.approval_pending == False,  # noqa: E712
         KnowledgeEntry.compiled_at.is_(None),
         KnowledgeEntry.freshness_class.in_(["current", "aging"]),
         KnowledgeEntry.superseded_by.is_(None),

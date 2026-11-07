@@ -476,6 +476,12 @@ export interface HelperActionTargetResult {
   ticket_id?: string;
   /** create_reminder: the new reminder's id when applied. */
   reminder_id?: string;
+  /** create_meeting: the saved meeting and how extraction went. */
+  meeting_id?: string;
+  extraction_status?: string;
+  extraction_error?: string | null;
+  action_item_count?: number;
+  decision_count?: number;
   /** comment_ticket: the new comment's id when applied. */
   comment_id?: string;
   /** create_ticket with publish_to_jira: the issue it was published as. */
@@ -1993,7 +1999,7 @@ export type SnoozeRequest =
   | { preset: 'custom'; until: string };
 
 export interface NotificationSubject {
-  kind: 'ticket' | 'reminder' | string;
+  kind: 'ticket' | 'reminder' | 'approval' | string;
   id: string;
   title?: string | null;
   due_at?: string | null;
@@ -2002,7 +2008,7 @@ export interface NotificationSubject {
 export interface TicketNotification {
   id: number;
   /** Absent on rows written before reminders existed; treat as 'ticket'. */
-  subject_kind?: 'ticket' | 'reminder' | string;
+  subject_kind?: 'ticket' | 'reminder' | 'approval' | string;
   subject?: NotificationSubject | null;
   /** Null on reminder rows. */
   ticket_id: string | null;
@@ -2017,6 +2023,162 @@ export interface TicketNotification {
   created_at: string;
   updated_at: string;
   read_at: string | null;
+}
+
+// ------------------------------------------------------------------
+// Approval policies (/api/v1/orgs/{org}/approval-policies, /api/v1/me/approvals)
+// ------------------------------------------------------------------
+
+export type ApprovalTargetKind = 'merge' | 'kb_promote';
+export type ApprovalState = 'pending' | 'approved' | 'rejected' | 'expired' | 'superseded';
+
+export type ApprovalRequirement =
+  | { who: 'org_role'; role: 'owner' | 'admin'; count: number }
+  | { who: 'users'; user_ids: string[]; count: number };
+
+export interface ApprovalMergeFilter {
+  project_ids?: string[];
+  priority_at_least?: 'low' | 'medium' | 'high' | 'critical';
+  ticket_kind?: 'task' | 'issue';
+  finding_harm_any?: string[];
+  checklist_class_any?: string[];
+}
+
+export interface ApprovalKbFilter {
+  project_ids?: string[];
+  entry_type_any?: string[];
+  entity_ref_prefix_any?: string[];
+}
+
+export type ApprovalFilter = ApprovalMergeFilter & ApprovalKbFilter;
+
+export interface ApprovalPolicy {
+  id: string;
+  lineage_id: string;
+  name: string;
+  target_kind: ApprovalTargetKind;
+  requirements: ApprovalRequirement[];
+  blocking: boolean;
+  active: boolean;
+  version: number;
+  /** Present for owners and admins only. */
+  description?: string;
+  filter?: ApprovalFilter;
+  supersedes_id?: string | null;
+  created_by_user_id?: string | null;
+  created_at?: string | null;
+  deactivated_at?: string | null;
+}
+
+export interface ApprovalPolicyList {
+  policies: ApprovalPolicy[];
+  can_manage: boolean;
+  plan_includes_approvals: boolean;
+}
+
+export interface ApprovalPolicyBody {
+  name: string;
+  description: string;
+  target_kind: ApprovalTargetKind;
+  filter: ApprovalFilter;
+  requirements: ApprovalRequirement[];
+  blocking: boolean;
+}
+
+export interface ApprovalQueueItem {
+  id: string;
+  policy_id: string;
+  policy_name: string | null;
+  org_id: string;
+  project_id: string;
+  target_kind: ApprovalTargetKind;
+  target_id: string;
+  target_title: string | null;
+  target_fingerprint: string;
+  state: ApprovalState;
+  requested_at: string | null;
+  expires_at: string | null;
+  approved_count: number;
+  required_count: number;
+}
+
+export interface ApprovalDecision {
+  id: string;
+  approver_user_id: string | null;
+  approver_name: string | null;
+  requirement_index: number;
+  decision: 'approve' | 'reject';
+  reason: string;
+  decided_at: string | null;
+}
+
+export interface ApprovalRequestDetail {
+  id: string;
+  policy: {
+    id: string;
+    name: string | null;
+    version: number | null;
+    blocking: boolean;
+    requirements: ApprovalRequirement[];
+  };
+  org_id: string;
+  project_id: string;
+  target_kind: ApprovalTargetKind;
+  target_id: string;
+  target_fingerprint: string;
+  state: ApprovalState;
+  requested_at: string | null;
+  expires_at: string | null;
+  decided_at: string | null;
+  approved_count: number;
+  required_count: number;
+  can_decide: boolean;
+  decisions: ApprovalDecision[];
+}
+
+/** One decision in the org approval log (GET /orgs/{org}/approval-log). */
+export interface ApprovalLogRow {
+  decision_id: string;
+  decided_at: string | null;
+  decision: 'approve' | 'reject';
+  approver_user_id: string | null;
+  approver_name: string | null;
+  reason: string;
+  request_id: string;
+  request_state: ApprovalState | string;
+  policy_id: string;
+  policy_name: string | null;
+  policy_version: number | null;
+  project_id: string;
+  target_kind: ApprovalTargetKind;
+  target_id: string;
+  target_fingerprint: string;
+  requested_at: string | null;
+}
+
+export interface ApprovalLogPage {
+  items: ApprovalLogRow[];
+  next_before: string | null;
+}
+
+export interface ApprovalLogFilters {
+  project_id?: string;
+  policy_id?: string;
+  decision?: 'approve' | 'reject';
+  approver?: string;
+  since?: string;
+  until?: string;
+}
+
+/** One row of a ticket's `approvals` list (readiness, loop status). */
+export interface TicketApproval {
+  request_id: string | null;
+  policy_id: string;
+  policy_name: string;
+  state: ApprovalState | string;
+  blocking: boolean;
+  approved_count: number;
+  required_count: number;
 }
 
 export interface TicketNotificationList {
@@ -2857,6 +3019,9 @@ export interface MeetingActionItem {
   kind: MeetingItemKind;
   description: string;
   owner_participant_id: string | null;
+  /** The owner the transcript named when it matched no participant
+   *  (DLP-redacted, untrusted). Absent on older servers. */
+  owner_hint?: string | null;
   /** YYYY-MM-DD */
   due_date: string | null;
   /** 1-based, inclusive, into the stored text. */
@@ -4343,6 +4508,55 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     unlinkJira: (projectId: string, ticketId: string) =>
       request<void>(`/api/v1/projects/${projectId}/tickets/${ticketId}/jira`, {
         method: 'DELETE',
+      }),
+
+    // ── Approval policies and requests ──
+    listApprovalPolicies: (orgId: string, params: { include_inactive?: boolean } = {}) =>
+      request<ApprovalPolicyList>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/approval-policies${params.include_inactive ? '?include_inactive=true' : ''}`,
+      ),
+    createApprovalPolicy: (orgId: string, body: ApprovalPolicyBody) =>
+      request<ApprovalPolicy>(`/api/v1/orgs/${encodeURIComponent(orgId)}/approval-policies`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    updateApprovalPolicy: (orgId: string, policyId: string, body: ApprovalPolicyBody) =>
+      request<ApprovalPolicy>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/approval-policies/${encodeURIComponent(policyId)}`,
+        { method: 'PUT', body: JSON.stringify(body) },
+      ),
+    deactivateApprovalPolicy: (orgId: string, policyId: string) =>
+      request<ApprovalPolicy>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/approval-policies/${encodeURIComponent(policyId)}`,
+        { method: 'DELETE' },
+      ),
+    listMyApprovals: () => request<{ requests: ApprovalQueueItem[]; count: number }>('/api/v1/me/approvals'),
+    getApprovalLog: (orgId: string, filters: ApprovalLogFilters = {}, before?: string | null) => {
+      const q = new URLSearchParams();
+      for (const [k, v] of Object.entries(filters)) if (v) q.set(k, v);
+      if (before) q.set('before', before);
+      const qs = q.toString();
+      return request<ApprovalLogPage>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/approval-log${qs ? `?${qs}` : ''}`,
+      );
+    },
+    /** The log as CSV text (capped at 10,000 rows server-side; `truncated` when cut). */
+    exportApprovalLogCsv: async (orgId: string, filters: ApprovalLogFilters = {}) => {
+      const q = new URLSearchParams({ format: 'csv' });
+      for (const [k, v] of Object.entries(filters)) if (v) q.set(k, v);
+      const resp = await fetch(
+        `${baseUrl}/api/v1/orgs/${encodeURIComponent(orgId)}/approval-log?${q.toString()}`,
+        { headers: { Authorization: `Bearer ${apiKey}` } },
+      );
+      if (!resp.ok) throw new ApiError(resp.status, await resp.text());
+      return { blob: await resp.blob(), truncated: resp.headers.get('X-Truncated') === 'true' };
+    },
+    getApprovalRequest: (id: string) =>
+      request<ApprovalRequestDetail>(`/api/v1/approval-requests/${encodeURIComponent(id)}`),
+    decideApprovalRequest: (id: string, body: { decision: 'approve' | 'reject'; reason: string }) =>
+      request<ApprovalRequestDetail>(`/api/v1/approval-requests/${encodeURIComponent(id)}/decide`, {
+        method: 'POST',
+        body: JSON.stringify(body),
       }),
 
     // ── Ticket watchers + notifications (me-scoped) ──

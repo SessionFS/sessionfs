@@ -300,12 +300,12 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_121(self):
+    def test_tool_count_is_124(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 121, (
-            "Expected 121 MCP tools after review-loop start, status and "
-            "update, the project checklist, the loop report, the worker run and round tools "
-            "and the three reminder tools, "
+        assert len(_TOOLS) == 124, (
+            "Expected 124 MCP tools after review-loop start, status and "
+            "update, the project checklist, the loop report, the worker run and round tools, "
+            "the three reminder tools and the three read-only approval tools, "
             f"got {len(_TOOLS)}"
         )
 
@@ -5291,3 +5291,95 @@ class TestReminderMcpDispatch:
         self._install(monkeypatch, cap, status=404, body={"detail": "Reminder not found"})
         out = await mcp_server._handle_update_reminder({"reminder_id": "rem_zz", "close": "done"})
         assert out == {"error": "Reminder 'rem_zz' not found"}
+
+
+class TestApprovalMcpDispatch:
+    """Approval policies A2: three read-only wrappers. Agents cannot decide."""
+
+    @staticmethod
+    def _install(monkeypatch, capture: dict, status: int = 200, body=None):
+        body = body if body is not None else {"requests": [], "count": 0}
+        monkeypatch.setattr(mcp_server, "_handoff_api_config", lambda: ("https://api.test", "k"))
+        monkeypatch.setattr(mcp_server, "_group_api_config", lambda: ("https://api.test", "k"))
+        import httpx
+
+        class _Resp:
+            def __init__(self, code, b):
+                self.status_code = code
+                self._b = b
+                self.text = json.dumps(b)
+
+            def json(self):
+                return self._b
+
+        class _Client:
+            def __init__(self, *a, **kw):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url, *, headers=None, params=None):
+                capture.setdefault("urls", []).append(url)
+                capture.update(method="GET", url=url, params=params)
+                if url.endswith("/auth/me"):
+                    return _Resp(200, {"default_org_id": "org_default"})
+                return _Resp(status, body)
+
+        monkeypatch.setattr(httpx, "AsyncClient", _Client)
+
+    def test_tools_registered_read_only(self):
+        names = {t.name for t in mcp_server._TOOLS}
+        assert {"list_my_approvals", "get_approval_request", "list_approval_policies"} <= names
+        # No decide tool: agents cannot approve or reject.
+        assert not any("decide" in n or n.startswith("approve_approval") for n in names)
+
+    @pytest.mark.asyncio
+    async def test_list_my_approvals(self, monkeypatch):
+        cap: dict = {}
+        self._install(monkeypatch, cap)
+        out = await mcp_server._handle_list_my_approvals({})
+        assert cap["url"] == "https://api.test/api/v1/me/approvals"
+        assert out == {"requests": [], "count": 0}
+
+    @pytest.mark.asyncio
+    async def test_get_approval_request(self, monkeypatch):
+        cap: dict = {}
+        self._install(monkeypatch, cap, body={"id": "ar_1", "state": "pending"})
+        out = await mcp_server._handle_get_approval_request({"request_id": " ar_1 "})
+        assert cap["url"] == "https://api.test/api/v1/approval-requests/ar_1"
+        assert out["id"] == "ar_1"
+
+    @pytest.mark.asyncio
+    async def test_get_approval_request_refuses_bad_ids(self, monkeypatch):
+        cap: dict = {}
+        self._install(monkeypatch, cap)
+        assert "error" in await mcp_server._handle_get_approval_request({})
+        out = await mcp_server._handle_get_approval_request({"request_id": "../admin"})
+        assert out == {"error": "Approval request not found"} and not cap
+
+    @pytest.mark.asyncio
+    async def test_get_approval_request_404(self, monkeypatch):
+        cap: dict = {}
+        self._install(monkeypatch, cap, status=404, body={"detail": "Approval request not found"})
+        out = await mcp_server._handle_get_approval_request({"request_id": "ar_x"})
+        assert out == {"error": "Approval request not found"}
+
+    @pytest.mark.asyncio
+    async def test_list_policies_default_org_and_explicit(self, monkeypatch):
+        cap: dict = {}
+        self._install(monkeypatch, cap, body={"policies": []})
+        await mcp_server._handle_list_approval_policies({})
+        assert cap["url"] == "https://api.test/api/v1/orgs/org_default/approval-policies"
+        await mcp_server._handle_list_approval_policies({"org_id": "org_abc"})
+        assert cap["url"] == "https://api.test/api/v1/orgs/org_abc/approval-policies"
+
+    @pytest.mark.asyncio
+    async def test_call_tool_dispatches(self, monkeypatch):
+        cap: dict = {}
+        self._install(monkeypatch, cap)
+        await mcp_server.call_tool("list_my_approvals", {})
+        assert cap["url"] == "https://api.test/api/v1/me/approvals"

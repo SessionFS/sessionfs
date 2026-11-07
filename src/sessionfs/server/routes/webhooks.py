@@ -1518,6 +1518,8 @@ async def _handle_pr_ingest(payload: dict, fence: tuple[str, int] | None = None)
                     repo=full_name,
                     head_sha=head_sha,
                 )
+                # Keep any approval request raised while computing readiness.
+                await db.commit()
             return True
     except _Superseded:
         return True

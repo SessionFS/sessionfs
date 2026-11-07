@@ -322,6 +322,53 @@ export function isCaptionFile(name: string): boolean {
   return /\.(vtt|srt)$/i.test(name);
 }
 
+// The server's cue timing line (routes/meetings.py `_CUE_TIMING_RE`).
+const CUE_TIMESTAMP = String.raw`(?:\d{1,3}:)?\d{1,2}:\d{2}[.,]\d{1,3}`;
+const CUE_TIMING_RE = new RegExp(String.raw`^${CUE_TIMESTAMP}\s+-->\s+${CUE_TIMESTAMP}(?:\s.*)?$`);
+
+/**
+ * True when text is a WebVTT or SRT caption file, by the same exact signature
+ * the server uses before it strips cue timing (pasted or uploaded alike).
+ */
+export function looksLikeCaptions(text: string): boolean {
+  const lines = text.replace(/^\ufeff/, '').replace(/\r\n?/g, '\n').split('\n');
+  if (/^WEBVTT(?:[ \t].*)?$/.test(lines[0] ?? '')) return true;
+  const nonempty: string[] = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (t) nonempty.push(t);
+    if (nonempty.length === 2) break;
+  }
+  return nonempty.length === 2 && /^\d+$/.test(nonempty[0]) && CUE_TIMING_RE.test(nonempty[1]);
+}
+
+/**
+ * A title for a pasted transcript the user didn't name: its first line when
+ * that reads like a heading, else "Meeting on <date>". A picked file already
+ * gets its file name, so pasting shouldn't be the one path that stops at
+ * "Give the meeting a title."
+ */
+export function defaultMeetingTitle(text: string, date: string, now: Date = new Date()): string {
+  const first = text
+    .replace(/^\ufeff/, '')
+    .split(/\r\n?|\n/)
+    .map((l) => l.trim())
+    .find((l) => l.length > 0);
+  if (
+    first &&
+    first.length <= 120 &&
+    !looksLikeCaptions(text) &&
+    !splitSpeaker(first) &&
+    !/^\d/.test(first)
+  ) {
+    return first.slice(0, MAX_TITLE);
+  }
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(date)
+    ? DATE_FMT.format(new Date(`${date}T00:00:00Z`))
+    : new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' }).format(now);
+  return `Meeting on ${day}`;
+}
+
 /** A picked file too big to even read (over the 1 MiB request cap). */
 export function fileTooLarge(size: number): string | null {
   return size > MAX_BODY_BYTES

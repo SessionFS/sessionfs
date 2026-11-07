@@ -1872,3 +1872,32 @@ async def test_file_upload_caption_signatures_and_numeric_cue_text(
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["content"] == "2026\nBudget approved"
+
+
+async def test_pasted_captions_are_normalised_like_a_file(
+    client: AsyncClient, auth_headers: dict, db_session: AsyncSession, test_user: User
+) -> None:
+    """A WebVTT/SRT transcript pasted into the dialog (source=manual_paste)
+    loses its cue timing exactly as an uploaded file does; the dashboard sizes
+    pasted captions by the body cap for that reason. Plain pasted text with an
+    arrow in it is untouched."""
+    project = await _project(db_session, test_user)
+    url = f"/api/v1/projects/{project.id}/meetings"
+    vtt = "WEBVTT\n\n1\n00:00:01.000 --> 00:00:03.000\n<v Alice>Hello there</v>\n"
+    resp = await client.post(
+        url, headers=auth_headers, json={"title": "p", "content": vtt, "source": "manual_paste"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["content"] == "Alice: Hello there"
+
+    srt = "1\n00:00:01,000 --> 00:00:02,000\nHello\n"
+    resp = await client.post(
+        url, headers=auth_headers, json={"title": "s", "content": srt, "source": "manual_paste"},
+    )
+    assert resp.json()["content"] == "Hello"
+
+    plain = "Alice: step one --> step two\nBob: ok"
+    resp = await client.post(
+        url, headers=auth_headers, json={"title": "t", "content": plain, "source": "manual_paste"},
+    )
+    assert resp.json()["content"] == plain

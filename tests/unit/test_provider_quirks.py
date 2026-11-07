@@ -287,6 +287,42 @@ class TestDeepSeekReasoning:
         assert requests[0]["thinking"] == {"type": "disabled"}
 
     @pytest.mark.asyncio
+    async def test_disable_thinking_turns_thinking_off_for_a_fresh_turn(self):
+        """Meeting extraction asks for it: default-on thinking used the whole
+        output budget on a long transcript."""
+        handler, requests = capturing_handler([DEEPSEEK_REASONING_TEXT])
+        with mock_stream(handler):
+            await collect(
+                stream_chat(
+                    model="deepseek-v4-pro",
+                    system="sys",
+                    messages=[user_message("hi")],
+                    tools=[],
+                    api_key="k",
+                    provider="deepseek",
+                    disable_thinking=True,
+                )
+            )
+        assert requests[0]["thinking"] == {"type": "disabled"}
+
+    @pytest.mark.asyncio
+    async def test_disable_thinking_is_ignored_by_other_providers(self):
+        handler, requests = capturing_handler([DEEPSEEK_REASONING_TEXT])
+        with mock_stream(handler):
+            await collect(
+                stream_chat(
+                    model="gpt-4o",
+                    system="sys",
+                    messages=[user_message("hi")],
+                    tools=[],
+                    api_key="k",
+                    provider="openai",
+                    disable_thinking=True,
+                )
+            )
+        assert "thinking" not in requests[0]
+
+    @pytest.mark.asyncio
     async def test_run_agent_echoes_reasoning_on_followup_tool_turn(self):
         handler, requests = capturing_handler([DEEPSEEK_TOOL, DEEPSEEK_TEXT])
 

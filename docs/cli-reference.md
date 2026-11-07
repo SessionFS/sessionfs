@@ -3245,7 +3245,7 @@ Store meeting transcripts for a project or a project group, extract action items
 
 | Command | Description |
 |---------|-------------|
-| `sfs meeting upload <file> \| --stdin --title T [--project proj_… \| --group pg_…] [--date ISO] [--duration MIN] [--extract]` | Upload a `.txt`, `.md`, `.vtt` or `.srt` transcript. `--extract` also runs extraction (uses your own LLM key; allow up to two minutes) |
+| `sfs meeting upload <file> \| --stdin --title T [--project proj_… \| --group pg_…] [--date ISO] [--duration MIN] [--extract]` | Upload a `.txt`, `.md`, `.vtt` or `.srt` transcript. `--extract` also runs extraction (uses your own LLM key; allow up to four minutes) |
 | `sfs meeting list [--project \| --group] [-q TEXT] [-n N] [--before ID]` | Meetings, newest first |
 | `sfs meeting search <q> [--project \| --group]` | Search titles and transcript text |
 | `sfs meeting show <id> [--no-transcript]` | Numbered transcript, participants, action items and decisions |
@@ -3269,6 +3269,22 @@ Personal reminders, optionally tied to a meeting or a ticket. A reminder is priv
 | `sfs remind note <id> "text"` | Add a note (notes are append-only) |
 | `sfs remind snooze <id> 1h\|tomorrow\|next-week` / `--until TIME [--tz ZONE]` | Push it later. `tomorrow` and `next-week` mean 09:00 in the reminder's timezone (next week = Monday) |
 | `sfs remind done <id>` / `dismiss <id>` | Close it as done, or dismiss it |
+
+## `sfs approval` (Enterprise)
+
+Approval policies make sign-offs declarative: "auth changes need one security approver before merge", or "decisions under `docs/compliance/` need an admin before they become project truth". A matching **blocking** policy holds merge readiness (and the GitHub check) at the exact commit, or keeps a knowledge entry a note with `approval_pending` until it is approved; compile leaves held entries out. **Advisory** policies only add warnings. Approvals bind to the exact commit sha or entry content hash: a new commit, or an edited entry, needs a new approval. Only people with a user key can decide; the ticket's implementers and the entry's author (including through a service key they minted) can never approve their own work. Org owners and admins manage policies; creating and editing needs the Enterprise plan, while reading, disabling and deciding keep working after a downgrade. See [Approvals](https://sessionfs.dev/approvals/).
+
+| Command | Description |
+|---------|-------------|
+| `sfs approval policy list [--org ORG] [--all]` | The org's active policies (`--all`: every version, admins) |
+| `sfs approval policy create --name N --target merge\|kb_promote --require role:admin:1 [--require users:ID[,ID]:COUNT ...] [--filter JSON \| --filter-file PATH] [--advisory] [--description D] [--org ORG]` | Create a policy. Merge filters: `project_ids`, `priority_at_least`, `ticket_kind`, `finding_harm_any`, `checklist_class_any`. KB filters: `project_ids`, `entry_type_any`, `entity_ref_prefix_any` |
+| `sfs approval policy update <policy_id> [--name] [--description] [--require ...] [--filter ...] [--blocking \| --advisory] [--org ORG]` | Edit a policy. This creates a new version; open requests stay on the version that raised them |
+| `sfs approval policy disable <policy_id> [--org ORG]` | Deactivate a policy |
+| `sfs approval list` | Pending requests you could decide now |
+| `sfs approval show <request_id>` | A request with its policy version, target, state and every decision |
+| `sfs approval approve <request_id> --reason "…"` / `reject <request_id> --reason "…"` | Decide. The reason is DLP-redacted and stored with the decision; one reject rejects the whole request |
+
+Org owners and admins can export the decision log with `GET /api/v1/orgs/{org}/approval-log` (`?format=csv` for CSV).
 
 ## `sfs helper` (Enterprise, BYOK)
 

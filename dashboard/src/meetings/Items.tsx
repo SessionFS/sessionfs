@@ -46,6 +46,9 @@ export function ItemList({
     <ul className="space-y-2">
       {items.map((item) => {
         const owner = item.owner_participant_id ? owners.get(item.owner_participant_id) : undefined;
+        // An action with no matched owner: say so, so someone assigns it on
+        // Create ticket (decisions have no owner to find).
+        const unknownOwner = !owner && item.kind === 'action' && item.status === 'pending';
         const selected = selectedId === item.id;
         const dismissed = item.status === 'dismissed';
         const busy = !!busyItemIds?.has(item.id);
@@ -80,13 +83,19 @@ export function ItemList({
                     <span className="truncate text-text-secondary">{ownerName(owner)}</span>
                   </span>
                 )}
+                {unknownOwner && (
+                  <span className="inline-flex items-center gap-1 min-w-0" title={item.owner_hint ? `The transcript named “${item.owner_hint}”, who isn’t matched to anyone` : undefined}>
+                    <span className="text-warning">Owner unknown</span>
+                    {item.owner_hint && <span className="truncate">(“{item.owner_hint}”)</span>}
+                  </span>
+                )}
                 {item.due_date && (
                   <>
-                    {owner && <span aria-hidden="true">·</span>}
+                    {(owner || unknownOwner) && <span aria-hidden="true">·</span>}
                     <span>Due {dueLabel(item.due_date)}</span>
                   </>
                 )}
-                {(owner || item.due_date) && <span aria-hidden="true">·</span>}
+                {(owner || unknownOwner || item.due_date) && <span aria-hidden="true">·</span>}
                 <span className={`font-mono ${selected ? 'text-brand' : ''}`}>{linesLabel(range)}</span>
               </span>
             </button>

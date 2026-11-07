@@ -71,6 +71,7 @@ export function PromoteDialog({ meetingId, item, onClose }: PromoteDialogProps) 
         <PromoteForm
           meetingId={meetingId}
           itemId={item.id}
+          ownerHint={item.owner_participant_id ? null : (item.owner_hint ?? null)}
           draft={preview.data}
           onClose={onClose}
           onPendingChange={setCreating}
@@ -83,12 +84,14 @@ export function PromoteDialog({ meetingId, item, onClose }: PromoteDialogProps) 
 function PromoteForm({
   meetingId,
   itemId,
+  ownerHint,
   draft,
   onClose,
   onPendingChange,
 }: {
   meetingId: string;
   itemId: string;
+  ownerHint: string | null;
   draft: MeetingPromotePreview;
   onClose: () => void;
   onPendingChange: (pending: boolean) => void;
@@ -208,16 +211,23 @@ function PromoteForm({
       />
 
       {target ? (
-        <AssigneePicker
-          id="promote-assignee"
-          projectId={target}
-          value={assignee}
-          onChange={(next) => {
-            setAssignee(next);
-            setAssigneeError(undefined);
-          }}
-          error={assigneeError}
-        />
+        <div>
+          <AssigneePicker
+            id="promote-assignee"
+            projectId={target}
+            value={assignee}
+            onChange={(next) => {
+              setAssignee(next);
+              setAssigneeError(undefined);
+            }}
+            error={assigneeError}
+          />
+          {ownerHint && assignee.kind === 'none' && (
+            <p className="mt-1 text-xs text-text-tertiary">
+              Owner unknown: the transcript named “{ownerHint}”, who isn’t matched to anyone. Choose who should do it.
+            </p>
+          )}
+        </div>
       ) : (
         <Input id="promote-assignee-disabled" title="Assignee" value="" placeholder="Choose a project first" disabled readOnly />
       )}

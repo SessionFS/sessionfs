@@ -462,25 +462,12 @@ async def _ingest_gitlab_deployment(
 
 
 async def _ticket_merge_readiness(db: AsyncSession, ticket: Ticket, sha: str) -> dict:
-    """The shared readiness computation, mirrored from
-    ``routes.tickets.get_ticket_merge_readiness`` so the badge can't drift."""
-    from sessionfs.server.services.review_state import (
-        compute_merge_readiness,
-        load_implementer_identities,
-        load_key_minters,
-        load_review_comments,
-    )
+    """The shared readiness computation (review readiness plus approval
+    policies), the same function ``routes.tickets.get_ticket_merge_readiness``
+    uses so the badge can't drift."""
+    from sessionfs.server.services.approvals import ticket_readiness
 
-    comments, truncated = await load_review_comments(db, ticket.id)
-    identities = (await load_implementer_identities(db, [ticket]))[ticket.id]
-    key_minters = await load_key_minters(db, comments, identities)
-    return compute_merge_readiness(
-        comments=comments,
-        sha=sha,
-        implementer_identities=identities,
-        key_minters=key_minters,
-        history_truncated=truncated,
-    )
+    return await ticket_readiness(db, ticket, sha)
 
 
 async def post_gitlab_status(

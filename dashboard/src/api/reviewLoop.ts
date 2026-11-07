@@ -8,7 +8,7 @@
  * ABSENT (not null, not zero) for everyone else, so the UI shows dollars only
  * when the key is present.
  */
-import { ApiError } from './client';
+import { ApiError, type TicketApproval } from './client';
 
 export type RunRole =
   | 'implementer'
@@ -49,6 +49,10 @@ export interface Readiness {
   ready: boolean;
   reasons: string[];
   verdict: { reviewer: string; reviewed_commit: string | null; at: string | null } | null;
+  /** Approval policies that match this change (absent on older servers). */
+  approvals?: TicketApproval[];
+  /** Advisory notes, for example an advisory policy not yet approved. */
+  warnings?: string[];
 }
 
 export interface LoopBudget {
@@ -77,6 +81,8 @@ export interface LoopChild {
   ready: boolean;
   verdict: Readiness['verdict'];
   not_ready_reasons: string[];
+  approvals?: TicketApproval[];
+  warnings?: string[];
 }
 export interface Loop {
   id: string;

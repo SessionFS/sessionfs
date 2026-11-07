@@ -13,7 +13,7 @@ from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
 from sessionfs.server.middleware import MetricsMiddleware, RequestLoggingMiddleware
-from sessionfs.server.routes import activation, admin, admin_licenses, agent_feedback, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, confluence, delivery_webhooks, dlp, handoffs, health, helm, helper, helper_settings, jira, knowledge, llm_providers, loop_checklist, loop_needs_you, loop_share_links, loop_workers, loops, marketplace, marketplace_disclosure, marketplace_discovery, marketplace_moderation, marketplace_publishers, marketplace_scanning, me, meeting_actions, meetings, merge_checks, metrics, native_catalogs, org, org_llm_settings, org_members, personas, project_groups, project_transfers, projects, releases, reminders, residents, retrieval_audit, review_loop, rules, sessions, settings, skill_policy, spend, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, uploads, webhooks, wiki, work_queues
+from sessionfs.server.routes import activation, admin, approvals, admin_licenses, agent_feedback, agent_runs, api_keys, audit, auth, auth_sso, billing, bookmarks, confluence, delivery_webhooks, dlp, handoffs, health, helm, helper, helper_settings, jira, knowledge, llm_providers, loop_checklist, loop_needs_you, loop_share_links, loop_workers, loops, marketplace, marketplace_disclosure, marketplace_discovery, marketplace_moderation, marketplace_publishers, marketplace_scanning, me, meeting_actions, meetings, merge_checks, metrics, native_catalogs, org, org_llm_settings, org_members, personas, project_groups, project_transfers, projects, releases, reminders, residents, retrieval_audit, review_loop, rules, sessions, settings, skill_policy, spend, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, uploads, webhooks, wiki, work_queues
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -159,7 +159,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             # GitHub #103: the unpaged Jira projects list reports a cut-off
             # list through X-Jira-Projects-Truncated; expose it so a
             # cross-origin caller can read it like a same-origin one.
-            expose_headers=["ETag", "X-Jira-Projects-Truncated"],
+            expose_headers=["ETag", "X-Jira-Projects-Truncated", "X-Truncated"],
             max_age=3600,
         )
 
@@ -257,6 +257,9 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(reminders.router)
     app.include_router(reminders.project_router)
     app.include_router(reminders.group_router)
+    # Approval policies (GitHub #123): org policies, requests, decisions.
+    app.include_router(approvals.org_router)
+    app.include_router(approvals.router)
     # Marketplace has project subpaths and must precede the project catch-all.
     app.include_router(marketplace.router)
     app.include_router(marketplace_moderation.router)

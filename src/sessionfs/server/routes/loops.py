@@ -535,6 +535,16 @@ async def start_review_loop(
     }
 
 
+async def _show_policy_names(db: AsyncSession, auth: AuthContext, project: Project) -> bool:
+    """Approval policy names in loop readiness are for active members of the
+    project's org; other readers and service keys get generic reasons."""
+    from sessionfs.server.services.approvals import is_active_org_member
+
+    if auth.key_kind == "service":
+        return False
+    return await is_active_org_member(db, project.org_id, auth.user.id)
+
+
 async def _show_dollars(db: AsyncSession, auth: AuthContext, project: Project) -> bool:
     if auth.key_kind == "service":
         return False
@@ -610,9 +620,12 @@ async def list_loops(
             .order_by(Ticket.created_at.desc(), Ticket.id.desc())
         )
     ).scalars().all()
-    return await load_loops(
-        db, loop_tickets=list(loops), show_dollars=await _show_dollars(db, auth, project)
+    result = await load_loops(
+        db, loop_tickets=list(loops), show_dollars=await _show_dollars(db, auth, project),
+        show_policy_names=await _show_policy_names(db, auth, project),
     )
+    await db.commit()  # keep approval requests raised for ready children
+    return result
 
 
 @router.get("/{project_id}/loops/{loop_id}")
@@ -638,8 +651,10 @@ async def get_loop(
         raise HTTPException(404, _LOOP_NOT_FOUND)
     await check_project_feature(ctx, "agent_tickets", project, db)
     results = await load_loops(
-        db, loop_tickets=[loop], show_dollars=await _show_dollars(db, auth, project)
+        db, loop_tickets=[loop], show_dollars=await _show_dollars(db, auth, project),
+        show_policy_names=await _show_policy_names(db, auth, project),
     )
+    await db.commit()  # keep approval requests raised for ready children
     return results[0]
 
 
@@ -711,8 +726,10 @@ async def update_loop(
     await db.commit()
 
     results = await load_loops(
-        db, loop_tickets=[loop], show_dollars=await _show_dollars(db, auth, project)
+        db, loop_tickets=[loop], show_dollars=await _show_dollars(db, auth, project),
+        show_policy_names=await _show_policy_names(db, auth, project),
     )
+    await db.commit()  # keep approval requests raised for ready children
     return results[0]
 
 

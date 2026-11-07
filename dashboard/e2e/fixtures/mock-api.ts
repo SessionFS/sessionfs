@@ -168,6 +168,8 @@ export function resolve(method: string, pathname: string): MockResult | null {
   if (path === '/api/v1/org/invites') return ok(d.orgInvites);
   if (path === '/api/v1/org/invites/me') return ok({ invites: [] });
   if (path === '/api/v1/orgs') return ok(d.myOrgs);
+  if (/^\/api\/v1\/orgs\/[^/]+\/approval-policies$/.test(path)) return ok(d.approvalPolicies);
+  if (/^\/api\/v1\/orgs\/[^/]+\/approval-log$/.test(path)) return ok(d.approvalLog);
   const org = path.match(/^\/api\/v1\/orgs\/([^/]+)(\/.*)?$/);
   if (org) {
     const rest = org[2] ?? '';
@@ -241,6 +243,10 @@ export function resolve(method: string, pathname: string): MockResult | null {
   if (path === `/api/v1/me/reminders/${d.REMINDER_ID}`) return ok(d.reminderDue);
   if (path === `/api/v1/me/reminders/${d.REMINDER_ID}/notes`) return ok(d.reminderNotes);
   if (/^\/api\/v1\/projects\/[^/]+\/(meetings|tickets)\/[^/]+\/reminders$/.test(path)) return ok(d.sourceReminders);
+
+  // ── approvals ──
+  if (path === '/api/v1/me/approvals') return ok(d.approvalQueue);
+  if (path === `/api/v1/approval-requests/${d.APPROVAL_ID}`) return ok(d.approvalDetail);
 
   // ── notifications ──
   if (path === '/api/v1/me/ticket-notifications') return ok(d.ticketNotifications);

@@ -7,8 +7,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, type MeetingDetail, type MeetingPromotePreview, type MeetingSummary } from '../api/client';
 import { axe } from '../test/axe';
 import {
+  defaultMeetingTitle,
   describeFindings,
   extractionReason,
+  looksLikeCaptions,
   meetingScopeHref,
   parseLines,
   parseWarnings,
@@ -205,6 +207,25 @@ function tab(props: Partial<Parameters<typeof MeetingsTab>[0]> = {}) {
   );
 }
 
+describe('pasted transcript helpers', () => {
+  it('detects captions by the server signature', () => {
+    expect(looksLikeCaptions('WEBVTT\n\n00:00.000 --> 00:01.000\nhi')).toBe(true);
+    expect(looksLikeCaptions('\ufeffWEBVTT - call\n')).toBe(true);
+    expect(looksLikeCaptions('1\n00:00:01,000 --> 00:00:02,000\nhi')).toBe(true);
+    expect(looksLikeCaptions('WEBVTTX\n')).toBe(false);
+    expect(looksLikeCaptions('1\nPriya: hi')).toBe(false);
+    expect(looksLikeCaptions('Priya: a --> b')).toBe(false);
+  });
+
+  it('derives a title from the first line or the date', () => {
+    expect(defaultMeetingTitle('  Q4 planning \nPriya: hi', '')).toBe('Q4 planning');
+    expect(defaultMeetingTitle('Priya: hi', '2026-11-03')).toBe('Meeting on Nov 3, 2026');
+    expect(defaultMeetingTitle('00:01 Priya: hi', '2026-11-03')).toBe('Meeting on Nov 3, 2026');
+    expect(defaultMeetingTitle('WEBVTT\n\n00:00.000 --> 00:01.000\nhi', '2026-11-03')).toBe('Meeting on Nov 3, 2026');
+    expect(defaultMeetingTitle('x'.repeat(200), '2026-11-03')).toBe('Meeting on Nov 3, 2026');
+  });
+});
+
 describe('MeetingsTab list', () => {
   it('lists meetings with their status and counts, and opens one', async () => {
     client.listMeetings.mockResolvedValue({
@@ -354,6 +375,86 @@ describe('UploadMeetingDialog', () => {
     const alert = await screen.findByText(/After timestamps are removed.*512 KB or 10,000 lines/);
     expect(alert).toBeInTheDocument();
     expect(screen.queryByText(/1 MB upload size limit/)).not.toBeInTheDocument();
+  });
+
+  it('pastes a transcript with extraction on and no title typed: names it and sends one upload', async () => {
+    // CEO repro: pasting (not picking a file) with "Extract action items now"
+    // checked stopped at "Give the meeting a title." and sent nothing — only
+    // a picked file got a title for free.
+    client.uploadMeeting.mockResolvedValue(detail());
+    const onUploaded = vi.fn();
+    wrap(<UploadMeetingDialog scope={{ kind: 'project', id: 'proj_1' }} onClose={vi.fn()} onUploaded={onUploaded} />);
+    const user = userEvent.setup();
+    expect(screen.getByLabelText(/Extract action items now/)).toBeChecked();
+    await user.click(screen.getByLabelText('Transcript'));
+    await user.paste('Weekly platform sync\nPriya: Sam, draft the rollout plan by Friday?\nSam: Will do.');
+    expect(screen.getByLabelText('Title')).toHaveValue('Weekly platform sync');
+    await user.click(screen.getByRole('button', { name: 'Add meeting' }));
+    await waitFor(() => expect(onUploaded).toHaveBeenCalled());
+    expect(client.uploadMeeting).toHaveBeenCalledTimes(1);
+    expect(client.uploadMeeting.mock.calls[0][1]).toEqual({
+      title: 'Weekly platform sync',
+      content: 'Weekly platform sync\nPriya: Sam, draft the rollout plan by Friday?\nSam: Will do.',
+      source: 'manual_paste',
+      meeting_at: null,
+      extract: true,
+    });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('names a pasted transcript that starts with a speaker line by its date', async () => {
+    client.uploadMeeting.mockResolvedValue(detail());
+    wrap(<UploadMeetingDialog scope={{ kind: 'project', id: 'proj_1' }} onClose={vi.fn()} onUploaded={vi.fn()} />);
+    const user = userEvent.setup();
+    fireEvent.change(screen.getByLabelText('Meeting date (optional)'), { target: { value: '2026-11-03' } });
+    await user.click(screen.getByLabelText('Transcript'));
+    await user.paste('Priya: hi\nSam: hello');
+    await user.click(screen.getByLabelText(/Extract action items now/));
+    await user.click(screen.getByRole('button', { name: 'Add meeting' }));
+    await waitFor(() => expect(client.uploadMeeting).toHaveBeenCalledTimes(1));
+    expect(client.uploadMeeting.mock.calls[0][1]).toMatchObject({
+      title: 'Meeting on Nov 3, 2026',
+      source: 'manual_paste',
+      extract: false,
+      meeting_at: '2026-11-03T00:00:00Z',
+    });
+  });
+
+  it('keeps a title the user cleared on purpose required', async () => {
+    wrap(<UploadMeetingDialog scope={{ kind: 'project', id: 'proj_1' }} onClose={vi.fn()} onUploaded={vi.fn()} />);
+    const user = userEvent.setup();
+    await user.click(screen.getByLabelText('Transcript'));
+    await user.paste('Standup notes\nPriya: hi');
+    await user.clear(screen.getByLabelText('Title'));
+    await user.click(screen.getByRole('button', { name: 'Add meeting' }));
+    expect(await screen.findByText('Give the meeting a title.')).toBeInTheDocument();
+    expect(client.uploadMeeting).not.toHaveBeenCalled();
+  });
+
+  it('sizes a pasted caption file like an uploaded one', async () => {
+    // A long pasted WebVTT is over 10,000 lines before its timing is
+    // stripped; the server strips pasted captions too, so only the body cap applies.
+    const cues = Array.from({ length: 3000 }, (_, i) => `${i + 1}\n00:00:${String(i % 60).padStart(2, '0')}.000 --> 00:00:${String(i % 60).padStart(2, '0')}.900\n<v Priya>Line ${i}\n`).join('\n');
+    const vtt = `WEBVTT\n\n${cues}`;
+    client.uploadMeeting.mockResolvedValue(detail());
+    wrap(<UploadMeetingDialog scope={{ kind: 'project', id: 'proj_1' }} onClose={vi.fn()} onUploaded={vi.fn()} />);
+    const user = userEvent.setup();
+    fireEvent.change(screen.getByLabelText('Transcript'), { target: { value: vtt } });
+    await user.click(screen.getByRole('button', { name: 'Add meeting' }));
+    await waitFor(() => expect(client.uploadMeeting).toHaveBeenCalledTimes(1));
+    expect(client.uploadMeeting.mock.calls[0][1]).toMatchObject({ source: 'manual_paste', extract: true });
+    expect(client.uploadMeeting.mock.calls[0][1].title).toMatch(/^Meeting on /);
+  });
+
+  it('sends a picked file with extraction on', async () => {
+    client.uploadMeeting.mockResolvedValue(detail());
+    wrap(<UploadMeetingDialog scope={{ kind: 'project', id: 'proj_1' }} onClose={vi.fn()} onUploaded={vi.fn()} />);
+    const user = userEvent.setup();
+    await user.upload(screen.getByLabelText('Transcript file'), new File(['Priya: hi'], 'sync.txt', { type: 'text/plain' }));
+    await screen.findByText('sync.txt');
+    await user.click(screen.getByRole('button', { name: 'Add meeting' }));
+    await waitFor(() => expect(client.uploadMeeting).toHaveBeenCalledTimes(1));
+    expect(client.uploadMeeting.mock.calls[0][1]).toMatchObject({ title: 'sync', source: 'file_upload', extract: true });
   });
 
   it('refuses unsupported files before reading them', async () => {
@@ -600,6 +701,27 @@ function preview(overrides: Partial<MeetingPromotePreview> = {}): MeetingPromote
 
 describe('PromoteDialog', () => {
   const item = detail().action_items[0];
+
+  it('keeps an action whose owner matched nobody as "Owner unknown" and asks for an assignee on promote', async () => {
+    const unknown = {
+      ...detail().action_items[0],
+      id: 'mai_9',
+      owner_participant_id: null,
+      owner_hint: 'Jordan',
+      description: 'Book the venue',
+    };
+    client.getMeeting.mockResolvedValue(detail({ action_items: [unknown] }));
+    wrap(detailView());
+    expect(await screen.findByText('Book the venue')).toBeInTheDocument();
+    expect(screen.getByText('Owner unknown')).toBeInTheDocument();
+    expect(screen.getByText('(“Jordan”)')).toBeInTheDocument();
+
+    client.previewMeetingPromote.mockResolvedValue(preview({ assigned_user_id: null, assigned_to: null }));
+    wrap(<PromoteDialog meetingId={MEETING_ID} item={unknown} onClose={vi.fn()} />);
+    expect(
+      await screen.findByText(/Owner unknown: the transcript named “Jordan”, who isn’t matched to anyone/),
+    ).toBeInTheDocument();
+  });
 
   it('shows the editable draft and creates the ticket on confirm', async () => {
     client.previewMeetingPromote.mockResolvedValue(preview());

@@ -56,7 +56,9 @@ async def get_needs_you(
     db: AsyncSession = Depends(get_db),
 ) -> NeedsYouResponse:
     """The caller's org-wide review-loop inbox, newest first (max 100 items)."""
-    return await needs_you(db, user_id=user.id)
+    result = await needs_you(db, user_id=user.id)
+    await db.commit()  # keep approval requests raised for ready loop children
+    return result
 
 
 @router.get("/needs-you/count", response_model=NeedsYouCountResponse)
@@ -66,4 +68,5 @@ async def get_needs_you_count(
 ) -> NeedsYouCountResponse:
     """Total inbox count for the sidebar badge (not capped at 100)."""
     result = await needs_you(db, user_id=user.id)
+    await db.commit()  # keep approval requests raised for ready loop children
     return NeedsYouCountResponse(count=result["counts"]["total"])

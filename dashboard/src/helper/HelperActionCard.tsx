@@ -33,6 +33,7 @@ import { helperActionKey, useDecideHelperAction, useHelperAction } from './useHe
 import { LayersIcon, RetryIcon, TrashIcon } from './icons';
 import { PersonAvatar } from '../projects/tickets/AssigneeLabel';
 import { reminderHref, sourceHref } from '../reminders/format';
+import { extractionReason, meetingHref } from '../meetings/format';
 
 /** Where Trash lives: the sessions list opened on its Trash view. */
 export const TRASH_HREF = '/?view=trash';
@@ -266,6 +267,7 @@ export default function HelperActionCard({
   const isCreate = action.kind === 'create_ticket';
   const isComment = action.kind === 'comment_ticket';
   const isReminder = action.kind === 'create_reminder';
+  const isMeeting = action.kind === 'create_meeting';
   const editable = pending && (isCreate || isComment);
   const params = useMemo(() => record?.params ?? action.params ?? {}, [record?.params, action.params]);
   // A create_ticket draft assigned to a person. The confirm body can only
@@ -354,6 +356,7 @@ export default function HelperActionCard({
   };
   const createdTicketId = [...results.values()].find((r) => r.ticket_id)?.ticket_id;
   const createdReminderId = [...results.values()].find((r) => r.reminder_id)?.reminder_id;
+  const savedMeeting = [...results.values()].find((r) => r.meeting_id);
   const jira = status === 'confirmed' ? jiraOutcome(action.kind, record?.result, params) : null;
   // Both overwrite directions throw away one side's text: confirm reads as such.
   const destructive = isTrash || action.kind === 'jira_overwrite';
@@ -465,7 +468,7 @@ export default function HelperActionCard({
     if (jira?.kind === 'not_published') announcement += ' The ticket was not published to Jira.';
     footer = (
       <div className="space-y-1.5 text-xs text-text-secondary">
-        {!(isReminder && failed === 0) && (
+        {!((isReminder || isMeeting) && failed === 0) && (
           <p>
             {failed > 0
               ? `Applied ${applied} of ${results.size}; ${failed} failed.`
@@ -494,6 +497,25 @@ export default function HelperActionCard({
               className="font-medium text-brand underline-offset-2 hover:underline outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] rounded-sm"
             >
               Open reminder
+            </Link>
+          </p>
+        )}
+        {isMeeting && savedMeeting?.meeting_id && (
+          <p>
+            Meeting saved
+            {savedMeeting.extraction_status === 'done'
+              ? ` with ${savedMeeting.action_item_count ?? 0} action ${savedMeeting.action_item_count === 1 ? 'item' : 'items'} and ${savedMeeting.decision_count ?? 0} ${savedMeeting.decision_count === 1 ? 'decision' : 'decisions'}`
+              : ''}
+            .{' '}
+            {savedMeeting.extraction_status !== 'done' && savedMeeting.extraction_error && (
+              <span className="text-warning">Action items weren’t extracted: {extractionReason(savedMeeting.extraction_error)} </span>
+            )}
+            <Link
+              to={meetingHref(savedMeeting.meeting_id)}
+              onClick={onNavigate}
+              className="font-medium text-brand underline-offset-2 hover:underline outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] rounded-sm"
+            >
+              Open meeting
             </Link>
           </p>
         )}

@@ -590,10 +590,10 @@ def ticket_notification_email(
         label = KIND_LABELS.get(
             item["kind"], str(item["kind"]).replace("_", " ").title()
         )
-        is_reminder = item.get("subject_kind") == "reminder"
         url = _notification_url(item, dashboard_url, escape=True)
-        link_text = "View reminder" if is_reminder else "View ticket"
-        fallback = "Untitled reminder" if is_reminder else "Untitled ticket"
+        link_text, fallback = _SUBJECT_TEXT.get(
+            item.get("subject_kind") or "ticket", _SUBJECT_TEXT["ticket"]
+        )
         items_html.append(
             "<div style='background: #161b22; padding: 12px 16px; margin: 8px 0; "
             "border-radius: 6px;'>"
@@ -604,13 +604,15 @@ def ticket_notification_email(
             "</div>"
         )
     plural = "" if count == 1 else "s"
-    has_reminders = any(i.get("subject_kind") == "reminder" for i in notifications)
-    heading = f"{count} update{plural}" if has_reminders else f"{count} ticket update{plural}"
-    blurb = (
-        "Reminders are due and tickets you follow changed."
-        if has_reminders
-        else "Tickets you follow changed."
-    )
+    kinds = {i.get("subject_kind") or "ticket" for i in notifications}
+    only_tickets = kinds <= {"ticket"}
+    heading = f"{count} ticket update{plural}" if only_tickets else f"{count} update{plural}"
+    if only_tickets:
+        blurb = "Tickets you follow changed."
+    elif "approval" in kinds:
+        blurb = "Approvals need you, and items you follow changed."
+    else:
+        blurb = "Reminders are due and tickets you follow changed."
     return (
         _shell()
         + "<div style='margin-bottom: 24px;'>"
@@ -629,9 +631,9 @@ def ticket_notification_text(
     """Plain-text fallback for the ticket-notification email."""
     lines = [f"{len(notifications)} ticket update(s)\n"]
     for item in notifications:
-        fallback = (
-            "Untitled reminder" if item.get("subject_kind") == "reminder" else "Untitled ticket"
-        )
+        fallback = _SUBJECT_TEXT.get(
+            item.get("subject_kind") or "ticket", _SUBJECT_TEXT["ticket"]
+        )[1]
         lines.append(
             f"{item['ticket_title'] or fallback}\n{item['summary']}\n"
             f"{_notification_url(item, dashboard_url, escape=False)}\n"
@@ -639,8 +641,16 @@ def ticket_notification_text(
     return "\n".join(lines)
 
 
+# (link text, fallback title) per notification subject kind.
+_SUBJECT_TEXT = {
+    "ticket": ("View ticket", "Untitled ticket"),
+    "reminder": ("View reminder", "Untitled reminder"),
+    "approval": ("View approval", "Approval request"),
+}
+
+
 def _notification_url(item: dict, dashboard_url: str, *, escape: bool) -> str:
-    """Dashboard link for a digest item: the ticket, or the reminder."""
+    """Dashboard link for a digest item: the ticket, reminder or approval."""
     from urllib.parse import quote
 
     def enc(value: object) -> str:
@@ -650,6 +660,8 @@ def _notification_url(item: dict, dashboard_url: str, *, escape: bool) -> str:
     base = dashboard_url.rstrip("/")
     if item.get("subject_kind") == "reminder":
         return base + "/reminders?reminder=" + enc(item.get("reminder_id"))
+    if item.get("subject_kind") == "approval":
+        return base + "/approvals?request=" + enc(item.get("approval_id"))
     return (
         base
         + "/projects/"

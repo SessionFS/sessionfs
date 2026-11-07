@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 121 tools in sixteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Review Checklist (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Skills Marketplace, Project Groups (Team+), Meetings, and Reminders.
+The MCP server exposes 124 tools in seventeen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas (Pro+), Tickets (Team+), AgentRun (Team+), Agent Feedback (Team+), Review Checklist (Team+), Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Skills Marketplace, Project Groups (Team+), Meetings, Reminders, and Approvals (Enterprise).
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -1066,6 +1066,16 @@ Personal reminders on every plan. A reminder is private to the person reminded a
 | `list_my_reminders` | Your reminders, earliest due first, each with `is_due`. Filters: `status` (`open` default, `done`, `dismissed`, `all`), `due_before` (ISO 8601), `source` (`meeting`, `meeting_item`, `ticket`, or `kind:id`), `limit` (1–200) |
 | `create_reminder` | Remind **yourself** (never someone else): `title`, `due_at` (ISO 8601; without an offset it is read in `timezone`, an IANA name, else UTC; between 1 hour ago and 2 years ahead), optional `source` `{kind, id, lines}` on a meeting, meeting item, ticket, session or knowledge entry you can read |
 | `update_reminder` | Exactly one change per call: `note` (append a note), `snooze` (`1h`, `tomorrow`, `next_week` at 09:00 in the reminder's timezone, or `custom` with `until`), `reschedule` (a new `due_at`, optional `timezone`), or `close` (`done` or `dismissed`) |
+
+### Approvals
+
+Read-only views of [approval policies](/approvals/) (Enterprise). Agents cannot approve or reject; a person decides in the dashboard or with `sfs approval approve|reject`. Service keys need `approvals:read` and only see their own org and project allowlist.
+
+| Tool | Purpose |
+|------|---------|
+| `list_my_approvals` | Pending requests you could decide now (merges at one commit, KB entries waiting to become claims), newest first, with approvals so far |
+| `get_approval_request` | One request by id (`ar_…`): policy version and requirements, target and fingerprint (commit sha or content sha256), state and every decision |
+| `list_approval_policies` | An org's active policies (`org_id`, else your default org). Members see names and requirements; owners and admins also see filters |
 
 ## Agent Knowledge Contribution
 

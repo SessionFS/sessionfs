@@ -1,3 +1,4 @@
+import { AwaitingApprovalLines } from '../../approvals/PendingApprovals';
 import { Link } from 'react-router-dom';
 import { Card } from '../../components/ui';
 import type { Loop, LoopChild } from '../../api/reviewLoop';
@@ -82,6 +83,9 @@ function Lane({ projectId, child }: { projectId: string; child: LoopChild }) {
       )}
       <BudgetBar child={child} />
       {plan && <p className="text-xs text-text-tertiary">{plan}</p>}
+      <div className="text-xs">
+        <AwaitingApprovalLines approvals={child.approvals} />
+      </div>
     </Card>
   );
 }

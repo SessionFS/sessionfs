@@ -383,7 +383,13 @@ function LoopCard({ projectId, child: c }: { projectId: string; child: LoopChild
       <BudgetBar child={c} />
       <TrustSeal
         compact
-        readiness={{ ready: c.ready, reasons: c.not_ready_reasons ?? [], verdict: c.verdict ?? null }}
+        readiness={{
+          ready: c.ready,
+          reasons: c.not_ready_reasons ?? [],
+          verdict: c.verdict ?? null,
+          approvals: c.approvals,
+          warnings: c.warnings,
+        }}
       />
     </Card>
   );

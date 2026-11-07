@@ -17,6 +17,33 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.29.6 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.29.6</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">November 7, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Approvals &middot; Meeting Extraction Fixes</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Approval policies (Enterprise).</strong> Write rules like &ldquo;auth changes need one security approver before merge&rdquo; or &ldquo;decisions under <span class="font-mono text-accent text-sm">docs/compliance/</span> need an admin before they become project truth&rdquo;. A blocking policy holds the work until enough of the right people approve; an advisory one only warns. Editing a policy creates a new version. See <a href="/approvals/" class="text-brand hover:underline">Approvals</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Merges wait for approval.</strong> Merge readiness, the GitHub check, the GitLab commit status and loop status show &ldquo;Needs approval&rdquo; until a matching request is approved. An approval binds to the exact commit; a new commit needs a new approval.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Knowledge-base promotion waits for approval.</strong> Every promote path checks the policies. A matching entry stays a note marked pending approval and compile leaves it out; once approved it is promoted only if its content is unchanged.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Nobody approves their own work.</strong> Implementers can&rsquo;t approve their merge and authors can&rsquo;t approve their entry, including through a service key they minted or rotated; if that can&rsquo;t be determined, nobody can approve. Only people decide; agents can only read.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Notifications and an approval log.</strong> Approvers see requests in the bell, Inbox and digest; requesters hear the decision. Org owners and admins can browse every decision under Org &rarr; Governance and export it as CSV.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span>CLI <span class="font-mono text-accent text-sm">sfs approval policy list|create|update|disable</span>, <span class="font-mono text-accent text-sm">sfs approval list|show|approve|reject</span>; read-only MCP <span class="font-mono text-accent text-sm">list_my_approvals</span>, <span class="font-mono text-accent text-sm">get_approval_request</span>, <span class="font-mono text-accent text-sm">list_approval_policies</span>. Dashboard Approvals page with a waiting count.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Save a pasted meeting from the session helper.</strong> Paste a transcript and ask the helper to save it; it proposes the meeting and extracts its action items once you confirm. See <a href="/session-helper/" class="text-brand hover:underline">Session Helper</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Owner unknown.</strong> A meeting action item whose owner matches nobody is now kept as &ldquo;Owner unknown&rdquo; instead of dropped; you pick the assignee when you turn it into a ticket.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed:</strong> pasting a transcript into Add meeting left the title empty so Save refused it; a pasted transcript is now titled from its first line or the date. Pasted WebVTT and SRT captions are cleaned like uploaded files.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed:</strong> extraction on long transcripts could return nothing with reasoning models. It now turns thinking off, allows up to 240 seconds, knows the meeting date so &ldquo;by Friday&rdquo; lands on the right day, and accepts a sentence before the JSON.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;121 (120 adds approval policies, requests and decisions and the approval columns on knowledge entries; 121 keeps the owner text on meeting items; both additive). Self-hosted: run migrations 120&ndash;121. 124 MCP tools (+3).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
       <!-- v0.29.5 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +51,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.29.5</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">November 7, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Reminders</h2>
         <ul class="space-y-2 text-base text-muted">

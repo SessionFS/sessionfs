@@ -544,6 +544,46 @@ async def user_can_edit_project(
     return bool(roles & set(GROUP_EDIT_ROLES))
 
 
+async def org_member_reader_ids(db: AsyncSession, project: Project) -> set[str]:
+    """Every member of the project's org who may read ``project`` — the set
+    form of ``user_can_access_project`` restricted to org members, for batch
+    checks (members never need the captured-session branch: in an
+    unrestricted org they all read by membership, in a restricted one the
+    captured branch grants nothing).
+
+    Unrestricted: every member. Restricted: org admins/owners, the project
+    owner and members holding any grant on a live group of the org that
+    contains the project. Empty for a personal project."""
+    if project.org_id is None:
+        return set()
+    if not await project_restricts_visibility(db, project):
+        stmt = select(OrgMember.user_id).where(OrgMember.org_id == project.org_id)
+    else:
+        grant_users = (
+            select(ProjectGroupMember.user_id)
+            .join(
+                ProjectGroupAccess,
+                ProjectGroupAccess.group_id == ProjectGroupMember.group_id,
+            )
+            .join(ProjectGroup, ProjectGroup.id == ProjectGroupAccess.group_id)
+            .where(
+                ProjectGroupAccess.project_id == project.id,
+                ProjectGroup.deleted_at.is_(None),
+                ProjectGroup.org_id == project.org_id,
+            )
+            .correlate(None)
+        )
+        stmt = select(OrgMember.user_id).where(
+            OrgMember.org_id == project.org_id,
+            or_(
+                OrgMember.role.in_(ADMIN_ROLES),
+                OrgMember.user_id == project.owner_id,
+                OrgMember.user_id.in_(grant_users),
+            ),
+        )
+    return set((await db.execute(stmt)).scalars().all())
+
+
 async def project_editor_user_ids(db: AsyncSession, project: Project) -> set[str]:
     """Every user id with editor standing on the project — the set form of
     ``user_can_edit_project`` for batch checks.

@@ -427,25 +427,63 @@ async def _run_compile_housekeeping(
     # Criteria: confidence >= 0.5, content >= 30 chars, not dismissed.
     # Deliberately looser than the manual writeback gate (0.8/50) because
     # deterministic extraction already filters for meaningful content.
+    auto_promote_where = [
+        KnowledgeEntry.project_id == project_id,
+        KnowledgeEntry.claim_class == "evidence",
+        KnowledgeEntry.dismissed == False,  # noqa: E712
+        KnowledgeEntry.confidence >= 0.5,
+        func.length(KnowledgeEntry.content) >= 30,
+        # tk_25872885e3274a7d — evidence from a captured-session reader
+        # (anyone who synced a session on the repo) is never promoted
+        # automatically; an editor must promote it explicitly.
+        editor_authored_clause(
+            KnowledgeEntry.user_id,
+            project,
+            KnowledgeEntry.actor_type,
+            restricted=restricted,
+        ),
+    ]
+    # Approval policies (A2, decision 5): auto-promotion respects blocking
+    # kb_promote policies too. Each candidate goes through the same gate as
+    # a manual promote; a held one keeps approval_pending=true and is left
+    # out of the UPDATE (and so out of this compile). With no active policy,
+    # nothing holds an entry, so a stale flag is cleared by the UPDATE.
+    kb_policies: list = []
+    if project.org_id:
+        from sessionfs.server.services.approvals import (
+            active_kb_policies,
+            kb_promotion_gate,
+        )
+
+        kb_policies = await active_kb_policies(db, project.org_id)
+    if kb_policies:
+        candidates = (
+            await db.execute(
+                select(KnowledgeEntry)
+                .where(*auto_promote_where)
+                .execution_options(populate_existing=True)
+            )
+        ).scalars().all()
+        passed_ids: list[int] = []
+        for candidate in candidates:
+            gate = await kb_promotion_gate(
+                db, candidate, None, project=project, policies=kb_policies
+            )
+            if not gate.blocked:
+                passed_ids.append(candidate.id)
+                if candidate.approval_pending:
+                    candidate.approval_pending = False
+        await db.flush()
+        auto_promote_where.append(KnowledgeEntry.approval_pending == False)  # noqa: E712
+        # Only the rows that went through the gate above: evidence written by
+        # a concurrent sync after the candidate read (extraction does not
+        # take the project lock) must wait for the next compile's gate
+        # instead of being promoted by this UPDATE unchecked.
+        auto_promote_where.append(KnowledgeEntry.id.in_(passed_ids))
     await db.execute(
         update(KnowledgeEntry)
-        .where(
-            KnowledgeEntry.project_id == project_id,
-            KnowledgeEntry.claim_class == "evidence",
-            KnowledgeEntry.dismissed == False,  # noqa: E712
-            KnowledgeEntry.confidence >= 0.5,
-            func.length(KnowledgeEntry.content) >= 30,
-            # tk_25872885e3274a7d — evidence from a captured-session reader
-            # (anyone who synced a session on the repo) is never promoted
-            # automatically; an editor must promote it explicitly.
-            editor_authored_clause(
-                KnowledgeEntry.user_id,
-                project,
-                KnowledgeEntry.actor_type,
-                restricted=restricted,
-            ),
-        )
-        .values(claim_class="claim")
+        .where(*auto_promote_where)
+        .values(claim_class="claim", approval_pending=False)
         .execution_options(synchronize_session=False)
     )
 

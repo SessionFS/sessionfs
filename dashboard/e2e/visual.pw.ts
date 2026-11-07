@@ -13,6 +13,7 @@ import {
   ORG_ID,
   PROJECT_ID,
   REMINDER_ID,
+  APPROVAL_ID,
   reminderDone,
   confluenceDriftError,
   confluenceLink,
@@ -85,6 +86,17 @@ const PAGES: Scenario[] = [
     prepare: async (page) => {
       await page.getByRole('tab', { name: 'Done' }).click();
       await page.getByText('Send the signed order form').waitFor();
+    },
+  },
+  { name: 'approvals-queue', path: '/approvals' },
+  { name: 'approval-request-drawer', path: `/approvals?request=${APPROVAL_ID}` },
+  { name: 'approval-policies', path: '/settings/organization?tab=governance' },
+  {
+    name: 'approval-log',
+    path: '/settings/organization?tab=governance',
+    prepare: async (page) => {
+      await page.getByRole('tab', { name: 'Approval log' }).click();
+      await page.getByText('Checked the token handling').waitFor();
     },
   },
   { name: 'reminder-drawer', path: `/reminders?reminder=${REMINDER_ID}` },

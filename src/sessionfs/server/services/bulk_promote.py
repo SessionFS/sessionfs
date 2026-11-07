@@ -60,6 +60,9 @@ SKIP_REASONS = (
     "too_short",
     "low_confidence",
     "duplicate",
+    # Approval policies (A2): a blocking kb_promote policy holds the note
+    # until its request is approved.
+    "approval_pending",
 )
 
 
@@ -83,6 +86,9 @@ class BulkPromoteResult:
     dry_run: bool = True
     # Notes by non-editors left out because include_reader_notes was False.
     reader_notes_excluded: int = 0
+    # Approval policies (A2): ids held for approval, and advisory warnings.
+    approval_pending_ids: list[int] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     def _bump_skip(self, reason: str) -> None:
         if reason not in self.reasons:
@@ -98,6 +104,8 @@ class BulkPromoteResult:
             "promoted_ids": list(self.promoted_ids),
             "dry_run": self.dry_run,
             "reader_notes_excluded": self.reader_notes_excluded,
+            "approval_pending_ids": list(self.approval_pending_ids),
+            "warnings": list(self.warnings),
         }
 
 
@@ -182,6 +190,20 @@ async def promote_eligible_notes(
 
         editor_ids = await project_editor_user_ids(db, project)
 
+    from sessionfs.server.services.approvals import (
+        active_kb_policies,
+        kb_promotion_gate,
+    )
+
+    if project is None:
+        project = await db.get(Project, project_id)
+    kb_policies = (
+        await active_kb_policies(db, project.org_id)
+        if project is not None and project.org_id
+        else []
+    )
+    gated = False
+
     for entry in notes:
         # 0. Reader-authored notes (same rule as editor_authored_clause:
         #    owner, org member or service key) stay out unless asked for.
@@ -227,6 +249,22 @@ async def promote_eligible_notes(
             result._bump_skip("duplicate")
             continue
 
+        # 8. Approval policies (A2). A dry run only reports what would be
+        #    held; a real run creates/loads the request and marks the note.
+        if kb_policies:
+            gate = await kb_promotion_gate(
+                db, entry, user_id, project=project,
+                policies=kb_policies, create=not dry_run,
+            )
+            for warning in gate.warnings:
+                if warning not in result.warnings:
+                    result.warnings.append(warning)
+            if gate.blocked:
+                gated = True
+                result.approval_pending_ids.append(entry.id)
+                result._bump_skip("approval_pending")
+                continue
+
         # All gates passed — promote (or pretend to in dry-run).
         result.promoted += 1
         result.promoted_ids.append(entry.id)
@@ -245,8 +283,13 @@ async def promote_eligible_notes(
             entry.claim_class = "claim"
             entry.promoted_at = now
             entry.promoted_by = user_id
+            entry.approval_pending = False
+            if entry.pending_supersede_ids:
+                from sessionfs.server.services.approvals import apply_pending_supersede
 
-    if not dry_run and result.promoted > 0:
+                await apply_pending_supersede(db, entry, actor_id=user_id)
+
+    if not dry_run and (result.promoted > 0 or gated):
         await db.commit()
 
     return result

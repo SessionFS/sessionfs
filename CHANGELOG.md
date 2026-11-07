@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.6] - 2026-11-07
+
+**Approvals: the sign-offs regulated teams need, enforced and on the record. Plus meeting extraction that finishes on long transcripts.** Server migrations 120–121.
+
+### Added
+- **Approval policies (Enterprise).** An org owner or admin writes a rule such as "auth changes need one security approver before merge" or "decisions under `docs/compliance/` need an admin before they become project truth". A policy has a target (`merge` or `kb_promote`), a filter (projects, priority, ticket kind, finding harm, checklist class; or entry type and `entity_ref` prefix), requirements (a number of org owners or admins, or named members) and is either **blocking** or **advisory**. Editing a policy creates a new version; open requests stay on the version that raised them.
+- **Merges wait for approval.** Once a matching ticket is trusted-clean at a commit, merge readiness, the GitHub check, the GitLab commit status and loop status report "Needs approval (0 of 1)" until the request is approved. An approval binds to that exact commit; a new commit needs a new approval. Merge checks are re-evaluated when a decision settles and whenever a policy is created, edited or disabled.
+- **Knowledge-base promotion waits for approval.** Every way an entry becomes a claim (promote, bulk promote, adding an entry as a claim, auto-promotion at compile) checks the policies. A matching entry stays a note marked `approval_pending` and compile leaves it out. Once approved it is promoted, but only if its content is unchanged; an edited entry needs a new approval.
+- **Approvers decide with a reason.** Eligible approvers get an **Approval requested** notification in the bell, Inbox and digest; the ticket's creator and assignee (or the entry's author) get **Approval decided**. One reject rejects the whole request; requests expire after 14 days.
+- **Approval log.** Org owners and admins can browse every decision under **Org → Governance → Approval log** and export it as CSV (`GET /api/v1/orgs/{org}/approval-log`, `format=csv`).
+- **Dashboard:** an Approvals page with a waiting count in the sidebar, a request drawer, Org → Governance → Policies, and "awaiting approval" lines on merge readiness.
+- `sfs approval policy list|create|update|disable` and `sfs approval list|show|approve|reject --reason`; read-only MCP tools `list_my_approvals`, `get_approval_request`, `list_approval_policies` (124 in total); the session helper can list your approvals; API scope `approvals:read` for service keys.
+- **Save a pasted meeting from the session helper.** Paste a transcript and ask the helper to save it: it proposes saving it as a meeting in the conversation's project or group and, unless you ask otherwise, extracting its action items. Nothing is saved until you confirm, and the text comes from your own message, never retyped by the model.
+
+### Changed
+- **Nobody approves their own work.** A ticket's implementers can't approve its merge and an entry's author can't approve its promotion, including through a service key they minted or rotated. If the implementer or author can't be determined, nobody can approve. Only people with a user key decide; agents and service keys can only read.
+- People who can read a project through a captured session, and service keys, see that a request exists but not who the approvers are. Readiness reasons and the merge check summary name no policy for readers outside the org.
+- A merge policy that has already raised a request for a ticket keeps applying when the ticket is edited, so lowering its priority can't drop the gate. Creating, editing and disabling a policy is recorded in the org audit log with who did it.
+- An entry held for approval no longer replaces the entries it would supersede until it is actually promoted.
+- Merge readiness never reports ready, and raises no approval request, on a review history too long to evaluate completely.
+- **Meeting action items with an unknown owner are kept.** An item whose owner matches nobody in the meeting used to be dropped; it is now kept as **Owner unknown** with the name the transcript gave, and you choose an assignee when you turn it into a ticket.
+
+### Fixed
+- **Pasting a transcript into Add meeting works.** A pasted transcript left the title empty, so Save refused it before sending anything. It now gets its first line as the title when that reads like a heading, else "Meeting on" and the date, and you can edit it.
+- **Pasted captions are cleaned like uploaded ones.** WebVTT and SRT text pasted in is stored as `Speaker: text` lines without cue timing.
+- **Extraction finishes on long transcripts.** Reasoning models could spend their whole output budget thinking on an hour-long meeting and return nothing; extraction now turns thinking off, allows up to 240 seconds, and accepts an answer that puts a sentence before its JSON.
+- **Relative due dates land on the right day.** Extraction now tells the model the meeting date, so "by Friday" means the Friday after the meeting.
+
 ## [0.29.5] - 2026-11-07
 
 **Reminders: nothing that comes up in a meeting, a ticket or a conversation gets lost.** Server migration 119.

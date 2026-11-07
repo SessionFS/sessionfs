@@ -1983,8 +1983,9 @@ _TICKET_SWEEP_LIMIT = 5000
 _TICKET_SWEEP_USER_LIMIT = 500
 _TICKET_RETENTION_DAYS = 90
 # Kinds that pass the ``your_turn`` email preference (spec §6: a due reminder
-# and, later, an approval request count as your turn).
-_YOUR_TURN_EMAIL_KINDS = frozenset({"your_turn", "reminder_due"})
+# and an approval request count as your turn).
+_YOUR_TURN_EMAIL_KINDS = frozenset({"your_turn", "reminder_due", "approval_requested"})
+_DIGEST_SUBJECT_KINDS = ("ticket", "reminder", "approval")
 
 
 async def _mark_notifications_emailed(
@@ -2087,15 +2088,16 @@ async def sweep_ticket_notifications(
     # granularity; each user's rows are then fetched and claimed per user.
     # Ticket rows wait out the coalescing delay; reminder_due rows are already
     # final when written (the due sweep emits each one once), so they don't.
+    # Approval rows never coalesce either, so they are final when written.
     deliverable = or_(
-        TicketNotification.subject_kind == "reminder",
+        TicketNotification.subject_kind.in_(("reminder", "approval")),
         TicketNotification.updated_at <= cutoff,
     )
     user_ids = (
         await db.execute(
             select(TicketNotification.user_id)
             .where(
-                TicketNotification.subject_kind.in_(("ticket", "reminder")),
+                TicketNotification.subject_kind.in_(_DIGEST_SUBJECT_KINDS),
                 TicketNotification.read_at.is_(None),
                 TicketNotification.emailed_at.is_(None),
                 deliverable,
@@ -2147,7 +2149,7 @@ async def sweep_ticket_notifications(
                 )
                 .where(
                     TicketNotification.user_id == user_id,
-                    TicketNotification.subject_kind.in_(("ticket", "reminder")),
+                    TicketNotification.subject_kind.in_(_DIGEST_SUBJECT_KINDS),
                     TicketNotification.read_at.is_(None),
                     TicketNotification.emailed_at.is_(None),
                     deliverable,
@@ -2169,6 +2171,15 @@ async def sweep_ticket_notifications(
             # Reminder rows re-check the reminder itself (still open, and the
             # owner can still see it through its live source).
             visible: list[tuple[TicketNotification, str | None, str | None, Reminder | None]] = []
+            # Approval rows re-check the recipient's eligibility (can still
+            # decide the request, or can still read its project).
+            from sessionfs.server.services.approvals import (
+                approval_notification_subjects,
+            )
+
+            approval_subjects = await approval_notification_subjects(
+                db, user, [r[0] for r in items if r[0].subject_kind == "approval"]
+            )
             invisible_ids: list[int] = []
             project_access: dict[str, bool] = {}
             reminder_rows = [r[3] for r in items if r[3] is not None]
@@ -2179,6 +2190,15 @@ async def sweep_ticket_notifications(
                 vis = await reminder_visibility(db, user_id, reminder_rows)
                 visible_reminders = {rid for rid, v in vis.items() if v.visible}
             for notification, title, project_id, reminder in items:
+                if notification.subject_kind == "approval":
+                    subject = approval_subjects.get(notification.id)
+                    if subject is not None:
+                        visible.append(
+                            (notification, subject["title"], subject["project_id"], None)
+                        )
+                    else:
+                        invisible_ids.append(notification.id)
+                    continue
                 if notification.subject_kind == "reminder":
                     if (
                         reminder is not None
@@ -2245,6 +2265,7 @@ async def sweep_ticket_notifications(
                     "ticket_id": n.ticket_id,
                     "project_id": project_id,
                     "reminder_id": reminder.id if reminder is not None else None,
+                    "approval_id": n.subject_id if n.subject_kind == "approval" else None,
                     "due_at": reminder.due_at.isoformat() if reminder is not None else None,
                     "kind": n.kind,
                     "summary": n.summary,

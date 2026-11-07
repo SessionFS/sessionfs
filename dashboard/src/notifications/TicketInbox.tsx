@@ -9,6 +9,7 @@ import RelativeDate from '../components/RelativeDate';
 import { Badge } from '../components/Badge';
 import { Button, Card, PageContainer, PageHeader } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
+import { approvalRequestHref } from '../approvals/format';
 import { formatDue, reminderHref } from '../reminders/format';
 import { notificationKindLabel, notificationKindVariant } from './kind';
 
@@ -53,7 +54,7 @@ export default function TicketInbox() {
     <PageContainer width="narrow" className="space-y-5">
       <PageHeader
         title="Inbox"
-        description="Updates on tickets you follow and reminders that are due. Summaries never include comment bodies."
+        description="Updates on tickets you follow, reminders that are due and approvals waiting for you. Summaries never include comment bodies."
         actions={
           <div className="flex items-center gap-2">
             <Button
@@ -109,7 +110,11 @@ export default function TicketInbox() {
                         <Badge
                           variant={notificationKindVariant(n.kind)}
                           tint
-                          label={notificationKindLabel(n.kind)}
+                          label={
+                            n.subject_kind === 'approval' && notificationKindLabel(n.kind) === n.kind
+                              ? 'Approval'
+                              : notificationKindLabel(n.kind)
+                          }
                           size="sm"
                         />
                         {n.event_count > 1 && (
@@ -119,7 +124,14 @@ export default function TicketInbox() {
                         )}
                         <RelativeDate iso={n.created_at} />
                       </div>
-                      {n.subject_kind === 'reminder' && n.subject ? (
+                      {n.subject_kind === 'approval' && n.subject ? (
+                        <Link
+                          to={approvalRequestHref(n.subject.id)}
+                          className="mt-1 block font-medium text-text-primary hover:text-brand transition-colors truncate"
+                        >
+                          {n.subject.title ?? n.ticket_title ?? 'Approval request'}
+                        </Link>
+                      ) : n.subject_kind === 'reminder' && n.subject ? (
                         <Link
                           to={reminderHref(n.subject.id)}
                           className="mt-1 block font-medium text-text-primary hover:text-brand transition-colors truncate"

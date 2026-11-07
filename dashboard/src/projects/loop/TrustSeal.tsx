@@ -3,9 +3,14 @@ import RelativeDate from '../../components/RelativeDate';
 import { Button, Dialog, DialogFooter, DialogHeader, MonoText } from '../../components/ui';
 import type { Readiness } from '../../api/reviewLoop';
 import { shortSha } from './format';
+import {
+  ApprovalWarnings,
+  AwaitingApprovalLines,
+  withoutApprovalReasons,
+} from '../../approvals/PendingApprovals';
 
 interface TrustSealProps {
-  readiness: Pick<Readiness, 'ready' | 'reasons' | 'verdict'>;
+  readiness: Pick<Readiness, 'ready' | 'reasons' | 'verdict'> & Partial<Pick<Readiness, 'approvals' | 'warnings'>>;
   /** Compact: one line, reasons collapsed to the first one. */
   compact?: boolean;
 }
@@ -26,7 +31,8 @@ function Check() {
 export function TrustSeal({ readiness, compact = false }: TrustSealProps) {
   const [open, setOpen] = useState(false);
   const titleId = useId();
-  const { ready, reasons, verdict } = readiness;
+  const { ready, verdict, approvals, warnings } = readiness;
+  const reasons = withoutApprovalReasons(readiness.reasons, approvals);
 
   if (!ready) {
     const shown = compact ? reasons.slice(0, 1) : reasons;
@@ -44,14 +50,19 @@ export function TrustSeal({ readiness, compact = false }: TrustSealProps) {
             {more > 0 && <li>and {more} more</li>}
           </ul>
         )}
+        <AwaitingApprovalLines approvals={approvals} />
+        <ApprovalWarnings warnings={warnings} />
       </div>
     );
   }
 
   if (!verdict) {
     return (
-      <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-text-secondary">
-        <Check /> Ready
+      <span className="inline-block">
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-text-secondary">
+          <Check /> Ready
+        </span>
+        <ApprovalWarnings warnings={warnings} />
       </span>
     );
   }
@@ -72,6 +83,7 @@ export function TrustSeal({ readiness, compact = false }: TrustSealProps) {
         {verdict.at && <RelativeDate iso={verdict.at} />}
         <span className="sr-only">Open the verdict</span>
       </button>
+      <ApprovalWarnings warnings={warnings} />
       <Dialog open={open} onClose={() => setOpen(false)} titleId={titleId}>
         <DialogHeader titleId={titleId}>Verdict</DialogHeader>
         <dl className="space-y-3 text-sm">

@@ -3619,6 +3619,55 @@ _TOOLS = [
             "required": ["reminder_id"],
         },
     ),
+    Tool(
+        name="list_my_approvals",
+        description=(
+            "List the pending approval requests you could decide now (merge "
+            "approvals bound to one commit, and KB promotions waiting on an "
+            "approval policy), newest first. Read only: agents cannot approve "
+            "or reject. A person decides in the dashboard or with "
+            "`sfs approval approve|reject`.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs approval list` or any other sfs CLI command."
+        ),
+        inputSchema={"type": "object", "properties": {}},
+    ),
+    Tool(
+        name="get_approval_request",
+        description=(
+            "Get one approval request: its policy version and requirements, "
+            "the target (ticket + commit sha, or knowledge entry + content "
+            "hash), its state, and every decision with the approver, reason "
+            "and time. Read only.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs approval show` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string", "description": "Approval request id (ar_...)."},
+            },
+            "required": ["request_id"],
+        },
+    ),
+    Tool(
+        name="list_approval_policies",
+        description=(
+            "List an org's active approval policies (name, target merge or "
+            "kb_promote, blocking or advisory, requirements). Org members see "
+            "names and requirements; owners and admins also see filters. "
+            "Without org_id the default org (`sfs config default-org`) is "
+            "used. Read only.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs approval policy list` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "org_id": {"type": "string", "description": "Org id (org_...). Optional."},
+            },
+        },
+    ),
 ]
 
 
@@ -3751,6 +3800,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_create_reminder(arguments)
         elif name == "update_reminder":
             result = await _handle_update_reminder(arguments)
+        elif name == "list_my_approvals":
+            result = await _handle_list_my_approvals(arguments)
+        elif name == "get_approval_request":
+            result = await _handle_get_approval_request(arguments)
+        elif name == "list_approval_policies":
+            result = await _handle_list_approval_policies(arguments)
         elif name == "start_ticket":
             result = await _handle_start_ticket(arguments)
         elif name == "create_ticket":
@@ -6904,6 +6959,11 @@ async def _meeting_scope_base(args: dict) -> tuple[str, str, str]:
     return api_url, api_key, f"/api/v1/projects/{_path_segment(project_id)}"
 
 
+# Extraction has a 240 s server deadline (reasoning models need it on long
+# transcripts); the client waits a little longer than that.
+_MEETING_EXTRACT_TIMEOUT = 270
+
+
 def _meeting_api_config() -> tuple[str, str]:
     config = load_config()
     if not config.sync.api_key:
@@ -6956,7 +7016,7 @@ async def _handle_upload_meeting_transcript(args: dict) -> dict:
         body["extract"] = True
 
     import httpx
-    async with httpx.AsyncClient(timeout=150) as client:
+    async with httpx.AsyncClient(timeout=_MEETING_EXTRACT_TIMEOUT) as client:
         resp = await client.post(
             f"{api_url}{base}/meetings",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -7039,7 +7099,7 @@ async def _handle_extract_meeting_action_items(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
     import httpx
-    async with httpx.AsyncClient(timeout=150) as client:
+    async with httpx.AsyncClient(timeout=_MEETING_EXTRACT_TIMEOUT) as client:
         resp = await client.post(
             f"{api_url}/api/v1/meetings/{_path_segment(meeting_id.strip())}/extract",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8707,6 +8767,66 @@ def _handoff_api_config() -> tuple[str, str] | dict:
     if not config.sync.api_key:
         return {"error": "Not authenticated. Run 'sfs auth login' first."}
     return config.sync.api_url.rstrip("/"), config.sync.api_key
+
+
+_APPROVAL_NOT_FOUND = {"error": "Approval request not found"}
+
+
+async def _approval_get(url: str, api_key: str, params: dict | None = None) -> Any:
+    import httpx
+    async with httpx.AsyncClient(timeout=15) as client:
+        return await client.get(
+            url, headers={"Authorization": f"Bearer {api_key}"}, params=params or {}
+        )
+
+
+async def _handle_list_my_approvals(args: dict) -> dict:
+    """Wrap GET /api/v1/me/approvals (read only)."""
+    conf = _handoff_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+    resp = await _approval_get(f"{api_url}/api/v1/me/approvals", api_key)
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_get_approval_request(args: dict) -> dict:
+    """Wrap GET /api/v1/approval-requests/{id} (read only)."""
+    request_id = args.get("request_id")
+    if not isinstance(request_id, str) or not request_id.strip():
+        return {"error": "request_id is required"}
+    conf = _handoff_api_config()
+    if isinstance(conf, dict):
+        return conf
+    api_url, api_key = conf
+    try:
+        segment = _path_segment(request_id.strip())
+    except ValueError:
+        return dict(_APPROVAL_NOT_FOUND)
+    resp = await _approval_get(f"{api_url}/api/v1/approval-requests/{segment}", api_key)
+    if resp.status_code == 404:
+        return dict(_APPROVAL_NOT_FOUND)
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_list_approval_policies(args: dict) -> dict:
+    """Wrap GET /api/v1/orgs/{org}/approval-policies (active only)."""
+    try:
+        api_url, api_key, org_id = await _group_config(args)
+    except Exception as exc:
+        return {"error": str(exc)}
+    resp = await _approval_get(
+        f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/approval-policies", api_key
+    )
+    if resp.status_code == 404:
+        return {"error": "Organization not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
 
 
 def _reminder_error(resp: Any, reminder_id: str = "") -> dict:

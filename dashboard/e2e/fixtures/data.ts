@@ -1617,6 +1617,13 @@ export const sourceReminders = {
 export const ticketNotifications = {
   items: [
     {
+      id: 106, subject_kind: 'approval',
+      subject: { kind: 'approval', id: 'apr_fixture01', title: 'Security-sensitive merges' },
+      ticket_id: null, project_id: null, ticket_title: null,
+      kind: 'approval_requested', summary: 'Approval requested', actor_type: 'user', actor_user_id: null,
+      service_key_name: null, event_count: 1, created_at: NOW, updated_at: NOW, read_at: null,
+    },
+    {
       id: 105, subject_kind: 'reminder',
       subject: { kind: 'reminder', id: REMINDER_ID, title: reminderDue.title, due_at: reminderDue.due_at },
       ticket_id: null, project_id: null, ticket_title: null,
@@ -1995,4 +2002,65 @@ export const meetingPromotePreview = {
   target_project_options: null,
   // DB-only gate result from the server; the fixture project publishes to Jira.
   jira_publish_available: true,
+};
+
+// ── approvals ──
+export const APPROVAL_ID = 'apr_fixture01';
+export const approvalPolicies = {
+  can_manage: true,
+  plan_includes_approvals: true,
+  policies: [
+    {
+      id: 'apol_fixture01', lineage_id: 'apol_fixture01', name: 'Security-sensitive merges', description: 'Two admins sign off on high-priority changes.',
+      target_kind: 'merge', filter: { priority_at_least: 'high', finding_harm_any: ['security'] },
+      requirements: [{ who: 'org_role', role: 'admin', count: 2 }], blocking: true, active: true, version: 2,
+      created_at: EARLIER, created_by_user_id: me.user_id,
+    },
+    {
+      id: 'apol_fixture02', lineage_id: 'apol_fixture02', name: 'Promote runbook claims', description: '',
+      target_kind: 'kb_promote', filter: { entry_type_any: ['decision'] },
+      requirements: [{ who: 'users', user_ids: [me.user_id], count: 1 }], blocking: false, active: true, version: 1,
+      created_at: EARLIER, created_by_user_id: me.user_id,
+    },
+  ],
+};
+export const approvalLog = {
+  items: [
+    {
+      decision_id: 'ad_fixture01', decided_at: EARLIER, decision: 'approve', approver_user_id: me.user_id,
+      approver_name: 'Ada Lovelace', reason: 'Checked the token handling and the rollout plan.', request_id: APPROVAL_ID,
+      request_state: 'approved', policy_id: 'apol_fixture01', policy_name: 'Security-sensitive merges', policy_version: 2,
+      project_id: 'proj_fixture01', target_kind: 'merge', target_id: 'tk_fixture01', target_fingerprint: 'a'.repeat(40),
+      requested_at: EARLIER,
+    },
+    {
+      decision_id: 'ad_fixture02', decided_at: EARLIER, decision: 'reject', approver_user_id: me.user_id,
+      approver_name: 'Ada Lovelace', reason: '', request_id: 'apr_fixture02',
+      request_state: 'rejected', policy_id: 'apol_fixture02', policy_name: 'Promote runbook claims', policy_version: 1,
+      project_id: 'proj_fixture01', target_kind: 'kb_promote', target_id: 'ke_fixture01', target_fingerprint: 'b'.repeat(64),
+      requested_at: EARLIER,
+    },
+  ],
+  next_before: null,
+};
+export const approvalQueue = {
+  count: 1,
+  requests: [
+    {
+      id: APPROVAL_ID, policy_id: 'apol_fixture01', policy_name: 'Security-sensitive merges', org_id: ORG_ID,
+      project_id: PROJECT_ID, target_kind: 'merge', target_id: tickets[0].id, target_title: tickets[0].title,
+      target_fingerprint: 'a'.repeat(40), state: 'pending', requested_at: NOW, expires_at: null,
+      approved_count: 1, required_count: 2,
+    },
+  ],
+};
+export const approvalDetail = {
+  id: APPROVAL_ID,
+  policy: { id: 'apol_fixture01', name: 'Security-sensitive merges', version: 2, blocking: true, requirements: [{ who: 'org_role', role: 'admin', count: 2 }] },
+  org_id: ORG_ID, project_id: PROJECT_ID, target_kind: 'merge', target_id: tickets[0].id,
+  target_fingerprint: 'a'.repeat(40), state: 'pending', requested_at: NOW, expires_at: null, decided_at: null,
+  approved_count: 1, required_count: 2, can_decide: true,
+  decisions: [
+    { id: 'apd_1', approver_user_id: 'usr_peer01', approver_name: 'Sam Peer', requirement_index: 0, decision: 'approve', reason: 'Reviewed the diff.', decided_at: EARLIER },
+  ],
 };
