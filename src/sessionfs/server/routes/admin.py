@@ -3077,6 +3077,104 @@ def _contact_retention_days_from_settings(settings: str | dict | None) -> int | 
     return value if 30 <= value <= 3650 else None
 
 
+_EVAL_OUTPUT_RETENTION_DAYS = 180
+_EVAL_OUTPUT_BATCH = 1000
+
+
+def _eval_output_retention_days_from_settings(settings: str | dict | None) -> int:
+    """Read ``general.eval_output_retention_days`` (default 180, 1-3650)."""
+    if isinstance(settings, str):
+        try:
+            settings = json.loads(settings)
+        except (TypeError, ValueError):
+            return _EVAL_OUTPUT_RETENTION_DAYS
+    if not isinstance(settings, dict):
+        return _EVAL_OUTPUT_RETENTION_DAYS
+    general = settings.get("general")
+    days = (
+        general.get("eval_output_retention_days", _EVAL_OUTPUT_RETENTION_DAYS)
+        if isinstance(general, dict)
+        else _EVAL_OUTPUT_RETENTION_DAYS
+    )
+    if isinstance(days, bool) or not isinstance(days, int) or days < 1 or days > 3650:
+        return _EVAL_OUTPUT_RETENTION_DAYS
+    return days
+
+
+
+
+@router.post("/sweeps/eval-outputs")
+async def sweep_eval_outputs(
+    body: dict | None = None,
+    batch_size: int = Query(default=_EVAL_OUTPUT_BATCH, ge=1, le=10000),
+    auth: AuthContext = Depends(require_platform_sweeper()),
+    db: AsyncSession = Depends(get_db),
+):
+    """Clear stored eval output text past retention (GitHub #121).
+
+    Per org ``general.eval_output_retention_days`` (default 180; personal
+    projects use the default). Sets ``output`` and ``notes`` to NULL on
+    results older than the window and stamps ``output_cleared_at``; the
+    verdict, score and ``output_sha256`` stay, so the audit verdict outlives
+    the text. Suites, cases, runs and artifacts are never swept. Keyset
+    batches by result id, one commit per batch.
+    """
+    from sessionfs.server.db.models import EvalCaseResult, EvalRun
+
+    now = datetime.now(timezone.utc)
+    org_days: dict[str, int] = {}
+    for org_id, settings in (
+        await db.execute(select(Organization.id, Organization.settings))
+    ).all():
+        org_days[org_id] = _eval_output_retention_days_from_settings(settings)
+
+    cleared = 0
+    cursor: str | None = None
+    while True:
+        stmt = (
+            select(EvalCaseResult.id, Project.org_id, EvalCaseResult.created_at)
+            .join(EvalRun, EvalRun.id == EvalCaseResult.run_id)
+            .join(Project, Project.id == EvalRun.project_id)
+            .where(EvalCaseResult.output_cleared_at.is_(None))
+            .order_by(EvalCaseResult.id.asc())
+            .limit(batch_size)
+        )
+        if cursor is not None:
+            stmt = stmt.where(EvalCaseResult.id > cursor)
+        page = (await db.execute(stmt)).all()
+        if not page:
+            break
+        doomed = [
+            rid
+            for rid, org_id, created_at in page
+            if created_at is not None
+            and _as_utc(created_at)
+            < now - timedelta(days=org_days.get(org_id, _EVAL_OUTPUT_RETENTION_DAYS))
+        ]
+        if doomed:
+            result = await db.execute(
+                update(EvalCaseResult)
+                .where(EvalCaseResult.id.in_(doomed), EvalCaseResult.output_cleared_at.is_(None))
+                .values(output=None, notes=None, output_cleared_at=now)
+            )
+            cleared += result.rowcount or 0
+            await db.commit()
+        cursor = page[-1][0]
+        if len(page) < batch_size:
+            break
+
+    await _log_action(
+        db,
+        auth.user.id,
+        "eval_output_retention_sweep",
+        "eval_case_result",
+        "bulk",
+        {**sweep_actor_details(auth), "results_cleared": cleared},
+    )
+    await db.commit()
+    return {"results_cleared": cleared}
+
+
 @router.post("/sweeps/reminders-due")
 async def sweep_reminders_due(
     body: dict | None = None,

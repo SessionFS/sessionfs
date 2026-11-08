@@ -127,6 +127,12 @@ is the k8s component label; `path` is the admin sweep endpoint; `schedule` and
   schedule: '45 3 * * *'
   envVar: SFS_ATTENTION_HIDES_API_KEY
   secretKey: attention-hides-api-key
+- key: evalOutputs
+  component: eval-outputs
+  path: /api/v1/admin/sweeps/eval-outputs
+  schedule: '15 4 * * *'
+  envVar: SFS_EVAL_OUTPUTS_API_KEY
+  secretKey: eval-outputs-api-key
 {{- end }}
 
 {{/*

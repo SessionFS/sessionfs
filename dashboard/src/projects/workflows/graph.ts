@@ -7,8 +7,14 @@ export const GAP_X = 56;
 export const GAP_Y = 18;
 export const PAD = 12;
 
-export interface PlacedStep {
-  step: StepDefinition;
+/** Anything with an id and the ids it depends on (a step, a lineage node). */
+export interface DagNode {
+  id: string;
+  depends_on: string[];
+}
+
+export interface PlacedStep<T extends DagNode = StepDefinition> {
+  step: T;
   column: number;
   row: number;
   x: number;
@@ -18,8 +24,8 @@ export interface Edge {
   from: string;
   to: string;
 }
-export interface GraphLayout {
-  nodes: PlacedStep[];
+export interface GraphLayout<T extends DagNode = StepDefinition> {
+  nodes: PlacedStep<T>[];
   edges: Edge[];
   width: number;
   height: number;
@@ -31,7 +37,7 @@ export interface GraphLayout {
  * dependencies (a definition the server would refuse) are ignored, and a
  * cycle cannot loop forever because depth is memoised before recursing.
  */
-export function layoutSteps(steps: StepDefinition[]): GraphLayout {
+export function layoutSteps<T extends DagNode>(steps: T[]): GraphLayout<T> {
   const byId = new Map(steps.map((s) => [s.id, s]));
   const depth = new Map<string, number>();
   const visit = (id: string): number => {
@@ -47,7 +53,7 @@ export function layoutSteps(steps: StepDefinition[]): GraphLayout {
     return d;
   };
   const rowsInColumn = new Map<number, number>();
-  const nodes: PlacedStep[] = steps.map((step) => {
+  const nodes: PlacedStep<T>[] = steps.map((step) => {
     const column = visit(step.id);
     const row = rowsInColumn.get(column) ?? 0;
     rowsInColumn.set(column, row + 1);

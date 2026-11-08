@@ -2795,7 +2795,7 @@ class AgentRun(Base):
         ),
         CheckConstraint(
             "role IS NULL OR role IN ('implementer', 'ui-implementer', 'reviewer', "
-            "'design-reviewer', 'security-reviewer', 'release')",
+            "'design-reviewer', 'security-reviewer', 'release', 'grader')",
             name="ck_agent_run_role",
         ),
         CheckConstraint(
@@ -2916,6 +2916,8 @@ class AgentRun(Base):
     # Workflow templates (migration 124): the template step this run reports
     # for. Null for runs outside a workflow loop.
     workflow_step_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Evaluations (migration 133): the eval run a grader run belongs to.
+    eval_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     exit_reason: Mapped[str | None] = mapped_column(String(20), nullable=True)
     occurred_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -8140,3 +8142,384 @@ Index(
     sqlite_where=text("review_round IS NOT NULL"),
     postgresql_where=text("review_round IS NOT NULL"),
 )
+
+
+# ── Evaluations + model/dataset lineage (GitHub #121/#122, migrations 131-133) ──
+#
+# Record-only: SessionFS stores pointers, definitions and the results graders
+# post. It never fetches an artifact, never runs a grader and never calls a
+# model. Everything is project-scoped in v1.
+
+ARTIFACT_KINDS = ("dataset", "model", "feature_set", "prompt", "checkpoint")
+ARTIFACT_STAGES = ("candidate", "staging", "production", "archived")
+ARTIFACT_RELATIONS = ("derived_from", "trained_on", "fine_tuned_from", "evaluated_against", "uses")
+
+
+class Artifact(Base):
+    """A pointer to one version of an external dataset, model, feature set,
+    prompt or checkpoint (migration 131). Never the bytes: a URI, an optional
+    digest, a schema summary and tags. The family is (project, kind, name)."""
+
+    __tablename__ = "artifacts"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('dataset', 'model', 'feature_set', 'prompt', 'checkpoint')",
+            name="ck_artifacts_kind",
+        ),
+        CheckConstraint(
+            "stage IN ('candidate', 'staging', 'production', 'archived')",
+            name="ck_artifacts_stage",
+        ),
+        CheckConstraint(
+            "actor_type IN ('user', 'service_key')", name="ck_artifacts_actor_type"
+        ),
+        UniqueConstraint(
+            "project_id", "kind", "name", "version", name="uq_artifacts_family_version"
+        ),
+        Index("idx_artifacts_family", "project_id", "kind", "name"),
+        Index("idx_artifacts_project_created", "project_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # art_<hex>
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    external_uri: Mapped[str] = mapped_column(String(2048), nullable=False)
+    digest: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    schema_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    stage: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="candidate", server_default="candidate"
+    )
+    produced_by_agent_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default="user"
+    )
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    deprecated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ArtifactEdge(Base):
+    """A lineage edge parent -> child inside one project (migration 131)."""
+
+    __tablename__ = "artifact_edges"
+    __table_args__ = (
+        CheckConstraint(
+            "relation IN ('derived_from', 'trained_on', 'fine_tuned_from', "
+            "'evaluated_against', 'uses')",
+            name="ck_artifact_edges_relation",
+        ),
+        CheckConstraint("parent_id <> child_id", name="ck_artifact_edges_no_self"),
+        CheckConstraint(
+            "actor_type IN ('user', 'service_key')", name="ck_artifact_edges_actor_type"
+        ),
+        UniqueConstraint("parent_id", "child_id", "relation", name="uq_artifact_edges_pair"),
+        Index("idx_artifact_edges_child", "child_id"),
+        Index("idx_artifact_edges_project", "project_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # ae_<hex>
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    parent_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False
+    )
+    child_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("artifacts.id", ondelete="CASCADE"), nullable=False
+    )
+    relation: Mapped[str] = mapped_column(String(30), nullable=False)
+    context_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default="user"
+    )
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ArtifactTag(Base):
+    """One key/value tag on an artifact (migration 131). At most 32 per artifact."""
+
+    __tablename__ = "artifact_tags"
+    __table_args__ = (Index("idx_artifact_tags_key_value", "key", "value"),)
+
+    artifact_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("artifacts.id", ondelete="CASCADE"), primary_key=True
+    )
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(String(256), nullable=False, default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class EvalSuite(Base):
+    """One immutable version of an evaluation suite (migration 132).
+
+    Same shape as ``workflow_templates``: an edit (or a case add/retire)
+    inserts version + 1 in the same ``lineage_id``; only ``active`` changes
+    on an existing row; one active row per lineage and one active slug per
+    project."""
+
+    __tablename__ = "eval_suites"
+    __table_args__ = (
+        CheckConstraint("version >= 1", name="ck_eval_suites_version"),
+        CheckConstraint(
+            "case_storage IN ('inline', 'reference')", name="ck_eval_suites_case_storage"
+        ),
+        CheckConstraint(
+            "actor_type IN ('user', 'service_key')", name="ck_eval_suites_actor_type"
+        ),
+        UniqueConstraint("lineage_id", "version", name="uq_eval_suites_lineage_version"),
+        Index("idx_eval_suites_project", "project_id"),
+        Index(
+            "uq_eval_suites_lineage_active",
+            "lineage_id",
+            unique=True,
+            postgresql_where=text("active = true"),
+            sqlite_where=text("active = 1"),
+        ),
+        Index(
+            "uq_eval_suites_project_slug_active",
+            "project_id",
+            "slug",
+            unique=True,
+            postgresql_where=text("active = true"),
+            sqlite_where=text("active = 1"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # evs_<hex>
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    lineage_id: Mapped[str] = mapped_column(String(64), nullable=False)  # evl_<hex>
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    supersedes_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    active: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("true")
+    )
+    slug: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    grader: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
+    acceptance: Mapped[str] = mapped_column(Text, nullable=False)  # JSON
+    case_storage: Mapped[str] = mapped_column(
+        String(12), nullable=False, default="inline", server_default="inline"
+    )
+    case_bank_artifact_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    definition_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default="user"
+    )
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class EvalCase(Base):
+    """One case in a suite lineage (migration 132).
+
+    Live in version v when ``added_in_version <= v`` and ``retired_in_version``
+    is NULL or greater than v. ``content_sha256`` is always set; in
+    reference storage ``input`` / ``expected`` stay NULL."""
+
+    __tablename__ = "eval_cases"
+    __table_args__ = (
+        CheckConstraint("added_in_version >= 1", name="ck_eval_cases_added"),
+        CheckConstraint(
+            "retired_in_version IS NULL OR retired_in_version > added_in_version",
+            name="ck_eval_cases_retired",
+        ),
+        UniqueConstraint("lineage_id", "case_key", name="uq_eval_cases_lineage_key"),
+        Index("idx_eval_cases_project", "project_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # evc_<hex>
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    lineage_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    case_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    added_in_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    retired_in_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False, default="", server_default="")
+    input: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expected: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rubric_notes: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    tags: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
+    content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ArtifactFamilyRequirement(Base):
+    """Which suite lineages must have a trusted pass on an artifact version
+    before it is promoted to staging or production (migration 132)."""
+
+    __tablename__ = "artifact_family_requirements"
+    __table_args__ = (
+        UniqueConstraint("project_id", "kind", "name", name="uq_artifact_family_requirements"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # afr_<hex>
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    suite_lineage_ids: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
+    require_tags: Mapped[str] = mapped_column(Text, nullable=False, default="{}", server_default="{}")
+    updated_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class EvalRun(Base):
+    """One grading pass of a pinned suite version against one subject
+    (migration 133). ``verdict`` and ``trusted`` are computed by the server
+    at finish, never accepted from the client."""
+
+    __tablename__ = "eval_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "trigger_source IN ('manual', 'ci', 'workflow', 'promotion')",
+            name="ck_eval_runs_trigger_source",
+        ),
+        CheckConstraint(
+            "state IN ('running', 'finished', 'voided', 'expired')", name="ck_eval_runs_state"
+        ),
+        CheckConstraint(
+            "verdict IS NULL OR verdict IN ('passed', 'failed', 'incomplete')",
+            name="ck_eval_runs_verdict",
+        ),
+        CheckConstraint(
+            "actor_type IN ('user', 'service_key')", name="ck_eval_runs_actor_type"
+        ),
+        Index("idx_eval_runs_project_started", "project_id", "started_at"),
+        Index("idx_eval_runs_suite_lineage", "suite_lineage_id"),
+        Index(
+            "idx_eval_runs_gate",
+            "suite_lineage_id",
+            "artifact_id",
+            "finished_at",
+            postgresql_where=text("state = 'finished'"),
+            sqlite_where=text("state = 'finished'"),
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # evr_<hex>
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False
+    )
+    suite_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("eval_suites.id", ondelete="CASCADE"), nullable=False
+    )
+    suite_lineage_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    artifact_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("artifacts.id", ondelete="SET NULL"), nullable=True
+    )
+    subject_label: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    trigger_source: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="manual", server_default="manual"
+    )
+    trigger_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    agent_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    grader_persona: Mapped[str] = mapped_column(String(50), nullable=False)
+    grader_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    grader_service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default="user"
+    )
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    state: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="running", server_default="running"
+    )
+    verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    trusted: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    untrusted_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    summary: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON
+    baseline_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    voided_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    voided_by_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    voided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class EvalCaseResult(Base):
+    """One per-case result in a run (migration 133). Append-only; a
+    correction is a new run. ``output`` / ``notes`` are cleared by the
+    retention sweep while ``verdict``, ``score`` and ``output_sha256`` stay."""
+
+    __tablename__ = "eval_case_results"
+    __table_args__ = (
+        CheckConstraint(
+            "verdict IN ('pass', 'fail', 'error', 'skip')", name="ck_eval_case_results_verdict"
+        ),
+        CheckConstraint(
+            "score IS NULL OR (score >= 0 AND score <= 1)", name="ck_eval_case_results_score"
+        ),
+        UniqueConstraint("run_id", "case_id", name="uq_eval_case_results_run_case"),
+        Index("idx_eval_case_results_created", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # evx_<hex>
+    run_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("eval_runs.id", ondelete="CASCADE"), nullable=False
+    )
+    case_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("eval_cases.id", ondelete="CASCADE"), nullable=False
+    )
+    case_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(10), nullable=False)
+    score: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
+    grader_kind: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    body_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    output_cleared_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

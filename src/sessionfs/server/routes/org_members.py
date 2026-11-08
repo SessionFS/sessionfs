@@ -281,6 +281,9 @@ class OrgGeneralSettings(BaseModel):
     # set (30–3650), archived or unreferenced contacts older than N days are
     # deleted by POST /admin/sweeps/contact-retention.
     contact_retention_days: StrictInt | None = None
+    # GitHub #121 — eval result output/notes retention in days. ``None`` means
+    # "use the platform default (180)"; the stored value is validated 1–3650.
+    eval_output_retention_days: StrictInt | None = None
     # GitHub #59 — verified-email-domain auto-join (v0.17.0). ``None``
     # is the "leave unchanged on partial PUT" sentinel; the stored/returned
     # value is always a list ([] when unset).
@@ -314,6 +317,7 @@ def _read_general_settings(org: Organization) -> OrgGeneralSettings:
         helper_retention_days=general.get("helper_retention_days"),
         meeting_retention_days=general.get("meeting_retention_days"),
         contact_retention_days=general.get("contact_retention_days"),
+        eval_output_retention_days=general.get("eval_output_retention_days"),
         auto_join_domains=auto_join,
         # Always a bool on read. Unreadable settings report True: access
         # checks treat them as restricted (fail closed).
@@ -387,6 +391,10 @@ async def update_org_settings(
         30 <= body.contact_retention_days <= 3650
     ):
         raise HTTPException(400, "contact_retention_days must be between 30 and 3650")
+    if body.eval_output_retention_days is not None and not (
+        1 <= body.eval_output_retention_days <= 3650
+    ):
+        raise HTTPException(400, "eval_output_retention_days must be between 1 and 3650")
 
     # GitHub #101 — restricted visibility requires the project_groups feature
     # (Team+). Only the OFF -> ON transition is gated: clearing it is always

@@ -92,6 +92,7 @@ from sessionfs.cli.cmd_resident import resident_app
 from sessionfs.cli.cmd_helper import helper_app
 from sessionfs.cli.cmd_loop import loop_app
 from sessionfs.cli.cmd_workflow import workflow_app
+from sessionfs.cli.cmd_eval import artifact_app, eval_app
 from sessionfs.cli.cmd_release import release_app
 from sessionfs.cli.cmd_keys import (
     auth_keys_app,
@@ -147,6 +148,10 @@ app.add_typer(loop_app, name="loop")
 
 # Register the record-only workflow template commands (GitHub #120)
 app.add_typer(workflow_app, name="workflow")
+
+# Register the record-only evaluation and lineage commands (GitHub #121/#122)
+app.add_typer(eval_app, name="eval")
+app.add_typer(artifact_app, name="artifact")
 
 # Register the PR / release / deploy / Ship Report commands (Review Loop F1)
 app.add_typer(release_app, name="release")

@@ -127,7 +127,7 @@ _MAX_DIFF_ITEMS_PER_LIST = 500
 _VALID_COST_BASIS: tuple[str, ...] = ("reported", "estimated", "plan", "unknown")
 _VALID_ROLES: tuple[str, ...] = (
     "implementer", "ui-implementer", "reviewer",
-    "design-reviewer", "security-reviewer", "release",
+    "design-reviewer", "security-reviewer", "release", "grader",
 )
 _VALID_EXIT_REASONS: tuple[str, ...] = ("finished", "out_of_turns", "crashed")
 _VALID_FINDING_STAGES: tuple[str, ...] = ("design", "code")

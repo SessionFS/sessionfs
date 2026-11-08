@@ -503,7 +503,7 @@ Elevate → mint → revert does **not** produce a working key: the minted key i
 still coupled to the account that minted it. Keep the minter a platform admin
 for the life of the key, or re-mint as a user who stays a platform admin.
 
-The chart can create a CronJob for each scheduled sweep (`meetingRetention` works the same way as the ones below). They are off by
+The chart can create a CronJob for each scheduled sweep (`meetingRetention` and `evalOutputs` — eval result output retention, daily at 04:15 — work the same way as the ones below). They are off by
 default and each needs a Secret holding a `platform_sweeps:run` service key
 (`existingSecret` is required when enabled). Enable the ones you run:
 

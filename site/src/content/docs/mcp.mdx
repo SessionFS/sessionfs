@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 135 tools in twenty categories: Session, Knowledge Read, Knowledge Write, Rules, Personas, Tickets, AgentRun, Agent Feedback, Review Checklist, Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Workflow Templates, Skills Marketplace, Project Groups (Team+), Meetings and chat, Reminders, Approvals (Enterprise), External contacts, and For You.
+The MCP server exposes 145 tools in twenty-one categories: Session, Knowledge Read, Knowledge Write, Rules, Personas, Tickets, AgentRun, Agent Feedback, Review Checklist, Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Workflow Templates, Skills Marketplace, Project Groups (Team+), Meetings and chat, Reminders, Approvals (Enterprise), External contacts, For You, and Evaluations and Lineage (Team+ for writes).
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -1148,6 +1148,23 @@ People your org works with who are not SessionFS users ([External contacts](/con
 | Tool | Purpose |
 |------|---------|
 | `get_my_attention` | What needs you: the ranked For You feed across reminders, approvals, assigned tickets, Review Loop items, meeting and chat action items, knowledge changes and the weekly proof card. Filters: `band` (`now`, `your_turn`, `upcoming`, `lately`), `limit` (1–100). Service keys need `attention:read` and see only their org and project allowlist; each section also needs its own read scope (approvals need `approvals:read`) |
+
+### Evaluations and Lineage
+
+Record-only [evaluations and lineage](/evals/). Your grader runs in your own CI and posts results; SessionFS computes the verdict and whether the run is trusted. Agents grade and register artifacts but cannot define suites or promote: those are people-only (CLI or dashboard). Writes need Team or Enterprise. Service keys use `evals:read`/`evals:write` and `artifacts:read`/`artifacts:write`. Responses that carry case text or grader output include an `untrusted_content_notice`.
+
+| Tool | Purpose |
+|------|---------|
+| `list_eval_suites` | Active suites: slug, version, grader persona, acceptance, case storage, live case count (`cursor` pages) |
+| `get_eval_suite` | One suite by `evs_` id, `evl_` lineage id or slug, with its versions; `include_cases` adds the first page of live cases (inputs only for inline storage) |
+| `start_eval_run` | Start grading the active suite version against `artifact_id`, `commit_sha` (full hex) or `subject_label`; optional `ticket_id`, `trigger_source`, `trigger_ref`. Your credential becomes the grader; returns the cases and a `trust_preview` |
+| `record_eval_results` | Post up to 500 results (`case_key`, `verdict` pass/fail/error/skip, `score` 0–1, `notes`, `output`, `content_sha256` for reference storage); `finish: true` closes the run. Optional `input_tokens`, `output_tokens`, `cost_usd` go on the grader run |
+| `get_eval_run` | A run's state, verdict, trusted or unverified with the reason, and summary; `include_results` adds the first page of results |
+| `compare_eval_runs` | `a` (reference) vs `b` (candidate) of one suite: regressions, fixes, cases added/removed, score deltas, pass rate per tag |
+| `register_artifact` | Register a version as a pointer: `kind`, `name`, `version`, `external_uri` (never fetched; pre-signed URLs refused), optional `digest`, `schema_summary`, `description`, `tags`, `produced_by_agent_run_id` |
+| `link_artifacts` | Add a lineage edge `parent_id` → `child_id` with a `relation`; cycles and self-edges are refused |
+| `get_artifact_lineage` | Trace `up`, `down` or `both` (depth ≤ 25, ≤ 500 nodes) with the latest trusted run per suite and node |
+| `list_artifacts` | Filter by `kind`, `name`, `stage`, `tag` (`key` or `key=value`); `cursor` pages |
 
 ## Agent Knowledge Contribution
 

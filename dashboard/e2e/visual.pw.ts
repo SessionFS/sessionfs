@@ -1606,6 +1606,64 @@ const WORKFLOW_SCENARIOS: Scenario[] = [
     },
   },
 ];
+// Evaluations + lineage: Work → Evals and Work → Artifacts.
+const EVALS_PATH = `/projects/${PROJECT_ID}?tab=work&sub=evals`;
+const ARTIFACTS_PATH = `/projects/${PROJECT_ID}?tab=work&sub=artifacts`;
+const EVAL_SCENARIOS: Scenario[] = [
+  { name: 'evals-runs', path: EVALS_PATH },
+  { name: 'evals-run-detail', path: `${EVALS_PATH}&ev=runs&evrun=evr_failed002` },
+  {
+    name: 'evals-run-void',
+    path: `${EVALS_PATH}&ev=runs&evrun=evr_failed002`,
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}`,
+        (route) => route.fulfill(fulfillJson(200, { ...projects[0], can_admin: true, can_edit: true })),
+      );
+    },
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Void run' }).click();
+      await page.getByRole('dialog', { name: 'Void this run?' }).waitFor();
+    },
+  },
+  { name: 'evals-suites', path: `${EVALS_PATH}&ev=suites` },
+  { name: 'evals-suite-detail', path: `${EVALS_PATH}&ev=suites&suite=evs_clinical0002` },
+  { name: 'evals-suite-reference', path: `${EVALS_PATH}&ev=suites&suite=evs_phi00000001` },
+  { name: 'evals-compare', path: `${EVALS_PATH}&ev=compare&a=evr_trusted01&b=evr_failed002` },
+  {
+    name: 'evals-empty',
+    path: EVALS_PATH,
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/eval-runs`,
+        (route) => route.fulfill(fulfillJson(200, { runs: [], next_cursor: null })),
+      );
+    },
+  },
+  {
+    name: 'evals-gated',
+    path: EVALS_PATH,
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}`,
+        (route) => route.fulfill(fulfillJson(200, { ...projects[0], effective_tier: 'free' })),
+      );
+    },
+  },
+  { name: 'artifacts', path: ARTIFACTS_PATH },
+  { name: 'artifact-detail', path: `${ARTIFACTS_PATH}&art=art_model_v25` },
+  {
+    name: 'artifact-family',
+    path: `${ARTIFACTS_PATH}&family=model:note-summarizer`,
+    mock: async (page) => {
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}`,
+        (route) => route.fulfill(fulfillJson(200, { ...projects[0], can_admin: true, can_edit: true })),
+      );
+    },
+  },
+];
+
 // For You, the dashboard home (tk_dc118ffd6e804a9a): full, caught up,
 // loading, error, reduced motion, and its open disclosures and panels.
 const FY_FEED = (u: URL) => u.pathname === '/api/v1/me/for-you';
@@ -1927,6 +1985,7 @@ const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: MEETING_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: LOOP_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: WORKFLOW_SCENARIOS })),
+  ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: EVAL_SCENARIOS })),
   ...FOR_YOU_WIDTHS.map((width) => ({ width, scenarios: FOR_YOU_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: CONTACT_SCENARIOS })),
 ];

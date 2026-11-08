@@ -3251,6 +3251,59 @@ steps:
 
 At most 30 steps, no cycles, brief templates up to 8 KiB, the whole definition up to 32 KiB. Placeholders are `{ticket.title}`, `{ticket.description}` and `{checklist}`. A step's gate is its **exit** gate: the step is not done, and nothing after it becomes ready, until the gate passes. The template never grants trust: `trusted_clean` uses the trusted-reviewer registry and merge readiness, and is only allowed on reviewer and verifier steps. Each reviewer step needs its own trusted `VERIFIED-CLEAN` round (`sfs loop review --step STEP`) on every ticket it reviews; another reviewer step's clean never counts. YAML that two readers could read differently is refused: anchors, aliases, tags, `|2`-style indentation indicators, more-indented folded lines, and unquoted `yes`/`no`/`on`/`off`/`y`/`n`, `True`/`NULL`, floats, hex/octal numbers and dates. MCP: `list_workflow_templates`, `get_workflow_template`, `start_workflow`, `get_workflow_plan`.
 
+## `sfs eval`
+
+Record-only [evaluations](https://sessionfs.dev/evals/). Your CI grades with your own keys and posts results; SessionFS computes each run's verdict and whether it is trusted (a registered trusted grader for the suite's grader persona, independent of whoever produced the artifact). It never runs a grader or calls a model. Tier: **Team+** for writes. Suites and cases are written by people (project owner or org admin, user key). Commands use the project of the current repository. Reference: [evals.md](evals.md).
+
+| Command | Description |
+|---------|-------------|
+| `sfs eval suite list [--json]` | Active suites with grader, storage and live case count |
+| `sfs eval suite show SUITE [--json]` | One suite (`evs_` id, `evl_` lineage id or slug) |
+| `sfs eval suite create FILE` | Create a suite from YAML or JSON (validated locally; `cases` in the file go into version 1, then in batches of 500) |
+| `sfs eval suite update SUITE_ID FILE` | Save a new version of the definition; cases carry over; slug and case storage cannot change |
+| `sfs eval suite disable SUITE_ID` | Deactivate a suite |
+| `sfs eval case add SUITE FILE [--reference]` | Add cases from JSON Lines (each batch of 500 is a new version). For reference-storage suites the text is hashed locally and only `content_sha256` is sent |
+| `sfs eval case list SUITE [--json]` | Live cases of a version |
+| `sfs eval case retire SUITE KEY...` | Retire cases (a new version; keys are never reused) |
+| `sfs eval run start SUITE (--artifact ID \| --commit SHA \| --label TEXT) [--ticket TK] [--trigger ci] [--cases-out FILE] [--output-id]` | Start a run; your credential becomes the grader. Warns when the run will be unverified |
+| `sfs eval run submit RUN --from results.jsonl [--finish]` | Post results in batches of 500 (idempotent per case) |
+| `sfs eval run finish RUN [--json]` | Close the run; exits 1 unless the verdict is `passed` |
+| `sfs eval runs [--suite S] [--artifact A] [--json]` | Runs newest first with verdict and trust |
+| `sfs eval compare A B [--json]` | Regressions, fixes and score changes between two runs of one suite; **exits 1 on any regression** |
+| `sfs eval void RUN --reason TEXT` | Void a run (project owner or org admin); it no longer counts for gates or baselines |
+
+Suite file:
+
+```yaml
+slug: clinical-notes
+name: Clinical note summaries
+grader: {kind: llm_judge, persona: clin-grader, rubric: "Keep every medication and dose."}
+acceptance: {min_pass_rate: 0.95, max_failures_by_tag: {critical: 0}, no_regression_vs: production}
+case_storage: inline     # or reference: only hashes leave your machine
+cases:
+  - {case_key: note-001, input: "...", expected: "...", tags: [critical]}
+```
+
+Result lines: `{"case_key": "note-001", "verdict": "pass", "score": 0.97, "notes": "...", "content_sha256": "..."}` (`content_sha256` is required for reference storage). MCP: `list_eval_suites`, `get_eval_suite`, `start_eval_run`, `record_eval_results`, `get_eval_run`, `compare_eval_runs`.
+
+## `sfs artifact`
+
+Model and dataset lineage: register versions of datasets, models, feature sets, prompts and checkpoints as **pointers** (URIs are validated and never fetched), link them, and promote with a gate. Tier: **Team+** for writes.
+
+| Command | Description |
+|---------|-------------|
+| `sfs artifact register --kind K --name N --version V --uri URI [--digest D] [--description T] [--schema FILE] [--tag k=v]... [--produced-by RUN] [--output-id]` | Register one version. Schemes: `s3 gs mlflow models runs hf https vertex`; pre-signed URLs and user names are refused |
+| `sfs artifact list [--kind K] [--name N] [--stage S] [--tag k[=v]] [--json]` | Newest first |
+| `sfs artifact show ID [--json]` | One version with tags and edge counts |
+| `sfs artifact link PARENT CHILD --relation R [--context-ref REF]` | `derived_from`, `trained_on`, `fine_tuned_from`, `evaluated_against` or `uses`; cycles are refused |
+| `sfs artifact lineage ID [--direction up\|down\|both] [--depth N] [--json]` | Trace lineage (depth ≤ 25, ≤ 500 nodes) |
+| `sfs artifact tag ID k=v... [--remove k]` | Set and remove tags (≤ 32) |
+| `sfs artifact deprecate ID` | Keep the version but never promote it again |
+| `sfs artifact promote ID --to STAGE` | `staging`/`production` need a trusted pass of every required suite on this exact version; production archives the previous production version. People only |
+| `sfs artifact requirements KIND NAME [--suite S]... [--require-tag k=v]... [--show]` | Set (project owner or org admin) or show what a family needs before promotion |
+
+MCP: `register_artifact`, `link_artifacts`, `get_artifact_lineage`, `list_artifacts`.
+
 ## `sfs release`
 
 Record pull requests, releases, gates and deployments, then read the **Ship Report** — the per-release and per-month rollup of a review loop's findings, harm, cost per accepted change and checklist learning. Tier: **Team+**. Commands use the project of the current repository.

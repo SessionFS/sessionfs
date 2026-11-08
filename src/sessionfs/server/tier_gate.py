@@ -276,7 +276,14 @@ def check_feature(ctx: UserContext, feature: str) -> None:
 # Features that belong to a project rather than to the caller. Inside a
 # project they are paid for by the project's owner (tk_a90e4015ad984cde).
 PROJECT_SCOPED_FEATURES = frozenset(
-    {"project_context", "agent_personas", "agent_tickets", "agent_runs", "review_loop"}
+    {
+        "project_context",
+        "agent_personas",
+        "agent_tickets",
+        "agent_runs",
+        "review_loop",
+        "evaluations",
+    }
 )
 
 

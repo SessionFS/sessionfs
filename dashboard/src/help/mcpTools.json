@@ -218,6 +218,22 @@
         { "name": "create_external_contact", "desc": "Add a contact when a person asks (never from transcripts)" },
         { "name": "update_external_contact", "desc": "Edit a contact's name, role, tags, email, status or aliases" }
       ]
+    },
+    {
+      "id": "evals",
+      "label": "Evals and lineage",
+      "tools": [
+        { "name": "list_eval_suites", "desc": "The project's active evaluation suites" },
+        { "name": "get_eval_suite", "desc": "One suite version, its versions and live cases" },
+        { "name": "start_eval_run", "desc": "Start grading a suite against an artifact, commit or label" },
+        { "name": "record_eval_results", "desc": "Post per-case results and optionally finish the run" },
+        { "name": "get_eval_run", "desc": "A run's verdict, trust and summary" },
+        { "name": "compare_eval_runs", "desc": "Regressions, fixes and score changes between two runs" },
+        { "name": "register_artifact", "desc": "Register a dataset, model or prompt version as a pointer" },
+        { "name": "link_artifacts", "desc": "Add a lineage edge between two artifacts" },
+        { "name": "get_artifact_lineage", "desc": "What an artifact came from and what came from it" },
+        { "name": "list_artifacts", "desc": "Registered artifacts by kind, name, stage or tag" }
+      ]
     }
   ]
 }

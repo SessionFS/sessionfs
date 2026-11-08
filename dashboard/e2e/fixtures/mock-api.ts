@@ -3,6 +3,7 @@ import * as d from './data';
 import * as loop from '../../src/projects/loop/fixtures';
 import * as wf from '../../src/projects/workflows/fixtures';
 import * as fy from '../../src/foryou/fixtures';
+import * as ev from '../../src/projects/evals/fixtures';
 
 export interface MockResult {
   status: number;
@@ -154,6 +155,9 @@ export function resolve(method: string, pathname: string): MockResult | null {
     if (rest === '/meetings') return ok(d.projectMeetings);
     if (/^\/meetings\/[^/]+\/reminders$/.test(rest)) return ok(d.sourceReminders);
     if (rest === '/agent-runs') return ok(d.agentRuns);
+    // Evaluations + lineage (shapes follow routes/evals.py and routes/artifacts.py).
+    const evalHit = resolveEvals(rest);
+    if (evalHit) return evalHit;
     if (rest === '/rules') return ok(d.rules.rules);
     if (rest === '/rules/versions') return ok(d.rulesVersions);
     const rulesVersion = rest.match(/^\/rules\/versions\/(\d+)$/);
@@ -334,4 +338,35 @@ export async function mockApi(page: Page): Promise<string[]> {
     });
   });
   return misses;
+}
+
+/** Evals and artifacts under /api/v1/projects/{p}. */
+function resolveEvals(rest: string): MockResult | null {
+  if (rest === '/eval-suites') return ok(ev.suites());
+  const suiteM = rest.match(/^\/eval-suites\/([^/]+)(\/cases)?$/);
+  if (suiteM) {
+    const reference = decodeURIComponent(suiteM[1]).includes('phi');
+    if (suiteM[2]) return ok(reference ? ev.referenceCasePage() : ev.casePage());
+    return ok(reference ? ev.referenceSuite() : ev.suite());
+  }
+  if (rest === '/eval-runs') return ok(ev.runs());
+  if (rest === '/eval-runs/compare') return ok(ev.compare());
+  const runM = rest.match(/^\/eval-runs\/([^/]+)(\/results)?$/);
+  if (runM) {
+    if (runM[2]) return ok(ev.results());
+    const id = decodeURIComponent(runM[1]);
+    return ok(ev.runs().runs.find((r) => r.id === id) ?? ev.run({ id }));
+  }
+  if (rest === '/artifacts') return ok(ev.artifacts());
+  const artM = rest.match(/^\/artifacts\/([^/]+)(\/lineage|\/promotion-check)?$/);
+  if (artM) {
+    if (artM[2] === '/lineage') return ok(ev.lineage());
+    if (artM[2] === '/promotion-check') return ok(ev.promotionBlocked());
+    const id = decodeURIComponent(artM[1]);
+    return ok(ev.artifacts().artifacts.find((a) => a.id === id) ?? ev.artifact());
+  }
+  if (rest === '/artifact-families') return ok(ev.families());
+  const famM = rest.match(/^\/artifact-families\/[^/]+\/[^/]+\/(requirements|evals)$/);
+  if (famM) return ok(famM[1] === 'requirements' ? ev.requirements() : ev.matrix());
+  return null;
 }

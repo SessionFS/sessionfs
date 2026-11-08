@@ -31,6 +31,8 @@ import KnowledgeEntriesTab from './knowledge/EntriesTab';
 import PagesTab from './knowledge/PagesTab';
 import HistoryTab from './knowledge/HistoryTab';
 import { TemplatesPanel } from './workflows/TemplatesPanel';
+import EvalsTab from './evals/EvalsTab';
+import ArtifactsTab from './evals/ArtifactsTab';
 import { displayTier } from '../utils/tier';
 import { Card, Button, Textarea, Dialog, DialogHeader, DialogFooter, Tabs, TabPanel, Alert } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
@@ -64,6 +66,8 @@ const SUB_TABS: Partial<Record<Section, { key: string; label: string }[]>> = {
     { key: 'meetings', label: 'Conversations' },
     { key: 'loop', label: 'Review Loop' },
     { key: 'agent-runs', label: 'Agent runs' },
+    { key: 'evals', label: 'Evals' },
+    { key: 'artifacts', label: 'Artifacts' },
     { key: 'personas', label: 'Agents' },
   ],
   config: [
@@ -74,6 +78,9 @@ const SUB_TABS: Partial<Record<Section, { key: string; label: string }[]>> = {
     { key: 'workflows', label: 'Workflows' },
   ],
 };
+
+// What the Evals and Artifacts sub-tabs keep open; dropped on a tab change.
+const EVAL_PARAMS = ['ev', 'evrun', 'suite', 'a', 'b', 'art', 'family'];
 
 // Before the restructure every tab key was top-level; old links still work.
 const LEGACY_TABS: Record<string, [Section, string?]> = {
@@ -202,6 +209,7 @@ export default function ProjectDetail() {
       params.delete('sub');
       params.delete('story');
       params.delete('run');
+      for (const k of EVAL_PARAMS) params.delete(k);
       return params;
     });
   }, [setSearchParams]);
@@ -218,12 +226,26 @@ export default function ProjectDetail() {
     });
   }, [setSearchParams]);
 
+  // From an artifact to one of its eval runs on the Evals sub-tab.
+  const openEvalRun = useCallback((runId: string) => {
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      for (const k of EVAL_PARAMS) params.delete(k);
+      params.set('tab', 'work');
+      params.set('sub', 'evals');
+      params.set('ev', 'runs');
+      params.set('evrun', runId);
+      return params;
+    });
+  }, [setSearchParams]);
+
   const switchSub = useCallback((next: string) => {
     setSearchParams((prev) => {
       const params = new URLSearchParams(prev);
       params.set('sub', next);
       params.delete('story');
       params.delete('run');
+      for (const k of EVAL_PARAMS) params.delete(k);
       return params;
     }, { replace: true });
   }, [setSearchParams]);
@@ -620,6 +642,22 @@ export default function ProjectDetail() {
       )}
       {section === 'work' && sub === 'agent-runs' && (
         <Panel padded sub={sub}><AgentRunsTab projectId={project.id} initialRunId={searchParams.get('run')} /></Panel>
+      )}
+      {section === 'work' && sub === 'evals' && (
+        <Panel padded sub={sub}>
+          <EvalsTab projectId={project.id} tier={project.effective_tier || displayTier(me)} canAdmin={project.can_admin === true} />
+        </Panel>
+      )}
+      {section === 'work' && sub === 'artifacts' && (
+        <Panel padded sub={sub}>
+          <ArtifactsTab
+            projectId={project.id}
+            tier={project.effective_tier || displayTier(me)}
+            canEdit={canEdit}
+            canAdmin={project.can_admin === true}
+            onOpenRun={openEvalRun}
+          />
+        </Panel>
       )}
       {section === 'work' && sub === 'personas' && (
         <Panel padded sub={sub}><PersonasTab projectId={project.id} canEdit={canEdit} /></Panel>

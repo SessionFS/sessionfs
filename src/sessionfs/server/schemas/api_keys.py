@@ -77,6 +77,14 @@ VALID_SCOPES = frozenset(
         # Resident R0 (migration 057) — durable mind for reviewer/implementer
         # residents. resident_memory:read hydrates; resident_memory:write
         # writes + compacts + quarantines.
+        # Evaluations + lineage (GitHub #121/#122). evals:write starts runs
+        # and posts results (the CI grader path); suite and case writes are
+        # people-only. artifacts:write registers artifacts, edges and tags;
+        # promote is people-only.
+        "evals:read",
+        "evals:write",
+        "artifacts:read",
+        "artifacts:write",
         "resident_memory:read",
         "resident_memory:write",
         "retrieval_audit:read",

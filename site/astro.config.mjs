@@ -74,6 +74,7 @@ export default defineConfig({
             { label: 'Skills Marketplace', slug: 'skills-marketplace' },
             { label: 'Worker Review Loop', slug: 'review-loop' },
             { label: 'Workflow Templates', slug: 'workflows' },
+            { label: 'Evaluations and Lineage', slug: 'evals' },
             { label: 'Session Helper', slug: 'session-helper' },
           ],
         },

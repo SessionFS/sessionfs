@@ -166,7 +166,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs auth use\|profiles\|whoami` | Switch between named account profiles |
 | `sfs auth keys list\|create\|revoke` | Manage your personal API keys |
 | `sfs config show\|set\|default-org` | Manage configuration and your default organization |
-| `sfs mcp serve` | Start MCP server (135 tools) for AI tool integration |
+| `sfs mcp serve` | Start MCP server (145 tools) for AI tool integration |
 | `sfs mcp install\|uninstall --for TOOL` | Add or remove the MCP registration for any of the 10 supported tools |
 | `sfs mcp index` | Rebuild the local full-text search index |
 | `sfs init` | Interactive setup wizard — auto-detects tools, optional sync |
@@ -281,6 +281,8 @@ Sessions are stored as `.sfs` directories:
 All file paths are relative to workspace root. Sessions are append-only — conflict resolution appends both sides rather than merging.
 
 ## Status
+
+**v0.29.14 — Public Beta.** 11439 backend tests + 2221 dashboard tests passing. Database migrations 001–133 (067 and 068 unused). 145 MCP tools. **Evaluations and model/dataset lineage (#121, #122), record-only:** versioned eval suites (inline or hash-only cases, people-only edits), eval runs posted by your own grader with server-computed verdicts, trusted only from a registered independent grader; compare runs; datasets/models/prompts registered as pointers with lineage edges; promotion to staging/production gated on a trusted pass of every required suite on that exact version. SessionFS never runs a model or fetches an artifact. `sfs eval`, `sfs artifact`, ten MCP tools, Project → Work → Evals/Artifacts. Migrations 131–133.
 
 **v0.29.13 — Public Beta.** 11392 backend tests + 2203 dashboard tests passing. Database migrations 001–130 (067 and 068 unused). 135 MCP tools. **External contacts (#125):** people your org works with who aren't SessionFS users, in Organization → Contacts. Meeting and chat speakers resolve to members, then contacts, then a "To confirm" queue a person works through (extraction never creates contacts); tickets and action items can be owned by a contact (shown as external, never notified); a contact who joins with a verified email becomes the member and their open tickets follow. Emails masked except for owners, admins and the creator; merge, export, erasure and an optional retention sweep. `sfs contact`, four MCP tools, `contacts:read|write` scopes. Migration 130.
 
@@ -422,7 +424,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### MCP and dashboard
 
-- **MCP server** (local, stdio) with 135 tools — sessions, knowledge read and write, rules, personas, tickets, external contacts, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), meetings and chat threads, reminders, read-only approvals, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
+- **MCP server** (local, stdio) with 145 tools — sessions, knowledge read and write, rules, personas, tickets, external contacts, evaluations and model/dataset lineage, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), meetings and chat threads, reminders, read-only approvals, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
 - **`sfs mcp install --for <tool>`** for all 10 tools (stale registration repair, malformed config handling)
 - **Web dashboard** with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, command palette (Cmd+K), mobile nav, accessibility (focus trapping, ARIA live regions), product identity
 - **`/help` page** — MCP-first guidance, 10-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference

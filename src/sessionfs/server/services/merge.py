@@ -21,6 +21,12 @@ from sessionfs.server.db.models import (
     AgentFeedback,
     AgentPersona,
     AgentRun,
+    Artifact,
+    ArtifactEdge,
+    ArtifactFamilyRequirement,
+    EvalCase,
+    EvalRun,
+    EvalSuite,
     Handoff,
     ContextCompilation,
     HandoffAttachment,
@@ -66,6 +72,59 @@ _STRAIGHT_REASSIGN_MODELS = [
     RetrievalAuditEvent,
     MeetingTranscript,
 ]
+
+
+# Evaluations + lineage tables (migrations 131-133). Merge does not relocate
+# them: artifact families/versions, active suite slugs, family requirements,
+# the one-production-version-per-family invariant and regression baselines
+# would all have to be reconciled across two projects. A merge is refused
+# (409 ``merge_blocked_by_evals``) while either project holds any of these
+# rows. ``artifact_tags`` and ``eval_case_results`` hang off artifacts and
+# runs, so checking the project-scoped tables covers them.
+_EVAL_LINEAGE_MODELS = [
+    Artifact,
+    ArtifactEdge,
+    ArtifactFamilyRequirement,
+    EvalSuite,
+    EvalCase,
+    EvalRun,
+]
+EVALS_BLOCKING_REASON = "merge_blocked_by_evals"
+
+
+async def _eval_lineage_holders(
+    db: AsyncSession, source_id: str, target_id: str
+) -> list[str]:
+    """Which of ``source`` / ``target`` hold any artifact or eval rows."""
+    holders: list[str] = []
+    for side, pid in (("source", source_id), ("target", target_id)):
+        for model in _EVAL_LINEAGE_MODELS:
+            hit = (
+                await db.execute(
+                    select(model.id).where(model.project_id == pid).limit(1)  # type: ignore[attr-defined]
+                )
+            ).scalar_one_or_none()
+            if hit is not None:
+                holders.append(side)
+                break
+    return holders
+
+
+def _evals_refusal(holders: list[str]):
+    from fastapi import HTTPException
+
+    return HTTPException(
+        409,
+        {
+            "code": EVALS_BLOCKING_REASON,
+            "message": (
+                "Projects with eval suites, eval runs or artifacts can't be "
+                "merged yet: their families, versions, suites and promotion "
+                "requirements would collide. Merge projects without them."
+            ),
+            "projects_with_evals": holders,
+        },
+    )
 
 
 # ── helpers ────────────────────────────────────────────────────────
@@ -1459,13 +1518,16 @@ async def merge_projects(
         # org-shadowing refusal so the plan never promises a merge that
         # --confirm would refuse.
         shadow = _org_shadow_collisions(persona_collisions)
+        eval_holders = await _eval_lineage_holders(db, source_id, target_id)
+        shadow_refuses = bool(shadow) and persona_policy != "rename"
         return {
             "dry_run": True,
-            "would_refuse": bool(shadow) and persona_policy != "rename",
+            "would_refuse": bool(eval_holders) or shadow_refuses,
             "blocking_reason": (
-                "persona_org_shadowing"
-                if shadow and persona_policy != "rename" else None
+                EVALS_BLOCKING_REASON if eval_holders
+                else "persona_org_shadowing" if shadow_refuses else None
             ),
+            "projects_with_evals": eval_holders,
             "stats": stats,
             "persona_collisions": persona_collisions,
             "slug_collisions": slug_collisions,
@@ -1619,6 +1681,13 @@ async def merge_projects(
             actor_user_id=user_id, platform_admin=platform_admin,
         )
         slug_collisions = await _detect_slug_collisions(db, source_id, target_id)
+
+        # Evals + lineage rows are not relocated (see _EVAL_LINEAGE_MODELS);
+        # checked under the scope locks, which every eval/artifact write
+        # also takes, so no row can land after this check.
+        eval_holders = await _eval_lineage_holders(db, source_id, target_id)
+        if eval_holders:
+            raise _evals_refusal(eval_holders)
 
         # =============================================================
         # Phase 3: Merge mutations — single atomic transaction.

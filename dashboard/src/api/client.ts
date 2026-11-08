@@ -1935,6 +1935,295 @@ export type TicketNotificationKind =
   | 'reminder_due';
 
 // ------------------------------------------------------------------
+// Evaluations + lineage (/api/v1/projects/{p}/eval-* and artifact-*)
+// Record-only: SessionFS stores results graders post; it never runs one.
+// ------------------------------------------------------------------
+
+export type EvalGraderKind = 'deterministic' | 'llm_judge' | 'human' | 'hybrid';
+export type EvalCaseStorage = 'inline' | 'reference';
+export type EvalRunState = 'running' | 'finished' | 'voided' | 'expired';
+export type EvalRunVerdict = 'passed' | 'failed' | 'incomplete';
+export type EvalResultVerdict = 'pass' | 'fail' | 'error' | 'skip';
+export type EvalTriggerSource = 'manual' | 'ci' | 'workflow' | 'promotion';
+
+export interface EvalGrader {
+  kind: EvalGraderKind;
+  persona: string;
+  rubric: string;
+  script_ref?: string | null;
+  model_hint?: string | null;
+}
+
+export interface EvalAcceptance {
+  require_all_cases: boolean;
+  min_pass_rate?: number | null;
+  min_mean_score?: number | null;
+  min_pass_rate_by_tag: Record<string, number>;
+  max_failures_by_tag: Record<string, number>;
+  /** 'none' | 'production' | an eval run id */
+  no_regression_vs: string;
+  regression_tags: string[];
+}
+
+export interface EvalSuite {
+  id: string;
+  lineage_id: string;
+  version: number;
+  supersedes_id: string | null;
+  active: boolean;
+  project_id: string;
+  slug: string;
+  name: string;
+  description: string;
+  grader: EvalGrader;
+  acceptance: EvalAcceptance;
+  case_storage: EvalCaseStorage;
+  case_bank_artifact_id: string | null;
+  definition_sha256: string;
+  created_by_user_id: string | null;
+  actor_type: 'user' | 'service_key';
+  created_at: string | null;
+  live_cases?: number;
+  /** GET by ref only: every version of the lineage, newest first. */
+  versions?: { id: string; version: number; active: boolean; created_at: string | null }[];
+}
+
+export interface EvalCase {
+  id: string;
+  case_key: string;
+  name: string;
+  tags: string[];
+  content_sha256: string;
+  rubric_notes: string;
+  added_in_version: number;
+  retired_in_version: number | null;
+  /** Inline storage only; absent for reference-storage suites. */
+  input?: string | null;
+  expected?: string | null;
+}
+
+export interface EvalCasePage {
+  suite_id: string;
+  suite_version: number;
+  case_storage: EvalCaseStorage;
+  cases: EvalCase[];
+  next_cursor: string | null;
+  untrusted_content_notice: string;
+}
+
+export interface EvalTagStats {
+  cases: number;
+  graded: number;
+  passed: number;
+  not_passed: number;
+  pass_rate: number | null;
+}
+
+export interface EvalRunSummary {
+  total_cases: number;
+  graded: number;
+  passed: number;
+  failed: number;
+  error: number;
+  skip: number;
+  missing: number;
+  pass_rate: number | null;
+  mean_score: number | null;
+  by_tag: Record<string, EvalTagStats>;
+  by_tag_truncated: boolean;
+  regressions: string[];
+  regression_count: number;
+  baseline_run_id: string | null;
+  reasons: string[];
+}
+
+export interface EvalRun {
+  id: string;
+  project_id: string;
+  suite_id: string;
+  suite_lineage_id: string;
+  artifact_id: string | null;
+  subject_label: string | null;
+  commit_sha: string | null;
+  ticket_id: string | null;
+  trigger_source: EvalTriggerSource;
+  trigger_ref: string | null;
+  agent_run_id: string | null;
+  grader_persona: string;
+  actor_type: 'user' | 'service_key';
+  service_key_name: string | null;
+  state: EvalRunState;
+  verdict: EvalRunVerdict | null;
+  trusted: boolean;
+  /** 'trusted' | 'unverified' once finished, else null. */
+  trust_label: 'trusted' | 'unverified' | null;
+  untrusted_reason: string | null;
+  summary: EvalRunSummary | null;
+  baseline_run_id: string | null;
+  voided_reason: string | null;
+  voided_at: string | null;
+  started_at: string | null;
+  finished_at: string | null;
+  /** GET one run only. */
+  suite?: { id: string; slug: string; name: string; version: number; case_storage: EvalCaseStorage };
+}
+
+export interface EvalCaseResult {
+  id: string;
+  case_id: string;
+  case_key: string;
+  verdict: EvalResultVerdict;
+  score: number | null;
+  grader_kind: EvalGraderKind | null;
+  notes: string | null;
+  output: string | null;
+  output_sha256: string | null;
+  /** True once the retention sweep cleared output and notes. */
+  output_cleared: boolean;
+  created_at: string | null;
+}
+
+export interface EvalResultPage {
+  run_id: string;
+  results: EvalCaseResult[];
+  next_cursor: string | null;
+  untrusted_content_notice: string;
+}
+
+export interface EvalCompareSide {
+  run_id: string;
+  suite_version_id: string;
+  verdict: EvalRunVerdict | null;
+  trusted: boolean;
+  state: EvalRunState;
+  tokens: { input: number; output: number; cache_read: number; cache_write: number } | null;
+  /** Org owners/admins only (never service keys). */
+  cost_usd?: number | null;
+}
+
+export interface EvalCompare {
+  warnings: string[];
+  suite_lineage_id: string;
+  a: EvalCompareSide;
+  b: EvalCompareSide;
+  regressions: string[];
+  regression_count: number;
+  fixes: string[];
+  fix_count: number;
+  unchanged: { pass: number; not_pass: number };
+  cases_added: string[];
+  cases_removed: string[];
+  score_deltas: { case_key: string; a: number; b: number; delta: number }[];
+  pass_rate_by_tag: Record<string, { a: number | null; b: number | null }>;
+}
+
+export type ArtifactKind = 'dataset' | 'model' | 'feature_set' | 'prompt' | 'checkpoint';
+export type ArtifactStage = 'candidate' | 'staging' | 'production' | 'archived';
+export type ArtifactRelation =
+  | 'derived_from'
+  | 'trained_on'
+  | 'fine_tuned_from'
+  | 'evaluated_against'
+  | 'uses';
+
+export interface Artifact {
+  id: string;
+  project_id: string;
+  kind: ArtifactKind;
+  name: string;
+  version: string;
+  /** Copy-only unless link_url is set (https, or hf:// mapped to huggingface.co). */
+  external_uri: string;
+  link_url: string | null;
+  digest: string | null;
+  schema_summary: unknown;
+  description: string;
+  stage: ArtifactStage;
+  produced_by_agent_run_id: string | null;
+  tags: Record<string, string>;
+  created_by_user_id: string | null;
+  actor_type: 'user' | 'service_key';
+  service_key_name: string | null;
+  created_at: string | null;
+  deprecated_at: string | null;
+  /** GET one artifact only. */
+  parents?: number;
+  children?: number;
+  latest_trusted_runs?: { suite_lineage_id: string; run_id: string; verdict: EvalRunVerdict | null; finished_at: string | null }[];
+}
+
+export interface ArtifactEdge {
+  id: string;
+  parent_id: string;
+  child_id: string;
+  relation: ArtifactRelation;
+  context_ref: string | null;
+  actor_type: 'user' | 'service_key';
+  service_key_name: string | null;
+  created_at: string | null;
+}
+
+export interface ArtifactLineage {
+  root_id: string;
+  direction: 'up' | 'down' | 'both';
+  depth: number;
+  truncated: boolean;
+  nodes: Artifact[];
+  edges: ArtifactEdge[];
+  evals: { artifact_id: string; suite_lineage_id: string; run_id: string; verdict: EvalRunVerdict | null; finished_at: string | null }[];
+}
+
+export interface PromotionBlocker {
+  code: string;
+  message: string;
+  suite_lineage_id?: string;
+  suite_slug?: string | null;
+  parent_id?: string;
+  tag?: string;
+  required_value?: string;
+}
+
+export interface PromotionCheck {
+  artifact_id: string;
+  from_stage: ArtifactStage;
+  to_stage: ArtifactStage;
+  allowed: boolean;
+  blockers: PromotionBlocker[];
+}
+
+export interface ArtifactFamily {
+  kind: ArtifactKind;
+  name: string;
+  versions: number;
+  latest_created_at: string | null;
+  production_artifact_id: string | null;
+  production_version: string | null;
+}
+
+export interface ArtifactFamilyRequirements {
+  kind: ArtifactKind;
+  name: string;
+  /** Suite lineage ids. */
+  suites: string[];
+  require_tags: Record<string, string>;
+  updated_by_user_id: string | null;
+  updated_at: string | null;
+}
+
+export interface ArtifactFamilyMatrix {
+  kind: ArtifactKind;
+  name: string;
+  columns: { suite_lineage_id: string; slug: string | null; name: string | null; required: boolean }[];
+  rows: {
+    artifact_id: string;
+    version: string;
+    stage: ArtifactStage;
+    deprecated: boolean;
+    cells: Record<string, { run_id: string; verdict: EvalRunVerdict | null; pass_rate: number | null } | null>;
+  }[];
+}
+
+// ------------------------------------------------------------------
 // Reminders (/api/v1/me/reminders)
 // ------------------------------------------------------------------
 
@@ -3631,6 +3920,16 @@ export function parseApiErrorBody(body: string, status: number): ParsedApiError 
   return { message: body };
 }
 
+/** Query string for the eval/artifact list routes (drops unset values). */
+function evalQs(params: Record<string, string | number | boolean | undefined | null>): string {
+  const sp = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== '') sp.set(key, String(value));
+  }
+  const qs = sp.toString();
+  return qs ? `?${qs}` : '';
+}
+
 export function createApiClient(baseUrl: string, apiKey: string) {
   async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const resp = await fetch(`${baseUrl}${path}`, {
@@ -5158,6 +5457,108 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       }),
     listReminderNotes: (id: string) =>
       request<{ items: ReminderNote[] }>(`/api/v1/me/reminders/${encodeURIComponent(id)}/notes`),
+
+    // ── Evaluations + lineage ──
+    listEvalSuites: (projectId: string, params: { cursor?: string; limit?: number } = {}) =>
+      request<{ suites: EvalSuite[]; next_cursor: string | null }>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/eval-suites${evalQs(params)}`,
+      ),
+    getEvalSuite: (projectId: string, suiteRef: string) =>
+      request<EvalSuite>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/eval-suites/${encodeURIComponent(suiteRef)}`,
+      ),
+    listEvalSuiteCases: (projectId: string, suiteRef: string, params: { cursor?: string; limit?: number } = {}) =>
+      request<EvalCasePage>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/eval-suites/${encodeURIComponent(suiteRef)}/cases${evalQs(params)}`,
+      ),
+    deactivateEvalSuite: (projectId: string, suiteId: string) =>
+      request<void>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/eval-suites/${encodeURIComponent(suiteId)}`,
+        { method: 'DELETE' },
+      ),
+    listEvalRuns: (
+      projectId: string,
+      params: { suite?: string; artifact_id?: string; state?: EvalRunState; verdict?: EvalRunVerdict; cursor?: string; limit?: number } = {},
+    ) =>
+      request<{ runs: EvalRun[]; next_cursor: string | null }>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/eval-runs${evalQs(params)}`,
+      ),
+    getEvalRun: (projectId: string, runId: string) =>
+      request<EvalRun>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/eval-runs/${encodeURIComponent(runId)}`,
+      ),
+    listEvalResults: (
+      projectId: string,
+      runId: string,
+      params: { verdict?: EvalResultVerdict; tag?: string; cursor?: string; limit?: number } = {},
+    ) =>
+      request<EvalResultPage>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/eval-runs/${encodeURIComponent(runId)}/results${evalQs(params)}`,
+      ),
+    compareEvalRuns: (projectId: string, a: string, b: string) =>
+      request<EvalCompare>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/eval-runs/compare${evalQs({ a, b })}`,
+      ),
+    voidEvalRun: (projectId: string, runId: string, reason: string) =>
+      request<EvalRun>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/eval-runs/${encodeURIComponent(runId)}/void`,
+        { method: 'POST', body: JSON.stringify({ reason }) },
+      ),
+    listArtifacts: (
+      projectId: string,
+      params: { kind?: ArtifactKind; name?: string; stage?: ArtifactStage; tag?: string; include_deprecated?: boolean; cursor?: string; limit?: number } = {},
+    ) =>
+      request<{ artifacts: Artifact[]; next_cursor: string | null }>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/artifacts${evalQs(params)}`,
+      ),
+    getArtifact: (projectId: string, artifactId: string) =>
+      request<Artifact>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}`,
+      ),
+    getArtifactLineage: (
+      projectId: string,
+      artifactId: string,
+      params: { direction?: 'up' | 'down' | 'both'; depth?: number } = {},
+    ) =>
+      request<ArtifactLineage>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}/lineage${evalQs(params)}`,
+      ),
+    checkArtifactPromotion: (projectId: string, artifactId: string, toStage: ArtifactStage) =>
+      request<PromotionCheck>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}/promotion-check${evalQs({ to_stage: toStage })}`,
+      ),
+    promoteArtifact: (projectId: string, artifactId: string, toStage: ArtifactStage) =>
+      request<Artifact & { from_stage: ArtifactStage; archived_ids: string[] }>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}/promote`,
+        { method: 'POST', body: JSON.stringify({ to_stage: toStage }) },
+      ),
+    deprecateArtifact: (projectId: string, artifactId: string) =>
+      request<Artifact>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/artifacts/${encodeURIComponent(artifactId)}/deprecate`,
+        { method: 'POST', body: '{}' },
+      ),
+    listArtifactFamilies: (projectId: string, params: { kind?: ArtifactKind } = {}) =>
+      request<{ families: ArtifactFamily[] }>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/artifact-families${evalQs(params)}`,
+      ),
+    getArtifactFamilyRequirements: (projectId: string, kind: ArtifactKind, name: string) =>
+      request<ArtifactFamilyRequirements>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/artifact-families/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/requirements`,
+      ),
+    putArtifactFamilyRequirements: (
+      projectId: string,
+      kind: ArtifactKind,
+      name: string,
+      body: { suites: string[]; require_tags?: Record<string, string> },
+    ) =>
+      request<ArtifactFamilyRequirements>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/artifact-families/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/requirements`,
+        { method: 'PUT', body: JSON.stringify(body) },
+      ),
+    getArtifactFamilyEvals: (projectId: string, kind: ArtifactKind, name: string) =>
+      request<ArtifactFamilyMatrix>(
+        `/api/v1/projects/${encodeURIComponent(projectId)}/artifact-families/${encodeURIComponent(kind)}/${encodeURIComponent(name)}/evals`,
+      ),
     addReminderNote: (id: string, body: string) =>
       request<ReminderNote>(`/api/v1/me/reminders/${encodeURIComponent(id)}/notes`, {
         method: 'POST',

@@ -1,0 +1,146 @@
+---
+title: "Evaluations and Lineage"
+description: "Keep one auditable record of which model version passed which eval suite and what data it came from. Your CI grades; SessionFS records the results, decides whether they are trusted and gates promotion."
+---
+
+Evaluations answer "did v2.3 pass the clinical-note suite?" and lineage answers "what data trained the production model?" from one record instead of Jira comments, READMEs and run names.
+
+Both are **record-only**. SessionFS stores suite definitions, artifact pointers and the results your graders post. It never runs a grader, never calls a model, never holds a model key and never fetches an artifact. Your graders run in your own CI or orchestrator with your own keys and post results with a SessionFS credential.
+
+| What you want | MCP tool | CLI |
+| --- | --- | --- |
+| See the suites | `list_eval_suites`, `get_eval_suite` | `sfs eval suite list`, `sfs eval suite show` |
+| Grade a model, commit or label | `start_eval_run`, `record_eval_results` | `sfs eval run start`, `sfs eval run submit`, `sfs eval run finish` |
+| Read or compare runs | `get_eval_run`, `compare_eval_runs` | `sfs eval runs`, `sfs eval compare` |
+| Record a dataset or model version | `register_artifact`, `list_artifacts` | `sfs artifact register`, `sfs artifact list` |
+| Record where it came from | `link_artifacts`, `get_artifact_lineage` | `sfs artifact link`, `sfs artifact lineage` |
+| Promote a version | (people only) | `sfs artifact promote` |
+
+Writes need the **Team** or **Enterprise** plan on the project. Reading, disabling a suite, deprecating an artifact and voiding a run stay open after a downgrade.
+
+## Concepts
+
+| Term | Meaning |
+| --- | --- |
+| **Suite** | A versioned definition: grader, rubric and acceptance criteria. Every edit, and every case added or retired, creates a new version. Old versions keep their exact case set. |
+| **Case** | One input with an optional expected output and tags, identified by a `case_key`. |
+| **Run** | One grading pass of a pinned suite version against one subject: an artifact version, a commit or a label. |
+| **Result** | One per case: `pass`, `fail`, `error` or `skip`, an optional score from 0 to 1, notes and output. |
+| **Verdict** | `passed`, `failed` or `incomplete`, computed by SessionFS from the results and the acceptance criteria. A client never sets it. |
+| **Artifact** | A pointer to one version of a dataset, model, feature set, prompt or checkpoint: a URI, an optional digest, a schema summary and tags. Never the bytes. |
+| **Edge** | `derived_from`, `trained_on`, `fine_tuned_from`, `evaluated_against` or `uses`, from a parent artifact to a child, inside one project. |
+| **Stage** | `candidate`, `staging`, `production` or `archived`. Promotion to staging or production is gated. |
+
+## Define a suite
+
+Suites are written by people with a user key (project owner or org admin), through the CLI or the dashboard. Agents can grade and register artifacts, but they cannot change the bar.
+
+```yaml
+# clinical.yaml
+slug: clinical-notes
+name: Clinical note summaries
+grader:
+  kind: llm_judge          # deterministic | llm_judge | human | hybrid
+  persona: clin-grader     # the trusted-reviewer persona a grader must hold
+  rubric: Score 1 when the summary keeps every medication and dose.
+acceptance:
+  min_pass_rate: 0.95
+  max_failures_by_tag:
+    critical: 0
+  no_regression_vs: production   # none (default) | production | evr_<id>
+  regression_tags: [critical]
+case_storage: inline              # inline (default) | reference
+cases:
+  - case_key: note-001
+    input: "..."
+    expected: "..."
+    tags: [critical]
+```
+
+```bash
+sfs eval suite create clinical.yaml
+sfs eval case add clinical-notes more-cases.jsonl   # JSON Lines, 500 per version
+sfs eval case retire clinical-notes note-007
+```
+
+Acceptance keys (only these are accepted):
+
+| Key | Meaning |
+| --- | --- |
+| `require_all_cases` | Default `true`: any live case without a result makes the run `incomplete`. |
+| `min_pass_rate` | Pass rate over graded cases must be at least this. |
+| `min_mean_score` | Mean of reported scores must be at least this. |
+| `min_pass_rate_by_tag` | Per-tag minimum pass rate, for example `{critical: 1.0}`. |
+| `max_failures_by_tag` | Per-tag maximum of cases that did not pass, for example `{critical: 0}`. |
+| `no_regression_vs` | `production` compares with the latest trusted passing run on the family's production version; an `evr_` id compares with that run. A case that passed there and fails now fails the run when it carries one of `regression_tags`. |
+
+With no threshold declared, every graded case must pass. `error` and `skip` count as not passed.
+
+### Regulated data: reference storage
+
+With `case_storage: reference`, case text never reaches SessionFS. Only the `case_key` and a `content_sha256` are stored, and the grader must send the same hash with each result. A wrong hash is refused (`422 case_hash_mismatch`), so the record still proves which case was graded. `sfs eval case add` and `sfs eval suite create` compute the hash on your machine from local `input` and `expected` and send only the hash.
+
+The hash is sha256 over the canonical JSON `{"expected": ..., "input": ...}` (sorted keys, no spaces, UTF-8).
+
+## Grade from CI
+
+```bash
+RUN=$(sfs eval run start clinical-notes --artifact art_1234 --output-id --cases-out cases.jsonl)
+# ... your grader reads cases.jsonl and writes results.jsonl:
+# {"case_key": "note-001", "verdict": "pass", "score": 0.97, "notes": "..."}
+sfs eval run submit "$RUN" --from results.jsonl --finish
+```
+
+Starting a run pins the active suite version, binds **your credential** as the grader and creates a grader agent run (role `grader`) so tokens and cost show up in the spend rollups. Only that credential can post results or finish the run. Results are idempotent per case: a replay of the same body is accepted, a different body for a graded case is `409 result_conflict`. A correction is a new run. A run left running for 7 days expires.
+
+### Trusted or unverified
+
+A finished run is **trusted** only when every one of these holds; otherwise it is stored and shown as **Unverified** with the reason, and it never satisfies a gate:
+
+- the credential is an active [trusted reviewer](/review-loop/) for the suite's `grader.persona` in this project or org (checked at start and again at finish, so a revocation mid-run counts);
+- the grader is independent of whoever produced the subject: the person who registered the artifact, everyone who minted or rotated the key that registered it, the credential behind its `produced_by_agent_run_id`, and the implementers of a linked ticket. A person grading a model they registered, or with a key they minted, is not independent;
+- a `human` grader uses a user key.
+
+Anything SessionFS cannot resolve makes the run unverified.
+
+A run linked to a ticket adds an `eval_run_finished` event to the ticket timeline. It never writes a review verdict, so an eval pass can never count as a code review.
+
+## Lineage and promotion
+
+```bash
+sfs artifact register --kind dataset --name notes --version v3 --uri s3://ml/notes/v3 --tag phi_compliant=v3
+sfs artifact register --kind model --name clin --version 2.3 --uri hf://acme/clin-2.3
+sfs artifact link art_dataset art_model --relation trained_on --context-ref 4f1c2ab
+sfs artifact lineage art_model --direction up
+```
+
+URIs must use `s3`, `gs`, `mlflow`, `models`, `runs`, `hf`, `https` or `vertex`. A user name or password, or a query key that carries a credential (`X-Amz-*`, `sig`, `token`, `key`, SAS `sv`/`se`/`sp`, ...), is refused with `uri_has_credentials`, so a pre-signed URL can never be stored. SessionFS never fetches the URI. The dashboard links only `https` and `hf://` (to huggingface.co); every other URI is copy-only.
+
+Edges stay inside one project; cycles and self-edges are refused, and a lineage trace stops at depth 25 and 500 nodes.
+
+Set what a family needs before promotion (project owner or org admin, user key):
+
+```bash
+sfs artifact requirements model clin --suite clinical-notes --require-tag phi_compliant=v3
+sfs artifact promote art_model --to staging
+```
+
+Promoting to `staging` or `production` needs a trusted `passed` run of every required suite on **this exact version**, and every required tag on each `trained_on` parent. A miss is `409 promotion_blocked` with the reasons. Promoting a version to `production` archives the family's previous production version in the same step. Promotion is for people with a user key.
+
+`sfs eval compare <a> <b>` lists regressions, fixes, cases added or removed between suite versions, score changes and pass rate per tag, and exits 1 on any regression. Dollars appear only for org owners and admins, never for service keys.
+
+## Access
+
+| Who | Can |
+| --- | --- |
+| Project readers | read suites, cases, runs, results, artifacts and lineage |
+| Project editors | register, tag, link and deprecate artifacts; start runs and post results; promote (user key) |
+| Project owner, org admins | write suites and cases, set family requirements, void runs, hard-delete unused artifacts (user key) |
+
+Service keys use `evals:read`, `evals:write`, `artifacts:read` and `artifacts:write` inside their org and project allowlist. Grading through a service key is the expected CI path. Suite writes, requirements, promote, void and delete are people-only (`403 service_key_not_allowed`).
+
+## Privacy and retention
+
+Suite names, descriptions and rubrics, case text and notes, result output and notes, artifact names, descriptions, schema summaries and tag values, and URIs are scanned with your organization's DLP policy before they are stored (the strictest policy of every org you belong to). A blocking policy refuses the write; nothing is ever stored unscanned. Hashes are computed over the text you submitted, before any redaction, so reference proofs still match your copy.
+
+Result output and notes are cleared after `eval_output_retention_days` (org setting, default 180). Verdicts, scores and output hashes are kept, so the audit record outlives the text. Suites, cases, runs and artifacts are never swept; artifacts are deprecated, not deleted.

@@ -17,6 +17,26 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.29.14 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.29.14</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">November 8, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Evaluations and lineage</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Evaluation suites and runs, record-only.</strong> Versioned suites with acceptance rules; your own grader posts results and SessionFS computes the verdict. A run is trusted only when a registered grader, independent of whoever produced the work, posted it. SessionFS never runs a model. See <a href="/evals/" class="text-brand hover:underline">Evaluations</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Datasets, models and prompts as pointers</strong>, with versions, digests and a lineage graph; nothing is fetched or stored.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Promotion gated on evals.</strong> Staging or production needs a trusted pass of every required suite on that exact version. Compare runs for regressions; regulated cases can be stored as hashes only.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;133 (131&ndash;133 artifacts, suites and runs; additive). Self-hosted: run migrations 131&ndash;133. 145 MCP tools (+10). Team+ for writes.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
       <!-- v0.29.13 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +44,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.29.13</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">November 8, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">External contacts</h2>
         <ul class="space-y-2 text-base text-muted">

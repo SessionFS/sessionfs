@@ -128,6 +128,8 @@ async def test_admin_can_update_all_fields(
         "restrict_project_visibility": False,
         "meeting_retention_days": None,
         "contact_retention_days": None,
+        # eval_output_retention_days (evaluations) reads back as None = platform default.
+        "eval_output_retention_days": None,
     }
     assert resp.json() == expected
 

@@ -106,6 +106,8 @@ TIER_FEATURES: dict[Tier, dict] = {
             # Review loops, workflows, releases, merge checks and loop share
             # links stay Team+ even though tickets and runs are on every plan.
             "review_loop",
+            # Evaluations + model/dataset lineage writes (GitHub #121/#122).
+            "evaluations",
             "team_handoff",
             "oidc_sso",
             "marketplace_access",
@@ -145,6 +147,8 @@ TIER_FEATURES: dict[Tier, dict] = {
             # Review loops, workflows, releases, merge checks and loop share
             # links stay Team+ even though tickets and runs are on every plan.
             "review_loop",
+            # Evaluations + model/dataset lineage writes (GitHub #121/#122).
+            "evaluations",
             "team_handoff",
             "dlp_hipaa",
             "security_dashboard",

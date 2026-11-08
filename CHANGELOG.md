@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.14] - 2026-11-08
+
+**Evaluations and model/dataset lineage, record-only (GitHub #121, #122).** Server migrations 131–133.
+
+### Added
+- **Evaluation suites** (Team and Enterprise for writes). A suite is a versioned set of cases with a grader persona and acceptance rules (pass rate, required tags, per-case must-pass). Cases are stored inline (DLP-scanned) or as hashes only, so regulated data can stay on your side. Only people edit suites and acceptance rules. See [Evaluations](https://sessionfs.dev/evals/).
+- **Eval runs.** Your own grader (a script, CI job or agent) starts a run against an artifact version, a commit or a label, posts per-case results and finishes; SessionFS computes the verdict from the stored results and never runs a model or holds a model key. A run is **trusted** only when the grader is a registered trusted reviewer for the suite's grader persona and independent of whoever produced the artifact; if that can't be established, the run is marked Unverified with the reason. Compare two runs for regressions, fixes and score changes. A regression check against the production version is opt-in per suite.
+- **Artifacts and lineage.** Register datasets, models and prompts as pointers (https, s3, gs, hf URIs, never fetched) with versions, digests and tags, link them (model trained on dataset, dataset derived from source) and browse the lineage graph.
+- **Promotion gate.** Promoting a version to staging or production needs a trusted pass of every suite the family requires on that exact version; promoting to production archives the previous production version.
+- **Retention.** Case output and notes are cleared after 180 days by default (org setting `eval_output_retention_days`); verdicts and hashes are kept. `POST /admin/sweeps/eval-outputs`, Helm CronJob `api.evalOutputs`.
+- Ten MCP tools (`list_eval_suites`, `get_eval_suite`, `start_eval_run`, `record_eval_results`, `get_eval_run`, `compare_eval_runs`, `register_artifact`, `link_artifacts`, `get_artifact_lineage`, `list_artifacts`; 145 in total), CLI `sfs eval` and `sfs artifact`, scopes `evals:read|write` and `artifacts:read|write`, and Project → Work → Evals and Artifacts in the dashboard.
+
+### Changed
+- A project that holds evaluation or artifact data can't be merged with another project yet (409 `merge_blocked_by_evals`).
+
 ## [0.29.13] - 2026-11-08
 
 **External contacts: the people you work with who aren't SessionFS users (GitHub #125).** Server migration 130.

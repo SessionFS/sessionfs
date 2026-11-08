@@ -38,7 +38,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs mcp install --for claude-code</span></div>
             <div class="mt-2 text-muted">MCP server configured for Claude Code.</div>
             <div class="text-muted">Restart Claude Code to activate.</div>
-            <div class="mt-4 text-muted-dim">135 tools available to your AI agent:</div>
+            <div class="mt-4 text-muted-dim">145 tools available to your AI agent:</div>
             <div class="mt-1 text-muted-dim">Session tools (10):</div>
             <div class="text-txt">&bull; <span class="text-brand">search_sessions</span> <span class="text-muted-dim">— Search past sessions</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_session_context</span> <span class="text-muted-dim">— Full conversation from a session</span></div>
@@ -158,6 +158,13 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
             <div class="text-txt">&bull; <span class="text-brand">get_external_contact</span> <span class="text-muted-dim">— One contact and where they appear</span></div>
             <div class="text-txt">&bull; <span class="text-accent">create_external_contact</span> <span class="text-muted-dim">— Add a contact</span></div>
             <div class="text-txt">&bull; <span class="text-accent">update_external_contact</span> <span class="text-muted-dim">— Edit a contact or its other names</span></div>
+            <div class="mt-2 text-muted-dim">Evaluations and lineage (10) — <span class="text-accent">Team+</span> for writes:</div>
+            <div class="text-txt">&bull; <span class="text-accent">start_eval_run</span> <span class="text-muted-dim">— Start grading a suite against an artifact or commit</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">record_eval_results</span> <span class="text-muted-dim">— Post per-case results; the server computes the verdict</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">compare_eval_runs</span> <span class="text-muted-dim">— Regressions, fixes and score changes</span></div>
+            <div class="text-txt">&bull; <span class="text-accent">register_artifact</span> <span class="text-muted-dim">— A dataset, model or prompt version, as a pointer</span></div>
+            <div class="text-txt">&bull; <span class="text-brand">get_artifact_lineage</span> <span class="text-muted-dim">— What it came from and what came from it</span></div>
+            <div class="text-muted-dim">&hellip; plus list/get suites, get a run, link and list artifacts</div>
             <div class="mt-2 text-muted-dim">Review loops (6) — <span class="text-accent">Team+</span>:</div>
             <div class="text-txt">&bull; <span class="text-accent">start_review_loop</span> <span class="text-muted-dim">— Start a loop on a ticket or a new one</span></div>
             <div class="text-txt">&bull; <span class="text-brand">get_loop_status</span> <span class="text-muted-dim">— Children, rounds, spend and budget</span></div>

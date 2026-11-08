@@ -313,6 +313,18 @@ api:
       image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3
+  # Eval output retention: clears eval result output/notes past
+  # general.eval_output_retention_days (default 180); verdicts and hashes stay.
+  evalOutputs:
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "15 4 * * *"
+      existingSecret: ""
+      secretKey: "eval-outputs-api-key"
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
 
 ## MCP Server
 mcp:
