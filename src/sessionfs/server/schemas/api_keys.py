@@ -30,6 +30,11 @@ VALID_SCOPES = frozenset(
         # whose source project is inside its org and allowlist.
         "reminders:read",
         "reminders:write",
+        # 0.29.13 — external contacts (GitHub #125). A service key reads and
+        # writes its own org's directory only and never sees an email;
+        # merge, delete, export and suggestions are user-key only.
+        "contacts:read",
+        "contacts:write",
         # 0.29.6 — approval policies (GitHub #123). Read-only for service
         # keys: list the key's own org policies, read a request on a project
         # in the key's org and allowlist, list what the minter could decide.

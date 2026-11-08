@@ -20,9 +20,11 @@ import { estimateError, scheduleErrorMessage, scheduleFieldErrors } from './sche
 interface NewModalProps {
   projectId: string;
   onClose: () => void;
+  /** The project's org when the viewer is a member: offers its contacts. */
+  orgId?: string | null;
 }
 
-export function NewTicketModal({ projectId, onClose }: NewModalProps) {
+export function NewTicketModal({ projectId, onClose, orgId }: NewModalProps) {
   const create = useCreateTicket(projectId);
   const { addToast } = useToast();
 
@@ -198,6 +200,7 @@ export function NewTicketModal({ projectId, onClose }: NewModalProps) {
           <AssigneePicker
             id="field-assignee"
             projectId={projectId}
+            orgId={orgId}
             value={assignee}
             onChange={(next) => {
               setAssignee(next);

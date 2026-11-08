@@ -988,6 +988,11 @@ async def sso_callback(
         actor_user_id=new_user_id,
         actor_email_snapshot=idp_email_normalized,
     )
+    # External contacts (GitHub #125): the IdP-verified email links a contact.
+    from sessionfs.server.services.contacts import link_contacts_best_effort
+
+    await db.flush()
+    await link_contacts_best_effort(db, new_user, org_id=org_id)
     return await _finalize_login(
         db, user=new_user, link_method="jit_provision",
         org_id=org_id, attempt=attempt,

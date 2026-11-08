@@ -1,4 +1,5 @@
 import type React from 'react';
+import { ExternalBadge } from '../org/contacts/ContactChip';
 import { Link } from 'react-router-dom';
 import type { MeetingActionItem, MeetingItemTicketRef, MeetingParticipant } from '../api/client';
 import { Badge, Button } from '../components/ui';
@@ -98,6 +99,9 @@ export function ItemList({
                   <span className="inline-flex items-center gap-1 min-w-0">
                     <span className="sr-only">Owner: </span>
                     <span className="truncate text-text-secondary">{ownerName(owner)}</span>
+                    {!owner.user_id && !owner.persona_name && owner.contact && (
+                      <ExternalBadge linked={!!owner.contact.linked_user_id} archived={owner.contact.status === 'archived'} />
+                    )}
                   </span>
                 )}
                 {unknownOwner && (

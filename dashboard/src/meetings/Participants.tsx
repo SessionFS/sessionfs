@@ -6,6 +6,8 @@ import { useResolveParticipant } from '../hooks/useMeetings';
 import { PersonAvatar, PersonaGlyph } from '../projects/tickets/AssigneeLabel';
 import { RESOLUTION_LABEL, isResolved, meetingActionError } from './format';
 import { participantName, type MeetingPeople } from './people';
+import { ContactAvatar, ExternalBadge } from '../org/contacts/ContactChip';
+import { ContactFormDialog } from '../org/contacts/ContactFormDialog';
 
 interface ParticipantsProps {
   meetingId: string;
@@ -16,8 +18,9 @@ interface ParticipantsProps {
 
 /**
  * Who was in the meeting. Matched participants show who they were matched to
- * and how; unmatched ones offer a picker (editors) over the same people and
- * personas the server accepts. Naming someone never grants them access —
+ * and how; unmatched ones offer a picker (editors) over the same people,
+ * personas and external contacts the server accepts, plus "New contact"
+ * for someone outside SessionFS. Naming someone never grants them access —
  * matching only labels the row.
  */
 export function Participants({ meetingId, participants, people, canEdit }: ParticipantsProps) {
@@ -58,6 +61,8 @@ function ParticipantRow({
       <div className="flex items-center gap-2.5">
         {p.persona_name ? (
           <PersonaBadge />
+        ) : !p.user_id && p.contact ? (
+          <ContactAvatar name={name} className="!h-6 !w-6 !text-xs" />
         ) : resolved ? (
           <PersonAvatar name={name} seed={p.email_raw ?? p.user_id ?? p.name_raw} className="!h-6 !w-6 !text-xs" />
         ) : (
@@ -69,9 +74,18 @@ function ParticipantRow({
           </span>
         )}
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm text-text-primary">{name}</p>
+          <p className="flex min-w-0 items-center gap-1.5 text-sm text-text-primary">
+            <span className="truncate">{name}</span>
+            {!p.user_id && !p.persona_name && p.contact && (
+              <ExternalBadge linked={!!p.contact.linked_user_id} archived={p.contact.status === 'archived'} />
+            )}
+          </p>
           <p className="truncate text-xs text-text-tertiary">
-            {resolved ? RESOLUTION_LABEL[p.resolution_method] ?? 'Matched' : 'Not matched to anyone'}
+            {resolved
+              ? !p.user_id && !p.persona_name && p.contact
+                ? `Matched to a contact${p.contact.role ? ` · ${p.contact.role}` : ''}`
+                : RESOLUTION_LABEL[p.resolution_method] ?? 'Matched'
+              : 'Not matched to anyone'}
             {raw ? ` · “${raw}”` : ''}
           </p>
         </div>
@@ -100,6 +114,7 @@ function ParticipantRow({
 
 const PERSON = 'user:';
 const PERSONA = 'persona:';
+const CONTACT = 'contact:';
 
 export function ParticipantPicker({
   meetingId,
@@ -115,6 +130,7 @@ export function ParticipantPicker({
   const resolve = useResolveParticipant(meetingId);
   const { addToast } = useToast();
   const [error, setError] = useState<string | undefined>();
+  const [creating, setCreating] = useState(false);
 
   const options = useMemo<ComboboxOption[]>(
     () => [
@@ -138,15 +154,28 @@ export function ParticipantPicker({
           group: 'Personas',
           searchText: `${p.name} ${p.role ?? ''}`,
         })),
+      ...[...people.contacts]
+        .sort((a, b) => a.display_name.localeCompare(b.display_name))
+        .map((c) => ({
+          value: `${CONTACT}${c.id}`,
+          label: c.display_name,
+          description: c.role || undefined,
+          meta: 'External',
+          icon: <ContactAvatar name={c.display_name} />,
+          group: 'Contacts',
+          searchText: `${c.display_name} ${c.role ?? ''} ${c.aliases.join(' ')}`,
+        })),
     ],
-    [people.people, people.personas],
+    [people.people, people.personas, people.contacts],
   );
 
   const current = participant.persona_name
     ? `${PERSONA}${participant.persona_name}`
     : participant.user_id
       ? `${PERSON}${participant.user_id}`
-      : '';
+      : participant.contact
+        ? `${CONTACT}${participant.contact.id}`
+        : '';
 
   function pick(value: string) {
     if (!value || value === current) {
@@ -155,7 +184,9 @@ export function ParticipantPicker({
     }
     const body = value.startsWith(PERSONA)
       ? { persona_name: value.slice(PERSONA.length) }
-      : { user_id: value.slice(PERSON.length) };
+      : value.startsWith(CONTACT)
+        ? { contact_id: value.slice(CONTACT.length) }
+        : { user_id: value.slice(PERSON.length) };
     setError(undefined);
     resolve.mutate(
       { participantId: participant.id, body },
@@ -170,15 +201,15 @@ export function ParticipantPicker({
   }
 
   return (
-    <div className="mt-2 flex items-start gap-2 pl-8">
-      <div className="min-w-0 flex-1">
+    <div className="mt-2 flex flex-wrap items-start gap-2 pl-8">
+      <div className="min-w-0 flex-1 basis-56">
         <Combobox
           title={`Match “${participant.name_raw}” to`}
           value={current}
           onValueChange={pick}
           options={options}
-          placeholder="Choose a person or persona"
-          searchPlaceholder="Search people and personas"
+          placeholder={people.contactsOrgId ? 'Choose a person, persona or contact' : 'Choose a person or persona'}
+          searchPlaceholder={people.contactsOrgId ? 'Search people, personas and contacts' : 'Search people and personas'}
           loading={people.loading}
           disabled={resolve.isPending}
           emptyMessage={people.peopleNote ?? 'No people or personas to match'}
@@ -186,9 +217,28 @@ export function ParticipantPicker({
           error={error}
         />
       </div>
-      <Button variant="ghost" size="sm" className="mt-6" onClick={onDone}>
-        Cancel
-      </Button>
+      <div className="mt-6 flex shrink-0 items-center gap-1">
+        {people.contactsOrgId && (
+          <Button variant="secondary" size="sm" onClick={() => setCreating(true)} disabled={resolve.isPending}>
+            New contact
+          </Button>
+        )}
+        <Button variant="ghost" size="sm" onClick={onDone}>
+          Cancel
+        </Button>
+      </div>
+      {creating && people.contactsOrgId && (
+        <ContactFormDialog
+          orgId={people.contactsOrgId}
+          initialName={participant.name_raw}
+          onClose={() => setCreating(false)}
+          onSaved={(c) => pick(`${CONTACT}${c.id}`)}
+          onUseExisting={(id) => {
+            setCreating(false);
+            pick(`${CONTACT}${id}`);
+          }}
+        />
+      )}
     </div>
   );
 }

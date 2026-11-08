@@ -363,6 +363,11 @@ async def force_verify_user(
     user.email_verified = True
 
     await _log_action(db, admin.id, "verify", "user", user_id)
+    # External contacts (GitHub #125): link by the now-verified email.
+    from sessionfs.server.services.contacts import link_contacts_best_effort
+
+    await db.flush()
+    await link_contacts_best_effort(db, user)
     await db.commit()
 
     # GitHub #59 — auto-join verified-email users by domain.
@@ -2945,6 +2950,133 @@ async def sweep_meeting_retention(
     return {"meetings_deleted": meetings_deleted}
 
 
+@router.post("/sweeps/contact-retention")
+async def sweep_contact_retention(
+    body: dict | None = None,
+    batch_size: int = Query(default=500, ge=1, le=5000),
+    auth: AuthContext = Depends(require_platform_sweeper()),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete external contacts past their org's retention (GitHub #125).
+
+    Only orgs that set ``general.contact_retention_days`` (off by default,
+    30–3650) are swept. A contact goes when it is archived and was last
+    updated more than N days ago, or when nothing references it (no
+    participant, no ticket) and it was created more than N days ago. Each
+    deletion is the same erasure as DELETE /orgs/{org}/contacts/{id}.
+    Keyset batches; idempotent.
+    """
+    from sessionfs.server.db.models import ExternalContact
+    from sessionfs.server.routes.contacts import _audit as contact_audit
+    from sessionfs.server.services.contacts import (
+        ContactChanged,
+        contact_is_referenced,
+        erase_contact,
+        lock_contact,
+    )
+
+    def _org_days(settings: str | dict | None) -> int | None:
+        return _contact_retention_days_from_settings(settings)
+
+    now = datetime.now(timezone.utc)
+    org_ids = sorted(
+        org_id
+        for org_id, settings in (
+            await db.execute(select(Organization.id, Organization.settings))
+        ).all()
+        if _org_days(settings) is not None
+    )
+
+    deleted = 0
+    for org_id in org_ids:
+        cursor: str | None = None
+        while True:
+            # Re-read the org each page: retention may have been turned off
+            # or shortened/lengthened since the sweep started.
+            org = await db.get(Organization, org_id, populate_existing=True)
+            days = _org_days(org.settings) if org is not None else None
+            if days is None:
+                break
+            cutoff = now - timedelta(days=days)
+            stmt = (
+                select(ExternalContact.id)
+                .where(
+                    ExternalContact.org_id == org_id,
+                    ExternalContact.status != "merged",
+                )
+                .order_by(ExternalContact.id.asc())
+                .limit(batch_size)
+            )
+            if cursor is not None:
+                stmt = stmt.where(ExternalContact.id > cursor)
+            page = list((await db.execute(stmt)).scalars().all())
+            if not page:
+                break
+            cursor = page[-1]
+            # Candidates are locked one at a time in id order (the same
+            # order merge uses), then re-checked under the lock: a contact
+            # edited, merged, re-activated or newly referenced since the
+            # page was read is left alone.
+            for contact_id in page:
+                contact = await lock_contact(db, contact_id)
+                if (
+                    contact is None
+                    or contact.org_id != org_id
+                    or contact.status == "merged"
+                    or contact.merged_into_id is not None
+                ):
+                    continue
+                if contact.status == "archived" and _as_utc(contact.updated_at) < cutoff:
+                    doomed = True
+                elif _as_utc(contact.created_at) < cutoff:
+                    doomed = not await contact_is_referenced(db, contact.id)
+                else:
+                    doomed = False
+                if not doomed:
+                    continue
+                try:
+                    async with db.begin_nested():
+                        result = await erase_contact(db, contact, actor_user_id=None)
+                        # The same audit row a manual DELETE writes.
+                        db.add(contact_audit(
+                            org, org_id=org_id, event_type="contact_deleted", auth=auth,
+                            role="platform_admin", contact_id=contact_id,
+                            after={"participants_reset": result.participants_reset,
+                                   "tickets_unassigned": result.tickets_unassigned,
+                                   "reason": "retention"},
+                        ))
+                except ContactChanged:
+                    continue
+                deleted += 1
+            await db.commit()
+            if len(page) < batch_size:
+                break
+
+    await _log_action(
+        db,
+        auth.user.id,
+        "contact_retention_sweep",
+        "external_contact",
+        "bulk",
+        {**sweep_actor_details(auth), "contacts_deleted": deleted},
+    )
+    await db.commit()
+    return {"contacts_deleted": deleted}
+
+
+def _contact_retention_days_from_settings(settings: str | dict | None) -> int | None:
+    """``general.contact_retention_days`` when set and valid (30–3650), else None."""
+    try:
+        raw = json.loads(settings) if isinstance(settings, str) else (settings or {})
+    except (ValueError, TypeError):
+        return None
+    general = raw.get("general") if isinstance(raw, dict) else None
+    value = general.get("contact_retention_days") if isinstance(general, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 30 <= value <= 3650 else None
+
+
 @router.post("/sweeps/reminders-due")
 async def sweep_reminders_due(
     body: dict | None = None,
@@ -3487,6 +3619,10 @@ async def force_transfer_project(
     # Drop the old org's Jira/Confluence mappings (Jira links go stale,
     # Confluence page links are dropped).
     await drop_project_integration_mappings(db, project.id)
+    # External contacts are org-scoped (GitHub #125).
+    from sessionfs.server.services.contacts import clear_project_contact_assignments
+
+    await clear_project_contact_assignments(db, project.id, actor_user_id=admin.id)
     # Project groups are org-scoped: a project leaving an org leaves all of
     # its groups (audited per membership) so no grant follows it.
     await remove_project_from_all_groups(

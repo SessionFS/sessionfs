@@ -2123,3 +2123,51 @@ export const approvalDetail = {
     { id: 'apd_1', approver_user_id: 'usr_peer01', approver_name: 'Sam Peer', requirement_index: 0, decision: 'approve', reason: 'Reviewed the diff.', decided_at: EARLIER },
   ],
 };
+
+// ── External contacts (GitHub #125): /api/v1/orgs/{org}/contacts ──
+export const CONTACT_ID = 'ec_f1x7ure00001';
+const contactBase = {
+  org_id: ORG_ID,
+  linked_user_id: null,
+  linked_at: null,
+  created_by_user_id: 'user_fixture02',
+  created_at: EARLIER,
+  updated_at: NOW,
+  redirected_from: null,
+  possible_duplicates: [],
+};
+export const contacts = [
+  { ...contactBase, id: CONTACT_ID, display_name: 'Jordan Okafor', role: 'Contract SRE', tags: ['vendor', 'on-call'], aliases: ['Jordan (contractor)', 'J. Okafor'], status: 'active', email: 'j***@contractors.example', email_masked: true, has_email: true },
+  { ...contactBase, id: 'ec_f1x7ure00002', display_name: 'Priya Raman', role: 'Clinical lead', tags: ['partner'], aliases: [], status: 'active', email: 'priya.raman@clinic.example', email_masked: false, has_email: true },
+  { ...contactBase, id: 'ec_f1x7ure00003', display_name: 'Marta Lindqvist-Haraldsdóttir', role: null, tags: [], aliases: ['Marta'], status: 'active', email: null, email_masked: false, has_email: false },
+];
+export const archivedContacts = [
+  { ...contactBase, id: 'ec_f1x7ure00004', display_name: 'Ken Ito', role: 'Former vendor PM', tags: ['vendor'], aliases: [], status: 'archived', email: null, email_masked: false, has_email: true },
+];
+export const contactRef = { id: CONTACT_ID, display_name: 'Jordan Okafor', role: 'Contract SRE', status: 'active', linked_user_id: null, external: true };
+export const contactReferences = {
+  contact_id: CONTACT_ID,
+  conversations: [
+    { kind: 'meeting', meeting_id: MEETING_ID, participant_id: 'mp_f5', title: 'Launch readiness sync', project_id: PROJECT_ID, group_id: null, meeting_at: EARLIER, created_at: EARLIER },
+    { kind: 'chat', meeting_id: CHAT_ID, participant_id: 'mp_c9', title: '#incident-2041', project_id: PROJECT_ID, group_id: null, meeting_at: null, created_at: NOW },
+  ],
+  action_items: [
+    { item_id: 'mai_f2', meeting_id: MEETING_ID, kind: 'action', status: 'pending', description: 'Update the status page copy to remove the old pricing tiers.', due_date: null },
+  ],
+  tickets: [{ id: 'tk_fixture2', project_id: PROJECT_ID, title: 'Collect on-call sign-off from the contract SRE team', status: 'open', updated_at: NOW }],
+};
+export const contactSuggestions = {
+  truncated: false,
+  groups: [
+    {
+      name: 'Priya', name_norm: 'priya', mention_count: 4, latest_mention_at: NOW,
+      sources: [{ meeting_id: MEETING_ID, kind: 'meeting', title: 'Launch readiness sync' }, { meeting_id: CHAT_ID, kind: 'chat', title: '#incident-2041' }],
+      candidates: [{ id: 'ec_f1x7ure00002', display_name: 'Priya Raman', hint: 'same first name' }],
+    },
+    {
+      name: 'the vendor rep from Northwind Logistics', name_norm: 'the vendor rep from northwind logistics', mention_count: 1, latest_mention_at: EARLIER,
+      sources: [{ meeting_id: MEETING_ID, kind: 'meeting', title: 'Launch readiness sync' }],
+      candidates: [],
+    },
+  ],
+};

@@ -79,6 +79,10 @@ function assigneeText(v: unknown, names: UserNames): string | null {
   if (persona) return `the ${persona} persona`;
   const uid = str(o.user_id);
   if (uid) return names.get(uid) ?? 'a teammate';
+  // Events store only the contact id (never the name), so it can't leak
+  // after an erasure.
+  if (str(o.contact_id)) return 'an external contact';
+  if (o.contact_removed === true) return 'a removed contact';
   return null;
 }
 

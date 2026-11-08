@@ -1,10 +1,12 @@
 import { useMemo, type ReactNode } from 'react';
 import { Link, useInRouterContext } from 'react-router-dom';
-import { ApiError, type TicketAssignedUser } from '../../api/client';
+import { ApiError, type ContactRef, type ExternalContact, type TicketAssignedUser } from '../../api/client';
 import { Combobox, type ComboboxOption } from '../../components/ui';
 import { useMe } from '../../hooks/useMe';
 import { usePersonas } from '../../hooks/usePersonas';
 import { useAssignableUsers } from '../../hooks/useTickets';
+import { useActiveContacts } from '../../hooks/useContacts';
+import { ContactAvatar } from '../../org/contacts/ContactChip';
 import {
   assigneeNote,
   decodeAssignee,
@@ -18,7 +20,8 @@ import { PersonAvatar, PersonaGlyph } from './AssigneeLabel';
 /* ── Assignee picker ──
  *
  * One searchable list: "Unassigned", then People (who get notified), then
- * Personas (agent roles). Built on ui/Combobox, so the search box keeps
+ * Personas (agent roles), then Contacts (external people of the project's
+ * org, when `orgId` is given; never notified). Built on ui/Combobox, so the search box keeps
  * focus and the active row is exposed with aria-activedescendant. The note
  * under the field says who the choice notifies — or warns, quietly, when
  * the chosen persona represents no one. */
@@ -34,18 +37,37 @@ interface AssigneePickerProps {
   currentUser?: TicketAssignedUser | null;
   disabled?: boolean;
   error?: string;
+  /** The project's org, when the viewer is a member of it: adds the org's
+   *  active external contacts as a "Contacts" group. */
+  orgId?: string | null;
+  /** The contact already on the ticket, so its name shows even when it is
+   *  archived or not in the first page of contacts. */
+  currentContact?: ContactRef | null;
 }
 
-export function AssigneePicker({
+export function AssigneePicker(props: AssigneePickerProps) {
+  return props.orgId ? <PickerWithContacts {...props} orgId={props.orgId} /> : <PickerInner {...props} contacts={undefined} />;
+}
+
+function PickerWithContacts(props: AssigneePickerProps & { orgId: string }) {
+  const contacts = useActiveContacts(props.orgId);
+  // Not a member of the org (404) or an older server: offer no contacts.
+  return <PickerInner {...props} contacts={contacts.data?.items ?? (contacts.isError ? [] : undefined)} contactsLoading={contacts.isLoading} />;
+}
+
+function PickerInner({
   projectId,
   value,
   onChange,
   id,
   title = 'Assignee',
   currentUser,
+  currentContact,
   disabled,
   error,
-}: AssigneePickerProps) {
+  contacts,
+  contactsLoading = false,
+}: AssigneePickerProps & { contacts: ExternalContact[] | undefined; contactsLoading?: boolean }) {
   const { data: users, isLoading: usersLoading, error: usersError } = useAssignableUsers(projectId);
   // Readers whose only access is a captured session get 403 here: offer
   // personas only and say why people are missing.
@@ -91,8 +113,19 @@ export function AssigneePicker({
         group: 'Personas',
         searchText: `${p.name} ${p.role}`,
       })),
+      ...[...(contacts ?? [])]
+        .sort((a, b) => a.display_name.localeCompare(b.display_name))
+        .map((c) => ({
+          value: encodeAssignee({ kind: 'contact', contactId: c.id }),
+          label: c.display_name,
+          description: c.role || undefined,
+          meta: 'External',
+          icon: <ContactAvatar name={c.display_name} />,
+          group: 'Contacts',
+          searchText: `${c.display_name} ${c.role ?? ''} ${c.aliases.join(' ')} external contact`,
+        })),
     ];
-  }, [users, personas, meId]);
+  }, [users, personas, meId, contacts]);
 
   // Trigger text when the current assignee isn't in the list (a person no
   // longer assignable, an inactive or removed persona).
@@ -103,7 +136,11 @@ export function AssigneePicker({
         : `user ${value.userId.slice(0, 8)}`
       : value.kind === 'persona'
         ? value.name
-        : undefined;
+        : value.kind === 'contact'
+          ? currentContact && currentContact.id === value.contactId
+            ? currentContact.display_name
+            : contacts?.find((c) => c.id === value.contactId)?.display_name ?? 'Removed contact'
+          : undefined;
 
   const knownUsers = useMemo(
     () => [...(users ?? []), ...(currentUser ? [currentUser] : [])],
@@ -120,7 +157,7 @@ export function AssigneePicker({
       options={options}
       selectedLabel={selectedLabel}
       placeholder="Unassigned"
-      loading={usersLoading || personasLoading}
+      loading={usersLoading || personasLoading || contactsLoading}
       emptyMessage={peopleNote ?? 'No people or personas yet'}
       footer={peopleNote}
       disabled={disabled}
@@ -132,6 +169,13 @@ export function AssigneePicker({
 
 /** The line under the picker. Kept to one quiet sentence. */
 export function AssigneeNoteText({ note }: { note: NonNullable<AssigneeNote> }) {
+  if (note.kind === 'contact') {
+    return (
+      <span data-testid="assignee-note" className="inline-flex items-center gap-1">
+        External contact: no one is notified, since contacts don’t sign in.
+      </span>
+    );
+  }
   if (note.kind === 'notifies') {
     return (
       <span data-testid="assignee-note" className="inline-flex items-center gap-1">

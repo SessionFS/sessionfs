@@ -885,6 +885,7 @@ async def run_meeting_extraction(
             email_raw=(entry.get("email") or None),
             user_id=entry.get("user_id"),
             persona_name=entry.get("persona_name"),
+            contact_id=entry.get("contact_id"),
             resolution_method=entry.get("resolution_method") or "unresolved",
         )
         db.add(participant)

@@ -296,7 +296,7 @@ function PreviewDetails({
 }) {
   const criteria = ticket.acceptance_criteria.length;
   const description = ticket.description.trim();
-  const assigned = !!(ticket.assigned_to || ticket.assigned_user_id);
+  const assigned = !!(ticket.assigned_to || ticket.assigned_user_id || ticket.assigned_contact_id);
   return (
     <div>
       <h2 id={titleId} className="text-md font-semibold leading-snug text-text-primary [overflow-wrap:anywhere]">

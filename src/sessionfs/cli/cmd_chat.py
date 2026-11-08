@@ -287,9 +287,12 @@ def chat_resolve_participant(
     participant_id: str = typer.Argument(...),
     user: str | None = typer.Option(None, "--user", help="User id to resolve to."),
     persona: str | None = typer.Option(None, "--persona", help="Persona name to resolve to."),
+    contact: str | None = typer.Option(None, "--contact", help="External contact id (ec_...)."),
 ) -> None:
-    """Resolve a participant to an org member or a persona (exactly one)."""
-    _m.resolve_participant_impl(thread_id, participant_id, user, persona, kind=_KIND)
+    """Resolve a participant to an org member, a persona or an external contact (exactly one)."""
+    _m.resolve_participant_impl(
+        thread_id, participant_id, user, persona, kind=_KIND, contact=contact
+    )
 
 
 @chat_app.command("action-items")

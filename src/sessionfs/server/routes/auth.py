@@ -351,6 +351,13 @@ async def verify_email(
         )
         .values(email_verified=True)
     )
+    if flipped.rowcount == 1:
+        # External contacts (GitHub #125): the proven email links contacts
+        # in the user's orgs (same transaction as the flip).
+        from sessionfs.server.services.contacts import link_contacts_best_effort
+
+        await db.refresh(user)
+        await link_contacts_best_effort(db, user)
     await db.commit()
 
     # GitHub #59 — auto-join verified-email users by domain, but only when the

@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
-import { ApiError, type MeetingParticipant, type MeetingScope, type Persona } from '../api/client';
+import { ApiError, type ExternalContact, type MeetingParticipant, type MeetingScope, type Persona } from '../api/client';
+import { useActiveContacts } from '../hooks/useContacts';
 import { useOrgMembers } from '../org/useOrgMembers';
 import { useOrgPersonas, usePersonas } from '../hooks/usePersonas';
 import { useAssignableUsers } from '../hooks/useTickets';
@@ -14,6 +15,10 @@ export interface MeetingPerson {
 export interface MeetingPeople {
   people: MeetingPerson[];
   personas: Persona[];
+  /** Active external contacts of the meeting's org (empty for non-members). */
+  contacts: ExternalContact[];
+  /** The org contacts belong to, for creating one from a participant. */
+  contactsOrgId: string | null;
   loading: boolean;
   /** Why people aren't listed (a reader's 403, a failed load); personas still are. */
   peopleNote?: string;
@@ -33,6 +38,11 @@ export function useMeetingPeople(scope: MeetingScope, orgId: string | null | und
   const projectPersonas = usePersonas(projectId);
   const members = useOrgMembers(groupOrgId);
   const orgPersonas = useOrgPersonas(groupOrgId);
+  // A project meeting's contacts are its project's org's; a non-member gets
+  // 404 and simply sees none.
+  const contactsQuery = useActiveContacts(orgId ?? undefined);
+  const contactsData = contactsQuery.data;
+  const contacts = useMemo(() => contactsData?.items ?? [], [contactsData]);
 
   const usersData = assignable.data;
   const membersData = members.data;
@@ -65,6 +75,8 @@ export function useMeetingPeople(scope: MeetingScope, orgId: string | null | und
   return {
     people,
     personas,
+    contacts,
+    contactsOrgId: contactsQuery.isError ? null : orgId ?? null,
     loading: projectId
       ? assignable.isLoading || projectPersonas.isLoading
       : members.isLoading || orgPersonas.isLoading,
@@ -77,5 +89,6 @@ export function useMeetingPeople(scope: MeetingScope, orgId: string | null | und
 export function participantName(p: MeetingParticipant, people: Pick<MeetingPeople, 'nameOf'>): string {
   if (p.persona_name) return p.persona_name;
   if (p.user_id) return people.nameOf(p.user_id) ?? p.name_raw;
+  if (p.contact) return p.contact.display_name;
   return p.name_raw;
 }

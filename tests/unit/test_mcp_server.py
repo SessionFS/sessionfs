@@ -300,13 +300,14 @@ class TestToolRegistryV0996:
     (create/claim/get/list_inbox/list_sent/revoke/decline/comment = 8).
     Total: 53."""
 
-    def test_tool_count_is_131(self):
+    def test_tool_count_is_135(self):
         from sessionfs.mcp.server import _TOOLS
-        assert len(_TOOLS) == 131, (
+        assert len(_TOOLS) == 135, (
             "Expected 131 MCP tools after review-loop start, status and "
             "update, the project checklist, the loop report, the worker run and round tools, "
             "the three reminder tools, the three read-only approval tools, "
             "upload_chat_thread and get_my_attention, the four workflow tools and link_meeting_action_item, "
+            "the four external-contact tools, "
             f"got {len(_TOOLS)}"
         )
 

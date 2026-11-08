@@ -148,8 +148,24 @@ Changing the org defaults later does not retroactively update existing
 projects — change a project's own KB knobs from the project settings page to
 override.
 
+**Contact retention (days)** (`general.contact_retention_days`, 30–3650,
+off by default) lets the `POST /api/v1/admin/sweeps/contact-retention` sweep
+delete external contacts that are archived, or that nothing references,
+older than that many days. Leave it unset to keep contacts as long as the
+org exists.
+
 DLP policy edit lives on its own panel (existing `/api/v1/dlp/policy`
 surface). That route remains feature-gated on `dlp_secrets` (PRO+).
+
+## External contacts
+
+Members keep a directory of people the org works with who are not
+SessionFS users (`/api/v1/orgs/{org_id}/contacts`, `sfs contact`). Owners
+and admins merge duplicates, erase a contact (participants go back to
+unresolved, tickets become unassigned) and export one contact's data or the
+whole directory as CSV. A contact links to a member only when its email
+equals that member's verified address; their open tickets then move to the
+member in the same transaction. See [External contacts](https://sessionfs.dev/contacts/).
 
 ## Session helper AI key
 

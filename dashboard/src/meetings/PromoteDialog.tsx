@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import type { MeetingActionItem, MeetingPromotePreview } from '../api/client';
+import type { ContactRef, MeetingActionItem, MeetingPromotePreview } from '../api/client';
 import { Alert, Button, Checkbox, Dialog, DialogFooter, DialogHeader, Input, Select, Textarea } from '../components/ui';
 import { usePromoteMeetingItem, usePromotePreview } from '../hooks/useMeetings';
 import { useToast } from '../hooks/useToast';
@@ -14,6 +14,10 @@ interface PromoteDialogProps {
   onClose: () => void;
   /** The item cites chat messages, not transcript lines. */
   chat?: boolean;
+  /** The meeting's org: the assignee picker offers its external contacts. */
+  orgId?: string | null;
+  /** The owner's contact, when the owner resolved to one. */
+  ownerContact?: ContactRef | null;
 }
 
 const PRIORITIES = [
@@ -30,6 +34,7 @@ function sameAssignee(a: Assignee, b: Assignee): boolean {
 function draftAssignee(p: MeetingPromotePreview): Assignee {
   if (p.assigned_to) return { kind: 'persona', name: p.assigned_to };
   if (p.assigned_user_id) return { kind: 'person', userId: p.assigned_user_id };
+  if (p.assigned_contact_id) return { kind: 'contact', contactId: p.assigned_contact_id };
   return UNASSIGNED;
 }
 
@@ -38,7 +43,7 @@ function draftAssignee(p: MeetingPromotePreview): Assignee {
  * text with its quoted lines, the matched owner, the due date) shown editable,
  * then Confirm. A group meeting picks the project to file it in.
  */
-export function PromoteDialog({ meetingId, item, onClose, chat = false }: PromoteDialogProps) {
+export function PromoteDialog({ meetingId, item, onClose, chat = false, orgId, ownerContact }: PromoteDialogProps) {
   const preview = usePromotePreview(meetingId, item.id);
   // While the ticket is being created the dialog stays: closing it would
   // look like a cancel of a write that still lands.
@@ -83,6 +88,8 @@ export function PromoteDialog({ meetingId, item, onClose, chat = false }: Promot
           draft={preview.data}
           onClose={onClose}
           onPendingChange={setCreating}
+          orgId={orgId}
+          ownerContact={ownerContact}
         />
       )}
     </Dialog>
@@ -97,7 +104,11 @@ function PromoteForm({
   draft,
   onClose,
   onPendingChange,
+  orgId,
+  ownerContact,
 }: {
+  orgId?: string | null;
+  ownerContact?: ContactRef | null;
   meetingId: string;
   itemId: string;
   ownerHint: string | null;
@@ -225,6 +236,8 @@ function PromoteForm({
           <AssigneePicker
             id="promote-assignee"
             projectId={target}
+            orgId={orgId}
+            currentContact={ownerContact}
             value={assignee}
             onChange={(next) => {
               setAssignee(next);

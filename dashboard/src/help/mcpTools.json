@@ -208,6 +208,16 @@
         { "name": "get_approval_request", "desc": "One request with its policy, target and decisions" },
         { "name": "list_approval_policies", "desc": "An org's active approval policies" }
       ]
+    },
+    {
+      "id": "contacts",
+      "label": "External contacts",
+      "tools": [
+        { "name": "list_external_contacts", "desc": "People outside SessionFS the org attributes work to" },
+        { "name": "get_external_contact", "desc": "One contact and where it appears (what you can read)" },
+        { "name": "create_external_contact", "desc": "Add a contact when a person asks (never from transcripts)" },
+        { "name": "update_external_contact", "desc": "Edit a contact's name, role, tags, email, status or aliases" }
+      ]
     }
   ]
 }

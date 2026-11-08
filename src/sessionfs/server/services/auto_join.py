@@ -319,4 +319,9 @@ async def _auto_join_impl(user_id: str, db: AsyncSession) -> None:
             after=json.dumps({"domain": domain, "role": "member"}),
         )
     )
+    # External contacts (GitHub #125): link by the verified email.
+    from sessionfs.server.services.contacts import link_contacts_best_effort
+
+    await db.flush()
+    await link_contacts_best_effort(db, user, org_id=org.id)
     await db.commit()

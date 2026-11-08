@@ -341,7 +341,7 @@ export function TicketDetail({
                         size="sm"
                       />
                       <span className="truncate text-text-primary">{child.title}</span>
-                      {(child.assigned_to || child.assigned_user_id) && (
+                      {(child.assigned_to || child.assigned_user_id || child.assigned_contact_id) && (
                         <span className="inline-flex min-w-0 items-center gap-1 text-xs text-text-tertiary">
                           → <AssigneeLabel ticket={child} />
                         </span>
@@ -376,7 +376,7 @@ export function TicketDetail({
               {t.priority}
             </span>
             <span className="inline-flex min-w-0 items-center gap-1 text-xs text-text-secondary">
-              {t.assigned_to || t.assigned_user_id ? (
+              {t.assigned_to || t.assigned_user_id || t.assigned_contact_id ? (
                 <>
                   Assigned to <AssigneeLabel ticket={t} emphasis />
                 </>
@@ -391,7 +391,7 @@ export function TicketDetail({
                   className="!px-1.5 !py-0.5 !text-xs !font-normal !text-brand"
                   onClick={() => setReassigning(true)}
                 >
-                  {t.assigned_to || t.assigned_user_id ? 'Reassign' : 'Assign'}
+                  {t.assigned_to || t.assigned_user_id || t.assigned_contact_id ? 'Reassign' : 'Assign'}
                 </Button>
               )}
             </span>
@@ -408,6 +408,7 @@ export function TicketDetail({
             ticket={t}
             onDone={() => setReassigning(false)}
             needsReapproval={needsReapproval}
+            orgId={orgId}
           />
         )}
 

@@ -13,6 +13,9 @@ vi.mock('../hooks/usePersonas', () => ({
   usePersonas: () => ({ data: [], isLoading: false }),
   useOrgPersonas: () => ({ data: [], isLoading: false }),
 }));
+vi.mock('../hooks/useContacts', () => ({
+  useActiveContacts: () => ({ data: undefined, isLoading: false, isError: false }),
+}));
 vi.mock('../org/useOrgMembers', () => ({
   useOrgMembers: (id?: string) => ({ data: undefined, isLoading: false, error: id ? forbidden : null }),
 }));

@@ -18,6 +18,9 @@ import {
   APPROVAL_ID,
   reminderDone,
   confluenceDriftError,
+  CONTACT_ID,
+  contactRef,
+  meetingDetail,
   confluenceLink,
   confluencePreview,
   jiraConnection,
@@ -1809,6 +1812,103 @@ FOR_YOU_SCENARIOS.push(
 );
 const FOR_YOU_WIDTHS = [400, 768, 1280];
 
+
+// External contacts (GitHub #125): Organization -> Contacts, the "To confirm"
+// queue, a contact's page with its dialogs, and contacts on meetings and tickets.
+const CONTACTS = '/settings/organization?tab=contacts';
+const CONTACT_SCENARIOS: Scenario[] = [
+  { name: 'org-contacts', path: CONTACTS },
+  { name: 'org-contacts-to-confirm', path: `${CONTACTS}&view=confirm` },
+  {
+    name: 'org-contacts-to-confirm-existing',
+    path: `${CONTACTS}&view=confirm`,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Existing contact…' }).first().click();
+      await page.getByRole('button', { name: /Who is “Priya”/ }).click();
+      await page.getByRole('listbox').waitFor();
+    },
+  },
+  { name: 'org-contact-detail', path: `${CONTACTS}&contact=${CONTACT_ID}` },
+  {
+    name: 'org-contact-create-duplicate',
+    path: CONTACTS,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'New contact' }).click();
+      const dlg = page.getByRole('dialog', { name: 'New contact' });
+      await dlg.getByRole('textbox', { name: 'Name', exact: true }).fill('priya raman');
+      await dlg.getByText('Possible duplicate').waitFor();
+    },
+  },
+  {
+    name: 'org-contact-merge-preview',
+    path: `${CONTACTS}&contact=${CONTACT_ID}`,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Merge…' }).click();
+      const dlg = page.getByRole('dialog', { name: /Merge into/ });
+      await dlg.getByRole('button', { name: 'Duplicate contact' }).click();
+      await page.getByRole('option', { name: /Marta/ }).click();
+      await dlg.getByTestId('merge-preview').waitFor();
+    },
+  },
+  {
+    name: 'org-contact-delete-confirm',
+    path: `${CONTACTS}&contact=${CONTACT_ID}`,
+    prepare: async (page) => {
+      await page.getByRole('link', { name: /Collect on-call sign-off/ }).waitFor();
+      await page.getByRole('button', { name: 'Delete' }).click();
+      await page.getByRole('dialog', { name: /Delete Jordan Okafor/ }).waitFor();
+    },
+  },
+  {
+    // A participant and an action-item owner matched to a contact.
+    name: 'meeting-contact-owner',
+    path: `/projects/${PROJECT}?tab=work&sub=meetings&meeting=${MEETING_ID}`,
+    mock: async (page) => {
+      const withContact = {
+        ...meetingDetail,
+        participants: meetingDetail.participants.map((p) =>
+          p.id === 'mp_f5' ? { ...p, resolution_method: 'manual', contact_id: CONTACT_ID, contact: contactRef } : p,
+        ),
+      };
+      await page.route(
+        (u) => u.pathname === `/api/v1/meetings/${MEETING_ID}`,
+        (route) => route.fulfill(fulfillJson(200, withContact)),
+      );
+    },
+    prepare: async (page) => {
+      await page.getByTestId('external-badge').first().waitFor();
+    },
+  },
+  {
+    name: 'ticket-contact-assignee',
+    path: `/projects/${PROJECT}?tab=work&sub=tickets&ticket=tk_fixture2`,
+    mock: async (page) => {
+      const base = tickets.find((t) => t.id === 'tk_fixture2')!;
+      await page.route(
+        (u) => u.pathname === `/api/v1/projects/${PROJECT}/tickets/tk_fixture2`,
+        (route) =>
+          route.fulfill(
+            fulfillJson(200, { ...base, assigned_to: null, assigned_user_id: null, assigned_user: null, assigned_contact_id: CONTACT_ID, assigned_contact: contactRef }),
+          ),
+      );
+    },
+    prepare: async (page) => {
+      await page.getByTestId('external-badge').first().waitFor();
+    },
+  },
+  {
+    name: 'ticket-reassign-contacts',
+    path: `/projects/${PROJECT}?tab=work&sub=tickets&ticket=tk_fixture2`,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Reassign' }).click();
+      const editor = page.getByRole('group', { name: 'Reassign ticket' });
+      await editor.getByRole('button', { name: 'Assignee' }).click();
+      await editor.getByRole('option', { name: /Jordan Okafor/ }).click();
+      await editor.getByText(/no one is notified/).waitFor();
+    },
+  },
+];
+
 const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...WIDTHS.map((width) => ({ width, scenarios: PAGES })),
   ...SHELL_WIDTHS.map((width) => ({ width, scenarios: SHELL_SCENARIOS })),
@@ -1828,6 +1928,7 @@ const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: LOOP_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: WORKFLOW_SCENARIOS })),
   ...FOR_YOU_WIDTHS.map((width) => ({ width, scenarios: FOR_YOU_SCENARIOS })),
+  ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: CONTACT_SCENARIOS })),
 ];
 
 for (const theme of THEMES) {

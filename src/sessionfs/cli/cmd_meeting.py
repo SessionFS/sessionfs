@@ -8,7 +8,7 @@ Commands:
 - sfs meeting delete <id> [--yes]
 - sfs meeting extract <id>         — extraction with YOUR OWN LLM key
 - sfs meeting participants <id>
-- sfs meeting resolve-participant <id> <participant_id> --user ID | --persona NAME
+- sfs meeting resolve-participant <id> <participant_id> --user ID | --persona NAME | --contact ID
 - sfs meeting action-items <id>
 - sfs meeting promote <id> <item_id> [--title …] [--assignee PERSONA] [--user ID]
                                      [--due DATE] [--target-project ID] [--jira] [--yes]
@@ -458,9 +458,10 @@ def resolve_participant(
     participant_id: str = typer.Argument(...),
     user: str | None = typer.Option(None, "--user", help="User id to resolve to."),
     persona: str | None = typer.Option(None, "--persona", help="Persona name to resolve to."),
+    contact: str | None = typer.Option(None, "--contact", help="External contact id (ec_...)."),
 ) -> None:
-    """Resolve a participant to an org member or a persona (exactly one)."""
-    resolve_participant_impl(meeting_id, participant_id, user, persona)
+    """Resolve a participant to an org member, a persona or an external contact (exactly one)."""
+    resolve_participant_impl(meeting_id, participant_id, user, persona, contact=contact)
 
 
 def resolve_participant_impl(
@@ -469,11 +470,16 @@ def resolve_participant_impl(
     user: str | None,
     persona: str | None,
     kind: str | None = None,
+    contact: str | None = None,
 ) -> None:
-    if bool(user) == bool(persona):
-        err_console.print("[red]Give exactly one of --user or --persona.[/red]")
+    if bool(user) + bool(persona) + bool(contact) != 1:
+        err_console.print("[red]Give exactly one of --user, --persona or --contact.[/red]")
         raise typer.Exit(1)
-    payload = {"user_id": user} if user else {"persona_name": persona}
+    payload = (
+        {"user_id": user} if user
+        else {"persona_name": persona} if persona
+        else {"contact_id": contact}
+    )
     body = _call(
         "PUT", f"/api/v1/meetings/{meeting_id}/participants/{participant_id}",
         json_data=payload, params=_kind_params(kind) or None,

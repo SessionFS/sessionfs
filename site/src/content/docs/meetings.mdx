@@ -44,10 +44,12 @@ Each named participant in the transcript is resolved over the meeting's scope (i
 1. an exact email matching an active org member,
 2. an exact persona name (project personas first, then the org's personas the caller can see),
 3. a display name matching exactly one active member,
+4. the exact email of an active [external contact](/contacts/) of the org,
+5. a name or alias matching exactly one active external contact,
 
-otherwise the participant stays **unresolved**. A persona that represents a member fills both `persona_name` and `user_id`. Personal meetings have no org, so only a project persona resolves; otherwise participants stay unresolved until overridden.
+otherwise the participant stays **unresolved**. Extraction never creates a contact: unresolved names wait in the org's **People to confirm** queue until a person creates the contact or adds the name as an alias. A persona that represents a member fills both `persona_name` and `user_id`. Personal meetings have no org, so only a project persona resolves; otherwise participants stay unresolved until overridden.
 
-A project or group editor can override any participant manually with exactly one of `user_id` or `persona_name`, which sets the resolution method to `manual` and records who made the override.
+A project or group editor can override any participant manually with exactly one of `user_id`, `persona_name` or `contact_id` (an active contact of the meeting's org), which sets the resolution method to `manual` and records who made the override.
 
 ## Action-item extraction
 

@@ -311,6 +311,11 @@ def create_ticket(
         help="Teammate email or user id for direct-to-person assignment "
              "(mutually exclusive with --assigned-to)",
     ),
+    assign_contact: str | None = typer.Option(
+        None, "--assign-contact",
+        help="External contact id (ec_...) of the project's org. A contact "
+             "can't log in or be notified (mutually exclusive with --assigned-to / --user).",
+    ),
     priority: str = typer.Option("medium", "--priority", "-p"),
     criteria: list[str] = typer.Option([], "--criteria", help="Acceptance criterion (repeatable)"),
     file_ref: list[str] = typer.Option([], "--file", "-f", help="File reference (repeatable)"),
@@ -352,6 +357,8 @@ def create_ticket(
         payload["assigned_to"] = assigned_to
     if user:
         payload["assigned_user"] = user
+    if assign_contact:
+        payload["assigned_contact_id"] = assign_contact
     if parent:
         payload["parent_ticket_id"] = parent
     if due:
@@ -545,6 +552,10 @@ def update_ticket_cmd(
         help="Teammate email or user id for direct-to-person assignment "
              "(mutually exclusive with `sfs ticket assign`)",
     ),
+    assign_contact: str | None = typer.Option(
+        None, "--assign-contact",
+        help="External contact id (ec_...) to assign, or `none` to unassign the contact.",
+    ),
     due: str | None = typer.Option(
         None, "--due",
         help="Due date as YYYY-MM-DD. Pass `none` to clear the due date.",
@@ -591,6 +602,10 @@ def update_ticket_cmd(
         payload["priority"] = priority
     if user is not None:
         payload["assigned_user"] = user
+    if assign_contact is not None:
+        payload["assigned_contact_id"] = (
+            None if assign_contact.lower() == "none" else assign_contact
+        )
     if due is not None:
         payload["due_date"] = None if due.lower() == "none" else due
     if estimate is not None:

@@ -557,6 +557,7 @@ async def create_ticket_action(
     service_key_name: str | None = None,
     auth=None,
     require_editor: bool = False,
+    assigned_contact_id: str | None = None,
 ) -> str:
     """Create a ticket as the confirming user; caller owns the commit.
 
@@ -608,6 +609,23 @@ async def create_ticket_action(
         if canonical is not None:
             normalized_assigned_to = canonical
 
+    resolved_contact_id: str | None = None
+    if assigned_contact_id:
+        from sessionfs.server.services.ticket_writes import (
+            check_assignee_conflict,
+            resolve_assigned_contact_id,
+        )
+
+        check_assignee_conflict(
+            normalized_assigned_to,
+            assigned_user_id or None,
+            None,
+            assigned_contact_id=assigned_contact_id,
+        )
+        resolved_contact_id = await resolve_assigned_contact_id(
+            db, project=project, value=assigned_contact_id
+        )
+
     resolved_assigned_user: User | None = None
     if assigned_user_id:
         resolved_assigned_user = await resolve_assigned_user_id(
@@ -635,6 +653,7 @@ async def create_ticket_action(
         assigned_user_id=(
             resolved_assigned_user.id if resolved_assigned_user is not None else None
         ),
+        assigned_contact_id=resolved_contact_id,
         created_by_user_id=user_id,
         created_by_session_id=None,
         created_by_persona=None,
@@ -700,6 +719,15 @@ async def create_ticket_action(
             "assigned",
             field="assigned_to",
             after={"persona": normalized_assigned_to},
+            **actor,
+        )
+    elif resolved_contact_id is not None:
+        await record_ticket_event(
+            db,
+            ticket,
+            "assigned",
+            field="assigned_contact_id",
+            after={"contact_id": resolved_contact_id},
             **actor,
         )
 

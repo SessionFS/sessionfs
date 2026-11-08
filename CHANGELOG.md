@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.13] - 2026-11-08
+
+**External contacts: the people you work with who aren't SessionFS users (GitHub #125).** Server migration 130.
+
+### Added
+- **External contacts** (Team and Enterprise, every org). A contact is a real person your org attributes work to who doesn't log in to SessionFS: a stakeholder on another team, a client, a contractor. Contacts have a name, other names, an optional email, a role and tags, and live in **Organization → Contacts**. Any org member can add and edit them; owners and admins merge duplicates, export a contact's data and delete it. Emails are visible to owners, admins and whoever added the contact; everyone else sees them masked, and service keys never see them. See [External Contacts](https://sessionfs.dev/contacts/).
+- **Meeting and chat participants resolve to contacts.** Extraction matches a speaker to a member first, then to exactly one contact by email, name or other name. A name that matches nobody goes to the **To confirm** queue, where a person creates the contact or picks an existing one. Extraction never creates contacts.
+- **Tickets and action items can be owned by a contact.** A ticket's assignee can be a persona, a person or a contact, shown with an *external* tag; contacts are never notified. API `assigned_contact_id`, MCP `assigned_contact`, CLI `--assign-contact`.
+- **A contact who joins becomes the member.** When someone signs up or joins with an email a contact holds (verified email only), the contact links to them and its open tickets move to them in every project they can read, each with a ticket event.
+- **Erasure and retention.** Deleting a contact removes it from participants and tickets (ticket events record only that a contact was removed). An optional org setting, off by default, sweeps archived or unreferenced contacts after N days (`POST /admin/sweeps/contact-retention`).
+- MCP `list_external_contacts`, `get_external_contact`, `create_external_contact` and `update_external_contact` (135 tools in total); CLI `sfs contact list|show|create|edit|alias|archive|merge|delete|export|suggestions`; scopes `contacts:read` and `contacts:write`.
+
+### Changed
+- `assignee_conflict` now means more than one of persona, person and contact was given.
+
 ## [0.29.12] - 2026-11-08
 
 **Release gates and deployments record who wrote them, merge readiness never writes, and the last 0.29.x follow-ups are closed.** Server migration 129.

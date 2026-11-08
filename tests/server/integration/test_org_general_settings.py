@@ -122,7 +122,13 @@ async def test_admin_can_update_all_fields(
     assert resp.status_code == 200, resp.text
     # restrict_project_visibility (GitHub #101) always reads back as a bool.
     # meeting_retention_days (GitHub #116) reads back as None when unset.
-    expected = {**payload, "restrict_project_visibility": False, "meeting_retention_days": None}
+    # contact_retention_days (external contacts) is off (None) by default.
+    expected = {
+        **payload,
+        "restrict_project_visibility": False,
+        "meeting_retention_days": None,
+        "contact_retention_days": None,
+    }
     assert resp.json() == expected
 
     # Round-trip via GET.

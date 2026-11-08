@@ -125,7 +125,7 @@ function BoardCard({
         <span className={`uppercase tracking-wide font-semibold ${PRIORITY_TONE[t.priority] ?? ''}`}>
           {t.priority}
         </span>
-        {(t.assigned_to || t.assigned_user_id) && (
+        {(t.assigned_to || t.assigned_user_id || t.assigned_contact_id) && (
           <span className="inline-flex min-w-0 max-w-full">
             <AssigneeLabel ticket={t} variant="chip" />
           </span>

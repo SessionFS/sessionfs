@@ -21,10 +21,13 @@ export function ReassignPanel({
   ticket,
   onDone,
   needsReapproval = false,
+  orgId,
 }: {
   projectId: string;
   ticket: Ticket;
   onDone: () => void;
+  /** The project's org when the viewer is a member: offers its contacts. */
+  orgId?: string | null;
   /** Saving withdraws the ticket's approval (non-editor, status open). */
   needsReapproval?: boolean;
 }) {
@@ -83,7 +86,7 @@ export function ReassignPanel({
   async function commit(target: Assignee = value) {
     setError(undefined);
     try {
-      await update.mutateAsync({ ticketId: ticket.id, body: assigneePayload(target) });
+      await update.mutateAsync({ ticketId: ticket.id, body: assigneePayload(target, { clearContact: !!ticket.assigned_contact_id }) });
       addToast('success', target.kind === 'none' ? 'Unassigned' : 'Assignee updated');
       onDone();
     } catch (exc) {
@@ -111,6 +114,8 @@ export function ReassignPanel({
             setError(undefined);
           }}
           currentUser={ticket.assigned_user ?? null}
+          currentContact={ticket.assigned_contact ?? null}
+          orgId={orgId}
           error={error}
         />
       </div>

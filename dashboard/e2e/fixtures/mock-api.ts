@@ -62,6 +62,12 @@ export function resolve(method: string, pathname: string): MockResult | null {
   if (!get && path === '/api/v1/me/for-you/collaboration/remind') {
     return { status: 201, body: { reminder_id: 'rem_fixture_nudge', due_at: new Date().toISOString(), to: 'Kemi Ade' } };
   }
+  // External contacts (GitHub #125): a merge preview, applying a name.
+  const contactMerge = !get && path.match(/^\/api\/v1\/orgs\/[^/]+\/contacts\/([^/]+)\/merge-from\/([^/]+)$/);
+  if (contactMerge) {
+    return ok({ confirmed: false, target: d.contacts[0], source_id: decodeURIComponent(contactMerge[2]), participants_moved: 3, tickets_moved: 1, aliases_added: ['Marta Lindqvist-Haraldsdóttir'] });
+  }
+  if (!get && /^\/api\/v1\/orgs\/[^/]+\/contacts\/suggestions\/apply$/.test(path)) return ok({ applied: 3, skipped: 1 });
   if (!get) return ok({ status: 'ok' });
 
   // For You (the dashboard home).
@@ -198,6 +204,18 @@ export function resolve(method: string, pathname: string): MockResult | null {
   if (org) {
     const rest = org[2] ?? '';
     if (rest === '/settings') return ok(d.orgSettings);
+    // External contacts (GitHub #125).
+    if (rest === '/contacts') return ok({ items: d.contacts, next_before: null });
+    if (rest === '/contacts/suggestions') return ok(d.contactSuggestions);
+    const contact = rest.match(/^\/contacts\/([^/]+)(\/references|\/aliases|\/export)?$/);
+    if (contact) {
+      const cid = decodeURIComponent(contact[1]);
+      const found = [...d.contacts, ...d.archivedContacts].find((c) => c.id === cid);
+      if (!found) return { status: 404, body: { error: { code: '404', message: 'Contact not found' } } };
+      if (contact[2] === '/references') return ok(cid === d.CONTACT_ID ? d.contactReferences : { contact_id: cid, conversations: [], action_items: [], tickets: [] });
+      if (contact[2] === '/export') return ok({ contact: found });
+      return ok(found);
+    }
     if (rest === '/workflow-templates') return ok([wf.orgTemplate()]);
     if (rest === '/groups') return ok(d.projectGroups);
     if (/^\/groups\/[^/]+$/.test(rest)) return ok(d.projectGroupDetail);

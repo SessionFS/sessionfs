@@ -70,6 +70,7 @@ export default defineConfig({
             { label: 'Meetings', slug: 'meetings' },
             { label: 'Approvals', slug: 'approvals' },
             { label: 'Chat threads', slug: 'chat' },
+            { label: 'External contacts', slug: 'contacts' },
             { label: 'Skills Marketplace', slug: 'skills-marketplace' },
             { label: 'Worker Review Loop', slug: 'review-loop' },
             { label: 'Workflow Templates', slug: 'workflows' },

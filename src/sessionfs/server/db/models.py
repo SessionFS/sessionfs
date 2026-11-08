@@ -2085,6 +2085,7 @@ class Ticket(Base):
         Index("idx_ticket_project_status", "project_id", "status"),
         Index("idx_ticket_assigned", "project_id", "assigned_to", "status"),
         Index("idx_ticket_assigned_user", "project_id", "assigned_user_id", "status"),
+        Index("idx_ticket_assigned_contact", "project_id", "assigned_contact_id", "status"),
         Index("idx_ticket_project_parent", "project_id", "parent_ticket_id"),
     )
 
@@ -2130,6 +2131,11 @@ class Ticket(Base):
     # FK in metadata (mirrors created_by_user_id/resolver_user_id); the PG-only
     # FK lives in migration 101. Nullable for persona/unassigned tickets.
     assigned_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # Migration 130: assignment to an external contact (persona XOR person
+    # XOR contact). Like ``assigned_user_id`` there is no FK in metadata; the
+    # PG-only FK (ON DELETE SET NULL) lives in the migration.
+    assigned_contact_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     # Scheduling — a calendar due date (no time component) and a bounded
     # Jira-duration estimate ("2d 4h", "30m"), both nullable and validated
@@ -6970,9 +6976,10 @@ class MeetingParticipant(Base):
     __table_args__ = (
         Index("idx_meeting_participants_transcript", "transcript_id"),
         CheckConstraint(
-            "resolution_method IN ('exact_email', 'display_name', 'persona', 'manual', 'unresolved')",
+            "resolution_method IN ('exact_email', 'display_name', 'persona', 'manual', 'contact', 'unresolved')",
             name="ck_meeting_participants_resolution_method",
         ),
+        Index("idx_meeting_participants_contact", "contact_id"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -6992,6 +6999,14 @@ class MeetingParticipant(Base):
     )
     resolved_by_user_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    # Migration 130: the external contact this name resolved to
+    # (``resolution_method='contact'``, or a manual override to a contact).
+    # Rendered only when the contact's org is the meeting's live scope org.
+    contact_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("external_contacts.id", ondelete="SET NULL"),
+        nullable=True,
     )
 
 
@@ -8010,6 +8025,105 @@ class AttentionHide(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class ExternalContact(Base):
+    """A person the org attributes work to who is not a SessionFS user
+    (migration 130, docs/design/external-contacts.md).
+
+    Created deliberately by a person, never by extraction. Org-scoped only.
+    ``name_norm`` is the extraction ``_norm`` of ``display_name`` (NFKC +
+    casefold + whitespace fold); resolution matches it exactly. A merged row
+    keeps ``merged_into_id`` and is never listed; ``linked_user_id`` is set
+    only when the contact's email equals a member's verified email.
+    """
+
+    __tablename__ = "external_contacts"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'archived', 'merged')",
+            name="ck_external_contacts_status",
+        ),
+        CheckConstraint(
+            "(status = 'merged') = (merged_into_id IS NOT NULL)",
+            name="ck_external_contacts_merged",
+        ),
+        Index(
+            "uq_external_contacts_org_email",
+            "org_id",
+            "email",
+            unique=True,
+            postgresql_where=text("email IS NOT NULL AND status <> 'merged'"),
+            sqlite_where=text("email IS NOT NULL AND status <> 'merged'"),
+        ),
+        Index("idx_external_contacts_org_status_name", "org_id", "status", "name_norm"),
+        Index("idx_external_contacts_linked_user", "linked_user_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    name_norm: Mapped[str] = mapped_column(String(120), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    role: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    tags: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default=text("'[]'")
+    )
+    status: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="active", server_default=text("'active'")
+    )
+    merged_into_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("external_contacts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    linked_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    linked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    actor_type: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="user", server_default=text("'user'")
+    )
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+
+class ExternalContactAlias(Base):
+    """Another name a contact goes by (migration 130). ``org_id`` is
+    denormalised so resolution is one indexed lookup on (org_id, alias_norm).
+    At most 20 per contact (route-enforced)."""
+
+    __tablename__ = "external_contact_aliases"
+    __table_args__ = (
+        Index("idx_external_contact_aliases_org_norm", "org_id", "alias_norm"),
+    )
+
+    contact_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("external_contacts.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    alias_norm: Mapped[str] = mapped_column(String(120), primary_key=True)
+    alias: Mapped[str] = mapped_column(String(120), nullable=False)
+    org_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("organizations.id", ondelete="CASCADE"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
     )
 
 

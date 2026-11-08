@@ -95,6 +95,8 @@ class PromotePreviewResponse(BaseModel):
     kind: str
     assigned_to: str | None
     assigned_user_id: str | None
+    # External contact owner (GitHub #125) when the owner has no user/persona.
+    assigned_contact_id: str | None = None
     due_date: date | None
     context_refs: list[str]
     target_project_id: str | None
@@ -114,6 +116,7 @@ class PromoteRequest(BaseModel):
     kind: Literal["task", "issue"] = "task"
     assigned_to: str | None = None
     assigned_user_id: str | None = Field(None, max_length=320)
+    assigned_contact_id: str | None = Field(default=None, max_length=64)
     due_date: date | None = None
     target_project_id: str | None = None
     publish_to_jira: bool = False
@@ -162,23 +165,35 @@ def _promote_description(meeting: MeetingTranscript, item: MeetingActionItem) ->
 
 
 async def _draft_assignee(
-    db: AsyncSession, item: MeetingActionItem
-) -> tuple[str | None, str | None]:
-    """``(assigned_to, assigned_user_id)`` from the resolved owner.
+    db: AsyncSession, item: MeetingActionItem, scope_org_id: str | None = None
+) -> tuple[str | None, str | None, str | None]:
+    """``(assigned_to, assigned_user_id, assigned_contact_id)`` from the
+    resolved owner.
 
     A persona assignment wins over the represented person, matching §7
-    ("persona if any, else person").
+    ("persona if any, else person"); an external contact (GitHub #125) comes
+    last, and a contact linked to a still-active member drafts that member.
     """
     if item.owner_participant_id is None:
-        return None, None
+        return None, None, None
     participant = await db.get(MeetingParticipant, item.owner_participant_id)
     if participant is None:
-        return None, None
+        return None, None, None
     if participant.persona_name:
-        return participant.persona_name, None
+        return participant.persona_name, None, None
     if participant.user_id:
-        return None, participant.user_id
-    return None, None
+        return None, participant.user_id, None
+    if participant.contact_id and scope_org_id:
+        from sessionfs.server.db.models import ExternalContact
+        from sessionfs.server.services.contacts import linked_member_id
+
+        contact = await db.get(ExternalContact, participant.contact_id)
+        if contact is not None and contact.org_id == scope_org_id and contact.status == "active":
+            member_id = await linked_member_id(db, contact)
+            if member_id is not None:
+                return None, member_id, None
+            return None, None, contact.id
+    return None, None, None
 
 
 EXPORTER_EMAIL_NOTE = "matched by exporter email"
@@ -482,7 +497,9 @@ async def preview_promote(
     if item.status != "pending":
         raise _item_not_pending()
 
-    assigned_to, assigned_user_id = await _draft_assignee(db, item)
+    assigned_to, assigned_user_id, assigned_contact_id = await _draft_assignee(
+        db, item, await _meeting_scope_org_id(db, meeting)
+    )
 
     resolved_target_id: str | None = None
     target_project_options: list[ProjectOption] | None = None
@@ -526,6 +543,7 @@ async def preview_promote(
         kind="task",
         assigned_to=assigned_to,
         assigned_user_id=assigned_user_id,
+        assigned_contact_id=assigned_contact_id,
         due_date=item.due_date,
         context_refs=[f"meeting:{meeting.id}#{item.id}"],
         target_project_id=resolved_target_id,
@@ -583,7 +601,12 @@ async def promote_meeting_item(
     # The same draft validation POST /projects/{p}/tickets applies, with the
     # same 422 bodies (field errors in the framework's envelope, one error
     # for a persona + person assignment together).
-    check_assignee_conflict(body.assigned_to, body.assigned_user_id, None)
+    check_assignee_conflict(
+        body.assigned_to,
+        body.assigned_user_id,
+        None,
+        assigned_contact_id=body.assigned_contact_id,
+    )
     try:
         draft = TicketCreate(
             title=body.title,
@@ -592,6 +615,7 @@ async def promote_meeting_item(
             kind=body.kind,
             assigned_to=body.assigned_to,
             assigned_user_id=body.assigned_user_id,
+            assigned_contact_id=body.assigned_contact_id,
             due_date=body.due_date,
             context_refs=[f"meeting:{meeting.id}#{item.id}"],
         )
@@ -631,6 +655,7 @@ async def promote_meeting_item(
         service_key_name=auth.service_key_name,
         auth=auth,
         require_editor=True,
+        assigned_contact_id=draft.assigned_contact_id,
     )
 
     # Rowcount-1 guard: only a still-pending item flips. A concurrent promote

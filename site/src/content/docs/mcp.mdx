@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 131 tools in nineteen categories: Session, Knowledge Read, Knowledge Write, Rules, Personas, Tickets, AgentRun, Agent Feedback, Review Checklist, Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Workflow Templates, Skills Marketplace, Project Groups (Team+), Meetings and chat, Reminders, Approvals (Enterprise), and For You.
+The MCP server exposes 135 tools in twenty categories: Session, Knowledge Read, Knowledge Write, Rules, Personas, Tickets, AgentRun, Agent Feedback, Review Checklist, Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Workflow Templates, Skills Marketplace, Project Groups (Team+), Meetings and chat, Reminders, Approvals (Enterprise), External contacts, and For You.
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -1129,6 +1129,19 @@ Read-only views of [approval policies](/approvals/) (Enterprise). Agents cannot 
 | `list_my_approvals` | Pending requests you could decide now (merges at one commit, KB entries waiting to become claims), newest first, with approvals so far |
 | `get_approval_request` | One request by id (`ar_…`): policy version and requirements, target and fingerprint (commit sha or content sha256), state and every decision |
 | `list_approval_policies` | An org's active policies (`org_id`, else your default org). Members see names and requirements; owners and admins also see filters |
+
+### External contacts
+
+People your org works with who are not SessionFS users ([External contacts](/contacts/)). Org members read and create; owners and admins merge and delete (not over MCP). Emails are masked for members other than owners, admins and the creator, and never shown to service keys (`contacts:read` / `contacts:write`, own org only). Without `org_id` the default org is used.
+
+| Tool | Purpose |
+|------|---------|
+| `list_external_contacts` | The org's contacts: `q` (name or alias), `status` (`active`, `archived`, `all`), `tag`, `before`, `limit` |
+| `get_external_contact` | One contact (`contact_id`) and the meetings, chats, action items and tickets naming it that you can read. A merged id returns the contact it was merged into |
+| `create_external_contact` | Create a contact when a person asks: `display_name`, optional `email`, `role`, `tags`, `aliases`. Never from names found in transcripts |
+| `update_external_contact` | Edit `display_name`, `role`, `tags`, `email`, `status` (`active` or `archived`), `add_aliases`, `remove_aliases`; explicit null clears role or email |
+
+`create_ticket` and `update_ticket` take `assigned_contact` (a contact of the project's org; persona, person and contact are mutually exclusive).
 
 ### For You
 

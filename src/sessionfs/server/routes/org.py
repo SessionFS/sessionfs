@@ -899,6 +899,11 @@ async def accept_invite(
     if result.rowcount != 1:
         await db.rollback()
         raise HTTPException(409, "Invite state changed concurrently; reload and retry")
+    # External contacts (GitHub #125): a contact with this member's VERIFIED
+    # email links to them, and their open tickets move in this transaction.
+    from sessionfs.server.services.contacts import link_contacts_best_effort
+
+    await link_contacts_best_effort(db, user, org_id=invite.org_id)
     await db.commit()
 
     return {"org_id": invite.org_id, "role": invite.role}

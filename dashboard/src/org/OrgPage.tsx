@@ -16,9 +16,10 @@ import ActivateLicensePanel from './ActivateLicensePanel';
 import OwnerTransferDialog from './OwnerTransferDialog';
 import IntegrationsTab from './integrations/IntegrationsTab';
 import GroupsTab from './groups/GroupsTab';
+import ContactsSection from './contacts/ContactsSection';
 import { errorMessage } from '../utils/errorMessage';
 
-type OrgTab = 'members' | 'groups' | 'personas' | 'policies' | 'governance' | 'security' | 'integrations';
+type OrgTab = 'members' | 'groups' | 'contacts' | 'personas' | 'policies' | 'governance' | 'security' | 'integrations';
 
 export default function OrgPage() {
   const { auth } = useAuth();
@@ -172,6 +173,7 @@ export default function OrgPage() {
 
   const visibleTabs: OrgTab[] = ['members'];
   if (org.id) visibleTabs.push('groups');
+  if (org.id) visibleTabs.push('contacts');
   if (org.id && (isAdmin || myUserId)) visibleTabs.push('personas');
   if (org.id) visibleTabs.push('policies');
   if (org.id) visibleTabs.push('governance');
@@ -187,6 +189,9 @@ export default function OrgPage() {
         // An integration's detail view belongs to the Integrations tab.
         next.delete('integration');
         next.delete('section');
+        // A contact's page and the contacts sub-view belong to Contacts.
+        next.delete('contact');
+        next.delete('view');
         return next;
       },
       { replace: true },
@@ -196,6 +201,7 @@ export default function OrgPage() {
   const TAB_LABELS: Record<OrgTab, string> = {
     members: 'Members',
     groups: 'Groups',
+    contacts: 'Contacts',
     personas: 'Personas',
     policies: 'Policies',
     governance: 'Governance',
@@ -422,6 +428,7 @@ export default function OrgPage() {
 
       </>
     ),
+    contacts: org?.id ? <ContactsSection orgId={org.id} isAdmin={isAdmin} /> : null,
     governance: org?.id ? <GovernanceSection orgId={org.id} isAdmin={isAdmin} tier={org.tier ?? null} /> : null,
     security: (
       <>

@@ -262,6 +262,7 @@ export default function TicketsTab({
       {creating && (
         <NewTicketModal
           projectId={projectId}
+          orgId={jira?.orgId}
           onClose={() => setCreating(false)}
         />
       )}

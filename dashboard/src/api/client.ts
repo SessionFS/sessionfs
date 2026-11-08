@@ -1731,6 +1731,12 @@ export interface Ticket {
   /** Person assignee. Absent on older servers. */
   assigned_user_id?: string | null;
   assigned_user?: TicketAssignedUser | null;
+  /** External-contact assignee (GitHub #125). Absent on older servers. */
+  assigned_contact_id?: string | null;
+  /** Rendered only while the contact belongs to the project's org; when
+   *  `assigned_contact_id` is set but this is null, show "Unassigned
+   *  (contact removed)". */
+  assigned_contact?: ContactRef | null;
   created_by_user_id: string;
   created_by_session_id: string | null;
   created_by_persona: string | null;
@@ -1831,6 +1837,9 @@ export interface TicketAssigneeFields {
 
 /** `PUT /api/v1/projects/{id}/tickets/{tid}` — partial update. */
 export interface TicketUpdate extends TicketAssigneeFields {
+  /** An external contact of the project's org (persona XOR person XOR
+   *  contact, GitHub #125); explicit null unassigns the contact. */
+  assigned_contact_id?: string | null;
   title?: string;
   description?: string;
   priority?: TicketPriority | string;
@@ -1847,6 +1856,7 @@ export interface TicketCreate {
   priority?: TicketPriority | string;
   assigned_to?: string | null;
   assigned_user_id?: string | null;
+  assigned_contact_id?: string | null;
   acceptance_criteria?: string[];
   context_refs?: string[];
   file_refs?: string[];
@@ -3014,7 +3024,13 @@ export interface ChatMessageMeta {
   posted_at: string | null;
 }
 export type MeetingExtractionStatus = 'none' | 'done' | 'failed';
-export type MeetingResolutionMethod = 'exact_email' | 'display_name' | 'persona' | 'manual' | 'unresolved';
+export type MeetingResolutionMethod =
+  | 'exact_email'
+  | 'display_name'
+  | 'persona'
+  | 'manual'
+  | 'contact'
+  | 'unresolved';
 export type MeetingItemKind = 'action' | 'decision';
 export type MeetingItemStatus = 'pending' | 'promoted' | 'dismissed' | 'linked';
 
@@ -3027,6 +3043,130 @@ export interface MeetingItemTicketRef {
   status: string;
 }
 
+// ── External contacts (GitHub #125, /api/v1/orgs/{org}/contacts) ──
+
+/** A contact as a meeting, chat or ticket renders it: name and role only. */
+export interface ContactRef {
+  id: string;
+  display_name: string;
+  role: string | null;
+  status: ContactStatus;
+  /** Set once the contact joined as a member (verified email); show the member. */
+  linked_user_id: string | null;
+  external: true;
+}
+
+export type ContactStatus = 'active' | 'archived' | 'merged';
+
+export interface ExternalContact {
+  id: string;
+  org_id: string;
+  display_name: string;
+  role: string | null;
+  tags: string[];
+  aliases: string[];
+  status: ContactStatus;
+  /** Full address for owners, admins and the creator; masked
+   *  (`email_masked: true`) for other members; null for service keys or
+   *  when the contact has none. */
+  email: string | null;
+  email_masked: boolean;
+  has_email: boolean;
+  linked_user_id: string | null;
+  linked_at: string | null;
+  created_by_user_id: string | null;
+  created_at: string;
+  updated_at: string;
+  /** The requested id was merged into this contact. */
+  redirected_from: string | null;
+  /** Create only: contacts with exactly the same name or alias. */
+  possible_duplicates: { id: string; display_name: string }[];
+}
+
+export interface ExternalContactList {
+  items: ExternalContact[];
+  next_before: string | null;
+}
+
+export interface ExternalContactCreate {
+  display_name: string;
+  email?: string | null;
+  role?: string | null;
+  tags?: string[];
+  aliases?: string[];
+}
+
+/** PATCH body: send only what changes; explicit null clears role / email. */
+export interface ExternalContactUpdate {
+  display_name?: string;
+  email?: string | null;
+  role?: string | null;
+  tags?: string[];
+  status?: 'active' | 'archived';
+}
+
+export interface ContactReferences {
+  contact_id: string;
+  conversations: {
+    kind: 'meeting' | 'chat';
+    meeting_id: string;
+    participant_id: string;
+    title: string;
+    project_id: string | null;
+    group_id: string | null;
+    meeting_at: string | null;
+    created_at: string;
+  }[];
+  action_items: {
+    item_id: string;
+    meeting_id: string;
+    kind: 'action' | 'decision';
+    status: MeetingItemStatus;
+    description: string;
+    due_date: string | null;
+  }[];
+  tickets: { id: string; project_id: string; title: string; status: string; updated_at: string }[];
+}
+
+export interface ContactMergeResult {
+  confirmed: boolean;
+  target: ExternalContact;
+  source_id: string;
+  participants_moved: number;
+  tickets_moved: number;
+  aliases_added: string[];
+}
+
+export interface ContactDeleteResult {
+  deleted: boolean;
+  contact_id: string;
+  participants_reset: number;
+  tickets_unassigned: number;
+}
+
+export interface ContactSuggestionGroup {
+  name: string;
+  name_norm: string;
+  mention_count: number;
+  latest_mention_at: string | null;
+  sources: { meeting_id: string; kind: 'meeting' | 'chat'; title: string }[];
+  /** Hints only ("same name", "same first name", "name starts the same"). */
+  candidates: { id: string; display_name: string; hint: string }[];
+}
+
+export interface ContactSuggestions {
+  groups: ContactSuggestionGroup[];
+  truncated: boolean;
+}
+
+export interface ContactListParams {
+  q?: string;
+  status?: 'active' | 'archived' | 'all';
+  tag?: string;
+  before?: string | null;
+  limit?: number;
+}
+
 export interface MeetingParticipant {
   id: string;
   name_raw: string;
@@ -3035,6 +3175,10 @@ export interface MeetingParticipant {
   persona_name: string | null;
   resolution_method: MeetingResolutionMethod;
   resolved_by_user_id: string | null;
+  /** External contact this name resolved to (GitHub #125). Only set when the
+   *  contact belongs to the meeting's live org; otherwise show `name_raw`. */
+  contact_id?: string | null;
+  contact?: ContactRef | null;
 }
 
 export interface MeetingActionItem {
@@ -3182,6 +3326,8 @@ export interface MeetingPromotePreview {
   kind: 'task' | 'issue';
   assigned_to: string | null;
   assigned_user_id: string | null;
+  /** The owner is an external contact (no user or persona). */
+  assigned_contact_id?: string | null;
   due_date: string | null;
   context_refs: string[];
   /** Fixed for a project meeting; null for a group meeting (pick one). */
@@ -3203,6 +3349,7 @@ export interface MeetingPromoteRequest {
   kind: 'task' | 'issue';
   assigned_to: string | null;
   assigned_user_id: string | null;
+  assigned_contact_id?: string | null;
   due_date: string | null;
   target_project_id?: string | null;
   publish_to_jira?: boolean;
@@ -4799,6 +4946,84 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'DELETE',
       }),
 
+    // ── External contacts (GitHub #125) ──
+    listContacts: (orgId: string, params: ContactListParams = {}) => {
+      const q = new URLSearchParams();
+      for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') q.set(k, String(v));
+      const qs = q.toString();
+      return request<ExternalContactList>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/contacts${qs ? `?${qs}` : ''}`,
+      );
+    },
+    getContact: (orgId: string, contactId: string) =>
+      request<ExternalContact>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/contacts/${encodeURIComponent(contactId)}`,
+      ),
+    getContactReferences: (orgId: string, contactId: string) =>
+      request<ContactReferences>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/contacts/${encodeURIComponent(contactId)}/references`,
+      ),
+    createContact: (orgId: string, body: ExternalContactCreate) =>
+      request<ExternalContact>(`/api/v1/orgs/${encodeURIComponent(orgId)}/contacts`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    updateContact: (orgId: string, contactId: string, body: ExternalContactUpdate) =>
+      request<ExternalContact>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/contacts/${encodeURIComponent(contactId)}`,
+        { method: 'PATCH', body: JSON.stringify(body) },
+      ),
+    addContactAlias: (orgId: string, contactId: string, alias: string) =>
+      request<ExternalContact>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/contacts/${encodeURIComponent(contactId)}/aliases`,
+        { method: 'POST', body: JSON.stringify({ alias }) },
+      ),
+    removeContactAlias: (orgId: string, contactId: string, alias: string) =>
+      request<ExternalContact>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/contacts/${encodeURIComponent(contactId)}/aliases?alias=${encodeURIComponent(alias)}`,
+        { method: 'DELETE' },
+      ),
+    /** Owners/admins. A preview unless `confirm` is true. */
+    mergeContacts: (orgId: string, targetId: string, sourceId: string, confirm = false) =>
+      request<ContactMergeResult>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/contacts/${encodeURIComponent(targetId)}/merge-from/${encodeURIComponent(sourceId)}${confirm ? '?confirm=true' : ''}`,
+        { method: 'POST' },
+      ),
+    /** Owners/admins: erases the contact (participants reset, tickets unassigned). */
+    deleteContact: (orgId: string, contactId: string) =>
+      request<ContactDeleteResult>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/contacts/${encodeURIComponent(contactId)}`,
+        { method: 'DELETE' },
+      ),
+    /** Owners/admins: one contact's data for a data request (JSON). */
+    exportContact: (orgId: string, contactId: string) =>
+      request<Record<string, unknown>>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/contacts/${encodeURIComponent(contactId)}/export`,
+      ),
+    /** Owners/admins: the directory as CSV (10,000 rows max; `truncated` when cut). */
+    exportContactsCsv: async (orgId: string, status: 'active' | 'archived' | 'all' = 'all') => {
+      const resp = await fetch(
+        `${baseUrl}/api/v1/orgs/${encodeURIComponent(orgId)}/contacts?format=csv&status=${status}`,
+        { headers: { Authorization: `Bearer ${apiKey}` } },
+      );
+      if (!resp.ok) throw new ApiError(resp.status, await resp.text());
+      return { blob: await resp.blob(), truncated: resp.headers.get('X-Truncated') === 'true' };
+    },
+    /** "People to confirm": unresolved names the caller can read (last 90 days). */
+    getContactSuggestions: (orgId: string) =>
+      request<ContactSuggestions>(`/api/v1/orgs/${encodeURIComponent(orgId)}/contacts/suggestions`),
+    /** Resolve every editable unresolved mention of `name` to the contact. */
+    applyContactSuggestion: (orgId: string, name: string, contactId: string) =>
+      request<{ applied: number; skipped: number }>(
+        `/api/v1/orgs/${encodeURIComponent(orgId)}/contacts/suggestions/apply`,
+        { method: 'POST', body: JSON.stringify({ name, contact_id: contactId }) },
+      ),
+    dismissContactSuggestion: (orgId: string, name: string) =>
+      request<void>(`/api/v1/orgs/${encodeURIComponent(orgId)}/contacts/suggestions/dismiss`, {
+        method: 'POST',
+        body: JSON.stringify({ name }),
+      }),
+
     // ── Approval policies and requests ──
     listApprovalPolicies: (orgId: string, params: { include_inactive?: boolean } = {}) =>
       request<ApprovalPolicyList>(
@@ -5509,11 +5734,11 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         method: 'POST',
       }),
 
-    /** Exactly one of user_id / persona_name. */
+    /** Exactly one of user_id / persona_name / contact_id. */
     resolveMeetingParticipant: (
       meetingId: string,
       participantId: string,
-      body: { user_id: string } | { persona_name: string },
+      body: { user_id: string } | { persona_name: string } | { contact_id: string },
     ) =>
       request<MeetingParticipant>(
         `/api/v1/meetings/${encodeURIComponent(meetingId)}/participants/${encodeURIComponent(participantId)}`,

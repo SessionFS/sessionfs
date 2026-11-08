@@ -83,6 +83,7 @@ from sessionfs.server.services.ticket_writes import (
     assigned_user_label,
     authorize_ticket_edit,
     check_assignee_conflict,
+    resolve_assigned_contact_id,
     insert_ticket_comment,
     resolve_assigned_user_id,
     resolve_persona_name as _resolve_persona_name,
@@ -222,6 +223,8 @@ class TicketCreate(BaseModel):
     # email is at most 320 characters (RFC 5321).
     assigned_user_id: str | None = Field(default=None, max_length=ASSIGNEE_MAX_LEN)
     assigned_user: str | None = Field(default=None, max_length=ASSIGNEE_MAX_LEN)
+    # External contact (GitHub #125): persona XOR person XOR contact.
+    assigned_contact_id: str | None = Field(default=None, max_length=64)
     context_refs: list[str] = []
     file_refs: list[str] = []
     related_sessions: list[str] = []
@@ -320,6 +323,7 @@ class TicketUpdate(BaseModel):
     assigned_to: str | None = None
     assigned_user_id: str | None = Field(default=None, max_length=ASSIGNEE_MAX_LEN)
     assigned_user: str | None = Field(default=None, max_length=ASSIGNEE_MAX_LEN)
+    assigned_contact_id: str | None = Field(default=None, max_length=64)
     context_refs: list[str] | None = None
     file_refs: list[str] | None = None
     related_sessions: list[str] | None = None
@@ -381,6 +385,18 @@ class AssignedUser(BaseModel):
     email: str
 
 
+class AssignedContact(BaseModel):
+    """An external contact a ticket is assigned to (GitHub #125): name and
+    role only, rendered only while the contact belongs to the project's org."""
+
+    id: str
+    display_name: str
+    role: str | None = None
+    status: str
+    linked_user_id: str | None = None
+    external: bool = True
+
+
 class AssignableUser(BaseModel):
     """A teammate who may be assigned a ticket in this project."""
 
@@ -440,6 +456,8 @@ class TicketResponse(BaseModel):
     assigned_to: str | None
     assigned_user_id: str | None = None
     assigned_user: AssignedUser | None = None
+    assigned_contact_id: str | None = None
+    assigned_contact: AssignedContact | None = None
     created_by_user_id: str
     created_by_session_id: str | None
     created_by_persona: str | None
@@ -735,6 +753,7 @@ async def _ticket_response(
     created_by, resolved_by = await _load_provenance(
         db, ticket, show_email=show_email
     )
+    contacts = await _ticket_contacts(db, [ticket])
     return _to_response(
         ticket,
         deps,
@@ -742,7 +761,37 @@ async def _ticket_response(
         assigned_user,
         created_by=created_by,
         resolved_by=resolved_by,
+        assigned_contact=contacts.get(ticket.assigned_contact_id or ""),
     )
+
+
+async def _ticket_contacts(db: AsyncSession, tickets: list[Ticket]) -> dict[str, AssignedContact]:
+    """Renderable contacts for ``tickets``: only contacts of each ticket's
+    project's live org (GitHub #125)."""
+    from sessionfs.server.services.contacts import contact_ref, contacts_in_org
+
+    wanted = [t for t in tickets if t.assigned_contact_id]
+    if not wanted:
+        return {}
+    project_ids = sorted({t.project_id for t in wanted})
+    org_by_project = {
+        pid: org_id
+        for pid, org_id in (
+            await db.execute(
+                select(Project.id, Project.org_id).where(Project.id.in_(project_ids))
+            )
+        ).all()
+    }
+    out: dict[str, AssignedContact] = {}
+    by_org: dict[str, set[str]] = {}
+    for t in wanted:
+        org_id = org_by_project.get(t.project_id)
+        if org_id and t.assigned_contact_id:
+            by_org.setdefault(org_id, set()).add(t.assigned_contact_id)
+    for org_id, ids in by_org.items():
+        for cid, contact in (await contacts_in_org(db, ids, org_id)).items():
+            out[cid] = AssignedContact(**contact_ref(contact))
+    return out
 
 
 def _to_response(
@@ -754,6 +803,7 @@ def _to_response(
     created_by: TicketUserSummary | None = None,
     resolved_by: TicketUserSummary | None = None,
     recent_events: list[TicketEventResponse] | None = None,
+    assigned_contact: AssignedContact | None = None,
 ) -> TicketResponse:
     return TicketResponse(
         id=t.id,
@@ -764,6 +814,8 @@ def _to_response(
         assigned_to=t.assigned_to,
         assigned_user_id=t.assigned_user_id,
         assigned_user=assigned_user,
+        assigned_contact_id=t.assigned_contact_id,
+        assigned_contact=assigned_contact,
         created_by_user_id=t.created_by_user_id,
         created_by_session_id=t.created_by_session_id,
         created_by_persona=t.created_by_persona,
@@ -1169,6 +1221,7 @@ async def _record_create_events(
     auth: AuthContext,
     assigned_to: str | None,
     assigned_user_id: str | None,
+    assigned_contact_id: str | None = None,
 ) -> None:
     """The create-time timeline entries (same transaction as the ticket)."""
     actor = _actor_fields(
@@ -1207,6 +1260,15 @@ async def _record_create_events(
             "assigned",
             field="assigned_to",
             after={"persona": assigned_to},
+            **actor,
+        )
+    elif assigned_contact_id is not None:
+        await record_ticket_event(
+            db,
+            ticket,
+            "assigned",
+            field="assigned_contact_id",
+            after={"contact_id": assigned_contact_id},
             **actor,
         )
 
@@ -1390,6 +1452,7 @@ async def list_tickets(
     project_id: str,
     assigned_to: str | None = None,
     assigned_user: str | None = Query(None, max_length=ASSIGNEE_MAX_LEN),
+    assigned_contact: str | None = Query(None, max_length=64),
     status: str | None = None,
     priority: str | None = None,
     kind: str | None = None,
@@ -1435,6 +1498,8 @@ async def list_tickets(
             stmt = stmt.where(Ticket.assigned_user_id == auth.user.id)
         else:
             stmt = stmt.where(Ticket.assigned_user_id == assigned_user)
+    if assigned_contact is not None:
+        stmt = stmt.where(Ticket.assigned_contact_id == assigned_contact)
     if status is not None:
         stmt = stmt.where(Ticket.status == status)
     if priority is not None:
@@ -1508,12 +1573,14 @@ async def list_tickets(
         t.created_by_user_id for t in rows if t.created_by_user_id
     } | {t.resolver_user_id for t in rows if t.resolver_user_id}
     provenance_users = await _batch_users(db, provenance_ids)
+    assigned_contacts = await _ticket_contacts(db, list(rows))
     return [
         _to_response(
             t,
             deps_by_ticket[t.id],
             children_by_parent.get(t.id, []),
             assigned_users.get(t.assigned_user_id) if t.assigned_user_id else None,
+            assigned_contact=assigned_contacts.get(t.assigned_contact_id or ""),
             created_by=_user_summary(
                 provenance_users.get(t.created_by_user_id),
                 user_id=t.created_by_user_id,
@@ -1988,7 +2055,12 @@ async def create_ticket(
     # GitHub #96 — a person assignment (id or email) is mutually exclusive
     # with a persona assignment, and resolves to an active teammate with
     # read standing on the project (else 422).
-    check_assignee_conflict(body.assigned_to, body.assigned_user_id, body.assigned_user)
+    check_assignee_conflict(
+        body.assigned_to,
+        body.assigned_user_id,
+        body.assigned_user,
+        assigned_contact_id=body.assigned_contact_id,
+    )
     normalized_assigned_to = body.assigned_to
     if body.assigned_to is not None:
         from sessionfs.server.services.personas import (
@@ -2019,6 +2091,11 @@ async def create_ticket(
             value=token,
             assigner_user_id=None if auth.key_kind == "service" else auth.user.id,
         )
+    resolved_contact_id: str | None = None
+    if body.assigned_contact_id is not None:
+        resolved_contact_id = await resolve_assigned_contact_id(
+            db, project=project, value=body.assigned_contact_id
+        )
 
     ticket = Ticket(
         id=f"tk_{uuid.uuid4().hex[:16]}",
@@ -2030,6 +2107,7 @@ async def create_ticket(
         assigned_user_id=(
             resolved_assigned_user.id if resolved_assigned_user is not None else None
         ),
+        assigned_contact_id=resolved_contact_id,
         created_by_user_id=user.id,
         created_by_session_id=body.created_by_session_id,
         created_by_persona=body.created_by_persona,
@@ -2059,6 +2137,7 @@ async def create_ticket(
         assigned_user_id=(
             resolved_assigned_user.id if resolved_assigned_user is not None else None
         ),
+        assigned_contact_id=resolved_contact_id,
     )
 
     # Ticket watchers: the creator follows automatically, and so does the
@@ -2194,6 +2273,7 @@ async def update_ticket(
         or "assigned_to" in body.model_fields_set
         or "assigned_user_id" in body.model_fields_set
         or "assigned_user" in body.model_fields_set
+        or "assigned_contact_id" in body.model_fields_set
         or body.context_refs is not None
         or body.file_refs is not None
         or body.related_sessions is not None
@@ -2211,7 +2291,7 @@ async def update_ticket(
             400,
             "update_ticket requires at least one mutable field "
             "(title, description, priority, assigned_to, assigned_user_id, "
-            "assigned_user, context_refs, file_refs, related_sessions, "
+            "assigned_user, assigned_contact_id, context_refs, file_refs, related_sessions, "
             "acceptance_criteria, depends_on, due_date, estimated_effort). "
             "lease_epoch alone is not a mutation — it is the fence for one.",
         )

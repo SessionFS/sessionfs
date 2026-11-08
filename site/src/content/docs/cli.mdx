@@ -2043,8 +2043,8 @@ Manage tickets with a server-enforced FSM (`suggested → open → in_progress �
 | `sfs ticket list [--status STATE]` | List tickets, optionally filtered by FSM state |
 | `sfs ticket show <id>` | Show ticket detail + dependencies + recent comments, with the creator, due date and estimate |
 | `sfs ticket history <id> [--limit N]` | The ticket's change history, newest first: each status change, assignment and field edit with its before and after values and who made it (default 50, up to 200; v0.28.0) |
-| `sfs ticket create --title T --description D [--accept "..." --depends-on tkt_…] [--assigned-to PERSONA \| --user EMAIL] [--due YYYY-MM-DD] [--estimate DURATION]` | Open a ticket (agent source requires ≥1 acceptance criterion + ≥20-char description). `--user/-u` assigns it directly to a teammate (email or user id), who gets a "Your turn" notification; it can't be combined with `--assigned-to` (v0.27.0). `--due` sets a due date and `--estimate` an estimate in Jira duration syntax such as `2d 4h` (v0.28.0) |
-| `sfs ticket update <id> [--title T] [--description D] [--priority P] [--user EMAIL] [--due YYYY-MM-DD\|none] [--estimate DURATION\|none]` | Change a ticket's editable fields; `--user/-u` reassigns it directly to a teammate (v0.27.0). `--due` and `--estimate` set the due date and estimate; `none` clears them (v0.28.0) |
+| `sfs ticket create --title T --description D [--accept "..." --depends-on tkt_…] [--assigned-to PERSONA \| --user EMAIL] [--due YYYY-MM-DD] [--estimate DURATION]` | Open a ticket (agent source requires ≥1 acceptance criterion + ≥20-char description). `--user/-u` assigns it directly to a teammate (email or user id), who gets a "Your turn" notification; it can't be combined with `--assigned-to` (v0.27.0). `--due` sets a due date and `--estimate` an estimate in Jira duration syntax such as `2d 4h` (v0.28.0). `--assign-contact ec_…` assigns it to an [external contact](/contacts/) of the project's org instead (no notification: a contact can't log in) |
+| `sfs ticket update <id> [--title T] [--description D] [--priority P] [--user EMAIL] [--due YYYY-MM-DD\|none] [--estimate DURATION\|none]` | Change a ticket's editable fields; `--user/-u` reassigns it directly to a teammate (v0.27.0). `--due` and `--estimate` set the due date and estimate; `none` clears them (v0.28.0). `--assign-contact ec_…\|none` assigns or unassigns an external contact |
 | `sfs ticket start <id> [--tool T] [--force] [--no-print-context]` | Atomic claim; writes the active-ticket bundle and prints compiled persona + ticket context with tool-aware token budget |
 | `sfs ticket complete <id>` | Move from `in_progress` to `review`; clears owned bundle |
 | `sfs ticket comment <id> "body" [--as PERSONA]` | Slack-like comment (non-idempotent) |
@@ -2068,6 +2068,21 @@ Manage tickets with a server-enforced FSM (`suggested → open → in_progress �
 The active-ticket bundle is stored locally and read by all 10 daemon watchers (claude_code, codex, copilot, cursor, gemini, amp, cline, roo_code, kilo_code, antigravity). Captured sessions carry the bundle in their `manifest.json` and the server populates `sessions.persona_name` + `sessions.ticket_id` on upload.
 
 Following is also automatic: creating a ticket, being assigned, commenting or posting a review verdict follows it for you. Notifications are written by the server and never copy comment bodies. Choose an email digest (`off`, `your_turn` by default, or `all`) under **Settings → Preferences** in the dashboard.
+
+---
+
+## `sfs contact`
+
+An org's [external contacts](/contacts/): people the org works with who are not SessionFS users. Every command takes `--org` (default: your default org).
+
+| Command | Description |
+|---------|-------------|
+| `sfs contact list [--q TEXT] [--status active\|archived\|all] [--tag TAG]` | Contacts, newest first |
+| `sfs contact show <id> [--refs]` | One contact, and with `--refs` where it appears (sources you can read) |
+| `sfs contact create NAME [--email E] [--role R] [--tag T] [--alias A]` | Create a contact (any member) |
+| `sfs contact edit <id> [...]` / `alias add\|rm <id> ALIAS` / `archive <id> [--undo]` | Edit a contact |
+| `sfs contact merge <target> <source> [--yes]` / `delete <id>` / `export <id>` / `export-all` | Owners and admins |
+| `sfs contact suggestions [--apply NAME --contact ID] [--dismiss NAME]` | Names in your meetings and chats that nobody confirmed yet |
 
 ---
 

@@ -53,6 +53,7 @@ _WORK_DEFINING_FIELDS = (
     "priority",
     "assigned_to",
     "assigned_user_id",
+    "assigned_contact_id",
     "acceptance_criteria",
     "depends_on",
 )
@@ -104,17 +105,44 @@ def check_assignee_conflict(
     assigned_to: str | None,
     assigned_user_id: str | None,
     assigned_user: str | None,
+    *,
+    assigned_contact_id: str | None = None,
 ) -> None:
     """Refuse more than one assignment token in a single write.
 
     ``assigned_to`` is a persona; ``assigned_user_id`` and ``assigned_user``
-    are the same person (id or email). Any two non-null tokens conflict.
+    are the same person (id or email); ``assigned_contact_id`` is an external
+    contact (GitHub #125). Any two non-null tokens conflict.
     """
     person_tokens = (assigned_user_id is not None) + (assigned_user is not None)
     if assigned_to is not None and person_tokens:
         raise HTTPException(422, _ASSIGNEE_CONFLICT)
     if person_tokens > 1:
         raise HTTPException(422, _ASSIGNEE_CONFLICT)
+    if assigned_contact_id is not None and (assigned_to is not None or person_tokens):
+        raise HTTPException(422, _ASSIGNEE_CONFLICT)
+
+
+async def resolve_assigned_contact_id(
+    db: AsyncSession, *, project: Project, value: str
+) -> str:
+    """An active external contact of the project's live org. Every miss —
+    unknown, archived, merged, linked to a still-active member, another org,
+    a personal project — is the same 422 ``assignee_not_eligible``.
+
+    The contact row is locked ``FOR UPDATE`` and re-read, so this ticket
+    write serialises with a concurrent link, merge, archive or delete of the
+    same contact (each of those locks the contact row before touching its
+    tickets). Callers hold the project scope lock already.
+    """
+    from sessionfs.server.services.contacts import eligible_assignee_contact
+
+    contact = await eligible_assignee_contact(
+        db, project, value.strip(), lock=True, reject_linked_member=True
+    )
+    if contact is None:
+        raise HTTPException(422, _ASSIGNEE_NOT_ELIGIBLE)
+    return contact.id
 
 
 def assigned_user_label(user: User) -> str:
@@ -392,7 +420,9 @@ async def assert_lease_required_mode(
 
 # The assignee fields of a ticket update. A project editor who is neither
 # the creator nor a project admin may change these (and only these).
-ASSIGNEE_FIELDS = frozenset({"assigned_to", "assigned_user_id", "assigned_user"})
+ASSIGNEE_FIELDS = frozenset(
+    {"assigned_to", "assigned_user_id", "assigned_user", "assigned_contact_id"}
+)
 
 
 async def authorize_ticket_edit(
@@ -567,6 +597,8 @@ async def apply_ticket_update(
         present.append("assigned_to")
     if "assigned_user_id" in body_fields_set or "assigned_user" in body_fields_set:
         present.append("assigned_user_id")
+    if "assigned_contact_id" in body_fields_set:
+        present.append("assigned_contact_id")
     # Scheduling fields are not work-defining, but an explicit null is a
     # change (clear the due date / estimate) and must pass the same gate.
     if "due_date" in body_fields_set:
@@ -576,6 +608,23 @@ async def apply_ticket_update(
     editor = await assert_ticket_fields_editable(
         db, ticket=ticket, project=project, user_id=user_id, fields=present
     )
+
+    # A contact assignee is validated (and its row locked) before the lease
+    # fence touches the ticket row: link / merge / delete lock the contact
+    # and then its tickets, so taking the contact first here keeps one lock
+    # order and the two writes serialise instead of deadlocking.
+    body_contact = getattr(body, "assigned_contact_id", None)
+    resolved_contact_id: str | None = None
+    if body_contact is not None:
+        check_assignee_conflict(
+            body.assigned_to,
+            body.assigned_user_id,
+            body.assigned_user,
+            assigned_contact_id=body_contact,
+        )
+        resolved_contact_id = await resolve_assigned_contact_id(
+            db, project=project, value=body_contact
+        )
 
     # Optimistic concurrency: fence on lease_epoch when caller passes
     # it. Atomic UPDATE WHERE lease_epoch=... so a concurrent writer
@@ -650,8 +699,16 @@ async def apply_ticket_update(
             user_labels[user_id] = label if label else user_id
 
     check_assignee_conflict(
-        body.assigned_to, body.assigned_user_id, body.assigned_user
+        body.assigned_to,
+        body.assigned_user_id,
+        body.assigned_user,
+        assigned_contact_id=body_contact,
     )
+
+    def _clear_contact() -> None:
+        if ticket.assigned_contact_id is not None:
+            _record("assigned_contact_id", ticket.assigned_contact_id, None)
+            ticket.assigned_contact_id = None
 
     if body.assigned_to is not None:
         # v0.10.23 tk_884b2321fdb74170 — same best-effort normalize as
@@ -675,6 +732,7 @@ async def apply_ticket_update(
             await _remember_label(ticket.assigned_user_id)
             _record("assigned_user_id", ticket.assigned_user_id, None)
             ticket.assigned_user_id = None
+        _clear_contact()
         # v0.17.0 — auto-capture route feedback when an agent-created
         # ticket is reassigned to a *different* persona. Best-effort:
         # feedback capture must never fail the reassignment.
@@ -705,6 +763,18 @@ async def apply_ticket_update(
         if ticket.assigned_to is not None:
             _record("assigned_to", ticket.assigned_to, None)
             ticket.assigned_to = None
+        _clear_contact()
+    elif resolved_contact_id is not None:
+        contact_id = resolved_contact_id
+        _record("assigned_contact_id", ticket.assigned_contact_id, contact_id)
+        ticket.assigned_contact_id = contact_id
+        if ticket.assigned_to is not None:
+            _record("assigned_to", ticket.assigned_to, None)
+            ticket.assigned_to = None
+        if ticket.assigned_user_id is not None:
+            await _remember_label(ticket.assigned_user_id)
+            _record("assigned_user_id", ticket.assigned_user_id, None)
+            ticket.assigned_user_id = None
     else:
         # No non-null assignment token: explicit null(s) unassign whichever
         # side the caller named. The dashboard always sends both keys, so a
@@ -716,6 +786,8 @@ async def apply_ticket_update(
             await _remember_label(ticket.assigned_user_id)
             _record("assigned_user_id", ticket.assigned_user_id, None)
             ticket.assigned_user_id = None
+        if "assigned_contact_id" in body_fields_set:
+            _clear_contact()
     if body.context_refs is not None:
         old_refs = json.loads(ticket.context_refs or "[]")
         _record("context_refs", old_refs, body.context_refs)
@@ -829,6 +901,18 @@ async def apply_ticket_update(
                 actor_user_id=user_id,
                 actor_persona=editing_persona,
             )
+        elif field_name == "assigned_contact_id":
+            await record_ticket_event(
+                db,
+                ticket,
+                "assigned" if new_v else "unassigned",
+                field="assigned_contact_id",
+                before={"contact_id": old_v} if old_v else None,
+                after={"contact_id": new_v} if new_v else None,
+                actor_type=actor_type,
+                actor_user_id=user_id,
+                actor_persona=editing_persona,
+            )
         elif field_name == "due_date":
             await record_ticket_event(
                 db,
@@ -927,13 +1011,31 @@ async def apply_ticket_update(
     # Ticket watchers: a reassignment notifies watchers and hands the new
     # assignee — the persona's human owner or the assigned person — a
     # "your turn", auto-subscribing them.
+    _assign_fields = ("assigned_to", "assigned_user_id", "assigned_contact_id")
     assignment_edit = next(
-        (edit for edit in edits if edit[0] in ("assigned_to", "assigned_user_id")),
+        (edit for edit in edits if edit[0] in _assign_fields and edit[2]),
         None,
-    )
+    ) or next((edit for edit in edits if edit[0] in _assign_fields), None)
     if assignment_edit is not None:
         field_name, _, new_value = assignment_edit
-        if field_name == "assigned_user_id":
+        if field_name == "assigned_contact_id":
+            # A contact can't log in: watchers hear about it, nobody gets
+            # "your turn" (GitHub #125).
+            from sessionfs.server.db.models import ExternalContact
+
+            new_assignee_user_id = None
+            new_assignee_persona = None
+            contact = (
+                await db.get(ExternalContact, new_value)
+                if isinstance(new_value, str) and new_value
+                else None
+            )
+            summary = (
+                f"Assigned to {contact.display_name} (external)"
+                if contact is not None
+                else "Unassigned"
+            )
+        elif field_name == "assigned_user_id":
             # The edit records the user id; render the readable label for
             # the hand-off summary. The recipient is the id now on the ticket.
             new_assignee_user_id = ticket.assigned_user_id

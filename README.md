@@ -166,7 +166,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs auth use\|profiles\|whoami` | Switch between named account profiles |
 | `sfs auth keys list\|create\|revoke` | Manage your personal API keys |
 | `sfs config show\|set\|default-org` | Manage configuration and your default organization |
-| `sfs mcp serve` | Start MCP server (131 tools) for AI tool integration |
+| `sfs mcp serve` | Start MCP server (135 tools) for AI tool integration |
 | `sfs mcp install\|uninstall --for TOOL` | Add or remove the MCP registration for any of the 10 supported tools |
 | `sfs mcp index` | Rebuild the local full-text search index |
 | `sfs init` | Interactive setup wizard — auto-detects tools, optional sync |
@@ -282,7 +282,9 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
-**v0.29.12 — Public Beta.** 11364 backend tests + 2185 dashboard tests passing. Database migrations 001–129 (067 and 068 unused). 131 MCP tools. **Release gates and deployments record who wrote them** (user, service key or webhook, from the credential only; migration 129). **Merge readiness is a pure read:** approval requests are raised only when something changes (a verdict, a decision, a policy write, the merge-check trigger or a PR/MR webhook). GitLab commit statuses are sent after the event is saved, with a bounded retry inside the webhook deadline; confirming `link_meeting_action_item` needs the previewed ticket; meeting unlink locks and re-checks like link.
+**v0.29.13 — Public Beta.** 11392 backend tests + 2203 dashboard tests passing. Database migrations 001–130 (067 and 068 unused). 135 MCP tools. **External contacts (#125):** people your org works with who aren't SessionFS users, in Organization → Contacts. Meeting and chat speakers resolve to members, then contacts, then a "To confirm" queue a person works through (extraction never creates contacts); tickets and action items can be owned by a contact (shown as external, never notified); a contact who joins with a verified email becomes the member and their open tickets follow. Emails masked except for owners, admins and the creator; merge, export, erasure and an optional retention sweep. `sfs contact`, four MCP tools, `contacts:read|write` scopes. Migration 130.
+
+**v0.29.12 — Public Beta.** 11361 backend tests + 2185 dashboard tests passing. Database migrations 001–129 (067 and 068 unused). 131 MCP tools. **Release gates and deployments record who wrote them** (user, service key or webhook, from the credential only; migration 129). **Merge readiness is a pure read:** approval requests are raised only when something changes (a verdict, a decision, a policy write, the merge-check trigger or a PR/MR webhook). GitLab commit statuses are sent after the event is saved, with a bounded retry inside the webhook deadline; confirming `link_meeting_action_item` needs the previewed ticket; meeting unlink locks and re-checks like link.
 
 **v0.29.11 — Public Beta.** 11324 backend tests + 2185 dashboard tests passing. Database migrations 001–128 (067 and 068 unused). 131 MCP tools. **Meeting and chat action items suggest the existing ticket they look like** (never linked automatically): one click links the item, a picker links any item to a ticket, and linked items show their ticket with Unlink (API, MCP `link_meeting_action_item`, `sfs meeting|chat link|unlink`, dashboard). For You shows 10 items per section with Show more, session helper conversations can be renamed, and the helper panel has a Large size. Review-loop and security hardening: retry-safe worker starts, one run per review round, implementers counted across every lease, bounded needs-you and approval gates, share links that stop with their creator's access, and unreadable projects answer 404. Migrations 125–128.
 
@@ -420,7 +422,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### MCP and dashboard
 
-- **MCP server** (local, stdio) with 131 tools — sessions, knowledge read and write, rules, personas, tickets, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), meetings and chat threads, reminders, read-only approvals, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
+- **MCP server** (local, stdio) with 135 tools — sessions, knowledge read and write, rules, personas, tickets, external contacts, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), meetings and chat threads, reminders, read-only approvals, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
 - **`sfs mcp install --for <tool>`** for all 10 tools (stale registration repair, malformed config handling)
 - **Web dashboard** with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, command palette (Cmd+K), mobile nav, accessibility (focus trapping, ARIA live regions), product identity
 - **`/help` page** — MCP-first guidance, 10-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference

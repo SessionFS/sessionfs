@@ -33,7 +33,7 @@ export function ListView({ tickets, projectId, selected, onSelect, onNavigate, j
                 >
                   {t.priority}
                 </span>
-                {(t.assigned_to || t.assigned_user_id) && (
+                {(t.assigned_to || t.assigned_user_id || t.assigned_contact_id) && (
                   <span className="inline-flex min-w-0 items-center gap-1 text-xs text-text-tertiary">
                     → <AssigneeLabel ticket={t} />
                   </span>

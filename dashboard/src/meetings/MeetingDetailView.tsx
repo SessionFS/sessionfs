@@ -426,6 +426,8 @@ export function MeetingDetailView({
           meetingId={m.id}
           item={promoting}
           chat={chat}
+          orgId={orgId}
+          ownerContact={m.participants.find((p) => p.id === promoting.owner_participant_id)?.contact ?? null}
           onClose={() => setPromoting(null)}
         />
       )}

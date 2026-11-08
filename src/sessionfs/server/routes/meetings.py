@@ -23,6 +23,7 @@ import json
 import re
 import uuid
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -68,6 +69,14 @@ from sessionfs.server.services.personas import (
     find_org_persona,
     resolve_persona,
     visible_persona_org_id_for_auth,
+)
+from sessionfs.server.services.contacts import (
+    contact_ref,
+    contacts_in_org,
+    eligible_assignee_contact,
+    linked_member_id,
+    resolve_contact,
+    valid_contact_id,
 )
 from sessionfs.server.services.ticket_writes import resolve_assigned_user_id
 
@@ -122,6 +131,20 @@ class ChatThreadCreate(BaseModel):
 class ParticipantOverride(BaseModel):
     user_id: str | None = None
     persona_name: str | None = None
+    # External contacts (GitHub #125): exactly one of the three.
+    contact_id: str | None = Field(default=None, max_length=64)
+
+
+class ParticipantContact(BaseModel):
+    """A contact rendered through the meeting's own read check: name and
+    role only, and only when the contact belongs to the live scope org."""
+
+    id: str
+    display_name: str
+    role: str | None = None
+    status: str
+    linked_user_id: str | None = None
+    external: bool = True
 
 
 class MeetingParticipantResponse(BaseModel):
@@ -132,6 +155,8 @@ class MeetingParticipantResponse(BaseModel):
     persona_name: str | None
     resolution_method: str
     resolved_by_user_id: str | None
+    contact_id: str | None = None
+    contact: ParticipantContact | None = None
 
 
 class SuggestedReminder(BaseModel):
@@ -564,10 +589,18 @@ async def _upload_dlp_policy(
     return union
 
 
-def _dlp_scan_content(content: str, policy: dict | None) -> tuple[str, int]:
+def _dlp_scan_content(
+    content: str,
+    policy: dict | None,
+    *,
+    exclude_patterns: frozenset[str] = frozenset(),
+) -> tuple[str, int]:
     """Scan ``content`` under ``policy``; BLOCK-mode findings refuse with a
     422 carrying counts by type. Returns ``(stored_content, dlp_findings)``
-    where ``dlp_findings`` is the number of redactions applied."""
+    where ``dlp_findings`` is the number of redactions applied.
+
+    ``exclude_patterns`` drops findings of those built-in detectors (a
+    contact's email field skips only the email-address detector)."""
     policy = policy or DEFAULT_DLP_POLICY
     mode = policy.get("mode", "warn")
     categories = policy.get("categories")
@@ -587,7 +620,11 @@ def _dlp_scan_content(content: str, policy: dict | None) -> tuple[str, int]:
         custom_patterns=custom_patterns,
         allowlist=allowlist,
     )
-    findings = [f for f in findings if getattr(f, "match_text", None)]
+    findings = [
+        f
+        for f in findings
+        if getattr(f, "match_text", None) and f.pattern_name not in exclude_patterns
+    ]
     if not findings:
         return content, 0
     if mode == "block":
@@ -913,7 +950,13 @@ def _summaries_with_counts(
     return out
 
 
-def _participant_response(p: MeetingParticipant) -> MeetingParticipantResponse:
+def _participant_response(
+    p: MeetingParticipant, contacts: dict | None = None
+) -> MeetingParticipantResponse:
+    """``contacts`` maps contact id → ExternalContact for contacts already
+    checked to belong to the meeting's live scope org; any other contact id
+    is not rendered (the participant falls back to ``name_raw``)."""
+    contact = (contacts or {}).get(p.contact_id) if p.contact_id else None
     return MeetingParticipantResponse(
         id=p.id,
         name_raw=p.name_raw,
@@ -922,7 +965,19 @@ def _participant_response(p: MeetingParticipant) -> MeetingParticipantResponse:
         persona_name=p.persona_name,
         resolution_method=p.resolution_method,
         resolved_by_user_id=p.resolved_by_user_id,
+        contact_id=p.contact_id if contact is not None else None,
+        contact=ParticipantContact(**contact_ref(contact)) if contact is not None else None,
     )
+
+
+async def participant_contacts(
+    db: AsyncSession, meeting: MeetingTranscript, participants: list[MeetingParticipant]
+) -> dict:
+    """The renderable contacts for ``participants`` (live scope org only)."""
+    ids = {p.contact_id for p in participants if p.contact_id}
+    if not ids:
+        return {}
+    return await contacts_in_org(db, ids, await _meeting_scope_org_id(db, meeting))
 
 
 def suggested_reminder(
@@ -1038,6 +1093,7 @@ async def _meeting_detail(
         .all()
     )
     owner_users = {p.id: p.user_id for p in participants}
+    contacts = await participant_contacts(db, meeting, list(participants))
     tickets = await item_tickets(db, meeting, auth, list(action_items))
     messages: list[ChatMessageResponse] = []
     if meeting.kind == "chat":
@@ -1059,7 +1115,7 @@ async def _meeting_detail(
         content=meeting.content,
         content_sha256=meeting.content_sha256,
         messages=messages,
-        participants=[_participant_response(p) for p in participants],
+        participants=[_participant_response(p, contacts) for p in participants],
         action_items=[
             _action_item_response(
                 i,
@@ -1337,7 +1393,9 @@ async def resolve_participants(
 ) -> list[dict]:
     """Resolve participant names to org members/personas over the meeting's
     scope (§6), in order: exact email of an active org member → exact persona
-    name → a display name matching exactly one member → unresolved. A persona
+    name → a display name matching exactly one member → an active external
+    contact's exact email → exactly one active contact by name or alias →
+    unresolved. A persona
     that represents a member fills both ``persona_name`` and ``user_id``.
 
     Persona resolution for a project meeting follows the visibility rule
@@ -1377,6 +1435,7 @@ async def resolve_participants(
             "email": email,
             "user_id": None,
             "persona_name": None,
+            "contact_id": None,
             "resolution_method": "unresolved",
         }
         if org_id and email:
@@ -1412,6 +1471,21 @@ async def resolve_participants(
                 if len(members) == 1:
                     result["user_id"] = members[0].id
                     result["resolution_method"] = "display_name"
+                    resolved.append(result)
+                    continue
+        # External contacts (GitHub #125): an active contact's exact email,
+        # then exactly one active contact by name or alias. A contact linked
+        # to a still-active member resolves to that member. Never creates.
+        if org_id and (name or email):
+            contact = await resolve_contact(db, org_id, name, email)
+            if contact is not None:
+                result["contact_id"] = contact.id
+                member_id = await linked_member_id(db, contact)
+                if member_id is not None:
+                    result["user_id"] = member_id
+                    result["resolution_method"] = "exact_email"
+                else:
+                    result["resolution_method"] = "contact"
         resolved.append(result)
     return resolved
 
@@ -1857,10 +1931,28 @@ async def override_meeting_participant(
 
     has_user = body.user_id is not None
     has_persona = body.persona_name is not None
-    if has_user == has_persona:
-        raise HTTPException(422, "Provide exactly one of user_id or persona_name")
+    has_contact = body.contact_id is not None
+    if has_user + has_persona + has_contact != 1:
+        raise HTTPException(
+            422, "Provide exactly one of user_id, persona_name or contact_id"
+        )
 
-    if has_user:
+    if has_contact:
+        # An active contact of the meeting's live scope org; every miss is
+        # the same uniform 422.
+        contact = None
+        if scope_org_id and valid_contact_id(body.contact_id):
+            # Locked so the override serialises with a concurrent merge,
+            # delete or retention sweep of the same contact.
+            contact = await eligible_assignee_contact(
+                db, SimpleNamespace(org_id=scope_org_id), body.contact_id or "", lock=True
+            )
+        if contact is None:
+            raise HTTPException(422, _PARTICIPANT_NOT_ELIGIBLE)
+        participant.contact_id = contact.id
+        participant.user_id = None
+        participant.persona_name = None
+    elif has_user:
         if meeting.project_id is not None:
             try:
                 target = await resolve_assigned_user_id(
@@ -1877,6 +1969,7 @@ async def override_meeting_participant(
             target = await _resolve_group_org_member(db, scope_org_id, body.user_id)
         participant.user_id = target.id
         participant.persona_name = None
+        participant.contact_id = None
     else:
         if meeting.project_id is not None:
             # Project personas resolve first, then the caller's visible org
@@ -1904,6 +1997,7 @@ async def override_meeting_participant(
         # Same as automatic resolution: a persona that represents a member
         # labels the participant with both.
         participant.user_id = persona.represented_user_id
+        participant.contact_id = None
 
     participant.resolution_method = "manual"
     participant.resolved_by_user_id = user.id
@@ -1923,13 +2017,16 @@ async def override_meeting_participant(
                 "meeting_id": meeting.id,
                 "participant_id": participant.id,
                 "user_id": participant.user_id,
+                "contact_id": participant.contact_id,
             },
         )
     )
 
     await db.commit()
     await db.refresh(participant)
-    return _participant_response(participant)
+    return _participant_response(
+        participant, await participant_contacts(db, meeting, [participant])
+    )
 
 
 async def _resolve_group_org_member(

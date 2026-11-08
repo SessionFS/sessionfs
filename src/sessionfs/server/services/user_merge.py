@@ -97,6 +97,8 @@ REASSIGN_COLUMNS: tuple[tuple[str, str], ...] = (
     ("project_groups", "created_by_user_id"),
     ("project_group_members", "granted_by_user_id"),
     ("project_group_access", "added_by_user_id"),
+    ("external_contacts", "linked_user_id"),
+    ("external_contacts", "created_by_user_id"),
 )
 
 # (table, key column or None): one row per (user, key); the target's wins.

@@ -1,6 +1,7 @@
 import type { Ticket } from '../../api/client';
 import { getAvatarColor } from '../../utils/avatar';
 import { ticketPersonName } from './assignee';
+import { ContactName } from '../../org/contacts/ContactChip';
 
 /* ── Assignee display ──
  *
@@ -45,7 +46,8 @@ export function AssigneeLabel({
   variant = 'text',
   emphasis = false,
 }: {
-  ticket: Pick<Ticket, 'assigned_to' | 'assigned_user' | 'assigned_user_id'>;
+  ticket: Pick<Ticket, 'assigned_to' | 'assigned_user' | 'assigned_user_id'> &
+    Partial<Pick<Ticket, 'assigned_contact_id' | 'assigned_contact'>>;
   variant?: 'text' | 'chip';
   /** Primary-coloured, medium-weight name (the detail header). */
   emphasis?: boolean;
@@ -70,6 +72,17 @@ export function AssigneeLabel({
     ) : (
       <span className={nameClass} data-assignee="persona">
         {t.assigned_to}
+      </span>
+    );
+  }
+  if (t.assigned_contact) {
+    return <ContactName contact={t.assigned_contact} nameClassName={nameClass} />;
+  }
+  if (t.assigned_contact_id) {
+    // The contact was deleted or now belongs to another org.
+    return (
+      <span className="text-text-tertiary" data-assignee="contact-removed">
+        Unassigned (contact removed)
       </span>
     );
   }

@@ -125,7 +125,7 @@ describe('assignee helpers', () => {
     const coded = new ApiError(422, JSON.stringify({ error: { code: 'assignee_not_eligible', message: 'nope' } }));
     expect(assigneeErrorFrom(coded)).toMatch(/can't be assigned tickets in this project/);
     const detailed = new ApiError(422, JSON.stringify({ error: { code: '422', message: 'x', details: { error: 'assignee_conflict' } } }));
-    expect(assigneeErrorFrom(detailed)).toMatch(/person or a persona, not both/);
+    expect(assigneeErrorFrom(detailed)).toMatch(/one person, persona or contact at a time/);
     expect(assigneeErrorFrom(new ApiError(500, 'boom'))).toBeNull();
     expect(assigneeErrorFrom(new Error('x'))).toBeNull();
   });

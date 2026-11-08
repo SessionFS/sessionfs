@@ -3291,7 +3291,7 @@ Store meeting transcripts for a project or a project group, extract action items
 | `sfs meeting delete <id> [--yes]` | Delete a meeting |
 | `sfs meeting extract <id>` | Extract participants, action items and decisions with your own LLM key |
 | `sfs meeting participants <id>` | Participants and how each was resolved |
-| `sfs meeting resolve-participant <id> <participant_id> --user USER_ID \| --persona NAME` | Resolve a participant manually |
+| `sfs meeting resolve-participant <id> <participant_id> --user USER_ID \| --persona NAME \| --contact CONTACT_ID` | Resolve a participant manually (a contact must be an active contact of the meeting's org) |
 | `sfs meeting action-items <id>` | Action items and decisions |
 | `sfs meeting promote <id> <item_id> [--title T] [--assignee PERSONA \| --user USER_ID] [--due DATE] [--priority P] [--target-project ID] [--jira] [--yes]` | Show the ticket draft and ask before creating it; a group meeting needs `--target-project` |
 | `sfs meeting dismiss <id> <item_id>` / `restore <id> <item_id>` | Dismiss or restore a pending item |
@@ -3310,11 +3310,31 @@ Store chat threads (a Slack export, a DiscordChatExporter export, or a plain pas
 | `sfs chat show <id> [--no-messages]` | Numbered messages (`M1`, `M2`, …), participants, action items and decisions |
 | `sfs chat delete <id> [--yes]` | Delete a chat thread |
 | `sfs chat extract <id>` | Extract participants, action items and decisions with your own LLM key |
-| `sfs chat participants <id>` / `resolve-participant <id> <participant_id> --user USER_ID \| --persona NAME` | Participants, and resolving one manually |
+| `sfs chat participants <id>` / `resolve-participant <id> <participant_id> --user USER_ID \| --persona NAME \| --contact CONTACT_ID` | Participants, and resolving one manually |
 | `sfs chat action-items <id>` | Action items and decisions |
 | `sfs chat promote <id> <item_id> [same options as sfs meeting promote]` | Show the ticket draft and ask before creating it |
 | `sfs chat dismiss <id> <item_id>` / `restore <id> <item_id>` | Dismiss or restore a pending item |
 | `sfs chat link <id> <item_id> [<ticket_id>] [--yes]` / `unlink <id> <item_id>` | Link a pending item to an existing ticket, or unlink it (same as `sfs meeting link`; the comment cites messages `M<a>–<b>`) |
+
+## `sfs contact`
+
+External contacts: people your org works with who are not SessionFS users. Contacts are org-scoped; every command takes `--org` (default: your default org). Any member creates and edits; owners and admins merge, delete and export. Emails show to owners, admins and the contact's creator, masked for other members. Extraction never creates a contact. See [External contacts](https://sessionfs.dev/contacts/).
+
+| Command | Description |
+|---------|-------------|
+| `sfs contact list [--q TEXT] [--status active\|archived\|all] [--tag TAG] [--limit N] [--json]` | Contacts, newest first |
+| `sfs contact show <id> [--refs] [--json]` | One contact; `--refs` lists the meetings, chats and tickets naming it that you can read |
+| `sfs contact create NAME [--email E] [--role R] [--tag T ...] [--alias A ...]` | Create a contact. An email that belongs to a member is refused (assign the member instead); possible duplicates are listed |
+| `sfs contact edit <id> [--name N] [--email E \| --clear-email] [--role R \| --clear-role] [--tag T ...]` | Edit fields (`--tag` replaces the tags) |
+| `sfs contact alias add <id> ALIAS` / `alias rm <id> ALIAS` | Add or remove another name the contact goes by |
+| `sfs contact archive <id> [--undo]` | Archive (drops out of matching and pickers) or make active again |
+| `sfs contact merge <target_id> <source_id> [--yes]` | Merge a duplicate into a contact; a preview without `--yes` |
+| `sfs contact delete <id> [--yes]` | Erase a contact: participants go back to unresolved, tickets become unassigned |
+| `sfs contact export <id> [-o FILE]` | Everything stored about one contact (JSON), for a data request |
+| `sfs contact export-all [-o FILE]` | The directory as CSV (at most 10,000 rows) |
+| `sfs contact suggestions [--apply NAME --contact ID] [--dismiss NAME]` | Unresolved names in the last 90 days of meetings and chats you can read; resolve one to a contact or hide it |
+
+`sfs ticket create --assign-contact <id>` and `sfs ticket update <ticket_id> --assign-contact <id|none>` assign a ticket to a contact.
 
 ## `sfs remind`
 

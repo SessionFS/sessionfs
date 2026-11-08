@@ -57,6 +57,7 @@ from sessionfs.server.db.models import (
     User,
 )
 from sessionfs.server.roles import ADMIN_ROLES
+from sessionfs.server.services.contacts import clear_project_contact_assignments
 from sessionfs.server.services.personas import personas_stranded_by_scope_change
 from sessionfs.server.services.project_groups import remove_project_from_all_groups
 from sessionfs.server.services.scope_locks import lock_project_scope
@@ -805,6 +806,9 @@ async def initiate_transfer(
         # Confluence space; Jira links go stale rather than writing to an
         # unrelated issue, Confluence page links are dropped.
         await drop_project_integration_mappings(db, project.id)
+        # External contacts are org-scoped: tickets assigned to the old org's
+        # contacts are unassigned, with an event (GitHub #125).
+        await clear_project_contact_assignments(db, project.id, actor_user_id=user.id)
         # Project groups are org-scoped: a project leaving an org leaves all of
         # its groups (audited per membership) so no grant follows it.
         await remove_project_from_all_groups(
@@ -1234,6 +1238,10 @@ async def accept_transfer(
             # Drop the old org's Jira/Confluence mappings (Jira links go
             # stale, Confluence page links are dropped).
             await drop_project_integration_mappings(db, project.id)
+            # External contacts are org-scoped (GitHub #125).
+            await clear_project_contact_assignments(
+                db, project.id, actor_user_id=user.id
+            )
             # Project groups are org-scoped: a project leaving an org leaves
             # all of its groups (audited per membership) so no grant follows it.
             await remove_project_from_all_groups(

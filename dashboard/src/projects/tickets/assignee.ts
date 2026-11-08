@@ -2,23 +2,28 @@ import { ApiError, type AssignableUser, type Persona, type Ticket, type TicketAs
 
 /**
  * A ticket is assigned to a persona (an agent role, `assigned_to`) OR to a
- * person (`assigned_user_id`), never both. A person is only notified about a
- * persona assignment when that persona represents them.
+ * person (`assigned_user_id`) OR to an external contact of the project's org
+ * (`assigned_contact_id`, GitHub #125), never two at once. A person is only
+ * notified about a persona assignment when that persona represents them; a
+ * contact is never notified.
  */
 export type Assignee =
   | { kind: 'none' }
   | { kind: 'person'; userId: string }
-  | { kind: 'persona'; name: string };
+  | { kind: 'persona'; name: string }
+  | { kind: 'contact'; contactId: string };
 
 export const UNASSIGNED: Assignee = { kind: 'none' };
 
 const PERSON_PREFIX = 'user:';
 const PERSONA_PREFIX = 'persona:';
+const CONTACT_PREFIX = 'contact:';
 
-/** Option value for the picker: '' | 'user:<id>' | 'persona:<name>'. */
+/** Option value for the picker: '' | 'user:<id>' | 'persona:<name>' | 'contact:<id>'. */
 export function encodeAssignee(a: Assignee): string {
   if (a.kind === 'person') return `${PERSON_PREFIX}${a.userId}`;
   if (a.kind === 'persona') return `${PERSONA_PREFIX}${a.name}`;
+  if (a.kind === 'contact') return `${CONTACT_PREFIX}${a.contactId}`;
   return '';
 }
 
@@ -29,13 +34,19 @@ export function decodeAssignee(value: string): Assignee {
   if (value.startsWith(PERSONA_PREFIX) && value.length > PERSONA_PREFIX.length) {
     return { kind: 'persona', name: value.slice(PERSONA_PREFIX.length) };
   }
+  if (value.startsWith(CONTACT_PREFIX) && value.length > CONTACT_PREFIX.length) {
+    return { kind: 'contact', contactId: value.slice(CONTACT_PREFIX.length) };
+  }
   return UNASSIGNED;
 }
 
-/** The current assignee of a ticket. A person wins if a server ever sent both. */
-export function ticketAssignee(t: Pick<Ticket, 'assigned_to' | 'assigned_user_id'>): Assignee {
+/** The current assignee of a ticket. A person wins if a server ever sent more than one. */
+export function ticketAssignee(
+  t: Pick<Ticket, 'assigned_to' | 'assigned_user_id'> & Partial<Pick<Ticket, 'assigned_contact_id'>>,
+): Assignee {
   if (t.assigned_user_id) return { kind: 'person', userId: t.assigned_user_id };
   if (t.assigned_to) return { kind: 'persona', name: t.assigned_to };
+  if (t.assigned_contact_id) return { kind: 'contact', contactId: t.assigned_contact_id };
   return UNASSIGNED;
 }
 
@@ -43,16 +54,22 @@ export function sameAssignee(a: Assignee, b: Assignee): boolean {
   return encodeAssignee(a) === encodeAssignee(b);
 }
 
+export type AssigneePayload = Required<TicketAssigneeFields> & { assigned_contact_id?: string | null };
+
 /**
- * Request fields for create/update. Both fields are always sent so the
- * request states the whole assignee: the one that is set, and an explicit
- * null for the other (never both non-null — the server answers 422
- * `assignee_conflict`).
+ * Request fields for create/update. The persona and person fields are always
+ * sent so the request states the whole assignee: the one that is set, and an
+ * explicit null for the other (never two non-null — the server answers 422
+ * `assignee_conflict`). `assigned_contact_id` is sent when a contact is
+ * chosen, or as an explicit null when `clearContact` says the ticket had one;
+ * otherwise it is left out so servers without contacts see the old shape.
  */
-export function assigneePayload(a: Assignee): Required<TicketAssigneeFields> {
-  if (a.kind === 'person') return { assigned_user_id: a.userId, assigned_to: null };
-  if (a.kind === 'persona') return { assigned_to: a.name, assigned_user_id: null };
-  return { assigned_to: null, assigned_user_id: null };
+export function assigneePayload(a: Assignee, { clearContact = false }: { clearContact?: boolean } = {}): AssigneePayload {
+  const contact = clearContact ? { assigned_contact_id: null } : {};
+  if (a.kind === 'person') return { assigned_user_id: a.userId, assigned_to: null, ...contact };
+  if (a.kind === 'persona') return { assigned_to: a.name, assigned_user_id: null, ...contact };
+  if (a.kind === 'contact') return { assigned_to: null, assigned_user_id: null, assigned_contact_id: a.contactId };
+  return { assigned_to: null, assigned_user_id: null, ...contact };
 }
 
 /** Display name for a person: their display name, else their email. */
@@ -70,6 +87,8 @@ export function ticketPersonName(t: Pick<Ticket, 'assigned_user' | 'assigned_use
 export type AssigneeNote =
   | { kind: 'notifies'; name: string; you: boolean }
   | { kind: 'unrepresented'; persona: string; orgId: string | null; orgPersona: boolean }
+  /** An external contact: never notified (they don't log in). */
+  | { kind: 'contact' }
   | null;
 
 export function assigneeNote(
@@ -107,6 +126,7 @@ export function assigneeNote(
     const orgPersona = p.scope === 'org' || (!p.project_id && !!p.org_id);
     return { kind: 'unrepresented', persona: p.name, orgId: p.org_id ?? null, orgPersona };
   }
+  if (a.kind === 'contact') return { kind: 'contact' };
   return null;
 }
 
@@ -116,7 +136,7 @@ export function assigneeErrorMessage(code: string | undefined): string | null {
     case 'assignee_not_eligible':
       return "That person can't be assigned tickets in this project.";
     case 'assignee_conflict':
-      return 'A ticket can be assigned to a person or a persona, not both.';
+      return 'A ticket can be assigned to one person, persona or contact at a time.';
     default:
       return null;
   }

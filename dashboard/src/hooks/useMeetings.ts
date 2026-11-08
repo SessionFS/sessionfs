@@ -138,7 +138,7 @@ export function useResolveParticipant(meetingId: string | undefined) {
   const { auth } = useAuth();
   return useMeetingWrite(
     meetingId,
-    ({ participantId, body }: { participantId: string; body: { user_id: string } | { persona_name: string } }) =>
+    ({ participantId, body }: { participantId: string; body: { user_id: string } | { persona_name: string } | { contact_id: string } }) =>
       auth!.client.resolveMeetingParticipant(meetingId!, participantId, body),
     (prev, p: MeetingParticipant) => ({
       ...prev,

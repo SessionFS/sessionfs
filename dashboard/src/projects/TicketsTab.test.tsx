@@ -37,6 +37,10 @@ vi.mock('../hooks/useJiraTickets', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../hooks/useJiraTickets')>()),
   useJiraLink: mockUseJiraLink,
 }));
+// External contacts in the assignee picker (GitHub #125): none here.
+vi.mock('../hooks/useContacts', () => ({
+  useActiveContacts: () => ({ data: { items: [], next_before: null }, isLoading: false, isError: false }),
+}));
 vi.mock('../hooks/useMe', () => ({
   useMe: mockUseMe,
 }));
@@ -1087,7 +1091,7 @@ describe('TicketsTab', () => {
         ticketId: 'tk_1',
         body: { assigned_to: 'sentinel', assigned_user_id: null },
       });
-      expect(await screen.findByRole('alert')).toHaveTextContent('A ticket can be assigned to a person or a persona, not both.');
+      expect(await screen.findByRole('alert')).toHaveTextContent('A ticket can be assigned to one person, persona or contact at a time.');
       // The editor stays open so the choice can be fixed.
       expect(screen.getByRole('group', { name: 'Reassign ticket' })).toBeInTheDocument();
     });

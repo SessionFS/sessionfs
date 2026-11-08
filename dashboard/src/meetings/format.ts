@@ -453,9 +453,14 @@ export const RESOLUTION_LABEL: Record<string, string> = {
   display_name: 'Matched by name',
   persona: 'Matched to a persona',
   manual: 'Matched by hand',
+  contact: 'Matched to a contact',
   unresolved: 'Not matched',
 };
 
-export function isResolved(p: Pick<MeetingParticipant, 'user_id' | 'persona_name'>): boolean {
-  return !!(p.user_id || p.persona_name);
+export function isResolved(
+  p: Pick<MeetingParticipant, 'user_id' | 'persona_name'> & Partial<Pick<MeetingParticipant, 'contact'>>,
+): boolean {
+  // A contact id without a rendered contact (removed, or another org's)
+  // shows as the raw name, so it counts as unmatched.
+  return !!(p.user_id || p.persona_name || p.contact);
 }
