@@ -22,6 +22,11 @@ RUN pip install --no-cache-dir --upgrade "pip>=26.1.2" "setuptools>=80.10" "whee
 
 RUN chown -R sessionfs:sessionfs /app
 
+# Pick up Debian security fixes released after the base image was built.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 USER 10001
 
 EXPOSE 8080
