@@ -89,9 +89,12 @@ def sessionfs_label(project_id: str, kind: str, key: str) -> str:
 # ── Markdown → Confluence storage format ──
 
 
+# Link text and backlink slugs exclude ``[``: otherwise every ``[`` of a long
+# ``[[[[…`` run starts a match that scans up to 500 characters before failing
+# (about 0.4 s per 10k characters, ~70 s for a 1 MB publish).
 _INLINE_RE = re.compile(
-    r"\[(?P<link_text>[^\]\n]{1,500})\]\((?P<link_url>(?:[^()\s]|\([^()\s]*\))+)\)"
-    r"|\[\[(?P<backlink>[^\]\n]{1,200})\]\]"
+    r"\[(?P<link_text>[^\[\]\n]{1,500})\]\((?P<link_url>(?:[^()\s]|\([^()\s]*\))+)\)"
+    r"|\[\[(?P<backlink>[^\[\]\n]{1,200})\]\]"
     r"|\*\*(?P<bold>[^*]+)\*\*"
     r"|\*(?P<italic>[^*]+)\*"
     r"|`(?P<code>[^`]+)`"

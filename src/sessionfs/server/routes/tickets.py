@@ -45,7 +45,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy import false as sa_false
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -206,6 +206,10 @@ async def _jira_enqueue_status(
 
 # ── Request / response models ──
 
+# Longest accepted person-assignment token: an email address (RFC 5321) or a
+# user id.
+ASSIGNEE_MAX_LEN = 320
+
 
 class TicketCreate(BaseModel):
     title: str
@@ -214,9 +218,10 @@ class TicketCreate(BaseModel):
     assigned_to: str | None = None
     # Direct-to-person assignment (GitHub #96): a teammate's user id, or an
     # email/id in ``assigned_user``. Mutually exclusive with ``assigned_to``;
-    # setting one clears the other.
-    assigned_user_id: str | None = None
-    assigned_user: str | None = None
+    # setting one clears the other. Bounded: a user id is a UUID and an
+    # email is at most 320 characters (RFC 5321).
+    assigned_user_id: str | None = Field(default=None, max_length=ASSIGNEE_MAX_LEN)
+    assigned_user: str | None = Field(default=None, max_length=ASSIGNEE_MAX_LEN)
     context_refs: list[str] = []
     file_refs: list[str] = []
     related_sessions: list[str] = []
@@ -313,8 +318,8 @@ class TicketUpdate(BaseModel):
     description: str | None = None
     priority: str | None = None
     assigned_to: str | None = None
-    assigned_user_id: str | None = None
-    assigned_user: str | None = None
+    assigned_user_id: str | None = Field(default=None, max_length=ASSIGNEE_MAX_LEN)
+    assigned_user: str | None = Field(default=None, max_length=ASSIGNEE_MAX_LEN)
     context_refs: list[str] | None = None
     file_refs: list[str] | None = None
     related_sessions: list[str] | None = None
@@ -600,6 +605,17 @@ async def _viewer_sees_emails(
         # Service keys are already confined to their org + project allowlist.
         return True
     return await _user_sees_emails(db, auth.user.id, project)
+
+
+def mask_verdict_reviewer(readiness: dict) -> dict:
+    """Copy of a readiness dict with ``verdict.reviewer`` blanked.
+
+    For readers without project read standing: the dashboard shows
+    "Trusted reviewer" for an empty name."""
+    verdict = readiness.get("verdict")
+    if not isinstance(verdict, dict) or not verdict.get("reviewer"):
+        return readiness
+    return {**readiness, "verdict": {**verdict, "reviewer": ""}}
 
 
 async def _user_sees_emails(db: AsyncSession, user_id: str, project: Project) -> bool:
@@ -1373,7 +1389,7 @@ async def _check_dependency_cycle(
 async def list_tickets(
     project_id: str,
     assigned_to: str | None = None,
-    assigned_user: str | None = None,
+    assigned_user: str | None = Query(None, max_length=ASSIGNEE_MAX_LEN),
     status: str | None = None,
     priority: str | None = None,
     kind: str | None = None,
@@ -1801,6 +1817,11 @@ async def get_ticket_merge_readiness(
         db, project.org_id, auth.user.id
     )
     readiness = await ticket_readiness(db, ticket, sha, show_names=show_names)
+    # The reviewer is a user or service-key id. Readers without project read
+    # standing (captured-session readers) get the verdict without it, like
+    # the assignee email masking.
+    if not await _viewer_sees_emails(db, auth, project):
+        readiness = mask_verdict_reviewer(readiness)
     # A newly raised approval request is a pending row: persist it.
     await db.commit()
     return {"ticket_id": ticket.id, **readiness}
@@ -1993,7 +2014,10 @@ async def create_ticket(
         )
         assert token is not None
         resolved_assigned_user = await resolve_assigned_user_id(
-            db, project=project, value=token
+            db,
+            project=project,
+            value=token,
+            assigner_user_id=None if auth.key_kind == "service" else auth.user.id,
         )
 
     ticket = Ticket(
@@ -2982,6 +3006,25 @@ async def is_registered_trusted_reviewer(
     return (await db.execute(stmt)).scalar_one_or_none() is not None
 
 
+async def authorize_ticket_comment(
+    db: AsyncSession, auth: AuthContext, project_id: str, ctx: UserContext
+) -> Project:
+    """Who may comment on a ticket in ``project_id``: the project's read
+    predicate for user keys (403/404 otherwise), the key's org + project
+    allowlist for service keys, and the ``agent_tickets`` feature gate.
+
+    Shared by ``POST …/comments`` and meeting/chat action-item links, which
+    add their "raised again" comment through this same check.
+    """
+    project = await _get_project_for_auth(project_id, db, auth)
+    from sessionfs.server.auth.dependencies import (
+        assert_service_key_can_access_project,
+    )
+    await assert_service_key_can_access_project(db, auth, project)
+    await check_project_feature(ctx, "agent_tickets", project, db)
+    return project
+
+
 @router.post(
     "/{project_id}/tickets/{ticket_id}/comments",
     response_model=CommentResponse,
@@ -2996,12 +3039,7 @@ async def create_ticket_comment(
     db: AsyncSession = Depends(get_db),
 ) -> CommentResponse:
     user = auth.user
-    project = await _get_project_for_auth(project_id, db, auth)
-    from sessionfs.server.auth.dependencies import (
-        assert_service_key_can_access_project,
-    )
-    await assert_service_key_can_access_project(db, auth, project)
-    await check_project_feature(ctx, "agent_tickets", project, db)
+    project = await authorize_ticket_comment(db, auth, project_id, ctx)
 
     # tk_d42170b4670f4448 — server-stamp the verdict trust decision from
     # the authenticated identity against the trusted_reviewers registry.

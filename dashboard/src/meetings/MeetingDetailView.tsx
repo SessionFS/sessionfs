@@ -7,9 +7,12 @@ import { useMe } from '../hooks/useMe';
 import {
   useDeleteMeeting,
   useDismissMeetingItem,
+  useDismissMeetingSuggestion,
   useExtractMeeting,
+  useLinkMeetingItem,
   useMeeting,
   useRestoreMeetingItem,
+  useUnlinkMeetingItem,
 } from '../hooks/useMeetings';
 import { useToast } from '../hooks/useToast';
 import {
@@ -28,6 +31,7 @@ import {
 import { RemindersStrip } from '../reminders/RemindersStrip';
 import { ItemList } from './Items';
 import { ItemReminderDialog } from './ItemReminderDialog';
+import { LinkTicketDialog } from './LinkTicketDialog';
 import { Participants } from './Participants';
 import { participantName, useMeetingPeople } from './people';
 import { PromoteDialog } from './PromoteDialog';
@@ -69,12 +73,16 @@ export function MeetingDetailView({
   const extract = useExtractMeeting(meetingId);
   const dismiss = useDismissMeetingItem(meetingId);
   const restore = useRestoreMeetingItem(meetingId);
+  const linkItem = useLinkMeetingItem(meetingId);
+  const unlinkItem = useUnlinkMeetingItem(meetingId);
+  const dismissSuggestion = useDismissMeetingSuggestion(meetingId);
   const del = useDeleteMeeting(meetingId);
 
   const [selectedItem, setSelectedItem] = useState<string | null>(null);
   const [scrollKey, setScrollKey] = useState(0);
   const [promoting, setPromoting] = useState<MeetingActionItem | null>(null);
   const [reminding, setReminding] = useState<MeetingActionItem | null>(null);
+  const [linking, setLinking] = useState<MeetingActionItem | null>(null);
   const [extractError, setExtractError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   // Every item with a dismiss/restore in flight (two can run at once).
@@ -177,12 +185,29 @@ export function MeetingDetailView({
 
   // mutateAsync per call: with mutate(), a second call on the same mutation
   // detaches the first one's callbacks, so its item would stay busy forever.
-  async function itemWrite(kind: 'dismiss' | 'restore', item: MeetingActionItem) {
+  async function itemWrite(
+    kind: 'dismiss' | 'restore' | 'link' | 'unlink' | 'not_this_one',
+    item: MeetingActionItem,
+  ) {
     setBusyItems((prev) => new Set(prev).add(item.id));
-    const mutation = kind === 'dismiss' ? dismiss : restore;
     try {
-      await mutation.mutateAsync(item.id);
-      addToast('success', kind === 'dismiss' ? 'Dismissed' : 'Restored');
+      if (kind === 'link') {
+        // One click: the suggested ticket. The server re-checks it is still
+        // in scope and readable before linking.
+        const ticketId = item.suggested_ticket?.id;
+        if (!ticketId) return;
+        const result = await linkItem.mutateAsync({ itemId: item.id, ticketId });
+        addToast('success', `Linked to ${result.ticket_id}`);
+      } else if (kind === 'unlink') {
+        await unlinkItem.mutateAsync(item.id);
+        addToast('success', 'Unlinked — the item is open again');
+      } else if (kind === 'not_this_one') {
+        await dismissSuggestion.mutateAsync(item.id);
+        addToast('success', 'Suggestion hidden');
+      } else {
+        await (kind === 'dismiss' ? dismiss : restore).mutateAsync(item.id);
+        addToast('success', kind === 'dismiss' ? 'Dismissed' : 'Restored');
+      }
     } catch (err) {
       addToast('error', meetingActionError(err));
     } finally {
@@ -249,11 +274,14 @@ export function MeetingDetailView({
         )}
       </div>
 
-      {projectId && (
-        <div className="mt-4">
-          <RemindersStrip kind="meeting" projectId={projectId} sourceId={meetingId} />
-        </div>
-      )}
+      <div className="mt-4">
+        <RemindersStrip
+          kind="meeting"
+          projectId={projectId ?? undefined}
+          groupId={scope.kind === 'group' ? scope.id : undefined}
+          sourceId={meetingId}
+        />
+      </div>
 
       {/* ── One-time upload notices ── */}
       {(warnings.duplicateOf || (warnings.extractionSkipped && !extractError)) && (
@@ -313,6 +341,10 @@ export function MeetingDetailView({
                 onRemind={setReminding}
                 onDismiss={(i) => void itemWrite('dismiss', i)}
                 onRestore={(i) => void itemWrite('restore', i)}
+                onLinkSuggested={(i) => void itemWrite('link', i)}
+                onDismissSuggestion={(i) => void itemWrite('not_this_one', i)}
+                onPickTicket={setLinking}
+                onUnlink={(i) => void itemWrite('unlink', i)}
                 busyItemIds={busyItems}
                 chat={chat}
               />
@@ -334,6 +366,10 @@ export function MeetingDetailView({
                 onRemind={setReminding}
                 onDismiss={(i) => void itemWrite('dismiss', i)}
                 onRestore={(i) => void itemWrite('restore', i)}
+                onLinkSuggested={(i) => void itemWrite('link', i)}
+                onDismissSuggestion={(i) => void itemWrite('not_this_one', i)}
+                onPickTicket={setLinking}
+                onUnlink={(i) => void itemWrite('unlink', i)}
                 busyItemIds={busyItems}
                 chat={chat}
               />
@@ -392,6 +428,10 @@ export function MeetingDetailView({
           chat={chat}
           onClose={() => setPromoting(null)}
         />
+      )}
+
+      {linking && (
+        <LinkTicketDialog meetingId={m.id} item={linking} chat={chat} onClose={() => setLinking(null)} />
       )}
 
       {reminding && (

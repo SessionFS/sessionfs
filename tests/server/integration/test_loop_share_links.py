@@ -662,3 +662,133 @@ async def test_public_404_keeps_no_store_headers_and_merged_project_refused(
     assert resp.status_code == 404
     assert resp.json() == NOT_FOUND
     assert resp.headers["cache-control"] == "no-store"
+
+
+# ── Creator standing + org DLP on the public view (tk_86db8de1c3bf4bf0) ──
+
+
+async def _org_with_member(
+    db: AsyncSession, settings: dict | None = None
+) -> tuple[Organization, User, str, Project]:
+    from sessionfs.server.db.models import OrgMember
+
+    admin, _ = await _make_user(db, name="admin")
+    member, member_key = await _make_user(db, name="member")
+    org = Organization(
+        id=f"org_{uuid.uuid4().hex[:8]}",
+        name="Org",
+        slug=f"o-{uuid.uuid4().hex[:6]}",
+        tier="team",
+        settings=json.dumps(settings or {}),
+        created_at=datetime.now(timezone.utc),
+    )
+    db.add(org)
+    await db.commit()
+    for user, role in ((admin, "admin"), (member, "member")):
+        db.add(
+            OrgMember(
+                org_id=org.id, user_id=user.id, role=role,
+                joined_at=datetime.now(timezone.utc),
+            )
+        )
+    await db.commit()
+    project = await _make_project(db, admin, org_id=org.id)
+    return org, member, member_key, project
+
+
+@pytest.mark.asyncio
+async def test_public_view_stops_when_creator_loses_access(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """#7: a member's link stops serving once they leave the org."""
+    from sqlalchemy import delete
+
+    from sessionfs.server.db.models import OrgMember
+
+    org, member, member_key, project = await _org_with_member(db_session)
+    ticket = await _make_ticket(db_session, project, member, title="T")
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/loop-share-links",
+        headers=_hdrs(member_key),
+        json={"kind": "story", "ticket_id": ticket.id},
+    )
+    assert resp.status_code == 201, resp.text
+    token = resp.json()["token"]
+    assert (await client.get(f"/api/v1/share/loop/{token}")).status_code == 200
+
+    await db_session.execute(
+        delete(OrgMember).where(
+            OrgMember.org_id == org.id, OrgMember.user_id == member.id
+        )
+    )
+    await db_session.commit()
+    gone = await client.get(f"/api/v1/share/loop/{token}")
+    assert gone.status_code == 404 and gone.json() == NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_public_view_stops_when_minting_key_is_revoked(
+    client: AsyncClient, db_session: AsyncSession
+):
+    org, member, _, project = await _org_with_member(db_session)
+    ticket = await _make_ticket(db_session, project, member, title="T")
+    svc = await _make_service_key(db_session, member, org, ["loops:read", "loops:write"])
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/loop-share-links",
+        headers=_hdrs(svc),
+        json={"kind": "story", "ticket_id": ticket.id},
+    )
+    assert resp.status_code == 201, resp.text
+    token = resp.json()["token"]
+    assert (await client.get(f"/api/v1/share/loop/{token}")).status_code == 200
+
+    key_row = (
+        await db_session.execute(select(ApiKey).where(ApiKey.key_hash == hash_api_key(svc)))
+    ).scalar_one()
+    key_row.revoked_at = datetime.now(timezone.utc)
+    key_row.is_active = False
+    await db_session.commit()
+    gone = await client.get(f"/api/v1/share/loop/{token}")
+    assert gone.status_code == 404 and gone.json() == NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_public_view_applies_org_dlp_policy_and_fails_closed(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """#16: the org's DLP policy (custom patterns included) applies to the
+    public text, and a scan error refuses to serve instead of skipping."""
+    _, member, member_key, project = await _org_with_member(
+        db_session,
+        settings={
+            "dlp": {
+                "enabled": True,
+                "mode": "redact",
+                "categories": [],
+                "custom_patterns": [
+                    {"name": "proj_code", "regex": r"ZETA-\d+", "category": "secret",
+                     "severity": "high"}
+                ],
+            }
+        },
+    )
+    ticket = await _make_ticket(db_session, project, member, title="Ship ZETA-4242 fix")
+    resp = await client.post(
+        f"/api/v1/projects/{project.id}/loop-share-links",
+        headers=_hdrs(member_key),
+        json={"kind": "story", "ticket_id": ticket.id},
+    )
+    token = resp.json()["token"]
+    public = await client.get(f"/api/v1/share/loop/{token}")
+    assert public.status_code == 200, public.text
+    assert "ZETA-4242" not in public.text
+    assert "REDACTED" in public.text
+
+    import sessionfs.security.secrets as secrets_mod
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("scanner down")
+
+    monkeypatch.setattr(secrets_mod, "scan_dlp", broken)
+    refused = await client.get(f"/api/v1/share/loop/{token}")
+    assert refused.status_code == 404 and refused.json() == NOT_FOUND

@@ -4655,8 +4655,9 @@ async def test_restricted_org_jira_preview_and_publish_need_edit_standing(
         json={"summary": preview["summary"], "sections": preview["sections"], "confirm": True},
     )
     assert resp.status_code == 403, resp.text
+    # A plain member without a grant can no longer read the project: 404.
     resp = await client.post(f"{url}/preview", headers=_hdrs(plain_key))
-    assert resp.status_code == 403, resp.text
+    assert resp.status_code == 404, resp.text
     resp = await client.post(f"{url}/preview", headers=_hdrs(editor_key))
     assert resp.status_code == 200, resp.text
 
@@ -5814,3 +5815,35 @@ async def test_publish_create_400_error_map_names_sprint_and_parent_drops_both(
         {"customfield_10010": 42, "parent": {"key": "PARENT-1"}},
         None,
     ]
+
+
+@pytest.mark.asyncio
+async def test_connection_account_id_lives_on_the_row_and_skips_empty_answers():
+    """The adoption check reads the connection's accountId from its row, so
+    every replica agrees and a reconnect is never shadowed by a process-local
+    copy. An empty /myself answer is not stored: the next check asks again
+    instead of staying blocked until a restart."""
+    from sessionfs.server.db.models import OrgTrackerConnection
+    from sessionfs.server.routes.jira import _connection_account_id
+
+    answers = ["", "acc-1"]
+    calls = {"n": 0}
+
+    class Fake:
+        async def myself_account_id(self):
+            calls["n"] += 1
+            return answers.pop(0)
+
+    conn = OrgTrackerConnection(org_id="org_x", jira_account_id=None)
+    assert await _connection_account_id(Fake(), conn) is None
+    assert conn.jira_account_id is None
+    assert await _connection_account_id(Fake(), conn) == "acc-1"
+    assert conn.jira_account_id == "acc-1"
+    # Known now: no further /myself call.
+    assert await _connection_account_id(Fake(), conn) == "acc-1"
+    assert calls["n"] == 2
+
+    # A row whose account was re-saved answers with the stored value.
+    conn.jira_account_id = "acc-2"
+    assert await _connection_account_id(Fake(), conn) == "acc-2"
+    assert calls["n"] == 2

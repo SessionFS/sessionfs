@@ -13,6 +13,9 @@ Commands:
 - sfs meeting promote <id> <item_id> [--title …] [--assignee PERSONA] [--user ID]
                                      [--due DATE] [--target-project ID] [--jira] [--yes]
 - sfs meeting dismiss | restore <id> <item_id>
+- sfs meeting link <id> <item_id> [<ticket_id>] [--yes]  — tie an item to an EXISTING
+                                     ticket (default: the item's suggestion)
+- sfs meeting unlink <id> <item_id>
 
 The CLI is a thin client of the meeting routes; every access rule (project
 edit / group editor, DLP, retention) is enforced server-side.
@@ -208,6 +211,19 @@ def _print_items(items: list[dict], participants: list[dict], kind: str | None =
     promoted = [it for it in items if it.get("promoted_ticket_id")]
     for it in promoted:
         console.print(f"[dim]{it['id']} promoted to ticket[/dim] {it['promoted_ticket_id']}")
+    for it in items:
+        linked = it.get("linked_ticket")
+        if it.get("status") == "linked" and linked:
+            console.print(
+                f"[dim]{it['id']} linked to ticket[/dim] {linked['id']} "
+                f"[dim]· {escape(str(linked.get('title', '')))} · {linked.get('status')}[/dim]"
+            )
+        suggested = it.get("suggested_ticket")
+        if it.get("status") == "pending" and suggested:
+            console.print(
+                f"[yellow]{it['id']} looks like[/yellow] {suggested['id']} "
+                f"[dim]· {escape(str(suggested.get('title', '')))} · {suggested.get('status')}[/dim]"
+            )
 
 
 def _print_extraction_summary(body: dict) -> None:
@@ -615,3 +631,68 @@ def restore_item(
 ) -> None:
     """Bring a dismissed action item back to pending."""
     item_action_impl(meeting_id, item_id, "restore")
+
+
+@meeting_app.command("link")
+@handle_errors
+def link_item(
+    meeting_id: str = typer.Argument(...),
+    item_id: str = typer.Argument(...),
+    ticket_id: str | None = typer.Argument(
+        None, help="Existing ticket id (tk_...). Omit to use the item's suggestion."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Link without asking."),
+) -> None:
+    """Tie a pending action item to an EXISTING ticket. Shows the ticket and
+    the comment it will add, then asks to confirm."""
+    link_impl(meeting_id, item_id, ticket_id, yes=yes)
+
+
+def link_impl(
+    meeting_id: str,
+    item_id: str,
+    ticket_id: str | None,
+    *,
+    yes: bool,
+    kind: str | None = None,
+) -> None:
+    kp = _kind_params(kind) or None
+    api = _get_api_config()
+    root = _item_path(meeting_id, item_id)
+    body = {"ticket_id": ticket_id} if ticket_id else None
+    preview = _call("POST", f"{root}/link/preview", json_data=body, params=kp, api=api)
+    ticket = preview["ticket"]
+    console.print(Panel(
+        f"[cyan]{ticket['id']}[/cyan] [bold]{escape(str(ticket.get('title', '')))}[/bold]\n"
+        f"status {ticket.get('status')}  project {ticket.get('project_id')}"
+        + ("  [dim](suggested)[/dim]" if preview.get("suggested") else ""),
+        title="Link to ticket",
+        expand=False,
+    ))
+    console.print("[dim]Adds this comment on the ticket:[/dim]")
+    console.print(escape(str(preview.get("comment", ""))))
+    if not confirm_or_exit("Link this item?", yes=yes, yes_hint="Pass --yes to link without a prompt."):
+        console.print("[dim]Nothing linked.[/dim]")
+        raise typer.Exit(0)
+    out = _call(
+        "POST", f"{root}/link", json_data={"ticket_id": ticket["id"]}, params=kp, api=api
+    )
+    console.print(f"[green]Linked[/green] {item_id} to [cyan]{out['ticket_id']}[/cyan]")
+
+
+@meeting_app.command("unlink")
+@handle_errors
+def unlink_item(
+    meeting_id: str = typer.Argument(...),
+    item_id: str = typer.Argument(...),
+) -> None:
+    """Put a linked action item back to pending (the ticket comment stays)."""
+    unlink_impl(meeting_id, item_id)
+
+
+def unlink_impl(meeting_id: str, item_id: str, kind: str | None = None) -> None:
+    _call(
+        "POST", f"{_item_path(meeting_id, item_id)}/unlink",
+        params=_kind_params(kind) or None,
+    )
+    console.print(f"[green]Unlinked[/green] {item_id}")

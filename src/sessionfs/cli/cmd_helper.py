@@ -6,6 +6,7 @@ Commands:
 - sfs helper ask "..." [--project ID] [--session ID ...] [--conversation ID] [--no-stream] [--json]
 - sfs helper conversations list
 - sfs helper conversations show <id>
+- sfs helper conversations rename <id> <title>
 - sfs helper conversations delete <id> [--yes]
 - sfs helper status
 
@@ -43,7 +44,7 @@ helper_app = typer.Typer(
 )
 conversations_app = typer.Typer(
     name="conversations",
-    help="List, show and delete helper conversations.",
+    help="List, show, rename and delete helper conversations.",
     no_args_is_help=True,
 )
 helper_app.add_typer(conversations_app, name="conversations")
@@ -582,6 +583,55 @@ def conversations_show(
         else:
             tool_name = m.get("tool_name") or m.get("role", "tool")
             console.print(f"\n[dim]  · {markup_escape(tool_name)}[/dim]")
+
+
+# Mirrors the server's limit, so an obviously bad title fails before a request.
+_TITLE_MAX_CHARS = 200
+
+
+@conversations_app.command("rename")
+@handle_errors
+def conversations_rename(
+    conversation_id: str = typer.Argument(..., help="Conversation ID (hc_...)"),
+    title: str = typer.Argument(..., help="New title (up to 200 characters)"),
+) -> None:
+    """Rename a helper conversation.
+
+    The title is checked like everything else you send the helper: anything
+    your org's data protection would redact is saved as a [REDACTED:...] marker.
+    """
+    cleaned = " ".join(title.split())
+    if not cleaned:
+        err_console.print("[red]Give the conversation a title.[/red]")
+        raise typer.Exit(1)
+    if len(cleaned) > _TITLE_MAX_CHARS:
+        err_console.print(
+            f"[red]Titles can be at most {_TITLE_MAX_CHARS} characters "
+            f"(this one is {len(cleaned)}).[/red]"
+        )
+        raise typer.Exit(1)
+    api_url, api_key = _get_api_config()
+    status, body, _ = asyncio.run(
+        _api_request(
+            "PATCH",
+            f"/api/v1/helper/conversations/{conversation_id}",
+            api_url,
+            api_key,
+            json_data={"title": cleaned},
+        )
+    )
+    if status >= 400:
+        _fail(status, body)
+    if not isinstance(body, dict):
+        err_console.print("[red]Unexpected API response.[/red]")
+        raise typer.Exit(1)
+    saved = body.get("title") or cleaned
+    console.print(f"[green]Renamed to[/green] {markup_escape(saved)}")
+    if "[REDACTED" in saved and "[REDACTED" not in cleaned:
+        console.print(
+            "[yellow]Part of the title looked like a secret or personal data, "
+            "so it was saved redacted.[/yellow]"
+        )
 
 
 @conversations_app.command("delete")

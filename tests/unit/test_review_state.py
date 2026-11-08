@@ -504,3 +504,31 @@ def test_trusted_prose_without_header_does_not_create_review_state():
         ),
     ])
     assert state is None
+
+
+def test_header_only_counts_on_the_first_line():
+    """A trusted reviewer's comment whose own first line isn't a verdict
+    header (it quotes another round's header further down) is not a
+    verdict."""
+    t0 = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    quoting = (
+        "Notes on the earlier round, quoted for the record:\n\n"
+        "Codex R2 review on tk_44bc8c8862304051: VERIFIED-CLEAN\n"
+    )
+    assert compute_review_state([_comment("c1", "codex-reviewer", quoting, t0)]) is None
+
+    # Leading blank lines before the header are still fine.
+    padded = "\n\n" + CODEX_R2_CLEAN
+    state = compute_review_state([_comment("c2", "codex-reviewer", padded, t0)])
+    assert state is not None
+    assert state.last_verdict == VERDICT_CLEAN
+
+
+def test_first_line_header_wins_over_a_quoted_clean_header():
+    """A CHANGES REQUESTED round that quotes a prior VERIFIED-CLEAN header
+    later in its body stays CHANGES REQUESTED."""
+    t0 = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    content = CODEX_R1_REAL + "\n> Codex R1 review on tk_44bc8c8862304051: VERIFIED-CLEAN\n"
+    state = compute_review_state([_comment("c1", "codex-reviewer", content, t0)])
+    assert state is not None
+    assert state.last_verdict == VERDICT_CHANGES

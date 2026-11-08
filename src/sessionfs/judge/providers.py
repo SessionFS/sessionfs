@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
+from urllib.parse import quote
 
 import httpx
 
@@ -44,6 +45,15 @@ _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 _GOOGLE_URL_TEMPLATE = (
     "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 )
+
+
+def google_model_segment(model: str) -> str:
+    """The model id as ONE URL path segment for the googleapis URL.
+
+    The id is user-supplied (judge/helper settings), so it is percent-encoded
+    with nothing left safe: a ``/``, ``?``, ``#``, ``:`` or ``..`` can't reach
+    another path, method suffix or query on the Google host."""
+    return quote(model, safe="")
 
 
 def _detect_provider(model: str) -> str:
@@ -327,7 +337,7 @@ async def _call_anthropic(model: str, system: str, prompt: str, api_key: str, te
 
 async def _call_google(model: str, system: str, prompt: str, api_key: str, temperature: float = 0) -> str:
     """Call the Google Generative Language API."""
-    url = _GOOGLE_URL_TEMPLATE.format(model=model)
+    url = _GOOGLE_URL_TEMPLATE.format(model=google_model_segment(model))
     headers = {
         "x-goog-api-key": api_key,
         "Content-Type": "application/json",

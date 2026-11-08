@@ -996,7 +996,13 @@ async def test_confirm_org_lost_jira_integration_is_refused(
     ticket = await _make_ticket(db_session, user, project)
     await _make_connection(db_session, org, user, sync_comments="both")
     await _make_link(db_session, org, ticket)
+    # The conversation is bound to another Enterprise org the caller belongs
+    # to, so the helper itself stays available at confirm; only the ticket's
+    # org loses the Jira integration.
+    helper_org = await _make_org(db_session, user)
     conv = await _make_conversation(db_session, user)
+    conv.org_id = helper_org.id
+    await db_session.commit()
     action = await _make_action(
         db_session,
         user,

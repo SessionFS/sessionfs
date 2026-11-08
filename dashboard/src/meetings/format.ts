@@ -167,6 +167,12 @@ export function meetingActionError(err: unknown): string {
       return 'This item was already handled — refresh to see its current state.';
     case 'item_not_dismissed':
       return 'This item is no longer dismissed.';
+    case 'item_not_linked':
+      return 'This item isn’t linked to a ticket any more — refresh to see its current state.';
+    case 'ticket_not_linkable':
+      return 'That ticket can’t be linked to this item. Pick a ticket from this project (or one of the group’s projects you can see).';
+    case 'ticket_required':
+      return 'Choose the ticket to link this item to.';
     case 'target_project_required':
       return 'Choose the project to create the ticket in.';
     case 'target_project_not_editable':

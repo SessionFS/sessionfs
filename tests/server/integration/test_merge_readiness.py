@@ -555,7 +555,7 @@ async def test_readiness_fails_closed_when_implementer_key_minter_unresolvable(
 
 
 @pytest.mark.asyncio
-async def test_readiness_outsider_gets_403(
+async def test_readiness_outsider_gets_404(
     client: AsyncClient, db_session: AsyncSession
 ):
     owner, _ = await _make_user(db_session)
@@ -574,10 +574,11 @@ async def test_readiness_outsider_gets_403(
     ticket_id = await _make_ticket(client, project, owner_key)
 
     # An outsider with no read standing on the project hits the SAME
-    # project-access gate as GET ticket (403), never leaking the ticket.
+    # project-access gate as GET ticket (404, like a missing project), never
+    # leaking the ticket.
     outsider, outsider_key = await _make_user(db_session, name="outsider")
     resp = await _readiness(client, project, ticket_id, outsider_key, HEAD)
-    assert resp.status_code == 403
+    assert resp.status_code == 404
     assert outsider.id not in {owner.id}
 
 
@@ -1027,3 +1028,90 @@ def test_compute_merge_readiness_truncated_flag_is_never_ready():
     out = compute_merge_readiness(**kwargs, history_truncated=True)
     assert out["ready"] is False
     assert out["reasons"] == [REVIEW_HISTORY_TRUNCATED_REASON]
+
+
+@pytest.mark.asyncio
+async def test_earlier_lease_implementer_is_not_independent(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """tk_215621358a664738: someone who started the ticket under an EARLIER
+    lease and was then reassigned is still an implementer. They can't close
+    it as the reviewer, and they can't approve its merge."""
+    from sqlalchemy import update
+
+    from sessionfs.server.db.models import ApprovalRequest, Ticket
+    from sessionfs.server.services.approvals import is_implementer
+    from sessionfs.server.services.review_state import load_implementer_identities
+
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    ticket_id = await _make_ticket(client, project, key)
+    first, _ = await _make_user(db_session, name="first-implementer")
+    first_id = first.id
+
+    # `first` started the ticket under lease 1; it was reassigned and the
+    # owner took lease 2 and finished the work.
+    await _seed_start_context(db_session, ticket_id, user_id=first_id, lease_epoch=1)
+    await _seed_start_context(db_session, ticket_id, user_id=owner.id, lease_epoch=2)
+    await db_session.execute(
+        update(Ticket).where(Ticket.id == ticket_id).values(lease_epoch=2)
+    )
+    await db_session.commit()
+    await _seed_clean_verdict(db_session, ticket_id, first, reviewed_commit=HEAD)
+
+    resp = await _readiness(client, project, ticket_id, key, HEAD)
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ready"] is False
+    assert "reviewer identity matches an implementer identity" in body["reasons"]
+
+    ticket = await db_session.get(Ticket, ticket_id)
+    identities = (await load_implementer_identities(db_session, [ticket]))[ticket_id]
+    assert (None, first_id) in identities and (None, owner.id) in identities
+
+    request = ApprovalRequest(id="apr_test", target_kind="merge", target_id=ticket_id)
+    assert await is_implementer(db_session, request, first_id) is True
+
+
+async def test_readiness_masks_reviewer_for_captured_session_reader(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A captured-session-only reader can read readiness but never learns
+    the reviewer's user or service-key id; the owner still sees it."""
+    from sessionfs.server.db.models import Session
+
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    ticket_id = await _make_ticket(client, project, key)
+    reviewer, _ = await _make_user(db_session, name="reviewer")
+    await _seed_clean_verdict(db_session, ticket_id, reviewer, reviewed_commit=HEAD)
+    await _seed_implementer(db_session, project, ticket_id, user_id=owner.id)
+
+    captured, captured_key = await _make_user(db_session, name="captured")
+    now = datetime.now(timezone.utc)
+    db_session.add(
+        Session(
+            id=f"ses_{uuid.uuid4().hex[:16]}",
+            user_id=captured.id,
+            title="synced",
+            source_tool="claude-code",
+            blob_key=f"sessions/{captured.id}/x.tar.gz",
+            etag=uuid.uuid4().hex,
+            created_at=now,
+            updated_at=now,
+            uploaded_at=now,
+            project_id=project.id,
+        )
+    )
+    await db_session.commit()
+
+    owner_body = (await _readiness(client, project, ticket_id, key, HEAD)).json()
+    assert owner_body["verdict"]["reviewer"] == reviewer.id
+
+    resp = await _readiness(client, project, ticket_id, captured_key, HEAD)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ready"] is True
+    assert body["verdict"]["reviewer"] == ""
+    assert body["verdict"]["reviewed_commit"] == HEAD
+    assert reviewer.id not in resp.text

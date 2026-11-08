@@ -91,6 +91,15 @@ describe('describeTicketEvent', () => {
     ).toBe('Jira took the title and description from Jira ACME-12');
   });
 
+  it('reads meeting and chat item links', () => {
+    expect(sentence(ev('conversation_linked', { after: { kind: 'meeting', conversation_id: 'meet_1', item_id: 'mai_1' } }))).toBe(
+      'Alice tied a meeting action item to this ticket',
+    );
+    expect(sentence(ev('conversation_unlinked', { before: { kind: 'chat', conversation_id: 'chat_1', item_id: 'mai_2' } }))).toBe(
+      'Alice untied a chat thread action item from this ticket',
+    );
+  });
+
   it('reads moderation and creation', () => {
     expect(sentence(ev('approved'))).toBe('Alice approved this ticket');
     expect(sentence(ev('dismissed'))).toBe('Alice dismissed this ticket');

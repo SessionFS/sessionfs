@@ -55,7 +55,7 @@ export default function HelperEmptyState({
   onShowHistory: () => void;
 }) {
   return (
-    <div className="px-4 py-6 sm:px-5 sm:py-8">
+    <div className="px-4 py-6 sm:px-5 sm:py-8 group-data-[size=large]/helper:mx-auto group-data-[size=large]/helper:max-w-[56rem] md:group-data-[size=large]/helper:px-8">
       <span className="grid h-10 w-10 place-items-center rounded-xl bg-[color-mix(in_oklch,var(--brand)_16%,transparent)] text-brand">
         <SparkIcon size={20} />
       </span>

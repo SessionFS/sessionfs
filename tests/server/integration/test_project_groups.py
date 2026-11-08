@@ -633,7 +633,7 @@ async def test_restricted_org_end_to_end_visibility(
     assert resp.status_code == 200, resp.text
     assert resp.json()["can_edit"] is False
     resp = await client.get(f"/api/v1/projects/{hidden.id}", headers=member_h)
-    assert resp.status_code == 403, resp.text
+    assert resp.status_code == 404, resp.text
 
 
 # ---------------------------------------------------------------------------
@@ -806,7 +806,7 @@ async def test_corrupt_settings_fail_closed(client: AsyncClient, db_session: Asy
     assert await user_can_edit_project(db_session, admin.id, project)
     assert (await client.get(f"/api/v1/projects/{project.id}", headers=owner_h)).status_code == 200
     assert (await client.get(f"/api/v1/projects/{project.id}", headers=admin_h)).status_code == 200
-    assert (await client.get(f"/api/v1/projects/{project.id}", headers=member_h)).status_code == 403
+    assert (await client.get(f"/api/v1/projects/{project.id}", headers=member_h)).status_code == 404
 
     resp = await client.get(f"/api/v1/orgs/{org.id}/settings", headers=member_h)
     assert resp.status_code == 200, resp.text
@@ -1086,7 +1086,7 @@ async def test_restricted_member_push_gets_no_link_and_no_read(
     assert not await user_can_access_project(db_session, member.id, project)
     assert project.id not in {p.id for p in await list_accessible_projects(db_session, member.id)}
     resp = await client.get(f"/api/v1/projects/{project.id}", headers=member_h)
-    assert resp.status_code == 403, resp.text
+    assert resp.status_code == 404, resp.text
     # The session stays the member's own.
     resp = await client.get(f"/api/v1/sessions/{sid}", headers=member_h)
     assert resp.status_code == 200, resp.text
@@ -1437,3 +1437,114 @@ async def test_merged_project_cannot_join_a_group(client: AsyncClient, db_sessio
     details = error["details"]
     assert "merged_into" not in details
     assert await _access_rows(db_session, group_id=group.id) == []
+
+
+@pytest.mark.asyncio
+async def test_merge_drops_memberships_the_actor_cannot_administer(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A merge only moves a group membership onto the target when the actor
+    administers that group; otherwise the source's membership is dropped
+    (reason group_admin_required), so a project owner can't widen a group's
+    reach by merging into a project its grantees couldn't read."""
+    admin, _ = await _user(db_session, "orgadmin")
+    owner, owner_h = await _user(db_session, "owner")
+    org = await _org(db_session)
+    await _member(db_session, org, admin, role="owner")
+    await _member(db_session, org, owner)  # plain member, owns both projects
+    source = await _project(db_session, owner, org=org)
+    target = await _project(db_session, owner, org=org)
+    foreign = await _group(db_session, org, admin, name="Foreign")
+    mine = await _group(db_session, org, admin, name="Mine")
+    await _grant(db_session, mine, owner, "admin")
+    await _place(db_session, foreign, source)
+    await _place(db_session, mine, source)
+
+    resp = await client.post(
+        f"/api/v1/projects/{target.id}/merge",
+        headers=owner_h,
+        json={"source_project_id": source.id, "dry_run": True},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["stats"]["project_group_memberships_moved"] == 1
+    assert resp.json()["stats"]["project_group_memberships_dropped"] == 1
+
+    resp = await client.post(
+        f"/api/v1/projects/{target.id}/merge",
+        headers=owner_h,
+        json={"source_project_id": source.id, "dry_run": False, "persona_policy": "rename"},
+    )
+    assert resp.status_code == 200, resp.text
+    stats = resp.json()["stats"]
+    assert stats["project_group_memberships_moved"] == 1
+    assert stats["project_group_memberships_dropped"] == 1
+
+    assert await _access_rows(db_session, project_id=source.id) == []
+    assert [r.group_id for r in await _access_rows(db_session, project_id=target.id)] == [mine.id]
+    removed = await _events(db_session, org.id, "project_group_project_removed")
+    assert [e.target_id for e in removed] == [foreign.id]
+    assert json.loads(removed[0].after)["reason"] == "group_admin_required"
+
+
+@pytest.mark.asyncio
+async def test_project_groups_hide_ungranted_groups_from_plain_members(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A plain org member reading a project sees only the groups they hold a
+    grant on, like the org's group list; an org admin sees them all."""
+    owner, owner_h = await _user(db_session, "owner")
+    member, member_h = await _user(db_session, "member")
+    org = await _org(db_session)
+    await _member(db_session, org, owner, role="owner")
+    await _member(db_session, org, member)
+    project = await _project(db_session, owner, org=org)
+    granted = await _group(db_session, org, owner, name="Granted")
+    hidden = await _group(db_session, org, owner, name="Hidden")
+    await _place(db_session, granted, project)
+    await _place(db_session, hidden, project)
+    await _grant(db_session, granted, member, "reader")
+
+    for path in (f"/api/v1/projects/{project.id}", f"/api/v1/projects/{project.id}/groups"):
+        resp = await client.get(path, headers=member_h)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        groups = body["groups"] if isinstance(body, dict) else body
+        assert [g["id"] for g in groups] == [granted.id], path
+        assert hidden.id not in resp.text
+
+        resp = await client.get(path, headers=owner_h)
+        body = resp.json()
+        groups = body["groups"] if isinstance(body, dict) else body
+        assert sorted(g["id"] for g in groups) == sorted([granted.id, hidden.id]), path
+
+
+@pytest.mark.asyncio
+async def test_group_description_is_length_capped(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, owner_h = await _user(db_session, "owner")
+    org = await _org(db_session)
+    await _member(db_session, org, owner, role="owner")
+    too_long = "d" * 2001
+
+    resp = await client.post(
+        f"/api/v1/orgs/{org.id}/groups",
+        headers=owner_h,
+        json={"name": "Docs", "description": too_long},
+    )
+    assert resp.status_code == 422, resp.text
+    assert too_long not in resp.text
+
+    resp = await client.post(
+        f"/api/v1/orgs/{org.id}/groups",
+        headers=owner_h,
+        json={"name": "Docs", "description": "d" * 2000},
+    )
+    assert resp.status_code == 201, resp.text
+    group_id = resp.json()["id"]
+    resp = await client.patch(
+        f"/api/v1/orgs/{org.id}/groups/{group_id}",
+        headers=owner_h,
+        json={"description": too_long},
+    )
+    assert resp.status_code == 422, resp.text

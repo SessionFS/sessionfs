@@ -18,6 +18,8 @@ Routes:
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import os
 import re
 import secrets
@@ -27,7 +29,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import inspect, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import (
@@ -38,23 +40,22 @@ from sessionfs.server.auth.dependencies import (
 from sessionfs.server.auth.project_access import (
     require_project_editor,
     user_can_access_project,
+    user_can_edit_project,
 )
 from sessionfs.server.db.engine import get_db
-from sessionfs.server.db.models import LoopShareLink, Project, Ticket
+from sessionfs.server.db.models import ApiKey, LoopShareLink, Project, Ticket, User
 from sessionfs.server.routes.knowledge import _get_project_for_auth
-from sessionfs.server.routes.loop_checklist import _sanitize_text
+from sessionfs.server.sanitize import sanitize_archive_string
 from sessionfs.server.routes.tickets import _get_ticket_or_404
 from sessionfs.server.services import releases, review_loop
 from sessionfs.server.tier_gate import UserContext, check_project_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/projects", tags=["loop-share-links"])
+logger = logging.getLogger("sessionfs.api")
 share_router = APIRouter()
 
 _MAX_EXPIRES_DAYS = 90
 _DEFAULT_EXPIRES_DAYS = 30
-# The ship report is built from the releases tables track F adds (#119); until
-# they land a ship_report link resolves to the constant 404.
-_RELEASES_TABLE = "releases"
 # Identity keys a public ship report never carries.
 _PUBLIC_DROPPED_KEYS = frozenset(
     {"author_user_id", "created_by_user_id", "service_key_id", "service_key_name"}
@@ -118,15 +119,6 @@ def _stamp_user_id(auth: AuthContext) -> str | None:
     return None if auth.key_kind == "service" else auth.user.id
 
 
-async def _table_exists(db: AsyncSession, name: str) -> bool:
-    conn = await db.connection()
-
-    def _has(sync_conn) -> bool:
-        return inspect(sync_conn).has_table(name)
-
-    return await conn.run_sync(_has)
-
-
 def _iso(dt: datetime | None) -> str | None:
     if dt is None:
         return None
@@ -151,24 +143,55 @@ def _link_to_dict(link: LoopShareLink) -> dict[str, Any]:
     }
 
 
-def _redact_public_text(value: str) -> str:
-    """Collapse whitespace, strip NULs/surrogates, redact secrets and emails."""
-    value = _sanitize_text(value)
-    return _EMAIL_RE.sub("[REDACTED:email]", value)
+def _redact_public_text(value: str, policy: dict | None = None) -> str:
+    """Collapse whitespace, strip NULs/surrogates, redact emails, then scan
+    under the project org's DLP policy (secrets always included).
 
+    Unlike the best-effort ``_sanitize_text`` used on stored text, a scan
+    error here propagates: the public view refuses to serve rather than
+    serve text it could not inspect.
+    """
+    from sessionfs.security.secrets import scan_dlp as scan_dlp_full
+    from sessionfs.server.dlp import redact_text
 
-def _redact_value(value: Any) -> Any:
-    """Recursively redact every string in the public payload."""
-    if isinstance(value, str):
-        return _redact_public_text(value)
-    if isinstance(value, dict):
-        return {k: _redact_value(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_redact_value(v) for v in value]
+    value = " ".join((value or "").split())
+    value, _ = sanitize_archive_string(value)
+    value = _EMAIL_RE.sub("[REDACTED:email]", value)
+    policy = policy or {}
+    categories = policy.get("categories")
+    if not isinstance(categories, list):
+        categories = []
+    categories = ["secrets", *[c for c in categories if c != "secrets"]]
+    custom_patterns = policy.get("custom_patterns")
+    if not isinstance(custom_patterns, list):
+        custom_patterns = None
+    allowlist = policy.get("allowlist")
+    if not isinstance(allowlist, list):
+        allowlist = None
+    findings = scan_dlp_full(
+        value,
+        categories=categories,
+        custom_patterns=custom_patterns,
+        allowlist=allowlist,
+    )
+    findings = [f for f in findings if getattr(f, "match_text", None)]
+    if findings:
+        value = redact_text(value, findings, custom_patterns)
     return value
 
 
-def _redact_story(story: dict[str, Any]) -> dict[str, Any]:
+def _redact_value(value: Any, policy: dict | None = None) -> Any:
+    """Recursively redact every string in the public payload."""
+    if isinstance(value, str):
+        return _redact_public_text(value, policy)
+    if isinstance(value, dict):
+        return {k: _redact_value(v, policy) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_value(v, policy) for v in value]
+    return value
+
+
+def _redact_story(story: dict[str, Any], policy: dict | None = None) -> dict[str, Any]:
     """Serve the story with dollars dropped and free text DLP-redacted.
 
     ``ticket_story`` already emits persona/role labels (``reviewer``,
@@ -176,7 +199,50 @@ def _redact_story(story: dict[str, Any]) -> dict[str, Any]:
     identity; this pass strips any email/secrets that leaked into a title,
     verdict or result summary.
     """
-    return _redact_value(story)
+    return _redact_value(story, policy)
+
+
+async def _creator_still_entitled(
+    db: AsyncSession, link: LoopShareLink, project: Project
+) -> bool:
+    """A link only serves while whoever minted it could still mint it.
+
+    A person must still be active with editor standing on the project; a
+    service key must still be live (active, not revoked or expired) in the
+    project's org with the project in its allowlist. A link with neither
+    stamp, or whose creator lost standing, stops serving at once.
+    """
+    if link.created_by_user_id:
+        user = await db.get(User, link.created_by_user_id)
+        if user is None or not user.is_active:
+            return False
+        return await user_can_edit_project(db, user.id, project)
+    if link.created_service_key_id:
+        key = await db.get(ApiKey, link.created_service_key_id)
+        if (
+            key is None
+            or key.key_kind != "service"
+            or not key.is_active
+            or key.revoked_at is not None
+            or project.org_id is None
+            or key.org_id != project.org_id
+        ):
+            return False
+        if key.expires_at is not None:
+            expires = key.expires_at
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=timezone.utc)
+            if expires <= datetime.now(timezone.utc):
+                return False
+        if key.project_ids:
+            try:
+                allowed = json.loads(key.project_ids)
+            except (TypeError, ValueError):
+                return False
+            if not isinstance(allowed, list) or (allowed and project.id not in allowed):
+                return False
+        return True
+    return False
 
 
 # ── Bodies ──
@@ -345,14 +411,14 @@ async def revoke_loop_share_link(
 # ── Public view ──
 
 
-async def _ship_report(db: AsyncSession, link: LoopShareLink) -> dict[str, Any]:
+async def _ship_report(
+    db: AsyncSession, link: LoopShareLink, policy: dict | None = None
+) -> dict[str, Any]:
     """Render a ship-report link: no dollars, no identities, redacted text.
 
-    A schema without the ``releases`` tables, or a release that no longer
-    exists, resolves to the same constant 404 as every other miss.
+    A release that no longer exists resolves to the same constant 404 as
+    every other miss.
     """
-    if not await _table_exists(db, _RELEASES_TABLE):
-        raise _not_found()
     report = await releases.ship_report(
         db,
         project_id=link.project_id,
@@ -362,7 +428,7 @@ async def _ship_report(db: AsyncSession, link: LoopShareLink) -> dict[str, Any]:
     )
     if report is None:
         raise _not_found()
-    return _redact_value(_strip_identities(report))
+    return _redact_value(_strip_identities(report), policy)
 
 
 def _strip_identities(value: Any) -> Any:
@@ -414,6 +480,12 @@ async def get_loop_share(
     ).scalar_one_or_none()
     if project is None or project.merged_into_project_id is not None:
         raise _not_found()
+    # A link minted by someone who has since lost access stops serving.
+    if not await _creator_still_entitled(db, link, project):
+        raise _not_found()
+    from sessionfs.server.helper.redaction import org_dlp_policy
+
+    policy = await org_dlp_policy(db, project.org_id)
 
     if link.kind == "story":
         if not link.ticket_id:
@@ -431,9 +503,19 @@ async def get_loop_share(
         story = await review_loop.ticket_story(
             db, project_id=link.project_id, ticket=ticket, show_dollars=False
         )
-        return _redact_story(story)
+        try:
+            return _redact_story(story, policy)
+        except Exception:
+            logger.exception("Loop share redaction failed for link %s", link.id)
+            raise _not_found()
 
     if link.kind == "ship_report":
-        return await _ship_report(db, link)
+        try:
+            return await _ship_report(db, link, policy)
+        except HTTPException:
+            raise
+        except Exception:
+            logger.exception("Loop share redaction failed for link %s", link.id)
+            raise _not_found()
 
     raise _not_found()

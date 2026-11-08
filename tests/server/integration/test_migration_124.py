@@ -94,6 +94,8 @@ def pre_124_db(tmp_path: Path) -> Path:
     with engine.begin() as conn:
         conn.execute(sa.text("DROP TABLE workflow_step_children"))
         conn.execute(sa.text("DROP TABLE workflow_templates"))
+        # 126's review-round index uses the column; it postdates this migration.
+        conn.execute(sa.text("DROP INDEX uq_agent_run_review_round"))
         conn.execute(sa.text("ALTER TABLE agent_runs DROP COLUMN workflow_step_id"))
         for stmt in _SEED:
             conn.execute(sa.text(stmt.format(t=1)))

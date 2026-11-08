@@ -405,6 +405,9 @@ async def _compute_merge_stats(
     source_id: str,
     target_id: str,
     org_id: str | None = None,
+    *,
+    actor_user_id: str,
+    platform_admin: bool,
 ) -> dict:
     """Count rows that will be moved / skipped."""
     stats: dict = {}
@@ -448,26 +451,17 @@ async def _compute_merge_stats(
     stats["ke_duplicates"] = len(ke_dupes)
 
     # Project-group memberships: moved to the target, or dropped where the
-    # group already contains the target.
-    target_groups = select(ProjectGroupAccess.group_id).where(
-        ProjectGroupAccess.project_id == target_id
+    # group already contains the target or the actor isn't its admin.
+    rows, in_target, no_standing = await _plan_group_memberships(
+        db,
+        source_id=source_id,
+        target_id=target_id,
+        actor_user_id=actor_user_id,
+        platform_admin=platform_admin,
     )
-    stats["project_group_memberships_moved"] = (
-        await db.execute(
-            select(func.count()).select_from(ProjectGroupAccess).where(
-                ProjectGroupAccess.project_id == source_id,
-                ProjectGroupAccess.group_id.not_in(target_groups),
-            )
-        )
-    ).scalar() or 0
-    stats["project_group_memberships_dropped"] = (
-        await db.execute(
-            select(func.count()).select_from(ProjectGroupAccess).where(
-                ProjectGroupAccess.project_id == source_id,
-                ProjectGroupAccess.group_id.in_(target_groups),
-            )
-        )
-    ).scalar() or 0
+    dropped = {g for g, _ in rows if g in in_target or g in no_standing}
+    stats["project_group_memberships_moved"] = len(rows) - len(dropped)
+    stats["project_group_memberships_dropped"] = len(dropped)
 
     # Rules
     stats["source_has_rules"] = await _has_rules(db, source_id)
@@ -1250,6 +1244,79 @@ async def _step_feature_grandfathers(
 
 # ── main entry point ───────────────────────────────────────────────
 
+async def _plan_group_memberships(
+    db: AsyncSession,
+    *,
+    source_id: str,
+    target_id: str,
+    actor_user_id: str,
+    platform_admin: bool,
+) -> tuple[list[tuple[str, str]], set[str], set[str]]:
+    """``(rows, already_in_target, no_standing)`` for the source's group
+    memberships: ``rows`` are ``(group_id, org_id)``; ``already_in_target``
+    the groups that already contain the target; ``no_standing`` the groups
+    the actor can't administer.
+
+    Moving a membership makes the TARGET readable to that group's grantees,
+    which is a group-admin decision. Admin standing on a group = platform
+    admin, admin/owner of the group's org, or an explicit ``admin`` grant on
+    the group (the same rule as the group routes)."""
+    from sessionfs.server.auth.project_access import GROUP_ROLE_ADMIN
+    from sessionfs.server.db.models import OrgMember, ProjectGroup, ProjectGroupMember
+    from sessionfs.server.roles import ADMIN_ROLES
+
+    rows = [
+        (g, o)
+        for g, o in (
+            await db.execute(
+                select(ProjectGroupAccess.group_id, ProjectGroup.org_id)
+                .join(ProjectGroup, ProjectGroup.id == ProjectGroupAccess.group_id)
+                .where(ProjectGroupAccess.project_id == source_id)
+                .order_by(ProjectGroupAccess.group_id)
+            )
+        ).all()
+    ]
+    if not rows:
+        return [], set(), set()
+    group_ids = [g for g, _ in rows]
+    target_groups = set(
+        (
+            await db.execute(
+                select(ProjectGroupAccess.group_id).where(
+                    ProjectGroupAccess.project_id == target_id,
+                    ProjectGroupAccess.group_id.in_(group_ids),
+                )
+            )
+        ).scalars().all()
+    )
+    if platform_admin:
+        return rows, target_groups, set()
+    admin_orgs = set(
+        (
+            await db.execute(
+                select(OrgMember.org_id).where(
+                    OrgMember.user_id == actor_user_id,
+                    OrgMember.org_id.in_({o for _, o in rows}),
+                    OrgMember.role.in_(ADMIN_ROLES),
+                )
+            )
+        ).scalars().all()
+    )
+    granted = set(
+        (
+            await db.execute(
+                select(ProjectGroupMember.group_id).where(
+                    ProjectGroupMember.user_id == actor_user_id,
+                    ProjectGroupMember.group_id.in_(group_ids),
+                    ProjectGroupMember.role == GROUP_ROLE_ADMIN,
+                )
+            )
+        ).scalars().all()
+    )
+    no_standing = {g for g, o in rows if o not in admin_orgs and g not in granted}
+    return rows, target_groups, no_standing
+
+
 async def _move_group_memberships(
     db: AsyncSession,
     *,
@@ -1258,32 +1325,27 @@ async def _move_group_memberships(
     actor_user_id: str,
     actor_role: str | None,
 ) -> dict:
-    """Move the source's project-group memberships onto the target (or drop
-    them where the group already contains the target), one
+    """Move the source's project-group memberships onto the target, one
     ``project_group_project_moved`` / ``project_group_project_removed`` org
-    audit row each. Returns ``{"moved": n, "dropped": n}``."""
-    from sessionfs.server.db.models import Organization, ProjectGroup
+    audit row each. Returns ``{"moved": n, "dropped": n}``.
+
+    A membership is dropped instead of moved where the group already contains
+    the target (reason ``project_merged``) or where the actor has no admin
+    standing on the group (reason ``group_admin_required``): a project admin
+    can't widen a group's reach by merging; a group admin can add the target
+    afterwards."""
+    from sessionfs.server.db.models import Organization
     from sessionfs.server.services.project_groups import group_audit_event
 
-    rows = (
-        await db.execute(
-            select(ProjectGroupAccess.group_id, ProjectGroup.org_id)
-            .join(ProjectGroup, ProjectGroup.id == ProjectGroupAccess.group_id)
-            .where(ProjectGroupAccess.project_id == source_id)
-            .order_by(ProjectGroupAccess.group_id)
-        )
-    ).all()
+    rows, target_groups, no_standing = await _plan_group_memberships(
+        db,
+        source_id=source_id,
+        target_id=target_id,
+        actor_user_id=actor_user_id,
+        platform_admin=actor_role == "platform_admin",
+    )
     if not rows:
         return {"moved": 0, "dropped": 0}
-    target_groups = set(
-        (
-            await db.execute(
-                select(ProjectGroupAccess.group_id).where(
-                    ProjectGroupAccess.project_id == target_id
-                )
-            )
-        ).scalars().all()
-    )
     actor = (
         await db.execute(select(User.email).where(User.id == actor_user_id))
     ).scalar_one_or_none()
@@ -1296,7 +1358,7 @@ async def _move_group_memberships(
             )
         ).all()
     )
-    dropped = [g for g, _ in rows if g in target_groups]
+    dropped = [g for g, _ in rows if g in target_groups or g in no_standing]
     if dropped:
         await db.execute(
             delete(ProjectGroupAccess).where(
@@ -1310,7 +1372,12 @@ async def _move_group_memberships(
         .values(project_id=target_id)
     )
     for group_id, org_id in rows:
-        was_dropped = group_id in target_groups
+        was_dropped = group_id in target_groups or group_id in no_standing
+        reason = (
+            "group_admin_required"
+            if group_id in no_standing and group_id not in target_groups
+            else "project_merged"
+        )
         db.add(
             group_audit_event(
                 org_id=org_id,
@@ -1328,7 +1395,7 @@ async def _move_group_memberships(
                 after={
                     "project_id": None if was_dropped else target_id,
                     "merged_into_project_id": target_id,
-                    "reason": "project_merged",
+                    "reason": reason,
                 },
             )
         )
@@ -1381,7 +1448,10 @@ async def merge_projects(
     slug_collisions = await _detect_slug_collisions(db, source_id, target_id)
     ke_duplicates = await _detect_ke_duplicates(db, source_id, target_id)
     target_has_rules_flag = await _has_rules(db, target_id)
-    stats = await _compute_merge_stats(db, source_id, target_id, source.org_id)
+    stats = await _compute_merge_stats(
+        db, source_id, target_id, source.org_id,
+        actor_user_id=user_id, platform_admin=platform_admin,
+    )
 
     if dry_run:
         # Dry-run: ZERO DB writes. Validate + return plan only.
@@ -1544,7 +1614,10 @@ async def merge_projects(
         # Recompute the execute plan from the locked state — the pre-lock
         # plan (including the slug collision set) may be stale.
         target_has_rules_flag = await _has_rules(db, target_id)
-        stats = await _compute_merge_stats(db, source_id, target_id, source.org_id)
+        stats = await _compute_merge_stats(
+            db, source_id, target_id, source.org_id,
+            actor_user_id=user_id, platform_admin=platform_admin,
+        )
         slug_collisions = await _detect_slug_collisions(db, source_id, target_id)
 
         # =============================================================

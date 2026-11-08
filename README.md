@@ -166,7 +166,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs auth use\|profiles\|whoami` | Switch between named account profiles |
 | `sfs auth keys list\|create\|revoke` | Manage your personal API keys |
 | `sfs config show\|set\|default-org` | Manage configuration and your default organization |
-| `sfs mcp serve` | Start MCP server (130 tools) for AI tool integration |
+| `sfs mcp serve` | Start MCP server (131 tools) for AI tool integration |
 | `sfs mcp install\|uninstall --for TOOL` | Add or remove the MCP registration for any of the 10 supported tools |
 | `sfs mcp index` | Rebuild the local full-text search index |
 | `sfs init` | Interactive setup wizard — auto-detects tools, optional sync |
@@ -281,6 +281,8 @@ Sessions are stored as `.sfs` directories:
 All file paths are relative to workspace root. Sessions are append-only — conflict resolution appends both sides rather than merging.
 
 ## Status
+
+**v0.29.11 — Public Beta.** 11324 backend tests + 2185 dashboard tests passing. Database migrations 001–128 (067 and 068 unused). 131 MCP tools. **Meeting and chat action items suggest the existing ticket they look like** (never linked automatically): one click links the item, a picker links any item to a ticket, and linked items show their ticket with Unlink (API, MCP `link_meeting_action_item`, `sfs meeting|chat link|unlink`, dashboard). For You shows 10 items per section with Show more, session helper conversations can be renamed, and the helper panel has a Large size. Review-loop and security hardening: retry-safe worker starts, one run per review round, implementers counted across every lease, bounded needs-you and approval gates, share links that stop with their creator's access, and unreadable projects answer 404. Migrations 125–128.
 
 **v0.29.10 — Public Beta.** 11205 backend tests + 2152 dashboard tests passing. Database migrations 001–124 (067 and 068 unused). 130 MCP tools. **Agents, tickets and agent runs on every plan**, Free included, with no cap; merge readiness and review-state reads too. Review loops, worker runs and review rounds, workflow templates, releases, the merge check, loop share links and PR/release webhook ingest stay Team+ under the new `review_loop` feature. Project editors can assign, reassign and unassign tickets (API, MCP `update_ticket`/`assign_persona`, `sfs ticket`, dashboard one-click Unassign); other fields still need the creator or a project admin. The session helper publishes existing tickets to Jira (confirm-first, same path as Promote to Jira) and accepts meeting and chat ranges as proposal sources (GitHub #124). Meeting extraction no longer fails on PostgreSQL when an item's owner matches a participant (GitHub #124), and the project Agents tab shows the project's own agents with an Include org people switch (GitHub #126). No new migrations.
 
@@ -416,7 +418,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### MCP and dashboard
 
-- **MCP server** (local, stdio) with 130 tools — sessions, knowledge read and write, rules, personas, tickets, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), meetings and chat threads, reminders, read-only approvals, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
+- **MCP server** (local, stdio) with 131 tools — sessions, knowledge read and write, rules, personas, tickets, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), meetings and chat threads, reminders, read-only approvals, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
 - **`sfs mcp install --for <tool>`** for all 10 tools (stale registration repair, malformed config handling)
 - **Web dashboard** with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, command palette (Cmd+K), mobile nav, accessibility (focus trapping, ARIA live regions), product identity
 - **`/help` page** — MCP-first guidance, 10-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference

@@ -41,12 +41,14 @@ from sessionfs.server.db.models import (
     ReleasePr,
     ReleaseTicket,
     Ticket,
-    TicketComment,
     TicketPrLink,
 )
 from sessionfs.server.sanitize import sanitize_archive_string
 from sessionfs.server.services import review_loop
-from sessionfs.server.services.review_state import compute_review_state
+from sessionfs.server.services.review_state import (
+    compute_review_state,
+    load_trusted_review_comments_by_ticket,
+)
 
 # ── Enums (mirror the migration CHECK constraints) ──
 
@@ -422,8 +424,40 @@ async def record_release(
         )
     await db.commit()
     return _release_to_dict(
-        release, pr_ids=sorted(pr_ids), ticket_ids=sorted(ticket_ids or [])
+        release,
+        pr_ids=sorted(pr_ids),
+        ticket_ids=await _linked_ticket_ids(
+            db, release_id=release.id, project_id=project_id
+        ),
     )
+
+
+async def _linked_ticket_ids(
+    db: AsyncSession, *, release_id: str, project_id: str
+) -> list[str]:
+    """The release's stored ticket set: tickets linked through its PRs plus
+    tickets linked directly, limited to tickets in the release's project.
+
+    Read back from the link tables, so a ticket the project-scoped insert
+    skipped (deleted, or in another project) is never reported as linked.
+    """
+    via_prs = (
+        select(TicketPrLink.ticket_id)
+        .join(ReleasePr, ReleasePr.pr_id == TicketPrLink.pr_id)
+        .where(ReleasePr.release_id == release_id)
+    )
+    direct = select(ReleaseTicket.ticket_id).where(
+        ReleaseTicket.release_id == release_id
+    )
+    rows = (
+        await db.execute(
+            select(Ticket.id).where(
+                Ticket.project_id == project_id,
+                or_(Ticket.id.in_(via_prs), Ticket.id.in_(direct)),
+            )
+        )
+    ).scalars().all()
+    return sorted(set(rows))
 
 
 async def _resolve_pr_ids(
@@ -497,7 +531,7 @@ async def link_release_tickets(
 
     The route validates that every id is a ticket in the same project before
     calling this; here we just upsert the unique pair (a re-link no-ops) and
-    return the idempotent linked set.
+    return the release's full stored ticket set (PR-linked and direct).
     """
     cleaned = [clean_str(t, _MAX_SHA) for t in ticket_ids[:MAX_RELEASE_TICKETS]]
     cleaned = list(dict.fromkeys(t for t in cleaned if t))
@@ -514,7 +548,7 @@ async def link_release_tickets(
             service_key_id=service_key_id,
         )
     await db.commit()
-    return sorted(cleaned)
+    return await _linked_ticket_ids(db, release_id=release_id, project_id=project_id)
 
 
 async def record_gate(
@@ -861,7 +895,7 @@ async def ship_report(
     done_tickets = [t for t in tickets if t.status == "done"]
 
     runs: list[AgentRun] = []
-    comments: list[TicketComment] = []
+    comments_by_ticket: dict[str, list[dict[str, Any]]] = {}
     involved_ids = [t.id for t in involved]
     if involved_ids:
         runs = list(
@@ -878,17 +912,10 @@ async def ship_report(
             .scalars()
             .all()
         )
-        comments = list(
-            (
-                await db.execute(
-                    select(TicketComment)
-                    .where(TicketComment.ticket_id.in_(involved_ids))
-                    .order_by(TicketComment.created_at, TicketComment.id)
-                    .limit(5000)
-                )
-            )
-            .scalars()
-            .all()
+        # Trusted verdicts only, capped per ticket: one long thread can't
+        # push the other tickets' rounds out of a shared limit.
+        comments_by_ticket = await load_trusted_review_comments_by_ticket(
+            db, involved_ids
         )
 
     # Findings + harm (one pass over already-loaded runs — no N+1).
@@ -912,23 +939,9 @@ async def ship_report(
                 all_fixed = False
 
     # Review rounds (trusted verdicts) across the involved tickets.
-    comments_by_ticket: dict[str, list[TicketComment]] = {}
-    for c in comments:
-        comments_by_ticket.setdefault(c.ticket_id, []).append(c)
     review_rounds = 0
-    for cid, crows in comments_by_ticket.items():
-        state = compute_review_state(
-            [
-                {
-                    "id": c.id,
-                    "author_persona": c.author_persona,
-                    "content": c.content,
-                    "created_at": c.created_at,
-                    "verdict_trusted": c.verdict_trusted,
-                }
-                for c in crows
-            ]
-        )
+    for crows in comments_by_ticket.values():
+        state = compute_review_state(crows)
         if state is not None:
             review_rounds += len(state.rounds)
 

@@ -1,4 +1,4 @@
-import type { ButtonHTMLAttributes, ReactNode } from 'react';
+import type { ButtonHTMLAttributes, ReactNode, Ref } from 'react';
 
 type IconButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 type IconButtonSize = 'sm' | 'md';
@@ -9,6 +9,8 @@ interface IconButtonProps extends Omit<ButtonHTMLAttributes<HTMLButtonElement>, 
   variant?: IconButtonVariant;
   size?: IconButtonSize;
   children: ReactNode;
+  /** Forwarded to the <button> (React 19 passes ref as a prop). */
+  ref?: Ref<HTMLButtonElement>;
 }
 
 const VARIANT_CLASSES: Record<IconButtonVariant, string> = {

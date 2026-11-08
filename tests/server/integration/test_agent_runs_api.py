@@ -19,12 +19,13 @@ from datetime import datetime, timezone
 import pytest
 import yaml
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.models import (
     AgentPersona,
     ApiKey,
+    Base,
     Project,
     User,
 )
@@ -572,33 +573,64 @@ async def test_complete_failed_forces_exit_code_1(
     assert final["exit_code"] == 1
 
 
-@pytest.mark.asyncio
-async def test_concurrent_starts_only_one_wins(
-    client: AsyncClient, db_session: AsyncSession
-):
-    """Two concurrent start requests on the same queued run: exactly one
-    moves it to running, the other returns 409. Verifies the atomic
-    UPDATE...WHERE status='queued' rowcount-1 guard.
+class TestConcurrentStart:
+    """Two concurrent requests need two database connections.
+
+    The shared in-memory engine uses a StaticPool, so every session borrows
+    the same sqlite3 connection. On Python 3.10, sqlite3 resets every open
+    cursor on a connection at commit/rollback; aiosqlite runs execute and
+    fetchall as separate jobs, so when one request committed between the
+    other's two jobs, that fetch failed with "Cursor needed to be reset
+    because of commit/rollback" (rare, load-dependent). A file-backed
+    database gives each session its own pooled connection, which is also
+    what the guard is meant to be tested against.
     """
-    user, key = await _make_user(db_session)
-    project = await _make_project(db_session, user)
-    await _make_persona(db_session, project, user, "atlas")
-    cr = await client.post(
-        f"/api/v1/projects/{project.id}/agent-runs",
-        headers=_hdrs(key),
-        json={"persona_name": "atlas"},
-    )
-    run_id = cr.json()["id"]
 
-    async def _start():
-        return await client.post(
-            f"/api/v1/projects/{project.id}/agent-runs/{run_id}/start",
-            headers=_hdrs(key),
+    @pytest.fixture
+    async def db_engine(self, tmp_path):
+        from sessionfs.server.db.engine import install_sqlite_unicode_lower
+
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'agent_runs.db'}",
+            connect_args={"check_same_thread": False, "timeout": 30},
         )
+        install_sqlite_unicode_lower(engine)
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        yield engine
+        await engine.dispose()
 
-    results = await asyncio.gather(_start(), _start())
-    statuses = sorted(r.status_code for r in results)
-    assert statuses == [200, 409]
+    @pytest.mark.asyncio
+    async def test_concurrent_starts_only_one_wins(
+        self, client: AsyncClient, db_session: AsyncSession
+    ):
+        """Two concurrent start requests on the same queued run: exactly one
+        moves it to running, the other returns 409. Verifies the atomic
+        UPDATE...WHERE status='queued' rowcount-1 guard.
+        """
+        user, key = await _make_user(db_session)
+        project = await _make_project(db_session, user)
+        await _make_persona(db_session, project, user, "atlas")
+        cr = await client.post(
+            f"/api/v1/projects/{project.id}/agent-runs",
+            headers=_hdrs(key),
+            json={"persona_name": "atlas"},
+        )
+        run_id = cr.json()["id"]
+
+        async def _start():
+            return await client.post(
+                f"/api/v1/projects/{project.id}/agent-runs/{run_id}/start",
+                headers=_hdrs(key),
+            )
+
+        results = await asyncio.gather(_start(), _start())
+        statuses = sorted(r.status_code for r in results)
+        assert statuses == [200, 409], [r.text for r in results]
+        got = await client.get(
+            f"/api/v1/projects/{project.id}/agent-runs/{run_id}", headers=_hdrs(key)
+        )
+        assert got.json()["status"] == "running"
 
 
 # ── Replay (GitHub #95) ───────────────────────────────────────────

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -28,6 +28,8 @@ const {
   deleteMutateMock,
   conversationsRefetchMock,
   statusRefetchMock,
+  renameMutateMock,
+  addToastMock,
 } = vi.hoisted(() => ({
   useHelperGroupsMock: vi.fn(),
   useAuthMock: vi.fn(),
@@ -39,11 +41,13 @@ const {
   deleteMutateMock: vi.fn(),
   conversationsRefetchMock: vi.fn(),
   statusRefetchMock: vi.fn(),
+  renameMutateMock: vi.fn(),
+  addToastMock: vi.fn(),
 }));
 
 vi.mock('../auth/AuthContext', () => ({ useAuth: useAuthMock }));
 vi.mock('../hooks/useMe', () => ({ useMe: useMeMock }));
-vi.mock('../hooks/useToast', () => ({ useToast: () => ({ addToast: vi.fn() }) }));
+vi.mock('../hooks/useToast', () => ({ useToast: () => ({ addToast: addToastMock }) }));
 vi.mock('../hooks/useProjects', () => ({ useProject: () => ({ data: undefined }) }));
 vi.mock('./useHelper', () => ({
   useHelperStatus: useHelperStatusMock,
@@ -51,6 +55,7 @@ vi.mock('./useHelper', () => ({
   useHelperConversation: () => ({ data: null, isLoading: false }),
   useHelperGroups: useHelperGroupsMock,
   useDeleteHelperConversation: useDeleteHelperConversationMock,
+  useRenameHelperConversation: () => ({ mutate: renameMutateMock, isPending: false }),
 }));
 
 // ── SSE body helpers ──
@@ -209,6 +214,9 @@ beforeEach(() => {
   deleteMutateMock.mockReset();
   conversationsRefetchMock.mockReset();
   statusRefetchMock.mockReset();
+  renameMutateMock.mockReset();
+  addToastMock.mockReset();
+  window.localStorage.removeItem('sfs-helper-panel-size');
 });
 
 afterEach(() => {
@@ -1331,5 +1339,162 @@ describe('HelperPanel — history', () => {
     expect(screen.getByText(/permanently deletes/i)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Delete' }));
     expect(deleteMutateMock).toHaveBeenCalledWith('c1', expect.any(Object));
+  });
+});
+
+describe('HelperPanel — size', { timeout: 30_000 }, () => {
+  const panel = () => screen.getByRole('dialog');
+
+  it('starts Small, and Expand helper widens it, remembers it, and keeps focus on the toggle', async () => {
+    const first = renderPanel();
+    const user = userEvent.setup();
+    expect(panel().className).toContain('sm:w-[480px] lg:w-[520px]');
+    const toggle = screen.getByRole('button', { name: 'Expand helper' });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await user.click(toggle);
+    const shrink = screen.getByRole('button', { name: 'Shrink helper' });
+    expect(shrink).toBe(toggle);
+    expect(shrink).toHaveAttribute('aria-pressed', 'true');
+    expect(document.activeElement).toBe(shrink);
+    expect(panel().className).toContain('md:w-[min(960px,max(600px,62vw))]');
+    expect(panel().querySelector('[data-size]')).toHaveAttribute('data-size', 'large');
+    expect(window.localStorage.getItem('sfs-helper-panel-size')).toBe('large');
+
+    first.unmount();
+    renderPanel();
+    expect(screen.getByRole('button', { name: 'Shrink helper' })).toHaveAttribute('aria-pressed', 'true');
+    await user.click(screen.getByRole('button', { name: 'Shrink helper' }));
+    expect(panel().className).toContain('lg:w-[520px]');
+    expect(window.localStorage.getItem('sfs-helper-panel-size')).toBe('small');
+  });
+
+  it('hides the toggle below md, where the drawer is full screen', () => {
+    renderPanel();
+    const wrapper = screen.getByRole('button', { name: 'Expand helper' }).parentElement!;
+    expect(wrapper.className).toContain('hidden');
+    expect(wrapper.className).toContain('md:inline-flex');
+    expect(panel().className).toMatch(/(^| )w-full( |$)/);
+  });
+
+  it('keeps a streaming answer, the draft and the Stop control across a resize', async () => {
+    fetchMock.mockImplementation(hangAfter([['text', { delta: 'partial' }]]));
+    renderPanel();
+    const user = userEvent.setup();
+    await ask(user, 'What failed?');
+    await screen.findByText('partial');
+    await user.type(composer(), 'next question');
+    await user.click(screen.getByRole('button', { name: 'Expand helper' }));
+    expect(screen.getByText('partial')).toBeInTheDocument();
+    expect(composer()).toHaveValue('next question');
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+    await screen.findByText(/Stopped — the partial answer is saved/);
+  });
+
+  it('still toggles when localStorage throws', async () => {
+    const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+    try {
+      renderPanel();
+      const user = userEvent.setup();
+      await user.click(screen.getByRole('button', { name: 'Expand helper' }));
+      expect(screen.getByRole('button', { name: 'Shrink helper' })).toHaveAttribute('aria-pressed', 'true');
+    } finally {
+      set.mockRestore();
+    }
+  });
+});
+
+describe('HelperPanel — rename', { timeout: 30_000 }, () => {
+  async function openHistory() {
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Conversation history' }));
+    return user;
+  }
+
+  it('renames inline: Enter saves the trimmed title and focus returns to Rename', async () => {
+    setConversations([{ id: 'c1', title: 'Old name' }]);
+    renderPanel();
+    const user = await openHistory();
+    await user.click(screen.getByRole('button', { name: 'Rename Old name' }));
+    const input = screen.getByRole('textbox', { name: 'Rename Old name' });
+    expect(input).toHaveFocus();
+    expect(input).toHaveValue('Old name');
+    expect(input).toHaveAttribute('maxlength', '200');
+    await user.clear(input);
+    await user.type(input, '  Release   notes  {Enter}');
+    expect(renameMutateMock).toHaveBeenCalledTimes(1);
+    expect(renameMutateMock.mock.calls[0][0]).toEqual({ id: 'c1', title: 'Release notes' });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Rename Old name' })).toHaveFocus());
+  });
+
+  it('Escape cancels without closing the drawer', async () => {
+    setConversations([{ id: 'c1', title: 'Old name' }]);
+    const onClose = vi.fn();
+    renderPanel(undefined, onClose);
+    const user = await openHistory();
+    await user.click(screen.getByRole('button', { name: 'Rename Old name' }));
+    await user.type(screen.getByRole('textbox', { name: 'Rename Old name' }), ' changed');
+    await user.keyboard('{Escape}');
+    expect(screen.queryByRole('textbox', { name: /Rename/ })).not.toBeInTheDocument();
+    expect(renameMutateMock).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByRole('navigation', { name: 'Conversation history' })).toBeInTheDocument();
+  });
+
+  it('blur saves, and an empty or unchanged title keeps the old one', async () => {
+    setConversations([{ id: 'c1', title: 'Old name' }]);
+    renderPanel();
+    const user = await openHistory();
+    await user.click(screen.getByRole('button', { name: 'Rename Old name' }));
+    await user.clear(screen.getByRole('textbox', { name: 'Rename Old name' }));
+    await user.type(screen.getByRole('textbox', { name: 'Rename Old name' }), 'Blurred');
+    fireEvent.blur(screen.getByRole('textbox', { name: 'Rename Old name' }));
+    expect(renameMutateMock.mock.calls[0][0]).toEqual({ id: 'c1', title: 'Blurred' });
+
+    await user.click(screen.getByRole('button', { name: 'Rename Old name' }));
+    await user.clear(screen.getByRole('textbox', { name: 'Rename Old name' }));
+    await user.keyboard('{Enter}');
+    await user.click(screen.getByRole('button', { name: 'Rename Old name' }));
+    await user.keyboard('{Enter}');
+    expect(renameMutateMock).toHaveBeenCalledTimes(1);
+  });
+
+  async function openThread() {
+    setConversations([{ id: 'c1', title: 'Old name' }]);
+    getHelperConversationMock.mockResolvedValue({
+      id: 'c1', org_id: null, title: 'Old name', created_at: '', updated_at: '', scope: null,
+      messages: [
+        { id: 'm1', role: 'user', content: 'question?' },
+        { id: 'm2', role: 'assistant', content: 'the answer' },
+      ],
+    });
+    renderPanel();
+    const user = await openHistory();
+    await user.click(screen.getByRole('button', { name: /^Old name/ }));
+    await screen.findByText('the answer');
+    expect(screen.getByTitle('Old name')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Conversation history' }));
+    await user.click(screen.getByRole('button', { name: 'Rename Old name' }));
+    await user.clear(screen.getByRole('textbox', { name: 'Rename Old name' }));
+    await user.type(screen.getByRole('textbox', { name: 'Rename Old name' }), 'New name{Enter}');
+    await user.click(screen.getByRole('button', { name: 'Back to conversation' }));
+    return user;
+  }
+
+  it('updates the open conversation’s header title, with the server’s version on success', async () => {
+    await openThread();
+    // Optimistic first.
+    expect(screen.getByTitle('New name')).toBeInTheDocument();
+    const opts = renameMutateMock.mock.calls[0][1];
+    await act(async () => opts.onSuccess({ id: 'c1', title: 'New [REDACTED:ssn]', org_id: null, scope: null, created_at: '', updated_at: '' }));
+    expect(screen.getByTitle('New [REDACTED:ssn]')).toBeInTheDocument();
+    expect(addToastMock).toHaveBeenCalledWith('info', expect.stringMatching(/saved redacted/));
+  });
+
+  it('rolls the header back and shows an error toast when the rename fails', async () => {
+    await openThread();
+    const opts = renameMutateMock.mock.calls[0][1];
+    await act(async () => opts.onError(new Error('boom')));
+    expect(screen.getByTitle('Old name')).toBeInTheDocument();
+    expect(addToastMock).toHaveBeenCalledWith('error', expect.stringMatching(/Couldn't rename the conversation: boom/));
   });
 });

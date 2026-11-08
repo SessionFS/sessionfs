@@ -76,6 +76,7 @@ from sessionfs.judge.providers import (
     _detect_provider,
     _omitted_params,
     _remember_omission,
+    google_model_segment,
 )
 
 logger = logging.getLogger("sessionfs.judge.agent_stream")
@@ -994,7 +995,7 @@ async def _stream_google(
     top_p: float | None = None,
     max_response_bytes: int | None = None,
 ) -> AsyncIterator[StreamEvent]:
-    url = _GOOGLE_STREAM_URL_TEMPLATE.format(model=model)
+    url = _GOOGLE_STREAM_URL_TEMPLATE.format(model=google_model_segment(model))
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
     generation_config: dict[str, Any] = {"maxOutputTokens": max_tokens}
     if temperature is not None:

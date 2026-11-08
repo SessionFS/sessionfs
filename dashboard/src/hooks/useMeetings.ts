@@ -1,4 +1,5 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import {
   ApiError,
@@ -6,6 +7,8 @@ import {
   type ConversationKindFilter,
   type MeetingActionItem,
   type MeetingCreate,
+  type MeetingItemTicketRef,
+  type MeetingLinkResult,
   type MeetingDetail,
   type MeetingList,
   type MeetingParticipant,
@@ -23,6 +26,9 @@ import {
  *   PUT    /api/v1/meetings/{id}/participants/{pid}
  *   POST   /api/v1/meetings/{id}/action-items/{item}/promote[/preview]
  *   POST   /api/v1/meetings/{id}/action-items/{item}/{dismiss|restore}
+ *   POST   /api/v1/meetings/{id}/action-items/{item}/link[/preview]
+ *   POST   /api/v1/meetings/{id}/action-items/{item}/{unlink|dismiss-suggestion}
+ *   GET    /api/v1/meetings/{id}/linkable-tickets?q=
  */
 
 const PAGE_SIZE = 50;
@@ -189,4 +195,81 @@ export function usePromoteMeetingItem(meetingId: string | undefined) {
     // The new ticket shows up in the target project's ticket list.
     [['tickets']],
   );
+}
+
+
+/**
+ * Tie a pending item to an existing ticket. The item's own response comes
+ * back, and the ticket gains a comment, so its caches are refreshed too.
+ */
+export function useLinkMeetingItem(meetingId: string | undefined) {
+  const { auth } = useAuth();
+  return useMeetingWrite(
+    meetingId,
+    ({ itemId, ticketId }: { itemId: string; ticketId: string }) =>
+      auth!.client.linkMeetingItem(meetingId!, itemId, ticketId),
+    (prev, result: MeetingLinkResult) => withItem(prev, result.item),
+    [['tickets'], ['ticket'], ['ticketComments'], ['ticketEvents']],
+  );
+}
+
+export function useUnlinkMeetingItem(meetingId: string | undefined) {
+  const { auth } = useAuth();
+  return useMeetingWrite(meetingId, (itemId: string) => auth!.client.unlinkMeetingItem(meetingId!, itemId), withItem);
+}
+
+/** "Not this one": hide the item's suggested ticket. */
+export function useDismissMeetingSuggestion(meetingId: string | undefined) {
+  const { auth } = useAuth();
+  return useMeetingWrite(
+    meetingId,
+    (itemId: string) => auth!.client.dismissMeetingSuggestion(meetingId!, itemId),
+    withItem,
+  );
+}
+
+/** What linking `itemId` to `ticketId` would add (fetched when one is picked). */
+export function useLinkPreview(meetingId: string | undefined, itemId: string | undefined, ticketId: string | undefined) {
+  const { auth } = useAuth();
+  return useQuery({
+    queryKey: ['meetingLinkPreview', meetingId, itemId, ticketId ?? null],
+    queryFn: () => auth!.client.previewMeetingLink(meetingId!, itemId!, ticketId),
+    enabled: !!auth && !!meetingId && !!itemId && !!ticketId,
+    gcTime: 0,
+    staleTime: 0,
+    retry: false,
+  });
+}
+
+export const LINKABLE_SEARCH_DEBOUNCE_MS = 250;
+const LINKABLE_PAGE_SIZE = 20;
+
+/**
+ * Tickets an item of this conversation can be linked to, searched on the
+ * server by title or id prefix. Debounced; the previous page stays on screen
+ * while the next one loads (`searching` covers both).
+ */
+export function useLinkableTickets(meetingId: string | undefined, query: string, enabled = true) {
+  const { auth } = useAuth();
+  const trimmed = query.trim().slice(0, 100);
+  const debounced = useDebouncedValue(trimmed, LINKABLE_SEARCH_DEBOUNCE_MS);
+  const result = useQuery<{ tickets: MeetingItemTicketRef[] }>({
+    queryKey: ['meetingLinkableTickets', meetingId, debounced],
+    queryFn: () => auth!.client.listLinkableTickets(meetingId!, { q: debounced || undefined, limit: LINKABLE_PAGE_SIZE }),
+    enabled: !!auth && !!meetingId && enabled,
+    staleTime: 15_000,
+    placeholderData: keepPreviousData,
+    retry: retryServerErrors,
+  });
+  const searching = debounced !== trimmed || result.isFetching;
+  return { ...result, searching };
+}
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(timer);
+  }, [value, delayMs]);
+  return debounced;
 }

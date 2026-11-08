@@ -2140,6 +2140,7 @@ Store meeting transcripts for a project or a [project group](/project-groups/), 
 | `sfs meeting resolve-participant <id> <participant_id> --user USER_ID \| --persona NAME` | Resolve a participant manually |
 | `sfs meeting action-items <id>` | Action items and decisions |
 | `sfs meeting promote <id> <item_id> [--title T] [--description D] [--assignee PERSONA \| --user USER_ID] [--due DATE] [--priority P] [--target-project ID] [--jira] [--yes]` | Show the ticket draft and ask before creating it; `--yes` skips the prompt. A group meeting needs `--target-project` |
+| `sfs meeting link <id> <item_id> [TICKET_ID] [--yes]` / `unlink <id> <item_id>` | Tie a pending item to an existing ticket (the item's suggestion when no ticket is given); shows the ticket and the comment it will add, then asks. `unlink` puts a linked item back to pending (v0.29.11) |
 | `sfs meeting dismiss <id> <item_id>` / `restore <id> <item_id>` | Dismiss a pending item, or bring a dismissed one back |
 
 ## `sfs chat`
@@ -2157,6 +2158,7 @@ Store [chat threads](/chat/) (a Slack export, a DiscordChatExporter export, or a
 | `sfs chat participants <id>` / `resolve-participant <id> <participant_id> --user USER_ID \| --persona NAME` | Participants, and resolving one manually |
 | `sfs chat action-items <id>` | Action items and decisions |
 | `sfs chat promote <id> <item_id> [same options as sfs meeting promote]` | Show the ticket draft and ask before creating it |
+| `sfs chat link <id> <item_id> [TICKET_ID] [--yes]` / `unlink <id> <item_id>` | Tie an item to an existing ticket (the item's suggestion when no ticket is given; asks first), or put a linked item back to pending (v0.29.11) |
 | `sfs chat dismiss <id> <item_id>` / `restore <id> <item_id>` | Dismiss or restore a pending item |
 
 ## `sfs attention`
@@ -2203,6 +2205,7 @@ Ask the session helper a question over the sessions and project knowledge you ca
 | `sfs helper ask "QUESTION" [--project ID \| --group ID_OR_SLUG \| --session ID ...] [--conversation ID] [--no-stream] [--json]` | Ask a question. Streams the answer to the terminal and lists citations at the end. `--project`, `--group` (a project group id `pg_…` or its slug; v0.28.0) or `--session` scope the question, one at a time; `--conversation` continues a thread; `--no-stream` fetches the whole answer in one request; `--json` prints the raw JSON |
 | `sfs helper conversations list` | Your helper threads, newest first |
 | `sfs helper conversations show <id>` | One thread with its messages and citations |
+| `sfs helper conversations rename <id> "TITLE"` | Rename a thread (up to 200 characters, DLP-redacted like your questions) |
 | `sfs helper conversations delete <id> [--yes]` | Permanently delete a thread |
 | `sfs helper status` | Whether the helper is available to you, and which key, provider and model it would use |
 

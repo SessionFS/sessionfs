@@ -1406,3 +1406,45 @@ async def test_stale_cross_org_group_membership_is_ignored(db_session, test_user
     )
     out = await _run(ctx, "list_project_groups", {})
     assert out.content == "No project groups."
+
+
+# ── caller block: group- and session-scoped turns (tk_08193276f9d1425e) ──
+
+
+@pytest.mark.asyncio
+async def test_caller_block_group_scope_lists_only_readable_members(db_session, test_user):
+    """A group-scoped turn's caller block lists that group with its readable
+    member project only: the unreadable (foreign-org) member and a same-org
+    project outside the group never appear."""
+    from sessionfs.server.routes.helper import _caller_block
+
+    s = await _seed_group_matrix(db_session, test_user)
+    block = await _caller_block(db_session, test_user, HelperScope(group_id=s["group"].id))
+    assert "AI-ML" in block
+    assert "Member Project" in block
+    assert "Foreign Project" not in block
+    assert "Outsider Project" not in block
+
+
+@pytest.mark.asyncio
+async def test_caller_block_session_scope_lists_groups_of_the_sessions_projects(
+    db_session, test_user
+):
+    """A session-scoped turn lists only groups containing a session's project,
+    and only that project: a session outside every group yields no groups."""
+    from sessionfs.server.routes.helper import _caller_block
+
+    s = await _seed_group_matrix(db_session, test_user)
+    block = await _caller_block(
+        db_session, test_user, HelperScope(session_ids=(s["member_session"].id,))
+    )
+    assert "AI-ML" in block
+    assert "Member Project" in block
+    assert "Foreign Project" not in block
+    assert "Outsider Project" not in block
+
+    block = await _caller_block(
+        db_session, test_user, HelperScope(session_ids=(s["outsider_session"].id,))
+    )
+    assert "AI-ML" not in block
+    assert "Member Project" not in block

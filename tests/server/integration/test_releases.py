@@ -868,7 +868,9 @@ async def test_ship_report_direct_links_union_pr_links_no_double_counting(
     )
     assert resp.status_code == 200, resp.text
     assert set(resp.json()["pr_ids"]) == {pr_a["id"], pr_c["id"]}
-    assert set(resp.json()["ticket_ids"]) == {ticket_b.id, ticket_c.id}
+    # The response is the release's full stored set: PR-linked ∪ direct
+    # (tk_5d2a48eed3ab4446 #2), not just the ids passed in this call.
+    assert resp.json()["ticket_ids"] == sorted({ticket_a.id, ticket_b.id, ticket_c.id})
 
     report = await client.get(
         f"/api/v1/projects/{project.id}/releases/1.0.0/ship-report",
@@ -1022,3 +1024,34 @@ async def test_ship_report_bounded_sql(db_engine, db_session: AsyncSession):
     assert len(runs) == 1, captured
     assert len(comments) == 1, captured
     assert len(pr_links) == 1, captured
+
+
+@pytest.mark.asyncio
+async def test_pr_author_user_id_must_be_an_eligible_user(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """tk_86db8de1c3bf4bf0 #9: a caller-supplied author_user_id is stored
+    only for an active user with access to the project; every other value is
+    the same 422."""
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    stranger, _ = await _make_user(db_session, name="stranger")
+    inactive, _ = await _make_user(db_session, name="gone")
+    inactive.is_active = False
+    await db_session.commit()
+
+    bodies = []
+    for author in (stranger.id, inactive.id, "no-such-user"):
+        resp = await client.post(
+            f"/api/v1/projects/{project.id}/pull-requests",
+            json={"provider": "github", "repo": "o/r", "number": 5, "title": "t",
+                  "author_user_id": author},
+            headers=_hdrs(key),
+        )
+        assert resp.status_code == 422, resp.text
+        bodies.append(resp.json())
+    assert bodies[0] == bodies[1] == bodies[2]
+    assert bodies[0]["error"]["details"]["error"] == "author_not_eligible"
+
+    ok = await _upsert_pr(client, project, key, number=5, author_user_id=owner.id)
+    assert ok["author_user_id"] == owner.id

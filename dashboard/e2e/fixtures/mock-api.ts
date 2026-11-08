@@ -47,6 +47,17 @@ export function resolve(method: string, pathname: string): MockResult | null {
     return ok({ ticket_id: 'tk_fixture7', item_id: 'mai_f1', status: 'promoted', published_to_jira: false, warnings: [] });
   }
   if (!get && /^\/api\/v1\/meetings\/[^/]+\/extract$/.test(path)) return ok({ ...d.meetingDetail, dropped_items: 0 });
+  // Existing-ticket links (0.29.11): preview, link, unlink, Not this one.
+  if (!get && /^\/api\/v1\/meetings\/[^/]+\/action-items\/[^/]+\/link\/preview$/.test(path)) return ok(d.meetingLinkPreview);
+  const linkItem = !get && path.match(/^\/api\/v1\/meetings\/[^/]+\/action-items\/([^/]+)\/(link|unlink|dismiss-suggestion)$/);
+  if (linkItem) {
+    const base = d.meetingDetail.action_items.find((i) => i.id === decodeURIComponent(linkItem[1])) ?? d.meetingDetail.action_items[0];
+    if (linkItem[2] === 'link') {
+      const ticket = d.meetingLinkPreview.ticket;
+      return ok({ ticket_id: ticket.id, item_id: base.id, status: 'linked', comment_id: 'tc_fixture_link', item: { ...base, status: 'linked', suggested_ticket: null, linked_ticket: ticket } });
+    }
+    return ok({ ...base, status: 'pending', suggested_ticket: null, linked_ticket: null });
+  }
   // For You: reminding a collaborator answers with the new reminder.
   if (!get && path === '/api/v1/me/for-you/collaboration/remind') {
     return { status: 201, body: { reminder_id: 'rem_fixture_nudge', due_at: new Date().toISOString(), to: 'Kemi Ade' } };
@@ -234,6 +245,8 @@ export function resolve(method: string, pathname: string): MockResult | null {
   }
   // ── meetings ──
   if (/^\/api\/v1\/groups\/[^/]+\/meetings$/.test(path)) return ok(d.groupMeetings);
+  if (/^\/api\/v1\/groups\/[^/]+\/meetings\/[^/]+\/reminders$/.test(path)) return ok(d.sourceReminders);
+  if (/^\/api\/v1\/meetings\/[^/]+\/linkable-tickets$/.test(path)) return ok(d.linkableTickets);
   const meeting = path.match(/^\/api\/v1\/meetings\/([^/]+)$/);
   if (meeting) {
     const mid = decodeURIComponent(meeting[1]);

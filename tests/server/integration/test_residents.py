@@ -1850,6 +1850,129 @@ class TestResidentRouteHardening:
         # In-flight item re-pointed; completed item's provenance preserved.
         assert item.implementer_service_key_id == new_sk.id
         assert done_item.implementer_service_key_id == old_sk.id
+        # The old key stays on the in-flight item as prior identity.
+        assert json.loads(item.prior_implementer_service_key_ids) == [old_sk.id]
+        assert done_item.prior_implementer_service_key_ids is None
+
+    async def test_rotate_to_unrelated_key_keeps_old_minter_out_of_review(
+        self, db_session: AsyncSession
+    ):
+        """tk_5d2a48eed3ab4446 #1: rebinding a resident to an unrelated key
+        must not make the old key's minter an independent reviewer of the
+        in-flight work (their other key's clean verdict must not close it)."""
+        from sessionfs.server.routes.residents import (
+            RotateKeyRequest,
+            rotate_resident_key,
+        )
+        from sessionfs.server.services.review_state import (
+            load_implementer_identities,
+        )
+
+        org = await _make_org(db_session)
+        old_minter = await _make_user(db_session, org)
+        new_minter = await _make_user(db_session, org)
+        project = await _make_project(db_session, old_minter, org)
+        ticket = await _make_ticket(db_session, project)
+        queue = await _make_queue(db_session, project, old_minter)
+        item = await _make_item(db_session, queue, ticket)
+        old_sk = await _make_service_key(db_session, org, old_minter)
+        new_sk = await _make_service_key(db_session, org, new_minter)
+        # A second key minted by the OLD key's minter, registered as a
+        # trusted reviewer.
+        reviewer_sk = await _make_service_key(db_session, org, old_minter)
+        resident = await _make_resident(
+            db_session, org, project, old_sk, kind="implementer", work_queue=queue
+        )
+        item.implementer_service_key_id = old_sk.id
+        item.item_status = "active"
+        await db_session.commit()
+
+        await rotate_resident_key(
+            org.id,
+            resident.id,
+            RotateKeyRequest(new_service_key_id=new_sk.id),
+            self._admin_ctx(old_minter, org),
+            db_session,
+        )
+        await db_session.refresh(item)
+        assert item.implementer_service_key_id == new_sk.id
+
+        identities = (await load_implementer_identities(db_session, [ticket]))[
+            ticket.id
+        ]
+        assert (old_sk.id, None) in identities
+
+        # Post-rotation work by the new key, then a trusted clean from the
+        # old minter's other key.
+        db_session.add(TicketComment(
+            id=f"tc_{uuid.uuid4().hex[:16]}",
+            ticket_id=ticket.id,
+            author_user_id="",
+            author_persona="atlas",
+            content="Implemented the fix.",
+            verdict_trusted=False,
+            service_key_id=new_sk.id,
+            created_at=datetime.now(timezone.utc) - timedelta(minutes=5),
+        ))
+        db_session.add(TrustedReviewer(
+            id=f"tr_{uuid.uuid4().hex[:16]}",
+            org_id=org.id,
+            project_id=None,
+            service_key_id=reviewer_sk.id,
+            reviewer_persona="codex-reviewer",
+            is_active=True,
+            created_by_user_id=old_minter.id,
+            created_at=datetime.now(timezone.utc),
+        ))
+        await _seed_trusted_verdict(
+            db_session, ticket, service_key_id=reviewer_sk.id,
+            content=R_VERIFIED_CLEAN, verdict_trusted=True,
+        )
+        item.open_directive_id = f"dir_{uuid.uuid4().hex[:12]}"
+        db_session.add(wq_engine.WorkQueueRun(
+            id=f"wqr_{uuid.uuid4().hex[:16]}",
+            work_queue_id=queue.id,
+            work_queue_item_id=item.id,
+            directive_id=item.open_directive_id,
+            outcome=None,
+            created_at=datetime.now(timezone.utc),
+        ))
+        await db_session.flush()
+
+        result = await wq_engine.complete_work_queue_step(
+            db_session,
+            queue=queue,
+            item_id=item.id,
+            directive_id=item.open_directive_id,
+            ticket_id=ticket.id,
+            outcome="done",
+            comment_id=None,
+            agent_run_id=None,
+            failed=False,
+            actor_user_id=new_minter.id,
+            actor_org_id=org.id,
+            actor_service_key_id=new_sk.id,
+            actor_type="service_key",
+            service_key_name="impl-key",
+        )
+        assert result.item_terminal is False
+        assert item.item_status != "done"
+
+    async def test_unreadable_prior_keys_fail_closed(self, db_session: AsyncSession):
+        from sessionfs.server.services.review_state import (
+            UNREADABLE_PRIOR_KEYS,
+            load_key_minters,
+            prior_implementer_keys,
+        )
+
+        assert prior_implementer_keys(None) == []
+        assert prior_implementer_keys('["a", "a", "b"]') == ["a", "b"]
+        for raw in ("not json", '{"a": 1}', "[1]", '[""]'):
+            assert prior_implementer_keys(raw) == [UNREADABLE_PRIOR_KEYS]
+        minters = await load_key_minters(
+            db_session, [], [(UNREADABLE_PRIOR_KEYS, None)]
+        )
+        assert minters[UNREADABLE_PRIOR_KEYS] is None
 
     async def test_quarantine_requires_org_admin(self, db_session: AsyncSession):
         """M1 (Sentinel): quarantine is an owner/admin recovery signal — the

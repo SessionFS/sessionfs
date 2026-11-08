@@ -3,17 +3,20 @@ import { Badge } from '../components/Badge';
 import { useSourceReminders } from '../hooks/useReminders';
 import { formatDue, reminderHref } from './format';
 
-/** Reminders on a meeting or ticket (the viewer's own), hidden when none. */
+/** Reminders on a meeting or ticket (the viewer's own), hidden when none.
+ *  A group meeting passes ``groupId`` instead of ``projectId``. */
 export function RemindersStrip({
   kind,
   projectId,
+  groupId,
   sourceId,
 }: {
   kind: 'meeting' | 'ticket';
   projectId: string | undefined;
+  groupId?: string;
   sourceId: string | undefined;
 }) {
-  const { data } = useSourceReminders(kind, projectId, sourceId);
+  const { data } = useSourceReminders(kind, projectId, sourceId, groupId);
   if (!data || data.items.length === 0) return null;
   const c = data.counts;
   return (

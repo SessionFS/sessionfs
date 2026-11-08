@@ -30,6 +30,24 @@ export const SparkIcon = (p: P) => (
     <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" />
   </Icon>
 );
+/** Arrows pointing out: make the panel larger. */
+export const ExpandIcon = (p: P) => (
+  <Icon {...p}>
+    <polyline points="15 3 21 3 21 9" />
+    <polyline points="9 21 3 21 3 15" />
+    <line x1="21" y1="3" x2="14" y2="10" />
+    <line x1="3" y1="21" x2="10" y2="14" />
+  </Icon>
+);
+/** Arrows pointing in: back to the small panel. */
+export const ShrinkIcon = (p: P) => (
+  <Icon {...p}>
+    <polyline points="4 14 10 14 10 20" />
+    <polyline points="20 10 14 10 14 4" />
+    <line x1="14" y1="10" x2="21" y2="3" />
+    <line x1="3" y1="21" x2="10" y2="14" />
+  </Icon>
+);
 export const HistoryIcon = (p: P) => (
   <Icon {...p}>
     <path d="M3 12a9 9 0 1 0 3-6.7" />
@@ -141,6 +159,16 @@ export const TrashIcon = (p: P) => (
     <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
     <path d="M10 11v6M14 11v6" />
     <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+  </Icon>
+);
+/** A text cursor in a field: rename (distinct from New conversation's pen). */
+export const RenameIcon = (p: P) => (
+  <Icon {...p}>
+    <path d="M5 4h1a3 3 0 0 1 3 3 3 3 0 0 1 3-3h1" />
+    <path d="M13 20h-1a3 3 0 0 1-3-3 3 3 0 0 1-3 3H5" />
+    <path d="M5 16H4a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2h1" />
+    <path d="M13 8h7a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-7" />
+    <path d="M9 7v10" />
   </Icon>
 );
 export const KeyIcon = (p: P) => (

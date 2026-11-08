@@ -174,3 +174,34 @@ async def test_paused_loop_offers_raise_limit_only_to_editors_on_a_limit(
     # Not an editor, or not a limit: no Raise limit.
     assert "raise" not in cards["tk_child2"].actions and "loop" not in cards["tk_child2"].context
     assert "raise" not in cards["tk_child3"].actions
+
+
+async def test_pending_suggestion_shows_in_the_why_line(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    from sessionfs.server.db.models import Ticket
+
+    me, key = await _user(db_session)
+    p = await _project(db_session, me)
+    other = await _project(db_session, me)
+    m, item = await _chat_item(db_session, p, me)
+    ticket = Ticket(id=_id("tk"), project_id=p.id, title="Confirm the ship date",
+                    created_by_user_id=me.id)
+    stray = Ticket(id=_id("tk"), project_id=other.id, title="Out of scope",
+                   created_by_user_id=me.id)
+    db_session.add_all([ticket, stray])
+    item.suggested_ticket_id = ticket.id
+    await db_session.commit()
+
+    (card,) = [i for i in (await _feed(client, key))["items"] if i["kind"] == "chat_action"]
+    assert f"looks like {ticket.id} “Confirm the ship date”" in card["why"]
+    assert "not a ticket yet" not in card["why"]
+    assert dict(card["context"]["facts"])["Looks like"] == f"{ticket.id} · Confirm the ship date"
+
+    # A suggestion outside the conversation's scope, or dismissed, is not shown.
+    for change in ({"suggested_ticket_id": stray.id}, {"suggestion_dismissed_at": NOW}):
+        for k, v in change.items():
+            setattr(item, k, v)
+        await db_session.commit()
+        (card,) = [i for i in (await _feed(client, key))["items"] if i["kind"] == "chat_action"]
+        assert "not a ticket yet" in card["why"] and "looks like" not in card["why"]

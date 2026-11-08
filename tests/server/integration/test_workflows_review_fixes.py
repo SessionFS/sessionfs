@@ -880,3 +880,84 @@ def test_run_order_ignores_host_timezone_for_naive_timestamps(monkeypatch):
         if hasattr(time, "tzset"):
             time.tzset()
         os.environ.pop("TZ", None)
+
+
+@pytest.mark.asyncio
+async def test_approval_gate_is_cached_per_plan_and_budgeted(
+    db_session: AsyncSession, monkeypatch
+):
+    """tk_e12fd48d64e14976 #1: an approval gate checks each (policy, ticket)
+    once per plan, and its checks count against the plan's gate budget (past
+    it the gate fails closed without querying)."""
+    from types import SimpleNamespace
+
+    from sessionfs.server.services import approvals as approvals_svc
+    from sessionfs.workflow_definition import StepDefinition
+
+    calls: list[str] = []
+
+    async def gate_passed(db, *, policy_id, ticket):
+        calls.append(ticket.id)
+        return True, "Approved"
+
+    async def policy_row(db, policy_id):
+        return SimpleNamespace(id=policy_id, org_id="org_1")
+
+    async def policy_live(db, policy):
+        return True
+
+    monkeypatch.setattr(approvals_svc, "workflow_gate_passed", gate_passed)
+    monkeypatch.setattr(wf, "_policy_row", policy_row)
+    monkeypatch.setattr(wf, "_policy_live", policy_live)
+
+    ctx = wf._GateContext(db_session, "proj_1")
+    ctx._org_loaded, ctx._org_id = True, "org_1"
+    children = [
+        wf._Child(ticket=SimpleNamespace(id=f"tk_{i}"), index=i, item=None)
+        for i in range(3)
+    ]
+    step = StepDefinition(
+        id="approve", title="Approve", role="reviewer", agent="lead",
+        gate="approval_policy:apol_1",
+    )
+    other = StepDefinition(
+        id="approve-again", title="Approve again", role="reviewer", agent="lead",
+        gate="approval_policy:apol_1",
+    )
+    assert await wf._gate(ctx, step, children) == (True, None)
+    assert await wf._gate(ctx, other, children) == (True, None)
+    assert calls == ["tk_0", "tk_1", "tk_2"]
+    assert ctx.budget == wf.MAX_GATE_TICKETS - 3
+
+    ctx.budget = 0
+    fresh = [wf._Child(ticket=SimpleNamespace(id="tk_new"), index=0, item=None)]
+    ok, why = await wf._gate(ctx, step, fresh)
+    assert ok is False and "too many tickets" in (why or "")
+    assert calls == ["tk_0", "tk_1", "tk_2"]
+
+
+@pytest.mark.asyncio
+async def test_untagged_round_waits_for_the_reviewer_steps_dependencies(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """tk_e12fd48d64e14976 #2: a round without step_id counts for the reviewer
+    step pinned to the queue persona, so it is refused until that step's
+    dependencies are done, like a tagged round."""
+    e = await _env(db_session)
+    t = await _template(client, e)
+    started = (await _start(client, e, t["id"])).json()
+    loop_id = started["loop_id"]
+    impl = _ticket_ids(started, "implement")
+
+    early = await _round(client, e, loop_id, impl[0])
+    assert early.status_code == 422, early.text
+    assert _code(early) == "workflow_step_mismatch"
+    assert "'review'" in _msg(early) and "waiting for: implement" in _msg(early)
+
+    await _work(client, e, _ticket_ids(started, "dispatch")[0])
+    for tid in impl:
+        await _work(client, e, tid)
+    ok = await _round(client, e, loop_id, impl[0])
+    assert ok.status_code == 201, ok.text
+    plan, _ = await _plan(client, e, loop_id)
+    assert impl[0] not in [c["ticket_id"] for c in plan["review"]["ready_children"]]

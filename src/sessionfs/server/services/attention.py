@@ -70,6 +70,7 @@ from sessionfs.server.db.models import (
     OrgMember,
     Project,
     ProjectGroup,
+    ProjectGroupAccess,
     Reminder,
     Session,
     Ticket,
@@ -784,6 +785,55 @@ def _speaker_and_text(lines: list[str], chat: bool = False) -> tuple[str | None,
     return speaker, _cap(" ".join(parts), QUOTE_MAX)
 
 
+async def _readable_suggestions(ctx: Any, rows: list) -> dict[str, Ticket]:
+    """``{item id: ticket}`` for pending items whose (not dismissed)
+    suggested ticket the caller can read in the conversation's scope: the
+    meeting's own project, or a readable member project of its group."""
+    wanted = {
+        r.id: r.suggested_ticket_id
+        for r in rows
+        if r.suggested_ticket_id and r.suggestion_dismissed_at is None
+    }
+    if not wanted:
+        return {}
+    readable = set(ctx.projects)
+    tickets = {
+        t.id: t
+        for t in (
+            await ctx.db.execute(
+                select(Ticket).where(
+                    Ticket.id.in_(sorted(set(wanted.values()))),
+                    Ticket.project_id.in_(sorted(readable)),
+                )
+            )
+        ).scalars().all()
+    }
+    group_ids = sorted({r.group_id for r in rows if r.group_id and r.id in wanted})
+    group_projects: set[tuple[str, str]] = set()
+    if group_ids:
+        group_projects = set(
+            (
+                await ctx.db.execute(
+                    select(ProjectGroupAccess.group_id, ProjectGroupAccess.project_id).where(
+                        ProjectGroupAccess.group_id.in_(group_ids)
+                    )
+                )
+            ).all()
+        )
+    out: dict[str, Ticket] = {}
+    for r in rows:
+        ticket = tickets.get(wanted.get(r.id, ""))
+        if ticket is None:
+            continue
+        if r.project_id is not None:
+            if ticket.project_id != r.project_id:
+                continue
+        elif (r.group_id, ticket.project_id) not in group_projects:
+            continue
+        out[r.id] = ticket
+    return out
+
+
 async def provide_conversation_actions(ctx: _Ctx) -> tuple[list[Item], int]:
     """Pending meeting and chat-thread action items that may be the caller's: resolved to the caller (or
     an org persona that represents them in the meeting's scope), or with no
@@ -877,6 +927,8 @@ async def provide_conversation_actions(ctx: _Ctx) -> tuple[list[Item], int]:
         owner_p.name_raw.label("owner_name"),
         MeetingTranscript.kind.label("conversation_kind"),
         MeetingTranscript.channel_name,
+        MeetingActionItem.suggested_ticket_id,
+        MeetingActionItem.suggestion_dismissed_at,
     ]
     rows = (
         await ctx.db.execute(
@@ -933,6 +985,7 @@ async def provide_conversation_actions(ctx: _Ctx) -> tuple[list[Item], int]:
         ).all()
     ) if load else {}
     split_cache: dict[str, list[str]] = {}
+    suggestions = await _readable_suggestions(ctx, rows)
 
     items: list[Item] = []
     for r in rows:
@@ -956,7 +1009,11 @@ async def provide_conversation_actions(ctx: _Ctx) -> tuple[list[Item], int]:
             parts.append("nobody was named · you took part")
         if due_text:
             parts.append(due_text)
-        parts.append("not a ticket yet")
+        suggested = suggestions.get(r.id)
+        if suggested is not None:
+            parts.append(f"looks like {suggested.id} “{_cap(suggested.title, 60)}”")
+        else:
+            parts.append("not a ticket yet")
         lines = (
             f"{r.line_start}-{r.line_end}" if r.line_end != r.line_start else str(r.line_start)
         )
@@ -1028,6 +1085,9 @@ async def provide_conversation_actions(ctx: _Ctx) -> tuple[list[Item], int]:
                     ["Cited messages" if is_chat else "Cited lines", cited],
                     ["Said by", _cap(speaker, 40)] if speaker else None,
                     ["Goes to", f"{dest['name']} ({dest['kind']})"],
+                    ["Looks like", f"{suggested.id} · {_cap(suggested.title, 80)}"]
+                    if suggested is not None
+                    else None,
                 )
                 if f
             ],

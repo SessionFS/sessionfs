@@ -245,6 +245,7 @@ async def test_needs_you_across_projects_hides_unreadable_and_counts(
         "needs_human": 1,
         "proposed_checklist": 1,
         "total": 4,
+        "truncated": False,
     }
     assert len(body["items"]) == 4
 
@@ -414,3 +415,59 @@ async def test_needs_you_has_no_per_project_n_plus_one(db_engine, db_session):
         event.remove(db_engine.sync_engine, "before_cursor_execute", _capture)
 
     assert count_1_project == count_3_projects, captured
+
+
+@pytest.mark.asyncio
+async def test_needs_you_is_bounded_in_sql(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """tk_86db8de1c3bf4bf0 #6: the loop set and the proposed-item rows are
+    limited in SQL; proposed items are counted, not loaded, past the cap."""
+    from sessionfs.server.services import loop_needs_you as svc
+
+    monkeypatch.setattr(svc, "_LOOP_LIMIT", 1)
+    monkeypatch.setattr(svc, "_ITEM_LIMIT", 2)
+    owner, key = await _make_user(db_session)
+    p1 = await _make_project(db_session, owner)
+    for _ in range(2):
+        _parent, children = await _make_parent(
+            db_session, p1, owner, {"reviewer_persona": "reviewer"}, n=1
+        )
+        await _seed_ready_child(db_session, p1, owner, children[0])
+    for i in range(3):
+        await _make_proposed_item(db_session, p1, slug=f"trap-{i}")
+
+    body = (await client.get("/api/v1/me/loops/needs-you", headers=_hdrs(key))).json()
+    assert body["counts"]["ready"] == 1  # only the newest loop is evaluated
+    assert body["counts"]["truncated"] is True
+    assert body["counts"]["proposed_checklist"] == 3  # SQL count, not rows
+    assert len(body["items"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_needs_you_count_is_cached_briefly(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """The polled badge count reuses a recent computation."""
+    from sessionfs.server.routes import loop_needs_you as route
+
+    owner, key = await _make_user(db_session)
+    p1 = await _make_project(db_session, owner)
+    await _make_proposed_item(db_session, p1, slug="first")
+    first = await client.get("/api/v1/me/loops/needs-you/count", headers=_hdrs(key))
+    assert first.json() == {"count": 1}
+
+    calls = {"n": 0}
+    real = route.needs_you
+
+    async def counting(*args, **kwargs):
+        calls["n"] += 1
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(route, "needs_you", counting)
+    await _make_proposed_item(db_session, p1, slug="second")
+    cached = await client.get("/api/v1/me/loops/needs-you/count", headers=_hdrs(key))
+    assert cached.json() == {"count": 1} and calls["n"] == 0
+    monkeypatch.setattr(route, "_COUNT_TTL", 0.0)
+    fresh = await client.get("/api/v1/me/loops/needs-you/count", headers=_hdrs(key))
+    assert fresh.json() == {"count": 2} and calls["n"] == 1

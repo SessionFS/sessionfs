@@ -562,7 +562,8 @@ async def test_access_rechecked_at_confirm(
     body = resp.json()
     assert body["status"] == "confirmed"  # one target still succeeded
     by_id = {t["id"]: t for t in body["result"]["targets"]}
-    assert by_id[org_project.id] == {"id": org_project.id, "ok": False, "error": "forbidden"}
+    # An unreadable project answers like a missing one.
+    assert by_id[org_project.id] == {"id": org_project.id, "ok": False, "error": "not_found"}
     assert by_id[personal.id] == {"id": personal.id, "ok": True, "error": None}
 
     await db_session.refresh(personal)
@@ -892,9 +893,14 @@ async def test_free_project_proposal_marks_upgrade_required(db_session: AsyncSes
 async def test_confirm_fails_project_context_gate_on_free_project(
     client: AsyncClient, db_session: AsyncSession
 ):
-    user, key = await _make_user(db_session, tier="free")
-    project = await _make_project(db_session, user, name="Free repo")
-    conv = await _make_conversation(db_session, user)
+    # The conversation is bound to an Enterprise org (the confirm's helper
+    # gate passes); the target project belongs to a free org, so its own
+    # project_context gate refuses.
+    user, key = await _make_user(db_session)
+    helper_org = await _make_org_with(db_session, user)
+    org = await _make_org_with(db_session, user, tier="free")
+    project = await _make_project(db_session, user, org_id=org.id, name="Free repo")
+    conv = await _make_conversation(db_session, user, org_id=helper_org.id)
     action = await _make_action(
         db_session,
         user,
@@ -1454,3 +1460,68 @@ async def test_lost_race_returns_stored_state_not_500(
         )
     ).scalars().all()
     assert notes == []
+
+
+@pytest.mark.asyncio
+async def test_confirm_trash_refuses_sessions_that_left_the_scope(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A project-scoped trash proposal re-checks the scope on confirm: a
+    session moved to another project since is refused, not trashed."""
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user, name="A")
+    other = await _make_project(db_session, user, name="B")
+    stays = await _make_session(db_session, user, project_id=project.id)
+    moves = await _make_session(db_session, user, project_id=project.id)
+    conv = await _make_conversation(db_session, user)
+    conv.scope = json.dumps({"project_id": project.id})
+    await db_session.commit()
+    action = await _make_action(
+        db_session,
+        user,
+        kind="trash_sessions",
+        params={"session_ids": [stays.id, moves.id]},
+        conversation=conv,
+    )
+    moves.project_id = other.id
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/helper/actions/{action.id}/confirm", headers=_hdrs(key)
+    )
+    assert resp.status_code == 200, resp.text
+    by_id = {t["id"]: t for t in resp.json()["result"]["targets"]}
+    assert by_id[stays.id] == {"id": stays.id, "ok": True, "error": None}
+    assert by_id[moves.id] == {"id": moves.id, "ok": False, "error": "not_in_scope"}
+    await db_session.refresh(moves)
+    assert moves.is_deleted is False
+
+
+@pytest.mark.asyncio
+async def test_confirm_rechecks_the_helper_plan_gate(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A proposal made on Enterprise can't be applied after a downgrade: the
+    confirm is refused with upgrade_required and the action stays pending."""
+    user, key = await _make_user(db_session)
+    session = await _make_session(db_session, user)
+    conv = await _make_conversation(db_session, user)
+    action = await _make_action(
+        db_session,
+        user,
+        kind="trash_sessions",
+        params={"session_ids": [session.id]},
+        conversation=conv,
+    )
+    user.tier = "free"
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/helper/actions/{action.id}/confirm", headers=_hdrs(key)
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["error"]["details"]["error"] == "upgrade_required"
+    await db_session.refresh(action)
+    await db_session.refresh(session)
+    assert action.status == "pending"
+    assert session.is_deleted is False

@@ -42,7 +42,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: sweep
-              image: {{ $cron.image | default "curlimages/curl:8.12.1" }}
+              image: {{ $cron.image | default (include "sessionfs.curlImage" $) }}
               securityContext:
                 allowPrivilegeEscalation: false
                 readOnlyRootFilesystem: true

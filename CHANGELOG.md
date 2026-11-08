@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.11] - 2026-11-07
+
+**Meeting and chat action items that find the ticket you already have, a For You page that stays readable, renamable helper conversations, and a round of review-loop and security hardening.** Server migrations 125–128.
+
+### Added
+- **Meeting and chat action items suggest an existing ticket.** When a meeting or chat thread is extracted, SessionFS shortlists up to 30 open or recently resolved tickets in the same project (or the group's readable projects) and marks an item that looks like one of them: "Looks like tk_… · title". Nothing is ever linked automatically. Press **Link** to tie the item to that ticket, **Not this one** to dismiss the suggestion, or **Create new** to promote it as before.
+- **Link any action item to a ticket.** **Link to ticket…** opens a picker over the conversation's linkable tickets with a preview of the comment the link adds. A linked item shows its ticket with **Unlink**; the ticket gets a comment and a timeline event. A ticket you can't read is never named. API: `POST …/action-items/{id}/link`, `…/unlink`, `…/dismiss-suggestion`, `GET /meetings/{id}/linkable-tickets`; MCP `link_meeting_action_item` (previews unless `confirm=true`; 131 tools in total); CLI `sfs meeting link|unlink` and `sfs chat link|unlink`.
+- **Rename session helper conversations** from the history list, the API (`PATCH /api/v1/helper/conversations/{id}` with `{title}`) or `sfs helper conversations rename`.
+- **A Large size for the session helper panel** for reading long answers. The previous size is now Small.
+- **Opt-in Helm CronJob for the For You hides sweep** (`api.attentionHides`).
+
+### Changed
+- **For You shows the first 10 items of each section**, with **Show more** / **Show less** for the rest.
+- **A project you can't read now returns the same 404 as a project that doesn't exist**, instead of 403. Editor-only refusals for readers stay 403.
+- **Confirming a helper action re-checks the plan and the scope.** A proposal made before a downgrade is refused with `upgrade_required` and stays pending.
+- **Chart images are pinned by digest**, with the tag kept in a comment. Air-gapped installs can point them at a mirror.
+
+### Fixed
+- **Review loops:** start-worker is retry-safe and keeps a taken-over lease holder; only the starting credential or a project admin can finish a worker run; one recorded run per review round (migration 126); implementers counted from every lease, not only the current one; a rebound resident's old key stays in the item's implementer identity (migration 125); workflow approval gates are bounded and step order is enforced on untagged rounds; the needs-you feed is bounded and its badge cached; delivery idempotency keys are bound to the signed body and pruned (migration 127); loop share links stop working when their creator loses access, and org DLP applies to them; GitLab commits are never badged with a departed owner's credentials; report rounds are counted per ticket.
+- **Security hardening:** cross-org run and spend reads, reviewer ids and validation inputs are no longer exposed; platform-key denials no longer name another user's id or plan; person assignment needs read standing and its inputs are bounded; key echoes are scrubbed from audit and narrative errors; the ticket-update cursor and notification inputs are bounded; Confluence conversion is linear and the parent page is rechecked after a site change; project merges can't widen a group's reach; the Jira account id is read from the connection, not a process cache; the Google model id is encoded in the request path.
+- Reminder notifications are tidier, and reminders show on group meetings.
+- The dashboard dev dependency minimatch is 11.0.5 under typescript-estree.
+
 ## [0.29.10] - 2026-11-07
 
 **Agents, tickets and agent runs on every plan, editors who can reassign, and a session helper that publishes tickets to Jira.** No new server migrations.

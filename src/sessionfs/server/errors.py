@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import math
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -16,6 +15,9 @@ from sessionfs.server.schemas.errors import ErrorDetail, ErrorResponse
 from sessionfs.server.services.entitlements import BillingLockRetry
 
 logger = logging.getLogger(__name__)
+
+# Keys stripped from every pydantic validation error before it is returned.
+_VALIDATION_DROP_KEYS = frozenset({"input", "ctx", "url"})
 
 
 # v0.10.24 tk_e7da4c4508d94bac — PostgreSQL SQLSTATE codes for the
@@ -186,16 +188,14 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
-        # Sanitize errors: Pydantic v2 can include non-serializable objects in ctx
-        sanitized_errors = []
-        for err in exc.errors():
-            clean = {k: v for k, v in err.items() if k != "ctx"}
-            if "ctx" in err:
-                clean["ctx"] = {k: str(v) for k, v in err["ctx"].items()}
-            # NaN/Infinity can't be written as JSON; echo them as text.
-            if isinstance(clean.get("input"), float) and not math.isfinite(clean["input"]):
-                clean["input"] = str(clean["input"])
-            sanitized_errors.append(clean)
+        # Never echo the submitted value back (``input``) or the validator
+        # context (``ctx``): ``input`` can carry a whole request body, a
+        # secret or another caller's data, and ``msg`` already states the
+        # limit that failed. ``url`` is a pydantic docs link.
+        sanitized_errors = [
+            {k: v for k, v in err.items() if k not in _VALIDATION_DROP_KEYS}
+            for err in exc.errors()
+        ]
         body = ErrorResponse(
             error=ErrorDetail(
                 code="422",

@@ -2253,7 +2253,7 @@ async def _publish_package(
             db.add(version)
             # Publish-time instruction scan (critical was already refused by the
             # shared validator): stored per version, summarized on the card.
-            stage_publish_scan(db, version, hosted.instruction_scan)
+            scan_finding_rows = stage_publish_scan(db, version, hosted.instruction_scan)
             # Byte-derived capability manifest for disclosure and D2 (§3.6).
             skill_disclosure.stage_capability_manifest(version, hosted)
             for supported_tool in sorted(hosted.compatibility):
@@ -2281,6 +2281,11 @@ async def _publish_package(
                         )
                     )
                 ).scalar_one()
+            else:
+                # The findings point at the scan flushed just above; added in
+                # that same flush, PostgreSQL rejected them (no relationship()
+                # to order the inserts) and the publish looked like a lost race.
+                db.add_all(scan_finding_rows)
         # Publisher lifecycle (suspension, tombstone, trust revocation) is
         # serialized on the publisher row. Re-take that lock before anything is
         # listed: a rollback above (concurrent identical upload) released it, and

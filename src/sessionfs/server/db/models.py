@@ -3198,6 +3198,12 @@ class WorkQueueItem(Base):
     implementer_user_id: Mapped[str | None] = mapped_column(
         String(64), nullable=True
     )
+    # Migration 125: service keys this item's implementer identity was moved
+    # away from by a resident key rebind (JSON list). Part of the implementer
+    # identity for every self-review check.
+    prior_implementer_service_key_ids: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
     closed_by_service_key_id: Mapped[str | None] = mapped_column(
         String(36), nullable=True
     )
@@ -7006,8 +7012,12 @@ class MeetingActionItem(Base):
             name="ck_meeting_action_items_kind",
         ),
         CheckConstraint(
-            "status IN ('pending', 'promoted', 'dismissed')",
+            "status IN ('pending', 'promoted', 'dismissed', 'linked')",
             name="ck_meeting_action_items_status",
+        ),
+        CheckConstraint(
+            "suggestion_source IS NULL OR suggestion_source IN ('model', 'text')",
+            name="ck_meeting_action_items_suggestion_source",
         ),
     )
 
@@ -7041,6 +7051,25 @@ class MeetingActionItem(Base):
     )
     extracted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
+    )
+    # Migration 128: an existing ticket this item looks like (suggest, never
+    # auto-link). ``suggestion_source`` is ``model`` (the extraction model
+    # picked it from the server's shortlist) or ``text`` (the deterministic
+    # lexical fallback); ``suggestion_score`` is the lexical similarity 0..1.
+    # No FK, like promoted_ticket_id: visibility is re-checked on every read.
+    suggested_ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    suggestion_source: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    suggestion_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    suggestion_dismissed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # A person tied the item to an existing ticket (status ``linked``).
+    linked_ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    linked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    linked_by_user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
 
 
@@ -7168,6 +7197,8 @@ class PullRequest(Base):
         ),
         Index("idx_pull_requests_project_state", "project_id", "state"),
         Index("idx_pull_requests_project_created", "project_id", "created_at"),
+        # Migration 127: merge checks / commit statuses look PRs up by sha.
+        Index("idx_pull_requests_project_head", "project_id", "head_sha"),
     )
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)  # pr_<hex>
@@ -7504,6 +7535,8 @@ class DeliveryWebhookEvent(Base):
             "provider IN ('github', 'gitlab')",
             name="ck_delivery_webhook_events_provider",
         ),
+        # Migration 127: retention sweep by age.
+        Index("idx_delivery_webhook_events_received", "received_at"),
     )
 
     provider: Mapped[str] = mapped_column(String(20), primary_key=True)
@@ -7946,3 +7979,18 @@ class AttentionHide(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+# Migration 126: one recorded run per review round (record_review_round's
+# idempotency key). Declared here because it indexes an expression over
+# AgentRun's columns.
+Index(
+    "uq_agent_run_review_round",
+    AgentRun.ticket_id,
+    AgentRun.role,
+    AgentRun.review_round,
+    func.coalesce(AgentRun.workflow_step_id, ""),
+    unique=True,
+    sqlite_where=text("review_round IS NOT NULL"),
+    postgresql_where=text("review_round IS NOT NULL"),
+)

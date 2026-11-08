@@ -4,8 +4,8 @@
 sessions/project knowledge.  With ``stream=true`` (the default) it answers as
 Server-Sent Events; ``stream=false`` returns a single JSON document for the
 CLI/MCP.  ``GET /api/v1/helper/conversations`` lists the caller's threads,
-``GET .../{id}`` returns a thread's messages, ``DELETE .../{id}`` hard-deletes
-one, and ``GET .../status`` reports whether the helper is usable before the
+``GET .../{id}`` returns a thread's messages, ``PATCH .../{id}`` renames one,
+``DELETE .../{id}`` hard-deletes one, and ``GET .../status`` reports whether the helper is usable before the
 first question.
 
 Auth is user-key only (service keys are rejected by ``get_current_user``), the
@@ -1289,6 +1289,7 @@ async def _parse_wiki_citations(
     text: str,
     seen_wiki_refs: set[tuple[str, str]],
     allowed_project_ids: set[str],
+    dlp_policy: dict | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """Validate ``[wiki:<project_id>/<slug>]`` markers against refs a tool
     surfaced this turn.
@@ -1296,7 +1297,8 @@ async def _parse_wiki_citations(
     Returns ``(citations, cleaned_text)``.  A marker whose ref did not come
     from a tool result this turn is dropped, as is one whose page no longer
     resolves or whose project is not one of the turn's accessible, in-scope
-    projects (``allowed_project_ids``).
+    projects (``allowed_project_ids``). The page title is redacted with the
+    turn's DLP policy, like ticket and meeting citation titles.
     """
     requested = [
         (m.group("project_id"), m.group("slug"))
@@ -1330,7 +1332,7 @@ async def _parse_wiki_citations(
             "kind": "wiki",
             "project_id": key[0],
             "slug": key[1],
-            "title": pages[key].title,
+            "title": redact(pages[key].title, dlp_policy),
             "at": _iso(pages[key].updated_at),
         }
         for key in unique
@@ -1792,6 +1794,30 @@ def _conversation_title(message: str, dlp_policy: dict | None) -> str | None:
     """
     redacted = _sanitize_controls(redact(message, dlp_policy))
     return redacted.strip()[:80] or None
+
+
+# A renamed title is one line of plain text.  Every C0/C1 control and DEL is
+# dropped (line breaks and tabs become spaces first), as are the invisible
+# bidi/format controls that can make a title display differently from what is
+# stored (Trojan Source style), and runs of whitespace collapse to one space.
+_TITLE_MAX_CHARS = 200
+_TITLE_WHITESPACE_CONTROLS_RE = re.compile(r"[\t\n\r\v\f\x85\u2028\u2029]")
+_TITLE_STRIP_RE = re.compile(
+    r"[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]"
+)
+
+
+def _clean_renamed_title(raw: str) -> str:
+    """Strip controls and collapse whitespace; the result may be empty."""
+    text_ = _TITLE_WHITESPACE_CONTROLS_RE.sub(" ", raw)
+    text_ = _TITLE_STRIP_RE.sub("", text_)
+    return " ".join(text_.split())
+
+
+class RenameConversationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(..., max_length=4000)
 
 
 def _scope_to_json(scope: HelperScope | None) -> str | None:
@@ -2311,7 +2337,7 @@ async def _turn_events(
                     db, answer, ctx.seen_ticket_ids, citable_project_ids or set(), dlp_policy
                 )
                 wiki_citations, answer = await _parse_wiki_citations(
-                    db, answer, ctx.seen_wiki_refs, citable_project_ids or set()
+                    db, answer, ctx.seen_wiki_refs, citable_project_ids or set(), dlp_policy
                 )
                 meeting_citations, answer = await _parse_meeting_citations(
                     db, user.id, answer, ctx.seen_meeting_ids, scope, dlp_policy
@@ -2427,6 +2453,7 @@ async def _turn_events(
                                         answer,
                                         ctx.seen_wiki_refs,
                                         citable_project_ids or set(),
+                                        dlp_policy,
                                     )
                                 except Exception:  # noqa: BLE001 - a citation failure must not hide the answer
                                     logger.exception(
@@ -3042,6 +3069,84 @@ async def get_helper_conversation(
             }
             for m in messages
         ],
+    }
+
+
+@router.patch("/conversations/{conversation_id}")
+async def rename_helper_conversation(
+    conversation_id: str,
+    body: RenameConversationRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Rename a thread.  Owner only, with the same 404 as GET for a missing
+    thread, someone else's, or an org-bound one the caller has left.
+
+    The title is stored like the auto-title: controls stripped, then
+    DLP-redacted under the policy a turn in this thread would use (the
+    strictest union of the caller's orgs plus the thread's org), so a rename
+    can never store a secret the helper would have redacted.  Redaction
+    failing refuses the rename rather than storing unscanned text.
+
+    ``updated_at`` is left as it was: the history list orders by last
+    activity, and renaming is not activity, so a rename never moves a thread
+    to the top.
+    """
+    conversation = await _load_owned_conversation(db, user, conversation_id)
+    if conversation.org_id is not None and not await _is_active_member(
+        db, user.id, conversation.org_id
+    ):
+        raise HTTPException(404, "Conversation not found")
+
+    cleaned = _clean_renamed_title(body.title)
+    if not cleaned:
+        raise HTTPException(
+            status_code=422,
+            detail=_action_error("title_required", "Give the conversation a title."),
+        )
+    if len(cleaned) > _TITLE_MAX_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=_action_error(
+                "title_too_long",
+                f"Titles can be at most {_TITLE_MAX_CHARS} characters.",
+            ),
+        )
+
+    dlp_policy = await _resolve_dlp_policy(db, user, conversation.org_id)
+    try:
+        redacted = _sanitize_controls(redact(cleaned, dlp_policy)).strip()
+    except RedactionError:
+        logger.warning("Refusing a helper conversation rename that failed DLP redaction")
+        raise HTTPException(
+            status_code=422,
+            detail=_action_error(
+                "title_unscannable",
+                "This title couldn't be checked for secrets, so it wasn't saved.",
+            ),
+        ) from None
+    # Markers can make a redacted title longer than what was typed; the column
+    # holds 500 characters.
+    new_title = redacted[:500] or None
+
+    # Set updated_at to itself so the column's onupdate doesn't bump it.
+    await db.execute(
+        update(HelperConversation)
+        .where(
+            HelperConversation.id == conversation.id,
+            HelperConversation.user_id == user.id,
+        )
+        .values(title=new_title, updated_at=HelperConversation.updated_at)
+    )
+    await db.commit()
+    await db.refresh(conversation)
+    return {
+        "id": conversation.id,
+        "org_id": conversation.org_id,
+        "title": conversation.title,
+        "scope": await _scope_response(db, user, _scope_from_json(conversation.scope)),
+        "created_at": conversation.created_at,
+        "updated_at": conversation.updated_at,
     }
 
 
@@ -3719,6 +3824,71 @@ def _http_error(exc: HTTPException) -> str:
     return {403: "forbidden", 404: "not_found"}.get(exc.status_code, "error")
 
 
+async def _action_scope(db: AsyncSession, action: HelperAction) -> tuple[HelperScope, str | None]:
+    """The stored scope and owning org of the action's conversation."""
+    if not action.conversation_id:
+        return HelperScope(), None
+    row = (
+        await db.execute(
+            select(HelperConversation.scope, HelperConversation.org_id).where(
+                HelperConversation.id == action.conversation_id
+            )
+        )
+    ).first()
+    if row is None:
+        return HelperScope(), None
+    return _scope_from_json(row[0]), row[1]
+
+
+async def _trash_scope_clause(
+    db: AsyncSession, user_id: str, action: HelperAction
+) -> Any:
+    """SQL predicate for "this session is still inside the conversation's
+    scope", re-derived at confirm time; ``None`` for an unscoped
+    conversation. A scope that no longer reaches any project matches
+    nothing (fail closed)."""
+    from sqlalchemy import false
+
+    scope, _org_id = await _action_scope(db, action)
+    if scope.session_ids:
+        return Session.id.in_(list(scope.session_ids))
+    if scope.group_id is not None:
+        clause = await group_session_clause(db, user_id, scope.group_id)
+        return clause if clause is not None else false()
+    if scope.project_id is not None:
+        project = (
+            await db.execute(select(Project).where(Project.id == scope.project_id))
+        ).scalar_one_or_none()
+        if project is None or not await user_can_access_project(db, user_id, project):
+            return false()
+        return project_session_clause(project)
+    return None
+
+
+async def _gate_action_plan(db: AsyncSession, user: User, action: HelperAction) -> None:
+    """Re-check the helper plan gate for the action's conversation at confirm
+    time: a proposal made before a downgrade must not apply after it.
+
+    The org is re-derived from the stored scope exactly like a resumed turn;
+    when the scope no longer resolves (a target's access is re-checked per
+    target anyway) the conversation's own org binding decides."""
+    scope, org_id = await _action_scope(db, action)
+    if scope.project_id or scope.group_id or scope.session_ids:
+        try:
+            _scope, org_id = await _resolve_scope(
+                db,
+                user,
+                HelperScopeRequest(
+                    project_id=scope.project_id,
+                    group_id=scope.group_id,
+                    session_ids=list(scope.session_ids) or None,
+                ),
+            )
+        except HTTPException:
+            pass
+    await _gate(user, db, org_id)
+
+
 async def _ticket_target_refusal(
     db: AsyncSession,
     user_id: str,
@@ -4054,6 +4224,7 @@ async def _apply_action(
                 continue
             results.append({"id": pid, "ok": True, "error": None})
     elif action.kind == "trash_sessions":
+        in_scope = await _trash_scope_clause(db, user_id, action)
         for sid in params.get("session_ids") or []:
             session = (
                 await db.execute(select(Session).where(Session.id == sid))
@@ -4063,6 +4234,13 @@ async def _apply_action(
                 continue
             if session.is_deleted:
                 results.append({"id": sid, "ok": False, "error": "already_trashed"})
+                continue
+            if in_scope is not None and not (
+                await db.execute(select(Session.id).where(Session.id == sid, in_scope))
+            ).first():
+                # The session left the conversation's scope since the proposal
+                # (moved project, project left the group, access lost).
+                results.append({"id": sid, "ok": False, "error": "not_in_scope"})
                 continue
             soft_delete_session(session, deleted_by=user_id, scope="cloud")
             results.append({"id": sid, "ok": True, "error": None})
@@ -4415,6 +4593,7 @@ async def confirm_helper_action(
         if request is not None
         else ""
     )
+    plan_checked = False
     for _ in range(_DECIDE_ATTEMPTS):
         action = await _load_owned_action(db, user_id, action_id)
         if action.status in ("confirmed", "failed"):
@@ -4429,6 +4608,10 @@ async def confirm_helper_action(
                 await db.commit()
                 raise _expired_409()
             continue  # lost the race: re-read
+        if not plan_checked:
+            # Before the claim, so a refused confirm leaves the action pending.
+            await _gate_action_plan(db, user, action)
+            plan_checked = True
         if await _transition(db, action, "confirmed", now, only_if_live=True):
             break
         # Lost a race (another confirm/cancel, or it just expired): re-read.

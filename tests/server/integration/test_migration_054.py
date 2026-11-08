@@ -105,6 +105,7 @@ def upgraded_054_db_path(migration_054_db_path: Path) -> Path:
         "closed_by_service_key_id",
         "closed_by_user_id",
         "auto_close_review_kind",
+        "prior_implementer_service_key_ids",  # 125
     ):
         conn.execute(f"ALTER TABLE work_queue_items ADD COLUMN {col} VARCHAR")
     conn.commit()

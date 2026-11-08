@@ -3016,7 +3016,16 @@ export interface ChatMessageMeta {
 export type MeetingExtractionStatus = 'none' | 'done' | 'failed';
 export type MeetingResolutionMethod = 'exact_email' | 'display_name' | 'persona' | 'manual' | 'unresolved';
 export type MeetingItemKind = 'action' | 'decision';
-export type MeetingItemStatus = 'pending' | 'promoted' | 'dismissed';
+export type MeetingItemStatus = 'pending' | 'promoted' | 'dismissed' | 'linked';
+
+/** A ticket an action item suggests or is linked to. Only sent when the
+ *  caller can read it from the conversation's scope. */
+export interface MeetingItemTicketRef {
+  id: string;
+  project_id: string;
+  title: string;
+  status: string;
+}
 
 export interface MeetingParticipant {
   id: string;
@@ -3046,6 +3055,32 @@ export interface MeetingActionItem {
   extracted_at: string | null;
   /** Present on dated, not-dismissed items; absent otherwise (older servers too). */
   suggested_reminder?: SuggestedReminder | null;
+  /** An existing ticket this pending item looks like (suggest, never
+   *  auto-link). Absent once dismissed, linked, or when unreadable. */
+  suggested_ticket?: MeetingItemTicketRef | null;
+  suggestion_source?: 'model' | 'text' | null;
+  suggestion_score?: number | null;
+  /** The ticket a `linked` item is tied to, when readable. */
+  linked_ticket?: MeetingItemTicketRef | null;
+  linked_at?: string | null;
+}
+
+export interface MeetingLinkPreview {
+  meeting_id: string;
+  item_id: string;
+  ticket: MeetingItemTicketRef;
+  /** The ticket is the extraction's suggestion for this item. */
+  suggested: boolean;
+  /** The comment Link adds on the ticket (DLP-redacted). */
+  comment: string;
+}
+
+export interface MeetingLinkResult {
+  ticket_id: string;
+  item_id: string;
+  status: 'linked';
+  comment_id: string;
+  item: MeetingActionItem;
 }
 
 export interface SuggestedReminder {
@@ -3949,6 +3984,14 @@ export function createApiClient(baseUrl: string, apiKey: string) {
     getHelperConversation: (conversationId: string) =>
       request<HelperConversation>(
         `/api/v1/helper/conversations/${encodeURIComponent(conversationId)}`,
+      ),
+
+    /** Rename a thread. The server strips controls and DLP-redacts the title;
+     *  the response is the stored list item (updated_at unchanged). */
+    renameHelperConversation: (conversationId: string, title: string) =>
+      request<HelperConversationSummary>(
+        `/api/v1/helper/conversations/${encodeURIComponent(conversationId)}`,
+        { method: 'PATCH', body: JSON.stringify({ title }) },
       ),
 
     deleteHelperConversation: (conversationId: string) =>
@@ -4899,6 +4942,10 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       request<SourceReminders>(
         `/api/v1/projects/${encodeURIComponent(projectId)}/meetings/${encodeURIComponent(meetingId)}/reminders`,
       ),
+    listGroupMeetingReminders: (groupId: string, meetingId: string) =>
+      request<SourceReminders>(
+        `/api/v1/groups/${encodeURIComponent(groupId)}/meetings/${encodeURIComponent(meetingId)}/reminders`,
+      ),
     createMeetingItemReminder: (
       scope: MeetingScope,
       meetingId: string,
@@ -5499,6 +5546,42 @@ export function createApiClient(baseUrl: string, apiKey: string) {
         `/api/v1/meetings/${encodeURIComponent(meetingId)}/action-items/${encodeURIComponent(itemId)}/restore`,
         { method: 'POST' },
       ),
+
+    /** What Link would do; `ticketId` omitted = the item's suggestion. */
+    previewMeetingLink: (meetingId: string, itemId: string, ticketId?: string) =>
+      request<MeetingLinkPreview>(
+        `/api/v1/meetings/${encodeURIComponent(meetingId)}/action-items/${encodeURIComponent(itemId)}/link/preview`,
+        { method: 'POST', body: JSON.stringify(ticketId ? { ticket_id: ticketId } : {}) },
+      ),
+
+    linkMeetingItem: (meetingId: string, itemId: string, ticketId: string) =>
+      request<MeetingLinkResult>(
+        `/api/v1/meetings/${encodeURIComponent(meetingId)}/action-items/${encodeURIComponent(itemId)}/link`,
+        { method: 'POST', body: JSON.stringify({ ticket_id: ticketId }) },
+      ),
+
+    unlinkMeetingItem: (meetingId: string, itemId: string) =>
+      request<MeetingActionItem>(
+        `/api/v1/meetings/${encodeURIComponent(meetingId)}/action-items/${encodeURIComponent(itemId)}/unlink`,
+        { method: 'POST' },
+      ),
+
+    dismissMeetingSuggestion: (meetingId: string, itemId: string) =>
+      request<MeetingActionItem>(
+        `/api/v1/meetings/${encodeURIComponent(meetingId)}/action-items/${encodeURIComponent(itemId)}/dismiss-suggestion`,
+        { method: 'POST' },
+      ),
+
+    /** Tickets an item of this conversation can be linked to (the picker). */
+    listLinkableTickets: (meetingId: string, params: { q?: string; limit?: number } = {}) => {
+      const sp = new URLSearchParams();
+      if (params.q) sp.set('q', params.q);
+      if (params.limit) sp.set('limit', String(params.limit));
+      const qs = sp.toString();
+      return request<{ tickets: MeetingItemTicketRef[] }>(
+        `/api/v1/meetings/${encodeURIComponent(meetingId)}/linkable-tickets${qs ? `?${qs}` : ''}`,
+      );
+    },
 
 
     // ── For You (tk_dc118ffd6e804a9a) ──

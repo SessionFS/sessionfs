@@ -62,6 +62,11 @@ function str(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v.trim() : null;
 }
 
+/** "a meeting" / "a chat thread" for a conversation link event. */
+function conversationNoun(v: unknown): string {
+  return str(obj(v)?.kind) === 'chat' ? 'a chat thread' : 'a meeting';
+}
+
 function issueKey(e: TicketEvent): string | null {
   return str(obj(e.after)?.issue_key) ?? str(obj(e.before)?.issue_key);
 }
@@ -165,6 +170,10 @@ export function describeTicketEvent(e: TicketEvent, names: UserNames = new Map()
       return { actor, text: `unlinked ${jira}` };
     case 'jira_pulled':
       return { actor, text: `took the title and description from ${jira}` };
+    case 'conversation_linked':
+      return { actor, text: `tied ${conversationNoun(e.after)} action item to this ticket` };
+    case 'conversation_unlinked':
+      return { actor, text: `untied ${conversationNoun(e.before)} action item from this ticket` };
     case 'approved':
       return { actor, text: 'approved this ticket' };
     case 'dismissed':

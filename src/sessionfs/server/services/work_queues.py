@@ -2041,6 +2041,50 @@ async def complete_work_queue_step(
                     closing_usr and impl_usr and closing_usr == impl_usr
                 )
 
+            # A resident key rebind moves the recorded implementer key to the
+            # new key; the keys it moved away from stay part of the identity
+            # (tk_5d2a48eed3ab4446 #1). Same pairing rules as above; an
+            # unresolvable prior key fails closed.
+            if not self_close:
+                from sessionfs.server.services.review_state import (
+                    load_key_minters,
+                    prior_implementer_keys,
+                )
+
+                prior_keys = [
+                    k
+                    for k in prior_implementer_keys(
+                        item.prior_implementer_service_key_ids
+                    )
+                    if k != impl_svc
+                ]
+                if prior_keys:
+                    if closing_svc_key and closing_svc_key in prior_keys:
+                        self_close = True
+                    else:
+                        lookup = [
+                            {"verdict_trusted": True, "service_key_id": k}
+                            for k in [*prior_keys, closing_svc_key]
+                            if k
+                        ]
+                        prior_minters = await load_key_minters(db, lookup, [])
+                        closing_set = (
+                            prior_minters.get(closing_svc_key)
+                            if closing_svc_key
+                            else None
+                        )
+                        for k in prior_keys:
+                            minter = prior_minters.get(k)
+                            if minter is None:
+                                self_close = True
+                            elif closing_svc_key:
+                                if closing_set is None or minter & closing_set:
+                                    self_close = True
+                            elif closing_usr is None or closing_usr in minter:
+                                self_close = True
+                            if self_close:
+                                break
+
             # F1(d): fail-closed — no auto-close when implementer unknown.
             impl_unknown = not impl_svc and not impl_usr
 

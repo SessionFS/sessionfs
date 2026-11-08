@@ -2049,3 +2049,36 @@ async def test_preview_template_override_and_deprecated_alias(
     resp = await client.post(url, headers=_hdrs(key),
                              json={"kind": "wiki_page", "slug": "home", "template_override": "nope"})
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_parent_page_is_rechecked_after_the_space_id_was_cleared(
+    client: AsyncClient, db_session: AsyncSession, fake_confluence
+):
+    """A site change clears the cached space id but keeps parent_page_id,
+    which was validated on the old site. The next create checks the parent
+    again and refuses (409, nothing created) when it isn't a page in the
+    mapped space; once it is, the publish goes through."""
+    _, _, key, project, _ = await _ready(db_session)
+    mapping = (
+        await db_session.execute(
+            select(DocSpaceMapping).where(DocSpaceMapping.project_id == project.id)
+        )
+    ).scalars().one()
+    mapping.space_id = None
+    await db_session.commit()
+    fake_confluence.state["foreign_parent"].add("2001")
+
+    resp = await _publish(client, key, project)
+    assert resp.status_code == 409, resp.text
+    assert _err(resp) == "confluence_parent_invalid"
+    assert fake_confluence.state["pages"] == {}
+    link = await _link(db_session, project)
+    assert link.status == "failed"
+    assert link.claim_token is None
+    assert "parent page" in (link.last_push_failure or "")
+
+    fake_confluence.state["foreign_parent"].discard("2001")
+    resp = await _publish(client, key, project)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["outcome"] == "created"

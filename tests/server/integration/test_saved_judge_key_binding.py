@@ -154,3 +154,57 @@ async def test_audit_uses_saved_key_for_its_own_endpoint(
             headers=auth_headers,
         )
     assert seen.get("key") == "sk-saved"
+
+
+async def test_audit_failure_other_than_http_is_a_generic_502(
+    client, auth_headers, pushed_session
+):
+    """When every judge call fails with something other than an HTTP status
+    (e.g. a connection error to a custom endpoint), the route answers one
+    generic 502 instead of an unhandled 500, and never the exception text."""
+
+    async def fake_pipeline(*a, **k):
+        raise RuntimeError("connect to 10.0.0.5:443 refused (internal detail)")
+
+    with patch("sessionfs.server.routes.audit._run_judge_pipeline", side_effect=fake_pipeline):
+        r = await client.post(
+            f"/api/v1/sessions/{pushed_session}/audit",
+            json={"model": "m", "provider": "openai", "llm_api_key": "sk-caller-key-123456"},
+            headers=auth_headers,
+        )
+    assert r.status_code == 502, r.text
+    assert r.json()["error"] == "llm_request_failed"
+    assert "10.0.0.5" not in r.text
+    assert "refused" not in r.text
+
+
+async def test_audit_upstream_error_detail_never_echoes_the_key(
+    client, auth_headers, pushed_session
+):
+    """The upstream error body is passed on only after the caller's key, any
+    8+ character fragment of it, and recognised secrets are removed."""
+    import httpx
+
+    key = "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+    body = (
+        '{"error": {"message": "Incorrect API key provided: '
+        + key[:12] + "*****" + key[-6:]
+        + '. Also seen: ' + key + '"}}'
+    )
+
+    async def fake_pipeline(*a, **k):
+        request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        response = httpx.Response(401, request=request, text=body)
+        raise httpx.HTTPStatusError("401", request=request, response=response)
+
+    with patch("sessionfs.server.routes.audit._run_judge_pipeline", side_effect=fake_pipeline):
+        r = await client.post(
+            f"/api/v1/sessions/{pushed_session}/audit",
+            json={"model": "m", "provider": "openai", "llm_api_key": key},
+            headers=auth_headers,
+        )
+    assert r.status_code == 502, r.text
+    detail = r.json()["detail"]
+    assert "Incorrect API key provided" in detail
+    assert key not in r.text
+    assert key[:12] not in r.text

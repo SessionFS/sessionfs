@@ -387,3 +387,62 @@ async def test_post_gitlab_status_pending_when_history_truncated(
     await delivery_ingest.post_gitlab_status(db_session, project=project, repo=remote, sha=SHA)
 
     assert calls == [{"state": "pending"}]
+
+
+@pytest.mark.asyncio
+async def test_post_gitlab_status_noop_after_owner_leaves_org(
+    db_session: AsyncSession, monkeypatch
+):
+    """tk_86db8de1c3bf4bf0 #8: an org project's owner who left the org (or
+    was deactivated) no longer badges the org's commits with their own
+    GitLab credentials; a current member owner still does."""
+    from sqlalchemy import delete
+
+    from sessionfs.server.db.models import Organization, OrgMember
+
+    project, remote = await _setup(db_session)
+    org = Organization(
+        id=f"org_{uuid.uuid4().hex[:8]}",
+        name="Org",
+        slug=f"o-{uuid.uuid4().hex[:6]}",
+        tier="team",
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(org)
+    await db_session.commit()
+    db_session.add(
+        OrgMember(
+            org_id=org.id, user_id=project.owner_id, role="admin",
+            joined_at=datetime.now(timezone.utc),
+        )
+    )
+    project.org_id = org.id
+    await db_session.commit()
+
+    calls: list[str] = []
+
+    async def fake_post(self, project_id, sha, state, *, name, description, target_url=None):
+        calls.append(state)
+        return {"id": 1}
+
+    monkeypatch.setattr(gc.GitLabClient, "post_commit_status", fake_post)
+
+    await delivery_ingest.post_gitlab_status(db_session, project=project, repo=remote, sha=SHA)
+    assert calls == ["pending"]
+
+    await db_session.execute(
+        delete(OrgMember).where(
+            OrgMember.org_id == org.id, OrgMember.user_id == project.owner_id
+        )
+    )
+    await db_session.commit()
+    await delivery_ingest.post_gitlab_status(db_session, project=project, repo=remote, sha=SHA)
+    assert calls == ["pending"]
+
+    # A deactivated personal-project owner doesn't post either.
+    project.org_id = None
+    owner = await db_session.get(User, project.owner_id)
+    owner.is_active = False
+    await db_session.commit()
+    await delivery_ingest.post_gitlab_status(db_session, project=project, repo=remote, sha=SHA)
+    assert calls == ["pending"]

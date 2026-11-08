@@ -1809,7 +1809,7 @@ class TestGetContextSection:
         assert all(s["compile_id"] == winner_id for s in src_entries), src_entries
 
 
-# ---------- v0.9.9.6 Codex round 4: cross-user 403 regressions ----------
+# ---------- v0.9.9.6 Codex round 4: cross-user denial regressions ----------
 
 
 async def _mk_second_user_headers(
@@ -1842,10 +1842,10 @@ async def _mk_second_user_headers(
 
 
 class TestCrossUserAccessDenied:
-    """Non-members must get 403 on the new Tier A read endpoints."""
+    """Non-members must get 404 (like a missing project) on the new Tier A read endpoints."""
 
     @pytest.mark.asyncio
-    async def test_get_entry_returns_403_for_non_member(
+    async def test_get_entry_returns_404_for_non_member(
         self, client, db_session: AsyncSession, test_user
     ):
         project = await _own_project_for_user(db_session, test_user.id)
@@ -1860,13 +1860,13 @@ class TestCrossUserAccessDenied:
             f"/api/v1/projects/{project.id}/entries/{entry.id}",
             headers=outsider_headers,
         )
-        assert resp.status_code == 403, (
-            f"Non-member should be denied with 403, got {resp.status_code}: "
+        assert resp.status_code == 404, (
+            f"Non-member should be denied with 404, got {resp.status_code}: "
             f"{resp.text[:200]}"
         )
 
     @pytest.mark.asyncio
-    async def test_list_entries_returns_403_for_non_member(
+    async def test_list_entries_returns_404_for_non_member(
         self, client, db_session: AsyncSession, test_user
     ):
         project = await _own_project_for_user(db_session, test_user.id)
@@ -1881,13 +1881,13 @@ class TestCrossUserAccessDenied:
             f"/api/v1/projects/{project.id}/entries",
             headers=outsider_headers,
         )
-        assert resp.status_code == 403, (
-            f"Non-member should be denied with 403, got {resp.status_code}: "
+        assert resp.status_code == 404, (
+            f"Non-member should be denied with 404, got {resp.status_code}: "
             f"{resp.text[:200]}"
         )
 
     @pytest.mark.asyncio
-    async def test_get_context_section_returns_403_for_non_member(
+    async def test_get_context_section_returns_404_for_non_member(
         self, client, db_session: AsyncSession, test_user
     ):
         project = await _own_project_for_user(db_session, test_user.id)
@@ -1899,13 +1899,13 @@ class TestCrossUserAccessDenied:
             f"/api/v1/projects/{project.id}/context/sections/architecture",
             headers=outsider_headers,
         )
-        assert resp.status_code == 403, (
-            f"Non-member should be denied with 403, got {resp.status_code}: "
+        assert resp.status_code == 404, (
+            f"Non-member should be denied with 404, got {resp.status_code}: "
             f"{resp.text[:200]}"
         )
 
     @pytest.mark.asyncio
-    async def test_get_knowledge_health_returns_403_for_non_member(
+    async def test_get_knowledge_health_returns_404_for_non_member(
         self, client, db_session: AsyncSession, test_user
     ):
         project = await _own_project_for_user(db_session, test_user.id)
@@ -1915,8 +1915,8 @@ class TestCrossUserAccessDenied:
             f"/api/v1/projects/{project.id}/health",
             headers=outsider_headers,
         )
-        assert resp.status_code == 403, (
-            f"Non-member should be denied with 403, got {resp.status_code}: "
+        assert resp.status_code == 404, (
+            f"Non-member should be denied with 404, got {resp.status_code}: "
             f"{resp.text[:200]}"
         )
 

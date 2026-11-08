@@ -180,6 +180,21 @@ async def _coupling_status(
     return True, None
 
 
+# What an org admin who is not a platform admin sees when a coupled key has
+# stopped: it still says the key is broken and why in general terms, but not
+# which named person (owner or minter) lost platform-admin standing.
+COUPLING_REASON_GENERIC = "platform admin standing lapsed"
+_PERSON_COUPLING_REASONS = frozenset({"minter no longer admin", "owner no longer admin"})
+
+
+def _coupling_reason_for_viewer(viewer: User, reason: str | None) -> str | None:
+    if reason in _PERSON_COUPLING_REASONS and not (
+        viewer.is_active and viewer.tier == "admin"
+    ):
+        return COUPLING_REASON_GENERIC
+    return reason
+
+
 @service_key_router.post(
     "/{org_id}/service-keys",
     status_code=201,
@@ -270,6 +285,7 @@ async def list_service_keys(
         coupling_ok, coupling_reason = await _coupling_status(
             db, r.user_id, r.created_by_user_id, scopes
         )
+        coupling_reason = _coupling_reason_for_viewer(ctx.user, coupling_reason)
         out.append(
             _service_key_to_response(
                 r, project_ids, coupling_ok=coupling_ok, coupling_reason=coupling_reason

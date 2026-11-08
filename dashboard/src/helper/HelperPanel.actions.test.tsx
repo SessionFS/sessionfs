@@ -29,6 +29,7 @@ vi.mock('./useHelper', async (importActual) => ({
   useHelperStatus: useHelperStatusMock,
   useHelperConversations: useHelperConversationsMock,
   useDeleteHelperConversation: () => ({ mutate: vi.fn(), isPending: false }),
+  useRenameHelperConversation: () => ({ mutate: vi.fn(), isPending: false }),
   useHelperGroups: () => ({ data: [] }),
 }));
 

@@ -477,10 +477,8 @@ async def test_denied_details_report_minter_state(
     )
     if change == "demoted":
         minter.tier = "pro"
-        expected_tier = "pro"
     else:
         minter.is_active = False
-        expected_tier = "deactivated"
     await db_session.commit()
 
     refused = await client.post(
@@ -489,12 +487,41 @@ async def test_denied_details_report_minter_state(
     assert refused.status_code == 403, refused.text
     details = refused.json()["error"]["details"]
     assert details["error"] == "platform_sweeper_denied"
-    assert details["minter_user_id"] == minter.id
-    assert details["minter_current_tier"] == expected_tier
+    assert details["reason"] == "minter_not_admin"
     assert details["required_minter_tier"] == "admin"
     assert details["resolution"]
-    # The minter's email must never leak to the key holder.
+    # The key holder is not necessarily the minter: never another user's
+    # id, email or current plan tier.
+    assert "minter_user_id" not in details
+    assert "minter_current_tier" not in details
+    assert minter.id not in refused.text
     assert minter.email not in refused.text
+    assert '"pro"' not in refused.text
+    assert "deactivated" not in refused.text
+
+
+async def test_denied_details_report_owner_state(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """The owner lost standing while the minter kept it: a coarse
+    owner_not_admin reason, nothing else about either user."""
+    owner, _ = await _platform_admin_headers(db_session)
+    minter, _ = await _platform_admin_headers(db_session)
+    org_id = await _admin_org(db_session, owner)
+    _, headers = await _service_key(
+        db_session, owner=owner, org_id=org_id, scopes=[SCOPE], minter=minter
+    )
+    owner.tier = "pro"
+    await db_session.commit()
+
+    refused = await client.post(
+        "/api/v1/admin/marketplace/freshness/sweep", headers=headers, json={}
+    )
+    assert refused.status_code == 403, refused.text
+    details = refused.json()["error"]["details"]
+    assert details["reason"] == "owner_not_admin"
+    assert minter.id not in refused.text
+    assert owner.id not in refused.text
 
 
 async def test_list_reports_coupling_ok_false_after_demotion(
@@ -520,7 +547,44 @@ async def test_list_reports_coupling_ok_false_after_demotion(
     admin.tier = "pro"
     await db_session.commit()
 
+    # The demoted admin still administers the org but is no longer a platform
+    # admin: the key shows as broken without naming whose standing lapsed.
     after = await client.get(f"/api/v1/orgs/{org_id}/service-keys", headers=admin_headers)
     assert after.status_code == 200, after.text
     assert _row(after.json())["coupling_ok"] is False
-    assert _row(after.json())["coupling_reason"] == "minter no longer admin"
+    assert _row(after.json())["coupling_reason"] == "platform admin standing lapsed"
+
+
+async def test_list_coupling_reason_specific_only_for_platform_admins(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    """A platform admin listing the org's keys sees which person lost
+    standing; an org admin who is not a platform admin gets the generic
+    reason."""
+    from sessionfs.server.db.models import OrgMember
+
+    admin, admin_headers = await _platform_admin_headers(db_session)
+    other, other_headers = await _platform_admin_headers(db_session)
+    org_id = await _admin_org(db_session, admin)
+    db_session.add(OrgMember(org_id=org_id, user_id=other.id, role="admin"))
+    await db_session.commit()
+    minted = await client.post(
+        f"/api/v1/orgs/{org_id}/service-keys", headers=other_headers,
+        json={"name": "sweeper", "scopes": [SCOPE]},
+    )
+    assert minted.status_code == 201, minted.text
+    key_id = minted.json()["id"]
+    other.tier = "pro"
+    await db_session.commit()
+
+    def _row(listing_body: list) -> dict:
+        return [r for r in listing_body if r["id"] == key_id][0]
+
+    as_platform = await client.get(f"/api/v1/orgs/{org_id}/service-keys", headers=admin_headers)
+    assert as_platform.status_code == 200, as_platform.text
+    assert _row(as_platform.json())["coupling_reason"] == "minter no longer admin"
+
+    as_org_admin = await client.get(f"/api/v1/orgs/{org_id}/service-keys", headers=other_headers)
+    assert as_org_admin.status_code == 200, as_org_admin.text
+    assert _row(as_org_admin.json())["coupling_ok"] is False
+    assert _row(as_org_admin.json())["coupling_reason"] == "platform admin standing lapsed"

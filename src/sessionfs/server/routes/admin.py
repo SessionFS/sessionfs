@@ -1663,6 +1663,8 @@ async def sweep_github_webhook_deliveries(
     1. Delete github_webhook_deliveries older than the retention window
        (default 30 days; override with body {"retention_days": N}); stored
        payloads go with them.
+    1b. Delete delivery_webhook_events (the org delivery webhooks'
+       idempotency ledger) older than the tombstone window.
     2. Delete github_claim_attempts that are expired or consumed (their
        state/nonce/verifier hashes and any parked chooser go with them);
        'processing' attempts survive a 10-minute grace so an in-flight
@@ -1722,6 +1724,13 @@ async def sweep_github_webhook_deliveries(
         payload_retention=timedelta(days=retention_days),
         tombstone_retention=timedelta(days=tombstone_days),
     )
+    # The org delivery webhooks' idempotency ledger (GitHub/GitLab PRs and
+    # releases) keeps keys for the same replay window as the tombstones.
+    from sessionfs.server.services.delivery_ingest import prune_delivery_events
+
+    delivery_events_purged = await prune_delivery_events(
+        db, older_than=now - timedelta(days=tombstone_days)
+    )
     # 'processing' attempts (consumed, callback still working) survive
     # until their grace has passed — mirrors _create_attempt housekeeping
     # in routes/settings.py.
@@ -1763,6 +1772,7 @@ async def sweep_github_webhook_deliveries(
     result = {
         "payloads_purged": payloads_purged,
         "deliveries_purged": tombstones_purged,
+        "delivery_events_purged": delivery_events_purged,
         "claim_attempts_purged": attempts.rowcount or 0,
         "uploads_aborted": uploads_aborted,
         "deliveries_retried": retry_stats["retried"],

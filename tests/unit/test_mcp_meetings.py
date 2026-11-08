@@ -514,3 +514,80 @@ async def test_upload_chat_thread_discord_guild_channel_needs_no_attestation(htt
     )
     assert out["id"] == "chat_1"
     assert http["calls"][0]["json"]["attestation"] is False
+
+
+# ── link_meeting_action_item (0.29.11) ──
+
+_ITEM = f"{API}/api/v1/meetings/meet_1/action-items/mi_1"
+_PREVIEW = {
+    "meeting_id": "meet_1",
+    "item_id": "mi_1",
+    "ticket": {"id": "tk_9", "project_id": "proj_1", "title": "T", "status": "open"},
+    "suggested": True,
+    "comment": "Raised again in meeting ...",
+}
+
+
+def test_link_tool_registered_and_states_preview_only():
+    tool = next(t for t in mcp_server._TOOLS if t.name == "link_meeting_action_item")
+    assert "PREVIEW ONLY" in tool.description
+    assert set(tool.inputSchema["required"]) == {"meeting_id", "item_id"}
+    getter = next(t for t in mcp_server._TOOLS if t.name == "get_meeting_transcript")
+    assert "suggested_ticket" in getter.description
+
+
+@pytest.mark.asyncio
+async def test_link_without_confirm_only_previews(http):
+    http["responses"][("POST", f"{_ITEM}/link/preview")] = (200, _PREVIEW)
+    res = await mcp_server._handle_link_meeting_action_item(
+        {"meeting_id": "meet_1", "item_id": "mi_1", "conversation_kind": "chat"}
+    )
+    assert res["confirmed"] is False and res["preview"]["ticket"]["id"] == "tk_9"
+    assert [c["url"] for c in http["calls"]] == [f"{_ITEM}/link/preview"]
+    assert http["calls"][0]["json"] is None
+    assert http["calls"][0]["params"] == {"kind": "chat"}
+    assert "untrusted_content_notice" in res
+
+
+@pytest.mark.asyncio
+async def test_link_confirm_pins_the_previewed_ticket(http):
+    http["responses"][("POST", f"{_ITEM}/link/preview")] = (200, _PREVIEW)
+    http["responses"][("POST", f"{_ITEM}/link")] = (200, {"ticket_id": "tk_9", "status": "linked"})
+    res = await mcp_server._handle_link_meeting_action_item(
+        {"meeting_id": "meet_1", "item_id": "mi_1", "ticket_id": " tk_9 ", "confirm": True}
+    )
+    assert res["confirmed"] is True and res["status"] == "linked"
+    assert http["calls"][0]["json"] == {"ticket_id": "tk_9"}
+    assert http["calls"][1]["url"] == f"{_ITEM}/link"
+    assert http["calls"][1]["json"] == {"ticket_id": "tk_9"}
+
+
+@pytest.mark.asyncio
+async def test_link_unlink_and_validation(http):
+    noop = await mcp_server._handle_link_meeting_action_item(
+        {"meeting_id": "meet_1", "item_id": "mi_1", "unlink": True}
+    )
+    assert noop["confirmed"] is False and http["calls"] == []
+    http["responses"][("POST", f"{_ITEM}/unlink")] = (200, {"id": "mi_1", "status": "pending"})
+    out = await mcp_server._handle_link_meeting_action_item(
+        {"meeting_id": "meet_1", "item_id": "mi_1", "unlink": True, "confirm": True}
+    )
+    assert out["unlinked"] is True and out["item"]["status"] == "pending"
+
+    for bad in (
+        {"item_id": "mi_1"},
+        {"meeting_id": "meet_1"},
+        {"meeting_id": "meet_1", "item_id": "mi_1", "confirm": "yes"},
+        {"meeting_id": "meet_1", "item_id": "mi_1", "ticket_id": ""},
+        {"meeting_id": "meet_1", "item_id": "mi_1", "conversation_kind": "video"},
+    ):
+        assert "error" in await mcp_server._handle_link_meeting_action_item(bad)
+
+    http["responses"][("POST", f"{_ITEM}/link/preview")] = (
+        422, {"error": {"code": "ticket_not_linkable"}}
+    )
+    err = await mcp_server._handle_link_meeting_action_item(
+        {"meeting_id": "meet_1", "item_id": "mi_1", "ticket_id": "tk_x", "confirm": True}
+    )
+    assert "422" in err["error"]
+    assert not any(c["url"] == f"{_ITEM}/link" for c in http["calls"])

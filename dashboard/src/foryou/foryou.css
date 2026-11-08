@@ -217,6 +217,14 @@
 .fy .bandempty { margin: 0; padding: 12px 14px; border: 1px dashed var(--border); border-radius: var(--radius-lg); color: var(--text-tertiary); font-size: var(--text-sm); }
 .fy .banderr { margin: 0 0 10px; padding: 9px 12px; border-radius: var(--radius-md); border: 1px solid var(--fy-danger-line); background: var(--fy-danger-soft); color: var(--danger); font-size: var(--text-xs); }
 .fy .list { display: flex; flex-direction: column; }
+/* Show N more / Show less, under a section longer than its first ten. */
+.fy .bandmore { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 2px; }
+.fy .bandmore .btn .ic { width: 14px; height: 14px; transition: transform .25s var(--fy-ease); }
+.fy .bandmore .btn[aria-expanded="true"] { background: linear-gradient(180deg, var(--fy-glass-top), var(--fy-glass-bot)); color: var(--text-secondary); }
+.fy .bandmore .btn[aria-expanded="true"]:hover { color: var(--text-primary); }
+.fy .bandmore .btn[aria-expanded="true"] .ic { transform: rotate(180deg); }
+.fy .bandmore .of { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.fy.reduce .bandmore .btn .ic { transition: none; }
 @container (min-width: 900px) {
   .fy .list.grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 12px; align-items: start; }
 }
@@ -598,6 +606,7 @@
   .fy .actions .btn { height: 44px; font-size: var(--text-sm); }
   .fy .actions .btn.wide, .fy .actions .btn:only-child { grid-column: 1 / -1; }
   .fy .actions kbd { display: none; }
+  .fy .bandmore .btn { height: 44px; padding: 0 14px; }
   .fy .morebtn { height: 36px; margin-left: 0; }
   .fy .pnames { flex-basis: 100%; }
   .fy .moregrid { grid-template-columns: minmax(0, 1fr); }

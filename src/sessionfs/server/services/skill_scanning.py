@@ -191,11 +191,16 @@ def _finding_rows(
 
 def stage_publish_scan(
     db: AsyncSession, version: SkillPackageVersion, result: ScanResult | None
-) -> None:
+) -> list[SkillScanFinding]:
     """Stage the publish-time scan of a NEW version (same transaction, no
-    I/O; the caller ran ensure_ruleset() first)."""
+    I/O; the caller ran ensure_ruleset() first).
+
+    Returns the finding rows WITHOUT adding them: the models have no
+    relationship(), so the unit of work does not order a finding after the
+    scan it points at (SkillScanFinding sorts first), and PostgreSQL rejects
+    the pair in one flush. The caller adds them once the scan is flushed."""
     if result is None:
-        return
+        return []
     scan_id = _new_scan_id()
     version.scan_summary = _summary(result)
     db.add(
@@ -211,8 +216,7 @@ def stage_publish_scan(
             trigger="publish",
         )
     )
-    for row in _finding_rows(scan_id, result.findings, {}):
-        db.add(row)
+    return _finding_rows(scan_id, result.findings, {})
 
 
 async def latest_scan(db: AsyncSession, version_id: str) -> SkillVersionScan | None:

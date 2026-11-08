@@ -185,6 +185,7 @@
         { "name": "get_meeting_transcript", "desc": "A transcript with participants and extracted items" },
         { "name": "extract_meeting_action_items", "desc": "Extract action items and decisions with your own key" },
         { "name": "promote_meeting_action_item", "desc": "Preview, then confirm, turning an item into a ticket" },
+        { "name": "link_meeting_action_item", "desc": "Tie an item to an existing ticket, untie it, or dismiss the suggested match" },
         { "name": "search_meetings", "desc": "Search meeting titles and transcript text" },
         { "name": "upload_chat_thread", "desc": "Store a Slack, Discord or pasted chat thread" }
       ]

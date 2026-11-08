@@ -520,3 +520,255 @@ async def test_truncated_history_does_not_close_item(
     assert r.status_code == 201, r.text
     assert r.json()["verdict_trusted"] is True
     assert (await _item(db_session, e)).item_status != "done"
+
+
+@pytest.mark.asyncio
+async def test_finish_bound_to_starting_credential_or_admin(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """tk_86db8de1c3bf4bf0 #1: another editor or another key of the org can't
+    finish (and so record usage/head for) someone else's worker run."""
+    e = await _env(db_session, client)
+    other, other_key = await _make_user(db_session, "oth")
+    await _add_org_member(db_session, e.org, other, "member")
+    run_id = (await _start_worker(client, e, key=e.member_key)).json()["run_id"]
+
+    stranger = await _finish(client, e, run_id, key=other_key)
+    assert stranger.status_code == 403, stranger.text
+    assert stranger.json()["error"]["details"]["error"] == "worker_run_not_yours"
+    scopes = ["loops:write", "tickets:write", "agent_runs:write"]
+    _, k1 = await _make_service_key(
+        db_session, e.org, e.member, scopes, project_ids=[e.project.id]
+    )
+    assert (await _finish(client, e, run_id, key=k1)).status_code == 403
+    run = await db_session.get(AgentRun, run_id)
+    await db_session.refresh(run)
+    assert run.status == "running" and run.head_sha is None
+
+    ok = await _finish(client, e, run_id, key=e.member_key)
+    assert ok.status_code == 200, ok.text
+
+    # A project admin may finish any run; a key finishes its own run.
+    run2 = (await _start_worker(client, e, key=k1)).json()["run_id"]
+    assert (await _finish(client, e, run2, key=e.member_key)).status_code == 403
+    assert (await _finish(client, e, run2, key=e.owner_key)).status_code == 200
+    run3 = (await _start_worker(client, e, key=k1)).json()["run_id"]
+    assert (await _finish(client, e, run3, key=k1)).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_round_number_taken_by_another_reviewer_is_409(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """tk_86db8de1c3bf4bf0 #14: an untrusted caller who records round 1 first
+    must not make the trusted reviewer's round 1 report idempotent success."""
+    e = await _env(db_session, client)
+    squat = await _round(client, e, key=e.member_key, verdict="VERIFIED-CLEAN", findings=[])
+    assert squat.status_code == 201 and squat.json()["verdict_trusted"] is False
+    taken = await _round(client, e, verdict="VERIFIED-CLEAN", findings=[])
+    assert taken.status_code == 409, taken.text
+    assert taken.json()["error"]["details"]["error"] == "review_round_taken"
+    nxt = await _round(client, e, round=2, verdict="VERIFIED-CLEAN", findings=[])
+    assert nxt.status_code == 201 and nxt.json()["verdict_trusted"] is True
+
+
+@pytest.mark.asyncio
+async def test_round_race_maps_unique_violation_to_replay(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """tk_86db8de1c3bf4bf0 #2: when the idempotency read misses a concurrent
+    round (SQLite has no row lock), the unique index refuses the second run
+    and the call answers as a replay without a second verdict."""
+    from sessionfs.server.routes import loop_workers
+
+    e = await _env(db_session, client)
+    first = await _round(client, e)
+    assert first.status_code == 201
+
+    real = loop_workers._existing_round
+    calls = {"n": 0}
+
+    async def miss_once(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return None
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(loop_workers, "_existing_round", miss_once)
+    again = await _round(client, e)
+    assert again.status_code == 201, again.text
+    assert again.json()["idempotent"] is True
+    assert again.json()["run_id"] == first.json()["run_id"]
+    comments = (
+        await db_session.execute(
+            select(TicketComment).where(TicketComment.ticket_id == e.child_id)
+        )
+    ).scalars().all()
+    assert len([c for c in comments if "R1 review" in c.content]) == 1
+
+
+@pytest.mark.asyncio
+async def test_review_round_unique_index(db_session: AsyncSession, client: AsyncClient):
+    from sqlalchemy.exc import IntegrityError
+
+    e = await _env(db_session, client)
+    rid = (await _round(client, e)).json()["run_id"]
+    original = await db_session.get(AgentRun, rid)
+    dup = AgentRun(
+        id=f"run_{uuid.uuid4().hex[:16]}",
+        project_id=e.project.id,
+        persona_name="reviewer",
+        tool="generic",
+        trigger_source="manual",
+        status="passed",
+        ticket_id=e.child_id,
+        role="reviewer",
+        review_round=original.review_round,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(dup)
+    with pytest.raises(IntegrityError):
+        await db_session.flush()
+    await db_session.rollback()
+
+
+@pytest.mark.asyncio
+async def test_refused_round_keeps_its_token_usage(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """tk_86db8de1c3bf4bf0 #3: a round refused after the review ran (here the
+    item is parked) still records the tokens it spent, on an errored run that
+    takes no round number and posts no verdict."""
+    e = await _env(db_session, client, max_review_rounds=1)
+    assert (await _round(client, e)).json()["needs_human"] is True
+    r = await _round(
+        client, e, round=2,
+        usage={"input_tokens": 500, "output_tokens": 20, "cost_usd": 0.25},
+    )
+    assert r.status_code == 409
+    assert r.json()["error"]["details"]["error"] == "loop_needs_human"
+    runs = (
+        await db_session.execute(
+            select(AgentRun).where(
+                AgentRun.ticket_id == e.child_id, AgentRun.status == "errored"
+            )
+        )
+    ).scalars().all()
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.role == "reviewer" and run.review_round is None
+    assert run.input_tokens == 500 and run.output_tokens == 20
+    assert float(run.cost_usd) == 0.25 and run.trigger_ref is None
+    comments = (
+        await db_session.execute(
+            select(TicketComment).where(TicketComment.ticket_id == e.child_id)
+        )
+    ).scalars().all()
+    assert not [c for c in comments if "R2 review" in c.content]
+    # No usage reported: nothing extra is written.
+    again = await _round(client, e, round=3)
+    assert again.status_code == 409
+    count = (
+        await db_session.execute(
+            select(AgentRun).where(
+                AgentRun.ticket_id == e.child_id, AgentRun.status == "errored"
+            )
+        )
+    ).scalars().all()
+    assert len(count) == 1
+
+
+@pytest.mark.asyncio
+async def test_round_delivers_jira_outbox_and_logs_proposal_failures(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch, caplog
+):
+    """tk_86db8de1c3bf4bf0 #4 + #12: the verdict's Jira outbox rows are
+    drained after the round is durable, and a failed checklist proposal is
+    logged instead of swallowed."""
+    from sessionfs.server.routes import loop_checklist, loop_workers
+    from sessionfs.server.services import jira_sync
+
+    e = await _env(db_session, client)
+    real_post = loop_workers.post_server_verdict
+
+    async def post_with_outbox(*args, **kwargs):
+        comment, _ids = await real_post(*args, **kwargs)
+        return comment, ["tse_test"]
+
+    drained: list[list[str]] = []
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("proposal store down")
+
+    monkeypatch.setattr(loop_workers, "post_server_verdict", post_with_outbox)
+    monkeypatch.setattr(jira_sync, "schedule_drain", lambda ids: drained.append(list(ids)))
+    monkeypatch.setattr(loop_checklist, "propose_from_findings", boom)
+    with caplog.at_level("ERROR", logger="sessionfs.api"):
+        r = await _round(client, e)
+    assert r.status_code == 201, r.text
+    assert drained == [["tse_test"]]
+    assert any("Checklist proposals" in rec.getMessage() for rec in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_start_worker_retry_returns_the_running_run(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """tk_86db8de1c3bf4bf0 #5: a client retry of start-worker returns the
+    credential's still-running run instead of opening a second one."""
+    e = await _env(db_session, client)
+    a = await _start_worker(client, e)
+    b = await _start_worker(client, e)
+    assert a.status_code == 201 and b.status_code == 201, b.text
+    assert b.json()["run_id"] == a.json()["run_id"]
+    assert b.json()["idempotent"] is True and a.json()["idempotent"] is False
+    assert b.json()["lease_epoch"] == a.json()["lease_epoch"]
+    runs = (
+        await db_session.execute(
+            select(AgentRun).where(
+                AgentRun.ticket_id == e.child_id, AgentRun.role == "implementer"
+            )
+        )
+    ).scalars().all()
+    assert len(runs) == 1
+    # Once finished, a new start opens a new run.
+    await _finish(client, e, a.json()["run_id"])
+    c = await _start_worker(client, e)
+    assert c.json()["run_id"] != a.json()["run_id"] and c.json()["idempotent"] is False
+
+
+@pytest.mark.asyncio
+async def test_lease_takeover_keeps_previous_holder_as_implementer(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """tk_86db8de1c3bf4bf0 #13: another editor's start-worker on an
+    in-progress ticket bumps the lease; the previous holder's start context
+    must stay in the implementer identities."""
+    from sessionfs.server.db.models import RetrievalAuditContext
+    from sessionfs.server.services.review_state import load_implementer_identities
+
+    e = await _env(db_session, client)
+    epoch = (await _start_worker(client, e)).json()["lease_epoch"]
+    # The reviewer held the current lease through the ticket start route.
+    db_session.add(
+        RetrievalAuditContext(
+            id=f"ra_{uuid.uuid4().hex[:24]}",
+            project_id=e.project.id,
+            ticket_id=e.child_id,
+            lease_epoch=epoch,
+            created_by_user_id=e.reviewer.id,
+            actor_type="user",
+        )
+    )
+    await db_session.commit()
+    taken = await _start_worker(client, e, key=e.member_key)
+    assert taken.status_code == 201 and taken.json()["lease_epoch"] == epoch + 1
+    ticket = await db_session.get(Ticket, e.child_id)
+    await db_session.refresh(ticket)
+    identities = (await load_implementer_identities(db_session, [ticket]))[e.child_id]
+    assert (None, e.reviewer.id) in identities
+    # So the reviewer's trusted clean does not close the item.
+    await _finish(client, e, taken.json()["run_id"], key=e.member_key)
+    r = await _round(client, e, verdict="VERIFIED-CLEAN", findings=[])
+    assert r.status_code == 201 and r.json()["verdict_trusted"] is True
+    assert (await _item(db_session, e)).item_status != "done"

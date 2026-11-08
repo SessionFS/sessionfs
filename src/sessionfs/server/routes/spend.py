@@ -78,12 +78,15 @@ async def _scope(
 ) -> tuple[Project, bool, Select | None]:
     """Authorize the project and return (project, show_dollars, readable).
 
-    User keys get a byte-identical 404 for both "unknown" and "not yours"
-    (existence-oracle protection, review checklist #2); service keys keep
-    their org/allowlist 403 boundary."""
+    Every caller gets a byte-identical 404 for both "unknown" and "not
+    yours" (existence-oracle protection, review checklist #2): a service key
+    outside its org or project allowlist sees the same body as a miss, never
+    a cross_org_denied / project_not_in_allowlist probe."""
     if auth.key_kind == "service":
         project = await _get_project_for_auth(project_id, db, auth)
-        await assert_service_key_can_access_project(db, auth, project)
+        await assert_service_key_can_access_project(
+            db, auth, project, opaque_404_detail="Project not found"
+        )
         return project, False, None
 
     project = (

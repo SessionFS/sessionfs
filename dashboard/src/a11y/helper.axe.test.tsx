@@ -29,6 +29,7 @@ vi.mock('../helper/useHelper', () => ({
   useHelperConversation: () => ({ data: null, isLoading: false }),
   useHelperGroups: useHelperGroupsMock,
   useDeleteHelperConversation: () => ({ mutate: vi.fn(), isPending: false }),
+  useRenameHelperConversation: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 const status = (data: { enabled: boolean; key_source: string | null }) => ({
@@ -124,6 +125,16 @@ describe('session helper drawer has no axe violations', () => {
   it('history view', async () => {
     const { baseElement } = renderPanel();
     await userEvent.setup().click(screen.getByRole('button', { name: 'Conversation history' }));
+    expect(await axe(baseElement)).toHaveNoViolations();
+  });
+
+  it('history view renaming a conversation, in the large panel', async () => {
+    const { baseElement } = renderPanel();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Expand helper' }));
+    await user.click(screen.getByRole('button', { name: 'Conversation history' }));
+    await user.click(screen.getByRole('button', { name: 'Rename Why did the webhook retry?' }));
+    expect(screen.getByRole('textbox', { name: 'Rename Why did the webhook retry?' })).toHaveFocus();
     expect(await axe(baseElement)).toHaveNoViolations();
   });
 

@@ -244,12 +244,19 @@ def _event_name(provider: str, payload: dict, request: Request) -> str:
 
 
 def _idempotency_key(provider: str, body: bytes, request: Request) -> str:
+    """The ledger key for a delivery, bound to its signed body.
+
+    The delivery-id header is not covered by the signature, so it is hashed
+    together with the (signed) body: a replayed body under a made-up id can
+    only ever re-run that same body (every write is an idempotent upsert),
+    and nobody can claim a future delivery's key without its exact body.
+    """
     if provider == "github":
         key = request.headers.get("x-github-delivery")
     else:
         key = request.headers.get("x-gitlab-event-uuid")
     if key:
-        return key[:64]
+        return hashlib.sha256(key[:64].encode() + b"\n" + body).hexdigest()
     # Providers always send these, but a deterministic fallback keeps a
     # header-less delivery idempotent too.
     return hashlib.sha256(body).hexdigest()

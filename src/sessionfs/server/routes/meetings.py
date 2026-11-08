@@ -49,6 +49,7 @@ from sessionfs.server.db.models import (
     OrgMember,
     Project,
     ProjectGroup,
+    Ticket,
     User,
 )
 from sessionfs.server.dlp import (
@@ -149,6 +150,19 @@ class SuggestedReminder(BaseModel):
     owner_user_id: str | None = None
 
 
+class ItemTicketRef(BaseModel):
+    """A ticket an action item suggests or is linked to.
+
+    Only ever present when the caller can read the ticket from this
+    conversation's scope (re-checked on every read).
+    """
+
+    id: str
+    project_id: str
+    title: str
+    status: str
+
+
 class MeetingActionItemResponse(BaseModel):
     id: str
     kind: str
@@ -164,6 +178,16 @@ class MeetingActionItemResponse(BaseModel):
     promoted_ticket_id: str | None
     extracted_at: datetime | None
     suggested_reminder: SuggestedReminder | None = None
+    # An existing ticket this pending item looks like (suggest, never
+    # auto-link): only while the item is pending, the suggestion is not
+    # dismissed and the caller can read the ticket. ``suggestion_source``
+    # is ``model`` or ``text`` and accompanies ``suggested_ticket``.
+    suggested_ticket: ItemTicketRef | None = None
+    suggestion_source: str | None = None
+    suggestion_score: float | None = None
+    # The ticket a ``linked`` item is tied to, when the caller can read it.
+    linked_ticket: ItemTicketRef | None = None
+    linked_at: datetime | None = None
 
 
 class ChatMessageResponse(BaseModel):
@@ -920,9 +944,49 @@ def suggested_reminder(
     )
 
 
+def _ticket_ref(ticket: Ticket | None) -> ItemTicketRef | None:
+    if ticket is None:
+        return None
+    return ItemTicketRef(
+        id=ticket.id, project_id=ticket.project_id, title=ticket.title, status=ticket.status
+    )
+
+
+async def item_tickets(
+    db: AsyncSession,
+    meeting: MeetingTranscript,
+    auth: AuthContext | None,
+    items: list[MeetingActionItem],
+) -> dict[str, Ticket]:
+    """Tickets the items suggest or link that ``auth`` may see from this
+    conversation (scope + read access). No auth: none."""
+    if auth is None:
+        return {}
+    from sessionfs.server.services.ticket_match import visible_tickets
+
+    ids = {i.suggested_ticket_id for i in items if i.suggested_ticket_id}
+    ids |= {i.linked_ticket_id for i in items if i.linked_ticket_id}
+    return await visible_tickets(db, meeting, auth, ids)
+
+
 def _action_item_response(
-    item: MeetingActionItem, owner_user_id: str | None = None
+    item: MeetingActionItem,
+    owner_user_id: str | None = None,
+    tickets: dict[str, Ticket] | None = None,
 ) -> MeetingActionItemResponse:
+    tickets = tickets or {}
+    suggested = None
+    if (
+        item.status == "pending"
+        and item.suggested_ticket_id
+        and item.suggestion_dismissed_at is None
+    ):
+        suggested = _ticket_ref(tickets.get(item.suggested_ticket_id))
+    linked = (
+        _ticket_ref(tickets.get(item.linked_ticket_id))
+        if item.status == "linked" and item.linked_ticket_id
+        else None
+    )
     return MeetingActionItemResponse(
         id=item.id,
         kind=item.kind,
@@ -936,11 +1000,20 @@ def _action_item_response(
         promoted_ticket_id=item.promoted_ticket_id,
         extracted_at=item.extracted_at,
         suggested_reminder=suggested_reminder(item, owner_user_id),
+        suggested_ticket=suggested,
+        suggestion_source=item.suggestion_source if suggested is not None else None,
+        suggestion_score=item.suggestion_score if suggested is not None else None,
+        linked_ticket=linked,
+        linked_at=item.linked_at if item.status == "linked" else None,
     )
 
 
 async def _meeting_detail(
-    db: AsyncSession, meeting: MeetingTranscript, warnings: list[str] | None = None
+    db: AsyncSession,
+    meeting: MeetingTranscript,
+    warnings: list[str] | None = None,
+    *,
+    auth: AuthContext | None = None,
 ) -> MeetingDetailResponse:
     participants = (
         (
@@ -965,6 +1038,7 @@ async def _meeting_detail(
         .all()
     )
     owner_users = {p.id: p.user_id for p in participants}
+    tickets = await item_tickets(db, meeting, auth, list(action_items))
     messages: list[ChatMessageResponse] = []
     if meeting.kind == "chat":
         messages = [
@@ -988,7 +1062,9 @@ async def _meeting_detail(
         participants=[_participant_response(p) for p in participants],
         action_items=[
             _action_item_response(
-                i, owner_users.get(i.owner_participant_id) if i.owner_participant_id else None
+                i,
+                owner_users.get(i.owner_participant_id) if i.owner_participant_id else None,
+                tickets,
             )
             for i in action_items
         ],
@@ -1210,7 +1286,7 @@ async def _store_meeting(
             warnings.append(f"extraction_skipped: {code}")
             await db.refresh(meeting)
 
-    return await _meeting_detail(db, meeting, warnings=warnings)
+    return await _meeting_detail(db, meeting, warnings=warnings, auth=auth)
 
 
 # ── Service: participant resolution (§6) ──
@@ -1647,7 +1723,7 @@ async def get_meeting(
     if meeting.deleted_at is not None:
         raise HTTPException(404, "Meeting not found")
     await _meeting_scope(db, meeting, auth, write=False)
-    return await _meeting_detail(db, meeting)
+    return await _meeting_detail(db, meeting, auth=auth)
 
 
 @router.delete("/meetings/{meeting_id}", response_model=MeetingDetailResponse)
@@ -1739,7 +1815,7 @@ async def delete_meeting(
 
     await db.commit()
     await db.refresh(meeting)
-    return await _meeting_detail(db, meeting)
+    return await _meeting_detail(db, meeting, auth=auth)
 
 
 @router.put(
@@ -1788,7 +1864,7 @@ async def override_meeting_participant(
         if meeting.project_id is not None:
             try:
                 target = await resolve_assigned_user_id(
-                    db, project=project, value=body.user_id
+                    db, project=project, value=body.user_id, assigner_user_id=user.id
                 )
             except HTTPException as exc:
                 if exc.status_code == 422:

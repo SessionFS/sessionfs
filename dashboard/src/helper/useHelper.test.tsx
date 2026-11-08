@@ -3,7 +3,7 @@
  * (enabled: !!auth && open), so merely mounting the panel closed never hits
  * the helper API.
  */
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
@@ -12,7 +12,7 @@ import type { HelperStatus } from '../api/client';
 const { useAuthMock } = vi.hoisted(() => ({ useAuthMock: vi.fn() }));
 vi.mock('../auth/AuthContext', () => ({ useAuth: useAuthMock }));
 
-import { touchesJira, useDecideHelperAction, useHelperConversations, useHelperStatus } from './useHelper';
+import { touchesJira, useDecideHelperAction, useHelperConversations, useHelperStatus, useRenameHelperConversation } from './useHelper';
 
 function makeWrapper(qc: QueryClient) {
   return function Wrapper({ children }: { children: ReactNode }) {
@@ -164,5 +164,43 @@ describe('useDecideHelperAction', () => {
     expect(touchesJira({ kind: 'comment_ticket', params: { send_to_jira: true } })).toBe(true);
     expect(touchesJira({ kind: 'comment_ticket', params: {} })).toBe(false);
     expect(touchesJira({ kind: 'trash_sessions' })).toBe(false);
+  });
+});
+
+describe('useRenameHelperConversation', () => {
+  const list = [
+    { id: 'c1', org_id: null, title: 'Old', scope: null, created_at: '', updated_at: '' },
+    { id: 'c2', org_id: null, title: 'Other', scope: null, created_at: '', updated_at: '' },
+  ];
+
+  function setup(rename: ReturnType<typeof vi.fn>) {
+    useAuthMock.mockReturnValue({
+      auth: { client: { renameHelperConversation: rename, listHelperConversations: vi.fn().mockResolvedValue(list) } },
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    qc.setQueryData(['helperConversations'], list);
+    const hook = renderHook(() => useRenameHelperConversation(), { wrapper: makeWrapper(qc) });
+    const titles = () => (qc.getQueryData(['helperConversations']) as typeof list).map((c) => c.title);
+    return { hook, titles };
+  }
+
+  it('shows the new title at once and keeps the server’s version', async () => {
+    let resolve!: (v: unknown) => void;
+    const rename = vi.fn(() => new Promise((r) => { resolve = r; }));
+    const { hook, titles } = setup(rename);
+    act(() => hook.result.current.mutate({ id: 'c1', title: 'New' }));
+    await waitFor(() => expect(titles()).toEqual(['New', 'Other']));
+    expect(rename).toHaveBeenCalledWith('c1', 'New');
+    await act(async () => resolve({ ...list[0], title: 'New [REDACTED:ssn]' }));
+    await waitFor(() => expect(hook.result.current.isSuccess).toBe(true));
+    expect(titles()[0]).toBe('New [REDACTED:ssn]');
+  });
+
+  it('puts the old title back when the rename fails', async () => {
+    const rename = vi.fn().mockRejectedValue(new Error('nope'));
+    const { hook, titles } = setup(rename);
+    act(() => hook.result.current.mutate({ id: 'c1', title: 'New' }));
+    await waitFor(() => expect(hook.result.current.isError).toBe(true));
+    expect(titles()).toEqual(['Old', 'Other']);
   });
 });

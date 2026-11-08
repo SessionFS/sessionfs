@@ -198,6 +198,41 @@ export function saveCleared(entries: ClearedEntry[], now = new Date()): void {
   setItem(clearedKey(now), JSON.stringify(entries.slice(-200)));
 }
 
+// ── Section length (Show more / Show less) ──
+
+/** A section shows its first this-many items in rank order; the rest wait behind "Show N more". */
+export const SECTION_CAP = 10;
+
+const EXPANDED_KEY = 'sfs-foryou-expanded';
+
+/** Which sections are expanded, for this browser tab only (sessionStorage). */
+export function loadExpanded(): Set<AttentionGroup> {
+  try {
+    const raw = window.sessionStorage.getItem(EXPANDED_KEY);
+    const parsed: unknown = raw ? JSON.parse(raw) : [];
+    const ids = new Set<string>(GROUPS.map((g) => g.id));
+    return new Set(Array.isArray(parsed) ? (parsed.filter((x) => typeof x === 'string' && ids.has(x)) as AttentionGroup[]) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function saveExpanded(groups: Set<AttentionGroup>): void {
+  try {
+    window.sessionStorage.setItem(EXPANDED_KEY, JSON.stringify([...groups]));
+  } catch {
+    // Private mode or blocked storage: the choice lasts until reload.
+  }
+}
+
+/** The "Showing 10 of 79" caption under a section, or null when everything is on screen. */
+export function sectionCaption(shown: number, returned: number, total: number): string | null {
+  if (shown >= total) return null;
+  if (shown < returned) return `Showing ${shown} of ${total}`;
+  // Every returned item is on screen, but the feed returns only the top of a long list.
+  return `Showing ${shown} of ${total}. More appear as you clear these.`;
+}
+
 // ── Home preference ──
 
 export const HOME_PREF_KEY = 'sfs-home';

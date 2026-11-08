@@ -488,12 +488,14 @@ def _latest_head(child: _Child) -> str | None:
 
 class _GateContext:
     """Per-plan state shared by every gate check: readiness results cached
-    by (ticket, head), a cap on readiness checks, and the scope org."""
+    by (ticket, head), approval-gate results cached by (policy, ticket), one
+    cap on the checks of both kinds, and the scope org."""
 
     def __init__(self, db: AsyncSession, project_id: str) -> None:
         self.db = db
         self.project_id = project_id
         self.readiness: dict[tuple[str, str], tuple[bool, str | None]] = {}
+        self.approvals: dict[tuple[str, str], tuple[bool, str | None]] = {}
         self.budget = MAX_GATE_TICKETS
         self._org_loaded = False
         self._org_id: str | None = None
@@ -637,8 +639,28 @@ async def _approval_gate(
     The policy must exist, belong to the ticket's project org and still be
     live (its lineage has an active version); anything else fails closed.
     Any error is "not passed", inside a savepoint so the plan's transaction
-    stays usable.
+    stays usable. Results are cached per plan by (policy, ticket): the head
+    the gate reads is derived from the same rows for the whole plan. Each new
+    pair spends one unit of the plan's gate budget; past it the gate fails
+    closed.
     """
+    key = (policy_id, child.ticket.id)
+    cached = ctx.approvals.get(key)
+    if cached is not None:
+        return cached
+    if ctx.budget < 1:
+        return False, (
+            f"too many tickets to check in one plan (at most {MAX_GATE_TICKETS})"
+        )
+    ctx.budget -= 1
+    result = await _approval_gate_uncached(ctx, policy_id, child)
+    ctx.approvals[key] = result
+    return result
+
+
+async def _approval_gate_uncached(
+    ctx: _GateContext, policy_id: str, child: _Child
+) -> tuple[bool, str | None]:
     db = ctx.db
     org_id = await ctx.org_id()
     try:
@@ -1199,6 +1221,58 @@ async def check_step_report(
     return step
 
 
+async def check_untagged_round(
+    db: AsyncSession,
+    *,
+    loop: Ticket | None,
+    loop_config: dict[str, Any],
+    ticket: Ticket,
+    persona: str | None,
+) -> None:
+    """Refuse an untagged code round that would count for a reviewer step
+    whose dependencies are not done yet.
+
+    A round recorded without ``step_id`` counts for every reviewer step whose
+    pinned agent matches its persona and that reviews ``ticket`` (see
+    ``_round_counts_for_step``), so it must respect those steps' order just
+    like a tagged round does. Outside a workflow this is a no-op. Raises
+    ``WorkflowStepMismatch``."""
+    if loop is None or workflow_pin(loop_config) is None or not persona:
+        return
+    pin = workflow_pin(loop_config)
+    assert pin is not None
+    loaded = await load_pinned_definition(db, pin)
+    if loaded is None:
+        raise WorkflowStepMismatch("this loop's workflow template is unavailable")
+    definition = loaded[1]
+    candidates = [
+        s
+        for s in definition.steps
+        if s.role == "reviewer"
+        and step_agent(loop_config, s).lower() == persona.lower()
+    ]
+    if not candidates:
+        return
+    ancestors: set[str] = set()
+    for s in candidates:
+        ancestors |= _ancestors(definition, s)
+    plan = await compute_plan(
+        db, loop, loop_config, with_gates=False, gate_steps=frozenset(ancestors)
+    )
+    if plan is None:
+        raise WorkflowStepMismatch("this loop's workflow template is unavailable")
+    for s in candidates:
+        st = plan.steps[s.id]
+        if ticket.id not in {c.ticket.id for c in st.subjects}:
+            continue
+        waiting = [d for d in s.depends_on if not plan.steps[d].done]
+        if waiting:
+            raise WorkflowStepMismatch(
+                f"this round would count for step {s.id!r}, which is waiting for: "
+                f"{', '.join(waiting)} (pass step_id to report it for another step)"
+            )
+
+
 __all__ = [
     "MAX_DEFINITION_BYTES",
     "MAX_GATE_TICKETS",
@@ -1213,6 +1287,7 @@ __all__ = [
     "step_agent",
     "step_has_own_tickets",
     "check_step_report",
+    "check_untagged_round",
     "clean_multiline",
     "compute_plan",
     "dump_definition",

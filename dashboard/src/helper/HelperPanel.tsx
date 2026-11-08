@@ -9,7 +9,7 @@
  * transcript (or the history list), and a pinned composer.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
 import { useAuth } from '../auth/AuthContext';
@@ -28,7 +28,13 @@ import { useToast } from '../hooks/useToast';
 import { errorMessage } from '../utils/errorMessage';
 import { Button, Dialog, DialogFooter, DialogHeader, Drawer } from '../components/ui';
 import type { HelperScope } from './HelperProvider';
-import { useDeleteHelperConversation, useHelperConversations, useHelperGroups, useHelperStatus } from './useHelper';
+import {
+  useDeleteHelperConversation,
+  useHelperConversations,
+  useHelperGroups,
+  useHelperStatus,
+  useRenameHelperConversation,
+} from './useHelper';
 import { SseParser, parseActionProposed, type SseEvent } from './sse';
 import { actionKindForTool, proposedActionId, type TurnAction } from './actions';
 import {
@@ -45,6 +51,7 @@ import {
 import { activeOption, apiScope, hasScope, scopeKey, scopeOptions, withLabel, type ScopeOption } from './scope';
 import { clearRememberedScope, readRememberedScope, rememberScope, scopeOwner } from './scopeMemory';
 import HelperHeader from './HelperHeader';
+import { PANEL_WIDTH, readPanelSize, writePanelSize, type HelperPanelSize } from './panelSize';
 import HelperComposer from './HelperComposer';
 import HelperEmptyState from './HelperEmptyState';
 import HelperHistory from './HelperHistory';
@@ -105,8 +112,14 @@ export default function HelperPanel({
   const groupsQuery = useHelperGroups(open);
   const groups = useMemo(() => groupsQuery.data ?? [], [groupsQuery.data]);
   const deleteConversation = useDeleteHelperConversation();
+  const renameConversation = useRenameHelperConversation();
 
   const [conversationId, setConversationId] = useState<string | null>(null);
+  // For mutation callbacks that land after the user switched threads.
+  const conversationIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    conversationIdRef.current = conversationId;
+  }, [conversationId]);
   const [activeTitle, setActiveTitle] = useState<string | null>(null);
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState('');
@@ -122,6 +135,10 @@ export default function HelperPanel({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const stickRef = useRef(true);
+  const [size, setSize] = useState<HelperPanelSize>(readPanelSize);
+  // While the panel changes width the transcript reflows: keep the reader on
+  // the message they were reading (or at the bottom while following).
+  const anchorRef = useRef<{ el: Element; offset: number; until: number } | null>(null);
 
   const nextId = useCallback(() => `turn-${++idRef.current}`, []);
 
@@ -220,6 +237,81 @@ export default function HelperPanel({
     stickRef.current = atBottom;
     setShowJump(!atBottom);
   };
+
+  // Optimistic: the list (in the hook) and, for the open thread, the header
+  // show the new title at once; a failure puts both back and says why.
+  const renameThread = (c: HelperConversationSummary, title: string) => {
+    const isOpen = c.id === conversationId;
+    const before = activeTitle;
+    if (isOpen) setActiveTitle(title);
+    renameConversation.mutate(
+      { id: c.id, title },
+      {
+        onSuccess: (saved) => {
+          // Only if it is still the open thread.
+          if (saved.id === conversationIdRef.current) setActiveTitle(saved.title);
+          if (saved.title !== title && saved.title?.includes('[REDACTED')) {
+            addToast('info', 'Part of the title looked like a secret, so it was saved redacted.');
+          }
+        },
+        onError: (err) => {
+          if (isOpen && c.id === conversationIdRef.current) setActiveTitle(before);
+          addToast('error', `Couldn't rename the conversation: ${errorMessage(err)}`);
+        },
+      },
+    );
+  };
+
+  const hasTurns = turns.length > 0;
+  const toggleSize = () => {
+    const el = scrollerRef.current;
+    anchorRef.current = null;
+    if (el && !stickRef.current) {
+      // The first message whose bottom is below the top edge is what the reader is on.
+      const top = el.getBoundingClientRect().top;
+      const blocks = el.querySelectorAll('section[aria-label="Conversation"] > *');
+      for (const b of Array.from(blocks)) {
+        const r = b.getBoundingClientRect();
+        if (r.bottom > top) {
+          anchorRef.current = { el: b, offset: r.top - top, until: Date.now() + 600 };
+          break;
+        }
+      }
+    }
+    setSize((cur) => {
+      const next = cur === 'large' ? 'small' : 'large';
+      writePanelSize(next);
+      return next;
+    });
+  };
+
+  // Follow every reflow (the width animates for 200 ms, and a streaming answer
+  // can grow meanwhile): stay at the bottom while following, else keep the
+  // anchored message where it was.
+  useLayoutEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const settle = () => {
+      if (stickRef.current) {
+        el.scrollTop = el.scrollHeight;
+        return;
+      }
+      const a = anchorRef.current;
+      if (!a) return;
+      if (Date.now() > a.until || !a.el.isConnected) {
+        anchorRef.current = null;
+        return;
+      }
+      const delta = a.el.getBoundingClientRect().top - el.getBoundingClientRect().top - a.offset;
+      if (Math.abs(delta) >= 1) el.scrollTop += delta;
+    };
+    settle();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(settle);
+    ro.observe(el);
+    if (el.firstElementChild) ro.observe(el.firstElementChild);
+    return () => ro.disconnect();
+  }, [size, view, hasTurns]);
 
   const jumpToLatest = () => {
     const el = scrollerRef.current;
@@ -768,6 +860,7 @@ export default function HelperPanel({
           orgName={me.data?.org_name ?? null}
           onOpen={(id) => void loadConversation(id)}
           onDelete={setDeleteTarget}
+          onRename={renameThread}
           onNew={() => newConversation()}
         />
       </div>
@@ -786,7 +879,11 @@ export default function HelperPanel({
               onShowHistory={() => setView('history')}
             />
           ) : (
-            <section aria-label="Conversation" aria-busy={streaming} className="space-y-6 px-4 py-5 sm:px-5">
+            <section
+              aria-label="Conversation"
+              aria-busy={streaming}
+              className="space-y-6 px-4 py-5 sm:px-5 group-data-[size=large]/helper:mx-auto group-data-[size=large]/helper:max-w-[56rem] md:group-data-[size=large]/helper:px-8 md:group-data-[size=large]/helper:py-7"
+            >
               {turns.map((t) =>
                 t.role === 'user' ? (
                   <UserMessage key={t.id} content={t.content} />
@@ -823,8 +920,8 @@ export default function HelperPanel({
   }
 
   return (
-    <Drawer open={open} onClose={onClose} titleId={TITLE_ID} bare widthClassName="w-full sm:w-[480px] lg:w-[520px]">
-      <div className="flex h-full min-h-0 flex-col bg-surface">
+    <Drawer open={open} onClose={onClose} titleId={TITLE_ID} bare widthClassName={PANEL_WIDTH[size]}>
+      <div className="group/helper flex h-full min-h-0 flex-col bg-surface" data-size={size}>
         <HelperRefsProvider projectId={activeScope?.project_id} onNavigate={onClose}>
         <HelperHeader
           options={options}
@@ -837,6 +934,8 @@ export default function HelperPanel({
           onNew={() => newConversation()}
           onClose={onClose}
           showControls={hasStatus}
+          size={size}
+          onToggleSize={toggleSize}
         />
 
         {body}

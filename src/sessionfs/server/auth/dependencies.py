@@ -587,6 +587,7 @@ async def assert_platform_key_minter_active(
 
     if minter_id is None:
         minter_tier = "unknown"
+        reason = "minter_missing"
     else:
         minter = ctx.user if minter_id == ctx.user.id else await db.get(User, minter_id)
         owner_ok = ctx.user.is_active and ctx.user.tier == "admin"
@@ -597,27 +598,30 @@ async def assert_platform_key_minter_active(
             minter_tier = "deactivated"
         else:
             minter_tier = minter.tier
+        reason = "minter_not_admin" if not minter_ok else "owner_not_admin"
 
     message = (
         f"A {scope} key works only while its owner (the user it runs as) and "
         "the user who minted it are both active platform admins."
     )
+    # The holder of a key is not necessarily its minter: the 403 carries a
+    # coarse reason only, never another user's id or current plan tier. The
+    # server log keeps both for the operator.
     detail = {
         "error": error,
         "message": message,
-        "minter_user_id": minter_id,
-        "minter_current_tier": minter_tier,
+        "reason": reason,
         "required_minter_tier": "admin",
         "resolution": (
             "Restore the minter's admin tier, or mint a new key as a user "
             "who will stay a platform admin."
         ),
     }
-    # The caller presented the key to get here, so these details only reach
-    # the key's own holder. Log the key id (never the key itself).
+    # Log the key id (never the key itself).
     logger.warning(
-        "platform key denied: error=%s key_id=%s minter_user_id=%s minter_current_tier=%s",
-        error, ctx.api_key_id, minter_id, minter_tier,
+        "platform key denied: error=%s reason=%s key_id=%s minter_user_id=%s "
+        "minter_current_tier=%s",
+        error, reason, ctx.api_key_id, minter_id, minter_tier,
     )
     raise HTTPException(status_code=403, detail=detail)
 

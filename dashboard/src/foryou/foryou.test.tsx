@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { axe } from '../test/axe';
 import ForYouPage from './ForYouPage';
 import Chyron from './Chyron';
-import { fyCaughtUpFeed, fyFeed, fyItemContext, fyItems, fyLoops } from './fixtures';
+import { fyCaughtUpFeed, fyFeed, fyItemContext, fyItems, fyLongFeed, fyLoops } from './fixtures';
 import { snoozeTarget, whenLabel } from './model';
 
 const { client } = vi.hoisted(() => ({
@@ -225,8 +225,23 @@ describe('For You page', { timeout: 30_000 }, () => {
     await waitFor(() => expect(client.decideApprovalRequest).toHaveBeenCalledWith('apr_19f2c4', { decision: 'approve', reason: 'Reviewed the read path' }));
     expect(within(card).getByRole('button', { name: 'Approving…' })).toBeDisabled();
     expect(within(card).getByRole('textbox', { name: 'Reason' })).toBeDisabled();
-    await act(async () => resolve({ id: 'apr_19f2c4', state: 'approved', approved_count: 2, required_count: 2, decisions: [] }));
-    expect(await screen.findByText('Approved · 2 of 2')).toBeInTheDocument();
+    // The stamp is on screen for ~760 ms of wall-clock time (420 ms stamp, then
+    // the leave animation) before the card is hidden. Those timers start when
+    // the decision resolves, so a worker starved for longer than that (a full
+    // parallel run) used to fire both before React painted: Node runs expired
+    // timers ahead of the scheduler's setImmediate, the card went straight to
+    // hidden and the stamp was never in the DOM to find. Own the clock from
+    // here so the stamp, the leave and the hide happen in order.
+    vi.useFakeTimers({ shouldAdvanceTime: false, toFake: ['setTimeout', 'clearTimeout'] });
+    await act(async () => {
+      resolve({ id: 'apr_19f2c4', state: 'approved', approved_count: 2, required_count: 2, decisions: [] });
+      // Yields to the real event loop, so decide → commit → removeVisual settles inside act.
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(within(card).getByText('Approved · 2 of 2')).toBeInTheDocument();
+    expect(screen.getByText('Approved. Auth changes has every approval it needs.')).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(card.isConnected).toBe(false);
   });
 
   it('Reject shows the server error inline and keeps the panel open', async () => {
@@ -349,6 +364,133 @@ describe('For You page', { timeout: 30_000 }, () => {
     renderPage();
     await screen.findByRole('heading', { name: 'On your radar' });
     expect(client.getForYou).toHaveBeenCalledWith(undefined);
+  });
+});
+
+describe('Long sections', { timeout: 60_000 }, () => {
+  const band = () => document.getElementById('band-second')!;
+  const cards = () => Array.from(band().querySelectorAll<HTMLElement>('.slot:not(.leaving) .card'));
+  const keysShown = () => cards().map((c) => c.dataset.key);
+  const more = () => within(band()).getByRole('button', { name: /^Show (\d+ more|less)/ });
+
+  beforeEach(() => {
+    window.sessionStorage.clear();
+    client.getForYou.mockResolvedValue({ data: fyLongFeed(), etag: '"long"', notModified: false });
+  });
+
+  it('shows the first 10 in rank order, the true count, and Show N more', async () => {
+    renderPage();
+    await screen.findByRole('heading', { name: 'Worth a second look' });
+    expect(keysShown()).toEqual(Array.from({ length: 10 }, (_, i) => `fy_long${i + 1}`));
+    await waitFor(() => expect(band().querySelector('.bandhead .cnt')).toHaveTextContent('79 items'));
+    const btn = more();
+    expect(btn).toHaveTextContent('Show 69 more');
+    expect(btn).toHaveAttribute('aria-expanded', 'false');
+    expect(btn).toHaveAttribute('aria-controls', 'list-second');
+    expect(within(band()).getByText('Showing 10 of 79')).toBeInTheDocument();
+    // Short sections have no toggle.
+    expect(within(document.getElementById('band-waiting')!).queryByRole('button', { name: /^Show/ })).not.toBeInTheDocument();
+  });
+
+  it('Show more reveals the rest and moves focus to the first new card; Show less returns focus to the toggle', async () => {
+    renderPage();
+    await screen.findByRole('heading', { name: 'Worth a second look' });
+    fireEvent.click(more());
+    expect(keysShown()).toHaveLength(79);
+    expect(more()).toHaveTextContent('Show less');
+    expect(more()).toHaveAttribute('aria-expanded', 'true');
+    expect(within(band()).queryByText(/^Showing/)).not.toBeInTheDocument();
+    await waitFor(() => expect((document.activeElement as HTMLElement).dataset.key).toBe('fy_long11'));
+    // j and k carry on across the newly shown cards.
+    fireEvent.keyDown(document.activeElement!, { key: 'j' });
+    expect((document.activeElement as HTMLElement).dataset.key).toBe('fy_long12');
+    fireEvent.keyDown(document.activeElement!, { key: 'k' });
+    fireEvent.keyDown(document.activeElement!, { key: 'k' });
+    expect((document.activeElement as HTMLElement).dataset.key).toBe('fy_long10');
+    // Focus on a card that collapsing will hide: it goes to the toggle instead.
+    (cards()[40] as HTMLElement).focus();
+    fireEvent.click(more());
+    expect(keysShown()).toHaveLength(10);
+    await waitFor(() => expect(document.activeElement).toBe(more()));
+    expect(more()).toHaveTextContent('Show 69 more');
+  });
+
+  it('section number keys still land on the first card of a collapsed section', async () => {
+    renderPage();
+    await screen.findByRole('heading', { name: 'Worth a second look' });
+    fireEvent.keyDown(document.body, { key: '6' });
+    expect((document.activeElement as HTMLElement).dataset.key).toBe('fy_long1');
+  });
+
+  it('remembers an expanded section for the tab session', async () => {
+    const first = renderPage();
+    await screen.findByRole('heading', { name: 'Worth a second look' });
+    fireEvent.click(more());
+    expect(JSON.parse(window.sessionStorage.getItem('sfs-foryou-expanded')!)).toEqual(['second']);
+    first.unmount();
+    renderPage();
+    await screen.findByRole('heading', { name: 'Worth a second look' });
+    expect(keysShown()).toHaveLength(79);
+    expect(more()).toHaveTextContent('Show less');
+    // Nothing is written to localStorage: the choice doesn't outlive the tab.
+    expect(Object.keys(window.localStorage).some((k) => k.includes('expanded'))).toBe(false);
+  });
+
+  it('works when sessionStorage throws', async () => {
+    const get = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+    const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+    try {
+      renderPage();
+      await screen.findByRole('heading', { name: 'Worth a second look' });
+      fireEvent.click(more());
+      expect(keysShown()).toHaveLength(79);
+    } finally {
+      get.mockRestore();
+      set.mockRestore();
+    }
+  });
+
+  it('hiding an item in a collapsed section moves the next one up, keeps focus in the section, and Undo restores it', async () => {
+    renderPage();
+    await screen.findByRole('heading', { name: 'Worth a second look' });
+    const tenth = cards()[9];
+    expect(tenth.dataset.key).toBe('fy_long10');
+    tenth.focus();
+    fireEvent.keyDown(tenth, { key: 'h' });
+    await waitFor(() => expect(client.hideForYouItem).toHaveBeenCalledWith('fy_long10'));
+    await waitFor(() => expect(keysShown()).toEqual([...Array.from({ length: 9 }, (_, i) => `fy_long${i + 1}`), 'fy_long11']));
+    await waitFor(() => expect((document.activeElement as HTMLElement).dataset.key).toBe('fy_long11'));
+    expect(more()).toHaveTextContent('Show 68 more');
+    expect(within(band()).getByText('Showing 10 of 78')).toBeInTheDocument();
+    await waitFor(() => expect(band().querySelector('.bandhead .cnt')).toHaveTextContent('78 items'));
+
+    fireEvent.click(screen.getByRole('button', { name: /Undo/ }));
+    await waitFor(() => expect(client.unhideForYouItem).toHaveBeenCalledWith('fy_long10'));
+    await waitFor(() => expect(keysShown()).toEqual(Array.from({ length: 10 }, (_, i) => `fy_long${i + 1}`)));
+    expect(more()).toHaveTextContent('Show 69 more');
+  });
+
+  it('says so honestly when the feed returned fewer items than the section holds', async () => {
+    client.getForYou.mockResolvedValue({ data: fyLongFeed(30, 312), etag: '"cap"', notModified: false });
+    renderPage();
+    await screen.findByRole('heading', { name: 'Worth a second look' });
+    await waitFor(() => expect(band().querySelector('.bandhead .cnt')).toHaveTextContent('312 items'));
+    expect(more()).toHaveTextContent('Show 20 more');
+    expect(within(band()).getByText('Showing 10 of 312')).toBeInTheDocument();
+    fireEvent.click(more());
+    expect(within(band()).getByText('Showing 30 of 312. More appear as you clear these.')).toBeInTheDocument();
+  });
+
+  it('going to an item behind Show more opens its section and focuses it', async () => {
+    const feed = fyLongFeed();
+    feed.chyron = [{ item_key: 'fy_long40', category: 'forgotten', text: feed.items.find((i) => i.item_key === 'fy_long40')!.title, ref: 'x' }];
+    client.getForYou.mockResolvedValue({ data: feed, etag: '"goto"', notModified: false });
+    renderPage();
+    await screen.findByRole('heading', { name: 'Worth a second look' });
+    const ticker = screen.getByRole('region', { name: /Right now/ });
+    fireEvent.click(within(ticker).getAllByRole('button', { name: /Empty state on the releases page \(40\)/ })[0]);
+    await waitFor(() => expect((document.activeElement as HTMLElement).dataset.key).toBe('fy_long40'));
+    expect(keysShown()).toHaveLength(79);
   });
 });
 

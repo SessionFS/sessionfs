@@ -18,7 +18,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,12 +26,14 @@ from sessionfs.git_remote import normalize_git_remote
 from sessionfs.server.db.models import (
     DeliveryWebhookEvent,
     GitLabSettings,
+    OrgMember,
     Project,
     ProjectRepo,
     PullRequest,
     Release,
     Ticket,
     TicketPrLink,
+    User,
 )
 from sessionfs.server.sanitize import sanitize_archive_string
 from sessionfs.server.services import releases
@@ -490,6 +492,39 @@ async def post_gitlab_status(
         logger.exception("GitLab commit status post failed for %s @ %s", project.id, sha)
 
 
+async def prune_delivery_events(db: AsyncSession, *, older_than: datetime) -> int:
+    """Delete delivery idempotency-ledger rows received before ``older_than``.
+
+    Safe to forget old keys: every ingest write is an idempotent upsert, so
+    a very late redelivery of an old event is a no-op either way. The caller
+    commits.
+    """
+    result = await db.execute(
+        delete(DeliveryWebhookEvent)
+        .where(DeliveryWebhookEvent.received_at < older_than)
+        .execution_options(synchronize_session=False)
+    )
+    return int(result.rowcount or 0)
+
+
+async def _owner_may_post_status(db: AsyncSession, project: Project) -> bool:
+    """True when the project owner's GitLab integration may badge commits."""
+    owner = await db.get(User, project.owner_id) if project.owner_id else None
+    if owner is None or not owner.is_active:
+        return False
+    if project.org_id is None:
+        return True
+    member = (
+        await db.execute(
+            select(OrgMember.user_id).where(
+                OrgMember.org_id == project.org_id,
+                OrgMember.user_id == owner.id,
+            )
+        )
+    ).first()
+    return member is not None
+
+
 async def _post_gitlab_status(
     db: AsyncSession, *, project: Project, repo: str, sha: str
 ) -> None:
@@ -510,6 +545,12 @@ async def _post_gitlab_status(
     except (TypeError, ValueError):
         return
 
+    # The badge is posted with the project owner's GitLab credentials, so the
+    # owner must still be an active user and, for an org project, still a
+    # member of the project's org. An owner who left keeps their personal
+    # GitLab token out of the org's commits.
+    if not await _owner_may_post_status(db, project):
+        return
     settings = (
         await db.execute(
             select(GitLabSettings).where(GitLabSettings.user_id == project.owner_id)

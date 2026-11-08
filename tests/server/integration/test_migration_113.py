@@ -48,6 +48,8 @@ def pre_113_db(tmp_path: Path) -> Path:
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
         # Simulate the pre-113 schema: the real metadata minus the new column.
+        # 126's review-round index uses the column; it postdates this migration.
+        conn.execute(sa.text("DROP INDEX uq_agent_run_review_round"))
         conn.execute(sa.text("ALTER TABLE agent_runs DROP COLUMN review_round"))
     engine.dispose()
     command.stamp(_cfg(f"sqlite+aiosqlite:///{path}"), "112")

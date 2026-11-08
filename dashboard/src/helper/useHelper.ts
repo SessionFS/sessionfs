@@ -76,6 +76,39 @@ export function useDeleteHelperConversation() {
   });
 }
 
+/**
+ * Rename a thread with an optimistic update of the history list: the new title
+ * shows at once, a failure puts the old one back (the caller shows the error),
+ * and success stores the server's version (which may carry DLP markers).
+ */
+export function useRenameHelperConversation() {
+  const { auth } = useAuth();
+  const queryClient = useQueryClient();
+  const key = ['helperConversations'];
+  return useMutation({
+    mutationFn: ({ id, title }: { id: string; title: string }) => auth!.client.renameHelperConversation(id, title),
+    onMutate: async ({ id, title }) => {
+      await queryClient.cancelQueries({ queryKey: key });
+      const previous = queryClient.getQueryData<HelperConversationSummary[]>(key);
+      queryClient.setQueryData<HelperConversationSummary[]>(key, (list) =>
+        list?.map((c) => (c.id === id ? { ...c, title } : c)),
+      );
+      return { previous };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.previous) queryClient.setQueryData(key, ctx.previous);
+    },
+    onSuccess: (saved) => {
+      queryClient.setQueryData<HelperConversationSummary[]>(key, (list) =>
+        list?.map((c) => (c.id === saved.id ? { ...c, title: saved.title } : c)),
+      );
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: key });
+    },
+  });
+}
+
 // ── Confirm-first write actions ──
 
 export const helperActionKey = (id: string) => ['helperAction', id] as const;

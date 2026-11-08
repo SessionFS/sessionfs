@@ -277,3 +277,66 @@ def test_list_pagination_hint_keeps_group_and_quotes_query(api):
     )
     res = _run(["list", "--group", "pg_1", "-q", "q3 plan"])
     assert "sfs meeting list --group pg_1 --query 'q3 plan' --limit 50 --before meet_4" in res.output
+
+
+# ── link / unlink (0.29.11) ──
+
+_LINK_ROOT = "/api/v1/meetings/meet_1/action-items/mi_1"
+_LINK_PREVIEW = {
+    "meeting_id": "meet_1",
+    "item_id": "mi_1",
+    "ticket": {"id": "tk_9", "project_id": "proj_1", "title": "Ship pipeline", "status": "open"},
+    "suggested": True,
+    "comment": 'Raised again in meeting "Weekly sync" on 2026-10-29, lines L1: Ship it',
+}
+
+
+def _link_api(api):
+    api.responses[("POST", f"{_LINK_ROOT}/link/preview")] = (200, dict(_LINK_PREVIEW))
+    api.responses[("POST", f"{_LINK_ROOT}/link")] = (200, {"ticket_id": "tk_9", "status": "linked"})
+
+
+def test_link_without_yes_previews_and_links_nothing(api):
+    _link_api(api)
+    res = _run(["link", "meet_1", "mi_1"])
+    assert res.exit_code != 0 or "Nothing linked" in res.output
+    assert "tk_9" in res.output and "Raised again in meeting" in res.output
+    assert [c["path"] for c in api.calls] == [f"{_LINK_ROOT}/link/preview"]
+    assert api.calls[0]["json"] is None
+
+
+def test_link_yes_pins_the_previewed_ticket(api):
+    _link_api(api)
+    res = _run(["link", "meet_1", "mi_1", "tk_9", "--yes"])
+    assert res.exit_code == 0, res.output
+    assert "Linked" in res.output
+    assert api.calls[0]["json"] == {"ticket_id": "tk_9"}
+    assert api.calls[1]["path"] == f"{_LINK_ROOT}/link"
+    assert api.calls[1]["json"] == {"ticket_id": "tk_9"}
+
+
+def test_link_refusal_and_unlink(api):
+    api.responses[("POST", f"{_LINK_ROOT}/link/preview")] = (
+        422, {"detail": {"code": "ticket_not_linkable", "message": "That ticket can't be linked to this item."}}
+    )
+    res = _run(["link", "meet_1", "mi_1", "tk_x", "--yes"])
+    assert res.exit_code == 1
+    assert not any(c["path"] == f"{_LINK_ROOT}/link" for c in api.calls)
+    res = _run(["unlink", "meet_1", "mi_1"])
+    assert res.exit_code == 0, res.output
+    assert api.calls[-1]["path"] == f"{_LINK_ROOT}/unlink"
+
+
+def test_action_items_show_suggestion_and_link(api):
+    meeting = dict(_MEETING)
+    meeting["action_items"] = [
+        {**_MEETING["action_items"][0],
+         "suggested_ticket": {"id": "tk_9", "project_id": "p", "title": "Ship pipeline", "status": "open"}},
+        {**_MEETING["action_items"][0], "id": "mi_2", "status": "linked",
+         "linked_ticket": {"id": "tk_8", "project_id": "p", "title": "Old one", "status": "done"}},
+    ]
+    api.responses[("GET", "/api/v1/meetings/meet_1")] = (200, meeting)
+    res = _run(["action-items", "meet_1"])
+    assert res.exit_code == 0, res.output
+    assert "mi_1 looks like tk_9" in res.output
+    assert "mi_2 linked to ticket tk_8" in res.output

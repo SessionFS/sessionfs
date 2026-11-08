@@ -694,14 +694,29 @@ async def rotate_resident_key(
         # could auto-close without reviewing the new work. Terminal items
         # (done/failed) are NOT rewritten — their implementer_service_key_id is
         # historical provenance for who actually implemented that work.
-        await db.execute(
-            update(WorkQueueItem)
-            .where(
-                WorkQueueItem.implementer_service_key_id == old_service_key_id,
-                WorkQueueItem.item_status.notin_(("done", "failed")),
+        #
+        # The new key is unrelated to the old one (no rotation link), so the
+        # old key is kept in prior_implementer_service_key_ids: the people
+        # who minted it stay part of the item's implementer identity and can
+        # never independently review that work (tk_5d2a48eed3ab4446 #1).
+        from sessionfs.server.services.review_state import prior_implementer_keys
+
+        in_flight = (
+            await db.execute(
+                select(WorkQueueItem)
+                .where(
+                    WorkQueueItem.implementer_service_key_id == old_service_key_id,
+                    WorkQueueItem.item_status.notin_(("done", "failed")),
+                )
+                .with_for_update()
             )
-            .values(implementer_service_key_id=body.new_service_key_id)
-        )
+        ).scalars().all()
+        for wq_item in in_flight:
+            prior = prior_implementer_keys(wq_item.prior_implementer_service_key_ids)
+            if old_service_key_id not in prior:
+                prior.append(old_service_key_id)
+            wq_item.prior_implementer_service_key_ids = json.dumps(prior)
+            wq_item.implementer_service_key_id = body.new_service_key_id
 
     await db.commit()
     await db.refresh(resident)

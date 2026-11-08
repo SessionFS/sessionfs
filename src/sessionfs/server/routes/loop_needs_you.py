@@ -9,6 +9,8 @@ on.
 
 from __future__ import annotations
 
+import time
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +21,11 @@ from sessionfs.server.db.models import User
 from sessionfs.server.services.loop_needs_you import needs_you
 
 router = APIRouter(prefix="/api/v1/me/loops", tags=["loops"])
+
+# Per-process sidebar-badge cache: user id -> (monotonic time, count).
+_COUNT_TTL = 30.0
+_COUNT_CACHE_MAX = 10_000
+_count_cache: dict[str, tuple[float, int]] = {}
 
 
 class NeedsYouItem(BaseModel):
@@ -39,6 +46,8 @@ class NeedsYouCounts(BaseModel):
     needs_human: int
     proposed_checklist: int
     total: int
+    # True when more loops exist than one request evaluates (newest first).
+    truncated: bool = False
 
 
 class NeedsYouResponse(BaseModel):
@@ -66,7 +75,19 @@ async def get_needs_you_count(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> NeedsYouCountResponse:
-    """Total inbox count for the sidebar badge (not capped at 100)."""
+    """Total inbox count for the sidebar badge (not capped at 100).
+
+    The badge is polled, so the count is served from a short per-user cache
+    (``_COUNT_TTL`` seconds) instead of recomputing the whole feed each poll.
+    """
+    now = time.monotonic()
+    cached = _count_cache.get(user.id)
+    if cached is not None and now - cached[0] < _COUNT_TTL:
+        return NeedsYouCountResponse(count=cached[1])
     result = await needs_you(db, user_id=user.id)
     await db.commit()  # keep approval requests raised for ready loop children
-    return NeedsYouCountResponse(count=result["counts"]["total"])
+    count = result["counts"]["total"]
+    if len(_count_cache) >= _COUNT_CACHE_MAX:
+        _count_cache.clear()
+    _count_cache[user.id] = (now, count)
+    return NeedsYouCountResponse(count=count)

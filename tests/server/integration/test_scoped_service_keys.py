@@ -3152,25 +3152,21 @@ async def test_service_key_agent_runs_read_cross_project_denied(
         project_ids=[project_a.id],
     )
 
+    # Read routes: an allowlist miss is the same 404 as an unknown project.
     list_resp = await client.get(
         f"/api/v1/projects/{project_b.id}/agent-runs",
         headers=_hdrs(r_a_key),
     )
-    assert list_resp.status_code == 403, list_resp.text
-    assert (
-        _structured_error(list_resp.json()).get("error")
-        == "project_not_in_allowlist"
-    )
+    assert list_resp.status_code == 404, list_resp.text
+    assert "project_not_in_allowlist" not in list_resp.text
+    assert "allowed_project_ids" not in list_resp.text
 
     get_resp = await client.get(
         f"/api/v1/projects/{project_b.id}/agent-runs/{run_b_id}",
         headers=_hdrs(r_a_key),
     )
-    assert get_resp.status_code == 403, get_resp.text
-    assert (
-        _structured_error(get_resp.json()).get("error")
-        == "project_not_in_allowlist"
-    )
+    assert get_resp.status_code == 404, get_resp.text
+    assert "project_not_in_allowlist" not in get_resp.text
 
 
 @pytest.mark.asyncio
@@ -3213,9 +3209,9 @@ async def test_service_key_agent_runs_read_cross_org_denied(
         f"/api/v1/projects/{project_b.id}/agent-runs",
         headers=_hdrs(svc_key),
     )
-    assert list_resp.status_code == 403, list_resp.text
-    structured = _structured_error(list_resp.json())
-    assert structured.get("error") == "cross_org_denied", list_resp.json()
+    assert list_resp.status_code == 404, list_resp.text
+    assert "cross_org_denied" not in list_resp.text
+    assert "project_org_id" not in list_resp.text
 
 
 @pytest.mark.asyncio
@@ -3557,3 +3553,61 @@ async def test_user_key_context_and_wiki_unchanged(
             headers=_hdrs(user_key),
         )
     ).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_service_key_run_and_spend_reads_are_opaque_404(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Agent-run reads (list, get, compare) and the spend rollups answer a
+    cross-org or unallowlisted project with the byte-identical 404 an
+    unknown project gets: no cross_org_denied / project_not_in_allowlist
+    code, no project_org_id / allowed_project_ids leak."""
+    org_a, admin_a, _ = await _make_org_with_admin(db_session, slug="opq-run-a")
+    org_b, admin_b, _ = await _make_org_with_admin(db_session, slug="opq-run-b")
+    allowed = await _make_org_project(db_session, org_a, admin_a)
+    denied = await _make_org_project(db_session, org_a, admin_a)
+    other_org = await _make_org_project(db_session, org_b, admin_b)
+
+    _row, svc_key = await _create_service_key(
+        db_session,
+        org_a.id,
+        admin_a,
+        scopes=["agent_runs:read", "tickets:read"],
+        project_ids=[allowed.id],
+    )
+
+    def _urls(pid: str) -> list[str]:
+        return [
+            f"/api/v1/projects/{pid}/agent-runs",
+            f"/api/v1/projects/{pid}/agent-runs/run_x",
+            f"/api/v1/projects/{pid}/agent-runs/run_x/compare/run_y",
+            f"/api/v1/projects/{pid}/spend",
+            f"/api/v1/projects/{pid}/tickets/tk_x/spend",
+        ]
+
+    unknown = "proj_" + "e" * 16
+    baselines = []
+    for url in _urls(unknown):
+        r = await client.get(url, headers=_hdrs(svc_key))
+        assert r.status_code == 404, (url, r.text)
+        baselines.append(r.text)
+
+    for project in (denied, other_org):
+        for url, baseline in zip(_urls(project.id), baselines):
+            resp = await client.get(url, headers=_hdrs(svc_key))
+            assert resp.status_code == 404, (url, resp.text)
+            assert resp.text == baseline, (url, resp.text)
+            for leak in (
+                "cross_org_denied",
+                "project_not_in_allowlist",
+                "allowed_project_ids",
+                "project_org_id",
+            ):
+                assert leak not in resp.text, (url, resp.text)
+
+    # The allowlisted project still answers.
+    ok = await client.get(
+        f"/api/v1/projects/{allowed.id}/agent-runs", headers=_hdrs(svc_key)
+    )
+    assert ok.status_code == 200, ok.text

@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.models import (
@@ -50,6 +50,7 @@ from sessionfs.server.db.models import (
     ProjectGroup,
     ProjectGroupMember,
     Reminder,
+    ReminderNote,
     Session,
     Ticket,
     TicketNotification,
@@ -443,6 +444,50 @@ def reminder_notification(reminder: Reminder, now: datetime) -> TicketNotificati
         created_at=now,
         updated_at=now,
     )
+
+
+async def clear_unread_due_notifications(db: AsyncSession, reminder_id: str) -> int:
+    """Drop the reminder's unread ``reminder_due`` rows.
+
+    Called after a reschedule or snooze (in the same transaction, AFTER the
+    guarded UPDATE so a sweep that already claimed the row has committed its
+    notification first): the reminder is no longer due, so the old "Reminder
+    due" entry leaves the inbox and the digest. Read rows stay as history; the
+    sweep writes a fresh row when the new time comes.
+    """
+    result = await db.execute(
+        delete(TicketNotification)
+        .where(
+            TicketNotification.subject_kind == "reminder",
+            TicketNotification.subject_id == reminder_id,
+            TicketNotification.kind == REMINDER_DUE_KIND,
+            TicketNotification.read_at.is_(None),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return result.rowcount or 0
+
+
+async def delete_reminder_rows(db: AsyncSession, reminder_id: str) -> None:
+    """Delete a reminder with its notes and notifications (no commit).
+
+    The reminder row is locked FIRST. The due sweep holds that row lock from
+    its claim until it commits the ``reminder_due`` row, so deleting the
+    notifications only after taking the lock always sees a notification the
+    sweep wrote; without it a delete racing the sweep could leave an orphan.
+    A sweep that comes second finds the row gone and claims nothing.
+    """
+    await db.execute(
+        select(Reminder.id).where(Reminder.id == reminder_id).with_for_update()
+    )
+    await db.execute(
+        delete(TicketNotification).where(
+            TicketNotification.subject_kind == "reminder",
+            TicketNotification.subject_id == reminder_id,
+        )
+    )
+    await db.execute(delete(ReminderNote).where(ReminderNote.reminder_id == reminder_id))
+    await db.execute(delete(Reminder).where(Reminder.id == reminder_id))
 
 
 async def claim_due_reminder(db: AsyncSession, reminder_id: str, now: datetime) -> bool:

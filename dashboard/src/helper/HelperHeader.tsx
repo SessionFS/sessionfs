@@ -5,14 +5,17 @@ import {
   CheckIcon,
   ChevronDownIcon,
   CloseIcon,
+  ExpandIcon,
   FolderIcon,
   FoldersIcon,
   HistoryIcon,
   LayersIcon,
   NewChatIcon,
   SessionIcon,
+  ShrinkIcon,
   SparkIcon,
 } from './icons';
+import type { HelperPanelSize } from './panelSize';
 import type { ScopeKind, ScopeOption } from './scope';
 import { TITLE_ID } from './format';
 
@@ -237,6 +240,8 @@ export default function HelperHeader({
   onNew,
   onClose,
   showControls,
+  size,
+  onToggleSize,
 }: {
   options: ScopeOption[];
   active: ScopeOption;
@@ -249,7 +254,10 @@ export default function HelperHeader({
   onClose: () => void;
   /** False only before the first status arrives; gate/failed scopes keep controls so the user can switch back. */
   showControls: boolean;
+  size: HelperPanelSize;
+  onToggleSize: () => void;
 }) {
+  const large = size === 'large';
   return (
     <div className="shrink-0 border-b border-border px-4 pb-3 pt-3 sm:px-5">
       <div className="flex items-center gap-2.5">
@@ -276,6 +284,17 @@ export default function HelperHeader({
               <span aria-hidden="true" className="mx-1 h-4 w-px bg-border" />
             </>
           )}
+          {/* Phones always get the full-screen drawer, so the size toggle starts at md. */}
+          <span className="hidden md:inline-flex">
+            <IconButton
+              label={large ? 'Shrink helper' : 'Expand helper'}
+              aria-pressed={large}
+              onClick={onToggleSize}
+              className={large ? '!bg-surface-active !text-text-primary' : ''}
+            >
+              {large ? <ShrinkIcon /> : <ExpandIcon />}
+            </IconButton>
+          </span>
           <IconButton label="Close helper" onClick={onClose}>
             <CloseIcon />
           </IconButton>

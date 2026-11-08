@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useId, type InputHTMLAttributes, type TextareaHTMLAttributes, type ReactNode } from 'react';
+import { useState, useRef, useEffect, useCallback, useId, type InputHTMLAttributes, type TextareaHTMLAttributes, type ReactNode, type Ref } from 'react';
 import { baseField, describedBy, errorField } from './fieldStyles';
 
 /* ── field wrapper ── */
@@ -40,6 +40,8 @@ export function FieldWrapper({ label, htmlFor, error, hint, children }: FieldWra
 interface InputProps extends InputHTMLAttributes<HTMLInputElement> {
   error?: string;
   hint?: ReactNode;
+  /** Forwarded to the <input> (React 19 passes ref as a prop). */
+  ref?: Ref<HTMLInputElement>;
 }
 
 export function Input({ error, hint, className = '', id, title, 'aria-describedby': ariaDescribedBy, ...rest }: InputProps) {

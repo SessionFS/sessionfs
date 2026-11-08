@@ -17,6 +17,31 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.29.11 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.29.11</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">November 7, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Action items that find your ticket</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Action items suggest the ticket you already have.</strong> When a meeting or chat thread is extracted, SessionFS shortlists up to 30 open or recently resolved tickets in the same project (or the group&rsquo;s readable projects) and marks an item that looks like one: &ldquo;Looks like tk_&hellip; &middot; title&rdquo;. Nothing is linked automatically: press Link, Not this one, or Create new to promote as before. See <a href="/meetings/" class="text-brand hover:underline">Meetings</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Link any action item to a ticket.</strong> Link to ticket&hellip; opens a picker with a preview of the comment the link adds; a linked item shows its ticket with Unlink, and the ticket gets a comment and a timeline event. A ticket you can&rsquo;t read is never named. MCP <span class="font-mono text-accent text-sm">link_meeting_action_item</span> (previews unless <span class="font-mono text-accent text-sm">confirm=true</span>), CLI <span class="font-mono text-accent text-sm">sfs meeting link|unlink</span> and <span class="font-mono text-accent text-sm">sfs chat link|unlink</span>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Rename helper conversations</strong> from the history list, the API (<span class="font-mono text-accent text-sm">PATCH /api/v1/helper/conversations/&#123;id&#125;</span>) or <span class="font-mono text-accent text-sm">sfs helper conversations rename</span>, and a <strong>Large</strong> size for the helper panel (the previous size is now Small). See <a href="/session-helper/" class="text-brand hover:underline">Session Helper</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>For You stays readable.</strong> Each section shows its first 10 items with Show more / Show less for the rest. See <a href="/for-you/" class="text-brand hover:underline">For You</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Changed:</strong> a project you can&rsquo;t read now returns the same 404 as one that doesn&rsquo;t exist (editor-only refusals stay 403); confirming a helper action re-checks the plan and scope, so a proposal made before a downgrade is refused with <span class="font-mono text-accent text-sm">upgrade_required</span> and stays pending; chart images are pinned by digest, and an opt-in Helm CronJob (<span class="font-mono text-accent text-sm">api.attentionHides</span>) runs the For You hides sweep.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Review loop fixes.</strong> Retry-safe start-worker that keeps a taken-over lease holder; only the starting credential or a project admin can finish a worker run; one recorded run per review round; implementers counted from every lease, and a rebound resident&rsquo;s old key stays in the implementer identity; bounded workflow approval gates with step order enforced on untagged rounds; a bounded needs-you feed with a cached badge; delivery idempotency keys bound to the signed body and pruned; loop share links stop working when their creator loses access, with org DLP applied.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Security hardening.</strong> Cross-org run and spend reads, reviewer ids and validation inputs are no longer exposed; platform-key denials no longer name another user; person assignment needs read standing; key echoes are scrubbed from audit and narrative errors; Confluence conversion is linear; project merges can&rsquo;t widen a group&rsquo;s reach; the Jira account id is read from the connection.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed:</strong> tidier reminder notifications, and reminders now show on group meetings.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;128 (125 prior implementer keys on work items, 126 one run per review round, 127 delivery indexes, 128 suggested and linked tickets on action items; all additive). Self-hosted: run migrations 125&ndash;128. 131 MCP tools (+1).</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
       <!-- v0.29.10 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +49,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.29.10</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">November 7, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Agents, tickets and runs on every plan</h2>
         <ul class="space-y-2 text-base text-muted">

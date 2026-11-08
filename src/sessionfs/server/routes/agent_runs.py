@@ -1329,7 +1329,11 @@ async def list_agent_runs(
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
-    await assert_service_key_can_access_project(db, auth, project)
+    # Read route: a cross-org or unallowlisted project is the same 404 as
+    # an unknown one (existence oracle, review checklist #2).
+    await assert_service_key_can_access_project(
+        db, auth, project, opaque_404_detail="Project not found"
+    )
     await check_project_feature(ctx, "agent_runs", project, db)
 
     stmt = select(AgentRun).where(AgentRun.project_id == project_id)
@@ -1364,7 +1368,11 @@ async def get_agent_run(
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
-    await assert_service_key_can_access_project(db, auth, project)
+    # Read route: a cross-org or unallowlisted project is the same 404 as
+    # an unknown one (existence oracle, review checklist #2).
+    await assert_service_key_can_access_project(
+        db, auth, project, opaque_404_detail="Project not found"
+    )
     await check_project_feature(ctx, "agent_runs", project, db)
     include_cost = await _cost_visible(db, project, auth=auth)
     return _row_to_response(
@@ -1886,7 +1894,11 @@ async def compare_agent_runs(
     from sessionfs.server.auth.dependencies import (
         assert_service_key_can_access_project,
     )
-    await assert_service_key_can_access_project(db, auth, project)
+    # Read route: a cross-org or unallowlisted project is the same 404 as
+    # an unknown one (existence oracle, review checklist #2).
+    await assert_service_key_can_access_project(
+        db, auth, project, opaque_404_detail="Project not found"
+    )
     await check_project_feature(ctx, "agent_runs", project, db)
 
     a = await _get_run_or_404(project_id, run_id, db)

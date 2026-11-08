@@ -21,6 +21,7 @@ const { client, toast } = vi.hoisted(() => ({
     listReminderNotes: vi.fn(),
     addReminderNote: vi.fn(),
     listMeetingReminders: vi.fn(),
+    listGroupMeetingReminders: vi.fn(),
     listTicketReminders: vi.fn(),
     listTicketNotifications: vi.fn(),
     markTicketNotificationsRead: vi.fn(),
@@ -304,5 +305,17 @@ describe('RemindersStrip', () => {
     expect(strip).toHaveTextContent('1 open, 1 done, 0 dismissed');
     expect(within(strip).getByRole('link', { name: 'Chase legal' })).toHaveAttribute('href', '/reminders?reminder=rem_a');
     expect(client.listMeetingReminders).toHaveBeenCalledWith('proj_1', 'mtg_1');
+  });
+
+  it('reads a group meeting through its group', async () => {
+    client.listGroupMeetingReminders.mockResolvedValue({
+      items: [rem({ id: 'rem_g', title: 'Send the group recap' })],
+      counts: { open: 1, done: 0, dismissed: 0 },
+    });
+    renderAt(<RemindersStrip kind="meeting" projectId={undefined} groupId="grp_1" sourceId="mtg_9" />);
+    const strip = await screen.findByRole('region', { name: 'Reminders' });
+    expect(within(strip).getByRole('link', { name: 'Send the group recap' })).toBeInTheDocument();
+    expect(client.listGroupMeetingReminders).toHaveBeenCalledWith('grp_1', 'mtg_9');
+    expect(client.listMeetingReminders).not.toHaveBeenCalledWith(undefined, 'mtg_9');
   });
 });

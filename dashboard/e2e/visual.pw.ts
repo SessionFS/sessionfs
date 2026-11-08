@@ -3,7 +3,7 @@ import { appendFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { mockApi } from './fixtures/mock-api';
-import { fyCaughtUpFeed, fyLoops, FY_PROJECT } from '../src/foryou/fixtures';
+import { fyCaughtUpFeed, fyLongFeed, fyLoops, FY_PROJECT } from '../src/foryou/fixtures';
 import {
   agentRuns,
   GROUP_ID,
@@ -1348,6 +1348,39 @@ const MEETING_SCENARIOS: Scenario[] = [
     },
   },
   {
+    // 0.29.11: "Looks like tk_… · title · status" with Link / Not this one /
+    // Create new, and an item already linked to a ticket (Unlink).
+    name: 'meeting-item-suggested-and-linked',
+    path: `${MEETINGS}&meeting=${MEETING_ID}`,
+    prepare: async (page) => {
+      const row = page.getByText('Looks like').first();
+      await row.waitFor();
+      await page.getByRole('button', { name: /^Unlink: Review status page wording/ }).waitFor();
+      await row.scrollIntoViewIfNeeded();
+    },
+  },
+  {
+    name: 'meeting-link-ticket-picker',
+    path: `${MEETINGS}&meeting=${MEETING_ID}`,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: /^Link to ticket: Draft the rollout plan/ }).click();
+      const dlg = page.getByRole('dialog', { name: 'Link to a ticket' });
+      await dlg.getByRole('button', { name: 'Ticket' }).click();
+      await dlg.getByRole('option', { name: /Add retry budget/ }).waitFor();
+    },
+  },
+  {
+    name: 'meeting-link-ticket-preview',
+    path: `${MEETINGS}&meeting=${MEETING_ID}`,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: /^Link to ticket: Draft the rollout plan/ }).click();
+      const dlg = page.getByRole('dialog', { name: 'Link to a ticket' });
+      await dlg.getByRole('button', { name: 'Ticket' }).click();
+      await dlg.getByRole('option', { name: /Add retry budget/ }).click();
+      await dlg.getByText(/Raised again in meeting/).waitFor();
+    },
+  },
+  {
     name: 'meeting-item-reminder-dialog',
     path: `${MEETINGS}&meeting=${MEETING_ID}`,
     prepare: async (page) => {
@@ -1746,6 +1779,34 @@ FOR_YOU_SCENARIOS.push({
     if (await more.isVisible()) await more.click();
   },
 });
+// A 79-item "Worth a second look": the first 10 with Show 69 more, then
+// expanded; and a section the feed returned only part of (30 of 312).
+const FY_LONG = (feed: ReturnType<typeof fyLongFeed>) => async (page: Page) => {
+  await page.route(FY_FEED, (route) => route.fulfill(fulfillJson(200, feed)));
+};
+FOR_YOU_SCENARIOS.push(
+  {
+    name: 'for-you-long-collapsed',
+    path: '/',
+    mock: FY_LONG(fyLongFeed()),
+    prepare: async (page) => {
+      const btn = page.getByRole('button', { name: 'Show 69 more' });
+      await btn.waitFor();
+      await page.waitForTimeout(1800);
+      await btn.scrollIntoViewIfNeeded();
+    },
+  },
+  {
+    name: 'for-you-long-expanded',
+    path: '/',
+    mock: FY_LONG(fyLongFeed(30, 312)),
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Show 20 more' }).click();
+      await page.getByText('Showing 30 of 312. More appear as you clear these.').waitFor();
+      await page.waitForTimeout(1800);
+    },
+  },
+);
 const FOR_YOU_WIDTHS = [400, 768, 1280];
 
 const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [

@@ -706,6 +706,52 @@ async def test_sweep_notifies_once_and_is_idempotent(
     assert listed.json()["is_due"] is True and listed.json()["notified_at"] is not None
 
 
+async def test_snooze_and_reschedule_drop_unread_due_notification(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A reminder pushed later is no longer due: its unread "Reminder due"
+    row leaves the inbox and the digest; a read one stays as history."""
+    user, key = await _make_user(db_session, "pushed")
+    user_id = user.id
+    snoozed_id = (await _due(db_session, user)).id
+    rescheduled_id = (await _due(db_session, user)).id
+    read_id = (await _due(db_session, user)).id
+    _, admin_headers = await _platform_admin_headers(db_session)
+    resp = await client.post("/api/v1/admin/sweeps/reminders-due", headers=admin_headers, json={})
+    assert resp.json()["reminders_notified"] == 3
+    await db_session.execute(
+        update(TicketNotification)
+        .where(TicketNotification.subject_id == read_id)
+        .values(read_at=datetime.now(timezone.utc))
+    )
+    await db_session.commit()
+
+    resp = await client.post(
+        f"/api/v1/me/reminders/{snoozed_id}/snooze", headers=_hdrs(key), json={"preset": "1h"}
+    )
+    assert resp.status_code == 200, resp.text
+    resp = await client.patch(
+        f"/api/v1/me/reminders/{rescheduled_id}", headers=_hdrs(key), json={"due_at": _soon(90)}
+    )
+    assert resp.status_code == 200, resp.text
+    resp = await client.post(
+        f"/api/v1/me/reminders/{read_id}/snooze", headers=_hdrs(key), json={"preset": "1h"}
+    )
+    assert resp.status_code == 200, resp.text
+
+    db_session.expire_all()
+    rows = (
+        await db_session.execute(
+            select(TicketNotification.subject_id).where(TicketNotification.user_id == user_id)
+        )
+    ).scalars().all()
+    assert rows == [read_id]
+    unread = await client.get(
+        "/api/v1/me/ticket-notifications", headers=_hdrs(key), params={"unread": "true"}
+    )
+    assert unread.json()["items"] == []
+
+
 async def test_sweep_skips_owner_who_lost_source(client: AsyncClient, db_session: AsyncSession):
     lead, lead_key, mate, _, _, project = await _team(db_session)
     ticket_id = await _create_ticket(client, project, lead_key)

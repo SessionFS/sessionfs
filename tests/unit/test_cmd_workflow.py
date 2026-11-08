@@ -128,6 +128,34 @@ def test_bad_templates_refused_before_any_request(tmp_path):
         assert "Invalid workflow template" in result.output, fname
 
 
+def test_deeply_nested_template_refused_cleanly(tmp_path):
+    """tk_e12fd48d64e14976 #3: thousands of nested brackets get a clear
+    error instead of a RecursionError, for YAML and JSON alike; brackets
+    inside a string are not nesting."""
+    deep = "[" * 5000 + "]" * 5000
+    cases = {
+        "deep.yaml": f"name: x\nsteps: {deep}\n",
+        "deep.json": '{"name": "x", "steps": ' + deep + "}",
+    }
+    for fname, text in cases.items():
+        f = tmp_path / fname
+        f.write_text(text)
+        fake = _FakeApi(201, {})
+        result = _invoke(workflow_app, fake, ["create", str(f)])
+        assert result.exit_code == 1, (fname, result.output)
+        assert fake.calls == [], fname
+        assert "Invalid workflow template" in result.output, fname
+        assert "nested more than" in result.output, (fname, result.output)
+
+    ok = tmp_path / "brackets.json"
+    ok.write_text(json.dumps({
+        "name": "x",
+        "steps": [{"id": "a", "title": "[" * 100 + '\\"{', "role": "implementer", "agent": "atlas"}],
+    }))
+    name, definition = load_template_file(str(ok))
+    assert name == "x" and definition["steps"][0]["id"] == "a"
+
+
 def test_create_requires_a_name(tmp_path):
     f = tmp_path / "t.json"
     f.write_text(json.dumps({"steps": [{"id": "a", "title": "A", "role": "implementer", "agent": "atlas"}]}))

@@ -52,6 +52,10 @@ workflow_app = typer.Typer(
 # comments and indentation.
 _MAX_FILE_BYTES = 256 * 1024
 _MAX_NAME = 100
+# A valid template nests about six levels (file -> definition -> steps ->
+# step -> depends_on -> id). Anything far deeper is refused with a clear
+# error before the YAML composer or the JSON decoder recurses that far.
+_MAX_NESTING = 32
 
 
 # ── Template files ──
@@ -111,8 +115,14 @@ def _strict_yaml_load(text: str) -> Any:
                 )
 
     class _StrictLoader(yaml.SafeLoader):
+        _depth = 0
+
         def compose_node(self, parent: Any, index: Any) -> Any:
             event = self.peek_event()
+            if self._depth >= _MAX_NESTING:
+                raise refuse(
+                    event.start_mark, f"nested more than {_MAX_NESTING} levels deep"
+                )
             if isinstance(event, AliasEvent) or getattr(event, "anchor", None) is not None:
                 raise refuse(event.start_mark, "anchors (&) and aliases (*) are not supported")
             if getattr(event, "tag", None) is not None:
@@ -124,9 +134,39 @@ def _strict_yaml_load(text: str) -> Any:
                     why = ambiguous_plain(event.value)
                     if why:
                         raise refuse(event.start_mark, why)
-            return super().compose_node(parent, index)
+            self._depth += 1
+            try:
+                return super().compose_node(parent, index)
+            finally:
+                self._depth -= 1
 
     return yaml.load(text, Loader=_StrictLoader)  # noqa: S506 - SafeLoader subclass
+
+
+def _check_json_nesting(text: str) -> None:
+    """Refuse JSON nested deeper than ``_MAX_NESTING`` before decoding it
+    (``json.loads`` recurses once per level). Brackets inside strings are
+    skipped."""
+    depth = 0
+    in_string = escaped = False
+    for ch in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+            if depth > _MAX_NESTING:
+                raise WorkflowDefinitionError(
+                    f"nested more than {_MAX_NESTING} levels deep"
+                )
+        elif ch in "]}":
+            depth -= 1
 
 
 def load_template_file(path: str) -> tuple[str | None, dict[str, Any]]:
@@ -149,6 +189,7 @@ def load_template_file(path: str) -> tuple[str | None, dict[str, Any]]:
 
     data: Any
     if p.suffix.lower() == ".json":
+        _check_json_nesting(text)
         try:
             data = json.loads(text)
         except ValueError as exc:

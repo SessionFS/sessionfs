@@ -1900,7 +1900,7 @@ Start the MCP server on stdio transport.
 sfs mcp serve
 ```
 
-Tools exposed (130):
+Tools exposed (131):
 
 - **Sessions:** `search_sessions`, `get_session_context`, `list_recent_sessions`, `find_related_sessions`, `get_session_summary`, `get_audit_report`, `get_session_provenance`, `get_session_retrieval_log`, `rename_session`, `checkpoint_session`, `list_checkpoints`, `fork_session`, `ask_session_helper`
 - **Knowledge (read):** `get_project_context`, `get_context_section`, `get_wiki_page`, `get_wiki_page_history`, `search_project_knowledge`, `list_knowledge_entries`, `get_knowledge_entry`, `get_knowledge_health`, `ask_project`
@@ -1915,7 +1915,7 @@ Tools exposed (130):
 - **Handoffs:** `create_handoff`, `get_handoff`, `list_inbox_handoffs`, `list_sent_handoffs`, `claim_handoff`, `decline_handoff`, `revoke_handoff`, `add_handoff_comment`
 - **Marketplace (never writes files or enables executable content):** `search_skill_marketplace`, `get_marketplace_package`, `diff_marketplace_versions`, `get_skill_policy`, `preview_marketplace_skill`, `load_marketplace_skill`, `request_skill_install`, `list_skill_install_requests`, `get_skill_install_request`, `cancel_skill_install_request`
 - **Project groups:** `list_project_groups`, `get_project_group`, `create_project_group`, `update_project_group`, `delete_project_group`, `add_project_to_group`, `remove_project_from_group`, `list_group_members`, `grant_group_access`, `revoke_group_access`, `list_group_access`, `search_group_knowledge`, `get_group_context`, `compile_group_knowledge`, `ask_group`
-- **Meetings and chat:** `upload_meeting_transcript`, `upload_chat_thread`, `list_meeting_transcripts`, `get_meeting_transcript`, `extract_meeting_action_items`, `promote_meeting_action_item` (preview only unless `confirm=true`), `search_meetings`
+- **Meetings and chat:** `upload_meeting_transcript`, `upload_chat_thread`, `list_meeting_transcripts`, `get_meeting_transcript`, `extract_meeting_action_items`, `promote_meeting_action_item` (preview only unless `confirm=true`), `link_meeting_action_item` (preview only unless `confirm=true`), `search_meetings`
 - **Reminders:** `list_my_reminders`, `create_reminder`, `update_reminder`
 - **Approvals (read only):** `list_my_approvals`, `get_approval_request`, `list_approval_policies`
 - **For You:** `get_my_attention`
@@ -3295,6 +3295,8 @@ Store meeting transcripts for a project or a project group, extract action items
 | `sfs meeting action-items <id>` | Action items and decisions |
 | `sfs meeting promote <id> <item_id> [--title T] [--assignee PERSONA \| --user USER_ID] [--due DATE] [--priority P] [--target-project ID] [--jira] [--yes]` | Show the ticket draft and ask before creating it; a group meeting needs `--target-project` |
 | `sfs meeting dismiss <id> <item_id>` / `restore <id> <item_id>` | Dismiss or restore a pending item |
+| `sfs meeting link <id> <item_id> [<ticket_id>] [--yes]` | Tie a pending item to an existing ticket instead of creating one. Without `<ticket_id>` it uses the item's suggested ticket. Shows the ticket and the "Raised again in meeting …" comment it will add, then asks; the ticket must be in the meeting's project (a group meeting: a member project you can read) |
+| `sfs meeting unlink <id> <item_id>` | Put a linked item back to pending (the ticket comment stays) |
 
 ## `sfs chat`
 
@@ -3312,6 +3314,7 @@ Store chat threads (a Slack export, a DiscordChatExporter export, or a plain pas
 | `sfs chat action-items <id>` | Action items and decisions |
 | `sfs chat promote <id> <item_id> [same options as sfs meeting promote]` | Show the ticket draft and ask before creating it |
 | `sfs chat dismiss <id> <item_id>` / `restore <id> <item_id>` | Dismiss or restore a pending item |
+| `sfs chat link <id> <item_id> [<ticket_id>] [--yes]` / `unlink <id> <item_id>` | Link a pending item to an existing ticket, or unlink it (same as `sfs meeting link`; the comment cites messages `M<a>–<b>`) |
 
 ## `sfs remind`
 
@@ -3359,6 +3362,7 @@ Ask the **session helper** a question over the sessions you can read, with a bri
 | `sfs helper ask "QUESTION" [--project ID] [--group ID|SLUG] [--session ID ...] [--conversation ID] [--no-stream] [--json]` | Ask a question. Streams the answer to the terminal (Rich live markdown on a TTY, plain text otherwise) and lists citations at the end. `--project` (`-P`) scopes to a project ID (`proj_...`); `--group` (`-g`) scopes to a project group by id (`pg_...`) or slug (a slug is resolved against your own groups across orgs, and an ambiguous slug fails listing the matching ids); `--session` (`-s`, repeatable) scopes to specific session IDs (`ses_...`); `--conversation` (`-c`) continues an existing conversation (`hc_...`). At most one of `--project`, `--group` or `--session` may be set. `--no-stream` fetches the full JSON answer in one request and renders it the same way; `--json` prints the raw JSON document (non-streaming) for scripting. |
 | `sfs helper conversations list` | List your helper conversations, newest first. |
 | `sfs helper conversations show <id>` | Show one conversation with its user/assistant messages and citations. |
+| `sfs helper conversations rename <id> "TITLE"` | Rename a conversation (v0.29.11). Up to 200 characters; line breaks and other control characters are dropped. The title is DLP-redacted like your questions, so anything your org's data protection would redact is saved as a `[REDACTED:…]` marker, and the command says so. Renaming doesn't move the thread in the list, which stays ordered by last activity. |
 | `sfs helper conversations delete <id> [--yes]` | Permanently delete a conversation (prompts for confirmation; `--yes` skips). |
 | `sfs helper status` | Show whether the helper is enabled, which key source / provider / model it would use, the effective model settings, and whether org or personal custom instructions are set (the text is never shown). |
 

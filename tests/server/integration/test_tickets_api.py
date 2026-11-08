@@ -2026,8 +2026,8 @@ async def test_org_member_non_admin_cannot_create_issue(
 async def test_outsider_cannot_file_issue(
     client: AsyncClient, db_session: AsyncSession
 ):
-    """User with no project access at all gets 403 from project_access
-    before the kind gate runs."""
+    """User with no project access at all gets the project-access 404
+    (like a missing project) before the kind gate runs."""
     owner, _ = await _make_user(db_session, name="owner_x")
     outsider, outsider_key = await _make_user(db_session, name="outsider")
     project = await _make_project(db_session, owner)
@@ -2040,7 +2040,7 @@ async def test_outsider_cannot_file_issue(
             "assigned_to": "atlas",
         },
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -2722,13 +2722,14 @@ async def test_update_ticket_403_for_non_creator_non_admin(
     )
     tid = create_r.json()["id"]
 
-    # Intruder tries to update — should 403.
+    # Intruder tries to update. They can't read the project at all, so the
+    # project-access gate answers 404 before the edit check.
     bad = await client.put(
         f"/api/v1/projects/{project.id}/tickets/{tid}",
         headers=_hdrs(intruder_key),
         json={"title": "Hijacked"},
     )
-    assert bad.status_code == 403
+    assert bad.status_code == 404
 
 
 @pytest.mark.asyncio

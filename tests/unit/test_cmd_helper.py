@@ -645,6 +645,56 @@ def test_conversations_delete_with_yes(monkeypatch):
     assert "Deleted" in result.output
 
 
+def test_conversations_rename_patches_title(monkeypatch):
+    fake = _FakeApiRequest([(200, {"id": "hc_1", "title": "Release notes"})])
+    with (
+        patch.object(cmd_helper, "_get_api_config", return_value=("https://api.test", "key")),
+        patch.object(cmd_helper, "_api_request", new=fake),
+    ):
+        result = _invoke("conversations", "rename", "hc_1", "  Release\n notes ")
+    assert result.exit_code == 0, result.output
+    assert fake.calls == [
+        ("PATCH", "/api/v1/helper/conversations/hc_1", {"title": "Release notes"})
+    ]
+    assert "Renamed to Release notes" in result.output
+    assert "redacted" not in result.output
+
+
+def test_conversations_rename_says_when_redacted(monkeypatch):
+    fake = _FakeApiRequest([(200, {"id": "hc_1", "title": "key [REDACTED:aws_access_key_id]"})])
+    with (
+        patch.object(cmd_helper, "_get_api_config", return_value=("https://api.test", "key")),
+        patch.object(cmd_helper, "_api_request", new=fake),
+    ):
+        result = _invoke("conversations", "rename", "hc_1", "key AKIAIOSFODNN7EXAMPLE")
+    assert result.exit_code == 0, result.output
+    assert "[REDACTED:aws_access_key_id]" in result.output
+    assert "so it was saved redacted" in " ".join(result.output.split())
+
+
+@pytest.mark.parametrize("title", ["   ", "x" * 201])
+def test_conversations_rename_validates_locally(monkeypatch, title):
+    fake = _FakeApiRequest([])
+    with (
+        patch.object(cmd_helper, "_get_api_config", return_value=("https://api.test", "key")),
+        patch.object(cmd_helper, "_api_request", new=fake),
+    ):
+        result = _invoke("conversations", "rename", "hc_1", title)
+    assert result.exit_code == 1
+    assert fake.calls == []
+
+
+def test_conversations_rename_surfaces_not_found(monkeypatch):
+    fake = _FakeApiRequest([(404, {"detail": "Conversation not found"})])
+    with (
+        patch.object(cmd_helper, "_get_api_config", return_value=("https://api.test", "key")),
+        patch.object(cmd_helper, "_api_request", new=fake),
+    ):
+        result = _invoke("conversations", "rename", "hc_missing", "New")
+    assert result.exit_code == 1
+    assert "Conversation not found" in result.output
+
+
 def test_conversations_surfaces_not_found(monkeypatch):
     fake = _FakeApiRequest([(404, {"detail": "Conversation not found"})])
     with (

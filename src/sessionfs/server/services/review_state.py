@@ -40,6 +40,7 @@ VERIFIED-CLEAN, the findings stay open.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -64,6 +65,20 @@ _HEADER_RE = re.compile(
     r"NO[\s-]+CHANGES[\s-]+NEEDED|APPROVED)",
     re.IGNORECASE | re.MULTILINE,
 )
+
+
+
+def _match_header(content: str) -> "re.Match[str] | None":
+    """Match the verdict header on the comment's FIRST non-blank line only.
+
+    A header-shaped line further down (a reviewer quoting another round's
+    verdict, or a pasted transcript) is never the verdict. Trust still comes
+    only from the server-stamped ``verdict_trusted``; this keeps a trusted
+    reviewer's own comment from being read as a verdict it merely quotes.
+    """
+    start = len(content) - len(content.lstrip())
+    return _HEADER_RE.match(content, start)
+
 
 # Finding bullet pattern. Matches "  • SEVERITY — text..." or " - SEVERITY — text"
 # Codex sometimes uses an em-dash (—), sometimes a hyphen — accept either.
@@ -236,7 +251,7 @@ def verdict_from_header(content: str) -> Optional[str]:
     (``<Reviewer> R{N} review on tk_...: VERDICT``) rather than free-form
     prose.
     """
-    match = _HEADER_RE.search(content or "")
+    match = _match_header(content or "")
     if not match:
         return None
     return _normalize_verdict(match.group("verdict"))
@@ -284,7 +299,7 @@ def _parse_codex_comment(
     Returns (None, []) if the comment doesn't match the expected header
     pattern — non-conforming codex comments contribute nothing to state.
     """
-    header_match = _HEADER_RE.search(content)
+    header_match = _match_header(content)
     if not header_match:
         return None, []
 
@@ -715,14 +730,106 @@ def _compute_merge_readiness(
     }
 
 
+async def load_trusted_review_comments_by_ticket(
+    db: Any, ticket_ids: Iterable[str], *, cap: Optional[int] = None
+) -> dict[str, list[dict]]:
+    """Trusted review comments per ticket, oldest first, for ROUND COUNTS.
+
+    For reports that count rounds over many tickets (ship report, model
+    scoreboard). Only ``verdict_trusted`` comments are loaded — the only
+    ones ``compute_review_state`` turns into rounds — and the cap applies per
+    ticket (``row_number`` window), so one long thread can't push every
+    other ticket's rounds out of a shared LIMIT. Not for close/readiness
+    decisions: those use ``load_review_comments`` and its truncation flag.
+    """
+    from sqlalchemy import select, true
+    from sqlalchemy import func as sa_func
+
+    from sessionfs.server.db.models import TicketComment
+
+    ids = list(dict.fromkeys(ticket_ids))
+    out: dict[str, list[dict]] = {tid: [] for tid in ids}
+    if not ids:
+        return out
+    limit = REVIEW_HISTORY_CAP if cap is None else cap
+    ranked = (
+        select(
+            TicketComment.id.label("id"),
+            TicketComment.ticket_id.label("ticket_id"),
+            TicketComment.author_persona.label("author_persona"),
+            TicketComment.content.label("content"),
+            TicketComment.created_at.label("created_at"),
+            sa_func.row_number()
+            .over(
+                partition_by=TicketComment.ticket_id,
+                order_by=(TicketComment.created_at, TicketComment.id),
+            )
+            .label("rn"),
+        )
+        .where(
+            TicketComment.ticket_id.in_(ids),
+            TicketComment.verdict_trusted == true(),
+        )
+        .subquery()
+    )
+    rows = (
+        await db.execute(
+            select(ranked)
+            .where(ranked.c.rn <= limit)
+            .order_by(ranked.c.ticket_id, ranked.c.rn)
+        )
+    ).all()
+    for r in rows:
+        out[r.ticket_id].append(
+            {
+                "id": r.id,
+                "author_persona": r.author_persona,
+                "content": r.content,
+                "created_at": r.created_at,
+                "verdict_trusted": True,
+            }
+        )
+    return out
+
+
+# A key id that never exists in api_keys: load_key_minters resolves it to
+# None (unresolvable), so every self-review check fails closed on it.
+UNREADABLE_PRIOR_KEYS = "unreadable-prior-implementer-keys"
+
+
+def prior_implementer_keys(raw: Optional[str]) -> list[str]:
+    """The service keys recorded in ``prior_implementer_service_key_ids``.
+
+    The column holds a JSON list of key ids written by a resident key rebind.
+    Anything else (malformed JSON, a non-list, a non-string entry) yields the
+    ``UNREADABLE_PRIOR_KEYS`` sentinel so the identity is treated as
+    unresolvable rather than silently dropped.
+    """
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return [UNREADABLE_PRIOR_KEYS]
+    if not isinstance(value, list) or not all(
+        isinstance(k, str) and k for k in value
+    ):
+        return [UNREADABLE_PRIOR_KEYS]
+    return list(dict.fromkeys(value))
+
+
 async def load_implementer_identities(
     db: Any, tickets: Iterable[Any]
 ) -> dict[str, list[tuple[Optional[str], Optional[str]]]]:
     """Every recorded implementer ``(service_key_id, user_id)`` per ticket.
 
     Four sources: work-queue items, implementer-role agent runs, the start
-    context of the ticket's CURRENT lease (written by start_ticket), and the
-    resolver. Batched: one query per source for all tickets.
+    context of EVERY lease the ticket has had (written by start_ticket), and
+    the resolver. Batched: one query per source for all tickets.
+
+    Earlier leases count too: someone who started the ticket, did work and
+    was then reassigned is still one of its implementers, so they can neither
+    close it as an independent reviewer nor approve its merge.
     """
     from sqlalchemy import select
 
@@ -739,16 +846,20 @@ async def load_implementer_identities(
     if not by_id:
         return out
     ids = list(by_id)
-    for tid, svc, usr in (
+    for tid, svc, usr, prior in (
         await db.execute(
             select(
                 WorkQueueItem.ticket_id,
                 WorkQueueItem.implementer_service_key_id,
                 WorkQueueItem.implementer_user_id,
+                WorkQueueItem.prior_implementer_service_key_ids,
             ).where(WorkQueueItem.ticket_id.in_(ids))
         )
     ).all():
         out[tid].append((svc, usr))
+        # Keys a resident rebind moved this item away from stay part of the
+        # implementer identity (tk_5d2a48eed3ab4446 #1).
+        out[tid].extend((k, None) for k in prior_implementer_keys(prior))
     for tid, svc, usr in (
         await db.execute(
             select(
@@ -762,18 +873,18 @@ async def load_implementer_identities(
         )
     ).all():
         out[tid].append((svc, usr))
-    for tid, epoch, svc, usr in (
+    for tid, svc, usr in (
         await db.execute(
             select(
                 RetrievalAuditContext.ticket_id,
-                RetrievalAuditContext.lease_epoch,
                 RetrievalAuditContext.service_key_id,
                 RetrievalAuditContext.created_by_user_id,
-            ).where(RetrievalAuditContext.ticket_id.in_(ids))
+            )
+            .where(RetrievalAuditContext.ticket_id.in_(ids))
+            .distinct()
         )
     ).all():
-        if epoch == by_id[tid].lease_epoch:
-            out[tid].append((svc, usr))
+        out[tid].append((svc, usr))
     for tid, ticket in by_id.items():
         out[tid].append((None, ticket.resolver_user_id))
     return out

@@ -104,6 +104,9 @@ async def test_share_create_gated_list_revoke_open(
         kind="ship_report",
         month="2026-10",
         token_hash=hashlib.sha256(b"tok").hexdigest(),
+        # Every minted link carries its creator; the public view checks
+        # the creator still has standing.
+        created_by_user_id=owner.id,
         expires_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc)
         + __import__("datetime").timedelta(days=1),
     )

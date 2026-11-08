@@ -19,6 +19,9 @@ import type { TurnAction } from './actions';
 /** aria-labelledby target for the drawer heading. */
 export const TITLE_ID = 'helper-panel-title';
 
+/** Longest conversation title the server accepts (after whitespace is collapsed). */
+export const HELPER_TITLE_MAX = 200;
+
 /** Server limit on a single question (`_MAX_MESSAGE_CHARS` in routes/helper.py). */
 export const MAX_MESSAGE_CHARS = 20_000;
 

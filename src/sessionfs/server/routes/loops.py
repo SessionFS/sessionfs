@@ -22,7 +22,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, StrictInt, field_validator
-from sqlalchemy import and_, inspect, or_, select, text, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import (
@@ -37,6 +37,7 @@ from sessionfs.server.auth.project_access import (
 )
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
+    LoopChecklistItem,
     Project,
     Ticket,
     TrustedReviewer,
@@ -47,7 +48,11 @@ from sessionfs.server.db.models import (
 )
 from sessionfs.server.routes.knowledge import _get_project_for_editor
 from sessionfs.server.routes.loop_checklist import _sanitize_text
-from sessionfs.server.routes.tickets import _record_create_events
+from sessionfs.server.routes.tickets import (
+    _record_create_events,
+    _viewer_sees_emails,
+    mask_verdict_reviewer,
+)
 from sessionfs.server.services import ticket_watchers
 from sessionfs.server.services.loops import load_loops
 from sessionfs.server.services.scope_locks import lock_project_scope_authorized
@@ -55,7 +60,6 @@ from sessionfs.server.tier_gate import UserContext, check_project_feature, get_u
 
 router = APIRouter(prefix="/api/v1/projects", tags=["loops"])
 
-_LOOP_CHECKLIST_TABLE = "loop_checklist_items"
 
 # review_until_clean queues stop when every item has a clean verdict.
 _STOP_ALL_CLEAN = "all_clean"
@@ -191,38 +195,21 @@ def _load_loop_config(raw: str | None) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-async def _table_exists(db: AsyncSession, name: str) -> bool:
-    conn = await db.connection()
-
-    def _has(sync_conn) -> bool:
-        return inspect(sync_conn).has_table(name)
-
-    return await conn.run_sync(_has)
-
-
 async def _active_checklist_items(
     db: AsyncSession, project_id: str
 ) -> list[dict[str, str]]:
-    """Active ``loop_checklist_items`` for the briefs' "Known traps" section.
-
-    The table is added by a later track; until it lands, this returns []
-    (guard via the SQLAlchemy inspector so a project on an older schema
-    still starts loops).
-    """
-    if not await _table_exists(db, _LOOP_CHECKLIST_TABLE):
-        return []
+    """Active ``loop_checklist_items`` for the briefs' "Known traps" section."""
     rows = (
         await db.execute(
-            text(
-                'SELECT title, "check" AS how_to_check '
-                f"FROM {_LOOP_CHECKLIST_TABLE} "
-                "WHERE project_id = :pid AND status = :status "
-                "ORDER BY slug"
-            ),
-            {"pid": project_id, "status": "active"},
+            select(LoopChecklistItem.title, LoopChecklistItem.check_text)
+            .where(
+                LoopChecklistItem.project_id == project_id,
+                LoopChecklistItem.status == "active",
+            )
+            .order_by(LoopChecklistItem.slug)
         )
-    ).mappings().all()
-    return [{"title": r["title"], "check": r["how_to_check"]} for r in rows]
+    ).all()
+    return [{"title": title, "check": check} for title, check in rows]
 
 
 def _render_brief(
@@ -611,6 +598,20 @@ async def _show_policy_names(db: AsyncSession, auth: AuthContext, project: Proje
     return await is_active_org_member(db, project.org_id, auth.user.id)
 
 
+async def _mask_reviewers(
+    db: AsyncSession, auth: AuthContext, project: Project, loops: list[dict]
+) -> list[dict]:
+    """Blank each child's ``verdict.reviewer`` (a user or service-key id) for
+    readers without project read standing, as the readiness route does."""
+    if await _viewer_sees_emails(db, auth, project):
+        return loops
+    for loop in loops:
+        loop["children"] = [
+            mask_verdict_reviewer(child) for child in loop.get("children", [])
+        ]
+    return loops
+
+
 async def _show_dollars(db: AsyncSession, auth: AuthContext, project: Project) -> bool:
     if auth.key_kind == "service":
         return False
@@ -691,7 +692,7 @@ async def list_loops(
         show_policy_names=await _show_policy_names(db, auth, project),
     )
     await db.commit()  # keep approval requests raised for ready children
-    return result
+    return await _mask_reviewers(db, auth, project, result)
 
 
 @router.get("/{project_id}/loops/{loop_id}")
@@ -721,7 +722,7 @@ async def get_loop(
         show_policy_names=await _show_policy_names(db, auth, project),
     )
     await db.commit()  # keep approval requests raised for ready children
-    return results[0]
+    return (await _mask_reviewers(db, auth, project, results))[0]
 
 
 async def _load_loop_for_editor(
@@ -796,7 +797,7 @@ async def update_loop(
         show_policy_names=await _show_policy_names(db, auth, project),
     )
     await db.commit()  # keep approval requests raised for ready children
-    return results[0]
+    return (await _mask_reviewers(db, auth, project, results))[0]
 
 
 @router.post("/{project_id}/loops/{loop_id}/children/{ticket_id}/close")

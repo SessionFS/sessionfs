@@ -226,6 +226,20 @@ def test_promote_sends_kind_chat(api):
     assert [c["params"] for c in api.calls] == [{"kind": "chat"}, {"kind": "chat"}]
 
 
+def test_link_and_unlink_send_kind_chat(api):
+    root = "/api/v1/meetings/chat_1/action-items/mi_1"
+    api.responses[("POST", f"{root}/link/preview")] = (200, {
+        "ticket": {"id": "tk_1", "project_id": "p", "title": "T", "status": "open"},
+        "suggested": False, "comment": "Raised again in chat thread ...",
+    })
+    api.responses[("POST", f"{root}/link")] = (200, {"ticket_id": "tk_1", "status": "linked"})
+    res = _run(["link", "chat_1", "mi_1", "tk_1", "--yes"])
+    assert res.exit_code == 0, res.output
+    assert _run(["unlink", "chat_1", "mi_1"]).exit_code == 0
+    assert [c["path"] for c in api.calls] == [f"{root}/link/preview", f"{root}/link", f"{root}/unlink"]
+    assert all(c["params"] == {"kind": "chat"} for c in api.calls)
+
+
 def test_registered_on_main_app():
     from sessionfs.cli.main import app
 

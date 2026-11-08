@@ -130,12 +130,36 @@ async def _assigned_user_label(db: AsyncSession, user_id: str | None) -> str | N
     return assigned_user_label(user) if user is not None else None
 
 
+ASSIGNER_NOT_MEMBER = {
+    "error": "project_member_required",
+    "message": "Only project members can assign a ticket to a person.",
+}
+
+
 async def resolve_assigned_user_id(
-    db: AsyncSession, *, project: Project, value: str
+    db: AsyncSession,
+    *,
+    project: Project,
+    value: str,
+    assigner_user_id: str | None,
 ) -> User:
     """Resolve an id or email to an active user with read standing on
     ``project``. Every miss — unknown, inactive, or no read standing — raises
-    the same 422 so existence and org membership are never revealed."""
+    the same 422 so existence and org membership are never revealed.
+
+    ``assigner_user_id`` is the user key doing the assigning; it must itself
+    have read standing (owner, org member, group grant) or the call is
+    refused 403 BEFORE the value is looked at, like the assignable-users
+    list: otherwise a captured-session-only reader could learn from 422 vs
+    success whether an address belongs to the project's team. Service keys
+    pass ``None``; they are already confined to the project's org and
+    allowlist and see teammates' emails."""
+    from sessionfs.server.auth.project_access import user_has_read_standing
+
+    if assigner_user_id is not None and not await user_has_read_standing(
+        db, assigner_user_id, project
+    ):
+        raise HTTPException(403, ASSIGNER_NOT_MEMBER)
     value = value.strip()
     if "@" in value:
         stmt = select(User).where(func.lower(User.email) == value.lower())
@@ -145,8 +169,6 @@ async def resolve_assigned_user_id(
     user = matches[0] if len(matches) == 1 else None
     eligible = False
     if user is not None and user.is_active:
-        from sessionfs.server.auth.project_access import user_has_read_standing
-
         eligible = await user_has_read_standing(db, user.id, project)
     if not eligible:
         raise HTTPException(422, _ASSIGNEE_NOT_ELIGIBLE)
@@ -670,7 +692,12 @@ async def apply_ticket_update(
             if body.assigned_user_id is not None
             else body.assigned_user
         )
-        assignee = await resolve_assigned_user_id(db, project=project, value=token)
+        assignee = await resolve_assigned_user_id(
+            db,
+            project=project,
+            value=token,
+            assigner_user_id=None if actor_type == "service_key" else user_id,
+        )
         user_labels[assignee.id] = assigned_user_label(assignee)
         await _remember_label(ticket.assigned_user_id)
         _record("assigned_user_id", ticket.assigned_user_id, assignee.id)

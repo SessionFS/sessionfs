@@ -148,7 +148,7 @@ SessionFS requires several secrets for operation. You can either provide them in
 
 `verification-secret` and `encryption-key` encrypt stored LLM keys and GitLab/Jira tokens, so they must never change once set. If you leave them empty, the chart generates them on first install and keeps the same values on every later `helm upgrade`. ArgoCD and other `helm template` flows can't read the cluster, so for GitOps set both values or use `security.existingSecret`. Charts before 0.24.0 generated new values on every upgrade; if stored keys stopped working after an upgrade, re-enter them once.
 
-The API refuses to store or read encrypted secrets when `SFS_VERIFICATION_SECRET` is unset or a placeholder such as `dev-secret` (503 `encryption_unavailable`), except in development (`SFS_ENVIRONMENT=development`, or a SQLite database).
+The API refuses to store or read encrypted secrets when `SFS_VERIFICATION_SECRET` is unset or a placeholder such as `dev-secret` (503 `encryption_unavailable`), except in development: `SFS_ENVIRONMENT=development`, or `SFS_ENVIRONMENT` unset with a SQLite `SFS_DATABASE_URL` (the default). A production install on SQLite must set `SFS_ENVIRONMENT=production` to get the refusal.
 
 ### Create Secrets Manually
 
@@ -403,7 +403,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: sweep
-              image: curlimages/curl:latest
+              image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # 8.12.1
               args:
                 - -s
                 - -X
@@ -478,7 +478,7 @@ admin. That key is **tier-coupled** (see
 [API keys](./api-keys.md#service-keys)): it works only while the admin who
 minted or last rotated it *and* the user the key runs as are both still
 active platform admins. Demoting or deactivating either one stops the key
-with a `403` that names the minter's current tier and the fix.
+with a `403` that gives a coarse reason and the fix.
 
 The coupling is visible, not silent:
 
@@ -490,11 +490,14 @@ The coupling is visible, not silent:
   (`true` / `false` / `null`) and `coupling_reason`, so a key that quietly
   stopped working shows up in `sfs admin service-keys list` with an
   `inactive: minter no longer admin` marker. `coupling_ok` is `null` for keys
-  with no tier-coupled scope.
-- **Actionable 403** — a dead key's `403 platform_sweeper_denied` carries
-  `minter_user_id`, `minter_current_tier`, `required_minter_tier` and a
-  `resolution` string, so the operator can see the rule without a support
-  ticket.
+  with no tier-coupled scope. Only platform admins see which account lost
+  standing; other org admins see `platform admin standing lapsed`.
+- **Actionable 403** — a dead key's `403 platform_sweeper_denied` carries a
+  coarse `reason` (`minter_not_admin`, `owner_not_admin` or
+  `minter_missing`), `required_minter_tier` and a `resolution` string, so the
+  operator can see the rule without a support ticket. It never carries the
+  minter's user id or current plan (the key's holder may not be its minter);
+  the API server log records both with the key id.
 
 Elevate → mint → revert does **not** produce a working key: the minted key is
 still coupled to the account that minted it. Keep the minter a platform admin
@@ -542,6 +545,12 @@ api:
       schedule: "*/5 * * * *"         # every 5 minutes
       existingSecret: sessionfs-sweep-key
       secretKey: reminders-due-api-key
+  attentionHides:
+    enabled: true
+    cronJob:
+      schedule: "45 3 * * *"          # daily
+      existingSecret: sessionfs-sweep-key
+      secretKey: attention-hides-api-key
 ```
 
 The CronJob pod sends one authenticated request to the API sweep endpoint and
@@ -782,6 +791,22 @@ clears `notified_at`, so it fires again when it next comes due. The reminders
 list computes "due" when it is read, so a late or missing sweep only delays
 the bell and the email, never the list. The ticket-notification digest sends
 `reminder_due` rows without the 10-minute coalescing delay.
+
+### For You hides sweep
+
+Hide and Snooze on For You (0.29.8) store one row per hidden item. A daily
+sweep deletes the rows older than 90 days:
+
+```text
+POST /api/v1/admin/sweeps/attention-hides
+```
+
+Authenticate with a platform-admin user key or a `platform_sweeps:run`
+service key. It deletes in keyset batches of `batch_size` (query parameter,
+default 1000, max 5000), committing each batch, and stops after 50 batches;
+the next run picks up the rest. It is idempotent. Without it the rows only
+grow slowly, since each user's feed bounds what they can hide. Enable it in
+the chart with `api.attentionHides` (above).
 
 ### Jira sync and Confluence publish sweeps
 

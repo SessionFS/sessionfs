@@ -169,7 +169,7 @@ async def _load_project_or_404(
     if not project:
         raise HTTPException(404, "Project not found")
     if not await user_can_access_project(db, user_id, project):
-        raise HTTPException(403, "No access to this project")
+        raise HTTPException(404, "Project not found")
     return project
 
 

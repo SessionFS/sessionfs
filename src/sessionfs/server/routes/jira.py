@@ -508,20 +508,25 @@ def _token_hint(encrypted: str) -> str:
     return "••••" + plain[-4:]
 
 
-# In-memory cache of a connection's Atlassian accountId (from /myself), keyed
-# by org_id.  Invalidated when the connection is written or deleted so a
-# reconnected account can never be shadowed by a stale id.
-_account_id_cache: dict[str, str] = {}
+async def _connection_account_id(
+    client: JiraClient, conn: OrgTrackerConnection
+) -> str | None:
+    """The connection's own Atlassian accountId.
 
-
-async def _connection_account_id(client: JiraClient, *, org_id: str) -> str:
-    """The connection's own accountId, fetched once and cached per org."""
-    cached = _account_id_cache.get(org_id)
-    if cached is not None:
-        return cached
+    Read from the connection row (``jira_account_id``, written when the
+    connection is saved), so every replica sees the same value and a
+    reconnected account is never shadowed by a per-process copy. When the
+    row has none yet it is fetched from ``/myself`` and stored on the row
+    (committed with the caller's transaction). An empty answer is never
+    stored, so the next call asks again instead of staying blocked.
+    """
+    if conn.jira_account_id:
+        return conn.jira_account_id
     account_id = await client.myself_account_id()
-    _account_id_cache[org_id] = account_id
-    return account_id
+    if not account_id:
+        return None
+    conn.jira_account_id = str(account_id)[:128]
+    return conn.jira_account_id
 
 
 def _parse_jira_timestamp(value: str | None) -> datetime | None:
@@ -552,7 +557,7 @@ def _parse_jira_timestamp(value: str | None) -> datetime | None:
 def _adoption_block(
     adopted: TrackerIssue,
     expected_project_key: str,
-    account_id: str,
+    account_id: str | None,
     unknown_since: datetime | None,
 ) -> str | None:
     """Reason the label-found issue may NOT be adopted, or None if adoptable.
@@ -798,9 +803,6 @@ async def put_jira_connection(
         after=_connection_response(conn),
     )
     await db.commit()
-    # The account may have changed (or been created); drop the cached
-    # accountId so the next adoption check refetches it.
-    _account_id_cache.pop(org_id, None)
     return {**_connection_response(conn), "webhook_url": _jira_webhook_url(request, org_id)}
 
 
@@ -827,7 +829,6 @@ async def delete_jira_connection(
     )
     await db.delete(conn)
     await db.commit()
-    _account_id_cache.pop(org_id, None)
 
 
 @org_router.patch("/{org_id}/integrations/jira/sync")
@@ -963,7 +964,7 @@ def _webhook_actor(payload: dict) -> tuple[str, str | None]:
 
 def _own_account_id(conn: OrgTrackerConnection) -> str | None:
     """The connection's own Atlassian accountId, when known."""
-    return conn.jira_account_id or _account_id_cache.get(conn.org_id) or None
+    return conn.jira_account_id or None
 
 
 def _field_change_excerpt(item: dict) -> str:
@@ -4079,7 +4080,7 @@ async def publish_ticket_draft(
                     # (or one from a stale/duplicated connection) keeps the link
                     # 'unknown' and is refused with a clear 409.
                     account_id = await asyncio.wait_for(
-                        _connection_account_id(client, org_id=project.org_id),
+                        _connection_account_id(client, conn),
                         timeout=_remaining_timeout(deadline),
                     )
                     block = _adoption_block(

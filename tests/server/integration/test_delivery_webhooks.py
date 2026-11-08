@@ -798,3 +798,60 @@ async def test_github_pr_non_string_title_does_not_500(
         "t-1",
     )
     assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_delivery_ledger_key_is_bound_to_the_signed_body(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """tk_86db8de1c3bf4bf0 #17: the delivery-id header is unsigned, so the
+    ledger key hashes it with the signed body. A different signed body under
+    a reused id is a different delivery; the raw header is never the key."""
+    from sqlalchemy import select
+
+    from sessionfs.server.db.models import DeliveryWebhookEvent
+
+    owner, key = await _make_user(db_session, "owner")
+    org = await _make_org(db_session)
+    await _add_org_member(db_session, org, owner, "owner")
+    await _make_project(db_session, owner, org, "acme/widgets")
+    secret = (await _rotate(client, key, org.id, "github"))["webhook_secret"]
+
+    def _body(number: int) -> bytes:
+        return json.dumps(
+            {
+                "action": "opened",
+                "repository": {"clone_url": "https://github.com/Acme/widgets"},
+                "pull_request": {
+                    "number": number,
+                    "title": "fix",
+                    "state": "open",
+                    "head": {"ref": "main", "sha": "deadbeef"},
+                },
+            }
+        ).encode()
+
+    statuses = []
+    for number in (1, 2):
+        payload = _body(number)
+        resp = await client.post(
+            f"/api/v1/webhooks/github/{org.id}",
+            content=payload,
+            headers={
+                "content-type": "application/json",
+                "x-github-event": "pull_request",
+                "x-github-delivery": "same-delivery-id",
+                "x-hub-signature-256": _github_sig(secret, payload),
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        statuses.append(resp.json().get("status"))
+    assert "duplicate" not in statuses
+    keys = (
+        await db_session.execute(
+            select(DeliveryWebhookEvent.idempotency_key).where(
+                DeliveryWebhookEvent.org_id == org.id
+            )
+        )
+    ).scalars().all()
+    assert len(keys) == 2 and "same-delivery-id" not in keys

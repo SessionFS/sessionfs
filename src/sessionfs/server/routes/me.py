@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import and_, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -102,14 +102,19 @@ class TicketUpdatesResponse(BaseModel):
     next_cursor: int
 
 
+# Notification ids and cursors are BIGINT: anything outside its range is a
+# 422 here instead of a database overflow (500) later.
+_BIGINT_MAX = 2**63 - 1
+
+
 class ReadNotificationsRequest(BaseModel):
-    ids: list[int] | None = None
+    ids: list[int] | None = Field(None, max_length=500)
     all: bool = False
 
 
 class AckUpdatesRequest(BaseModel):
-    cursor: int
-    persona: str = ""
+    cursor: int = Field(ge=0, le=_BIGINT_MAX)
+    persona: str = Field("", max_length=50)
 
 
 class NotificationSettingsResponse(BaseModel):
@@ -267,7 +272,7 @@ def _cursor_persona(auth: AuthContext, persona: str) -> str:
 async def list_ticket_notifications(
     unread: bool = False,
     limit: int = Query(_NOTIFICATION_LIMIT_DEFAULT, ge=1, le=_NOTIFICATION_LIMIT_MAX),
-    before: int | None = Query(None),
+    before: int | None = Query(None, ge=0, le=_BIGINT_MAX),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> NotificationListResponse:

@@ -789,14 +789,17 @@ async def test_explicit_null_person_token_respects_editability_gate(
     # creator is a captured-session-only reader: access, but no edit standing.
     await _make_session(db_session, creator, project)
 
+    # A captured-session-only reader can't assign a person, so the owner
+    # assigns and the ticket is then attributed to the captured creator.
     ticket_id = (await _create_ticket(
-        client, project, creator_key, assigned_user=assignee.email
+        client, project, owner_key, assigned_user=assignee.email
     ))["id"]
 
     # Move past open so work-defining fields are locked for non-editors.
     row = (
         await db_session.execute(select(Ticket).where(Ticket.id == ticket_id))
     ).scalar_one()
+    row.created_by_user_id = creator.id
     row.status = "in_progress"
     await db_session.commit()
 
@@ -943,3 +946,84 @@ async def test_reader_cannot_change_the_assignee(
     for body in ({"assigned_to": "atlas"}, {"assigned_to": None}):
         resp = await client.put(url, headers=_hdrs(reader_key), json=body)
         assert resp.status_code == 403, (body, resp.text)
+
+
+# ── person assignment needs read standing (no eligibility oracle) ──
+
+
+@pytest.mark.asyncio
+async def test_captured_reader_cannot_assign_a_person(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A captured-session-only reader may create and edit their own tickets,
+    but assigning a PERSON is refused 403 before the address is looked at:
+    an eligible teammate, a stranger and an unknown address all get the same
+    body, so 422-vs-success can't reveal who is on the team."""
+    owner, owner_key = await _make_user(db_session, name="owner")
+    teammate, _ = await _make_user(db_session, name="mate")
+    stranger, _ = await _make_user(db_session, name="stranger")
+    captured, captured_key = await _make_user(db_session, name="captured")
+    org = await _make_org(db_session)
+    await _make_member(db_session, org, owner, role="admin")
+    await _make_member(db_session, org, teammate)
+    project = await _make_project(db_session, owner, org)
+    await _make_session(db_session, captured, project)
+    base = f"/api/v1/projects/{project.id}/tickets"
+
+    bodies = []
+    for token in (teammate.email, stranger.email, "nobody@example.com", teammate.id):
+        key = "assigned_user_id" if "@" not in token else "assigned_user"
+        resp = await client.post(
+            base, headers=_hdrs(captured_key), json={"title": "t", key: token}
+        )
+        assert resp.status_code == 403, (token, resp.text)
+        assert resp.json()["error"]["details"]["error"] == "project_member_required"
+        bodies.append(resp.text)
+    assert len(set(bodies)) == 1, bodies
+
+    # Their own ticket without an assignee still works; reassigning it to a
+    # person is refused the same way.
+    created = await _create_ticket(client, project, captured_key)
+    resp = await client.put(
+        f"{base}/{created['id']}",
+        headers=_hdrs(captured_key),
+        json={"assigned_user": teammate.email},
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.text == bodies[0]
+
+    # A member with read standing assigns as before.
+    ok = await _create_ticket(client, project, owner_key, assigned_user=teammate.email)
+    assert ok["assigned_user"]["id"] == teammate.id
+
+
+@pytest.mark.asyncio
+async def test_person_assignment_inputs_are_length_bounded(
+    client: AsyncClient, db_session: AsyncSession
+):
+    owner, owner_key = await _make_user(db_session, name="owner")
+    org = await _make_org(db_session)
+    await _make_member(db_session, org, owner, role="admin")
+    project = await _make_project(db_session, owner, org)
+    base = f"/api/v1/projects/{project.id}/tickets"
+    long_value = "a" * 400 + "@example.com"
+
+    for key in ("assigned_user", "assigned_user_id"):
+        resp = await client.post(
+            base, headers=_hdrs(owner_key), json={"title": "t", key: long_value}
+        )
+        assert resp.status_code == 422, (key, resp.text)
+        assert long_value not in resp.text
+
+    created = await _create_ticket(client, project, owner_key)
+    resp = await client.put(
+        f"{base}/{created['id']}",
+        headers=_hdrs(owner_key),
+        json={"assigned_user": long_value},
+    )
+    assert resp.status_code == 422, resp.text
+
+    resp = await client.get(
+        base, headers=_hdrs(owner_key), params={"assigned_user": long_value}
+    )
+    assert resp.status_code == 422, resp.text

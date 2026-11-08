@@ -28,7 +28,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import and_, delete, func, or_, select, update
+from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import AuthContext, require_scope
@@ -42,7 +42,6 @@ from sessionfs.server.db.models import (
     Reminder,
     ReminderNote,
     Ticket,
-    TicketNotification,
     User,
 )
 from sessionfs.server.services import reminders as svc
@@ -832,6 +831,8 @@ async def patch_reminder(
     if result.rowcount != 1:
         await db.rollback()
         raise _not_open()
+    if "due_at" in values:
+        await svc.clear_unread_due_notifications(db, r.id)
     await db.commit()
     r, vis, _ = await _load_visible(db, auth, reminder_id)
     await db.refresh(r)
@@ -854,14 +855,7 @@ async def delete_reminder(
     r, _, _ = await _load_visible(db, auth, reminder_id)
     if r.created_by_user_id != me:
         raise _forbidden("Only the person who created this reminder can delete it.")
-    await db.execute(
-        delete(TicketNotification).where(
-            TicketNotification.subject_kind == "reminder",
-            TicketNotification.subject_id == r.id,
-        )
-    )
-    await db.execute(delete(ReminderNote).where(ReminderNote.reminder_id == r.id))
-    await db.execute(delete(Reminder).where(Reminder.id == r.id))
+    await svc.delete_reminder_rows(db, r.id)
     await db.commit()
     return Response(status_code=204)
 
@@ -923,6 +917,7 @@ async def snooze_reminder(
     if result.rowcount != 1:
         await db.rollback()
         raise _not_open()
+    await svc.clear_unread_due_notifications(db, r.id)
     await db.commit()
     r, vis, _ = await _load_visible(db, auth, reminder_id)
     await db.refresh(r)

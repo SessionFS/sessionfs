@@ -23,30 +23,30 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import case, func, inspect, select, text
+from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.models import (
     AgentRun,
+    LoopChecklistItem,
     Deployment,
     PullRequest,
     Release,
     ReleasePr,
     ReleaseTicket,
     Ticket,
-    TicketComment,
     TicketPrLink,
 )
 from sessionfs.server.services.review_state import (
     VERDICT_CLEAN,
     compute_review_state,
     load_review_comments,
+    load_trusted_review_comments_by_ticket,
 )
 
 # Same split as agent_spend: only reported/estimated cost bases have dollars.
 _DOLLAR_COST_BASES: tuple[str, ...] = ("reported", "estimated")
 _COST_USD_SCALE = 6  # Numeric(12, 6)
-_CHECKLIST_TABLE = "loop_checklist_items"
 
 
 def _as_utc(dt: datetime) -> datetime:
@@ -60,26 +60,6 @@ def _iso(dt: datetime | None) -> str | None:
     if dt is None:
         return None
     return _as_utc(dt).isoformat()
-
-
-def _to_iso(val: Any) -> str | None:
-    """Serialise a raw joined-at value to a consistent UTC ISO string.
-
-    The checklist join date is read through raw ``text()`` so the driver hands
-    back a ``datetime`` on PostgreSQL but a string on SQLite (its
-    ``DateTime`` round-trips as ``YYYY-MM-DD HH:MM:SS.ffffff``). Normalise
-    both to the same ISO form; a value we cannot parse is passed through as-is.
-    """
-    if val is None:
-        return None
-    if isinstance(val, datetime):
-        return _iso(val)
-    # ``fromisoformat`` on 3.10 rejects the space separator, so normalise it.
-    norm = str(val).replace(" ", "T", 1)
-    try:
-        return _iso(datetime.fromisoformat(norm))
-    except ValueError:
-        return str(val)
 
 
 def _decode_findings(value: str | None) -> list[dict[str, Any]]:
@@ -258,47 +238,24 @@ async def _load_checklist_items(
     """Return ``{slug: {title, joined_at}}`` for ACTIVE checklist items.
 
     ``joined_at`` is the item's ``accepted_at`` (null for an active item that
-    was never accepted). ``loop_checklist_items`` is added by a later
-    review-loop migration; this endpoint is read-only and must not assume the
-    column exists. Guard with the inspector: an older schema falls back to
-    ``updated_at`` as the join date, and a schema without the table at all
-    reports no join dates.
+    was never accepted).
     """
-    conn = await db.connection()
-    has_table = await conn.run_sync(
-        lambda sync_conn: inspect(sync_conn).has_table(_CHECKLIST_TABLE)
-    )
-    if not has_table:
-        return {}
-    columns = await conn.run_sync(
-        lambda sync_conn: {
-            c["name"] for c in inspect(sync_conn).get_columns(_CHECKLIST_TABLE)
-        }
-    )
-    join_col = (
-        "accepted_at"
-        if "accepted_at" in columns
-        else "updated_at"
-        if "updated_at" in columns
-        else None
-    )
-    cols = "slug, title" + (f", {join_col}" if join_col else "")
     rows = (
         await db.execute(
-            text(
-                f"SELECT {cols} FROM {_CHECKLIST_TABLE} "
-                "WHERE project_id = :pid AND status = 'active'"
-            ),
-            {"pid": project_id},
+            select(
+                LoopChecklistItem.slug,
+                LoopChecklistItem.title,
+                LoopChecklistItem.accepted_at,
+            ).where(
+                LoopChecklistItem.project_id == project_id,
+                LoopChecklistItem.status == "active",
+            )
         )
     ).all()
-    out: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        joined: str | None = None
-        if join_col:
-            joined = _to_iso(getattr(row, join_col, None))
-        out[str(row.slug)] = {"title": str(row.title), "joined_at": joined}
-    return out
+    return {
+        str(slug): {"title": str(title), "joined_at": _iso(accepted_at)}
+        for slug, title, accepted_at in rows
+    }
 
 
 async def _cost_per_accepted_change(
@@ -444,34 +401,11 @@ async def _scoreboard(
                 harmful_by_ticket[ticket_id] = harmful_by_ticket.get(ticket_id, 0) + 1
 
     # Trusted rounds → rounds-to-first-clean, per ticket.
-    comments = list(
-        (
-            await db.execute(
-                select(TicketComment)
-                .where(TicketComment.ticket_id.in_(done_ids))
-                .order_by(TicketComment.created_at, TicketComment.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    comments_by_ticket: dict[str, list[TicketComment]] = {}
-    for c in comments:
-        comments_by_ticket.setdefault(c.ticket_id, []).append(c)
+    # Trusted verdicts only, capped per ticket (was unbounded).
+    comments_by_ticket = await load_trusted_review_comments_by_ticket(db, done_ids)
     rounds_by_ticket: dict[str, int | None] = {}
     for ticket_id, crows in comments_by_ticket.items():
-        state = compute_review_state(
-            [
-                {
-                    "id": c.id,
-                    "author_persona": c.author_persona,
-                    "content": c.content,
-                    "created_at": c.created_at,
-                    "verdict_trusted": c.verdict_trusted,
-                }
-                for c in crows
-            ]
-        )
+        state = compute_review_state(crows)
         clean_at: int | None = None
         if state is not None:
             for index, rnd in enumerate(state.rounds):

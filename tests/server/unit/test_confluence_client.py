@@ -507,3 +507,22 @@ def test_404_raises_not_found_subclass():
 
     with pytest.raises(DocumentationNotFound):
         _run(handler, lambda c: c.get_page("9"))
+
+
+def test_inline_link_scan_is_linear_on_long_bracket_runs():
+    """Every ``[`` of a long ``[[[[…`` run used to start a link match that
+    scanned 500 characters before failing: ~7 s per 100k characters, so a
+    1 MB publish held the event loop for over a minute."""
+    import time
+
+    for hostile in ("[" * 200_000, "[[" * 100_000, "[a" * 100_000):
+        started = time.monotonic()
+        markdown_to_storage(hostile)
+        assert time.monotonic() - started < 1.0, hostile[:4]
+
+    # Links and backlinks still render.
+    assert markdown_to_storage("[x](https://a.b) and [[guide]]",
+                               backlink_resolver={"guide": "https://g"}.get) == (
+        '<p><a href="https://a.b">x</a> and <a href="https://g">guide</a></p>'
+    )
+    assert markdown_to_storage("[[[x](https://a.b)") == '<p>[[<a href="https://a.b">x</a></p>'

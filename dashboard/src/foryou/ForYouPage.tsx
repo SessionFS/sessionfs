@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import type { AttentionFeed, AttentionGroup, AttentionItem } from '../api/client';
@@ -16,15 +16,19 @@ import SnoozeMenu, { presetCaption } from './SnoozeMenu';
 import {
   ACTIONABLE,
   GROUPS,
+  SECTION_CAP,
   SECTION_ORDER,
   TOGETHER_ID,
   dayLabel,
   greeting,
   hhmm,
   loadCleared,
+  loadExpanded,
   localZone,
   prefersSessionsHome,
   saveCleared,
+  saveExpanded,
+  sectionCaption,
   setSessionsHome,
   snoozeTarget,
   useReducedMotion,
@@ -99,6 +103,7 @@ export default function ForYouPage() {
   const [settled, setSettled] = useState(false);
   const [sessionsHome, setSessionsHomeState] = useState(prefersSessionsHome);
   const [now, setNow] = useState(() => new Date());
+  const [expanded, setExpanded] = useState<Set<AttentionGroup>>(loadExpanded);
 
   const handles = useRef(new Map<string, CardHandle>());
   // The last action and how to reverse it (Undo).
@@ -106,6 +111,9 @@ export default function ForYouPage() {
   const toastTimer = useRef<number>(0);
   const toastHeld = useRef(false);
   const caughtRef = useRef<HTMLElement>(null);
+  const moreRefs = useRef(new Map<AttentionGroup, HTMLButtonElement>());
+  // After expanding: focus the first newly shown card, or a card goto() asked for.
+  const afterExpand = useRef<{ group: AttentionGroup; key: string | null; goto: boolean } | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
   const feed: AttentionFeed | undefined = feedQ.data?.feed;
@@ -178,6 +186,33 @@ export default function ForYouPage() {
   }, [byKey]);
 
   const visible = useMemo(() => items.filter((i) => !gone[i.item_key]?.hidden), [items, gone]);
+  // What each section puts on screen: every item when expanded, else the first
+  // SECTION_CAP in rank order. A leaving card keeps its place until it is
+  // hidden, then the next one moves up into the cap.
+  const shownKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const g of GROUPS) {
+      const list = visible.filter((i) => i.group === g.id);
+      for (const it of expanded.has(g.id) ? list : list.slice(0, SECTION_CAP)) keys.add(it.item_key);
+    }
+    return keys;
+  }, [visible, expanded]);
+  // Read from event handlers (removeVisual), so they see this render's lists.
+  const visibleRef = useRef(visible);
+  const shownRef = useRef(shownKeys);
+  useLayoutEffect(() => {
+    visibleRef.current = visible;
+    shownRef.current = shownKeys;
+  }, [visible, shownKeys]);
+  // A card that will move up into a collapsed section once the one leaving is gone.
+  const pendingFocus = useRef<string | null>(null);
+  useEffect(() => {
+    const k = pendingFocus.current;
+    if (!k || !shownKeys.has(k)) return;
+    pendingFocus.current = null;
+    const ae = document.activeElement;
+    if (!ae || ae === document.body) handles.current.get(k)?.focus();
+  }, [shownKeys]);
   const live = useMemo(() => items.filter((i) => !gone[i.item_key]), [items, gone]);
 
   const groupCount = useCallback(
@@ -209,8 +244,20 @@ export default function ForYouPage() {
     if (focused && keys.includes(focused.dataset.key ?? '')) {
       const cards = visibleCardEls();
       const idx = cards.indexOf(focused);
-      nextFocus = cards.slice(idx + 1).find((c) => !keys.includes(c.dataset.key ?? ''))
-        ?? cards.slice(0, idx).reverse().find((c) => !keys.includes(c.dataset.key ?? '')) ?? null;
+      const group = list.find((i) => i.item_key === focused.dataset.key)?.group;
+      const after = cards.slice(idx + 1).find((c) => !keys.includes(c.dataset.key ?? ''));
+      const inGroup = (el: HTMLElement | undefined) =>
+        !!el && visibleRef.current.some((i) => i.item_key === el.dataset.key && i.group === group);
+      // In a collapsed section the next card may still be behind "Show N more":
+      // it moves up once this one has left, and focus follows it there.
+      const successor = inGroup(after)
+        ? undefined
+        : visibleRef.current.find((i) => i.group === group && !keys.includes(i.item_key) && !shownRef.current.has(i.item_key));
+      if (successor) pendingFocus.current = successor.item_key;
+      else {
+        nextFocus = after
+          ?? cards.slice(0, idx).reverse().find((c) => !keys.includes(c.dataset.key ?? '')) ?? null;
+      }
     }
     const stampMs = stamp && !reduce ? 420 : 0;
     setGone((g) => {
@@ -361,6 +408,16 @@ export default function ForYouPage() {
 
   const goto = useCallback((key: string) => {
     const it = byKey.get(key);
+    // Behind "Show N more": open the section first, then go to it.
+    if (it && !gone[key] && !shownKeys.has(key) && !expanded.has(it.group)) {
+      afterExpand.current = { group: it.group, key, goto: true };
+      setExpanded((cur) => {
+        const next = new Set(cur).add(it.group);
+        saveExpanded(next);
+        return next;
+      });
+      return;
+    }
     const el = document.getElementById(`card-${key}`);
     if (!it || gone[key] || !el) {
       showToast(it ? `Already handled: ${it.title}.` : 'That item is no longer on this page.');
@@ -370,7 +427,47 @@ export default function ForYouPage() {
     handles.current.get(key)?.focus();
     setFlashKey(key);
     window.setTimeout(() => setFlashKey(null), 1300);
-  }, [byKey, gone, reduce, showToast]);
+  }, [byKey, expanded, gone, reduce, shownKeys, showToast]);
+
+  const toggleSection = useCallback((g: AttentionGroup) => {
+    const opening = !expanded.has(g);
+    if (opening) {
+      // The first card that was hidden: focus moves there so the keyboard carries on.
+      const list = visible.filter((i) => i.group === g);
+      afterExpand.current = { group: g, key: list.find((i) => !shownKeys.has(i.item_key))?.item_key ?? null, goto: false };
+    }
+    setExpanded((cur) => {
+      const next = new Set(cur);
+      if (opening) next.add(g);
+      else next.delete(g);
+      saveExpanded(next);
+      return next;
+    });
+    if (!opening) {
+      // Focus may have been on a card that is now hidden: it goes to the toggle,
+      // which moves up with the shorter list.
+      const meta = GROUPS.find((x) => x.id === g);
+      say(`${meta?.title ?? 'Section'}: showing the first ${SECTION_CAP}.`);
+      requestAnimationFrame(() => {
+        const btn = moreRefs.current.get(g);
+        btn?.focus({ preventScroll: true });
+        btn?.scrollIntoView({ block: 'nearest', behavior: reduce ? 'auto' : 'smooth' });
+      });
+    }
+  }, [expanded, reduce, say, shownKeys, visible]);
+
+  useEffect(() => {
+    const pending = afterExpand.current;
+    if (!pending || !expanded.has(pending.group)) return;
+    afterExpand.current = null;
+    if (pending.goto && pending.key) {
+      goto(pending.key);
+      return;
+    }
+    const count = visible.filter((i) => i.group === pending.group && !gone[i.item_key]).length;
+    say(`Showing all ${count}.`);
+    if (pending.key) handles.current.get(pending.key)?.focus();
+  }, [expanded, goto, gone, say, visible]);
 
   const commit = useCallback<CardApi['commit']>(async (item, done, run) => {
     const result = await run();
@@ -674,6 +771,13 @@ export default function ForYouPage() {
             const list = visible.filter((i) => i.group === g.id);
             const count = groupCount(g.id);
             const broken = failed(g.id);
+            const open = expanded.has(g.id);
+            const shown = list.filter((i) => shownKeys.has(i.item_key));
+            const liveCount = list.filter((i) => !gone[i.item_key]).length;
+            const shownLive = shown.filter((i) => !gone[i.item_key]).length;
+            const hiddenCount = liveCount - shownLive;
+            const caption = sectionCaption(shownLive, liveCount, Math.max(count, liveCount));
+            const toggle = hiddenCount > 0 || (open && liveCount > SECTION_CAP);
             return (
               <section key={g.id} className="band" data-band={g.id} id={`band-${g.id}`} aria-labelledby={`h-${g.id}`} style={{ ['--acc' as string]: g.acc }}>
                 <div className="bandhead">
@@ -687,8 +791,8 @@ export default function ForYouPage() {
                     <button className="btn sm" type="button" onClick={() => void feedQ.refetch()}>Retry</button>
                   </div>
                 )}
-                <div className={`list${g.grid ? ' grid2' : ''}`}>
-                  {list.map((it) => {
+                <div className={`list${g.grid ? ' grid2' : ''}`} id={`list-${g.id}`}>
+                  {shown.map((it) => {
                     const st = gone[it.item_key];
                     return (
                       <ItemCard
@@ -706,6 +810,27 @@ export default function ForYouPage() {
                     );
                   })}
                 </div>
+                {(toggle || (caption && shownLive > 0)) && (
+                  <div className="bandmore">
+                    {toggle && (
+                      <button
+                        ref={(el) => {
+                          if (el) moreRefs.current.set(g.id, el);
+                          else moreRefs.current.delete(g.id);
+                        }}
+                        className="btn"
+                        type="button"
+                        aria-expanded={open}
+                        aria-controls={`list-${g.id}`}
+                        onClick={() => toggleSection(g.id)}
+                      >
+                        {open ? 'Show less' : `Show ${hiddenCount} more`}
+                        <Icon name="chev" />
+                      </button>
+                    )}
+                    {caption && <span className="of">{caption}</span>}
+                  </div>
+                )}
                 {count === 0 && broken.length === 0 && <p className="bandempty">{g.empty}</p>}
               </section>
             );

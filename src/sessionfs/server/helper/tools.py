@@ -3251,15 +3251,30 @@ def _reminder_due(args: dict[str, Any]) -> tuple[datetime, str | None]:
     return due, tz_name
 
 
-async def reminder_source_in_scope(db: Any, user_id: str, scope: Any, info: Any) -> bool:
-    """A source may only be used when the conversation's scope covers it."""
+async def reminder_source_in_scope(
+    db: Any,
+    user_id: str,
+    scope: Any,
+    info: Any,
+    project_ids: dict[str, set[str]] | None = None,
+) -> bool:
+    """A source may only be used when the conversation's scope covers it.
+
+    ``project_ids`` is an optional per-call memo: a list pass over many
+    reminders hands the same dict in so the scope's project set is resolved
+    once (key ``"ids"``) instead of once per row.
+    """
     if scope.project_id is None and scope.group_id is None and not scope.session_ids:
         return True
     if scope.group_id is not None and info.group_id == scope.group_id:
         return True
     if not info.project_id:
         return False
-    return info.project_id in await scope_project_ids(db, user_id, scope)
+    if project_ids is None:
+        return info.project_id in await scope_project_ids(db, user_id, scope)
+    if "ids" not in project_ids:
+        project_ids["ids"] = await scope_project_ids(db, user_id, scope)
+    return info.project_id in project_ids["ids"]
 
 
 async def _propose_reminder(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
@@ -3500,13 +3515,16 @@ async def _list_my_reminders(ctx: HelperContext, args: dict[str, Any]) -> ToolOu
     now = datetime.now(timezone.utc)
     lines: list[str] = []
     project_ids: list[str] = []
+    scope_ids: dict[str, set[str]] = {}
     for r in rows:
         v = vis[r.id]
         if not v.visible:
             continue
         if scoped and (
             v.source is None
-            or not await reminder_source_in_scope(ctx.db, me, ctx.scope, v.source)
+            or not await reminder_source_in_scope(
+                ctx.db, me, ctx.scope, v.source, scope_ids
+            )
         ):
             continue
         due = _as_utc(r.due_at)

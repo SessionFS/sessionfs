@@ -417,6 +417,30 @@ async def _ticket_ids_or_404(
 # ── Routes ──
 
 
+_AUTHOR_NOT_ELIGIBLE = {
+    "error": "author_not_eligible",
+    "message": "author_user_id must be an active user with access to this project.",
+}
+
+
+async def _require_eligible_author(
+    db: AsyncSession, project: Project, author_user_id: str
+) -> None:
+    """A caller-supplied PR author must be a real, active user with read
+    standing on the project. Every miss is the same 422, so the field can't
+    be used to probe for user ids."""
+    from sessionfs.server.auth.project_access import user_has_read_standing
+    from sessionfs.server.db.models import User
+
+    user = await db.get(User, author_user_id.strip())
+    if (
+        user is None
+        or not user.is_active
+        or not await user_has_read_standing(db, user.id, project)
+    ):
+        raise HTTPException(422, _AUTHOR_NOT_ELIGIBLE)
+
+
 @router.post("/{project_id}/pull-requests")
 async def upsert_pr(
     project_id: str,
@@ -428,6 +452,8 @@ async def upsert_pr(
     """Upsert a PR and auto-link tickets from ``tk_…`` ids / loop branches."""
     project = await _write_project(project_id, auth, db)
     await check_project_feature(ctx, "review_loop", project, db)
+    if body.author_user_id is not None:
+        await _require_eligible_author(db, project, body.author_user_id)
     return await releases.upsert_pull_request(
         db,
         project_id=project.id,

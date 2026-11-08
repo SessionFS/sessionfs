@@ -1,8 +1,11 @@
 """Meeting action-item extraction and promote (GitHub #116, M1b §5, §7).
 
-REST surface for the two things a stored transcript can do after upload:
-run (or re-run) extraction, and promote an extracted action item to a ticket
-(through a confirmable preview), plus dismiss/restore.
+REST surface for the things a stored transcript can do after upload: run
+(or re-run) extraction, promote an extracted action item to a ticket
+(through a confirmable preview), dismiss/restore, and (0.29.11) tie an item
+to an EXISTING ticket: link (preview + confirm), unlink, and dismiss the
+extraction's suggestion. Suggest, never auto-link: only these routes, called
+by a person or their key, link an item.
 
 Access follows §3: every meeting-level miss is the same ``"Meeting not found"``
 404 (the shared ``_get_meeting`` / ``_meeting_scope`` helpers keep existence and
@@ -13,13 +16,13 @@ project meetings admit service keys while group meetings stay user-key only.
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field, ValidationError
-from sqlalchemy import select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import (
@@ -39,19 +42,28 @@ from sessionfs.server.db.models import (
     Reminder,
 )
 from sessionfs.server.routes.meetings import (
+    ItemTicketRef,
     MeetingActionItemResponse,
     MeetingDetailResponse,
     RowKind,
     _action_item_response,
+    _dlp_scan_content,
     _get_meeting,
     _meeting_audit_event,
     _meeting_detail,
     _meeting_scope,
     _meeting_scope_org_id,
+    _ticket_ref,
+    _upload_dlp_policy,
     _user_org_role,
+    item_tickets,
 )
 from sessionfs.server.integrations.trackers.promote import ContentTooLarge
-from sessionfs.server.routes.tickets import TicketCreate
+from sessionfs.server.routes.tickets import TicketCreate, authorize_ticket_comment
+from sessionfs.server.db.models import Ticket
+from sessionfs.server.services.ticket_events import record_ticket_event
+from sessionfs.server.services.ticket_match import visible_tickets
+from sessionfs.server.services.ticket_writes import insert_ticket_comment
 from sessionfs.server.services.helper_ticket_actions import (
     create_ticket_action,
     display_name_for,
@@ -101,7 +113,7 @@ class PromoteRequest(BaseModel):
     priority: Literal["critical", "high", "medium", "low"] = "medium"
     kind: Literal["task", "issue"] = "task"
     assigned_to: str | None = None
-    assigned_user_id: str | None = None
+    assigned_user_id: str | None = Field(None, max_length=320)
     due_date: date | None = None
     target_project_id: str | None = None
     publish_to_jira: bool = False
@@ -442,7 +454,7 @@ async def extract_meeting(
     await _meeting_scope(db, meeting, auth, write=True)
 
     dropped_items, _ = await run_meeting_extraction(db, meeting=meeting, auth=auth)
-    detail = await _meeting_detail(db, meeting)
+    detail = await _meeting_detail(db, meeting, auth=auth)
     return ExtractionResponse(**detail.model_dump(), dropped_items=dropped_items)
 
 
@@ -711,6 +723,20 @@ async def promote_meeting_item(
     )
 
 
+async def _item_out(
+    db: AsyncSession,
+    meeting: MeetingTranscript,
+    auth: AuthContext,
+    item: MeetingActionItem,
+) -> MeetingActionItemResponse:
+    """One item's response, with the tickets the caller may see."""
+    return _action_item_response(
+        item,
+        await _item_owner_user_id(db, item),
+        await item_tickets(db, meeting, auth, [item]),
+    )
+
+
 async def _item_owner_user_id(db: AsyncSession, item: MeetingActionItem) -> str | None:
     if not item.owner_participant_id:
         return None
@@ -753,7 +779,7 @@ async def dismiss_meeting_item(
         raise _item_not_pending()
     await db.commit()
     await db.refresh(item)
-    return _action_item_response(item, await _item_owner_user_id(db, item))
+    return await _item_out(db, meeting, auth, item)
 
 
 @router.post(
@@ -792,4 +818,469 @@ async def restore_meeting_item(
         )
     await db.commit()
     await db.refresh(item)
-    return _action_item_response(item, await _item_owner_user_id(db, item))
+    return await _item_out(db, meeting, auth, item)
+
+
+# ── Link an item to an existing ticket (0.29.11) ──
+
+
+class LinkRequest(BaseModel):
+    # Omitted: the item's current (visible, not dismissed) suggestion.
+    ticket_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class LinkPreviewResponse(BaseModel):
+    meeting_id: str
+    item_id: str
+    ticket: ItemTicketRef
+    # True when the ticket is the extraction's suggestion for this item.
+    suggested: bool
+    # The comment Link will add on the ticket (DLP-redacted).
+    comment: str
+
+
+class LinkResponse(BaseModel):
+    ticket_id: str
+    item_id: str
+    status: Literal["linked"]
+    comment_id: str
+    item: MeetingActionItemResponse
+
+
+def _not_linkable() -> HTTPException:
+    """One refusal for every ticket that can't be linked: missing, outside
+    the conversation's scope, unreadable, or not open to the caller's
+    comments. Never says which."""
+    return HTTPException(
+        422,
+        {
+            "code": "ticket_not_linkable",
+            "message": "That ticket can't be linked to this item.",
+        },
+    )
+
+
+def _link_ticket_id(item: MeetingActionItem, requested: str | None) -> str:
+    if requested and requested.strip():
+        return requested.strip()
+    if item.suggested_ticket_id and item.suggestion_dismissed_at is None:
+        return item.suggested_ticket_id
+    raise HTTPException(
+        422,
+        {
+            "code": "ticket_required",
+            "message": "Choose the ticket to link this item to.",
+        },
+    )
+
+
+async def _linkable_ticket(
+    db: AsyncSession,
+    meeting: MeetingTranscript,
+    auth: AuthContext,
+    ticket_id: str,
+) -> tuple[Ticket, Project]:
+    """The ticket, if the caller may link this conversation's item to it:
+    in scope and readable (``visible_tickets``), and the caller passes the
+    ticket-comment authorization (the link writes a comment)."""
+    ticket = (await visible_tickets(db, meeting, auth, {ticket_id})).get(ticket_id)
+    if ticket is None:
+        raise _not_linkable()
+    try:
+        project = await authorize_ticket_comment(
+            db, auth, ticket.project_id, await build_user_context(auth.user, db)
+        )
+    except HTTPException:
+        raise _not_linkable() from None
+    return ticket, project
+
+
+def _range_label(meeting: MeetingTranscript, item: MeetingActionItem) -> str:
+    letter = "M" if meeting.kind == "chat" else "L"
+    if item.line_end != item.line_start:
+        return f"{letter}{item.line_start}–{item.line_end}"
+    return f"{letter}{item.line_start}"
+
+
+def link_comment_text(meeting: MeetingTranscript, item: MeetingActionItem) -> str:
+    """``Raised again in meeting "<title>" on <date>, lines L<a>–<b>: <text>``
+    (``chat thread`` / ``messages M<a>–<b>`` for a chat), before DLP."""
+    is_chat = meeting.kind == "chat"
+    noun = "chat thread" if is_chat else "meeting"
+    unit = "messages" if is_chat else "lines"
+    title = " ".join((meeting.title or "").split())
+    when = meeting.meeting_at or meeting.created_at
+    on = f" on {when.date().isoformat()}" if when is not None else ""
+    text = " ".join((item.description or "").split())
+    return f'Raised again in {noun} "{title}"{on}, {unit} {_range_label(meeting, item)}: {text}'
+
+
+async def _link_comment(
+    db: AsyncSession, meeting: MeetingTranscript, item: MeetingActionItem, auth: AuthContext
+) -> str:
+    """The comment body, redacted under the strictest-union policy the
+    meeting routes use (never blocks: the parts are already-stored text)."""
+    policy = await _upload_dlp_policy(db, auth, await _meeting_scope_org_id(db, meeting))
+    if policy is not None:
+        policy = dict(policy)
+        policy["mode"] = "redact"
+    redacted, _ = _dlp_scan_content(link_comment_text(meeting, item), policy)
+    return redacted
+
+
+async def _load_item_for_link(
+    db: AsyncSession, meeting_id: str, item_id: str, kind: str | None, auth: AuthContext
+) -> tuple[MeetingTranscript, MeetingActionItem]:
+    meeting = await _get_meeting(db, meeting_id, kind)
+    if meeting.deleted_at is not None:
+        raise HTTPException(404, "Meeting not found")
+    await _meeting_scope(db, meeting, auth, write=True)
+    _require_ticket_scope(auth)
+    item = await _get_action_item(db, meeting_id, item_id)
+    return meeting, item
+
+
+def _event_actor(auth: AuthContext) -> dict:
+    if auth.key_kind == "service":
+        return {
+            "actor_type": "service",
+            "actor_user_id": None,
+            "actor_label": auth.service_key_name,
+        }
+    return {"actor_type": "user", "actor_user_id": auth.user.id, "actor_label": None}
+
+
+async def _audit(
+    db: AsyncSession,
+    meeting: MeetingTranscript,
+    auth: AuthContext,
+    event_type: str,
+    after: dict,
+) -> None:
+    scope_org_id = await _meeting_scope_org_id(db, meeting)
+    if not scope_org_id:
+        return
+    org = await db.get(Organization, scope_org_id)
+    actor_role = (
+        await _user_org_role(db, auth.user.id, scope_org_id)
+        if auth.key_kind == "user"
+        else "service_key"
+    )
+    event = _meeting_audit_event(
+        meeting=meeting,
+        org=org,
+        event_type=event_type,
+        actor_user_id=auth.user.id,
+        actor_email=auth.user.email if auth.key_kind == "user" else None,
+        actor_role=actor_role,
+        after=after,
+    )
+    if event is not None:
+        db.add(event)
+
+
+def _conversation_ref(meeting: MeetingTranscript, item: MeetingActionItem) -> dict:
+    return {
+        "kind": meeting.kind or "meeting",
+        "conversation_id": meeting.id,
+        "item_id": item.id,
+    }
+
+
+@router.post(
+    "/meetings/{meeting_id}/action-items/{item_id}/link/preview",
+    response_model=LinkPreviewResponse,
+)
+async def preview_link(
+    meeting_id: str,
+    item_id: str,
+    body: LinkRequest | None = None,
+    kind: RowKind | None = Query(default=None),
+    auth: AuthContext = Depends(require_scope("meetings:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """What Link would do (the ticket + the comment it adds); writes nothing."""
+    meeting, item = await _load_item_for_link(db, meeting_id, item_id, kind, auth)
+    if item.status != "pending":
+        raise _item_not_pending()
+    ticket_id = _link_ticket_id(item, body.ticket_id if body else None)
+    ticket, _ = await _linkable_ticket(db, meeting, auth, ticket_id)
+    ref = _ticket_ref(ticket)
+    assert ref is not None
+    return LinkPreviewResponse(
+        meeting_id=meeting.id,
+        item_id=item.id,
+        ticket=ref,
+        suggested=(
+            item.suggested_ticket_id == ticket.id and item.suggestion_dismissed_at is None
+        ),
+        comment=await _link_comment(db, meeting, item, auth),
+    )
+
+
+@router.post(
+    "/meetings/{meeting_id}/action-items/{item_id}/link",
+    response_model=LinkResponse,
+)
+async def link_meeting_item(
+    meeting_id: str,
+    item_id: str,
+    body: LinkRequest | None = None,
+    kind: RowKind | None = Query(default=None),
+    auth: AuthContext = Depends(require_scope("meetings:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Tie a pending item to an existing ticket: the item becomes ``linked``
+    and the ticket gets a "raised again" comment plus a timeline event, all
+    in one transaction."""
+    meeting, item = await _load_item_for_link(db, meeting_id, item_id, kind, auth)
+    if item.status != "pending":
+        raise _item_not_pending()
+    ticket_id = _link_ticket_id(item, body.ticket_id if body else None)
+    _, project = await _linkable_ticket(db, meeting, auth, ticket_id)
+
+    try:
+        # The same locks as promote; then the meeting, the caller's standing
+        # and the ticket are checked again against the live rows.
+        if meeting.group_id is not None:
+            try:
+                await _lock_and_recheck_group_promote(
+                    db, meeting_id, item_id, project, auth
+                )
+            except HTTPException as exc:
+                if exc.status_code == 422:
+                    raise _not_linkable() from None
+                raise
+        else:
+            from sessionfs.server.services.scope_locks import lock_project_scope
+
+            await lock_project_scope(db, project)
+            await _lock_meeting_live(db, meeting_id)
+            await _meeting_scope(db, meeting, auth, write=True)
+        ticket, project = await _linkable_ticket(db, meeting, auth, ticket_id)
+
+        now = datetime.now(timezone.utc)
+        # Rowcount-1 guard: only a still-pending item links, so two racing
+        # links (or a link racing a promote) can't both land.
+        result = await db.execute(
+            update(MeetingActionItem)
+            .where(
+                MeetingActionItem.id == item_id,
+                MeetingActionItem.transcript_id == meeting_id,
+                MeetingActionItem.status == "pending",
+            )
+            .values(
+                status="linked",
+                linked_ticket_id=ticket.id,
+                linked_at=now,
+                linked_by_user_id=auth.user.id,
+            )
+        )
+        if result.rowcount != 1:
+            raise _item_not_pending()
+
+        comment_id = await insert_ticket_comment(
+            db,
+            project=project,
+            ticket_id=ticket.id,
+            user_id=auth.user.id,
+            content=await _link_comment(db, meeting, item, auth),
+            author_persona=None,
+            session_id=None,
+            lease_epoch=None,
+            verdict_trusted=False,
+            auth=auth,
+        )
+        await record_ticket_event(
+            db,
+            ticket,
+            "conversation_linked",
+            after=_conversation_ref(meeting, item),
+            **_event_actor(auth),
+        )
+        # Reminders on the item now also list on the ticket.
+        await db.execute(
+            update(Reminder)
+            .where(
+                Reminder.source_kind.in_(("meeting_item", "chat_item")),
+                Reminder.source_id == item_id,
+            )
+            .values(linked_ticket_id=ticket.id)
+            .execution_options(synchronize_session=False)
+        )
+        await _audit(
+            db,
+            meeting,
+            auth,
+            "meeting_action_linked",
+            {"meeting_id": meeting.id, "action_item_id": item.id, "ticket_id": ticket.id},
+        )
+    except HTTPException:
+        await db.rollback()
+        raise
+    await db.commit()
+    await db.refresh(item)
+    return LinkResponse(
+        ticket_id=ticket_id,
+        item_id=item_id,
+        status="linked",
+        comment_id=comment_id,
+        item=await _item_out(db, meeting, auth, item),
+    )
+
+
+@router.post(
+    "/meetings/{meeting_id}/action-items/{item_id}/unlink",
+    response_model=MeetingActionItemResponse,
+)
+async def unlink_meeting_item(
+    meeting_id: str,
+    item_id: str,
+    kind: RowKind | None = Query(default=None),
+    auth: AuthContext = Depends(require_scope("meetings:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Back to pending. The ticket's "raised again" comment stays (comments
+    are append-only); the ticket's timeline records the unlink."""
+    meeting, item = await _load_item_for_link(db, meeting_id, item_id, kind, auth)
+    previous = item.linked_ticket_id
+    result = await db.execute(
+        update(MeetingActionItem)
+        .where(
+            MeetingActionItem.id == item_id,
+            MeetingActionItem.transcript_id == meeting_id,
+            MeetingActionItem.status == "linked",
+        )
+        .values(
+            status="pending", linked_ticket_id=None, linked_at=None, linked_by_user_id=None
+        )
+    )
+    if result.rowcount != 1:
+        raise HTTPException(
+            409,
+            {"code": "item_not_linked", "message": "This action item is not linked."},
+        )
+    if previous:
+        ticket = await db.get(Ticket, previous)
+        if ticket is not None:
+            await record_ticket_event(
+                db,
+                ticket,
+                "conversation_unlinked",
+                before=_conversation_ref(meeting, item),
+                **_event_actor(auth),
+            )
+        await db.execute(
+            update(Reminder)
+            .where(
+                Reminder.source_kind.in_(("meeting_item", "chat_item")),
+                Reminder.source_id == item_id,
+                Reminder.linked_ticket_id == previous,
+            )
+            .values(linked_ticket_id=None)
+            .execution_options(synchronize_session=False)
+        )
+    await _audit(
+        db,
+        meeting,
+        auth,
+        "meeting_action_unlinked",
+        {"meeting_id": meeting.id, "action_item_id": item.id, "ticket_id": previous},
+    )
+    await db.commit()
+    await db.refresh(item)
+    return await _item_out(db, meeting, auth, item)
+
+
+@router.post(
+    "/meetings/{meeting_id}/action-items/{item_id}/dismiss-suggestion",
+    response_model=MeetingActionItemResponse,
+)
+async def dismiss_item_suggestion(
+    meeting_id: str,
+    item_id: str,
+    kind: RowKind | None = Query(default=None),
+    auth: AuthContext = Depends(require_scope("meetings:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """"Not this one": hide the suggestion; the item stays pending. Idempotent,
+    and the same answer whether or not the item had a (visible) suggestion."""
+    meeting = await _get_meeting(db, meeting_id, kind)
+    if meeting.deleted_at is not None:
+        raise HTTPException(404, "Meeting not found")
+    await _meeting_scope(db, meeting, auth, write=True)
+    item = await _get_action_item(db, meeting_id, item_id)
+    result = await db.execute(
+        update(MeetingActionItem)
+        .where(
+            MeetingActionItem.id == item_id,
+            MeetingActionItem.transcript_id == meeting_id,
+            MeetingActionItem.status == "pending",
+        )
+        .values(
+            suggestion_dismissed_at=func.coalesce(
+                MeetingActionItem.suggestion_dismissed_at, datetime.now(timezone.utc)
+            )
+        )
+    )
+    if result.rowcount != 1:
+        raise _item_not_pending()
+    await db.commit()
+    await db.refresh(item)
+    return await _item_out(db, meeting, auth, item)
+
+
+class LinkableTicketsResponse(BaseModel):
+    tickets: list[ItemTicketRef]
+
+
+_LINKABLE_LIMIT_MAX = 50
+
+
+@router.get(
+    "/meetings/{meeting_id}/linkable-tickets",
+    response_model=LinkableTicketsResponse,
+)
+async def list_linkable_tickets(
+    meeting_id: str,
+    q: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=20, ge=1, le=_LINKABLE_LIMIT_MAX),
+    kind: RowKind | None = Query(default=None),
+    auth: AuthContext = Depends(require_scope("meetings:write")),
+    db: AsyncSession = Depends(get_db),
+):
+    """Tickets an item of this conversation can be linked to (the "Link to
+    ticket…" picker): the meeting's project, or the group's member projects
+    the caller can read; cancelled tickets left out; newest first. ``q``
+    matches the title (substring) or an id prefix."""
+    from sessionfs.server.routes.meetings import _escape_like
+    from sessionfs.server.services.ticket_match import scope_project_ids
+
+    meeting = await _get_meeting(db, meeting_id, kind)
+    if meeting.deleted_at is not None:
+        raise HTTPException(404, "Meeting not found")
+    await _meeting_scope(db, meeting, auth, write=True)
+    _require_ticket_scope(auth)
+    project_ids = await scope_project_ids(db, meeting, auth)
+    if not project_ids:
+        return LinkableTicketsResponse(tickets=[])
+    stmt = select(Ticket).where(
+        Ticket.project_id.in_(project_ids), Ticket.status != "cancelled"
+    )
+    text = " ".join((q or "").split())
+    if text:
+        pattern = _escape_like(text.casefold())
+        stmt = stmt.where(
+            or_(
+                func.lower(Ticket.title).like(f"%{pattern}%", escape="\\"),
+                func.lower(Ticket.id).like(f"{pattern}%", escape="\\"),
+            )
+        )
+    rows = (
+        await db.execute(
+            stmt.order_by(Ticket.updated_at.desc(), Ticket.id.desc()).limit(limit)
+        )
+    ).scalars().all()
+    return LinkableTicketsResponse(
+        tickets=[ref for ref in (_ticket_ref(t) for t in rows) if ref is not None]
+    )

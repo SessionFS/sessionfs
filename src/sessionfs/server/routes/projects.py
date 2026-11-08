@@ -1666,7 +1666,7 @@ async def get_project(
                 db, auth, target, opaque_404_detail="No project context found"
             )
         elif not await user_can_access_project(db, user.id, target):
-            raise HTTPException(403, "No access to this project")
+            raise HTTPException(404, "No project context found")
         raise HTTPException(
             status_code=410,
             detail={
@@ -1686,7 +1686,7 @@ async def get_project(
             db, auth, project, opaque_404_detail="No project context found"
         )
     elif not await user_can_access_project(db, user.id, project):
-        raise HTTPException(403, "No access to this project")
+        raise HTTPException(404, "No project context found")
 
     effective_tier = (await resolve_project_plan_tier(project, db)).value
     if auth.key_kind == "service":
@@ -1746,7 +1746,7 @@ async def update_project_context(
         raise HTTPException(404, "No project context found")
 
     if not await user_can_access_project(db, user.id, project):
-        raise HTTPException(403, "No access to this project")
+        raise HTTPException(404, "No project context found")
     # Overwriting the shared context document is an edit: owner or org
     # member only (a captured-session reader gets 403).
     await require_project_editor(db, user.id, project)

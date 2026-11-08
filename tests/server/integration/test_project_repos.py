@@ -960,7 +960,8 @@ async def test_list_repos_denied_for_stranger(
         f"/api/v1/projects/{project.id}/repos",
         headers=auth_headers,
     )
-    assert resp.status_code == 403, resp.text
+    # Unreadable answers like missing.
+    assert resp.status_code == 404, resp.text
 
 
 # ── ProjectResponse.repos on detail ────────────────────────────────────

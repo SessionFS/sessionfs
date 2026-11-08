@@ -31,11 +31,15 @@ Gateways that reject `temperature`, `top_p` or reasoning settings for a reasonin
 
 - **Dashboard.** **Ask the helper** in the sidebar or the Cmd+K palette opens a drawer. The same button on a project or session page scopes the question to it, and the drawer's scope menu also lists the [project groups](#scope-a-question-to-a-project-group) you can see. The drawer remembers the scope you last picked for the rest of the browser tab, so a new conversation starts where you left off. The memory belongs to the account you're signed in with: signing in as someone else in the same tab starts from **All my sessions**. Answers stream in with citations; a citation opens the session at the exact message and highlights it (`/sessions/<id>?msg=<n>`). The composer stays pinned at the bottom, and earlier threads and **New** are always at hand. Retrying a failed answer doesn't save your question twice.
 
+  The expand button in the drawer header switches between **Small** (the default) and **Large**, a much wider panel for reading long answers, tables and code. The browser remembers your choice. On a phone the drawer is always full screen, so the button isn't shown.
+
+  To rename a thread, open the history, choose **Rename** next to it, type the new title and press Enter (Escape cancels; clicking away saves). Titles are up to 200 characters and are DLP-redacted like your questions. Renaming doesn't move a thread in the list, which stays ordered by last activity (v0.29.11).
+
   Ticket and wiki citations become links as soon as the answer finishes, without reloading the conversation.
 
   Ids in an answer are clickable. A ticket id (`tk_…`) opens a preview right over the conversation, with its status, priority, assignee, project, description and latest comments, plus **Open ticket** for the full view. Project (`proj_…`) and session (`ses_…`) ids open their pages, and when the scoped project has a single GitHub-verified repo, `PR #123` and commit SHAs link to GitHub. Ids inside code blocks stay as text.
 
-- **CLI.** `sfs helper ask "Where did we fix the SSO redirect?"` streams the answer to the terminal; `--project`, `--group` (a group id `pg_…` or slug) or `--session` scope it. `sfs helper conversations list|show|delete` manages threads, and `sfs helper status` shows whether the helper is available and which key it would use. See the [CLI reference](/cli/#sfs-helper-enterprise).
+- **CLI.** `sfs helper ask "Where did we fix the SSO redirect?"` streams the answer to the terminal; `--project`, `--group` (a group id `pg_…` or slug) or `--session` scope it. `sfs helper conversations list|show|rename|delete` manages threads, and `sfs helper status` shows whether the helper is available and which key it would use. See the [CLI reference](/cli/#sfs-helper-enterprise).
 - **MCP.** The `ask_session_helper` tool returns the whole answer with its citations, so an agent can ask without shelling out. It takes `project`, `group_id` or `session_ids` to scope the question. See [MCP Server](/mcp/#ask_session_helper).
 
 ## Scope a question to a project group
@@ -172,11 +176,14 @@ User API keys only; service keys get `service_key_not_allowed`. Each user can ru
 | POST | `/api/v1/helper/turns` | Ask a question. Server-Sent Events by default; one JSON document with `"stream": false` |
 | GET | `/api/v1/helper/conversations` | Your threads, newest first |
 | GET | `/api/v1/helper/conversations/{id}` | One thread with its messages |
+| PATCH | `/api/v1/helper/conversations/{id}` | Rename a thread: `{"title": "…"}` (v0.29.11) |
 | DELETE | `/api/v1/helper/conversations/{id}` | Delete a thread and its messages |
 | GET | `/api/v1/helper/actions/{id}` | A proposed change with its targets and state |
 | POST | `/api/v1/helper/actions/{id}/confirm` | Apply a proposed change (access re-checked per target) |
 | POST | `/api/v1/helper/actions/{id}/cancel` | Drop a proposed change |
 | GET | `/api/v1/helper/status` | Whether the helper is enabled for you, which key source, provider and model it would use, the effective settings, and whether org/personal instructions are set (never their text) |
+
+`PATCH /api/v1/helper/conversations/{id}` answers with the same object as a list item. Only the thread's owner can rename it; a missing thread, someone else's, or an org thread after you leave the org all get the same `404`. Whitespace is collapsed and control and bidirectional-override characters are dropped; an empty title is `422 title_required` and one over 200 characters is `422 title_too_long`. The title is then DLP-redacted under the same policy as a question in that thread, and if redaction can't run the rename is refused (`422 title_unscannable`) rather than stored unchecked. `updated_at` doesn't change.
 
 Request body for `POST /api/v1/helper/turns`:
 

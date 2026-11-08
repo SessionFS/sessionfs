@@ -45,7 +45,7 @@ spec:
       {{- if and .Values.license.key (ne .Values.license.mode "local") }}
       initContainers:
         - name: license-check
-          image: curlimages/curl:8.12.1
+          image: {{ include "sessionfs.curlImage" . }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

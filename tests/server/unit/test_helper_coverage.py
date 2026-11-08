@@ -1455,3 +1455,95 @@ async def test_resolve_identity_treats_like_wildcards_literally(db_session, test
     for needle in ("%", "_ob", "b%"):
         result = await _run(ctx, "resolve_identity", {"name": needle})
         assert "Bob Jones" not in result.content, needle
+
+
+@pytest.mark.asyncio
+async def test_list_and_get_ticket_mask_assignee_email_without_read_standing(
+    db_session, test_user
+):
+    """The helper's list_tickets and get_ticket show a person assignee's full
+    address only to callers with read standing; a captured-session-only
+    reader gets the masked form (the HTTP routes' rule)."""
+    owner = await _make_user(
+        db_session, email="owner@example.com", display_name="Owner", tier="team"
+    )
+    project = await _make_project(
+        db_session, owner=owner, remote="github.com/acme/assignee"
+    )
+    assignee = await _make_user(db_session, email="assignee@example.com")
+    assignee.display_name = None
+    await db_session.commit()
+    ticket = await _make_ticket(
+        db_session, project, title="assigned work", assigned_user_id=assignee.id
+    )
+
+    owner_ctx = _ctx(db_session, owner, audit=RecordingSink())
+    for tool, args in (
+        ("list_tickets", {"project_id": project.id}),
+        ("get_ticket", {"ticket_id": ticket.id}),
+    ):
+        result = await _run(owner_ctx, tool, args)
+        assert not result.is_error, (tool, result.content)
+        assert "assignee@example.com" in result.content, (tool, result.content)
+
+    stranger = await _make_user(db_session, email="reader@example.com")
+    await _make_session(
+        db_session, stranger, project_id=None, remote="github.com/acme/assignee"
+    )
+    assert await user_can_access_project(db_session, stranger.id, project) is True
+    assert await user_has_read_standing(db_session, stranger.id, project) is False
+
+    stranger_ctx = _ctx(db_session, stranger, audit=RecordingSink())
+    for tool, args in (
+        ("list_tickets", {"project_id": project.id}),
+        ("get_ticket", {"ticket_id": ticket.id}),
+    ):
+        result = await _run(stranger_ctx, tool, args)
+        assert not result.is_error, (tool, result.content)
+        assert "assigned work" in result.content, (tool, result.content)
+        assert "assignee@example.com" not in result.content, (tool, result.content)
+        assert mask_address("assignee@example.com") in result.content, (
+            tool,
+            result.content,
+        )
+
+
+@pytest.mark.asyncio
+async def test_wiki_citation_title_is_dlp_redacted(db_session, test_user):
+    """A wiki page title is stored and streamed in the citation event, so it
+    is redacted like ticket and meeting citation titles."""
+    secret = "AKIA" + "ABCDEFGHIJKLMNOP"
+    project = await _make_project(db_session, owner=test_user)
+    await _make_wiki_page(
+        db_session, project, slug="keys", title=f"Rotate {secret} soon"
+    )
+    citations, _ = await helper_routes._parse_wiki_citations(
+        db_session,
+        f"[wiki:{project.id}/keys]",
+        {(project.id, "keys")},
+        {project.id},
+        None,
+    )
+    assert len(citations) == 1
+    assert secret not in citations[0]["title"]
+    assert "[REDACTED" in citations[0]["title"]
+
+
+@pytest.mark.asyncio
+async def test_resolve_identity_folds_non_ascii_names_on_sqlite(db_session, test_user):
+    """Person matching folds non-ASCII letters on SQLite too: the engine
+    registers Python's Unicode ``str.lower`` as ``lower()``, so "ÄGENT ÖSTER"
+    and "ägent öster" find "Ägent Öster" exactly as PostgreSQL would."""
+    org = await _make_org(db_session)
+    await _add_member(db_session, org=org, user=test_user, role="admin")
+    person = await _make_user(
+        db_session, email="agent.oster@example.com", display_name="Ägent Öster"
+    )
+    await _add_member(db_session, org=org, user=person, role="member")
+    await _make_project(db_session, owner=test_user, org=org)
+
+    ctx = _ctx(db_session, test_user, audit=RecordingSink())
+    for query in ("ägent öster", "ÄGENT ÖSTER", "öster"):
+        result = await _run(ctx, "resolve_identity", {"name": query})
+        assert not result.is_error, query
+        assert "Ägent Öster" in result.content, query

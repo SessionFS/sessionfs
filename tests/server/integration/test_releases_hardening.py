@@ -211,10 +211,23 @@ async def test_link_release_tickets_skips_foreign_and_missing_tickets(
         release_id=rel["id"],
         ticket_ids=[mine.id, theirs.id, "tk_does_not_exist"],
     )
-    assert mine.id in linked
+    # Only the ticket actually stored is reported as linked.
+    assert linked == [mine.id]
     rows = (
         await db_session.execute(
             select(ReleaseTicket.ticket_id).where(ReleaseTicket.release_id == rel["id"])
         )
     ).scalars().all()
     assert rows == [mine.id]
+
+    # record_release reports the stored set too, and a later direct link
+    # returns every ticket the release already holds.
+    again = await releases.record_release(
+        db_session, project_id=project.id, version="1.0.0", tag_sha="a" * 40,
+        ticket_ids=[theirs.id],
+    )
+    assert again["ticket_ids"] == [mine.id]
+    second = await _make_ticket(db_session, project, owner)
+    assert await releases.link_release_tickets(
+        db_session, release_id=rel["id"], ticket_ids=[second.id]
+    ) == sorted([mine.id, second.id])

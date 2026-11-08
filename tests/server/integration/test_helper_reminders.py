@@ -252,6 +252,44 @@ async def test_list_my_reminders_reads_visible_only_and_respects_scope(
 
 
 @pytest.mark.asyncio
+async def test_list_my_reminders_scoped_resolves_scope_projects_once(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """A scoped list resolves the scope's project set once, not per row."""
+    import sessionfs.server.helper.tools as tools_mod
+
+    user, key = await _make_user(db_session)
+    project = await _make_project(db_session, user)
+    ticket = await _make_ticket(db_session, user, project)
+    for i in range(5):
+        resp = await client.post(
+            "/api/v1/me/reminders",
+            json={
+                "title": f"On the ticket {i}",
+                "due_at": _due(i + 1),
+                "source": {"kind": "ticket", "id": ticket.id},
+            },
+            headers=_hdrs(key),
+        )
+        assert resp.status_code == 201, resp.text
+
+    calls = 0
+    real = tools_mod.scope_project_ids
+
+    async def counting(db, user_id, scope):
+        nonlocal calls
+        calls += 1
+        return await real(db, user_id, scope)
+
+    monkeypatch.setattr(tools_mod, "scope_project_ids", counting)
+    out = await TOOLS["list_my_reminders"].handler(
+        _ctx(db_session, user, project_id=project.id), {}
+    )
+    assert all(f"On the ticket {i}" in out.text for i in range(5))
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_propose_accepts_chat_item_source(db_session: AsyncSession):
     from tests.server.integration.test_reminders_api import _chat, _meeting
 

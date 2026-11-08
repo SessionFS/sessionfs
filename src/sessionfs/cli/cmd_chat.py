@@ -5,7 +5,7 @@ Commands:
                          [--provider slack|discord|paste|teams_paste]
                          [--users users.json] [--attest] [--title T] [--extract]
 - sfs chat list | search | show | delete | extract | participants |
-  resolve-participant | action-items | promote | dismiss | restore
+  resolve-participant | action-items | promote | dismiss | restore | link | unlink
 
 Everything after upload is the matching `sfs meeting` command run against the
 same routes with ``?kind=chat``. Items cite message ranges (M<a>-<b>); message
@@ -334,3 +334,25 @@ def dismiss_chat_item(thread_id: str = typer.Argument(...), item_id: str = typer
 def restore_chat_item(thread_id: str = typer.Argument(...), item_id: str = typer.Argument(...)) -> None:
     """Bring a dismissed action item back to pending."""
     _m.item_action_impl(thread_id, item_id, "restore", kind=_KIND)
+
+
+@chat_app.command("link")
+@handle_errors
+def link_chat_item(
+    thread_id: str = typer.Argument(...),
+    item_id: str = typer.Argument(...),
+    ticket_id: str | None = typer.Argument(
+        None, help="Existing ticket id (tk_...). Omit to use the item's suggestion."
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Link without asking."),
+) -> None:
+    """Tie a pending action item to an EXISTING ticket. Shows the ticket and
+    the comment it will add, then asks to confirm."""
+    _m.link_impl(thread_id, item_id, ticket_id, yes=yes, kind=_KIND)
+
+
+@chat_app.command("unlink")
+@handle_errors
+def unlink_chat_item(thread_id: str = typer.Argument(...), item_id: str = typer.Argument(...)) -> None:
+    """Put a linked action item back to pending (the ticket comment stays)."""
+    _m.unlink_impl(thread_id, item_id, kind=_KIND)

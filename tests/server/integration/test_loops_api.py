@@ -1389,3 +1389,97 @@ async def test_needs_human_status_exposes_spent_tokens(
     assert child["tokens"] == 1000
     assert child["needs_human"] == "token budget hit (1,000 tokens spent)"
 
+
+
+@pytest.mark.asyncio
+async def test_status_masks_reviewer_for_captured_session_reader(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Loop reads blank each child's verdict.reviewer for a captured-session
+    reader, matching the readiness route; the owner still sees the id."""
+    from sessionfs.server.db.models import Session
+
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    resp = await _start_loop(
+        client, project, key, _loop_body([{"title": "clean"}], title="Masked loop")
+    )
+    assert resp.status_code == 201, resp.text
+    loop_id = resp.json()["loop_id"]
+    clean_id = resp.json()["tickets"][0]["id"]
+    reviewer, _ = await _make_user(db_session, name="reviewer")
+    await _make_run(db_session, project, ticket_id=clean_id, input_tokens=10)
+    await _seed_clean_verdict(db_session, clean_id, reviewer)
+    await _set_implementer(db_session, project, clean_id, owner)
+
+    captured, captured_key = await _make_user(db_session, name="captured")
+    now = datetime.now(timezone.utc)
+    db_session.add(
+        Session(
+            id=f"ses_{uuid.uuid4().hex[:16]}",
+            user_id=captured.id,
+            title="synced",
+            source_tool="claude-code",
+            blob_key=f"sessions/{captured.id}/x.tar.gz",
+            etag=uuid.uuid4().hex,
+            created_at=now,
+            updated_at=now,
+            uploaded_at=now,
+            project_id=project.id,
+        )
+    )
+    await db_session.commit()
+
+    url = f"/api/v1/projects/{project.id}/loops/{loop_id}"
+    owner_loop = (await client.get(url, headers=_hdrs(key))).json()
+    assert owner_loop["children"][0]["verdict"]["reviewer"] == reviewer.id
+
+    for path in (url, f"/api/v1/projects/{project.id}/loops"):
+        r = await client.get(path, headers=_hdrs(captured_key))
+        assert r.status_code == 200, (path, r.text)
+        assert reviewer.id not in r.text, path
+    child = (await client.get(url, headers=_hdrs(captured_key))).json()["children"][0]
+    assert child["ready"] is True
+    assert child["verdict"]["reviewer"] == ""
+
+
+@pytest.mark.asyncio
+async def test_start_brief_lists_active_checklist_items_with_check_text(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """Known traps in each child brief carry the item's stored check text,
+    in slug order; proposed and retired items are left out."""
+    from sessionfs.server.db.models import LoopChecklistItem
+
+    owner, key = await _make_user(db_session)
+    project = await _make_project(db_session, owner)
+    for slug, title, check, status in (
+        ("b-trap", "Second trap", "grep for the second", "active"),
+        ("a-trap", "First trap", "run the first check", "active"),
+        ("c-trap", "Proposed trap", "not yet", "proposed"),
+        ("d-trap", "Retired trap", "no longer", "retired"),
+    ):
+        db_session.add(
+            LoopChecklistItem(
+                id=f"lci_{uuid.uuid4().hex[:16]}",
+                project_id=project.id,
+                slug=slug,
+                title=title,
+                check_text=check,
+                status=status,
+            )
+        )
+    await db_session.commit()
+
+    resp = await _start_loop(
+        client, project, key, _loop_body([{"title": "child"}], title="Traps loop")
+    )
+    assert resp.status_code == 201, resp.text
+    brief = resp.json()["tickets"][0]["brief_markdown"]
+    assert (
+        "## Known traps\n"
+        "- **First trap** — run the first check\n"
+        "- **Second trap** — grep for the second"
+    ) in brief
+    assert "Proposed trap" not in brief
+    assert "Retired trap" not in brief

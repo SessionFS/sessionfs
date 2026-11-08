@@ -360,7 +360,7 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 **Upgrading to v0.24.0** runs migration 093 (ticket followers, notifications and per-persona cursors; additive). Also:
 
 - **Helm generated secrets now persist across upgrades.** Charts before 0.24.0 generated a new `verification-secret` and `encryption-key` on every `helm upgrade`, which broke stored LLM keys and GitLab/Jira tokens. From 0.24.0 the chart reuses the existing values. If stored keys stopped working after an earlier upgrade, re-enter them once. GitOps flows that render with `helm template` can't read the cluster: set both values explicitly or use `security.existingSecret`.
-- **Set `SFS_VERIFICATION_SECRET` to a real secret.** Stored LLM keys and integration tokens are encrypted with a key derived from it (existing values still decrypt). With an unset or placeholder value, routes that store or read encrypted secrets return `503 encryption_unavailable` outside development.
+- **Set `SFS_VERIFICATION_SECRET` to a real secret.** Stored LLM keys and integration tokens are encrypted with a key derived from it (existing values still decrypt). With an unset or placeholder value, routes that store or read encrypted secrets return `503 encryption_unavailable` outside development. Development means `SFS_ENVIRONMENT=development`, or `SFS_ENVIRONMENT` unset with a SQLite database (the default), so a production install on SQLite must set `SFS_ENVIRONMENT=production`.
 - **Schedule the ticket digest** if you want ticket emails; see [Scheduled sweeps](#scheduled-sweeps).
 
 **Upgrading to v0.25.0** runs migrations 094 (helper actions) and 095 (helper settings and the token-usage ledger); both are additive. Also:
@@ -389,11 +389,13 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 
 **Upgrading to v0.29.2** runs migrations 110 (review loop settings on the parent issue and service-key attribution on work queues), 111 (the `needs_human` work-queue item status) and 112 (the review checklist); all are additive. API keys gain the `loops:read` and `loops:write` scopes. No new settings are needed.
 
+**Upgrading to v0.29.11** runs migrations 125 (`work_queue_items.prior_implementer_service_key_ids`, so a resident rebound to a new key keeps its old key in the item's implementer identity), 126 (a partial unique index for one recorded run per review round; if an existing database already holds two runs for one round the index is skipped and the rows are printed for review, nothing is deleted), 127 (indexes for merge-check lookups and the delivery-event retention sweep) and 128 (suggested and linked tickets on meeting and chat action items, and the `linked` item status); all are additive, and a downgrade of 128 turns linked items back into pending ones. The chart's utility images are now pinned by digest (the tag is kept in a comment); air-gapped installs can point them at a mirror. The chart also gains the opt-in `api.attentionHides` CronJob. No new settings or scopes are needed.
+
 **Upgrading to v0.29.10** needs no migration. Agents (personas), tickets and agent runs are available on every plan; review loops, loop worker runs, workflow templates, releases, the merge check, loop share links and PR/release webhook ingest need a Team or Enterprise plan (the new `review_loop` feature).
 
 **Upgrading to v0.29.9** runs migration 124 (the `workflow_templates` and `workflow_step_children` tables and the `agent_runs.workflow_step_id` column behind [Workflow Templates](/workflows/)); it is additive, and a downgrade deletes every stored template and the link between workflow loops and their step tickets (the loops and tickets themselves stay). Workflows use the existing `loops:read` / `loops:write` scopes. No new settings are needed.
 
-**Upgrading to v0.29.8** runs migration 123 (the `attention_hides` table behind For You's Hide and Snooze); it is additive, and a downgrade only forgets which items people hid. API keys gain the `attention:read` scope for service keys that read their minter's For You feed. The dashboard home moves from the session list to [For You](/for-you/); the session list is at `/sessions`. To delete hides older than 90 days, call `POST /api/v1/admin/sweeps/attention-hides` daily with a `platform_sweeps:run` key; see [Scheduled sweeps](#scheduled-sweeps). No new settings are needed.
+**Upgrading to v0.29.8** runs migration 123 (the `attention_hides` table behind For You's Hide and Snooze); it is additive, and a downgrade only forgets which items people hid. API keys gain the `attention:read` scope for service keys that read their minter's For You feed. The dashboard home moves from the session list to [For You](/for-you/); the session list is at `/sessions`. To delete hides older than 90 days, call `POST /api/v1/admin/sweeps/attention-hides` daily with a `platform_sweeps:run` key (the Helm chart's opt-in `api.attentionHides` CronJob does this); see [Scheduled sweeps](#scheduled-sweeps). No new settings are needed.
 
 **Upgrading to v0.29.7** runs migration 122 (chat threads: the `kind`, `provider` and `channel_name` columns on meeting transcripts, the `chat_export` source, the `chat_extract` helper usage source and the `conversation_message_meta` table); it is additive and every existing row stays a meeting. No new settings or scopes are needed: chat threads use `meetings:read` / `meetings:write`, and the meeting retention sweep also removes chat threads. A downgrade deletes every chat thread with its items, participants and reminders.
 
@@ -679,7 +681,7 @@ Since v0.28.0 this is visible up front: minting or rotating such a key returns a
 | For You hides | `POST /api/v1/admin/sweeps/attention-hides` | Deletes For You hides and snoozes older than 90 days in bounded batches (`batch_size`, default 1000, max 5000); idempotent, run it daily (v0.29.8). See [For You](/for-you/) |
 | Confluence publish | `POST /api/v1/admin/sweeps/confluence-publish` | Republishes opted-in wiki pages and, where the mapping allows it, the context document; unchanged pages are skipped and pages edited in Confluence are never overwritten (v0.26.0). See [Confluence Cloud](/integrations/confluence/) |
 
-Suggested schedules: KB compile every 15 minutes, org digest, helper retention and meeting retention daily, ticket digest every 10 minutes, **Jira sync every minute** (its first retry is due one minute after a failed delivery; without the job a failed change never reaches Jira) and Confluence publish every 15 minutes. Every sweep is safe to run repeatedly and returns immediately when there is nothing to do.
+Suggested schedules: KB compile every 15 minutes, org digest, helper retention, meeting retention and For You hides daily, ticket digest every 10 minutes, **Jira sync every minute** (its first retry is due one minute after a failed delivery; without the job a failed change never reaches Jira) and Confluence publish every 15 minutes. Every sweep is safe to run repeatedly and returns immediately when there is nothing to do.
 
 Example CronJob for the KB compile sweep, every 15 minutes:
 
@@ -698,7 +700,7 @@ spec:
           restartPolicy: OnFailure
           containers:
             - name: sweep
-              image: curlimages/curl:latest
+              image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # 8.12.1
               args: ["-s", "-X", "POST", "https://your-api/api/v1/admin/sweeps/kb-compile",
                      "-H", "Authorization: Bearer $(SWEEP_KEY)",
                      "-H", "Content-Type: application/json", "-d", '{"limit": 100}']
@@ -756,6 +758,18 @@ api:
       schedule: "30 3 * * *"          # daily
       existingSecret: sessionfs-sweep-key
       secretKey: meeting-retention-api-key
+  remindersDue:
+    enabled: true
+    cronJob:
+      schedule: "*/5 * * * *"         # every 5 minutes
+      existingSecret: sessionfs-sweep-key
+      secretKey: reminders-due-api-key
+  attentionHides:
+    enabled: true
+    cronJob:
+      schedule: "45 3 * * *"          # daily
+      existingSecret: sessionfs-sweep-key
+      secretKey: attention-hides-api-key
 ```
 
 Each CronJob pod sends one authenticated request to the API sweep endpoint and exits; the work itself runs in the API pods. The key is read from the Secret into an environment variable and never printed, and the pods don't mount a Kubernetes service account token. When network policies are enabled, the chart adds an ingress rule so each enabled CronJob can reach the API, and an egress policy that lets the CronJob pods reach only DNS and the API, so the key can't be sent anywhere else.

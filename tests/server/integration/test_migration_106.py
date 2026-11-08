@@ -79,9 +79,9 @@ def pre_106_db(tmp_path: Path) -> Path:
         runs.constraints.discard(
             next(c for c in runs.constraints if getattr(c, "name", None) == name)
         )
-    runs.indexes.discard(
-        next(ix for ix in runs.indexes if getattr(ix, "name", None) == _INDEX_NAME)
-    )
+    # The parent index and 126's review-round index both postdate 105.
+    for ix in [ix for ix in runs.indexes if ix.name in (_INDEX_NAME, "uq_agent_run_review_round")]:
+        runs.indexes.discard(ix)
     for col in _NEW_COLUMNS:
         runs._columns.remove(runs.c[col])
     meta.create_all(engine)

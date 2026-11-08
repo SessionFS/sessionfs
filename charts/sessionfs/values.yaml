@@ -191,7 +191,17 @@ api:
       # platform admin (sfs admin service-keys create ... --scope skills_registry:poll).
       existingSecret: ""
       secretKey: "registry-poll-api-key"
-      image: curlimages/curl:8.12.1
+      # Every CronJob in this chart that calls a sweep or poll endpoint runs
+      # this curl image with a service key in its environment, so it is
+      # pinned by digest: a re-pushed tag can't swap the image. To upgrade,
+      # resolve the new tag's index digest (`crane digest
+      # curlimages/curl:<tag>`) and keep the tag in the comment. Air-gapped
+      # installs: mirror the image and set each cronJob.image to your
+      # registry's copy, ideally also by digest
+      # (registry.example.com/curlimages/curl@sha256:...). The egress policy
+      # that confines these pods to DNS and the API only renders when
+      # security.networkPolicies.enabled is true.
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3
   # Scheduled hard-delete of expired session-helper messages (see
@@ -208,7 +218,7 @@ api:
       # platform admin (sfs admin service-keys create ... --scope platform_sweeps:run).
       existingSecret: ""
       secretKey: "helper-retention-api-key"
-      image: curlimages/curl:8.12.1
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3
   # Scheduled platform sweeps (GitHub #115). Each is disabled by default and
@@ -223,7 +233,7 @@ api:
       schedule: "*/10 * * * *"
       existingSecret: ""
       secretKey: "ticket-notifications-api-key"
-      image: curlimages/curl:8.12.1
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3
   orgDigest:
@@ -233,7 +243,7 @@ api:
       schedule: "0 4 * * *"
       existingSecret: ""
       secretKey: "org-digest-api-key"
-      image: curlimages/curl:8.12.1
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3
   kbCompile:
@@ -243,7 +253,7 @@ api:
       schedule: "*/15 * * * *"
       existingSecret: ""
       secretKey: "kb-compile-api-key"
-      image: curlimages/curl:8.12.1
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3
   jiraSync:
@@ -256,7 +266,7 @@ api:
       body: '{"limit":100,"budget_seconds":50}'
       existingSecret: ""
       secretKey: "jira-sync-api-key"
-      image: curlimages/curl:8.12.1
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3
   confluencePublish:
@@ -266,7 +276,7 @@ api:
       schedule: "*/15 * * * *"
       existingSecret: ""
       secretKey: "confluence-publish-api-key"
-      image: curlimages/curl:8.12.1
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3
   meetingRetention:
@@ -276,7 +286,7 @@ api:
       schedule: "30 3 * * *"
       existingSecret: ""
       secretKey: "meeting-retention-api-key"
-      image: curlimages/curl:8.12.1
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3
   # Reminders due sweep: writes the bell/inbox notification for reminders
@@ -288,7 +298,19 @@ api:
       schedule: "*/5 * * * *"
       existingSecret: ""
       secretKey: "reminders-due-api-key"
-      image: curlimages/curl:8.12.1
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
+  # For You hides sweep: deletes hides and snoozes older than 90 days in
+  # bounded batches (run daily; idempotent).
+  attentionHides:
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "45 3 * * *"
+      existingSecret: ""
+      secretKey: "attention-hides-api-key"
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3
 

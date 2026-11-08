@@ -642,11 +642,13 @@ async def test_agent_run_transitions_on_others_runs_need_editor(
 async def test_no_access_and_missing_project_unchanged(client: AsyncClient, personal):
     pid = personal["project"].id
     sh = personal["stranger_h"]
+    # A stranger with no read standing gets the same 404 as a missing
+    # project, never the editor-only 403.
     resp = await client.put(f"/api/v1/projects/{pid}/settings", headers=sh, json={"auto_narrative": True})
-    assert resp.status_code == 403, resp.text
+    assert resp.status_code == 404, resp.text
     assert resp.json()["error"]["code"] != EDIT_CODE
     resp = await client.put(f"/api/v1/projects/{pid}/pages/x", headers=sh, json={"content": "x"})
-    assert resp.status_code == 403, resp.text
+    assert resp.status_code == 404, resp.text
     assert resp.json()["error"]["code"] != EDIT_CODE
 
     resp = await client.put(

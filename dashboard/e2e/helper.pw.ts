@@ -226,6 +226,12 @@ type Scenario = {
   preview?: boolean;
   /** Answer the first question, then refuse the follow-up with 429 helper_budget_exceeded. */
   budget?: boolean;
+  /** Switch the drawer to its Large size first (the toggle is hidden on phones). */
+  large?: boolean;
+  /** In the history, start renaming the first conversation and type a new title. */
+  rename?: boolean;
+  /** Also run at 1280 and 1920 (the Large panel's other reference widths). */
+  wide?: boolean;
 };
 
 const OK_STATUS = { enabled: true, key_source: 'user', provider: 'anthropic', model: 'claude-sonnet-4' };
@@ -245,6 +251,11 @@ const SCENARIOS: Scenario[] = [
   { name: 'helper-links', turn: 'answer', ask: 'Where is the webhook retry fix tracked?', links: true },
   { name: 'helper-usage-budget', turn: 'answer', ask: 'Why did the billing webhook retry twice?', budget: true, meRole: 'member', status: { ...OK_STATUS, key_source: 'org' } },
   { name: 'helper-ticket-preview', turn: 'answer', ask: 'Where is the webhook retry fix tracked?', links: true, preview: true },
+  { name: 'helper-large-empty', large: true, wide: true },
+  { name: 'helper-large-answer', turn: 'answer', ask: 'Why did the billing webhook retry twice?', large: true, wide: true },
+  { name: 'helper-large-streaming', turn: 'stream', ask: 'Why did the billing webhook retry twice?', large: true },
+  { name: 'helper-rename', openHistory: true, rename: true },
+  { name: 'helper-large-rename', openHistory: true, rename: true, large: true, wide: true },
 ];
 
 async function installHelperMocks(page: Page, sc: Scenario) {
@@ -260,6 +271,12 @@ async function installHelperMocks(page: Page, sc: Scenario) {
       if (p === '/api/v1/auth/me') return json(200, { ...me, org_role: sc.meRole ?? me.org_role });
       if (p === '/api/v1/helper/status') return json(200, status);
       if (p === '/api/v1/helper/conversations') return json(200, conversations);
+      if (p.startsWith('/api/v1/helper/conversations/') && route.request().method() === 'PATCH') {
+        const id = decodeURIComponent(p.split('/').pop()!);
+        const { title } = JSON.parse(route.request().postData() || '{}') as { title?: string };
+        const row = conversations.find((c) => c.id === id) ?? conversations[0];
+        return json(200, { ...row, title: title ?? row.title });
+      }
       if (p.startsWith('/api/v1/helper/conversations/')) {
         return json(200, {
           ...conversations[0],
@@ -394,13 +411,18 @@ const WIDTHS: Array<[number, number]> = [
   [834, 1112],
   [390, 844],
 ];
+const WIDE_WIDTHS: Array<[number, number]> = [
+  [1280, 800],
+  [1920, 1080],
+];
 
 for (const theme of THEMES) {
-  for (const [width, height] of WIDTHS) {
+  for (const [width, height] of [...WIDTHS, ...WIDE_WIDTHS]) {
+    const wideOnly = WIDE_WIDTHS.some(([w]) => w === width);
     test.describe(`helper ${theme} ${width}`, () => {
       test.use({ viewport: { width, height }, colorScheme: theme });
 
-      for (const sc of SCENARIOS) {
+      for (const sc of SCENARIOS.filter((x) => !wideOnly || x.wide)) {
         test(sc.name, async ({ page }) => {
           await mockApi(page);
           await installHelperMocks(page, sc);
@@ -436,10 +458,23 @@ for (const theme of THEMES) {
           await page.waitForTimeout(300);
           await openDrawer(page);
 
+          if (sc.large) {
+            const expand = page.getByRole('button', { name: 'Expand helper' });
+            if (await expand.isVisible()) {
+              await expand.click();
+              await page.waitForTimeout(300);
+            }
+          }
           if (sc.openHistory) {
             const historyBtn = page.getByRole('button', { name: /history|conversations/i }).first();
             if (await historyBtn.count()) await historyBtn.click();
             await page.waitForTimeout(250);
+          }
+          if (sc.rename) {
+            await page.getByRole('button', { name: /^Rename / }).first().click();
+            const box = page.getByRole('textbox', { name: /^Rename / });
+            await box.fill('Billing webhook retries: the follow-up from Tuesday');
+            await page.waitForTimeout(150);
           }
           if (sc.ask) {
             await ask(page, sc.ask);

@@ -715,8 +715,9 @@ async def load_project_for_user(
 ) -> Project:
     """Fetch a project enforcing the user-key access predicate.
 
-    Raises 404 if the project does not exist. Raises 403 if `user_id`
-    is supplied and `user_can_access_project` returns False. Passing
+    Raises 404 if the project does not exist, and the SAME 404 if `user_id`
+    is supplied and `user_can_access_project` returns False, so an
+    unreadable project is indistinguishable from a missing one. Passing
     `user_id=None` skips the access check — only legitimate when the
     caller has its own boundary (e.g. service-key paths that already
     ran `assert_service_key_can_access_project`).
@@ -731,7 +732,7 @@ async def load_project_for_user(
         return project
 
     if not await user_can_access_project(db, user_id, project):
-        raise HTTPException(403, "No access to this project")
+        raise HTTPException(404, "Project not found")
 
     return project
 

@@ -984,7 +984,7 @@ async def test_non_reader_confirm_fails_target(
     body = resp.json()
     assert body["status"] == "failed"
     assert body["result"]["targets"] == [
-        {"id": project.id, "ok": False, "error": "forbidden"}
+        {"id": project.id, "ok": False, "error": "not_found"}
     ]
     assert (await db_session.execute(select(Ticket))).scalars().all() == []
 

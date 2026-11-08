@@ -18,7 +18,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.project_access import (
@@ -30,8 +30,12 @@ from sessionfs.server.services.loops import load_loops
 from sessionfs.server.tier_gate import resolve_project_plan_tiers
 from sessionfs.server.tiers import Tier, get_features_for_tier
 
-# Cap the feed's item array; ``counts`` always reflects the full totals.
+# Cap the feed's item array; ``counts`` reflects the full totals within the
+# loop window below (``counts.truncated`` says when that window was full).
 _ITEM_LIMIT = 100
+# The newest loops considered per request. Readiness has to be computed per
+# child, so the loop set is bounded in SQL rather than loaded whole.
+_LOOP_LIMIT = 200
 
 # needs_human reasons from services.loops._build_child -> a card headline.
 _NEEDS_HUMAN_TITLES = (
@@ -60,12 +64,23 @@ def _sort_at(dt: datetime | None) -> datetime:
     return dt
 
 
-def _empty_counts() -> dict[str, int]:
-    return {"ready": 0, "needs_human": 0, "proposed_checklist": 0, "total": 0}
+def _empty_counts() -> dict[str, Any]:
+    return {
+        "ready": 0,
+        "needs_human": 0,
+        "proposed_checklist": 0,
+        "total": 0,
+        "truncated": False,
+    }
 
 
 async def needs_you(db: AsyncSession, *, user_id: str) -> dict[str, Any]:
-    """Return ``{"items": [...], "counts": {...}}`` for the caller's inbox."""
+    """Return ``{"items": [...], "counts": {...}}`` for the caller's inbox.
+
+    Bounded: at most ``_LOOP_LIMIT`` newest loops are evaluated and at most
+    ``_ITEM_LIMIT`` proposed checklist rows are loaded (their total is a SQL
+    count).
+    """
     projects = await list_accessible_projects(db, user_id)
     if not projects:
         return {"items": [], "counts": _empty_counts()}
@@ -103,11 +118,14 @@ async def needs_you(db: AsyncSession, *, user_id: str) -> dict[str, Any]:
                     Ticket.loop_config.isnot(None),
                 )
                 .order_by(Ticket.created_at.desc(), Ticket.id.desc())
+                .limit(_LOOP_LIMIT + 1)
             )
         )
         .scalars()
         .all()
     )
+    loops_truncated = len(loops) > _LOOP_LIMIT
+    loops = loops[:_LOOP_LIMIT]
     loop_project = {t.id: t.project_id for t in loops}
     loops_data = await load_loops(db, loop_tickets=loops, show_dollars=False)
 
@@ -165,18 +183,27 @@ async def needs_you(db: AsyncSession, *, user_id: str) -> dict[str, Any]:
                         )
                     )
 
-    # Proposed checklist items across all readable projects, newest first.
+    # Proposed checklist items across all readable projects, newest first:
+    # counted in SQL, and only the rows that can make the item cap loaded.
+    proposed_filter = (
+        LoopChecklistItem.project_id.in_(project_ids),
+        LoopChecklistItem.status == "proposed",
+    )
+    proposed_total = int(
+        await db.scalar(
+            select(func.count()).select_from(LoopChecklistItem).where(*proposed_filter)
+        )
+        or 0
+    )
     proposed = (
         (
             await db.execute(
                 select(LoopChecklistItem)
-                .where(
-                    LoopChecklistItem.project_id.in_(project_ids),
-                    LoopChecklistItem.status == "proposed",
-                )
+                .where(*proposed_filter)
                 .order_by(
                     LoopChecklistItem.created_at.desc(), LoopChecklistItem.id.desc()
                 )
+                .limit(_ITEM_LIMIT)
             )
         )
         .scalars()
@@ -206,9 +233,9 @@ async def needs_you(db: AsyncSession, *, user_id: str) -> dict[str, Any]:
             counts["ready"] += 1
         elif kind == "needs_human":
             counts["needs_human"] += 1
-        elif kind == "proposed_checklist":
-            counts["proposed_checklist"] += 1
+    counts["proposed_checklist"] = proposed_total
     counts["total"] = sum(counts[k] for k in ("ready", "needs_human", "proposed_checklist"))
+    counts["truncated"] = loops_truncated
 
     # Newest first; stable tie-break so pagination/cap is deterministic.
     items.sort(key=lambda pair: (pair[0], pair[1].get("ticket_id") or "", pair[1].get("checklist_item_id") or ""), reverse=True)

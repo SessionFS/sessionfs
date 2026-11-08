@@ -182,6 +182,35 @@ def _build_narrative_prompt(summary: SessionSummary, messages: list[dict]) -> st
     return "\n".join(parts)
 
 
+# A run of at least this many characters of the caller's key in an upstream
+# error body is treated as an echo of the key (providers often repeat a key
+# with its middle masked, e.g. "sk-abcdef12...wxyz"); four characters is what
+# SessionFS itself shows of a saved key.
+_KEY_FRAGMENT_CHARS = 8
+
+
+def scrub_key_echo(text: str, api_key: str | None) -> str:
+    """Remove the caller's key from upstream error text: the whole key, any
+    run of ``_KEY_FRAGMENT_CHARS`` or more of its characters, and anything
+    the built-in secret patterns recognise (another key the body quotes)."""
+    if not text:
+        return text
+    if api_key:
+        text = text.replace(api_key, "***")
+        if len(api_key) > _KEY_FRAGMENT_CHARS:
+            for i in range(len(api_key) - _KEY_FRAGMENT_CHARS + 1):
+                fragment = api_key[i : i + _KEY_FRAGMENT_CHARS]
+                if fragment in text:
+                    text = text.replace(fragment, "***")
+    try:
+        from sessionfs.server.helper.redaction import redact
+
+        text = redact(text, None)
+    except Exception:  # noqa: BLE001 - an unscannable body is not echoed
+        return "The LLM request failed."
+    return text
+
+
 def _narrative_error_snippet(exc: Exception, api_key: str) -> tuple[int | None, str]:
     """Extract a short, sanitized description of an upstream LLM failure.
 
@@ -226,8 +255,7 @@ def _narrative_error_snippet(exc: Exception, api_key: str) -> tuple[int | None, 
         elif isinstance(err, str) and err:
             text = err
 
-    if api_key:
-        text = text.replace(api_key, "***")
+    text = scrub_key_echo(text, api_key)
     text = "".join(ch if ch.isprintable() else " " for ch in text).strip() or "The LLM request failed."
     if len(text) > 300:
         text = text[:300] + "..."

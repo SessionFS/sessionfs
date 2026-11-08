@@ -33,7 +33,7 @@ Messages that carry no usable time keep their place in the export: they sort rig
 
 ## Extraction and promotion
 
-Extraction is the meeting extraction with a chat prompt: one LLM call with **your own** key (your key, else your org's; never a SessionFS key) returns participants, action items and decisions, each tied to a message range. Usage is recorded as `chat_extract` on every path, including cancellation, and counts against the org's helper budget. Promotion works exactly like a [meeting item](/meetings/#promote-to-a-ticket): a preview of the ticket draft quoting the cited messages, then an explicit confirm.
+Extraction is the meeting extraction with a chat prompt: one LLM call with **your own** key (your key, else your org's; never a SessionFS key) returns participants, action items and decisions, each tied to a message range. Usage is recorded as `chat_extract` on every path, including cancellation, and counts against the org's helper budget. Promotion works exactly like a [meeting item](/meetings/#promote-to-a-ticket): a preview of the ticket draft quoting the cited messages, then an explicit confirm. Items also suggest and link [existing tickets](/meetings/#existing-tickets-suggest-never-auto-link) the same way; a link's ticket comment reads `Raised again in chat thread "<title>" on <date>, messages M<a>–<b>: <item text>`.
 
 ## Reminders
 
@@ -51,13 +51,14 @@ sfs chat upload thread.txt --group pg_… --channel "#platform" --provider teams
 sfs chat list
 sfs chat show chat_…        # numbered messages M1, M2, …
 sfs chat promote chat_… mi_…
+sfs chat link chat_… mi_… tk_…   # tie to an existing ticket (asks first)
 ```
 
-Without `--provider` the CLI detects the format: Slack JSON, DiscordChatExporter JSON, otherwise a paste (which then needs `--attest`). A Slack file with no channel object, or a Discord file without guild channel details, needs `--attest` too. Files over 2 MiB are refused before anything is sent. `list`, `search`, `show`, `delete`, `extract`, `participants`, `resolve-participant`, `action-items`, `promote`, `dismiss` and `restore` are the [`sfs meeting`](/cli/#sfs-meeting) commands run against chat threads. See [`sfs chat`](/cli/#sfs-chat).
+Without `--provider` the CLI detects the format: Slack JSON, DiscordChatExporter JSON, otherwise a paste (which then needs `--attest`). A Slack file with no channel object, or a Discord file without guild channel details, needs `--attest` too. Files over 2 MiB are refused before anything is sent. `list`, `search`, `show`, `delete`, `extract`, `participants`, `resolve-participant`, `action-items`, `promote`, `link`, `unlink`, `dismiss` and `restore` are the [`sfs meeting`](/cli/#sfs-meeting) commands run against chat threads. See [`sfs chat`](/cli/#sfs-chat).
 
 ## MCP tools
 
-`upload_chat_thread` stores a thread (`provider`, `channel_name`, `content`, optional `attestation`, `users`, `title`, `extract`, and `git_remote` or `group_id`). Content over 2 MiB, and a paste, a Slack export with no channel object or a Discord export without guild channel details sent without `attestation: true`, are refused before the request. `create_reminder` accepts a `chat_item` source. The meeting tools then work on chat threads: `list_meeting_transcripts` and `search_meetings` take `kind` (`meeting` by default, `chat` or `all`), `get_meeting_transcript` and `extract_meeting_action_items` take an optional `kind` that must match the row, and `promote_meeting_action_item` takes `conversation_kind` (its `kind` is the ticket kind). See [MCP Server](/mcp/#meetings-and-chat).
+`upload_chat_thread` stores a thread (`provider`, `channel_name`, `content`, optional `attestation`, `users`, `title`, `extract`, and `git_remote` or `group_id`). Content over 2 MiB, and a paste, a Slack export with no channel object or a Discord export without guild channel details sent without `attestation: true`, are refused before the request. `create_reminder` accepts a `chat_item` source. The meeting tools then work on chat threads: `list_meeting_transcripts` and `search_meetings` take `kind` (`meeting` by default, `chat` or `all`), `get_meeting_transcript` and `extract_meeting_action_items` take an optional `kind` that must match the row, and `promote_meeting_action_item` and `link_meeting_action_item` take `conversation_kind` (promote's `kind` is the ticket kind). See [MCP Server](/mcp/#meetings-and-chat).
 
 ## Session helper
 

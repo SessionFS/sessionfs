@@ -396,7 +396,9 @@ async def resolve_assignee(
         pass
     if is_email or is_user_id:
         try:
-            user = await resolve_assigned_user_id(db, project=project, value=name)
+            user = await resolve_assigned_user_id(
+                db, project=project, value=name, assigner_user_id=user_id
+            )
         except HTTPException as exc:
             detail = exc.detail
             message = detail.get("message") if isinstance(detail, dict) else str(detail)
@@ -609,7 +611,14 @@ async def create_ticket_action(
     resolved_assigned_user: User | None = None
     if assigned_user_id:
         resolved_assigned_user = await resolve_assigned_user_id(
-            db, project=project, value=assigned_user_id
+            db,
+            project=project,
+            value=assigned_user_id,
+            assigner_user_id=(
+                None
+                if auth is not None and auth.key_kind == "service"
+                else user_id
+            ),
         )
 
     ticket = Ticket(

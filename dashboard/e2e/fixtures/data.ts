@@ -1993,13 +1993,34 @@ export const meetingDetail = {
   ],
   action_items: [
     { id: 'mai_f1', kind: 'action', description: 'Draft the rollout plan, including the feature-flag stages, rollback steps and who is on call for each stage.', owner_participant_id: 'mp_f2', due_date: '2026-10-31', line_start: 7, line_end: 9, status: 'pending', promoted_ticket_id: null, extracted_at: NOW, suggested_reminder: { title: 'Draft the rollout plan, including the feature-flag stages, rollback steps and who is on call for each stage.', due_date: '2026-10-31', due_at: '2026-10-31T09:00:00Z', lines: '7-9', owner_user_id: 'user_fixture02' } },
-    { id: 'mai_f2', kind: 'action', description: 'Update the status page copy to remove the old pricing tiers.', owner_participant_id: 'mp_f5', due_date: null, line_start: 10, line_end: 11, status: 'pending', promoted_ticket_id: null, extracted_at: NOW },
-    { id: 'mai_f3', kind: 'action', description: 'Review status page wording that mentions data handling.', owner_participant_id: 'mp_f4', due_date: null, line_start: 12, line_end: 12, status: 'pending', promoted_ticket_id: null, extracted_at: NOW },
+    // 0.29.11: an existing ticket this item looks like (Link / Not this one / Create new)…
+    { id: 'mai_f2', kind: 'action', description: 'Update the status page copy to remove the old pricing tiers.', owner_participant_id: 'mp_f5', due_date: null, line_start: 10, line_end: 11, status: 'pending', promoted_ticket_id: null, extracted_at: NOW, suggested_ticket: { id: 'tk_fixture8', project_id: PROJECT_ID, title: 'Remove the retired pricing tiers from the public status page', status: 'in_progress' }, suggestion_source: 'model', suggestion_score: 0.71 },
+    // …and one already linked to an existing ticket.
+    { id: 'mai_f3', kind: 'action', description: 'Review status page wording that mentions data handling.', owner_participant_id: 'mp_f4', due_date: null, line_start: 12, line_end: 12, status: 'linked', promoted_ticket_id: null, extracted_at: NOW, linked_ticket: { id: 'tk_fixture9', project_id: PROJECT_ID, title: 'Data-handling wording review', status: 'open' }, linked_at: NOW },
     { id: 'mai_f4', kind: 'action', description: 'Send the support team a briefing on the launch date.', owner_participant_id: 'mp_f3', due_date: '2026-11-03', line_start: 14, line_end: 15, status: 'promoted', promoted_ticket_id: 'tk_fixture2', extracted_at: NOW },
     { id: 'mai_f5', kind: 'action', description: 'Schedule a second load test.', owner_participant_id: null, due_date: null, line_start: 3, line_end: 3, status: 'dismissed', promoted_ticket_id: null, extracted_at: NOW },
     { id: 'mai_f6', kind: 'decision', description: 'Launch on November 10.', owner_participant_id: null, due_date: null, line_start: 2, line_end: 5, status: 'pending', promoted_ticket_id: null, extracted_at: NOW },
     { id: 'mai_f7', kind: 'decision', description: 'Keep the existing incident template; change only the pricing references.', owner_participant_id: null, due_date: null, line_start: 13, line_end: 13, status: 'pending', promoted_ticket_id: null, extracted_at: NOW },
   ],
+};
+
+/** The "Link to ticket…" picker (0.29.11). */
+export const linkableTickets = {
+  tickets: [
+    { id: 'tk_fixture8', project_id: PROJECT_ID, title: 'Remove the retired pricing tiers from the public status page', status: 'in_progress' },
+    { id: 'tk_fixture9', project_id: PROJECT_ID, title: 'Data-handling wording review', status: 'open' },
+    { id: 'tk_fixture2', project_id: PROJECT_ID, title: 'Add retry budget to the sync worker', status: 'open' },
+    { id: 'tk_fixture6', project_id: PROJECT_ID, title: 'Document the persona scope-lock protocol', status: 'done' },
+  ],
+};
+
+export const meetingLinkPreview = {
+  meeting_id: MEETING_ID,
+  item_id: 'mai_f1',
+  ticket: linkableTickets.tickets[2],
+  suggested: false,
+  comment:
+    'Raised again in meeting "Launch readiness — weekly sync" on 2026-10-27, lines L7–9: Draft the rollout plan, including the feature-flag stages, rollback steps and who is on call for each stage.',
 };
 
 export const groupMeetings = {

@@ -347,6 +347,37 @@ export function fyFeed(items: AttentionItem[] = fyItems, collab: CollabProject[]
   };
 }
 
+/** "Worth a second look" with `n` quiet tickets, in rank order (fy_long1 first). */
+export function fyLongSecondItems(n = 79): AttentionItem[] {
+  const topics = ['Retry budget for the sync worker', 'Pagination on the audit export', 'Locale fallback for dates', 'Rate limit headers on 429s', 'Cold start of the MCP server', 'Stale cache after a project merge', 'Webhook signature rotation', 'Empty state on the releases page'];
+  return Array.from({ length: n }, (_, i) => {
+    const days = 6 + (i % 23);
+    const id = `tk_${(0x5c8ef7 + i).toString(16)}73773fd43d${String(i).padStart(2, '0')}`;
+    return item({
+      item_key: `fy_long${i + 1}`, kind: 'ticket', group: 'second',
+      title: `${topics[i % topics.length]} (${i + 1})`,
+      why: `Assigned to you · no activity for ${days} days`,
+      occurred_at: iso(-days * 1440), source: { type: 'ticket', id },
+      actions: ['snooze', 'hide'],
+      context: {
+        source_label: 'Ticket', ref: id, project_name: 'Acme Widgets', quiet_days: days,
+        facts: [['Status', 'open'], ['Priority', i % 3 ? 'low' : 'medium']],
+        people: [{ name: 'You', role: 'assignee', agent: false, you: true }],
+        ticket: { id, project_id: FY_PROJECT, status: 'open' },
+      },
+    });
+  });
+}
+
+/** The default feed with a 79-item "Worth a second look" (the server sends at most `returned`). */
+export function fyLongFeed(n = 79, total = n): AttentionFeed {
+  const long = fyLongSecondItems(n);
+  const feed = fyFeed([...fyItems.filter((i) => i.group !== 'second'), ...long]);
+  feed.groups = { ...feed.groups, second: total };
+  feed.truncated = total > n;
+  return feed;
+}
+
 /** Nothing actionable: only coming-up, second-look and what-changed items. */
 export function fyCaughtUpFeed(): AttentionFeed {
   return fyFeed(fyItems.filter((i) => !['radar', 'waiting', 'asking'].includes(i.group)), []);

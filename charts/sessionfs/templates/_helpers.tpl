@@ -73,7 +73,7 @@ app.kubernetes.io/component: {{ $component }}
 
 {{/*
 Scheduled platform sweeps (GitHub #115). One entry per sweep drives both the
-shared sweep-cronjob template and the NetworkPolicy ingress rules so the five
+shared sweep-cronjob template and the NetworkPolicy ingress rules so the
 sweeps stay in lock-step. `key` names the api.<key> values section; `component`
 is the k8s component label; `path` is the admin sweep endpoint; `schedule` and
 `secretKey` are the cron defaults (override via api.<key>.cronJob).
@@ -121,6 +121,21 @@ is the k8s component label; `path` is the admin sweep endpoint; `schedule` and
   schedule: '*/5 * * * *'
   envVar: SFS_REMINDERS_DUE_API_KEY
   secretKey: reminders-due-api-key
+- key: attentionHides
+  component: attention-hides
+  path: /api/v1/admin/sweeps/attention-hides
+  schedule: '45 3 * * *'
+  envVar: SFS_ATTENTION_HIDES_API_KEY
+  secretKey: attention-hides-api-key
+{{- end }}
+
+{{/*
+Default image for the CronJobs that call a sweep or poll endpoint: curl, pinned
+by digest (curlimages/curl:8.12.1, multi-arch index) because the pod holds a
+service key. Keep in step with the cronJob.image defaults in values.yaml.
+*/}}
+{{- define "sessionfs.curlImage" -}}
+curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6
 {{- end }}
 
 {{/*

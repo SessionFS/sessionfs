@@ -1612,3 +1612,43 @@ async def test_coalesce_attributes_the_upgrading_actor():
         assert (row.actor_type, row.actor_user_id, row.service_key_name) == (
             "service", None, "resident-a",
         )
+
+
+@pytest.mark.asyncio
+async def test_ack_and_list_bound_their_numeric_inputs(
+    client: AsyncClient, db_session: AsyncSession
+):
+    """A cursor or before value outside BIGINT, a negative cursor, an
+    oversized persona or a huge ids list is a 422, never a 500."""
+    owner, owner_key = await _make_user(db_session)
+    for body in (
+        {"cursor": 2**63, "persona": "atlas"},
+        {"cursor": 10**30},
+        {"cursor": -1},
+        {"cursor": 1, "persona": "p" * 51},
+    ):
+        resp = await client.post(
+            "/api/v1/me/ticket-updates/ack", headers=_hdrs(owner_key), json=body
+        )
+        assert resp.status_code == 422, (body, resp.text)
+
+    resp = await client.post(
+        "/api/v1/me/ticket-updates/ack",
+        headers=_hdrs(owner_key),
+        json={"cursor": 2**63 - 1, "persona": "atlas"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    resp = await client.get(
+        "/api/v1/me/ticket-notifications",
+        headers=_hdrs(owner_key),
+        params={"before": str(10**30)},
+    )
+    assert resp.status_code == 422, resp.text
+
+    resp = await client.post(
+        "/api/v1/me/ticket-notifications/read",
+        headers=_hdrs(owner_key),
+        json={"ids": list(range(501))},
+    )
+    assert resp.status_code == 422, resp.text

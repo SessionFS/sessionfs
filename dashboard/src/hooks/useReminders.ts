@@ -65,15 +65,20 @@ export function useSourceReminders(
   kind: 'meeting' | 'ticket',
   projectId: string | undefined,
   sourceId: string | undefined,
+  groupId?: string,
 ) {
   const { auth } = useAuth();
+  // A group meeting is read through its group (tickets are project-only).
+  const group = kind === 'meeting' && !projectId ? groupId : undefined;
   return useQuery({
-    queryKey: [ROOT, 'source', kind, projectId, sourceId],
+    queryKey: [ROOT, 'source', kind, projectId ?? null, group ?? null, sourceId],
     queryFn: () =>
-      kind === 'meeting'
-        ? auth!.client.listMeetingReminders(projectId!, sourceId!)
-        : auth!.client.listTicketReminders(projectId!, sourceId!),
-    enabled: !!auth && !!projectId && !!sourceId,
+      group
+        ? auth!.client.listGroupMeetingReminders(group, sourceId!)
+        : kind === 'meeting'
+          ? auth!.client.listMeetingReminders(projectId!, sourceId!)
+          : auth!.client.listTicketReminders(projectId!, sourceId!),
+    enabled: !!auth && !!(projectId || group) && !!sourceId,
     staleTime: 15_000,
     retry: false,
   });

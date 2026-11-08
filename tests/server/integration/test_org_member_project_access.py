@@ -288,7 +288,7 @@ async def test_non_member_cross_org_denied(client, db_session: AsyncSession):
     resp = await client.get(
         f"/api/v1/projects/{project_in_b.id}/personas", headers=outsider_hdr
     )
-    assert resp.status_code == 403, resp.text
+    assert resp.status_code == 404, resp.text
 
 
 @pytest.mark.asyncio
@@ -296,7 +296,7 @@ async def test_personal_project_unchanged_no_session_no_access(
     client, db_session: AsyncSession
 ):
     """A project with org_id IS NULL keeps the legacy
-    owner-or-captured-session predicate. An unrelated user gets 403,
+    owner-or-captured-session predicate. An unrelated user gets 404,
     same as before — org-aware predicate adds access; it does not
     remove existing checks."""
     owner, _ = await _make_user(db_session)
@@ -306,7 +306,7 @@ async def test_personal_project_unchanged_no_session_no_access(
     resp = await client.get(
         f"/api/v1/projects/{project.id}/personas", headers=other_hdr
     )
-    assert resp.status_code == 403, resp.text
+    assert resp.status_code == 404, resp.text
 
 
 @pytest.mark.asyncio

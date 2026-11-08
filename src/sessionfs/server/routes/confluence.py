@@ -1321,6 +1321,22 @@ class _AdoptRejected(Exception):
     pass
 
 
+class _ParentInvalid(Exception):
+    """The mapping's parent page is not a page in the mapped space on the
+    connection's current site (e.g. the site changed)."""
+
+
+def _parent_invalid_detail() -> dict:
+    return {
+        "error": "confluence_parent_invalid",
+        "message": (
+            "The space mapping's parent page isn't a page in that space on the "
+            "connected Confluence site (the site may have changed). An org "
+            "admin must pick the parent page again in the mapping."
+        ),
+    }
+
+
 class _TitleConflict(Exception):
     def __init__(self, page_id: str) -> None:
         self.page_id = page_id
@@ -1417,8 +1433,13 @@ async def execute_publish(db: AsyncSession, req: PublishRequest) -> dict:
         dashboard_url=req.dashboard_url,
     )
     try:
-        storage = sections_to_storage(
-            req.sections, _backlink_resolver(backlinks), footer=footer
+        # CPU-bound and linear, but up to ~1 MB of Markdown: convert off the
+        # event loop so a large publish never stalls other requests.
+        storage = await asyncio.to_thread(
+            sections_to_storage,
+            req.sections,
+            _backlink_resolver(backlinks),
+            footer=footer,
         )
     except ContentTooLarge as exc:
         raise _content_too_large(exc.section) from exc
@@ -1457,6 +1478,11 @@ async def execute_publish(db: AsyncSession, req: PublishRequest) -> dict:
     async def locate() -> tuple[str, Any, str]:
         """Phase 1: read-only. Returns (step, page, space_id)."""
         space_id = mapping.space_id
+        # No cached space id: the mapping predates it, or the connection was
+        # re-pointed at another site (which clears it). Its parent_page_id
+        # was validated against the OLD site, so check it again here before
+        # anything is created under it.
+        recheck_parent = not space_id
         if not space_id:
             space_id = (await client.get_space(mapping.space_key)).id
         if action == "update":
@@ -1504,6 +1530,13 @@ async def execute_publish(db: AsyncSession, req: PublishRequest) -> dict:
                 if block is not None:
                     raise _AdoptRejected(block)
                 return "adopt", existing, space_id
+        if recheck_parent and parent_id == mapping.parent_page_id:
+            try:
+                parent = await client.get_page(parent_id)
+            except DocumentationNotFound as exc:
+                raise _ParentInvalid() from exc
+            if parent.space_id is None or parent.space_id != space_id:
+                raise _ParentInvalid()
         return "create", None, space_id
 
     async def apply(step: str, found: Any, space_id: str) -> tuple[str, Any]:
@@ -1594,6 +1627,22 @@ async def execute_publish(db: AsyncSession, req: PublishRequest) -> dict:
         )
         await db.commit()
         raise HTTPException(409, _title_conflict_detail(exc.page_id)) from exc
+    except _ParentInvalid as exc:
+        # Read-only so far: this publish created nothing. A fresh create
+        # fails the claim so the next publish starts clean once the mapping
+        # is fixed; an adopt keeps the row unknown (an earlier unconfirmed
+        # create may still surface) so the next publish adopts again.
+        failure = "The mapping's parent page is not in the mapped space on this site"
+        if action == "adopt":
+            await _fenced_mark_unknown(
+                db, link_id=link_id, claim_token=claim_token, failure=failure
+            )
+        else:
+            await _fenced_mark_failed(
+                db, link_id=link_id, claim_token=claim_token, failure=failure
+            )
+        await db.commit()
+        raise HTTPException(409, _parent_invalid_detail()) from exc
     except _AdoptRejected as exc:
         await _fenced_mark_unknown(db, link_id=link_id, claim_token=claim_token)
         await db.commit()

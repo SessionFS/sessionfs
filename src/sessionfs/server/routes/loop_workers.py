@@ -22,6 +22,7 @@ Design: docs/design/review-loop-r3.md §4, §5, §6.4, §6.5, §7.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
@@ -31,6 +32,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import AuthContext, require_scope
@@ -40,6 +42,7 @@ from sessionfs.server.sanitize import sanitize_archive_string
 from sessionfs.server.db.models import (
     AgentRun,
     Project,
+    RetrievalAuditContext,
     Ticket,
     TicketComment,
     WorkQueue,
@@ -78,6 +81,7 @@ from sessionfs.server.services.work_queues import (
 from sessionfs.server.tier_gate import UserContext, check_project_feature, get_user_context
 
 router = APIRouter(prefix="/api/v1/projects", tags=["loop-workers"])
+logger = logging.getLogger("sessionfs.api")
 
 _COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
 _SHORT_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
@@ -292,6 +296,13 @@ def _clean_text(limit: int):
 # ── 1. start-worker ──
 
 
+def _same_start_credential(run: AgentRun, auth: AuthContext, user_id: str) -> bool:
+    """True when ``run`` was started by exactly this credential."""
+    if auth.key_kind == "service":
+        return bool(auth.service_key_id) and run.service_key_id == auth.service_key_id
+    return run.service_key_id is None and run.triggered_by_user_id == user_id
+
+
 class StartWorker(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -338,6 +349,7 @@ async def start_worker_run(
     """
     project = await _editor_project(project_id, db, auth)
     _require_scopes(auth, ("tickets:write", "agent_runs:write"))
+    caller_id = auth.user.id
     ticket = (
         await db.execute(
             select(Ticket).where(
@@ -384,6 +396,57 @@ async def start_worker_run(
                 + (" and the item is parked." if parked else ".")
             )
 
+    carried_contexts: list[RetrievalAuditContext] = []
+    if ticket.status == "in_progress":
+        # A client retry of the same start must not open a second run for
+        # one lease: the credential's still-running run is returned as is.
+        latest = (
+            await db.execute(
+                select(AgentRun)
+                .where(
+                    AgentRun.project_id == project_id,
+                    AgentRun.ticket_id == ticket.id,
+                    AgentRun.role.in_(("implementer", "ui-implementer")),
+                )
+                .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if (
+            latest is not None
+            and latest.status in ("queued", "running")
+            and latest.workflow_step_id == step_id
+            and _same_start_credential(latest, auth, caller_id)
+        ):
+            view_r: dict[str, Any] | None = None
+            if parent is not None:
+                view_r = _budget_view(await budget_status(db, ticket), dollars=dollars)
+            out = {
+                "run_id": latest.id,
+                "lease_epoch": ticket.lease_epoch,
+                "ticket_id": ticket.id,
+                "loop_id": parent.id if parent is not None else None,
+                "step_id": step_id,
+                "budget": view_r,
+                "idempotent": True,
+            }
+            await db.rollback()
+            return out
+        # Taking over a held lease bumps the epoch, which would drop the
+        # previous holder's start context from the implementer identities.
+        # Carry it to the new lease so they stay an implementer.
+        carried_contexts = list(
+            (
+                await db.execute(
+                    select(RetrievalAuditContext).where(
+                        RetrievalAuditContext.project_id == project_id,
+                        RetrievalAuditContext.ticket_id == ticket.id,
+                        RetrievalAuditContext.lease_epoch == ticket.lease_epoch,
+                    )
+                )
+            ).scalars().all()
+        )
+
     try:
         await start_ticket(
             db,
@@ -395,6 +458,24 @@ async def start_worker_run(
         )
     except TransitionRefused as exc:
         raise HTTPException(exc.status_code, str(exc))
+    seen_holders: set[tuple[str | None, str | None]] = set()
+    for old in carried_contexts:
+        holder = (old.created_by_user_id, old.service_key_id)
+        if holder in seen_holders:
+            continue
+        seen_holders.add(holder)
+        db.add(
+            RetrievalAuditContext(
+                id=f"ra_{uuid.uuid4().hex[:24]}",
+                project_id=project_id,
+                ticket_id=ticket.id,
+                persona_name=old.persona_name,
+                lease_epoch=ticket.lease_epoch,
+                created_by_user_id=old.created_by_user_id,
+                actor_type=old.actor_type,
+                service_key_id=old.service_key_id,
+            )
+        )
 
     # A loop-level run (e.g. the design review) is the natural parent; the
     # previous implementer run on this ticket is what this one continues.
@@ -463,6 +544,7 @@ async def start_worker_run(
         "loop_id": parent.id if parent is not None else None,
         "step_id": step_id,
         "budget": view,
+        "idempotent": False,
     }
 
 
@@ -548,6 +630,41 @@ async def _finish_view(
     return out
 
 
+_MAX_KEY_CHAIN = 50
+
+
+async def _may_finish_run(
+    db: AsyncSession, auth: AuthContext, run: AgentRun, project: Project
+) -> bool:
+    """A worker run is finished by the credential that started it.
+
+    A service key may finish runs started by itself or by a key it was
+    rotated from; a person may finish runs they started with their own
+    (user) key. A project admin may finish any run. Everyone else, including
+    other editors and other keys of the same org, is refused.
+    """
+    if auth.key_kind == "service":
+        if not run.service_key_id or not auth.service_key_id:
+            return False
+        from sessionfs.server.db.models import ApiKey
+
+        current: str | None = auth.service_key_id
+        seen: set[str] = set()
+        while current and current not in seen and len(seen) <= _MAX_KEY_CHAIN:
+            if current == run.service_key_id:
+                return True
+            seen.add(current)
+            current = await db.scalar(
+                select(ApiKey.rotated_from_key_id).where(ApiKey.id == current)
+            )
+        return False
+    if run.service_key_id is None and run.triggered_by_user_id == auth.user.id:
+        return True
+    from sessionfs.server.auth.project_access import user_is_project_admin
+
+    return await user_is_project_admin(db, auth.user.id, project)
+
+
 @router.post("/{project_id}/agent-runs/{run_id}/finish")
 async def finish_worker_run(
     project_id: str,
@@ -577,6 +694,17 @@ async def finish_worker_run(
     if run is None:
         raise _nf()
     await check_project_feature(ctx, "review_loop", project, db)
+    if not await _may_finish_run(db, auth, run, project):
+        raise HTTPException(
+            403,
+            {
+                "error": "worker_run_not_yours",
+                "message": (
+                    "Only the credential that started this run (or a project "
+                    "admin) can finish it."
+                ),
+            },
+        )
     dollars = await _show_dollars(db, auth, project)
 
     ticket = await db.get(Ticket, run.ticket_id) if run.ticket_id else None
@@ -873,6 +1001,123 @@ async def _reviewer_is_independent(
     return True
 
 
+async def _existing_round(
+    db: AsyncSession,
+    *,
+    project_id: str,
+    ticket_id: str,
+    role: str,
+    round_no: int,
+    step_id: str | None,
+) -> AgentRun | None:
+    """The recorded run for (ticket, role, round, workflow step), if any."""
+    return (
+        await db.execute(
+            select(AgentRun).where(
+                AgentRun.project_id == project_id,
+                AgentRun.ticket_id == ticket_id,
+                AgentRun.role == role,
+                AgentRun.review_round == round_no,
+                # Each workflow step keeps its own rounds: a second reviewer
+                # step's round 1 is not the first reviewer's round 1.
+                (
+                    AgentRun.workflow_step_id == step_id
+                    if step_id is not None
+                    else AgentRun.workflow_step_id.is_(None)
+                ),
+            )
+        )
+    ).scalars().first()
+
+
+def _check_round_owner(run: AgentRun, auth: AuthContext, user_id: str) -> None:
+    """A round replays only for the credential that recorded it.
+
+    Anyone else asking for a taken round number gets 409 instead of the
+    other reviewer's stored round, so an untrusted caller can't squat a
+    round and have a trusted reviewer's retry silently report success.
+    """
+    if auth.key_kind == "service":
+        same = bool(auth.service_key_id) and run.service_key_id == auth.service_key_id
+    else:
+        same = run.service_key_id is None and run.triggered_by_user_id == user_id
+    if not same:
+        raise HTTPException(
+            409,
+            {
+                "error": "review_round_taken",
+                "message": (
+                    "This round number was already recorded by another "
+                    "reviewer; record the next round."
+                ),
+            },
+        )
+
+
+async def _record_failed_round_usage(
+    db: AsyncSession,
+    auth: AuthContext,
+    *,
+    body: "ReviewRound",
+    project_id: str,
+    ticket: Ticket,
+    role: str,
+    queue: WorkQueue,
+    item: WorkQueueItem | None,
+    step_id: str | None,
+    persona: str | None,
+    now: datetime,
+    usage_vals: dict[str, Any],
+    reason: str,
+    user_id: str,
+) -> None:
+    """Keep a refused round's token usage on an errored run.
+
+    The run takes no round number and carries no verdict or findings, so it
+    never counts as a round; it only makes the spend visible to the budget.
+    Nothing is written when the round reported no usage.
+    """
+    if not any(v for k, v in usage_vals.items() if k != "cost_basis"):
+        return
+    db.add(
+        AgentRun(
+            id=f"run_{uuid.uuid4().hex[:16]}",
+            project_id=project_id,
+            persona_name=(persona or "reviewer")[:50],
+            tool="generic",
+            trigger_source="manual",
+            status="errored",
+            ticket_id=ticket.id,
+            triggered_by_user_id=user_id,
+            actor_type=auth.actor_type,
+            service_key_id=auth.service_key_id,
+            service_key_name=auth.service_key_name,
+            created_at=now,
+            started_at=now,
+            completed_at=now,
+            duration_seconds=0,
+            occurred_at=now,
+            severity="none",
+            findings="[]",
+            findings_count=0,
+            policy_result="fail",
+            exit_code=1,
+            result_summary=_sanitize_text(
+                f"Review round {body.round} refused: {reason}"
+            )[:_MAX_SUMMARY],
+            model=body.model,
+            provider=body.provider,
+            role=role,
+            head_sha=body.reviewed_commit,
+            work_queue_id=queue.id,
+            work_queue_item_id=item.id if item is not None else None,
+            workflow_step_id=step_id,
+            **usage_vals,
+        )
+    )
+    await db.commit()
+
+
 @router.post("/{project_id}/loops/{loop_id}/rounds", status_code=201)
 async def record_review_round(
     project_id: str,
@@ -893,6 +1138,7 @@ async def record_review_round(
     """
     project = await _editor_project(project_id, db, auth)
     _require_scopes(auth, ("tickets:write", "agent_runs:write", "work_queues:write"))
+    caller_id = auth.user.id
     try:
         loop = await _load_loop_for_editor(db, project_id, loop_id)
     except HTTPException:
@@ -955,24 +1201,12 @@ async def record_review_round(
         )
 
     role = "design-reviewer" if body.stage == "design" else "reviewer"
-    existing = (
-        await db.execute(
-            select(AgentRun).where(
-                AgentRun.project_id == project_id,
-                AgentRun.ticket_id == ticket.id,
-                AgentRun.role == role,
-                AgentRun.review_round == body.round,
-                # Each workflow step keeps its own rounds: a second reviewer
-                # step's round 1 is not the first reviewer's round 1.
-                (
-                    AgentRun.workflow_step_id == body.step_id
-                    if body.step_id is not None
-                    else AgentRun.workflow_step_id.is_(None)
-                ),
-            )
-        )
-    ).scalars().first()
+    existing = await _existing_round(
+        db, project_id=project_id, ticket_id=ticket.id, role=role,
+        round_no=body.round, step_id=body.step_id,
+    )
     if existing is not None:
+        _check_round_owner(existing, auth, caller_id)
         out = await _round_view(db, existing, ticket, idempotent=True, dollars=dollars)
         await db.rollback()
         return out
@@ -988,16 +1222,60 @@ async def record_review_round(
         from sessionfs.server.services import workflows as wf
 
         round_persona = wf.step_agent(config, step)
+    elif role == "reviewer":
+        # An untagged code round counts for any reviewer step pinned to the
+        # queue persona, so it must wait for those steps' dependencies too.
+        from sessionfs.server.services import workflows as wf
+
+        try:
+            await wf.check_untagged_round(
+                db, loop=loop, loop_config=config, ticket=ticket, persona=round_persona
+            )
+        except wf.WorkflowStepMismatch as exc:
+            raise _step_mismatch(exc.message)
+
+    usage_vals: dict[str, Any] = {}
+    if body.usage is not None:
+        u = body.usage
+        if u.cost_usd is not None and u.cost_usd > _MAX_COST_USD:
+            raise HTTPException(422, f"cost_usd must be at most {_MAX_COST_USD}")
+        usage_vals = {
+            "input_tokens": u.input_tokens,
+            "output_tokens": u.output_tokens,
+            "cache_read_tokens": u.cache_read_tokens,
+            "cache_write_tokens": u.cache_write_tokens,
+            "cost_usd": Decimal(str(u.cost_usd)) if u.cost_usd is not None else None,
+            "cost_basis": u.cost_basis
+            or ("reported" if u.cost_usd is not None else None),
+        }
+
+    async def _refuse(exc: HTTPException, reason: str) -> HTTPException:
+        # The review already ran and spent tokens: keep them on an errored
+        # run (no round number, no verdict) so the budget still sees them.
+        await _record_failed_round_usage(
+            db, auth, body=body, project_id=project_id, ticket=ticket,
+            role=role, queue=queue, item=item, step_id=step_id,
+            persona=round_persona, now=now, usage_vals=usage_vals,
+            reason=reason, user_id=caller_id,
+        )
+        return exc
 
     if item is not None:
         if item.item_status == "needs_human":
-            raise _needs_human("This loop item is parked for a human.")
+            raise await _refuse(
+                _needs_human("This loop item is parked for a human."),
+                "the loop item is parked for a human",
+            )
         # A later workflow review step still reviews an item an earlier
         # step's clean already closed; it never reopens or re-closes it.
         closed_ok = step_id is not None and item.item_status == "done"
         if item.item_status in ("done", "failed") and not closed_ok:
-            raise HTTPException(
-                409, {"error": "loop_item_closed", "message": "This loop item is closed."}
+            raise await _refuse(
+                HTTPException(
+                    409,
+                    {"error": "loop_item_closed", "message": "This loop item is closed."},
+                ),
+                "the loop item is closed",
             )
 
     findings: list[dict[str, Any]] = []
@@ -1025,7 +1303,7 @@ async def record_review_round(
     # Verdict through the shared work-queue helper — trust from the credential.
     text = _verdict_text(body, findings, ticket.id)
     try:
-        comment, _jira_ids = await post_server_verdict(
+        comment, jira_ids = await post_server_verdict(
             db,
             queue=queue,
             ticket_id=ticket.id,
@@ -1040,22 +1318,8 @@ async def record_review_round(
             reviewer_persona=round_persona,
         )
     except StepEngineError as exc:
-        raise HTTPException(exc.http_status, exc.message)
+        raise await _refuse(HTTPException(exc.http_status, exc.message), exc.message)
 
-    usage_vals: dict[str, Any] = {}
-    if body.usage is not None:
-        u = body.usage
-        if u.cost_usd is not None and u.cost_usd > _MAX_COST_USD:
-            raise HTTPException(422, f"cost_usd must be at most {_MAX_COST_USD}")
-        usage_vals = {
-            "input_tokens": u.input_tokens,
-            "output_tokens": u.output_tokens,
-            "cache_read_tokens": u.cache_read_tokens,
-            "cache_write_tokens": u.cache_write_tokens,
-            "cost_usd": Decimal(str(u.cost_usd)) if u.cost_usd is not None else None,
-            "cost_basis": u.cost_basis
-            or ("reported" if u.cost_usd is not None else None),
-        }
     top = max((_SEV_ORDER.get(str(f["severity"]), 0) for f in findings), default=0)
     severity = next(k for k, v in _SEV_ORDER.items() if v == top)
     run = AgentRun(
@@ -1092,7 +1356,24 @@ async def record_review_round(
         **usage_vals,
     )
     db.add(run)
-    await db.flush()
+    ticket_pk = ticket.id
+    try:
+        await db.flush()
+    except IntegrityError:
+        # Lost a race for this round number (the unique index is the
+        # backstop on SQLite, which has no row lock): undo the verdict and
+        # answer exactly as the idempotency check would have.
+        await db.rollback()
+        existing = await _existing_round(
+            db, project_id=project_id, ticket_id=ticket_pk, role=role,
+            round_no=body.round, step_id=body.step_id,
+        )
+        if existing is None:
+            raise
+        _check_round_owner(existing, auth, caller_id)
+        ticket = await db.get(Ticket, ticket_pk, populate_existing=True)
+        assert ticket is not None
+        return await _round_view(db, existing, ticket, idempotent=True, dollars=dollars)
 
     # Item bookkeeping for code rounds: close on a trusted strict clean from
     # an identity other than the implementer; otherwise enforce the caps.
@@ -1148,8 +1429,13 @@ async def record_review_round(
                 )
 
     run_id = run.id
-    ticket_pk = ticket.id
     await db.commit()
+    if jira_ids:
+        # A forwarded trusted verdict: deliver its Jira outbox row now (the
+        # sweep retries it if this task is lost).
+        from sessionfs.server.services import jira_sync
+
+        jira_sync.schedule_drain(jira_ids)
 
     # Checklist proposals (class="new") strictly after the round is durable;
     # a failure never fails the round.
@@ -1167,6 +1453,9 @@ async def record_review_round(
             created_service_key_name=auth.service_key_name,
         )
     except Exception:
+        logger.exception(
+            "Checklist proposals from review round %s on %s failed", run_id, ticket_pk
+        )
         await db.rollback()
 
     # Re-evaluate the ticket's merge check on a detached task so a slow or

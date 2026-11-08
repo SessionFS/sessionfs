@@ -49,7 +49,7 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -124,10 +124,14 @@ def _clean_slug(v: str) -> str:
 # ── Request / response models ──
 
 
+# Group descriptions are short free text shown on group cards and summaries.
+GROUP_DESCRIPTION_MAX = 2000
+
+
 class GroupCreateRequest(BaseModel):
     name: str
     slug: str | None = None
-    description: str | None = None
+    description: str | None = Field(None, max_length=GROUP_DESCRIPTION_MAX)
 
     @field_validator("name")
     @classmethod
@@ -148,7 +152,7 @@ class GroupUpdateRequest(BaseModel):
 
     name: str | None = None
     slug: str | None = None
-    description: str | None = None
+    description: str | None = Field(None, max_length=GROUP_DESCRIPTION_MAX)
     compile_enabled: bool | None = None
 
     @field_validator("name")
@@ -472,35 +476,42 @@ async def project_group_summaries(
 ) -> list[ProjectGroupSummary]:
     """The live groups ``project`` belongs to — shown only to a caller who is
     a member of the project's org (empty otherwise, and for a personal
-    project). Shared by ``GET /projects/{id}`` and
-    ``GET /projects/{id}/groups``."""
+    project), and, like the org's group list, every such group for an org
+    admin/owner but only the groups the caller holds a grant on for any other
+    member. Shared by ``GET /projects/{id}`` and ``GET /projects/{id}/groups``."""
     if project.org_id is None:
         return []
-    is_member = (
+    org_role = (
         await db.execute(
-            select(OrgMember.id).where(
+            select(OrgMember.role).where(
                 OrgMember.org_id == project.org_id, OrgMember.user_id == user_id
             )
         )
-    ).first()
-    if is_member is None:
+    ).scalar_one_or_none()
+    if org_role is None:
         return []
+    stmt = (
+        select(ProjectGroup)
+        .join(
+            ProjectGroupAccess,
+            ProjectGroupAccess.group_id == ProjectGroup.id,
+        )
+        .where(
+            ProjectGroupAccess.project_id == project.id,
+            ProjectGroup.org_id == project.org_id,
+            ProjectGroup.deleted_at.is_(None),
+        )
+    )
+    if org_role not in ADMIN_ROLES:
+        stmt = stmt.join(
+            ProjectGroupMember,
+            and_(
+                ProjectGroupMember.group_id == ProjectGroup.id,
+                ProjectGroupMember.user_id == user_id,
+            ),
+        )
     groups = list(
-        (
-            await db.execute(
-                select(ProjectGroup)
-                .join(
-                    ProjectGroupAccess,
-                    ProjectGroupAccess.group_id == ProjectGroup.id,
-                )
-                .where(
-                    ProjectGroupAccess.project_id == project.id,
-                    ProjectGroup.org_id == project.org_id,
-                    ProjectGroup.deleted_at.is_(None),
-                )
-                .order_by(ProjectGroup.created_at.asc())
-            )
-        ).scalars().all()
+        (await db.execute(stmt.order_by(ProjectGroup.created_at.asc()))).scalars().all()
     )
     return await _summaries(db, groups, user_id)
 
@@ -826,7 +837,16 @@ async def revoke_member(
     db: AsyncSession = Depends(get_db),
 ) -> ProjectGroupDetail:
     """Revoke a member's grant. Group admin only. Works without the plan
-    feature so admins can clean up after a downgrade."""
+    feature so admins can clean up after a downgrade.
+
+    Takes the grantee's user scope lock and the org scope lock (the order
+    grant and member removal use) and re-reads the caller's standing under
+    them, so a concurrent change to the caller's own role or grant is seen
+    before anything is written."""
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    org, org_role = await _org_for_member(db, user, org_id)
+    await lock_scopes(db, user_ids=[user_id], org_ids=[org_id])
     org, org_role = await _org_for_member(db, user, org_id)
     group, my_role = await _visible_group_or_404(db, user, org_id, group_id, org_role)
     _require_group_admin(my_role)
@@ -986,7 +1006,15 @@ async def remove_project_from_group(
     db: AsyncSession = Depends(get_db),
 ) -> ProjectGroupDetail:
     """Remove a project from a group. Group admin only. Works without the
-    plan feature so admins can clean up after a downgrade."""
+    plan feature so admins can clean up after a downgrade.
+
+    Locks the project, then the org (the order add-project uses) and
+    re-reads the caller's standing under them."""
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    org, org_role = await _org_for_member(db, user, org_id)
+    await lock_scopes(db, project_ids=[project_id])
+    await lock_scopes(db, org_ids=[org_id])
     org, org_role = await _org_for_member(db, user, org_id)
     group, my_role = await _visible_group_or_404(db, user, org_id, group_id, org_role)
     _require_group_admin(my_role)

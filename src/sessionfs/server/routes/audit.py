@@ -281,8 +281,10 @@ async def run_audit(
                 _audit_results[session_id] = asdict(report)
                 logger.info("Background audit completed for %s", session_id)
             except Exception as exc:
-                logger.error("Background audit failed for %s: %s", session_id, exc)
-                _audit_results[session_id] = {"error": str(exc)}
+                logger.error(
+                    "Background audit failed for %s: %s", session_id, type(exc).__name__
+                )
+                _audit_results[session_id] = {"error": _audit_failure_text(exc, llm_api_key)}
             finally:
                 _audit_jobs.pop(session_id, None)
 
@@ -334,7 +336,9 @@ async def run_audit(
             content={
                 "error": "llm_request_failed",
                 "message": f"Judge LLM returned {exc.response.status_code}",
-                "detail": exc.response.text[:500],
+                # The provider's own error message, with the caller's key (or
+                # any fragment of it) and recognised secrets removed.
+                "detail": _audit_failure_text(exc, llm_api_key),
             },
         )
     except httpx.TimeoutException:
@@ -343,6 +347,18 @@ async def run_audit(
             content={
                 "error": "llm_timeout",
                 "message": "Judge LLM timed out after 120s. Try a smaller session or faster model.",
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - every LLM call failed some other way
+        # Transport errors and unreadable answers: one generic 502, never the
+        # exception text (with a custom endpoint it would tell a refused
+        # connection from a TLS failure, a reachability probe).
+        logger.warning("Audit failed for %s: %s", session_id, type(exc).__name__)
+        return JSONResponse(
+            status_code=502,
+            content={
+                "error": "llm_request_failed",
+                "message": _audit_failure_text(exc, llm_api_key),
             },
         )
 
@@ -359,6 +375,18 @@ async def run_audit(
     await _store_audit_report(db, report, user.id, provider or "", base_url or "")
 
     return _report_to_response(report)
+
+
+def _audit_failure_text(exc: Exception, api_key: str | None) -> str:
+    """What an audit failure may tell the caller: our own "no claims" message
+    as is, otherwise the sanitized provider message the narrative path uses
+    (key and secrets scrubbed, at most 300 characters, transport errors
+    reduced to a fixed sentence)."""
+    if type(exc) is ValueError:
+        return str(exc)
+    from sessionfs.server.services.summarizer import _narrative_error_snippet
+
+    return _narrative_error_snippet(exc, api_key or "")[1]
 
 
 async def _run_judge_pipeline(
