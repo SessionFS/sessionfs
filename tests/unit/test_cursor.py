@@ -16,6 +16,45 @@ from sessionfs.converters.cursor_to_sfs import (
 )
 
 
+def test_safe_read_db_uses_a_private_copy_removed_on_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The copy is made with mkstemp (never the race-prone mktemp name) and
+    the copy plus its WAL/SHM siblings go away when the connection closes."""
+    import tempfile
+
+    from sessionfs.converters import cursor_to_sfs
+
+    src = tmp_path / "state.vscdb"
+    conn = sqlite3.connect(str(src))
+    conn.execute("CREATE TABLE t (v TEXT)")
+    conn.execute("INSERT INTO t VALUES ('x')")
+    conn.commit()
+    conn.close()
+    (tmp_path / "state.vscdb-wal").write_bytes(b"")
+
+    copies = tmp_path / "copies"
+    copies.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(copies))
+
+    def _no_mktemp(*a, **kw):
+        raise AssertionError("mktemp must not be used")
+
+    monkeypatch.setattr(tempfile, "mktemp", _no_mktemp)
+
+    copy = cursor_to_sfs._safe_read_db(src)
+    assert copy.execute("SELECT v FROM t").fetchone()["v"] == "x"
+    assert any(copies.iterdir())
+    copy.close()
+    assert list(copies.iterdir()) == []
+    assert src.exists()
+
+    # A failed copy leaves nothing behind either.
+    with pytest.raises(OSError):
+        cursor_to_sfs._safe_read_db(tmp_path / "missing.vscdb")
+    assert list(copies.iterdir()) == []
+
+
 @pytest.fixture
 def cursor_global_db(tmp_path: Path) -> Path:
     """Create a fake Cursor global state.vscdb with test data."""

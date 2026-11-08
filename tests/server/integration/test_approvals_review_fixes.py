@@ -31,6 +31,8 @@ from sessionfs.server.db.models import (
 )
 from sessionfs.server.services import approvals as svc
 from tests.server.integration.approvals_helpers import (
+    trigger_merge_check,
+    raised_readiness,
     HEAD,
     add_member,
     hdrs,
@@ -56,6 +58,7 @@ def _now() -> datetime:
 
 
 async def _readiness(client: AsyncClient, w, key: str, sha: str = HEAD) -> dict:
+    await trigger_merge_check(client, w)  # the write path raises requests
     resp = await client.get(
         f"/api/v1/projects/{w.project.id}/tickets/{w.ticket.id}/readiness",
         headers=hdrs(key), params={"sha": sha},
@@ -205,7 +208,7 @@ async def test_service_key_titles_need_read_scopes(
     await seed_implementer(db_session, other_project, other_ticket, user_id=w.implementer.id)
     await seed_clean(db_session, other_ticket, w.reviewer, HEAD)
     await make_policy(db_session, other)
-    await svc.ticket_readiness(db_session, other_ticket, HEAD)
+    await raised_readiness(db_session, other_ticket, HEAD)
     await db_session.commit()
     user_view = (await client.get("/api/v1/me/approvals", headers=hdrs(w.admin_key))).json()
     assert {r["org_id"] for r in user_view["requests"]} == {w.org.id, other.id}
@@ -428,7 +431,7 @@ async def test_gitlab_status_reposted_after_policy_and_approval(
     # Approval: the per-ticket recheck (what schedule_recheck runs) re-posts
     # success to GitLab.
     async with factory() as s:
-        rid = (await svc.ticket_readiness(s, await s.get(Ticket, w.ticket.id), HEAD))[
+        rid = (await raised_readiness(s, await s.get(Ticket, w.ticket.id), HEAD))[
             "approvals"][0]["request_id"]
         await s.commit()
     resp = await client.post(
@@ -451,7 +454,7 @@ async def _pending_requests(db: AsyncSession, w, n: int) -> list[ApprovalRequest
         t = await make_ticket(db, w.project, w.implementer)
         await seed_implementer(db, w.project, t, user_id=w.implementer.id)
         await seed_clean(db, t, w.reviewer, HEAD)
-        r = await svc.ticket_readiness(db, t, HEAD)
+        r = await raised_readiness(db, t, HEAD)
         await db.commit()
         reqs.append(await db.get(ApprovalRequest, r["approvals"][0]["request_id"]))
     return reqs
@@ -602,13 +605,13 @@ async def test_rejected_kb_request_reraised_on_explicit_promote(
 async def test_expired_merge_request_reraised(db_session: AsyncSession):
     w = await make_world(db_session)
     await make_policy(db_session, w.org)
-    r = await svc.ticket_readiness(db_session, w.ticket, HEAD)
+    r = await raised_readiness(db_session, w.ticket, HEAD)
     await db_session.commit()
     rid = r["approvals"][0]["request_id"]
     req = await db_session.get(ApprovalRequest, rid)
     req.expires_at = _now() - timedelta(minutes=1)
     await db_session.commit()
-    r = await svc.ticket_readiness(db_session, w.ticket, HEAD)
+    r = await raised_readiness(db_session, w.ticket, HEAD)
     await db_session.commit()
     (appr,) = r["approvals"]
     assert appr["state"] == "pending" and appr["request_id"] != rid
@@ -620,7 +623,7 @@ async def test_expired_merge_request_reraised(db_session: AsyncSession):
 async def test_superseded_reason_is_accurate(db_session: AsyncSession):
     w = await make_world(db_session)
     policy = await make_policy(db_session, w.org)
-    r = await svc.ticket_readiness(db_session, w.ticket, HEAD)
+    r = await raised_readiness(db_session, w.ticket, HEAD)
     await db_session.commit()
     rid = r["approvals"][0]["request_id"]
     req = await db_session.get(ApprovalRequest, rid)
@@ -648,7 +651,7 @@ async def test_superseded_reason_is_accurate(db_session: AsyncSession):
 async def test_decide_404_when_project_left_the_org(db_session: AsyncSession):
     w = await make_world(db_session)
     await make_policy(db_session, w.org)
-    rid = (await svc.ticket_readiness(db_session, w.ticket, HEAD))["approvals"][0]["request_id"]
+    rid = (await raised_readiness(db_session, w.ticket, HEAD))["approvals"][0]["request_id"]
     await db_session.commit()
     other = await make_org(db_session)
     await db_session.execute(
@@ -668,7 +671,7 @@ async def test_decide_404_when_approver_lost_read_access(db_session: AsyncSessio
     w = await make_world(db_session)
     await make_policy(db_session, w.org, requirements=[
         {"who": "users", "user_ids": [w.reviewer.id], "count": 1}])
-    rid = (await svc.ticket_readiness(db_session, w.ticket, HEAD))["approvals"][0]["request_id"]
+    rid = (await raised_readiness(db_session, w.ticket, HEAD))["approvals"][0]["request_id"]
     await db_session.commit()
     # Restricted visibility: a plain member without a group grant can't read.
     org = await db_session.get(Organization, w.org.id)
@@ -705,7 +708,7 @@ async def test_readiness_reasons_generic_for_non_members(
         assert "Needs approval (0 of 1)" in resp.json()["reasons"]
 
     # The shared function the GitHub check and GitLab status use is generic.
-    plain = await svc.ticket_readiness(db_session, w.ticket, HEAD)
+    plain = await raised_readiness(db_session, w.ticket, HEAD)
     assert "Secret auth rewrite" not in json.dumps(plain)
     from sessionfs.server.services.merge_checks import _check_run_summary
 

@@ -471,3 +471,68 @@ async def test_needs_you_count_is_cached_briefly(
     monkeypatch.setattr(route, "_COUNT_TTL", 0.0)
     fresh = await client.get("/api/v1/me/loops/needs-you/count", headers=_hdrs(key))
     assert fresh.json() == {"count": 2} and calls["n"] == 1
+
+
+@pytest.mark.asyncio
+async def test_needs_you_follows_the_loop_routes_feature_rule(
+    db_session: AsyncSession, monkeypatch
+):
+    """tk_5d2a48eed3ab4446 #3: the inbox uses check_project_feature's rule —
+    the project's plan, or a per-feature review_loop grandfather plus the
+    caller's plan — through the shared project_ids_with_feature helper."""
+    from types import SimpleNamespace
+
+    from fastapi import HTTPException
+
+    from sessionfs.server.db.models import ProjectFeatureGrandfather
+    from sessionfs.server.services import loop_needs_you as svc
+    from sessionfs.server.tier_gate import check_project_feature, project_ids_with_feature
+    from sessionfs.server.tiers import Tier
+
+    owner, _ = await _make_user(db_session, tier="free")
+    project = await _make_project(db_session, owner)  # free plan
+    _parent, children = await _make_parent(
+        db_session, project, owner, {"reviewer_persona": "reviewer"}, n=1
+    )
+    await _seed_ready_child(db_session, project, owner, children[0])
+
+    async def _route_allows(tier: Tier) -> bool:
+        try:
+            await check_project_feature(
+                SimpleNamespace(effective_tier=tier), "review_loop", project, db_session
+            )
+        except HTTPException:
+            return False
+        return True
+
+    async def _inbox_shows() -> bool:
+        body = await needs_you(db_session, user_id=owner.id)
+        return any(i.get("project_id") == project.id for i in body["items"])
+
+    # Free plan, no grandfather: neither the routes nor the inbox.
+    assert not await _route_allows(Tier.TEAM)
+    assert not await _inbox_shows()
+
+    # An agent_tickets grandfather does not carry over to review_loop.
+    db_session.add(ProjectFeatureGrandfather(project_id=project.id, feature="agent_tickets"))
+    await db_session.commit()
+    assert not await _route_allows(Tier.TEAM)
+    assert await project_ids_with_feature(
+        [project], "review_loop", db_session, caller_tier=Tier.TEAM
+    ) == set()
+
+    # A review_loop grandfather: allowed only with a caller plan that has it.
+    db_session.add(ProjectFeatureGrandfather(project_id=project.id, feature="review_loop"))
+    await db_session.commit()
+    assert not await _route_allows(Tier.FREE)
+    assert not await _inbox_shows()  # the caller is on free
+
+    async def _team(user, db, **kw):
+        return Tier.TEAM
+
+    monkeypatch.setattr(svc, "get_effective_tier", _team)
+    assert await _route_allows(Tier.TEAM)
+    assert await _inbox_shows()
+    assert await project_ids_with_feature(
+        [project], "review_loop", db_session, caller_tier=None
+    ) == set()

@@ -843,3 +843,108 @@ def test_shortlist_ranks_and_caps() -> None:
 
 # Silence an unused-import warning for Organization (kept for readability).
 _ = Organization
+
+
+# ═══ Unlink locks + readability, dismiss scope (Shield-SR v0.29.11 LOWs) ═══
+
+
+async def test_unlink_takes_link_locks_and_rechecks_under_them(
+    client: AsyncClient, db_session: AsyncSession, test_user: User, monkeypatch
+) -> None:
+    from sessionfs.server.services import scope_locks
+
+    _, project, headers = await _setup(db_session, test_user)
+    ticket = await _ticket(db_session, project, "A ticket")
+    meeting = await _meeting(db_session, project=project, content=TRANSCRIPT)
+    item = await _item(db_session, meeting.id)
+    assert (await _link(client, meeting, item, headers, ticket.id)).status_code == 200
+
+    order: list[str] = []
+    real_scope = scope_locks.lock_project_scope
+    real_meeting = actions_mod._lock_meeting_live
+
+    async def _scope(db, proj, **kw):
+        order.append(f"project:{proj.id}")
+        return await real_scope(db, proj, **kw)
+
+    async def _racing_meeting(db, meeting_id):
+        order.append("meeting")
+        locked = await real_meeting(db, meeting_id)
+        # Someone else unlinked while we waited for the locks.
+        await db.execute(
+            update(MeetingActionItem)
+            .where(MeetingActionItem.id == item.id)
+            .values(status="pending", linked_ticket_id=None)
+        )
+        return locked
+
+    monkeypatch.setattr(scope_locks, "lock_project_scope", _scope)
+    monkeypatch.setattr(actions_mod, "_lock_meeting_live", _racing_meeting)
+    resp = await client.post(_url(meeting, item, "unlink"), headers=headers)
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"]["code"] == "item_not_linked"
+    assert order == [f"project:{project.id}", "meeting"]
+    # The refusal rolled back the racing write too; no unlink event recorded.
+    assert (await db_session.execute(
+        select(TicketEvent).where(TicketEvent.action == "conversation_unlinked")
+    )).scalars().all() == []
+
+
+async def test_unlink_skips_event_on_a_ticket_the_caller_cannot_read(
+    client: AsyncClient, db_session: AsyncSession, test_user: User
+) -> None:
+    org, project, headers = await _setup(db_session, test_user)
+    ticket = await _ticket(db_session, project, "A ticket")
+    meeting = await _meeting(db_session, project=project, content=TRANSCRIPT)
+    item = await _item(db_session, meeting.id)
+    assert (await _link(client, meeting, item, headers, ticket.id)).status_code == 200
+
+    # The ticket moves to a project in another org the caller can't read.
+    stranger = await _user(db_session, "Stranger")
+    other_org = await _org(db_session)
+    await _member(db_session, other_org, stranger, role="owner")
+    hidden = await _project(db_session, stranger, org=other_org)
+    ticket.project_id = hidden.id
+    await db_session.commit()
+
+    resp = await client.post(_url(meeting, item, "unlink"), headers=headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "pending"
+    await db_session.refresh(item)
+    assert (item.status, item.linked_ticket_id) == ("pending", None)
+    assert (await db_session.execute(
+        select(TicketEvent).where(
+            TicketEvent.ticket_id == ticket.id,
+            TicketEvent.action == "conversation_unlinked",
+        )
+    )).scalars().all() == []
+
+
+async def test_dismiss_suggestion_needs_ticket_scope_for_service_keys(
+    client: AsyncClient, db_session: AsyncSession, test_user: User
+) -> None:
+    org, project, _ = await _setup(db_session, test_user)
+    ticket = await _ticket(db_session, project, "A ticket")
+    meeting = await _meeting(db_session, project=project, content=TRANSCRIPT)
+    item = await _item(db_session, meeting.id)
+    item.suggested_ticket_id = ticket.id
+    item.suggestion_source = "model"
+    await db_session.commit()
+
+    meetings_only = await _service_key(
+        db_session, owner=test_user, org_id=org.id, scopes=["meetings:write"]
+    )
+    denied = await client.post(
+        _url(meeting, item, "dismiss-suggestion"), headers=meetings_only
+    )
+    assert denied.status_code == 403
+    assert denied.json()["error"]["details"]["required"] == ["tickets:write"]
+    await db_session.refresh(item)
+    assert item.suggestion_dismissed_at is None
+
+    both = await _service_key(
+        db_session, owner=test_user, org_id=org.id, scopes=["meetings:write", "tickets:write"]
+    )
+    ok = await client.post(_url(meeting, item, "dismiss-suggestion"), headers=both)
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["suggested_ticket"] is None

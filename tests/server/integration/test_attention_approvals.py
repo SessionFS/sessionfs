@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.services import approvals as asvc
 from tests.server.integration.approvals_helpers import (
+    raised_readiness,
     HEAD,
     hdrs,
     make_policy,
@@ -22,7 +23,7 @@ pytestmark = pytest.mark.asyncio
 
 async def _raise(db: AsyncSession, w, **kw) -> str:
     await make_policy(db, w.org, **kw)
-    r = await asvc.ticket_readiness(db, w.ticket, HEAD)
+    r = await raised_readiness(db, w.ticket, HEAD)
     await db.commit()
     return r["approvals"][0]["request_id"]
 

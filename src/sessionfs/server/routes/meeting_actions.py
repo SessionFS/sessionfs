@@ -1141,52 +1141,88 @@ async def unlink_meeting_item(
     db: AsyncSession = Depends(get_db),
 ):
     """Back to pending. The ticket's "raised again" comment stays (comments
-    are append-only); the ticket's timeline records the unlink."""
+    are append-only); the ticket's timeline records the unlink when the
+    caller can still read that ticket.
+
+    Takes the same locks as link (the linked ticket's project scope, the
+    group row for a group conversation, then the meeting FOR UPDATE) and
+    re-checks the meeting, the caller's standing and the item under them.
+    """
     meeting, item = await _load_item_for_link(db, meeting_id, item_id, kind, auth)
-    previous = item.linked_ticket_id
-    result = await db.execute(
-        update(MeetingActionItem)
-        .where(
-            MeetingActionItem.id == item_id,
-            MeetingActionItem.transcript_id == meeting_id,
-            MeetingActionItem.status == "linked",
+    try:
+        from sessionfs.server.services.scope_locks import lock_project_scope
+
+        linked = await db.get(Ticket, item.linked_ticket_id) if item.linked_ticket_id else None
+        project = (
+            await db.get(Project, linked.project_id) if linked is not None else None
         )
-        .values(
-            status="pending", linked_ticket_id=None, linked_at=None, linked_by_user_id=None
-        )
-    )
-    if result.rowcount != 1:
-        raise HTTPException(
-            409,
-            {"code": "item_not_linked", "message": "This action item is not linked."},
-        )
-    if previous:
-        ticket = await db.get(Ticket, previous)
-        if ticket is not None:
-            await record_ticket_event(
-                db,
-                ticket,
-                "conversation_unlinked",
-                before=_conversation_ref(meeting, item),
-                **_event_actor(auth),
+        if project is not None:
+            # A merged project must not block the unlink itself.
+            await lock_project_scope(db, project, require_live=False)
+        if meeting.group_id is not None:
+            await db.execute(
+                select(ProjectGroup)
+                .where(ProjectGroup.id == meeting.group_id)
+                .with_for_update()
             )
-        await db.execute(
-            update(Reminder)
+        meeting = await _lock_meeting_live(db, meeting_id)
+        await _meeting_scope(db, meeting, auth, write=True)
+        item = await _get_action_item(db, meeting_id, item_id)
+        await db.refresh(item)
+        previous = item.linked_ticket_id
+
+        result = await db.execute(
+            update(MeetingActionItem)
             .where(
-                Reminder.source_kind.in_(("meeting_item", "chat_item")),
-                Reminder.source_id == item_id,
-                Reminder.linked_ticket_id == previous,
+                MeetingActionItem.id == item_id,
+                MeetingActionItem.transcript_id == meeting_id,
+                MeetingActionItem.status == "linked",
             )
-            .values(linked_ticket_id=None)
-            .execution_options(synchronize_session=False)
+            .values(
+                status="pending",
+                linked_ticket_id=None,
+                linked_at=None,
+                linked_by_user_id=None,
+            )
         )
-    await _audit(
-        db,
-        meeting,
-        auth,
-        "meeting_action_unlinked",
-        {"meeting_id": meeting.id, "action_item_id": item.id, "ticket_id": previous},
-    )
+        if result.rowcount != 1:
+            raise HTTPException(
+                409,
+                {"code": "item_not_linked", "message": "This action item is not linked."},
+            )
+        if previous:
+            # Only a ticket the caller can still read (in this conversation's
+            # scope and readable) gets the timeline event; the unlink itself
+            # goes through either way.
+            ticket = (await visible_tickets(db, meeting, auth, {previous})).get(previous)
+            if ticket is not None:
+                await record_ticket_event(
+                    db,
+                    ticket,
+                    "conversation_unlinked",
+                    before=_conversation_ref(meeting, item),
+                    **_event_actor(auth),
+                )
+            await db.execute(
+                update(Reminder)
+                .where(
+                    Reminder.source_kind.in_(("meeting_item", "chat_item")),
+                    Reminder.source_id == item_id,
+                    Reminder.linked_ticket_id == previous,
+                )
+                .values(linked_ticket_id=None)
+                .execution_options(synchronize_session=False)
+            )
+        await _audit(
+            db,
+            meeting,
+            auth,
+            "meeting_action_unlinked",
+            {"meeting_id": meeting.id, "action_item_id": item.id, "ticket_id": previous},
+        )
+    except HTTPException:
+        await db.rollback()
+        raise
     await db.commit()
     await db.refresh(item)
     return await _item_out(db, meeting, auth, item)
@@ -1209,6 +1245,9 @@ async def dismiss_item_suggestion(
     if meeting.deleted_at is not None:
         raise HTTPException(404, "Meeting not found")
     await _meeting_scope(db, meeting, auth, write=True)
+    # Suggestions point at tickets: the same ticket scope as link, preview
+    # and the linkable-tickets picker.
+    _require_ticket_scope(auth)
     item = await _get_action_item(db, meeting_id, item_id)
     result = await db.execute(
         update(MeetingActionItem)

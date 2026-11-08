@@ -175,8 +175,8 @@ async def _fold_approvals(
 ) -> None:
     """Approval policies (GitHub #123) on top of the pure readiness: a child is
     ready only when every matching blocking request for its head is approved.
-    Requests are raised only once the child is otherwise ready; the calling
-    route commits them. Adds ``warnings`` and ``approvals``. ``project`` and
+    A pure read: requests are raised on write/trigger paths
+    (``approvals.raise_ticket_approvals``), never here. Adds ``warnings`` and ``approvals``. ``project`` and
     ``policies`` (the org's active merge policies) are loaded once per call
     of ``load_loops``, so a policy-free org costs no query per child."""
     from sessionfs.server.services.approvals import evaluate_approvals
@@ -187,7 +187,7 @@ async def _fold_approvals(
         out["approvals"] = []
         return
     approvals = await evaluate_approvals(
-        db, child, head, create=bool(out["ready"]), comments=comments,
+        db, child, head, create=False, comments=comments,
         show_names=show_names, project=project, policies=policies,
     )
     if approvals["blocking_pending"]:

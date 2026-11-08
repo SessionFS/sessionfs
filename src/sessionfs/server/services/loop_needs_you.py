@@ -25,10 +25,9 @@ from sessionfs.server.auth.project_access import (
     editable_project_ids_subquery,
     list_accessible_projects,
 )
-from sessionfs.server.db.models import LoopChecklistItem, Ticket
+from sessionfs.server.db.models import LoopChecklistItem, Ticket, User
 from sessionfs.server.services.loops import load_loops
-from sessionfs.server.tier_gate import resolve_project_plan_tiers
-from sessionfs.server.tiers import Tier, get_features_for_tier
+from sessionfs.server.tier_gate import get_effective_tier, project_ids_with_feature
 
 # Cap the feed's item array; ``counts`` reflects the full totals within the
 # loop window below (``counts.truncated`` says when that window was full).
@@ -85,14 +84,16 @@ async def needs_you(db: AsyncSession, *, user_id: str) -> dict[str, Any]:
     if not projects:
         return {"items": [], "counts": _empty_counts()}
 
-    # Only projects whose plan includes review_loop (Team+) contribute;
-    # one batched plan resolution, never a per-project query loop.
-    tiers = await resolve_project_plan_tiers(list(projects), db)
-    projects = [
-        p
-        for p in projects
-        if "review_loop" in get_features_for_tier(tiers.get(p.id, Tier.FREE))
-    ]
+    # Only projects where review_loop is available contribute, with the same
+    # rule the loop routes enforce (check_project_feature: the project's
+    # plan, or a per-feature grandfather plus the caller's plan); batched,
+    # never a per-project query loop.
+    user = await db.get(User, user_id)
+    caller_tier = await get_effective_tier(user, db) if user is not None else None
+    allowed = await project_ids_with_feature(
+        list(projects), "review_loop", db, caller_tier=caller_tier
+    )
+    projects = [p for p in projects if p.id in allowed]
     if not projects:
         return {"items": [], "counts": _empty_counts()}
 

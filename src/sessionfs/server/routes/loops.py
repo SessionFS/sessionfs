@@ -691,7 +691,6 @@ async def list_loops(
         db, loop_tickets=list(loops), show_dollars=await _show_dollars(db, auth, project),
         show_policy_names=await _show_policy_names(db, auth, project),
     )
-    await db.commit()  # keep approval requests raised for ready children
     return await _mask_reviewers(db, auth, project, result)
 
 
@@ -721,7 +720,6 @@ async def get_loop(
         db, loop_tickets=[loop], show_dollars=await _show_dollars(db, auth, project),
         show_policy_names=await _show_policy_names(db, auth, project),
     )
-    await db.commit()  # keep approval requests raised for ready children
     return (await _mask_reviewers(db, auth, project, results))[0]
 
 
@@ -796,7 +794,6 @@ async def update_loop(
         db, loop_tickets=[loop], show_dollars=await _show_dollars(db, auth, project),
         show_policy_names=await _show_policy_names(db, auth, project),
     )
-    await db.commit()  # keep approval requests raised for ready children
     return (await _mask_reviewers(db, auth, project, results))[0]
 
 

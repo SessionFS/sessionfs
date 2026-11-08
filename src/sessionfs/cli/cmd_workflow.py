@@ -140,7 +140,10 @@ def _strict_yaml_load(text: str) -> Any:
             finally:
                 self._depth -= 1
 
-    return yaml.load(text, Loader=_StrictLoader)  # noqa: S506 - SafeLoader subclass
+    # _StrictLoader subclasses yaml.SafeLoader (no python/* tags, no object
+    # construction) and refuses even more; bandit can't see through the
+    # subclass, so B506 is a false positive here.
+    return yaml.load(text, Loader=_StrictLoader)  # noqa: S506  # nosec B506
 
 
 def _check_json_nesting(text: str) -> None:

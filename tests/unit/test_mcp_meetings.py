@@ -591,3 +591,24 @@ async def test_link_unlink_and_validation(http):
     )
     assert "422" in err["error"]
     assert not any(c["url"] == f"{_ITEM}/link" for c in http["calls"])
+
+
+@pytest.mark.asyncio
+async def test_link_confirm_requires_the_previewed_ticket_id(http):
+    tool = next(t for t in mcp_server._TOOLS if t.name == "link_meeting_action_item")
+    assert "REQUIRES ticket_id" in tool.description
+    # confirm without ticket_id: refused locally, no request at all.
+    res = await mcp_server._handle_link_meeting_action_item(
+        {"meeting_id": "meet_1", "item_id": "mi_1", "confirm": True}
+    )
+    assert "error" in res and "ticket_id" in res["error"]
+    assert http["calls"] == []
+
+    # The preview resolves to a different ticket than the one named: no link.
+    http["responses"][("POST", f"{_ITEM}/link/preview")] = (200, _PREVIEW)
+    res = await mcp_server._handle_link_meeting_action_item(
+        {"meeting_id": "meet_1", "item_id": "mi_1", "ticket_id": "tk_other", "confirm": True}
+    )
+    assert res["confirmed"] is False and "does not match" in res["error"]
+    assert res["preview"]["ticket"]["id"] == "tk_9"
+    assert not any(c["url"] == f"{_ITEM}/link" for c in http["calls"])

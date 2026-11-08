@@ -1822,8 +1822,8 @@ async def get_ticket_merge_readiness(
     # the assignee email masking.
     if not await _viewer_sees_emails(db, auth, project):
         readiness = mask_verdict_reviewer(readiness)
-    # A newly raised approval request is a pending row: persist it.
-    await db.commit()
+    # A pure read: approval requests are raised on write/trigger paths only
+    # (approvals.raise_ticket_approvals), so nothing is committed here.
     return {"ticket_id": ticket.id, **readiness}
 
 
@@ -3122,6 +3122,13 @@ async def create_ticket_comment(
         raise
     await db.commit()
     jira_sync.schedule_drain(jira_ids)
+    if verdict_trusted and ticket_watchers.parse_verdict(body.content) is not None:
+        # A trusted verdict was recorded: raise any approval requests it makes
+        # due and refresh the merge check, on a detached task (readiness reads
+        # never raise requests).
+        from sessionfs.server.services import merge_checks
+
+        merge_checks.schedule_recheck(ticket_id)
     comment = (
         await db.execute(select(TicketComment).where(TicketComment.id == comment_id))
     ).scalar_one()

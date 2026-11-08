@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.db.models import OrgAuditEvent
 from sessionfs.server.services import approvals
 from tests.server.integration.approvals_helpers import (
+    raised_readiness,
     HEAD,
     hdrs,
     make_policy,
@@ -28,14 +29,14 @@ async def test_lowering_priority_does_not_drop_a_raised_policy(db_session: Async
     await db_session.commit()
     await make_policy(db_session, w.org, flt={"priority_at_least": "high"})
 
-    first = await approvals.ticket_readiness(db_session, w.ticket, HEAD)
+    first = await raised_readiness(db_session, w.ticket, HEAD)
     await db_session.commit()
     assert first["ready"] is False
     assert first["approvals"][0]["state"] == "pending"
 
     w.ticket.priority = "low"
     await db_session.commit()
-    again = await approvals.ticket_readiness(db_session, w.ticket, HEAD)
+    again = await raised_readiness(db_session, w.ticket, HEAD)
     assert again["ready"] is False
     assert again["approvals"] and again["approvals"][0]["state"] == "pending"
 
@@ -46,7 +47,7 @@ async def test_policy_never_raised_still_honours_the_filter(db_session: AsyncSes
     w.ticket.priority = "low"
     await db_session.commit()
     await make_policy(db_session, w.org, flt={"priority_at_least": "high"})
-    result = await approvals.ticket_readiness(db_session, w.ticket, HEAD)
+    result = await raised_readiness(db_session, w.ticket, HEAD)
     assert result["ready"] is True
     assert result["approvals"] == []
 

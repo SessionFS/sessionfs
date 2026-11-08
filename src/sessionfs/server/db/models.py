@@ -7369,6 +7369,10 @@ class ReleaseGate(Base):
             "status IN ('passed', 'failed', 'skipped')",
             name="ck_release_gates_status",
         ),
+        CheckConstraint(
+            "actor_type IS NULL OR actor_type IN ('user', 'service_key', 'webhook')",
+            name="ck_release_gates_actor_type",
+        ),
         Index("idx_release_gates_release", "release_id"),
     )
 
@@ -7385,6 +7389,18 @@ class ReleaseGate(Base):
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+    # Migration 129 — who recorded the row: actor_type user | service_key
+    # (releases API) | webhook (delivery ingest). A user key stamps
+    # actor_user_id; a service key stamps only its own id/name, never its
+    # minter. NULL on pre-129 rows.
+    actor_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    actor_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_release_gates_actor_user"),
+        nullable=True,
+    )
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 
 class Deployment(Base):
@@ -7395,6 +7411,10 @@ class Deployment(Base):
         CheckConstraint(
             "source IN ('argocd', 'helm', 'manual')",
             name="ck_deployments_source",
+        ),
+        CheckConstraint(
+            "actor_type IS NULL OR actor_type IN ('user', 'service_key', 'webhook')",
+            name="ck_deployments_actor_type",
         ),
         Index("idx_deployments_release", "release_id"),
     )
@@ -7410,6 +7430,18 @@ class Deployment(Base):
     source: Mapped[str] = mapped_column(
         String(20), nullable=False, default="manual", server_default="manual"
     )
+    # Migration 129 — who recorded the row: actor_type user | service_key
+    # (releases API) | webhook (delivery ingest). A user key stamps
+    # actor_user_id; a service key stamps only its own id/name, never its
+    # minter. NULL on pre-129 rows.
+    actor_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    actor_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL", name="fk_deployments_actor_user"),
+        nullable=True,
+    )
+    service_key_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    service_key_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
 
 
 class LoopShareLink(Base):

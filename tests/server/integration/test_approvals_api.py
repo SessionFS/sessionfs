@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.db.models import ApprovalDecision, ApprovalPolicy
 from tests.server.integration.approvals_helpers import (
+    trigger_merge_check,
     HEAD,
     hdrs,
     make_org,
@@ -33,6 +34,7 @@ def _url(org_id: str, suffix: str = "") -> str:
 
 
 async def _readiness(client: AsyncClient, w, key: str, sha: str = HEAD):
+    await trigger_merge_check(client, w)  # the write path raises requests
     resp = await client.get(
         f"/api/v1/projects/{w.project.id}/tickets/{w.ticket.id}/readiness",
         headers=hdrs(key), params={"sha": sha},

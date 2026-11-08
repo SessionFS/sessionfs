@@ -566,6 +566,39 @@ async def project_plan_has_feature(
     return feature in get_features_for_tier(plan)
 
 
+async def project_ids_with_feature(
+    projects: list[Project],
+    feature: str,
+    db: AsyncSession,
+    *,
+    caller_tier: Tier | None,
+) -> set[str]:
+    """Batched, non-raising ``check_project_feature`` for feeds over many
+    projects: the ids of ``projects`` where ``feature`` is available — the
+    project's own plan includes it, or the project is grandfathered for
+    that feature (migration 065, per feature name) and the caller's own
+    plan includes it. One plan resolution plus at most one grandfather
+    query, never a per-project loop."""
+    if not projects:
+        return set()
+    tiers = await resolve_project_plan_tiers(list(projects), db)
+    allowed = {
+        p.id
+        for p in projects
+        if feature in get_features_for_tier(tiers.get(p.id, Tier.FREE))
+    }
+    rest = [p.id for p in projects if p.id not in allowed]
+    if rest and caller_tier is not None and feature in get_features_for_tier(caller_tier):
+        rows = await db.execute(
+            select(ProjectFeatureGrandfather.project_id).where(
+                ProjectFeatureGrandfather.feature == feature,
+                ProjectFeatureGrandfather.project_id.in_(rest),
+            )
+        )
+        allowed.update(rows.scalars().all())
+    return allowed
+
+
 def check_role(ctx: UserContext, min_role: str) -> None:
     """Raise 403 if the user's role is insufficient.
 

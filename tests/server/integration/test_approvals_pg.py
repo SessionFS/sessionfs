@@ -1,5 +1,5 @@
-"""Approval requests and decisions on real PostgreSQL: concurrent readiness
-reads converge on one request (insert-or-load on the unique key), concurrent
+"""Approval requests and decisions on real PostgreSQL: concurrent triggers
+(``raise_ticket_approvals``) converge on one request (insert-or-load on the unique key), concurrent
 approvals settle quorum once under the request row lock, and a concurrent
 double vote by one person records one decision."""
 
@@ -15,7 +15,12 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from sessionfs.server.db.models import ApprovalDecision, ApprovalRequest, Base, Ticket, User
 from sessionfs.server.services import approvals as svc
-from tests.server.integration.approvals_helpers import HEAD, make_policy, make_world
+from tests.server.integration.approvals_helpers import (
+    HEAD,
+    make_policy,
+    make_world,
+    raised_readiness,
+)
 
 pytestmark = [
     pytest.mark.asyncio,
@@ -40,7 +45,7 @@ async def test_concurrency_on_postgres() -> None:
         async def read() -> str:
             async with factory() as s:
                 t = await s.get(Ticket, w.ticket.id)
-                r = await svc.ticket_readiness(s, t, HEAD)
+                r = await raised_readiness(s, t, HEAD)
                 await s.commit()
                 return r["approvals"][0]["request_id"]
 
@@ -80,7 +85,7 @@ async def test_concurrency_on_postgres() -> None:
 
 async def test_concurrent_reraise_after_expiry_on_postgres() -> None:
     """An expired request frees its key (the unique index covers PENDING rows
-    only): concurrent readiness reads raise exactly one fresh request through
+    only): concurrent triggers raise exactly one fresh request through
     the partial-index ON CONFLICT."""
     from datetime import datetime, timedelta, timezone
 
@@ -92,7 +97,7 @@ async def test_concurrent_reraise_after_expiry_on_postgres() -> None:
         async with factory() as db:
             w = await make_world(db)
             await make_policy(db, w.org)
-            first = await svc.ticket_readiness(db, w.ticket, HEAD)
+            first = await raised_readiness(db, w.ticket, HEAD)
             await db.commit()
             old_id = first["approvals"][0]["request_id"]
             req = await db.get(ApprovalRequest, old_id)
@@ -102,7 +107,7 @@ async def test_concurrent_reraise_after_expiry_on_postgres() -> None:
         async def read() -> str:
             async with factory() as s:
                 t = await s.get(Ticket, w.ticket.id)
-                r = await svc.ticket_readiness(s, t, HEAD)
+                r = await raised_readiness(s, t, HEAD)
                 await s.commit()
                 return r["approvals"][0]["request_id"]
 

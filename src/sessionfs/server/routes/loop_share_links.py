@@ -58,7 +58,13 @@ _MAX_EXPIRES_DAYS = 90
 _DEFAULT_EXPIRES_DAYS = 30
 # Identity keys a public ship report never carries.
 _PUBLIC_DROPPED_KEYS = frozenset(
-    {"author_user_id", "created_by_user_id", "service_key_id", "service_key_name"}
+    {
+        "author_user_id",
+        "created_by_user_id",
+        "actor_user_id",
+        "service_key_id",
+        "service_key_name",
+    }
 )
 
 _EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")

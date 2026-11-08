@@ -76,7 +76,31 @@ def _check_run_conclusion(ready: bool, verdict: Optional[dict]) -> str:
     return "neutral"
 
 
+# Bounded retry for check-run calls: up to 3 attempts with these waits
+# (seconds) between them, only on a transport error or a 5xx response; a 4xx
+# is final. The caller has already committed (no transaction is open while
+# waiting). Tests shrink these.
+_GITHUB_RETRY_DELAYS: tuple[float, ...] = (0.5, 1.5)
+
+
 async def _github_request(
+    method: str, url: str, *, token: str, json_body: Optional[dict] = None
+) -> Optional[httpx.Response]:
+    """A bounded GitHub API call with a short retry on transport errors and
+    5xx responses. Returns the last response, or None when every attempt hit
+    a transport error."""
+    attempts = len(_GITHUB_RETRY_DELAYS) + 1
+    resp: Optional[httpx.Response] = None
+    for attempt in range(attempts):
+        resp = await _github_request_once(method, url, token=token, json_body=json_body)
+        if resp is not None and resp.status_code < 500:
+            return resp
+        if attempt < attempts - 1:
+            await asyncio.sleep(_GITHUB_RETRY_DELAYS[attempt])
+    return resp
+
+
+async def _github_request_once(
     method: str, url: str, *, token: str, json_body: Optional[dict] = None
 ) -> Optional[httpx.Response]:
     """One bounded GitHub API call. Returns None on any transport error."""
@@ -275,9 +299,45 @@ async def _compute_readiness(
 ) -> dict[str, Any]:
     # The same function the readiness route uses: pure review readiness plus
     # approval policies (a pending blocking approval keeps the check not green).
+    # A read: requests are raised by the trigger before the check is posted.
     from sessionfs.server.services.approvals import ticket_readiness
 
     return await ticket_readiness(db, ticket, head_sha)
+
+
+# ── Approval requests (raised on triggers, never on reads) ─────────
+
+
+async def raise_approvals_for_ticket(
+    db: AsyncSession, ticket_id: str, *, project_id: Optional[str] = None
+) -> None:
+    """Raise the merge approval requests ``ticket_id`` needs (write path:
+    a verdict, an approval decision, a policy recheck, the merge-check
+    trigger). Runs before, and independently of, the GitHub/GitLab posting
+    gates, so an unverified repo or a missing integration never stops a
+    request from being raised. The caller commits."""
+    from sessionfs.server.services.approvals import raise_ticket_approvals
+
+    stmt = select(Ticket).where(Ticket.id == ticket_id)
+    if project_id is not None:
+        stmt = stmt.where(Ticket.project_id == project_id)
+    ticket = (await db.execute(stmt)).scalar_one_or_none()
+    if ticket is not None:
+        await raise_ticket_approvals(db, ticket)
+
+
+async def raise_approvals_for_commit(
+    db: AsyncSession, project_id: str, repo: str, head_sha: Optional[str]
+) -> None:
+    """Raise approval requests for every ticket linked to a PR/MR row at
+    ``(repo, head_sha)`` in the project (PR/MR webhook ingest). The caller
+    commits."""
+    if not head_sha:
+        return
+    from sessionfs.server.services.approvals import raise_ticket_approvals
+
+    for ticket in await _tickets_for_commit(db, project_id, repo, head_sha):
+        await raise_ticket_approvals(db, ticket)
 
 
 def _skipped(repo: str, head_sha: str, ready: bool, reason: str) -> dict[str, Any]:
@@ -523,7 +583,20 @@ async def on_verdict_recorded(db: AsyncSession, ticket_id: str) -> None:
     GitLab commit status of every open GitLab merge request the ticket is
     linked to (``delivery_ingest.post_gitlab_status``). Best-effort and never
     raises (a failing check must not fail the settle request).
+
+    Raises the ticket's approval requests first (a write path), then posts
+    the read-only check/status; ``refresh_merge_check`` commits before any
+    outbound call, which persists the new requests.
     """
+    try:
+        # A savepoint: a failure here never drops what the caller already
+        # holds in the transaction (the org recheck pages many tickets).
+        async with db.begin_nested():
+            await raise_approvals_for_ticket(db, ticket_id)
+    except Exception:
+        logger.warning(
+            "approval requests could not be raised for ticket %s", ticket_id, exc_info=True
+        )
     try:
         await refresh_merge_check(db, ticket_id=ticket_id)
     except Exception:
@@ -541,8 +614,16 @@ async def on_verdict_recorded(db: AsyncSession, ticket_id: str) -> None:
 async def refresh_gitlab_statuses(db: AsyncSession, ticket_id: str) -> int:
     """Re-post the GitLab commit status for each open GitLab merge request
     linked to ``ticket_id`` (one post per distinct (repo, head sha)). Returns
-    the number of posts attempted."""
-    from sessionfs.server.services.delivery_ingest import post_gitlab_status
+    the number of posts attempted.
+
+    Every status is computed first; the session's transaction is then
+    committed (keeping any approval request raised while computing
+    readiness) so no transaction is open while the posts are sent and
+    retried."""
+    from sessionfs.server.services.delivery_ingest import (
+        plan_gitlab_status,
+        send_gitlab_statuses,
+    )
 
     rows = (
         await db.execute(
@@ -560,14 +641,21 @@ async def refresh_gitlab_statuses(db: AsyncSession, ticket_id: str) -> int:
         )
     ).all()
     posted = 0
+    planned = []
     for project_id, repo, sha in sorted(rows):
         if not _FULL_SHA_RE.fullmatch(sha or ""):
             continue
         project = await db.get(Project, project_id)
         if project is None:
             continue
-        await post_gitlab_status(db, project=project, repo=repo, sha=sha)
         posted += 1
+        status = await plan_gitlab_status(db, project=project, repo=repo, sha=sha)
+        if status is not None:
+            planned.append(status)
+    if planned:
+        if db.in_transaction():
+            await db.commit()
+        await send_gitlab_statuses(planned)
     return posted
 
 
@@ -588,7 +676,7 @@ async def _recheck_with_fresh_session(ticket_id: str) -> None:
     try:
         async with _session_factory() as db:
             await on_verdict_recorded(db, ticket_id)
-            # Keep any approval request raised while computing readiness.
+            # Keep any approval request raised for the ticket.
             await db.commit()
     except Exception:
         logger.warning(

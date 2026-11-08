@@ -13,11 +13,14 @@ re-delivery that does get through is still a no-op at the data layer.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 from sqlalchemy import delete, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -230,6 +233,7 @@ async def ingest_event(
     org_id: str,
     event: str,
     payload: dict,
+    deferred_statuses: list[GitLabStatusPost] | None = None,
 ) -> dict:
     """Ingest one verified delivery event. Returns a small status dict.
 
@@ -237,6 +241,13 @@ async def ingest_event(
     ``object_kind``. The caller owns auth and the idempotency ledger; this
     function only maps + writes and never raises for a merely unsupported or
     unmapped event.
+
+    When ``deferred_statuses`` is given, a GitLab commit status the event
+    calls for is computed here (inside the caller's transaction) but only
+    appended to the list: the caller commits the ledger first and then sends
+    them with ``send_gitlab_statuses``, so no transaction is open while the
+    GitLab API is called or retried. Without it the status is posted
+    immediately through ``post_gitlab_status``.
     """
     project, repo = await _resolve_project(
         db, org_id=org_id, provider=provider, payload=payload
@@ -249,7 +260,9 @@ async def ingest_event(
     try:
         if provider == "github":
             return await _ingest_github(db, project, repo, event, payload)
-        return await _ingest_gitlab(db, project, repo, event, payload)
+        return await _ingest_gitlab(
+            db, project, repo, event, payload, deferred_statuses
+        )
     except (ValueError, TypeError, DBAPIError):
         # A bad provider field must not 500 (the provider would retry forever).
         await db.rollback()
@@ -282,6 +295,7 @@ async def _ingest_github_pr(
 
     head = _dict(pr.get("head"))
     state = "merged" if pr.get("merged") else ("open" if pr.get("state") == "open" else "closed")
+    head_sha = _sha(head.get("sha"))
     await releases.upsert_pull_request(
         db,
         project_id=project.id,
@@ -292,13 +306,15 @@ async def _ingest_github_pr(
         external_id=_str(pr.get("id")),
         state=state,
         branch=_str(head.get("ref")) or "",
-        head_sha=_sha(head.get("sha")),
+        head_sha=head_sha,
         merged_at=_parse_dt(pr.get("merged_at")),
         merge_commit_sha=_sha(pr.get("merge_commit_sha")),
         external_url=releases.safe_url(pr.get("html_url")),
         body=_sanitize_text(pr.get("body")),
         provider_updated_at=_parse_dt(pr.get("updated_at")),
     )
+    if state == "open":
+        await _raise_commit_approvals(db, project, repo, head_sha)
     return {"status": "ok"}
 
 
@@ -352,6 +368,7 @@ async def _ingest_github_deployment(
         environment=environment,
         deployed_at=_parse_dt(status.get("updated_at") or status.get("created_at")),
         source="manual",
+        actor=releases.WEBHOOK_ACTOR,
     )
     return {"status": "ok"}
 
@@ -360,10 +377,15 @@ async def _ingest_github_deployment(
 
 
 async def _ingest_gitlab(
-    db: AsyncSession, project: Project, repo: str, event: str, payload: dict
+    db: AsyncSession,
+    project: Project,
+    repo: str,
+    event: str,
+    payload: dict,
+    deferred_statuses: list[GitLabStatusPost] | None = None,
 ) -> dict:
     if event == "merge_request":
-        return await _ingest_gitlab_mr(db, project, repo, payload)
+        return await _ingest_gitlab_mr(db, project, repo, payload, deferred_statuses)
     if event == "release":
         return await _ingest_gitlab_release(db, project, payload)
     if event == "deployment":
@@ -372,7 +394,11 @@ async def _ingest_gitlab(
 
 
 async def _ingest_gitlab_mr(
-    db: AsyncSession, project: Project, repo: str, payload: dict
+    db: AsyncSession,
+    project: Project,
+    repo: str,
+    payload: dict,
+    deferred_statuses: list[GitLabStatusPost] | None = None,
 ) -> dict:
     mr = _dict(payload.get("object_attributes"))
     number = mr.get("iid")
@@ -406,10 +432,19 @@ async def _ingest_gitlab_mr(
 
     # Push the commit status on open/update (the fallback covers a payload
     # with no ``action`` field). Only when the MR actually linked a ticket.
+    if state == "open":
+        await _raise_commit_approvals(db, project, repo, head_sha)
     action = mr.get("action") or ""
     if action in _GITLAB_MR_STATUS_ACTIONS or (not action and state == "open"):
         if head_sha and result.get("linked_ticket_ids"):
-            await post_gitlab_status(db, project=project, repo=repo, sha=head_sha)
+            if deferred_statuses is None:
+                await post_gitlab_status(db, project=project, repo=repo, sha=head_sha)
+            else:
+                planned = await plan_gitlab_status(
+                    db, project=project, repo=repo, sha=head_sha
+                )
+                if planned is not None:
+                    deferred_statuses.append(planned)
     return {"status": "ok"}
 
 
@@ -456,8 +491,27 @@ async def _ingest_gitlab_deployment(
         environment=environment,
         deployed_at=_parse_dt(payload.get("created_at")),
         source="manual",
+        actor=releases.WEBHOOK_ACTOR,
     )
     return {"status": "ok"}
+
+
+async def _raise_commit_approvals(
+    db: AsyncSession, project: Project, repo: str, head_sha: str | None
+) -> None:
+    """A PR/MR write path: raise the approval requests every ticket linked
+    at this head commit needs (readiness reads never raise them). Best-effort
+    inside a savepoint: a failure rolls back only the requests, never the
+    ledger row or PR upsert the route commits afterwards."""
+    if not head_sha:
+        return
+    from sessionfs.server.services.merge_checks import raise_approvals_for_commit
+
+    try:
+        async with db.begin_nested():
+            await raise_approvals_for_commit(db, project.id, repo, head_sha)
+    except Exception:
+        logger.exception("approval requests could not be raised for %s @ %s", project.id, head_sha)
 
 
 # ── GitLab commit status ──────────────────────────────────────────
@@ -472,6 +526,95 @@ async def _ticket_merge_readiness(db: AsyncSession, ticket: Ticket, sha: str) ->
     return await ticket_readiness(db, ticket, sha)
 
 
+@dataclass(frozen=True)
+class GitLabStatusPost:
+    """A computed GitLab commit status, ready to send with no DB access."""
+
+    instance_url: str
+    access_token: str = ""
+    gitlab_project_id: int = 0
+    sha: str = ""
+    state: str = "pending"
+    description: str = ""
+
+    def __repr__(self) -> str:  # never print the token
+        return (
+            f"GitLabStatusPost(project={self.gitlab_project_id}, sha={self.sha}, "
+            f"state={self.state})"
+        )
+
+
+# Bounded retry for the status post: up to 3 attempts, waiting these delays
+# (seconds) between them. Only transport errors and 5xx responses retry; a
+# 4xx (bad token, unknown project or commit) is final. Tests shrink these.
+_STATUS_RETRY_DELAYS: tuple[float, ...] = (0.5, 1.5)
+
+
+def _retryable(exc: BaseException) -> bool:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code >= 500
+    return isinstance(exc, httpx.TransportError)
+
+
+async def send_gitlab_status(post: GitLabStatusPost) -> bool:
+    """Send one computed commit status with a bounded retry. Never raises;
+    True when GitLab accepted it. Holds no DB session, so callers commit
+    before calling it and no transaction stays open during the waits."""
+    from sessionfs.server.gitlab_client import GitLabClient
+
+    client = GitLabClient(post.instance_url, post.access_token)
+    attempts = len(_STATUS_RETRY_DELAYS) + 1
+    for attempt in range(attempts):
+        try:
+            await client.post_commit_status(
+                post.gitlab_project_id,
+                post.sha,
+                post.state,
+                name="SessionFS review loop",
+                description=post.description,
+            )
+            return True
+        except Exception as exc:
+            if not _retryable(exc) or attempt == attempts - 1:
+                logger.warning(
+                    "GitLab commit status post failed for project %s @ %s "
+                    "after %d attempt(s): %s",
+                    post.gitlab_project_id,
+                    post.sha,
+                    attempt + 1,
+                    type(exc).__name__,
+                )
+                return False
+            await asyncio.sleep(_STATUS_RETRY_DELAYS[attempt])
+    return False
+
+
+async def send_gitlab_statuses(posts: list[GitLabStatusPost]) -> int:
+    """Send each computed status (see ``send_gitlab_status``); returns how
+    many GitLab accepted."""
+    sent = 0
+    for post in posts:
+        if await send_gitlab_status(post):
+            sent += 1
+    return sent
+
+
+async def plan_gitlab_status(
+    db: AsyncSession, *, project: Project, repo: str, sha: str
+) -> GitLabStatusPost | None:
+    """Compute the GitLab commit status for a merge request's head sha, or
+    None when nothing should be posted. DB work only; never raises."""
+    if not sha or _full_sha(sha) is None:
+        return None
+    try:
+        return await _plan_gitlab_status(db, project=project, repo=repo, sha=sha)
+    except Exception:
+        logger.exception(
+            "GitLab commit status evaluation failed for %s @ %s", project.id, sha
+        )
+        return None
+
+
 async def post_gitlab_status(
     db: AsyncSession, *, project: Project, repo: str, sha: str
 ) -> None:
@@ -481,15 +624,17 @@ async def post_gitlab_status(
     (the client re-checks the instance URL's SSRF guard before the request
     and never follows redirects). State is ``success`` only when every ticket
     linked to the PR is merge-ready for that exact sha; otherwise ``pending``.
-    Never raises — a missing integration or a failed API call must not fail
-    the webhook.
+    The status is computed, the session's transaction is committed (keeping
+    any approval request raised while computing readiness), and only then is
+    the post sent with a bounded retry. Never raises — a missing integration
+    or a failed API call must not fail the caller.
     """
-    if not sha or _full_sha(sha) is None:
+    planned = await plan_gitlab_status(db, project=project, repo=repo, sha=sha)
+    if planned is None:
         return
-    try:
-        await _post_gitlab_status(db, project=project, repo=repo, sha=sha)
-    except Exception:
-        logger.exception("GitLab commit status post failed for %s @ %s", project.id, sha)
+    if db.in_transaction():
+        await db.commit()
+    await send_gitlab_status(planned)
 
 
 async def prune_delivery_events(db: AsyncSession, *, older_than: datetime) -> int:
@@ -525,9 +670,9 @@ async def _owner_may_post_status(db: AsyncSession, project: Project) -> bool:
     return member is not None
 
 
-async def _post_gitlab_status(
+async def _plan_gitlab_status(
     db: AsyncSession, *, project: Project, repo: str, sha: str
-) -> None:
+) -> GitLabStatusPost | None:
     # The GitLab numeric project id lives on the repo row and is best-effort
     # (frequently NULL) — without it there is no remote to badge.
     repo_row = (
@@ -539,25 +684,25 @@ async def _post_gitlab_status(
         )
     ).scalars().first()
     if repo_row is None or not repo_row.provider_repo_id:
-        return
+        return None
     try:
         gitlab_project_id = int(repo_row.provider_repo_id)
     except (TypeError, ValueError):
-        return
+        return None
 
     # The badge is posted with the project owner's GitLab credentials, so the
     # owner must still be an active user and, for an org project, still a
     # member of the project's org. An owner who left keeps their personal
     # GitLab token out of the org's commits.
     if not await _owner_may_post_status(db, project):
-        return
+        return None
     settings = (
         await db.execute(
             select(GitLabSettings).where(GitLabSettings.user_id == project.owner_id)
         )
     ).scalars().first()
     if settings is None:
-        return
+        return None
 
     # The status belongs to the commit, so evaluate the tickets linked to
     # EVERY merge request row at this head sha: a second MR on the same
@@ -579,7 +724,7 @@ async def _post_gitlab_status(
         )
     )
     if not ticket_ids:
-        return
+        return None
 
     ready = True
     for ticket_id in ticket_ids:
@@ -591,15 +736,13 @@ async def _post_gitlab_status(
             ready = False
             break
 
-    from sessionfs.server.gitlab_client import GitLabClient
     from sessionfs.server.llm_keys import decrypt_secret
 
-    access_token = decrypt_secret(settings.encrypted_access_token)
-    client = GitLabClient(settings.instance_url, access_token)
-    await client.post_commit_status(
-        gitlab_project_id,
-        sha,
-        "success" if ready else "pending",
-        name="SessionFS review loop",
+    return GitLabStatusPost(
+        instance_url=settings.instance_url,
+        access_token=decrypt_secret(settings.encrypted_access_token),
+        gitlab_project_id=gitlab_project_id,
+        sha=sha,
+        state="success" if ready else "pending",
         description="All review checks passed" if ready else "Review in progress",
     )

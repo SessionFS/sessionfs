@@ -20,6 +20,7 @@ from sessionfs.server.db.models import (
 )
 from sessionfs.server.services import approvals as svc
 from tests.server.integration.approvals_helpers import (
+    raised_readiness,
     HEAD,
     NEXT,
     make_policy,
@@ -119,7 +120,7 @@ async def test_matching_policies_uses_ticket_findings(db_session: AsyncSession) 
 async def test_readiness_waits_then_turns_ready_after_quorum(db_session: AsyncSession) -> None:
     w = await make_world(db_session)
     await make_policy(db_session, w.org)
-    r = await svc.ticket_readiness(db_session, w.ticket, HEAD, show_names=True)
+    r = await raised_readiness(db_session, w.ticket, HEAD, show_names=True)
     await db_session.commit()
     assert r["ready"] is False
     assert "Waiting on approval: Auth changes (0 of 1)" in r["reasons"]
@@ -128,7 +129,7 @@ async def test_readiness_waits_then_turns_ready_after_quorum(db_session: AsyncSe
     await svc.decide(db_session, request_id=appr["request_id"], approver=w.admin,
                      decision="approve", reason="ok")
     await db_session.commit()
-    r = await svc.ticket_readiness(db_session, w.ticket, HEAD)
+    r = await raised_readiness(db_session, w.ticket, HEAD)
     assert r["ready"] is True
     assert r["approvals"][0]["state"] == "approved"
 
@@ -137,23 +138,25 @@ async def test_readiness_waits_then_turns_ready_after_quorum(db_session: AsyncSe
 async def test_no_request_before_the_review_is_clean(db_session: AsyncSession) -> None:
     w = await make_world(db_session)
     await make_policy(db_session, w.org)
-    r = await svc.ticket_readiness(db_session, w.ticket, NEXT)  # clean is bound to HEAD
+    r = await raised_readiness(db_session, w.ticket, NEXT)  # clean is bound to HEAD
     assert r["ready"] is False
     assert r["approvals"][0]["state"] == "not_requested"
     assert r["approvals"][0]["request_id"] is None
-    count = (await db_session.execute(select(ApprovalRequest))).scalars().all()
-    assert count == []
+    # The trigger raised the one request the work can need: at the commit the
+    # clean verdict is bound to, never at the sha a reader asked about.
+    rows = (await db_session.execute(select(ApprovalRequest))).scalars().all()
+    assert [row.target_fingerprint for row in rows] == [HEAD]
 
 
 @pytest.mark.asyncio
 async def test_advisory_policy_only_warns(db_session: AsyncSession) -> None:
     w = await make_world(db_session)
     await make_policy(db_session, w.org, name="FYI", blocking=False)
-    r = await svc.ticket_readiness(db_session, w.ticket, HEAD, show_names=True)
+    r = await raised_readiness(db_session, w.ticket, HEAD, show_names=True)
     assert r["ready"] is True
     assert r["warnings"] == ["Waiting on approval: FYI (0 of 1)"]
     # Without names (the merge check, non-member readers): generic wording.
-    r = await svc.ticket_readiness(db_session, w.ticket, HEAD)
+    r = await raised_readiness(db_session, w.ticket, HEAD)
     assert r["warnings"] == ["Needs approval (0 of 1)"]
     assert r["approvals"][0]["policy_name"] is None
 
@@ -174,10 +177,10 @@ async def test_personal_project_has_no_policies(db_session: AsyncSession) -> Non
 async def test_new_sha_creates_new_request_and_supersedes_old(db_session: AsyncSession) -> None:
     w = await make_world(db_session)
     await make_policy(db_session, w.org)
-    first = await svc.ticket_readiness(db_session, w.ticket, HEAD)
+    first = await raised_readiness(db_session, w.ticket, HEAD)
     await db_session.commit()
     await seed_clean(db_session, w.ticket, w.reviewer, NEXT)
-    second = await svc.ticket_readiness(db_session, w.ticket, NEXT)
+    second = await raised_readiness(db_session, w.ticket, NEXT)
     await db_session.commit()
     assert first["approvals"][0]["request_id"] != second["approvals"][0]["request_id"]
     old = await db_session.get(ApprovalRequest, first["approvals"][0]["request_id"])
@@ -198,7 +201,7 @@ async def test_concurrent_readiness_reads_create_one_request(db_engine, db_sessi
     async def read() -> str:
         async with factory() as s:
             t = await s.get(Ticket, w.ticket.id)
-            r = await svc.ticket_readiness(s, t, HEAD)
+            r = await raised_readiness(s, t, HEAD)
             await s.commit()
             return r["approvals"][0]["request_id"]
 
@@ -212,12 +215,12 @@ async def test_concurrent_readiness_reads_create_one_request(db_engine, db_sessi
 async def test_pending_request_expires_lazily(db_session: AsyncSession) -> None:
     w = await make_world(db_session)
     await make_policy(db_session, w.org)
-    r = await svc.ticket_readiness(db_session, w.ticket, HEAD)
+    r = await raised_readiness(db_session, w.ticket, HEAD)
     req = await db_session.get(ApprovalRequest, r["approvals"][0]["request_id"])
     req.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
     await db_session.commit()
     old_id = req.id
-    r = await svc.ticket_readiness(db_session, w.ticket, HEAD)
+    r = await raised_readiness(db_session, w.ticket, HEAD)
     await db_session.commit()
     # The expired request stays as history and a fresh one is raised.
     assert (await db_session.get(ApprovalRequest, old_id)).state == "expired"
@@ -233,7 +236,7 @@ async def test_pending_request_expires_lazily(db_session: AsyncSession) -> None:
 async def test_edited_policy_keeps_request_on_its_version(db_session: AsyncSession) -> None:
     w = await make_world(db_session)
     v1 = await make_policy(db_session, w.org)
-    r = await svc.ticket_readiness(db_session, w.ticket, HEAD)
+    r = await raised_readiness(db_session, w.ticket, HEAD)
     await db_session.commit()
     v1.active = False
     from sessionfs.server.db.models import ApprovalPolicy
@@ -245,7 +248,7 @@ async def test_edited_policy_keeps_request_on_its_version(db_session: AsyncSessi
     )
     db_session.add(v2)
     await db_session.commit()
-    again = await svc.ticket_readiness(db_session, w.ticket, HEAD)
+    again = await raised_readiness(db_session, w.ticket, HEAD)
     assert again["approvals"][0]["request_id"] == r["approvals"][0]["request_id"]
     assert again["approvals"][0]["required_count"] == 1  # still v1's requirements
 
@@ -255,7 +258,7 @@ async def test_edited_policy_keeps_request_on_its_version(db_session: AsyncSessi
 
 async def _pending(db: AsyncSession, w, **policy) -> str:
     await make_policy(db, w.org, **policy)
-    r = await svc.ticket_readiness(db, w.ticket, HEAD)
+    r = await raised_readiness(db, w.ticket, HEAD)
     await db.commit()
     return r["approvals"][0]["request_id"]
 
@@ -277,7 +280,7 @@ async def test_quorum_across_two_requirements(db_session: AsyncSession) -> None:
                            decision="approve", reason="")
     assert req.state == "approved"
     await db_session.commit()
-    r = await svc.ticket_readiness(db_session, w.ticket, HEAD)
+    r = await raised_readiness(db_session, w.ticket, HEAD)
     assert r["ready"] is True and r["approvals"][0]["approved_count"] == 3
 
 
@@ -290,7 +293,7 @@ async def test_one_reject_rejects(db_session: AsyncSession) -> None:
                            reason="no")
     assert req.state == "rejected"
     await db_session.commit()
-    r = await svc.ticket_readiness(db_session, w.ticket, HEAD, show_names=True)
+    r = await raised_readiness(db_session, w.ticket, HEAD, show_names=True)
     assert r["ready"] is False and "Approval rejected: Auth changes" in r["reasons"]
     # A rejection stands for this exact commit: no new request is raised.
     assert r["approvals"][0]["request_id"] == rid
@@ -419,6 +422,15 @@ async def test_loop_status_waits_on_blocking_approval(db_session: AsyncSession) 
     await db_session.commit()
     await make_policy(db_session, w.org)
 
+    # Loop status is a read: it shows the policy but raises nothing.
+    (loop,) = await load_loops(db_session, loop_tickets=[parent], show_dollars=False)
+    (c,) = loop["children"]
+    assert c["ready"] is False
+    assert c["approvals"][0]["state"] == "not_requested"
+    assert (await db_session.execute(select(ApprovalRequest))).scalars().all() == []
+
+    await svc.raise_ticket_approvals(db_session, child)  # the trigger
+    await db_session.commit()
     (loop,) = await load_loops(db_session, loop_tickets=[parent], show_dollars=False)
     (c,) = loop["children"]
     assert c["ready"] is False

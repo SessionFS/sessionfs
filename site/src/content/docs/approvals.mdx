@@ -26,6 +26,8 @@ Once a matching ticket is trusted-clean at a commit, readiness reports `Waiting 
 
 An approval binds to the exact commit. A new commit creates a new request, and approvals never carry over.
 
+Requests are raised when something changes, never by reading: a trusted verdict is recorded, a pull or merge request is opened or updated, a policy is created or edited (every ticket with an open PR is rechecked), an approval is decided, or someone runs the merge check. Reading readiness, loop status or the check only shows the current state; a request that has expired shows as expired and is raised again on the next of those events.
+
 ## Knowledge-base promotion
 
 Every way an entry becomes a claim checks the policies: promoting one entry, bulk promote, adding an entry that would be classified as a claim, and auto-promotion at compile. A matching entry stays a note with `approval_pending: true`, and compile leaves it out.

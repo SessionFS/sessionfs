@@ -31,9 +31,14 @@ async def post_ticket_merge_check(
     ctx: UserContext = Depends(get_user_context),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """Recompute and post a ticket's merge check. Returns the posted outcome."""
+    """Recompute and post a ticket's merge check. Returns the posted outcome.
+
+    A trigger (write) path: the ticket's approval requests are raised and
+    committed first, then the check is computed read-only and posted."""
     project = await _write_scope(project_id, auth, db)
     await check_project_feature(ctx, "review_loop", project, db)
+    await merge_checks.raise_approvals_for_ticket(db, ticket_id, project_id=project.id)
+    await db.commit()
     return await merge_checks.refresh_merge_check(
         db, ticket_id=ticket_id, project_id=project.id
     )

@@ -14,6 +14,7 @@ from sessionfs.server.db.models import OrgMember, TicketNotification
 from sessionfs.server.email_templates import ticket_notification_email
 from sessionfs.server.services import approvals as svc
 from tests.server.integration.approvals_helpers import (
+    raised_readiness,
     HEAD,
     hdrs,
     make_policy,
@@ -30,7 +31,7 @@ pytestmark = pytest.mark.asyncio
 async def _approval_world(db: AsyncSession):
     w = await make_world(db)
     await make_policy(db, w.org)
-    r = await svc.ticket_readiness(db, w.ticket, HEAD)
+    r = await raised_readiness(db, w.ticket, HEAD)
     await db.commit()
     return w, r["approvals"][0]["request_id"]
 

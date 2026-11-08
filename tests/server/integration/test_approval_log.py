@@ -14,6 +14,7 @@ from sessionfs.server.helper.tools import TOOLS
 from sessionfs.server.routes.approvals import csv_safe
 from sessionfs.server.services import approvals as svc
 from tests.server.integration.approvals_helpers import (
+    raised_readiness,
     HEAD,
     hdrs,
     make_policy,
@@ -38,7 +39,7 @@ async def _two_decisions(db: AsyncSession):
     formula-looking reason."""
     w = await make_world(db)
     policy = await make_policy(db, w.org)
-    r = await svc.ticket_readiness(db, w.ticket, HEAD)
+    r = await raised_readiness(db, w.ticket, HEAD)
     await db.commit()
     first = r["approvals"][0]["request_id"]
     await svc.decide(db, request_id=first, approver=w.admin, decision="approve",
@@ -48,7 +49,7 @@ async def _two_decisions(db: AsyncSession):
     ticket2 = await make_ticket(db, w.project, w.implementer)
     await seed_implementer(db, w.project, ticket2, user_id=w.implementer.id)
     await seed_clean(db, ticket2, w.reviewer, HEAD)
-    r2 = await svc.ticket_readiness(db, ticket2, HEAD)
+    r2 = await raised_readiness(db, ticket2, HEAD)
     await db.commit()
     second = r2["approvals"][0]["request_id"]
     await svc.decide(db, request_id=second, approver=w.admin2, decision="reject",
@@ -148,7 +149,7 @@ async def test_log_csv_export_is_injection_safe(
 async def test_helper_list_my_approvals(db_session: AsyncSession) -> None:
     w = await make_world(db_session)
     await make_policy(db_session, w.org)
-    rid = (await svc.ticket_readiness(db_session, w.ticket, HEAD))["approvals"][0]["request_id"]
+    rid = (await raised_readiness(db_session, w.ticket, HEAD))["approvals"][0]["request_id"]
     await db_session.commit()
     tool = TOOLS["list_my_approvals"]
 

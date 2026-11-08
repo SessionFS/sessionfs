@@ -1510,6 +1510,13 @@ async def _handle_pr_ingest(payload: dict, fence: tuple[str, int] | None = None)
                 provider_updated_at=_parse_iso(pr.get("updated_at")),
             )
             linked = result.get("linked_ticket_ids") or []
+            if state == "open" and head_sha:
+                # A PR write path: raise the approval requests every ticket
+                # linked at this head commit needs (readiness reads never do).
+                await merge_checks.raise_approvals_for_commit(
+                    db, project_id, full_name, head_sha
+                )
+                await db.commit()
             if action in ("opened", "synchronize") and head_sha and linked:
                 # One shared check run per PR: evaluates every linked ticket.
                 await merge_checks.refresh_merge_check(
@@ -1518,7 +1525,6 @@ async def _handle_pr_ingest(payload: dict, fence: tuple[str, int] | None = None)
                     repo=full_name,
                     head_sha=head_sha,
                 )
-                # Keep any approval request raised while computing readiness.
                 await db.commit()
             return True
     except _Superseded:

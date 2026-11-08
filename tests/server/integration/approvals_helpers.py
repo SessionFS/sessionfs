@@ -245,3 +245,23 @@ async def make_world(db: AsyncSession, tier: str = "enterprise") -> World:
     await seed_implementer(db, w.project, w.ticket, user_id=w.implementer.id)
     await seed_clean(db, w.ticket, w.reviewer, HEAD)
     return w
+
+
+async def raised_readiness(db: AsyncSession, ticket: Ticket, sha: str, **kw) -> dict:
+    """A trigger then a read: raise the ticket's approval requests (what a
+    verdict, a decision, a policy recheck or PR ingest does), then read
+    readiness. Readiness reads alone never raise a request."""
+    from sessionfs.server.services import approvals
+
+    await approvals.raise_ticket_approvals(db, ticket)
+    await db.commit()
+    return await approvals.ticket_readiness(db, ticket, sha, **kw)
+
+
+async def trigger_merge_check(client, w) -> None:
+    """The merge-check trigger route (a write path that raises requests)."""
+    resp = await client.post(
+        f"/api/v1/projects/{w.project.id}/tickets/{w.ticket.id}/merge-check",
+        headers=hdrs(w.owner_key),
+    )
+    assert resp.status_code == 200, resp.text

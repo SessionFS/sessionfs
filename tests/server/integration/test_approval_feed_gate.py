@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sessionfs.server.db.models import AgentRun
 from sessionfs.server.services import approvals as svc
 from tests.server.integration.approvals_helpers import (
+    raised_readiness,
     HEAD,
     NEXT,
     make_policy,
@@ -33,7 +34,7 @@ async def _run(db: AsyncSession, w, sha: str) -> None:
 
 async def _raise_request(db: AsyncSession, w, **policy_kw):
     policy = await make_policy(db, w.org, **policy_kw)
-    r = await svc.ticket_readiness(db, w.ticket, HEAD)
+    r = await raised_readiness(db, w.ticket, HEAD)
     await db.commit()
     return policy, r["approvals"][0]["request_id"]
 
@@ -108,7 +109,7 @@ async def test_gate_flow(db_session: AsyncSession) -> None:
     n = (await db_session.execute(select(func.count()).select_from(ApprovalRequest))).scalar_one()
     assert n == 0
 
-    await svc.ticket_readiness(db_session, w.ticket, HEAD)
+    await raised_readiness(db_session, w.ticket, HEAD)
     await db_session.commit()
     ok, why = await svc.workflow_gate_passed(db_session, policy_id=policy.id, ticket=w.ticket)
     assert ok is False and "Waiting on approval: Auth changes" in why

@@ -86,6 +86,16 @@ async def _write_project(
         return await _visible_project(project_id, auth, db)
     return await _write_scope(project_id, auth, db)
 
+def _actor(auth: AuthContext) -> dict[str, Any]:
+    """Gate/deployment provenance from the credential, never the body."""
+    return releases.actor_stamp(
+        key_kind=auth.key_kind,
+        user_id=_stamp_user_id(auth),
+        service_key_id=auth.service_key_id if auth.key_kind == "service" else None,
+        service_key_name=auth.service_key_name if auth.key_kind == "service" else None,
+    )
+
+
 _MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 _PR_PROVIDERS: frozenset[str] = frozenset({"github", "gitlab"})
@@ -550,6 +560,7 @@ async def record_gate(
         status=body.status,
         run_id=body.run_id,
         url=body.url,
+        actor=_actor(auth),
     )
 
 
@@ -572,6 +583,7 @@ async def record_deployment(
         environment=body.environment,
         deployed_at=body.deployed_at,
         source=body.source,
+        actor=_actor(auth),
     )
 
 

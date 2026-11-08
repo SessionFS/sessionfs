@@ -3382,8 +3382,10 @@ _TOOLS = [
             "confirm=true the item becomes `linked` and the ticket gets a "
             "comment ('Raised again in meeting \"<title>\" on <date>, "
             "lines L<a>-<b>: <item text>', or messages M<a>-<b> for a "
-            "chat) plus a timeline event. Omit ticket_id to use the item's "
-            "suggested_ticket (see get_meeting_transcript). The ticket must "
+            "chat) plus a timeline event. For the preview, omit ticket_id to "
+            "use the item's suggested_ticket (see get_meeting_transcript). "
+            "confirm=true REQUIRES ticket_id: pass back the ticket.id the "
+            "preview returned; a missing or different id links nothing. The ticket must "
             "be in the meeting's project (a group meeting: a member project "
             "you can read) and you must be allowed to comment on it; any "
             "other ticket is refused with the same ticket_not_linkable "
@@ -3401,7 +3403,7 @@ _TOOLS = [
                 "meeting_id": {"type": "string", "description": "Meeting id (meet_...) or chat thread id (chat_...)."},
                 "conversation_kind": _CONVERSATION_ROW_KIND,
                 "item_id": {"type": "string", "description": "Action item id."},
-                "ticket_id": {"type": "string", "description": "Existing ticket id (tk_...). Omit to use the item's suggestion."},
+                "ticket_id": {"type": "string", "description": "Existing ticket id (tk_...). Omit on a preview to use the item's suggestion; required with confirm=true (the previewed ticket.id)."},
                 "confirm": {
                     "type": "boolean",
                     "description": "Link (or unlink). Default false (preview only).",
@@ -7782,6 +7784,15 @@ async def _handle_link_meeting_action_item(args: dict) -> dict:
     kind_params = _row_kind_params(args, "conversation_kind")
     if kind_params is None:
         return {"error": "conversation_kind must be one of: meeting, chat, all"}
+    if confirm and not unlink and ticket_id is None:
+        # Defence in depth against meeting-text injection: a link only
+        # happens for a ticket the caller saw in a preview and names again.
+        return {
+            "error": (
+                "confirm=true needs ticket_id: call without confirm first, "
+                "then pass back the preview's ticket.id as ticket_id."
+            )
+        }
     try:
         api_url, api_key = _meeting_api_config()
     except Exception as exc:
@@ -7819,8 +7830,19 @@ async def _handle_link_meeting_action_item(args: dict) -> dict:
                     "confirm=true to link the item to this ticket."
                 ),
             })
-        # Link exactly the ticket the preview showed.
-        pinned = {"ticket_id": preview.json()["ticket"]["id"]}
+        # Link exactly the ticket the preview showed, and only when it is the
+        # ticket the caller named.
+        previewed = preview.json()["ticket"]["id"]
+        if not isinstance(ticket_id, str) or previewed != ticket_id.strip():
+            return _meeting_ok({
+                "confirmed": False,
+                "error": (
+                    "ticket_id does not match the previewed ticket; nothing "
+                    "was linked."
+                ),
+                "preview": preview.json(),
+            })
+        pinned = {"ticket_id": previewed}
         resp = await client.post(f"{root}/link", headers=headers, json=pinned, params=kind_params)
     if resp.status_code >= 400:
         return _meeting_error(resp)

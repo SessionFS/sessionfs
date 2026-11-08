@@ -7,9 +7,16 @@ creates or loads one request per matching active policy for that exact sha
 fingerprint), and readiness waits until every BLOCKING request is approved.
 Advisory policies only add warnings. A new sha means a new request; older
 pending ones become ``superseded``. Pending requests expire 14 days after they
-were raised (applied lazily, on read); an expired or superseded request is
-raised again for the same key (a rejected KB request only on a person's
-explicit promote; a merge rejection stands for that commit).
+were raised; an expired or superseded request is raised again for the same key
+(a rejected KB request only on a person's explicit promote; a merge rejection
+stands for that commit).
+
+Merge requests are raised only on write/trigger paths (``raise_ticket_approvals``:
+a verdict recorded, an approval decided, a policy written, the merge-check
+trigger and PR/MR webhook ingest). Readiness reads (the readiness route, loop
+status, the merge check and GitLab status they post) only read existing
+requests: a missing one reports ``not_requested`` and an overdue pending one is
+reported ``expired`` without writing.
 
 ``decide`` locks the request, re-checks the approver (active org member who
 fits a requirement, not an implementer of the ticket — a service key counts as
@@ -439,6 +446,13 @@ async def _dialect_insert(db: AsyncSession):
     return insert(ApprovalRequest)
 
 
+def _is_overdue(req: ApprovalRequest, now: datetime) -> bool:
+    """A pending request past ``expires_at`` (expired, whether or not that
+    has been written yet)."""
+    expires = _aware(req.expires_at)
+    return req.state == "pending" and expires is not None and expires <= now
+
+
 async def _expire_if_due(db: AsyncSession, req: ApprovalRequest, now: datetime) -> None:
     """Lazy expiry: a pending request past ``expires_at`` becomes expired
     (guarded UPDATE so a concurrent decision wins cleanly)."""
@@ -554,12 +568,14 @@ async def evaluate_approvals(
 ) -> dict:
     """Approval state of ``ticket`` at the exact commit ``sha``.
 
-    With ``create`` (callers pass it when the work is otherwise ready), one
-    request per matching active policy is inserted or loaded for this sha
-    (``ON CONFLICT DO NOTHING`` on the pending-only unique key, then a read,
-    so concurrent readiness reads converge on one row); an expired or
-    superseded request for this sha is raised again. Otherwise existing
-    requests are only read and a missing one reports ``not_requested``. A
+    With ``create`` (only ``raise_ticket_approvals`` — a write/trigger path —
+    passes it, and only when the work is otherwise ready), one request per
+    matching active policy is inserted or loaded for this sha (``ON CONFLICT
+    DO NOTHING`` on the pending-only unique key, then a read, so concurrent
+    triggers converge on one row); an expired or superseded request for this
+    sha is raised again. Otherwise nothing is written: existing requests are
+    only read, a missing one reports ``not_requested`` and an overdue pending
+    one reports ``expired``. A
     request raised under an older version of the same policy (same lineage)
     for this sha stays on that version. The caller commits.
 
@@ -627,11 +643,21 @@ async def evaluate_approvals(
 
     now = _now()
     rows = await _existing()
+    # A pure read (``create`` false) never writes: an overdue pending request
+    # is reported expired without persisting it (the next raise persists it).
+    overdue: set[str] = set()
     for req, _lin in rows:
-        await _expire_if_due(db, req, now)
+        if create:
+            await _expire_if_due(db, req, now)
+        elif _is_overdue(req, now):
+            overdue.add(req.id)
+
+    def _state(req: ApprovalRequest) -> str:
+        return "expired" if req.id in overdue else req.state
+
     missing = [
         p for p in matched
-        if (picked := _pick_request(rows, p)) is None or picked.state in _MERGE_REOPENABLE
+        if (picked := _pick_request(rows, p)) is None or _state(picked) in _MERGE_REOPENABLE
     ]
     limited: set[str] = set()
     if create and missing:
@@ -695,13 +721,13 @@ async def evaluate_approvals(
         req = picked[policy.id]
         if req is not None:
             reqs_def = policy_requirements(versions[req.policy_id])
-            state = req.state
+            state = _state(req)
             got = approved_count(reqs_def, counts.get(req.id, {}))
         else:
             reqs_def = policy_requirements(policy)
             state = "limit" if policy.id in limited else "not_requested"
             got = 0
-        if policy.id in limited and req is not None and req.state in _MERGE_REOPENABLE:
+        if policy.id in limited and req is not None and _state(req) in _MERGE_REOPENABLE:
             state = "limit"
         need = required_count(reqs_def)
         if state != "approved":
@@ -749,11 +775,10 @@ async def ticket_readiness(
     db: AsyncSession, ticket: Ticket, sha: str, *, show_names: bool = False
 ) -> dict:
     """Merge readiness with approvals — the one function the readiness route,
-    the GitHub check and the GitLab status share. ``compute_merge_readiness``
-    stays pure; approval requests are created only once the work is otherwise
-    ready. ``show_names`` (org members reading the API only) puts policy
-    names in the reasons; the check summary always stays generic. The caller
-    commits (new requests are pending rows)."""
+    the GitHub check and the GitLab status share. A pure read: it never raises
+    an approval request (``raise_ticket_approvals`` does, on write/trigger
+    paths) and never writes. ``show_names`` (org members reading the API only)
+    puts policy names in the reasons; the check summary always stays generic."""
     from sessionfs.server.services.review_state import (
         compute_merge_readiness,
         load_implementer_identities,
@@ -774,10 +799,56 @@ async def ticket_readiness(
         history_truncated=truncated,
     )
     approvals = await evaluate_approvals(
-        db, ticket, sha, create=bool(readiness["ready"]), comments=comments,
-        show_names=show_names,
+        db, ticket, sha, create=False, comments=comments, show_names=show_names,
     )
     return apply_approvals(readiness, approvals)
+
+
+_FULL_SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+
+
+async def raise_ticket_approvals(db: AsyncSession, ticket: Ticket) -> Optional[str]:
+    """Raise the merge approval requests ``ticket`` needs, if any (write path).
+
+    Readiness can only hold at the commit the latest trusted strict
+    VERIFIED-CLEAN verdict is bound to, so that is the one sha a request is
+    ever raised for: when the work is otherwise ready there, one request per
+    matching active policy is inserted (or an expired/superseded one raised
+    again) exactly as a readiness read used to. Called from every trigger —
+    a verdict recorded, an approval decided, a policy written (the org recheck
+    pages every open-PR ticket), the merge-check trigger and PR/MR webhook
+    ingest. Idempotent (pending-only unique key); a truncated review history
+    raises nothing. Returns the sha evaluated (``None`` when nothing could be
+    ready). The caller commits."""
+    from sessionfs.server.services.review_state import (
+        compute_merge_readiness,
+        load_implementer_identities,
+        load_key_minters,
+        load_review_comments,
+    )
+
+    comments, truncated = await load_review_comments(db, ticket.id)
+    if truncated:
+        return None
+    identities = (await load_implementer_identities(db, [ticket]))[ticket.id]
+    key_minters = await load_key_minters(db, comments, identities)
+
+    def _readiness(sha: str) -> dict:
+        return compute_merge_readiness(
+            comments=comments,
+            sha=sha,
+            implementer_identities=identities,
+            key_minters=key_minters,
+        )
+
+    verdict = _readiness("").get("verdict") or {}
+    sha = verdict.get("reviewed_commit")
+    if not isinstance(sha, str) or not _FULL_SHA_RE.fullmatch(sha):
+        return None
+    if not _readiness(sha)["ready"]:
+        return None
+    await evaluate_approvals(db, ticket, sha, create=True, comments=comments)
+    return sha
 
 
 # ── Notifications (A2) ─────────────────────────────────────────────
@@ -1928,7 +1999,10 @@ ATTENTION_LIMIT = 100
 
 def attention_item_key(request_id: str) -> str:
     """Stable feed key: ``fy_`` + 40 hex chars of sha1("approval:<id>")."""
-    return "fy_" + hashlib.sha1(f"approval:{request_id}".encode()).hexdigest()
+    # A stable identifier, not a security digest.
+    return "fy_" + hashlib.sha1(
+        f"approval:{request_id}".encode(), usedforsecurity=False
+    ).hexdigest()
 
 
 async def attention_items(

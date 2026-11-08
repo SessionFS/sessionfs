@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.29.12] - 2026-11-08
+
+**Release gates and deployments record who wrote them, merge readiness never writes, and the last 0.29.x follow-ups are closed.** Server migration 129.
+
+### Added
+- **Who recorded a release gate or deployment.** Each release gate and deployment row stores its actor: a user, a service key (its own id and name, never its minter) or the delivery webhook. The actor comes only from the request's credential, never from the body. A re-recorded gate is attributed to whoever recorded it last. Public loop share views never show actor ids. Migration 129.
+
+### Changed
+- **Merge readiness is a pure read.** Reading readiness (the API, MCP `check_merge_readiness`, loop status, the GitHub check and the GitLab status) no longer creates approval requests. Requests are raised when something changes: a verdict is recorded (including a trusted verdict posted as a ticket comment), an approval is decided, a policy is written, the merge check is triggered, or a pull request or merge request webhook arrives. An expired request is now raised again on the next of those, not on the next read.
+- **GitLab commit statuses are sent after the delivery event is saved**, with up to three attempts on network errors and 5xx responses, all inside the webhook's 8-second limit. GitHub check runs get the same retry.
+- **Confirming `link_meeting_action_item` needs the ticket the preview showed.** Pass back the previewed `ticket_id` with `confirm=true`; if the item's suggestion changed in the meantime, nothing is linked and the new preview comes back.
+- **The Review loops inbox follows the same plan rule as the review-loop routes**, including feature grandfathering.
+
+### Fixed
+- Unlinking a meeting or chat item takes the same locks as linking and re-checks your access under them; the ticket's timeline only records the unlink when you can still read the ticket.
+- Dismissing a suggested ticket checks the service key's ticket scope, like linking does.
+- The Cursor converter's private database copies are now deleted when they are closed.
+
 ## [0.29.11] - 2026-11-07
 
 **Meeting and chat action items that find the ticket you already have, a For You page that stays readable, renamable helper conversations, and a round of review-loop and security hardening.** Server migrations 125–128.

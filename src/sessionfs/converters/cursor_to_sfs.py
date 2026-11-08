@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import sqlite3
 import tempfile
@@ -85,16 +86,46 @@ def _get_workspace_storage_path() -> Path | None:
     return _CURSOR_WORKSPACE_STORAGE.get(plat)
 
 
+def _remove_copies(tmp: str) -> None:
+    for path in (tmp, tmp + "-wal", tmp + "-shm", tmp + "-journal"):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+class _CopiedDbConnection(sqlite3.Connection):
+    """A connection to a private copy of a DB; closing it removes the copy."""
+
+    _sfs_tmp_path: str | None = None
+
+    def close(self) -> None:
+        super().close()
+        tmp, self._sfs_tmp_path = self._sfs_tmp_path, None
+        if tmp:
+            _remove_copies(tmp)
+
+
 def _safe_read_db(db_path: Path) -> sqlite3.Connection:
-    """Open a SQLite DB safely by copying it first (avoids WAL locks)."""
-    tmp = tempfile.mktemp(suffix=".vscdb")
-    shutil.copy2(str(db_path), tmp)
-    # Also copy WAL/SHM if they exist
-    for ext in ("-wal", "-shm"):
-        src = Path(str(db_path) + ext)
-        if src.exists():
-            shutil.copy2(str(src), tmp + ext)
-    conn = sqlite3.connect(tmp)
+    """Open a SQLite DB safely by copying it first (avoids WAL locks).
+
+    The copy is created with ``mkstemp`` (exclusive, owner-only) rather than
+    the race-prone ``mktemp`` name, and is removed when the connection closes.
+    """
+    fd, tmp = tempfile.mkstemp(suffix=".vscdb")
+    os.close(fd)
+    try:
+        shutil.copy2(str(db_path), tmp)
+        # Also copy WAL/SHM if they exist
+        for ext in ("-wal", "-shm"):
+            src = Path(str(db_path) + ext)
+            if src.exists():
+                shutil.copy2(str(src), tmp + ext)
+        conn = sqlite3.connect(tmp, factory=_CopiedDbConnection)
+    except BaseException:
+        _remove_copies(tmp)
+        raise
+    conn._sfs_tmp_path = tmp
     conn.row_factory = sqlite3.Row
     return conn
 

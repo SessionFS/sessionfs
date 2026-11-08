@@ -204,8 +204,15 @@ async def _count(db: AsyncSession, coro_factory) -> int:
 
 
 @pytest.mark.asyncio
-async def test_plan_query_count_not_linear_in_fan_out(client: AsyncClient, db_session: AsyncSession):
+async def test_plan_query_count_not_linear_in_fan_out(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
     from sessionfs.server.routes.loops import _load_loop_config
+    from sessionfs.server.services import merge_checks
+
+    # The engine-wide counter would also see the detached merge-check
+    # rechecks the review rounds spawn; only compute_plan is measured here.
+    monkeypatch.setattr(merge_checks, "schedule_recheck", lambda t: None)
 
     counts = []
     for fan_out in (2, 8):
@@ -548,11 +555,12 @@ async def test_approval_policy_gate_with_a_real_policy(client: AsyncClient, db_s
     assert plan["build"]["gate_status"]["reason"] == "Waiting on approval: Security sign-off (0 of 1)"
     assert raw["ready_steps"] == []
 
-    # A trusted clean at the head raises the pending request.
+    # A trusted clean at the head: the trigger raises the pending request.
     await _seed_trusted_clean(db_session, build, e.reviewer)
     ticket = await db_session.get(Ticket, build)
-    readiness = await approvals.ticket_readiness(db_session, ticket, SHA1)
+    await approvals.raise_ticket_approvals(db_session, ticket)
     await db_session.commit()
+    readiness = await approvals.ticket_readiness(db_session, ticket, SHA1)
     (req,) = [a for a in readiness["approvals"] if a["policy_id"] == pid]
     assert req["state"] == "pending"
     plan, raw = await _plan(client, e, loop_id)

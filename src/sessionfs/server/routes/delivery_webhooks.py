@@ -19,9 +19,11 @@ reason as the Jira router (the project catch-all would otherwise swallow it).
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -46,11 +48,15 @@ from sessionfs.server.services import delivery_ingest, jira_sync
 org_router = APIRouter(prefix="/api/v1/orgs", tags=["delivery-webhooks"])
 webhook_router = APIRouter(prefix="/api/v1/webhooks", tags=["delivery-webhooks"])
 
+logger = logging.getLogger(__name__)
+
 _ORG_NOT_FOUND = "Organization not found"
 _VALID_PROVIDERS = {"github", "gitlab"}
 
 # Same 401 body for a bad signature and an unknown org: no existence oracle.
 _INVALID_SIGNATURE = "Invalid webhook signature"
+# Post-commit GitLab status sends must finish inside GitLab's webhook timeout.
+_STATUS_SEND_DEADLINE_S = 8.0
 
 
 def _insufficient_role(current_role: str | None) -> dict:
@@ -301,8 +307,17 @@ async def _inbound_webhook(
     ):
         return {"status": "duplicate"}
 
+    # A GitLab commit status the event calls for is computed inside this
+    # transaction but sent only after the ledger commit, with a bounded
+    # retry, so no transaction stays open during the GitLab call.
+    deferred: list[delivery_ingest.GitLabStatusPost] = []
     result = await delivery_ingest.ingest_event(
-        db, provider=provider, org_id=org_id, event=event, payload=payload
+        db,
+        provider=provider,
+        org_id=org_id,
+        event=event,
+        payload=payload,
+        deferred_statuses=deferred,
     )
     try:
         await db.commit()
@@ -310,6 +325,21 @@ async def _inbound_webhook(
         # A concurrent delivery of the same event won the ledger slot.
         await db.rollback()
         return {"status": "duplicate"}
+    if deferred:
+        # GitLab gives up on a webhook after ~10 s and disables hooks that
+        # keep failing, so the sends (retries included) get a hard deadline
+        # well inside that. The event is already in the ledger either way.
+        try:
+            await asyncio.wait_for(
+                delivery_ingest.send_gitlab_statuses(deferred),
+                timeout=_STATUS_SEND_DEADLINE_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "GitLab commit status sends for org %s passed the %ss webhook deadline",
+                org_id,
+                _STATUS_SEND_DEADLINE_S,
+            )
     return result
 
 

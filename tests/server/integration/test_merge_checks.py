@@ -734,10 +734,14 @@ async def test_pending_approval_keeps_check_not_green(
     await _seed_pr(db_session, project, ticket, head_sha=HEAD)
     await make_policy(db_session, org)
 
-    result = await merge_checks.refresh_merge_check(
+    # The posting refresh alone is a read: it raises no approval request.
+    await merge_checks.refresh_merge_check(
         db_session, ticket_id=ticket.id, project_id=project.id
     )
-    assert result["ready"] is False
+    assert (await db_session.execute(select(ApprovalRequest))).scalars().all() == []
+    # The re-evaluation hook (verdict / decision / policy write) raises it.
+    await merge_checks.on_verdict_recorded(db_session, ticket.id)
+    await db_session.commit()
     run = gh.runs_by_sha[HEAD][-1]
     assert run["conclusion"] == "action_required"
     # The check summary never names the policy.

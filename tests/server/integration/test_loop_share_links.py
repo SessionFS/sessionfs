@@ -600,6 +600,19 @@ async def test_public_view_serves_ship_report_without_dollars_or_identities(
         pr_numbers=[7],
         created_by_user_id=owner.id,
     )
+    # Gates and deployments carry actor provenance (migration 129).
+    stamp = releases.actor_stamp(
+        key_kind="user", user_id=owner.id, service_key_id=None, service_key_name=None
+    )
+    release_id = (
+        await releases.list_releases(
+            db_session, project_id=project.id, limit=1, before=None, before_id=None
+        )
+    )[0]["id"]
+    await releases.record_gate(db_session, release_id=release_id, kind="ci", actor=stamp)
+    await releases.record_deployment(
+        db_session, release_id=release_id, environment="prod", actor=stamp
+    )
     await db_session.commit()
 
     resp = await client.post(
@@ -617,6 +630,9 @@ async def test_public_view_serves_ship_report_without_dollars_or_identities(
     payload = json.dumps(body)
     assert owner.id not in payload
     assert "author_user_id" not in payload and "created_by_user_id" not in payload
+    assert "actor_user_id" not in payload and "service_key_id" not in payload
+    assert body["gates"][0]["actor_type"] == "user"
+    assert body["deployments"][0]["actor_type"] == "user"
     assert "usd" not in payload.lower()
     for string in _all_strings(body):
         assert not EMAIL_RE.search(string), f"raw email leaked: {string!r}"

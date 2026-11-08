@@ -106,7 +106,7 @@ A file upload is stored with `source=file_upload`; `--stdin` uses `manual_paste`
 
 ## MCP tools
 
-Seven tools cover the same flows for agents: `upload_meeting_transcript`, `list_meeting_transcripts`, `get_meeting_transcript`, `extract_meeting_action_items`, `promote_meeting_action_item`, `link_meeting_action_item` and `search_meetings`. A project is picked by `git_remote` or the workspace, a group by `group_id` (user keys only). `promote_meeting_action_item` and `link_meeting_action_item` are **preview only** unless `confirm=true`. Extraction (`extract_meeting_action_items`, or `extract=true` on upload) uses your own LLM key. See [MCP Server](/mcp/#meetings-and-chat). Chat threads use the same tools; see [Chat threads](/chat/).
+Seven tools cover the same flows for agents: `upload_meeting_transcript`, `list_meeting_transcripts`, `get_meeting_transcript`, `extract_meeting_action_items`, `promote_meeting_action_item`, `link_meeting_action_item` and `search_meetings`. A project is picked by `git_remote` or the workspace, a group by `group_id` (user keys only). `promote_meeting_action_item` and `link_meeting_action_item` are **preview only** unless `confirm=true`; confirming a link also needs the `ticket_id` the preview returned. Extraction (`extract_meeting_action_items`, or `extract=true` on upload) uses your own LLM key. See [MCP Server](/mcp/#meetings-and-chat). Chat threads use the same tools; see [Chat threads](/chat/).
 
 ## Session helper
 

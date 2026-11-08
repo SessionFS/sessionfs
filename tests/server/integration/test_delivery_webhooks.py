@@ -855,3 +855,92 @@ async def test_delivery_ledger_key_is_bound_to_the_signed_body(
         )
     ).scalars().all()
     assert len(keys) == 2 and "same-delivery-id" not in keys
+
+
+
+@pytest.mark.asyncio
+async def test_gitlab_mr_status_sent_after_commit_with_retry(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    """tk_86db8de1c3bf4bf0 #8: the MR's commit status is computed in the
+    ingest transaction but sent after the ledger commit, retrying a
+    transport error."""
+    import httpx
+
+    from sessionfs.server import gitlab_client as gc
+    from sessionfs.server.db.models import GitLabSettings, ProjectRepo
+    from sessionfs.server.llm_keys import encrypt_secret
+    from sessionfs.server.services import delivery_ingest
+
+    owner, key = await _make_user(db_session, "owner")
+    org = await _make_org(db_session)
+    await _add_org_member(db_session, org, owner, "owner")
+    project = await _make_project(db_session, owner, org, "acme/widgets")
+    db_session.add(
+        ProjectRepo(
+            id=f"repo_{uuid.uuid4().hex[:16]}",
+            project_id=project.id,
+            git_remote_normalized="acme/widgets",
+            provider="gitlab",
+            provider_repo_id="321",
+            is_primary=True,
+        )
+    )
+    db_session.add(
+        GitLabSettings(
+            user_id=owner.id,
+            instance_url="https://gitlab.example.com",
+            encrypted_access_token=encrypt_secret("glpat-test"),
+            webhook_secret="wh-secret",
+        )
+    )
+    await db_session.commit()
+    ticket = await _make_ticket(db_session, project, owner)
+    secret = (await _rotate(client, key, org.id, "gitlab"))["webhook_secret"]
+
+    sent_states: list[str] = []
+    attempts: list[int] = []
+
+    async def fake_post(self, project_id, sha, state, *, name, description, target_url=None):
+        attempts.append(project_id)
+        if len(attempts) == 1:
+            raise httpx.ConnectError("down")
+        sent_states.append(state)
+        return {"id": 1}
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(gc.GitLabClient, "post_commit_status", fake_post)
+    monkeypatch.setattr(delivery_ingest.asyncio, "sleep", no_sleep)
+
+    sha = "b" * 40
+    payload = json.dumps(
+        {
+            "object_kind": "merge_request",
+            "project": {"git_http_url": "https://gitlab.com/acme/widgets"},
+            "object_attributes": {
+                "id": 77,
+                "iid": 7,
+                "title": f"ship {ticket.id}",
+                "state": "opened",
+                "action": "open",
+                "source_branch": "feat/z",
+                "last_commit": {"id": sha},
+                "url": "https://gitlab.com/acme/widgets/-/merge_requests/7",
+                "description": "",
+            },
+        }
+    ).encode()
+    resp = await client.post(
+        f"/api/v1/webhooks/gitlab/{org.id}",
+        content=payload,
+        headers={
+            "content-type": "application/json",
+            "x-gitlab-token": secret,
+            "x-gitlab-event-uuid": "gl-uuid-retry",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert attempts == [321, 321], resp.json()
+    assert sent_states == ["pending"]

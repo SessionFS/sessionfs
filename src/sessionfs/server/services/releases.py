@@ -551,6 +551,42 @@ async def link_release_tickets(
     return await _linked_ticket_ids(db, release_id=release_id, project_id=project_id)
 
 
+# Provenance for rows the delivery webhook ingest writes (no credential).
+WEBHOOK_ACTOR: dict[str, Any] = {"actor_type": "webhook"}
+
+_ACTOR_KEYS = ("actor_type", "actor_user_id", "service_key_id", "service_key_name")
+
+
+def actor_stamp(
+    *,
+    key_kind: str,
+    user_id: str | None,
+    service_key_id: str | None,
+    service_key_name: str | None,
+) -> dict[str, Any]:
+    """Actor columns for a write through the API, from the authenticated
+    credential. A service key is recorded as itself (id + name) and never as
+    the user who minted it; a user key records the user."""
+    if key_kind == "service":
+        return {
+            "actor_type": "service_key",
+            "actor_user_id": None,
+            "service_key_id": service_key_id,
+            "service_key_name": (service_key_name or "")[:100] or None,
+        }
+    return {
+        "actor_type": "user",
+        "actor_user_id": user_id,
+        "service_key_id": None,
+        "service_key_name": None,
+    }
+
+
+def _actor_values(actor: dict[str, Any] | None) -> dict[str, Any]:
+    actor = actor or {}
+    return {k: actor.get(k) for k in _ACTOR_KEYS}
+
+
 async def record_gate(
     db: AsyncSession,
     *,
@@ -559,8 +595,14 @@ async def record_gate(
     status: str = "passed",
     run_id: str | None = None,
     url: str | None = None,
+    actor: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Insert or update a release gate (unique per release + kind)."""
+    """Insert or update a release gate (unique per release + kind).
+
+    ``actor`` is the server-derived provenance (``actor_stamp`` or
+    ``WEBHOOK_ACTOR``), never caller input. A re-record overwrites it along
+    with the status, so the row names whoever set its current status."""
+    stamp = _actor_values(actor)
     kind = clean_str(kind, _MAX_KIND)
     status = (status or "").strip().lower()
     values: dict[str, Any] = {
@@ -570,6 +612,7 @@ async def record_gate(
         "status": status,
         "run_id": clean_str(run_id, _MAX_SHA) or None,
         "url": safe_url(url),
+        **stamp,
     }
     stmt = (await _dialect_insert(db, ReleaseGate)).values(**values)
     stmt = stmt.on_conflict_do_update(
@@ -578,6 +621,12 @@ async def record_gate(
             "status": stmt.excluded.status,
             "run_id": stmt.excluded.run_id,
             "url": stmt.excluded.url,
+            "actor_type": stmt.excluded.actor_type,
+            "actor_user_id": stmt.excluded.actor_user_id,
+            "service_key_id": stmt.excluded.service_key_id,
+            "service_key_name": stmt.excluded.service_key_name,
+            # The actor columns name the latest writer, so the time does too.
+            "recorded_at": func.now(),
         },
     )
     await db.execute(stmt)
@@ -600,9 +649,11 @@ async def record_deployment(
     environment: str,
     deployed_at: datetime | None = None,
     source: str = "manual",
+    actor: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Append a deployment record for a release (not idempotent — a release
-    may deploy to the same environment more than once)."""
+    may deploy to the same environment more than once). ``actor`` is the
+    server-derived provenance, as for ``record_gate``."""
     environment = clean_str(environment, _MAX_ENV)
     source = (source or "").strip().lower()
     deployment = Deployment(
@@ -611,6 +662,7 @@ async def record_deployment(
         environment=environment,
         deployed_at=deployed_at or _now(),
         source=source,
+        **_actor_values(actor),
     )
     db.add(deployment)
     await db.commit()
@@ -680,6 +732,11 @@ def _gate_to_dict(gate: ReleaseGate) -> dict[str, Any]:
         "run_id": gate.run_id,
         "url": gate.url,
         "recorded_at": review_loop._iso(gate.recorded_at),
+        # Same readers and keys as a release's created_by_user_id /
+        # service_key_id; public share views strip the identities.
+        "actor_type": gate.actor_type,
+        "actor_user_id": gate.actor_user_id,
+        "service_key_id": gate.service_key_id,
     }
 
 
@@ -690,6 +747,9 @@ def _deployment_to_dict(deployment: Deployment) -> dict[str, Any]:
         "environment": deployment.environment,
         "deployed_at": review_loop._iso(deployment.deployed_at),
         "source": deployment.source,
+        "actor_type": deployment.actor_type,
+        "actor_user_id": deployment.actor_user_id,
+        "service_key_id": deployment.service_key_id,
     }
 
 

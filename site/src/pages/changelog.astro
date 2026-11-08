@@ -17,6 +17,27 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5 noise">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.29.12 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="pulse-badge inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-full px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.29.12</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">November 8, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="font-heading text-xl font-bold mb-4">Who recorded it, and reads that never write</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Release gates and deployments record who wrote them</strong>: a user, a service key or the delivery webhook, taken from the request&rsquo;s credential only. Public loop share views never show actor ids. See <a href="/review-loop/" class="text-brand hover:underline">Review Loop</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Merge readiness is a pure read.</strong> Approval requests are raised only when something changes &mdash; a verdict, a decision, a policy write, the merge-check trigger or a pull request or merge request webhook &mdash; never by reading readiness. See <a href="/approvals/" class="text-brand hover:underline">Approvals</a>.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Changed:</strong> GitLab commit statuses are sent after the event is saved, with a bounded retry inside the webhook deadline, and GitHub check runs retry too; confirming <span class="font-mono text-accent text-sm">link_meeting_action_item</span> needs the ticket the preview showed; the Review loops inbox follows the same plan rule as the loop routes.</li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><strong>Fixed:</strong> unlinking a meeting or chat item locks and re-checks like linking; dismissing a suggestion checks the service key&rsquo;s ticket scope; the Cursor converter deletes its private database copies.</li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="text-muted-dim">Migrations 001&ndash;129 (129 actor columns on release gates and deployments; additive). Self-hosted: run migration 129. 131 MCP tools.</span></li>
+        </ul>
+      </article>
+
+      <div class="grad-divider"></div>
+
       <!-- v0.29.11 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +45,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.29.11</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">November 7, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-bold px-2.5 py-0.5 rounded-full bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="font-heading text-xl font-bold mb-4">Action items that find your ticket</h2>
         <ul class="space-y-2 text-base text-muted">
