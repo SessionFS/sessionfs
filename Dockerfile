@@ -23,7 +23,10 @@ RUN groupadd --system --gid 10001 sessionfs \
 # openssh-client: the scheduled public-catalog mirror job (`sfs catalog
 # export --ssh-key-file`) pushes to GitHub over SSH with a deploy key; git
 # needs the ssh binary for that (--no-install-recommends keeps xauth out).
+# `apt-get upgrade` picks up Debian security fixes released after the base
+# image was built (the image scan fails on any fixable CRITICAL/HIGH).
 RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
     && apt-get install -y --no-install-recommends git ca-certificates openssh-client \
     && rm -rf /var/lib/apt/lists/* \
     && git --version | awk '{ split($3, v, "."); if (v[1] < 2 || (v[1] == 2 && v[2] < 44)) { print "git >= 2.44 required, found " $3; exit 1 } }'
