@@ -17,6 +17,8 @@ export const LIMITS = {
   personalInstructions: 2000,
 } as const;
 
+export const DEFAULT_GROUNDING = 'strict' as const;
+
 export const DEFAULTS: HelperModelSettings = {
   max_output_tokens: 4096,
   temperature: 0,
@@ -24,10 +26,11 @@ export const DEFAULTS: HelperModelSettings = {
   max_tool_steps: 8,
   reasoning_effort: null,
   answer_style: 'concise',
+  grounding: 'strict',
 };
 
 /** Settings keys whose explicit null returns them to the default. */
-export type ResettableKey = 'max_output_tokens' | 'max_tool_steps' | 'answer_style';
+export type ResettableKey = 'max_output_tokens' | 'max_tool_steps' | 'answer_style' | 'grounding';
 
 export type FieldKey =
   | keyof OrgHelperModelSettings
@@ -47,6 +50,7 @@ export interface Draft {
   /** '' = not set (sent as null). */
   reasoning_effort: '' | 'off' | 'low' | 'medium' | 'high';
   answer_style: 'concise' | 'detailed';
+  grounding: 'strict' | 'off';
   ceiling_max_output_tokens: string;
   ceiling_max_tool_steps: string;
   monthly_token_budget: string;
@@ -71,6 +75,8 @@ export function draftFrom(o: Original): Draft {
     max_tool_steps: numStr(s.max_tool_steps),
     reasoning_effort: s.reasoning_effort ?? '',
     answer_style: s.answer_style,
+    // Older servers don't send it: their behaviour is "strict" by default.
+    grounding: s.grounding ?? DEFAULT_GROUNDING,
     ceiling_max_output_tokens: numStr(s.ceiling_max_output_tokens),
     ceiling_max_tool_steps: numStr(s.ceiling_max_tool_steps),
     monthly_token_budget: numStr(o.monthly_token_budget),
@@ -168,6 +174,9 @@ export function buildPatch(
   if (resets.has('answer_style')) settings.answer_style = null;
   else if (draft.answer_style !== s.answer_style) settings.answer_style = draft.answer_style;
 
+  if (resets.has('grounding')) settings.grounding = null;
+  else if (draft.grounding !== (s.grounding ?? DEFAULT_GROUNDING)) settings.grounding = draft.grounding;
+
   const body: PatchBody = {};
 
   if (opts.org) {
@@ -208,6 +217,7 @@ const FIELD_KEYS: readonly FieldKey[] = [
   'max_tool_steps',
   'reasoning_effort',
   'answer_style',
+  'grounding',
   'ceiling_max_output_tokens',
   'ceiling_max_tool_steps',
   'monthly_token_budget',
@@ -293,6 +303,11 @@ export const STYLE_LABELS: Record<string, string> = {
   detailed: 'Detailed',
 };
 
+export const GROUNDING_LABELS: Record<string, string> = {
+  strict: 'Mark sentences without a source',
+  off: 'Citation markers only',
+};
+
 /** Read-only rows for the effective settings. */
 export function describeSettings(s: HelperModelSettings): Array<{ label: string; value: string }> {
   return [
@@ -302,5 +317,9 @@ export function describeSettings(s: HelperModelSettings): Array<{ label: string;
     { label: 'Max tool steps', value: String(s.max_tool_steps) },
     { label: 'Reasoning effort', value: REASONING_LABELS[s.reasoning_effort ?? ''] },
     { label: 'Answer style', value: STYLE_LABELS[s.answer_style] ?? s.answer_style },
+    {
+      label: 'Sources',
+      value: GROUNDING_LABELS[s.grounding ?? DEFAULT_GROUNDING] ?? String(s.grounding),
+    },
   ];
 }

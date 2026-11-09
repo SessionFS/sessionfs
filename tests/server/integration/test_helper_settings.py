@@ -166,6 +166,7 @@ async def test_user_get_returns_defaults(client: AsyncClient, db_session: AsyncS
         "max_tool_steps": 8,
         "reasoning_effort": None,
         "answer_style": "concise",
+        "grounding": "strict",
     }
     assert body["instructions"] is None
     assert body["effective_settings"] is None

@@ -41,6 +41,11 @@ from sessionfs.server.github_app import (
     _find_installation_repo,
     get_installation_token,
 )
+from sessionfs.server.services.merge_check_order import (
+    REPAIR_ROUNDS,
+    PostGuard,
+    take_eval_seq,
+)
 
 _FULL_SHA_RE = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
 
@@ -136,18 +141,49 @@ def _check_run_status(resp: Optional[httpx.Response]) -> str:
 
 
 async def _post_or_update_check_run(
-    token: str, repo: str, head_sha: str, conclusion: str, summary: str
+    token: str,
+    repo: str,
+    head_sha: str,
+    conclusion: str,
+    summary: str,
+    *,
+    guard: Optional[PostGuard] = None,
 ) -> str:
     """Create or update the check run for one ``(repo, head_sha, name)``.
 
+    With a ``guard`` the post is ordered (services/merge_check_order.py): it
+    is skipped (``superseded``) when a newer evaluation of the commit already
+    claimed the post, and after a successful write the newest claimed state
+    is re-sent if a newer evaluation claimed while this one was in flight.
+
     Returns ``check_run`` on success, or ``forbidden`` (no checks:write),
-    ``not_found``, or ``unavailable``.
+    ``not_found``, ``unavailable`` or ``superseded``.
     """
     owner, sep, name = repo.partition("/")
     if not sep or not owner or not name:
         return "unavailable"
     api = f"https://api.github.com/repos/{owner}/{name}"
+    if guard is not None and not await guard.claim(conclusion, summary):
+        return "superseded"
+    status = await _write_check_run(token, api, head_sha, conclusion, summary)
+    if status == "check_run" and guard is not None:
+        written = guard.seq
+        for _ in range(REPAIR_ROUNDS):
+            newest = await guard.newest()
+            if newest is None or newest[0] <= written:
+                break
+            written, newest_conclusion, newest_summary = newest
+            if await _write_check_run(
+                token, api, head_sha, newest_conclusion, newest_summary
+            ) != "check_run":
+                break
+    return status
 
+
+async def _write_check_run(
+    token: str, api: str, head_sha: str, conclusion: str, summary: str
+) -> str:
+    """The unordered create-or-update of one check run (no DB access)."""
     # Look up an existing run for THIS commit only. A new head sha therefore
     # gets its own run and an older run is never touched.
     run_id: Optional[int] = None
@@ -434,6 +470,13 @@ async def _refresh_for_target(
     if not await project_plan_has_feature(project, "review_loop", db):
         return _skipped(repo, head_sha, False, "plan")
 
+    # Ordering: the evaluation sequence is taken before readiness is read
+    # (row locked until the commit below, before any outbound call), so a
+    # stale evaluation can never post over a newer one.
+    seq = await take_eval_seq(
+        db, project_id=project_id, provider="github", repo=repo, head_sha=head_sha
+    )
+
     all_ready = True
     any_verdict = False
     reasons: list[str] = []
@@ -490,7 +533,21 @@ async def _refresh_for_target(
     if grant is None:
         return _skipped(repo, head_sha, ready, "repository not granted to the installation")
 
-    posted = await _post_or_update_check_run(token, repo, head_sha, conclusion, summary)
+    guard = PostGuard(
+        db=db,
+        project_id=project_id,
+        provider="github",
+        repo=repo,
+        head_sha=head_sha,
+        seq=seq,
+    )
+    posted = await _post_or_update_check_run(
+        token, repo, head_sha, conclusion, summary, guard=guard
+    )
+    if posted == "superseded":
+        return _skipped(
+            repo, head_sha, ready, "a newer evaluation of this commit already posted"
+        )
     if posted == "check_run":
         return {"repo": repo, "head_sha": head_sha, "ready": ready, "posted": "check_run"}
 
@@ -655,7 +712,7 @@ async def refresh_gitlab_statuses(db: AsyncSession, ticket_id: str) -> int:
     if planned:
         if db.in_transaction():
             await db.commit()
-        await send_gitlab_statuses(planned)
+        await send_gitlab_statuses(planned, db)
     return posted
 
 

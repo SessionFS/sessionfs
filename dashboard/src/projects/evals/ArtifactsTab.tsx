@@ -20,6 +20,7 @@ import { artifactLabel, KIND_LABEL, pct, planAllowsEvals, shortDate, stageLabel,
 import { ArtifactUri, PlanNotice, RunVerdictBadge, StageBadge } from './format';
 import { useViewParams } from './params';
 import { LineageGraph } from './LineageGraph';
+import { Term } from '../../help/Term';
 
 const KIND_OPTIONS = [{ value: '', label: 'All kinds' }, ...Object.entries(KIND_LABEL).map(([value, label]) => ({ value, label }))];
 const STAGE_OPTIONS = [{ value: '', label: 'Any stage' }, ...STAGES.map((s) => ({ value: s, label: stageLabel(s) }))];
@@ -82,7 +83,9 @@ export default function ArtifactsTab(props: Props) {
   return (
     <section aria-labelledby="artifacts-heading" className="space-y-4">
       <div className="min-w-0">
-        <h2 id="artifacts-heading" className="text-md font-semibold text-text-primary">Artifacts</h2>
+        <h2 id="artifacts-heading" className="text-md font-semibold text-text-primary">
+          <Term id="artifact">Artifacts</Term>
+        </h2>
         <p className="text-sm text-text-tertiary">
           Datasets, models and prompts by version, what each came from, and which evals it has passed. SessionFS stores pointers, never the files.
         </p>
@@ -180,7 +183,7 @@ function ArtifactsList({
                   </button>
                 ),
               },
-              { key: 'stage', header: 'Stage', render: (a) => <StageBadge stage={a.stage} deprecated={!!a.deprecated_at} /> },
+              { key: 'stage', header: <Term id="artifact-stage">Stage</Term>, render: (a) => <StageBadge stage={a.stage} deprecated={!!a.deprecated_at} /> },
               { key: 'tags', header: 'Tags', render: (a) => <TagList tags={a.tags} /> },
               { key: 'created', header: 'Registered', render: (a) => shortDate(a.created_at) },
             ]}
@@ -272,7 +275,9 @@ function ArtifactDetail({
       </Card>
       <PromotionPanel projectId={projectId} artifact={a} canPromote={canEdit && allowed} />
       <section aria-labelledby="lineage-heading" className="space-y-2">
-        <h4 id="lineage-heading" className="text-sm font-semibold text-text-primary">Lineage</h4>
+        <h4 id="lineage-heading" className="text-sm font-semibold text-text-primary">
+          <Term id="lineage">Lineage</Term>
+        </h4>
         {lineage.isLoading && <p className="text-sm text-text-tertiary">Tracing lineage…</p>}
         {lineage.error && <Alert variant="danger" title="Couldn't trace lineage">{errorMessage(lineage.error)}</Alert>}
         {lineage.data && <LineageGraph lineage={lineage.data} onOpen={onOpen} />}
@@ -396,6 +401,13 @@ export function PromotionPanel({ projectId, artifact, canPromote }: { projectId:
               <Button
                 size="sm"
                 disabled={!check.data?.allowed || promote.isPending}
+                disabledReason={
+                  check.data && !check.data.allowed
+                    ? 'Blocked by the promotion gate. The reasons are listed below.'
+                    : !check.data
+                      ? 'Checking the promotion gate'
+                      : undefined
+                }
                 loading={promote.isPending}
                 onClick={() => setConfirm(true)}
               >

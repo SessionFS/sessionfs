@@ -378,9 +378,9 @@ describe('MarketplacePage publishing and moderation entry points', () => {
     expect(screen.getByText('yanked')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
     expect(screen.getByText('This version is yanked.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Download archive' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Request for project' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Preview instructions' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Download archive' })).toBeUnavailable();
+    expect(screen.getByRole('button', { name: 'Request for project' })).toBeUnavailable();
+    expect(screen.getByRole('button', { name: 'Preview instructions' })).toBeUnavailable();
   });
 
   it('treats a package-wide block as blocking every version', async () => {
@@ -392,7 +392,7 @@ describe('MarketplacePage publishing and moderation entry points', () => {
     expect(screen.getByText('blocked')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /^Review Helper/ }));
     expect(screen.getByText('This version is blocked.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Download archive' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Download archive' })).toBeUnavailable();
   });
 
   it('badges a listing the server marks blocked even without feed data', () => {

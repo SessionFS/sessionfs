@@ -1,0 +1,32 @@
+{{- /*
+SLO recording + alerting rules as a Prometheus Operator PrometheusRule.
+Off by default: it needs the monitoring.coreos.com CRDs (kube-prometheus-stack
+or the Prometheus Operator) and a scrape job that authenticates to
+/api/v1/admin/metrics. The rules come verbatim from files/slo-rules.yaml,
+which is also published as docs/observability/sessionfs-slo-rules.yaml.
+*/ -}}
+{{- if .Values.api.metrics.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "sessionfs.fullname" . }}-slo
+  labels:
+    {{- include "sessionfs.componentLabels" (list . "api") | nindent 4 }}
+    {{- with .Values.api.metrics.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  {{- $rules := .Files.Get "files/slo-rules.yaml" | fromYaml }}
+  {{- $groups := $rules.groups }}
+  {{- if not .Values.api.metrics.prometheusRule.reminderSweep }}
+  {{- $kept := list }}
+  {{- range $groups }}
+  {{- if ne .name "sessionfs-slo-reminders" }}
+  {{- $kept = append $kept . }}
+  {{- end }}
+  {{- end }}
+  {{- $groups = $kept }}
+  {{- end }}
+  groups:
+    {{- toYaml $groups | nindent 4 }}
+{{- end }}

@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import type { TicketApproval } from '../api/client';
 import { Badge } from '../components/Badge';
 import { approvalRequestHref, stateLabel, stateVariant } from './format';
+import { Term } from '../help/Term';
 
 /** Blocking approvals that still hold the change. */
 export function awaitingApprovals(approvals: TicketApproval[] | undefined): TicketApproval[] {
@@ -68,7 +69,11 @@ export function ApprovalsPanel({ approvals, warnings }: { approvals?: TicketAppr
             <li key={a.policy_id} className="flex flex-wrap items-center gap-2">
               <span className="text-text-primary">{a.policy_name}</span>
               <Badge variant={stateVariant(a.state)} tint label={a.state === 'not_requested' ? 'Not requested' : stateLabel(a.state)} size="sm" />
-              {!a.blocking && <Badge variant="default" tint label="Advisory" size="sm" />}
+              {!a.blocking && (
+                <Term id="approval-advisory">
+                  <Badge variant="default" tint label="Advisory" size="sm" />
+                </Term>
+              )}
               <span className="text-xs text-text-tertiary">
                 {a.approved_count} of {a.required_count}
               </span>

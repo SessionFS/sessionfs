@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 
+from sessionfs.http_idempotency import idempotent_async_client
 from sessionfs.mcp.path_safety import _path_segment
 
 logger = logging.getLogger("sessionfs.mcp.cloud_client")
@@ -32,7 +33,7 @@ class CloudAPIClient:
     async def validate_key(self, api_key: str) -> bool:
         """Check if an API key is valid by calling /api/v1/sessions."""
         try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            async with idempotent_async_client(timeout=_TIMEOUT) as client:
                 resp = await client.get(
                     f"{self.base_url}/api/v1/sessions",
                     params={"page_size": 1},
@@ -56,7 +57,7 @@ class CloudAPIClient:
             params["tool"] = tool_filter
         if days:
             params["days"] = days
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        async with idempotent_async_client(timeout=_TIMEOUT) as client:
             resp = await client.get(
                 f"{self.base_url}/api/v1/sessions/search",
                 params=params,
@@ -67,7 +68,7 @@ class CloudAPIClient:
 
     async def get_session(self, api_key: str, session_id: str) -> dict[str, Any]:
         """Get session metadata."""
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        async with idempotent_async_client(timeout=_TIMEOUT) as client:
             resp = await client.get(
                 f"{self.base_url}/api/v1/sessions/{_path_segment(session_id)}",
                 headers=self._headers(api_key),
@@ -83,7 +84,7 @@ class CloudAPIClient:
         page_size: int = 50,
     ) -> dict[str, Any]:
         """Get paginated messages from a session."""
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        async with idempotent_async_client(timeout=_TIMEOUT) as client:
             resp = await client.get(
                 f"{self.base_url}/api/v1/sessions/{_path_segment(session_id)}/messages",
                 params={"page": page, "page_size": page_size},
@@ -95,7 +96,7 @@ class CloudAPIClient:
     async def get_project_context(self, api_key: str, git_remote_normalized: str) -> dict[str, Any] | None:
         """Get project context by normalized git remote."""
         try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+            async with idempotent_async_client(timeout=_TIMEOUT) as client:
                 resp = await client.get(
                     f"{self.base_url}/api/v1/projects/{git_remote_normalized}",
                     headers=self._headers(api_key),
@@ -120,7 +121,7 @@ class CloudAPIClient:
         params: dict[str, Any] = {"page": page, "page_size": page_size}
         if source_tool:
             params["source_tool"] = source_tool
-        async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+        async with idempotent_async_client(timeout=_TIMEOUT) as client:
             resp = await client.get(
                 f"{self.base_url}/api/v1/sessions",
                 params=params,

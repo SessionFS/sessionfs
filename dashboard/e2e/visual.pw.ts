@@ -11,6 +11,7 @@ import {
   GROUP_MEETING_ID,
   MEETING_ID,
   LINKED_TICKET_ID,
+  linkedTicket,
   linkedTicketJiraLink,
   ORG_ID,
   PROJECT_ID,
@@ -34,6 +35,7 @@ import {
   projects,
   skillRegistries,
   tickets,
+  ticketsRich,
 } from './fixtures/data';
 import * as loop from '../src/projects/loop/fixtures';
 import { workflowLoop } from '../src/projects/workflows/fixtures';
@@ -206,6 +208,36 @@ const OVERLAY_SCENARIOS: Scenario[] = [
   },
 ];
 const OVERLAY_WIDTHS = [390, 1440];
+
+// Glossary terms and icon-button tooltips, open. The bubble is fixed to the
+// viewport, so these also prove it stays inside the screen on a phone.
+const TOOLTIP_SCENARIOS: Scenario[] = [
+  {
+    name: 'tooltip-term-knowledge',
+    path: `/projects/${PROJECT}?tab=knowledge`,
+    prepare: async (page) => {
+      await page.locator('[data-term="kb-claim"] > button').first().click();
+      await page.getByRole('link', { name: /Learn more about Claim/ }).waitFor();
+    },
+  },
+  {
+    name: 'tooltip-term-review-loops',
+    path: '/review-loops',
+    prepare: async (page) => {
+      await page.locator('[data-term="needs-human"] > button').first().click();
+      await page.getByRole('link', { name: /Learn more about Needs a person/ }).waitFor();
+    },
+  },
+  {
+    name: 'tooltip-icon-button',
+    path: '/sessions',
+    prepare: async (page) => {
+      await page.keyboard.press('Tab');
+      await page.getByRole('button', { name: 'Grid view' }).focus();
+      await page.getByRole('tooltip').waitFor();
+    },
+  },
+];
 
 // "Test connection" on the personal judge key form: a success and an error.
 const judgeTestScenario = (name: string, result: Record<string, unknown>, waitFor: string): Scenario => ({
@@ -853,6 +885,8 @@ const CONFLUENCE_SCENARIOS: Scenario[] = [
 // Ticket detail: an open ticket, and a Jira-linked one with review rounds,
 // Jira activity and a mixed comment thread (list view and board drawer).
 const TICKET_PATH = (id: string) => `/projects/${PROJECT_ID}?tab=work&sub=tickets&ticket=${id}`;
+// The Jira controls live on the ticket pane's Jira tab.
+const TICKET_JIRA_PATH = (id: string) => `${TICKET_PATH(id)}&ticket_tab=jira`;
 const enterpriseProject = confluenceProject;
 const attachedLink = async (page: Page) => {
   await enterpriseProject(page);
@@ -869,12 +903,12 @@ const TICKET_SCENARIOS: Scenario[] = [
   { name: 'ticket-open', path: TICKET_PATH('tk_fixture2') },
   // Project → Settings grouped into sections, at the same three widths.
   { name: 'project-settings-sections', path: `/projects/${PROJECT_ID}?tab=settings` },
-  { name: 'ticket-jira-linked', path: TICKET_PATH(LINKED_TICKET_ID), mock: enterpriseProject },
+  { name: 'ticket-jira-linked', path: TICKET_JIRA_PATH(LINKED_TICKET_ID), mock: enterpriseProject },
   // Linked from Jira and never published: the "Sync with Jira…" choice, and
   // the confirm for taking the Jira text into the ticket.
   {
     name: 'ticket-jira-attached-sync-menu',
-    path: TICKET_PATH(LINKED_TICKET_ID),
+    path: TICKET_JIRA_PATH(LINKED_TICKET_ID),
     mock: attachedLink,
     prepare: async (page) => {
       await page.getByRole('button', { name: 'Sync with Jira…' }).click();
@@ -883,7 +917,7 @@ const TICKET_SCENARIOS: Scenario[] = [
   },
   {
     name: 'ticket-jira-attached-pull-confirm',
-    path: TICKET_PATH(LINKED_TICKET_ID),
+    path: TICKET_JIRA_PATH(LINKED_TICKET_ID),
     mock: attachedLink,
     prepare: async (page) => {
       await page.getByRole('button', { name: 'Sync with Jira…' }).click();
@@ -896,7 +930,7 @@ const TICKET_SCENARIOS: Scenario[] = [
   // warnings, and the 422 for a connection without a sprint field.
   {
     name: 'ticket-jira-publish-sprint-picker',
-    path: TICKET_PATH('tk_fixture2'),
+    path: TICKET_JIRA_PATH('tk_fixture2'),
     mock: enterpriseProject,
     prepare: async (page) => {
       await openPromoteDialog(page);
@@ -906,7 +940,7 @@ const TICKET_SCENARIOS: Scenario[] = [
   },
   {
     name: 'ticket-jira-publish-sprints-unavailable',
-    path: TICKET_PATH('tk_fixture2'),
+    path: TICKET_JIRA_PATH('tk_fixture2'),
     mock: async (page) => {
       await enterpriseProject(page);
       await page.route(
@@ -922,7 +956,7 @@ const TICKET_SCENARIOS: Scenario[] = [
   {
     // The connection has no sprint field: members get the explanation, no picker.
     name: 'ticket-jira-publish-sprint-field-missing',
-    path: TICKET_PATH('tk_fixture2'),
+    path: TICKET_JIRA_PATH('tk_fixture2'),
     mock: async (page) => {
       await enterpriseProject(page);
       await page.route(
@@ -937,7 +971,7 @@ const TICKET_SCENARIOS: Scenario[] = [
   },
   {
     name: 'ticket-jira-publish-warnings',
-    path: TICKET_PATH('tk_fixture2'),
+    path: TICKET_JIRA_PATH('tk_fixture2'),
     mock: enterpriseProject,
     prepare: async (page) => {
       await openPromoteDialog(page);
@@ -949,7 +983,7 @@ const TICKET_SCENARIOS: Scenario[] = [
   },
   {
     name: 'ticket-jira-publish-sprint-field-unknown',
-    path: TICKET_PATH('tk_fixture2'),
+    path: TICKET_JIRA_PATH('tk_fixture2'),
     mock: async (page) => {
       await enterpriseProject(page);
       await page.route(
@@ -978,7 +1012,7 @@ const TICKET_SCENARIOS: Scenario[] = [
   // "Link existing issue" open on an unlinked ticket, showing the key check.
   {
     name: 'ticket-jira-link-form',
-    path: TICKET_PATH('tk_fixture2'),
+    path: TICKET_JIRA_PATH('tk_fixture2'),
     mock: enterpriseProject,
     prepare: async (page) => {
       await page.getByRole('button', { name: 'Link existing issue' }).click();
@@ -1009,7 +1043,7 @@ const TICKET_SCENARIOS: Scenario[] = [
     name: 'ticket-reassign',
     path: TICKET_PATH('tk_fixture2'),
     prepare: async (page) => {
-      await page.getByRole('button', { name: 'Reassign' }).click();
+      await page.getByRole('button', { name: /^Reassign,/ }).click();
       const editor = page.getByRole('group', { name: 'Reassign ticket' });
       await editor.getByRole('button', { name: 'Assignee' }).click();
       await editor.getByRole('option', { name: /Peer Fixture/ }).click();
@@ -1039,7 +1073,7 @@ const TICKET_SCENARIOS: Scenario[] = [
 // log merged into the activity timeline, the estimate editor refusing a bad
 // value, and the Overdue list filter.
 const TIMELINE_SCENARIOS: Scenario[] = [
-  { name: 'ticket-history', path: TICKET_PATH(LINKED_TICKET_ID), mock: enterpriseProject },
+  { name: 'ticket-history', path: `${TICKET_PATH(LINKED_TICKET_ID)}&ticket_tab=activity`, mock: enterpriseProject },
   {
     name: 'ticket-history-estimate-edit',
     path: TICKET_PATH(LINKED_TICKET_ID),
@@ -1060,6 +1094,243 @@ const TIMELINE_SCENARIOS: Scenario[] = [
         (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/tickets` && u.searchParams.get('overdue') === 'true',
         (route) => route.fulfill(fulfillJson(200, overdueTickets)),
       );
+    },
+  },
+];
+
+// Tickets list (redesign phase 1): saved views, grouping, row signals and the
+// row menus, over a richer ticket set.
+const TICKETS_LIST = (query = '') => `/projects/${PROJECT_ID}?tab=work&sub=tickets${query}`;
+const richList = (body: unknown, status = 200) => async (page: Page) => {
+  await page.route(
+    (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/tickets`,
+    (route) => route.fulfill(fulfillJson(status, body)),
+  );
+};
+const TICKETS_LIST_WIDTHS = [390, 768, 1024, 1440];
+const TICKETS_LIST_SCENARIOS: Scenario[] = [
+  { name: 'tickets-list-all', path: TICKETS_LIST(), mock: richList(ticketsRich) },
+  { name: 'tickets-list-mine', path: TICKETS_LIST('&view=mine'), mock: richList(ticketsRich) },
+  { name: 'tickets-list-triage', path: TICKETS_LIST('&view=triage'), mock: richList(ticketsRich) },
+  { name: 'tickets-list-review', path: TICKETS_LIST('&view=review'), mock: richList(ticketsRich) },
+  { name: 'tickets-list-blocked', path: TICKETS_LIST('&view=blocked'), mock: richList(ticketsRich) },
+  { name: 'tickets-list-overdue', path: TICKETS_LIST('&view=overdue'), mock: richList(ticketsRich) },
+  { name: 'tickets-list-group-issue', path: TICKETS_LIST('&group=issue'), mock: richList(ticketsRich) },
+  { name: 'tickets-list-group-assignee', path: TICKETS_LIST('&group=assignee&sort=due'), mock: richList(ticketsRich) },
+  { name: 'tickets-list-show-finished', path: TICKETS_LIST('&group=none&sort=updated&finished=1'), mock: richList(ticketsRich) },
+  {
+    name: 'tickets-list-status-menu',
+    path: TICKETS_LIST('&view=triage'),
+    mock: richList(ticketsRich),
+    prepare: async (page) => {
+      await page.getByRole('button', { name: /^Status: Suggested/ }).first().click();
+      await page.getByRole('menu').waitFor();
+    },
+  },
+  {
+    name: 'tickets-list-dismiss-confirm',
+    path: TICKETS_LIST('&view=triage'),
+    mock: richList(ticketsRich),
+    prepare: async (page) => {
+      await page.getByRole('button', { name: /^Status: Suggested/ }).first().click();
+      await page.getByRole('menuitem', { name: /Dismiss/ }).click();
+      await page.getByRole('dialog', { name: 'Dismiss this ticket?' }).waitFor();
+    },
+  },
+  {
+    name: 'tickets-list-assign-menu',
+    path: TICKETS_LIST('&view=review'),
+    mock: richList(ticketsRich),
+    prepare: async (page) => {
+      // The assignee column is hidden on phones; the detail reassigns there.
+      const btn = page.getByRole('button', { name: /^Assignee: atlas/ }).first();
+      if (await btn.isVisible()) {
+        await btn.click();
+        await page.getByRole('dialog', { name: /^Reassign/ }).waitFor();
+      }
+    },
+  },
+  {
+    name: 'tickets-list-search-empty',
+    path: TICKETS_LIST('&q=nothing-matches-this'),
+    mock: richList(ticketsRich),
+  },
+  { name: 'tickets-list-empty-project', path: TICKETS_LIST(), mock: richList([]) },
+  {
+    name: 'tickets-list-error',
+    path: TICKETS_LIST(),
+    mock: richList({ error: { code: '500', message: 'Internal server error' } }, 500),
+  },
+];
+
+// Ticket pane (Tickets redesign phase 2): the split pane beside the list at
+// 1440, the slide-over at 1024 and full screen on a phone, plus the Review
+// and Child tasks tabs and a ticket waiting on dependencies.
+const ISSUE_ID = tickets[3].id;
+const routeTicket = async (page: Page, id: string, patch: Record<string, unknown>, inList = false) => {
+  const base = tickets.find((t) => t.id === id)!;
+  await page.route(
+    (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/tickets/${id}`,
+    (route) => route.fulfill(fulfillJson(200, { ...base, ...patch })),
+  );
+  if (inList) {
+    await page.route(
+      (u) => u.pathname === `/api/v1/projects/${PROJECT_ID}/tickets`,
+      (route) =>
+        route.fulfill(
+          fulfillJson(
+            200,
+            tickets.map((t) => (t.id === id ? { ...t, ...patch } : t.id === LINKED_TICKET_ID ? linkedTicket : t)),
+          ),
+        ),
+    );
+  }
+};
+const issueWithChildren = async (page: Page) => {
+  await enterpriseProject(page);
+  await routeTicket(page, ISSUE_ID, {
+    status: 'in_progress',
+    child_ticket_ids: [LINKED_TICKET_ID, tickets[4].id, tickets[5].id],
+  }, true);
+};
+const PANE_WIDE_SCENARIOS: Scenario[] = [
+  {
+    name: 'tickets-pane-split',
+    path: TICKET_PATH(LINKED_TICKET_ID),
+    mock: enterpriseProject,
+    prepare: async (page) => {
+      await page.getByRole('region', { name: /Split ProjectDetail/ }).waitFor();
+    },
+  },
+  {
+    name: 'tickets-pane-review-tab',
+    path: `${TICKET_PATH(LINKED_TICKET_ID)}&ticket_tab=review`,
+    mock: enterpriseProject,
+    prepare: async (page) => {
+      await page.getByText('Merge readiness').waitFor();
+    },
+  },
+  {
+    name: 'tickets-pane-children-tab',
+    path: `${TICKET_PATH(ISSUE_ID)}&ticket_tab=children`,
+    mock: issueWithChildren,
+    prepare: async (page) => {
+      await page.getByRole('img', { name: /finished/ }).waitFor();
+    },
+  },
+  {
+    name: 'tickets-pane-blocked',
+    path: TICKET_PATH(ISSUE_ID),
+    mock: async (page) => {
+      await enterpriseProject(page);
+      await routeTicket(page, ISSUE_ID, { kind: 'task', depends_on: [tickets[1].id, LINKED_TICKET_ID] }, true);
+    },
+    prepare: async (page) => {
+      await page.getByRole('region', { name: 'Next step' }).getByText(/Waiting on 2 tickets/).waitFor();
+    },
+  },
+];
+const PANE_SLIDEOVER_SCENARIOS: Scenario[] = [
+  {
+    name: 'tickets-pane-slideover',
+    path: TICKET_PATH(tickets[4].id),
+    prepare: async (page) => {
+      await page.getByRole('dialog', { name: /Review marketplace publish copy/ }).waitFor();
+    },
+  },
+];
+// Tickets redesign phase 3: the bulk bar (and its Assign… panel), the
+// keyboard shortcuts dialog, the board and the new-ticket dialog.
+const asBoard = async (page: Page) => {
+  await richList(ticketsRich)(page);
+  await page.addInitScript(() => {
+    try {
+      localStorage.setItem('sfs-tickets-view', 'board');
+    } catch {
+      /* storage unavailable */
+    }
+  });
+};
+const selectTwo = async (page: Page) => {
+  await page.getByRole('button', { name: /^Status: Suggested/ }).first().waitFor();
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  // Keyboard selection works at every width (the checkboxes hide on phones).
+  await page.keyboard.press('j');
+  await page.keyboard.press('x');
+  await page.keyboard.press('j');
+  await page.keyboard.press('x');
+  await page.getByRole('group', { name: 'Bulk actions' }).getByText('2 selected').waitFor();
+};
+const TICKETS_PHASE3_WIDTHS = [390, 1440];
+const TICKETS_PHASE3_SCENARIOS: Scenario[] = [
+  { name: 'tickets-bulk-bar', path: TICKETS_LIST('&view=triage'), mock: richList(ticketsRich), prepare: selectTwo },
+  {
+    name: 'tickets-bulk-assign',
+    path: TICKETS_LIST('&view=triage'),
+    mock: richList(ticketsRich),
+    prepare: async (page) => {
+      await selectTwo(page);
+      await page.getByRole('group', { name: 'Bulk actions' }).getByRole('button', { name: 'Assign…' }).click();
+      await page.getByRole('dialog', { name: 'Assign 2 tickets' }).waitFor();
+    },
+  },
+  {
+    name: 'tickets-shortcuts-dialog',
+    path: TICKETS_LIST(),
+    mock: richList(ticketsRich),
+    prepare: async (page) => {
+      await page.getByRole('heading', { name: /^Tickets/ }).waitFor();
+      await page.keyboard.press('?');
+      await page.getByRole('dialog', { name: 'Keyboard shortcuts' }).waitFor();
+    },
+  },
+  {
+    name: 'tickets-board',
+    path: TICKETS_LIST(),
+    mock: asBoard,
+    prepare: async (page) => {
+      await page.getByRole('region', { name: /^Triage/ }).waitFor();
+    },
+  },
+  {
+    name: 'tickets-board-finished',
+    path: TICKETS_LIST('&finished=1'),
+    mock: asBoard,
+    prepare: async (page) => {
+      await page.getByRole('region', { name: /^Done/ }).waitFor();
+    },
+  },
+  {
+    name: 'tickets-new-dialog',
+    path: TICKETS_LIST(),
+    mock: richList(ticketsRich),
+    prepare: async (page) => {
+      await page.getByRole('button', { name: /^New ticket/ }).click();
+      const dialog = page.getByRole('dialog', { name: 'New ticket' });
+      await dialog.waitFor();
+      await dialog.getByLabel('Title').fill('Cache the assignable-users list per project');
+    },
+  },
+  {
+    name: 'tickets-new-dialog-more',
+    path: TICKETS_LIST(),
+    mock: richList(ticketsRich),
+    prepare: async (page) => {
+      await page.getByRole('button', { name: /^New ticket/ }).click();
+      const dialog = page.getByRole('dialog', { name: 'New ticket' });
+      await dialog.getByRole('group', { name: 'Kind' }).getByRole('button', { name: 'Issue' }).click();
+      await dialog.getByText(/^More details/).click();
+      await dialog.getByLabel('Due date').waitFor();
+    },
+  },
+];
+const PANE_PHONE_SCENARIOS: Scenario[] = [
+  {
+    name: 'tickets-pane-phone',
+    path: TICKET_PATH(LINKED_TICKET_ID),
+    mock: enterpriseProject,
+    prepare: async (page) => {
+      await page.getByRole('button', { name: 'Back to tickets' }).waitFor();
     },
   },
 ];
@@ -1958,7 +2229,7 @@ const CONTACT_SCENARIOS: Scenario[] = [
     name: 'ticket-reassign-contacts',
     path: `/projects/${PROJECT}?tab=work&sub=tickets&ticket=tk_fixture2`,
     prepare: async (page) => {
-      await page.getByRole('button', { name: 'Reassign' }).click();
+      await page.getByRole('button', { name: /^Reassign,/ }).click();
       const editor = page.getByRole('group', { name: 'Reassign ticket' });
       await editor.getByRole('button', { name: 'Assignee' }).click();
       await editor.getByRole('option', { name: /Jordan Okafor/ }).click();
@@ -1971,6 +2242,7 @@ const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...WIDTHS.map((width) => ({ width, scenarios: PAGES })),
   ...SHELL_WIDTHS.map((width) => ({ width, scenarios: SHELL_SCENARIOS })),
   ...OVERLAY_WIDTHS.map((width) => ({ width, scenarios: OVERLAY_SCENARIOS })),
+  ...OVERLAY_WIDTHS.map((width) => ({ width, scenarios: TOOLTIP_SCENARIOS })),
   ...OVERLAY_WIDTHS.map((width) => ({ width, scenarios: ASSISTANT_SCENARIOS })),
   ...OVERLAY_WIDTHS.map((width) => ({ width, scenarios: JUDGE_TEST_SCENARIOS })),
   ...OVERLAY_WIDTHS.map((width) => ({ width, scenarios: JIRA_MAPPING_SCENARIOS })),
@@ -1979,7 +2251,12 @@ const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...OVERLAY_WIDTHS.map((width) => ({ width, scenarios: MARKETPLACE_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: INTEGRATION_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: TICKET_SCENARIOS })),
+  ...TICKETS_LIST_WIDTHS.map((width) => ({ width, scenarios: TICKETS_LIST_SCENARIOS })),
   ...OVERLAY_WIDTHS.map((width) => ({ width, scenarios: TIMELINE_SCENARIOS })),
+  { width: 1440, scenarios: PANE_WIDE_SCENARIOS },
+  { width: 1024, scenarios: PANE_SLIDEOVER_SCENARIOS },
+  { width: 390, scenarios: PANE_PHONE_SCENARIOS },
+  ...TICKETS_PHASE3_WIDTHS.map((width) => ({ width, scenarios: TICKETS_PHASE3_SCENARIOS })),
   ...OVERLAY_WIDTHS.map((width) => ({ width, scenarios: ORG_KEY_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: TEMPLATE_EDITOR_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: MEETING_SCENARIOS })),

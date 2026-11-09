@@ -1,8 +1,8 @@
 """Auto-join verified-email users to an org by verified domain.
 
 GitHub #59 (v0.17.0): when a user PROVES ownership of their email (the
-emailed verification link, or an admin force-verify), and they are
-not yet a member of any org, and exactly one org has that email's domain
+emailed verification link, or an admin force-verify), and exactly one org
+they are not already a member of has that email's domain
 in its `auto_join_domains` setting (where the domain is itself verified
 via OrgDomainVerification and the org's oidc_sso entitlement is active),
 add them as a `member`.
@@ -11,6 +11,10 @@ Safety invariants:
   - Only runs on proven email ownership. The signup auto-verify path used
     when email verification is disabled must NOT call this.
   - Best-effort: a failure here NEVER fails sign-up / verification.
+  - A person can belong to several orgs (CEO decision 2026-11-09), so a
+    membership elsewhere doesn't block the join; a membership in the
+    matching org does (no duplicate membership). Joining never changes the
+    stored default_org_id.
   - Never admin/owner — always `member`.
   - Seat cap honored (SELECT FOR UPDATE); full → skipped + audit, no error.
   - Previously removed users are not silently re-added: a member_removed
@@ -120,14 +124,15 @@ async def _auto_join_impl(user_id: str, db: AsyncSession) -> None:
     if domain is None:
         return
 
-    # Only join users who are not yet a member of ANY org.
-    already_member = (
-        await db.execute(
-            select(OrgMember.org_id).where(OrgMember.user_id == user_id).limit(1)
-        )
-    ).scalar_one_or_none()
-    if already_member is not None:
-        return
+    # Orgs the user already belongs to are never candidates (no duplicate
+    # membership); membership in OTHER orgs doesn't matter.
+    member_org_ids = set(
+        (
+            await db.execute(
+                select(OrgMember.org_id).where(OrgMember.user_id == user_id)
+            )
+        ).scalars().all()
+    )
 
     # Verified domains are globally unique (uq_org_domain_global_verified),
     # so at most one org can match — but the >1 path is handled anyway.
@@ -145,7 +150,11 @@ async def _auto_join_impl(user_id: str, db: AsyncSession) -> None:
         org = (
             await db.execute(select(Organization).where(Organization.id == org_id))
         ).scalar_one_or_none()
-        if org is not None and domain in read_auto_join_domains(org):
+        if (
+            org is not None
+            and org.id not in member_org_ids
+            and domain in read_auto_join_domains(org)
+        ):
             candidates.append(org)
 
     if len(candidates) != 1:
@@ -208,9 +217,11 @@ async def _auto_join_impl(user_id: str, db: AsyncSession) -> None:
         return
     if (
         await db.execute(
-            select(OrgMember.org_id).where(OrgMember.user_id == user_id).limit(1)
+            select(OrgMember.id)
+            .where(OrgMember.user_id == user_id, OrgMember.org_id == org.id)
+            .limit(1)
         )
-    ).scalar_one_or_none() is not None:
+    ).first() is not None:
         return
 
     # Entitlement gate (checked at join time — a lost entitlement stops

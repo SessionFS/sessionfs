@@ -4,11 +4,19 @@ import type { NeedsYouItem, NeedsYouKind } from '../../api/reviewLoop';
 import { useNeedsYouItems } from '../../hooks/useReviewLoop';
 import { errorMessage } from '../../utils/errorMessage';
 import { projectLoopHref, storyHref } from './format';
+import { Term } from '../../help/Term';
+import type { GlossaryId } from '../../help/glossary';
 
 const KIND_LABEL: Record<NeedsYouKind, string> = {
   ready: 'Ready to merge',
   needs_human: 'Needs a person',
   proposed_checklist: 'Checklist proposal',
+};
+
+const KIND_TERM: Record<NeedsYouKind, GlossaryId> = {
+  ready: 'merge-ready',
+  needs_human: 'needs-human',
+  proposed_checklist: 'loop-checklist',
 };
 
 function itemHref(i: NeedsYouItem): string {
@@ -61,7 +69,13 @@ export default function ReviewLoopsPage() {
                 {g.items.map((i, n) => (
                   <li key={`${i.kind}-${i.ticket_id ?? i.checklist_item_id ?? n}`} className="space-y-1 p-3">
                     <div className="flex flex-wrap items-center gap-2">
-                      <Badge label={KIND_LABEL[i.kind] ?? i.kind} />
+                      {KIND_TERM[i.kind] ? (
+                        <Term id={KIND_TERM[i.kind]}>
+                          <Badge label={KIND_LABEL[i.kind] ?? i.kind} />
+                        </Term>
+                      ) : (
+                        <Badge label={KIND_LABEL[i.kind] ?? i.kind} />
+                      )}
                       <Link className="text-sm font-medium text-brand underline" to={itemHref(i)}>
                         {i.title}
                       </Link>

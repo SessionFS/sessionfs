@@ -444,3 +444,77 @@ describe('OrgPage', () => {
     expect(confirmSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('OrgPage — several organizations', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function authWithOrgs(orgs: { org_id: string; name: string; is_default: boolean }[]) {
+    mockAuth.mockReset();
+    mockAuth.mockReturnValue({
+      auth: {
+        apiKey: 'sk_test',
+        baseUrl: 'http://test.api',
+        client: {
+          getMe: async () => ({
+            user_id: 'u_1',
+            org_id: orgs.find((o) => o.is_default)?.org_id ?? null,
+            orgs: orgs.map((o) => ({ ...o, slug: o.name.toLowerCase(), role: 'member', joined_at: null })),
+          }),
+        },
+      },
+    });
+  }
+
+  const acmeInfo = {
+    org: {
+      id: 'org_a', name: 'Acme', slug: 'acme', tier: 'team',
+      seats_used: 1, seats_limit: 5, storage_limit_bytes: 0, storage_used_bytes: 0,
+    },
+    members: [],
+    current_user_role: 'member',
+  };
+
+  it('switches the shown org by changing the default org', async () => {
+    authWithOrgs([
+      { org_id: 'org_a', name: 'Acme', is_default: true },
+      { org_id: 'org_b', name: 'Globex', is_default: false },
+    ]);
+    const fetchMock = stubFetch((url, init) => {
+      if (url.endsWith('/api/v1/auth/me/default-org') && init?.method === 'PUT') {
+        return jsonOk({ default_org_id: 'org_b' });
+      }
+      if (url.endsWith('/api/v1/org')) return jsonOk(acmeInfo);
+      if (url.includes('/owner/transfer')) return jsonOk({});
+      return jsonError(404);
+    });
+
+    renderPage();
+    const user = userEvent.setup();
+    const trigger = await screen.findByRole('button', { name: /organization/i });
+    await user.click(trigger);
+    await user.click(screen.getByRole('option', { name: 'Globex' }));
+
+    await waitFor(() => {
+      const put = fetchMock.mock.calls.find(
+        ([u, i]) => String(u).endsWith('/api/v1/auth/me/default-org') && (i as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(put).toBeTruthy();
+      expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({ org_id: 'org_b' });
+    });
+  });
+
+  it('shows no switcher for a single membership', async () => {
+    authWithOrgs([{ org_id: 'org_a', name: 'Acme', is_default: true }]);
+    stubFetch((url) => {
+      if (url.endsWith('/api/v1/org')) return jsonOk(acmeInfo);
+      if (url.includes('/owner/transfer')) return jsonOk({});
+      return jsonError(404);
+    });
+
+    renderPage();
+    await screen.findByRole('heading', { name: 'Acme' });
+    expect(screen.queryByRole('button', { name: /^organization$/i })).not.toBeInTheDocument();
+  });
+});

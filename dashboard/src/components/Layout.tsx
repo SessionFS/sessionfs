@@ -454,18 +454,19 @@ export default function Layout() {
         {/* Ask the helper — only when the provider/drawer is available. */}
         {openHelper && (
           <div className="px-2 pb-1">
-            <button
-              type="button"
-              onClick={() => openHelper()}
-              className={`flex items-center gap-2.5 rounded-md text-sm font-medium text-text-secondary hover:text-text-primary hover:bg-surface-hover transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] w-full ${
-                collapsed ? 'justify-center w-9 h-9 mx-auto' : 'px-3 py-1.5'
-              }`}
-              aria-label="Ask the helper"
-              title="Ask the helper"
-            >
-              <span className="shrink-0 flex items-center justify-center w-4 h-4">{helperIcon}</span>
-              {!collapsed && <span className="truncate">Ask the helper</span>}
-            </button>
+            <Tooltip content={'Ask the helper'} describe={false}>
+              <button
+                type="button"
+                onClick={() => openHelper()}
+                className={`flex items-center gap-2.5 rounded-md text-sm font-medium text-text-secondary hover:text-text-primary hover:bg-surface-hover transition-colors outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] w-full ${
+                  collapsed ? 'justify-center w-9 h-9 mx-auto' : 'px-3 py-1.5'
+                }`}
+                aria-label="Ask the helper"
+              >
+                <span className="shrink-0 flex items-center justify-center w-4 h-4">{helperIcon}</span>
+                {!collapsed && <span className="truncate">Ask the helper</span>}
+              </button>
+            </Tooltip>
           </div>
         )}
 
@@ -476,14 +477,16 @@ export default function Layout() {
 
         {/* Collapse toggle — bottom pinned, non-scrollable */}
         <div className={`flex ${collapsed ? 'justify-center' : 'justify-end'} px-2 py-2`}>
-          <button
-            type="button"
-            onClick={toggleCollapsed}
-            className="flex items-center justify-center w-7 h-7 rounded-sm hover:bg-surface-hover transition-colors text-text-tertiary hover:text-text-secondary"
-            aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          >
-            {collapsed ? expandIcon : collapseIcon}
-          </button>
+          <Tooltip content={collapsed ? 'Expand sidebar' : 'Collapse sidebar'} describe={false} side="top">
+            <button
+              type="button"
+              onClick={toggleCollapsed}
+              className="flex items-center justify-center w-7 h-7 rounded-sm hover:bg-surface-hover transition-colors text-text-tertiary hover:text-text-secondary"
+              aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            >
+              {collapsed ? expandIcon : collapseIcon}
+            </button>
+          </Tooltip>
         </div>
       </aside>
 
@@ -502,17 +505,19 @@ export default function Layout() {
           <div className="shell-divider pointer-events-none absolute inset-x-10 top-0 h-px" />
           {/* Left: Hamburger (mobile) + page area */}
           <div className="col-start-1 row-start-1 flex items-center gap-2 min-w-0">
-            <button
-              className="md:hidden flex items-center justify-center w-8 h-8 rounded-md transition-colors hover:bg-surface-hover"
-              onClick={() => setDrawerOpen(true)}
-              aria-label="Open navigation menu"
-            >
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                <line x1="3" y1="5" x2="17" y2="5" />
-                <line x1="3" y1="10" x2="17" y2="10" />
-                <line x1="3" y1="15" x2="17" y2="15" />
-              </svg>
-            </button>
+            <Tooltip content={'Open navigation menu'} describe={false} side="bottom">
+              <button
+                className="md:hidden flex items-center justify-center w-8 h-8 rounded-md transition-colors hover:bg-surface-hover"
+                onClick={() => setDrawerOpen(true)}
+                aria-label="Open navigation menu"
+              >
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                  <line x1="3" y1="5" x2="17" y2="5" />
+                  <line x1="3" y1="10" x2="17" y2="10" />
+                  <line x1="3" y1="15" x2="17" y2="15" />
+                </svg>
+              </button>
+            </Tooltip>
           </div>
 
           {/* Center: brand tagline (the pre-redesign header treatment) */}
@@ -594,16 +599,18 @@ export default function Layout() {
             {/* Drawer header */}
             <div className="flex items-center justify-between px-4 h-14">
               <Wordmark size="sm" />
-              <button
-                onClick={() => setDrawerOpen(false)}
-                className="flex items-center justify-center w-8 h-8 rounded-md transition-colors hover:bg-surface-hover"
-                aria-label="Close navigation menu"
-              >
-                <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                  <line x1="4" y1="4" x2="14" y2="14" />
-                  <line x1="14" y1="4" x2="4" y2="14" />
-                </svg>
-              </button>
+              <Tooltip content={'Close navigation menu'} describe={false} side="bottom">
+                <button
+                  onClick={() => setDrawerOpen(false)}
+                  className="flex items-center justify-center w-8 h-8 rounded-md transition-colors hover:bg-surface-hover"
+                  aria-label="Close navigation menu"
+                >
+                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                    <line x1="4" y1="4" x2="14" y2="14" />
+                    <line x1="14" y1="4" x2="4" y2="14" />
+                  </svg>
+                </button>
+              </Tooltip>
             </div>
             <div className="border-t border-border" />
             {/* Drawer links — full-width (always non-collapsed on mobile) */}

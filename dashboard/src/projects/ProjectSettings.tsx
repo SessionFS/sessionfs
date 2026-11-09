@@ -3,7 +3,8 @@ import { useUpdateProjectSettings, useUpdateProjectName } from '../hooks/useProj
 import { useToast } from '../hooks/useToast';
 import { useMyOrgs } from '../transfers/useTransfers';
 import type { ProjectContext } from '../api/client';
-import { Alert, Card, Button, Checkbox, Select, Input } from '../components/ui';
+import { Alert, Card, Button, Checkbox, Select, Input, MonoText } from '../components/ui';
+import RelativeDate from '../components/RelativeDate';
 import ReposTab from './ReposTab';
 import MergeSurface from './MergeSurface';
 import TransferPanel from './TransferPanel';
@@ -42,6 +43,38 @@ function SettingRow({ id, title, description, children }: { id: string; title: s
       </div>
       <div className="min-w-0">{children}</div>
     </div>
+  );
+}
+
+/** Facts about the project that used to sit in the page header. */
+function ProjectAbout({ project }: { project: ProjectContext }) {
+  const repoCount = project.repos?.length ?? 0;
+  const row = 'grid grid-cols-1 gap-x-8 gap-y-1 px-5 py-3 sm:grid-cols-[minmax(0,10rem)_minmax(0,1fr)]';
+  return (
+    <SettingsGroup id="settings-about-heading" title="About">
+      <dl className="divide-y divide-border text-sm">
+        <div className={row}>
+          <dt className="text-text-tertiary">Repository</dt>
+          <dd className="min-w-0 text-text-primary">
+            <MonoText value={project.git_remote_normalized} copyable />
+          </dd>
+        </div>
+        {repoCount > 0 && (
+          <div className={row}>
+            <dt className="text-text-tertiary">Linked repos</dt>
+            <dd className="text-text-primary tabular-nums">{repoCount}</dd>
+          </div>
+        )}
+        <div className={row}>
+          <dt className="text-text-tertiary">Created</dt>
+          <dd className="text-text-primary"><RelativeDate iso={project.created_at} /></dd>
+        </div>
+        <div className={row}>
+          <dt className="text-text-tertiary">Updated</dt>
+          <dd className="text-text-primary"><RelativeDate iso={project.updated_at} /></dd>
+        </div>
+      </dl>
+    </SettingsGroup>
   );
 }
 
@@ -160,6 +193,7 @@ export default function ProjectSettings({ project, onRequestDelete }: ProjectSet
             : 'Only the project owner can change its settings.'}{' '}
           {adminNote} You can still read it and add knowledge entries, tickets and comments.
         </Alert>
+        <ProjectAbout project={project} />
         {project.groups && project.groups.length > 0 && (
           <SettingsGroup id="settings-access-heading" title="Access & ownership">
             <div className="p-5">
@@ -179,6 +213,8 @@ export default function ProjectSettings({ project, onRequestDelete }: ProjectSet
           {adminNote}
         </Alert>
       )}
+
+      <ProjectAbout project={project} />
 
       <SettingsGroup id="settings-general-heading" title="General">
         <SettingRow

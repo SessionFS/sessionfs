@@ -146,7 +146,7 @@ describe('suggested ticket on an item', () => {
       `/projects/proj_1?tab=work&sub=tickets&ticket=${SUGGESTED.id}`,
     );
     expect(row).toHaveTextContent('Rollout plan for the launch');
-    expect(row).toHaveTextContent('in progress');
+    expect(row).toHaveTextContent('In progress');
     // Create new lives on the suggestion; no second "Create ticket".
     expect(screen.getByRole('button', { name: 'Create new ticket: Draft the rollout plan' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Create ticket: Draft the rollout plan' })).not.toBeInTheDocument();

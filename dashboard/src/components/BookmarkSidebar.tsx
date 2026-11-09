@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import type { FolderResponse } from '../api/client';
 import { useFolders, useCreateFolder, useUpdateFolder, useDeleteFolder } from '../hooks/useBookmarks';
 import { FOLDER_COLORS as PRESET_COLORS, DEFAULT_FOLDER_COLOR } from '../utils/folderColors';
+import { Tooltip } from './ui';
 
 export type NavFilter = 'all' | 'bookmarked' | 'in-repo' | string; // string = folder ID
 
@@ -141,13 +142,16 @@ export default function BookmarkSidebar({
         {/* Folders header */}
         <div className="flex items-center justify-between px-3 mb-2">
           <span className="text-2xs font-semibold uppercase tracking-wide text-text-tertiary">Folders</span>
+          <Tooltip content="Create folder" describe={false}>
           <button
+            type="button"
             onClick={() => setShowCreate(true)}
             className="text-text-tertiary hover:text-brand text-lg leading-none"
-            title="Create folder"
+            aria-label="Create folder"
           >
-            +
+            <span aria-hidden="true">+</span>
           </button>
+          </Tooltip>
         </div>
 
         {/* Folder list */}
@@ -170,7 +174,10 @@ export default function BookmarkSidebar({
                   {PRESET_COLORS.map((c) => (
                     <button
                       key={c}
+                      type="button"
                       onClick={() => setEditColor(c)}
+                      aria-label={`Color ${c}`}
+                      aria-pressed={editColor === c}
                       className={`w-4 h-4 rounded-full border-2 ${editColor === c ? 'border-white' : 'border-transparent'}`}
                       style={{ backgroundColor: c }}
                     />
@@ -211,9 +218,12 @@ export default function BookmarkSidebar({
                     e.stopPropagation();
                     setMenuFolder(menuFolder === f.id ? null : f.id);
                   }}
-                  className="px-1 text-text-tertiary hover:text-text-secondary opacity-0 group-hover:opacity-100 transition-opacity text-xs"
+                  aria-label={`Folder actions for ${f.name}`}
+                  aria-haspopup="menu"
+                  aria-expanded={menuFolder === f.id}
+                  className="px-1 text-text-tertiary hover:text-text-secondary opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-xs"
                 >
-                  ...
+                  <span aria-hidden="true">...</span>
                 </button>
               </div>
             )}
@@ -260,7 +270,10 @@ export default function BookmarkSidebar({
               {PRESET_COLORS.map((c) => (
                 <button
                   key={c}
+                  type="button"
                   onClick={() => setNewColor(c)}
+                  aria-label={`Color ${c}`}
+                  aria-pressed={newColor === c}
                   className={`w-4 h-4 rounded-full border-2 ${newColor === c ? 'border-white' : 'border-transparent'}`}
                   style={{ backgroundColor: c }}
                 />

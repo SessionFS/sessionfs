@@ -934,6 +934,46 @@ class TestNewToolDispatch:
         assert not captured
 
     @pytest.mark.asyncio
+    async def test_dispatch_start_review_loop_ticket_id_alias(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        """tk_3855ef8b11f94ee2 — ticket_id (start_workflow's name) adopts the
+        issue, sent as from_ticket_id; no title needed."""
+        result = await mcp_server._handle_start_review_loop({
+            "ticket_id": "tk_parent",
+            "tickets": [{"title": "c1"}],
+            "reviewer_persona": "codex",
+        })
+        assert captured["json"]["from_ticket_id"] == "tk_parent"
+        assert "ticket_id" not in captured["json"]
+        assert "error" not in result
+
+    @pytest.mark.asyncio
+    async def test_dispatch_start_review_loop_conflicting_ids(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_start_review_loop({
+            "ticket_id": "tk_a",
+            "from_ticket_id": "tk_b",
+            "tickets": [{"title": "c1"}],
+            "reviewer_persona": "codex",
+        })
+        assert "differ" in result["error"]
+        assert not captured
+
+    @pytest.mark.asyncio
+    async def test_dispatch_start_review_loop_requires_title_or_issue(
+        self, fake_resolver, fake_httpx, captured
+    ):
+        result = await mcp_server._handle_start_review_loop({
+            "tickets": [{"title": "c1"}],
+            "reviewer_persona": "codex",
+        })
+        assert "title is required" in result["error"]
+        assert "from_ticket_id" in result["error"] and "ticket_id" in result["error"]
+        assert not captured
+
+    @pytest.mark.asyncio
     async def test_dispatch_get_loop_status(self, fake_resolver, fake_httpx, captured):
         result = await mcp_server._handle_get_loop_status({"loop_id": "tk_42"})
         assert captured["method"] == "GET"

@@ -26,6 +26,26 @@ from sessionfs.server.db.models import Organization, OrgInvite, User
 logger = logging.getLogger("sessionfs.api")
 
 
+def invite_accept_url(request: Request, invite_id: str) -> str:
+    """The dashboard link an invitee opens to accept ``invite_id``.
+
+    Dashboard route is `/invites` (list); highlight= query param so the
+    InvitesPage scrolls/outlines the specific invite. Using a query param
+    means the link works whether the user has a logged-in session or has to
+    log in first — the dashboard preserves the query string across the
+    login redirect. The link carries no secret: accepting still requires
+    signing in as the invited email address, so the invite routes also
+    return it to the admin for servers with no email provider.
+    """
+    config = getattr(request.app.state, "config", None)
+    base_url = (
+        config.app_url.rstrip("/")
+        if config and getattr(config, "app_url", None)
+        else "https://app.sessionfs.dev"
+    )
+    return f"{base_url}/invites?highlight={invite_id}"
+
+
 async def dispatch_invite_email(
     *,
     request: Request,
@@ -45,19 +65,7 @@ async def dispatch_invite_email(
     if email_service is None:
         return False
 
-    config = getattr(request.app.state, "config", None)
-    base_url = (
-        config.app_url.rstrip("/")
-        if config and getattr(config, "app_url", None)
-        else "https://app.sessionfs.dev"
-    )
-    # Dashboard route is `/invites` (list); highlight= query param so
-    # the InvitesPage scrolls/outlines the specific invite when the
-    # user clicks the email link. Using a query param means the
-    # accept link works whether the user has a logged-in session or
-    # has to log in first — the dashboard preserves the query string
-    # across the login redirect.
-    accept_url = f"{base_url}/invites?highlight={invite.id}"
+    accept_url = invite_accept_url(request, invite.id)
     expires_human = invite.expires_at.strftime("%B %d, %Y")
 
     inviter_name = inviter.display_name or inviter.email

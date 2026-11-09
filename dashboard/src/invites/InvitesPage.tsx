@@ -70,7 +70,7 @@ export default function InvitesPage() {
     <PageContainer width="narrow">
       <PageHeader
         title="Organization invites"
-        description="Invites sent to your email address. Accept to join the org, or decline if you weren't expecting it."
+        description="Invites sent to your email address. Accept to join the org, or decline if you weren't expecting it. You can belong to several organizations, so accepting doesn't take you out of any org you're already in."
       />
 
       {rows.length === 0 ? (

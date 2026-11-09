@@ -6,6 +6,7 @@ import { useContactList } from '../../hooks/useContacts';
 import { ContactAvatar, ExternalBadge } from './ContactChip';
 import { ContactFormDialog } from './ContactFormDialog';
 import { contactErrorMessage, shortDate } from './format';
+import { Term } from '../../help/Term';
 
 type StatusFilter = 'active' | 'archived' | 'all';
 
@@ -68,7 +69,7 @@ export function ContactList({ orgId, isAdmin, onOpen }: { orgId: string; isAdmin
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <h2 id="contacts-heading" className="text-base font-semibold text-text-primary">
-              External contacts
+              <Term id="external-contact">External contacts</Term>
             </h2>
             <p className="mt-1 max-w-2xl text-sm text-text-tertiary">
               People your organization works with who don’t use SessionFS. Meetings, chats and tickets can name them so

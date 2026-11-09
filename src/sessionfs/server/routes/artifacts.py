@@ -69,7 +69,9 @@ from sessionfs.server.tier_gate import UserContext, get_user_context
 router = APIRouter(prefix="/api/v1/projects", tags=["artifacts"])
 
 Kind = Literal["dataset", "model", "feature_set", "prompt", "checkpoint"]
-Relation = Literal["derived_from", "trained_on", "fine_tuned_from", "evaluated_against", "uses"]
+Relation = Literal[
+    "derived_from", "trained_on", "fine_tuned_from", "distilled_from", "evaluated_against", "uses"
+]
 _VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+:@-]{0,63}$")
 _DIGEST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/+=-]{0,127}$")
 _MAX_REQUIRED_SUITES = 20

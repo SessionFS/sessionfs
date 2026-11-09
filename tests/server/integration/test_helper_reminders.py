@@ -244,11 +244,11 @@ async def test_list_my_reminders_reads_visible_only_and_respects_scope(
     other_project = await _make_project(db_session, user, name="Elsewhere")
     elsewhere = _ctx(db_session, user, project_id=other_project.id)
     out = await TOOLS["list_my_reminders"].handler(elsewhere, {})
-    assert out.text == "No reminders match."
+    assert out.text == "No reminders match (complete)."
 
     stranger, _ = await _make_user(db_session, "eve")
     out = await TOOLS["list_my_reminders"].handler(_ctx(db_session, stranger), {})
-    assert out.text == "No reminders match."
+    assert out.text == "No reminders match (complete)."
 
 
 @pytest.mark.asyncio

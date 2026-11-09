@@ -1,7 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { ApiError, type ContactReferences, type ExternalContact } from '../../api/client';
-import { Alert, Badge, Button, Card, Input } from '../../components/ui';
+import { Alert, Badge, Button, Card, Input, Tooltip } from '../../components/ui';
 import { useAuth } from '../../auth/AuthContext';
 import { useToast } from '../../hooks/useToast';
 import {
@@ -213,7 +213,13 @@ function ContactHeader({
           </Button>
           {isAdmin && (
             <>
-              <Button variant="secondary" size="sm" onClick={() => setMerging(true)} disabled={archived}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setMerging(true)}
+                disabled={archived}
+                disabledReason="Restore this contact before merging it"
+              >
                 Merge…
               </Button>
               <Button variant="secondary" size="sm" onClick={exportJson} disabled={exporting}>
@@ -343,17 +349,19 @@ function AliasesCard({ orgId, contact: c }: { orgId: string; contact: ExternalCo
             {c.aliases.map((a) => (
               <li key={a} className="inline-flex items-center gap-1 rounded-md border border-border bg-surface py-0.5 pl-2 pr-0.5 text-sm text-text-secondary">
                 {a}
-                <button
-                  type="button"
-                  onClick={() => void remove(a)}
-                  disabled={alias.isPending}
-                  aria-label={`Remove other name ${a}`}
-                  className="inline-flex h-5 w-5 items-center justify-center rounded text-text-tertiary hover:bg-surface-hover hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] disabled:opacity-50"
-                >
-                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
-                    <path d="M18 6 6 18M6 6l12 12" />
-                  </svg>
-                </button>
+                <Tooltip content={'Remove'} describe={false}>
+                  <button
+                    type="button"
+                    onClick={() => void remove(a)}
+                    disabled={alias.isPending}
+                    aria-label={`Remove other name ${a}`}
+                    className="inline-flex h-5 w-5 items-center justify-center rounded text-text-tertiary hover:bg-surface-hover hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] disabled:opacity-50"
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
+                      <path d="M18 6 6 18M6 6l12 12" />
+                    </svg>
+                  </button>
+                </Tooltip>
               </li>
             ))}
           </ul>

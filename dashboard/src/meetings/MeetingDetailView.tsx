@@ -38,6 +38,8 @@ import { PromoteDialog } from './PromoteDialog';
 import { Transcript } from './Transcript';
 import { ChatMessages } from './ChatMessages';
 import { messagesLabel, providerLabel } from './chat';
+import { Term } from '../help/Term';
+import type { GlossaryId } from '../help/glossary';
 
 interface MeetingDetailViewProps {
   meetingId: string;
@@ -325,6 +327,7 @@ export function MeetingDetailView({
 
           <PanelSection
             title="Action items"
+            term="action-item"
             count={actions.length}
             note={openActions > 0 && openActions !== actions.length ? `${openActions} open` : undefined}
           >
@@ -504,11 +507,14 @@ function KeyLink() {
 
 function PanelSection({
   title,
+  term,
   count,
   note,
   children,
 }: {
   title: string;
+  /** Glossary entry that explains the title. */
+  term?: GlossaryId;
   count: number;
   note?: string;
   children: ReactNode;
@@ -517,7 +523,7 @@ function PanelSection({
   return (
     <section aria-labelledby={id}>
       <h3 id={id} className="mb-2 flex items-baseline gap-2 text-sm font-semibold text-text-primary">
-        {title}
+        {term ? <Term id={term}>{title}</Term> : title}
         <span className="text-xs font-normal tabular-nums text-text-tertiary">{count}</span>
         {note && <span className="text-xs font-normal text-text-tertiary">· {note}</span>}
       </h3>

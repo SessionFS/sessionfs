@@ -67,6 +67,7 @@ export default function TicketInbox() {
             <Button
               size="sm"
               disabled={items.length === 0 || markRead.isPending}
+              disabledReason="Nothing to mark as read"
               loading={markRead.isPending}
               onClick={handleMarkAll}
             >

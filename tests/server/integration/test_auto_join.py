@@ -294,7 +294,10 @@ async def test_auto_join_unverified_domain_noop(db_session: AsyncSession):
 
 
 @pytest.mark.asyncio
-async def test_auto_join_user_already_in_any_org_noop(db_session: AsyncSession):
+async def test_auto_join_user_in_another_org_joins_too(db_session: AsyncSession):
+    """A person can belong to several orgs (CEO decision 2026-11-09): a
+    membership elsewhere no longer blocks auto-join, and the stored default
+    org pointer is left alone."""
     other = await _make_org(db_session)
 
     org = await _make_org(db_session)
@@ -310,7 +313,29 @@ async def test_auto_join_user_already_in_any_org_noop(db_session: AsyncSession):
 
     await maybe_auto_join(user, db_session)
 
-    assert await _members(db_session, org.id) == []
+    members = await _members(db_session, org.id)
+    assert [(m.user_id, m.role) for m in members] == [(user.id, "member")]
+    assert [m.user_id for m in await _members(db_session, other.id)] == [user.id]
+    await db_session.refresh(user)
+    assert user.default_org_id is None  # joining never writes the default
+
+
+@pytest.mark.asyncio
+async def test_auto_join_already_member_of_matching_org_noop(db_session: AsyncSession):
+    org = await _make_org(db_session)
+    await _verified_domain(db_session, org, "corp.com")
+    _set_auto_join(org, ["corp.com"])
+    await db_session.commit()
+
+    user = await _make_user(db_session, "alice@corp.com")
+    db_session.add(OrgMember(org_id=org.id, user_id=user.id, role="admin"))
+    await db_session.commit()
+
+    await maybe_auto_join(user, db_session)
+
+    members = await _members(db_session, org.id)
+    assert [(m.user_id, m.role) for m in members] == [(user.id, "admin")]
+    assert await _audit(db_session, org.id, "member_auto_joined") == []
 
 
 @pytest.mark.asyncio

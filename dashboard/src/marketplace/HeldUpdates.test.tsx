@@ -78,7 +78,7 @@ describe('HeldUpdates', () => {
     expect(screen.getByText('provenance_delta.new.publisher_verified = true')).toBeInTheDocument();
     expect(screen.getByTestId('disclosure-card')).toBeInTheDocument();
     const button = screen.getByRole('button', { name: 'Advance' });
-    expect(button).toBeDisabled();
+    expect(button).toBeUnavailable();
     await user.click(screen.getByRole('checkbox', { name: 'Acknowledge the update of kit' }));
     expect(button).toBeEnabled();
     await user.click(button);
@@ -105,7 +105,7 @@ describe('HeldUpdates', () => {
     await user.click(screen.getByRole('button', { name: 'Advance' }));
     expect(refetch).toHaveBeenCalled();
     expect(checkbox).not.toBeChecked();
-    expect(screen.getByRole('button', { name: 'Advance' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Advance' })).toBeUnavailable();
   });
 
   it('binds the advance to the reviewed update digest', async () => {
@@ -138,7 +138,7 @@ describe('HeldUpdates', () => {
       await user.click(screen.getByRole('button', { name: 'Advance' }));
       expect(refetch).toHaveBeenCalled();
       expect(checkbox).not.toBeChecked();
-      expect(screen.getByRole('button', { name: 'Advance' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Advance' })).toBeUnavailable();
       expect(hooks.addToast).toHaveBeenCalledWith('error', expect.stringMatching(/refreshed/));
     },
   );
@@ -153,7 +153,7 @@ describe('HeldUpdates', () => {
     render(<HeldUpdates orgId="org_1" />);
     expect(screen.getByTestId('held-update-diff-missing')).toHaveTextContent(/update diff is unavailable/);
     expect(screen.queryByRole('checkbox', { name: 'Acknowledge the update of kit' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Advance' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Advance' })).toBeUnavailable();
   });
 
   it('fails closed when the held update carries no digest', () => {
@@ -165,7 +165,7 @@ describe('HeldUpdates', () => {
     });
     render(<HeldUpdates orgId="org_1" />);
     expect(screen.getByTestId('held-update-digest-missing')).toHaveTextContent(/update digest is unavailable/);
-    expect(screen.getByRole('button', { name: 'Advance' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Advance' })).toBeUnavailable();
   });
 
   it('offers an org selector when the viewer administers several orgs', async () => {

@@ -1,0 +1,105 @@
+---
+title: "Tenancy and Isolation"
+description: "How the hosted SessionFS service keeps organizations apart: shared PostgreSQL with every query scoped by org and project, blob storage, DLP per org, service-key allowlists, what is not isolated, and the rate limits, concurrency caps and query timeouts that keep one tenant from starving the rest."
+---
+
+The hosted SessionFS service is multi-tenant: every organization and every personal account shares the same API servers and the same database. This page describes how tenants are kept apart, what is shared, and the limits that stop one tenant from using up capacity everyone else needs. If you need a stronger boundary, run SessionFS yourself with the [Helm chart](/self-hosted/).
+
+## How isolation works
+
+### One database, every query scoped
+
+All tenants live in one PostgreSQL database. There is no per-tenant schema or database. Isolation is enforced by the API on every request:
+
+- **Every read and write is scoped.** A row belongs to a project, an organization or a user, and each route loads it through a query that filters on that scope and on the caller's access. Access to a project is decided by one set of rules used everywhere: you own the project, you are a member of its organization, or you captured a session in it. An organization can turn on restricted project visibility, so members see only the projects their project groups grant them (owners and admins still see every project), and captured sessions grant nothing.
+- **The same 404 for missing and invisible.** If a resource doesn't exist or you can't see it, you get the same `404` with the same body. A response never tells you that something exists in another organization. Refusals that only apply to people who can already see the resource, such as "you can read this project but not edit it", are `403`.
+- **Authorization is re-checked under locks.** Writes that move or change ownership (project transfers, merges, approvals, promotions) take a lock and re-check your access before they commit, so a change of membership that lands in the middle of a request is seen.
+
+### Session archives and files
+
+Synced session archives are stored in object storage (Google Cloud Storage on the hosted service) under a key made from the uploading user's id and the session id. Objects are never public and there are no pre-signed links: every download goes through the API, which applies the same access rules as above before reading the object.
+
+### Data protection (DLP) per organization
+
+Each organization sets its own DLP policy (which secret and personal-data patterns to look for, and whether to block, redact or warn). Session pushes are scanned on the server. If you belong to several organizations, or own projects in them, a push is scanned under the strictest combination of all their policies, because the project a session lands in is only known once it has been read. A session is never linked to a project whose organization's policy wasn't part of that scan. Text that can reach more than one organization, such as session helper questions or meeting and chat uploads, is scanned under the strictest combination of every policy that applies. Another organization's custom pattern names are never shown to you.
+
+### Service keys
+
+A service key belongs to one organization and can be limited to a list of its projects and to named scopes. It can never reach another organization's data: reads outside its boundary get the same `404` as a missing resource, and writes are refused. A service key can't act as a person where a person is required (for example deciding an approval or exporting contacts).
+
+### Secrets
+
+LLM keys, integration tokens and webhook secrets are stored encrypted and used only for the organization or user that saved them. A saved LLM key is only ever sent to the provider and endpoint it was saved for.
+
+## What is not isolated
+
+- **Compute is shared.** Every tenant's requests are served by the same pool of API instances. A heavy request from one organization uses the same CPU and memory as everyone else's, which is why the limits below exist.
+- **The database instance is shared.** Tenants share one PostgreSQL instance, its connections and its I/O. Separation is logical (scoped queries), not physical.
+- **Object storage is one bucket.** Archives are separated by key and by the API's access checks, not by separate buckets or encryption keys per tenant.
+
+If your organization needs physical isolation, its own database, its own storage or its own network, deploy SessionFS in your own cloud with the [Helm chart](/self-hosted/). A self-hosted install serves only your organization, so none of the sharing above applies.
+
+## Limits
+
+### Rate limits
+
+- **Per API key:** 120 requests per minute by default, counted by each API instance (`SFS_RATE_LIMIT_PER_MINUTE`). Over the limit: `429`.
+- **At the edge:** the hosted service also rate-limits sign-in, license activation, webhook endpoints, handoff previews and public share pages before requests reach the API.
+- **Per person:** each user can have two session helper questions and meeting or chat extractions running at a time (the two share one count) on each API instance. Another one gets `409 helper_busy` or `409 extraction_busy`.
+- **Per feature:** some features have their own limits, such as the number of knowledge entries per hour or the org's monthly helper token budget. Those are described on each feature's page.
+
+### Concurrency caps per organization
+
+The most expensive operations are capped per organization, across every API instance together:
+
+| What | Default cap |
+| --- | --- |
+| Meeting and chat extraction | 4 at a time |
+| Session helper questions | 8 at a time |
+| Knowledge compile, rebuild and group compile | 2 at a time |
+| CSV exports (approval log, contacts) | 2 at a time |
+
+A personal project, or a helper question with no organization, counts against its owner instead of an organization. The cap is checked only after your access is: a resource you can't see still answers `404`.
+
+Over the cap the request is refused before any work starts:
+
+```http
+HTTP/1.1 429 Too Many Requests
+Retry-After: 15
+
+{
+  "error": {
+    "code": "org_concurrency_limit",
+    "message": "Too many of these requests are already running for this organization. Try again shortly.",
+    "details": { "route_class": "extraction", "limit": 4 }
+  }
+}
+```
+
+`route_class` is one of `extraction`, `helper`, `compile` or `export`. Wait for `Retry-After` seconds and retry.
+
+The caps are held in the database, so they apply across all API instances. A slot is held only while the request runs and is freed when it ends, including when it fails or the client disconnects. If an instance crashes while holding one, the slot is freed automatically once its lease runs out (at most 15 minutes). If the cap itself can't be checked because of a database problem, the request is allowed rather than refused.
+
+Self-hosted operators can change each cap, or turn it off with `0`: `SFS_ORG_CONCURRENCY_EXTRACTION`, `SFS_ORG_CONCURRENCY_HELPER`, `SFS_ORG_CONCURRENCY_COMPILE` and `SFS_ORG_CONCURRENCY_EXPORT` (Helm: `api.limits.orgConcurrency`). Refusals are counted in the `sessionfs_org_concurrency_rejected_total` metric by route class; see the [Metrics Reference](/metrics/).
+
+### Query timeouts
+
+Heavy reads have a database time limit, so one slow query can't hold a database connection for long. It applies to session search, For You, review-loop status, reports, insights and ticket stories, spend summaries, the approval log, the contact list and export, and session changes. The default is 15 seconds. Each For You section has its own limit of about 2 seconds, and a section that runs out shows as "couldn't load" while the rest of the page loads.
+
+A read that runs out of time answers:
+
+```http
+HTTP/1.1 503 Service Unavailable
+Retry-After: 5
+
+{ "error": { "code": "query_timeout", "message": "This request took too long to answer. Narrow it (a shorter time range, fewer items) or try again later.", "details": { "status": 503, "retryable": true } } }
+```
+
+Narrow the request (a shorter time range, a smaller page) or try again later. Self-hosted operators set the limit with `SFS_HEAVY_READ_TIMEOUT_MS` (Helm: `api.limits.heavyReadTimeoutMs`, `0` turns it off). The limit applies on PostgreSQL only.
+
+## Related
+
+- [Organizations](/organizations/): members, roles and restricted project visibility.
+- [Self-Hosted (Helm)](/self-hosted/): run SessionFS in your own cloud.
+- [Environment Variables](/environment/): every server setting.
+- [Metrics Reference](/metrics/): what operators can monitor.

@@ -8,6 +8,7 @@ import { isCommand } from './commands';
 import { CloseIcon, TerminalIcon } from './icons';
 import { isTierGate } from './tierGate';
 import { errorMessage } from '../utils/errorMessage';
+import { Term } from '../help/Term';
 
 const TOOL_LABELS: Record<string, string> = {
   'claude-code': 'Claude Code',
@@ -174,7 +175,9 @@ export function WorksInMatrix({ versionId, enabled }: { versionId: string; enabl
   const rows = Object.entries(worksIn.data.tools);
   return (
     <section className="mt-6 first:mt-0" aria-labelledby="works-in-heading">
-      <h3 id="works-in-heading" className="text-sm font-semibold text-text-primary">Works in</h3>
+      <h3 id="works-in-heading" className="text-sm font-semibold text-text-primary">
+        <Term id="works-in">Works in</Term>
+      </h3>
       <p className="mt-1 text-xs text-text-tertiary">
         Verified means the tool&apos;s own installer accepted it. Format valid means the catalog entry matches the tool&apos;s
         documented format (checked {worksIn.data.vendor_docs_checked}).

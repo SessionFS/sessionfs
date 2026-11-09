@@ -1,0 +1,134 @@
+---
+title: "Service Level Objectives"
+description: "The four SessionFS service level objectives (ticket comment writes, session pushes, meeting and chat extraction, reminder delivery): targets, how each is measured from the API's Prometheus metrics, the PromQL, and the alert rules self-hosted operators can install."
+---
+
+SessionFS sets four service level objectives (SLOs) on the operations people and agents depend on most. Each is measured from the Prometheus metrics the API already exposes at `GET /api/v1/admin/metrics` (see the [Metrics Reference](/metrics/)), over a rolling window of **28 days**.
+
+These are objectives, not a contractual SLA: they are the bar the hosted service is run against, and a regression past it is treated as a bug. A self-hosted install can measure itself against the same bar with the queries and alert rules on this page.
+
+## The objectives
+
+| SLO | Target over 28 days | Measured from |
+|---|---|---|
+| Ticket comment writes | 95% of successful writes finish within **500 ms** | `http_request_duration_seconds` for `POST /api/v1/projects/{project_id}/tickets/{ticket_id}/comments` |
+| Session pushes | 95% of successful pushes finish within **5 s** | `http_request_duration_seconds` for `PUT /api/v1/sessions/{session_id}/sync` |
+| Meeting and chat extraction | 95% of extractions spend at most **1 s** in the server, not counting the wait for the model provider | `sessionfs_extraction_server_seconds` |
+| Reminder delivery | In 99% of 5-minute slices, the reminders sweep has run in the last 15 minutes and no due reminder has waited more than **15 minutes** | `sessionfs_sweep_lag_seconds` and `sessionfs_sweep_runs_total` for `reminders-due` |
+
+The remaining share (5% for the latency objectives, 1% for reminders) is the error budget: how much slowness the window can absorb before the objective is missed.
+
+### Why these thresholds
+
+- **Ticket comments** are the main way agents and reviewers talk to each other. A write is a few indexed inserts plus a notification fan-out; 500 ms leaves room for a busy database without letting a slow query hide.
+- **Session pushes** carry archives of up to tens of megabytes, which are DLP-scanned and written to object storage. 5 s covers the typical push; the very largest archives can take longer and come out of the budget.
+- **Extraction** time is dominated by the model, which SessionFS does not control (you bring your own key). The objective measures only the server's own work: loading the transcript, building the prompt, validating the answer, matching people and tickets, and saving the result. It counts successful and failed extractions alike.
+- **Reminders** are delivered by a scheduled sweep that runs every 5 minutes. 15 minutes allows one missed run without anyone noticing a late reminder.
+
+## How each SLO is measured
+
+Latency objectives are measured as a **ratio of fast requests to all requests**, read from the histogram buckets, rather than as a computed p95. The ratio adds up correctly across replicas and over 28 days; a p95 does not. "95% of requests within 500 ms" is the same statement as "p95 at most 500 ms".
+
+Only successful requests count (`status_class="2xx"`). Errors are a separate concern: a request rejected in 5 ms should not make latency look better.
+
+Metrics are per process, so every query sums across replicas. The sweep lag gauge is set by whichever replica ran the sweep last, so it takes `max()`.
+
+### Ticket comment writes
+
+```promql
+sum(rate(http_request_duration_seconds_bucket{method="POST",route="/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",status_class="2xx",le="0.5"}[28d]))
+/
+sum(rate(http_request_duration_seconds_count{method="POST",route="/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",status_class="2xx"}[28d]))
+```
+
+The objective is met while this is at least `0.95`.
+
+### Session pushes
+
+```promql
+sum(rate(http_request_duration_seconds_bucket{method="PUT",route="/api/v1/sessions/{session_id}/sync",status_class="2xx",le="5.0"}[28d]))
+/
+sum(rate(http_request_duration_seconds_count{method="PUT",route="/api/v1/sessions/{session_id}/sync",status_class="2xx"}[28d]))
+```
+
+Met while at least `0.95`.
+
+### Meeting and chat extraction (server time)
+
+`sessionfs_extraction_server_seconds` records, for each extraction that finished (`result="done"` or `result="failed"`), the wall time of the extraction minus the time spent waiting on the provider call. Labels: `kind` (`meeting`, `chat`) and `result`.
+
+```promql
+sum(rate(sessionfs_extraction_server_seconds_bucket{le="1.0"}[28d]))
+/
+sum(rate(sessionfs_extraction_server_seconds_count[28d]))
+```
+
+Met while at least `0.95`. For the p95 itself over the last hour:
+
+```promql
+histogram_quantile(0.95, sum by (le) (rate(sessionfs_extraction_server_seconds_bucket[1h])))
+```
+
+### Reminder delivery
+
+Every 5 minutes, a slice is good when the `reminders-due` sweep ran successfully in the last 15 minutes and, when it last started, the oldest due reminder had waited at most 15 minutes:
+
+```promql
+(
+  (max(sessionfs_sweep_lag_seconds{sweep="reminders-due"}) <= bool 900)
+  or vector(1)
+)
+*
+(
+  (sum(increase(sessionfs_sweep_runs_total{sweep="reminders-due",result="ok"}[15m])) > bool 0)
+  or vector(0)
+)
+```
+
+The alert rules record this as `sessionfs:slo_reminders_due:good`. The objective over 28 days:
+
+```promql
+avg_over_time(sessionfs:slo_reminders_due:good[28d])
+```
+
+Met while at least `0.99`. A stopped scheduler counts against the objective even though no reminder is reported late, because the lag gauge only updates when the sweep runs.
+
+## Alerting on a self-hosted install
+
+The repository ships ready-made Prometheus rules at `docs/observability/sessionfs-slo-rules.yaml` (the same file is in the Helm chart at `charts/sessionfs/files/slo-rules.yaml`). They record the error ratio of each latency objective over 5 minutes, 30 minutes, 1 hour and 6 hours, and alert on how fast the error budget is being spent:
+
+| Alert | Severity | Fires when |
+|---|---|---|
+| `SessionFSTicketCommentLatencyBudgetBurn`, `SessionFSSessionPushLatencyBudgetBurn`, `SessionFSExtractionServerTimeBudgetBurn` | `page` | Over the last hour (confirmed over the last 5 minutes) the budget is being spent 14.4 times faster than allowed: at that rate the 28-day budget is gone in about two days. |
+| The same names ending in `Slow` | `ticket` | Over the last 6 hours (confirmed over 30 minutes) the budget is being spent 6 times faster than allowed: gone in about five days. |
+| `SessionFSReminderDeliveryLate` | `page` | For 15 minutes the reminders sweep has not run successfully, or a due reminder has waited over 15 minutes. |
+| `SessionFSReminderDeliveryBudgetBurnSlow` | `ticket` | Reminder delivery was late in more than 6% of the last 6 hours. |
+
+Load the file into Prometheus with `rule_files`, or, with the Prometheus Operator (for example kube-prometheus-stack), let the Helm chart create a `PrometheusRule`:
+
+```yaml
+api:
+  metrics:
+    scrapeAnnotations: true
+    prometheusRule:
+      enabled: true
+      # So your Prometheus ruleSelector picks the rule up.
+      labels:
+        release: kube-prometheus-stack
+      # Set to false if you do not schedule the reminders-due sweep.
+      reminderSweep: true
+```
+
+`api.metrics.prometheusRule.enabled` is off by default because it needs the Operator's custom resource definitions. Prometheus must also be able to scrape the metrics endpoint with a valid key; see [Self-Hosted: Operator metrics](/self-hosted/#operator-metrics).
+
+If you do not run the reminders sweep at all (it is an opt-in CronJob), set `reminderSweep: false` or drop the `sessionfs-slo-reminders` group from the rules file; otherwise it reports as failing.
+
+Other signals worth alerting on next to these: any increase in `sessionfs_sweep_denied_total` (a scheduler using a key that stopped working), `5xx` responses on `http_request_duration_seconds`, and `sessionfs_metrics_series_dropped_total` going up.
+
+## Dashboard
+
+The Grafana dashboard in the repository, `docs/observability/sessionfs-ops.json`, has an SLO row with each objective's 28-day value against its target, the remaining error budget, and the p95 of each operation over time.
+
+## Regression checks
+
+Every change to SessionFS runs a performance smoke test that drives each of these operations against an in-process server and fails if its p95 regresses past a fixed budget. The budgets are set well below the thresholds above so a regression is caught long before it could cost the objective.

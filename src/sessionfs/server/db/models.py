@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, Float, Index, Integer, JSON, Numeric, SmallInteger, String, Text, ForeignKey, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Date, DateTime, Float, Index, Integer, JSON, LargeBinary, Numeric, SmallInteger, String, Text, ForeignKey, UniqueConstraint, func, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -7279,6 +7279,44 @@ class TicketPrLink(Base):
     )
 
 
+class MergeCheckPost(Base):
+    """Ordering state for the merge check of one commit (migration 137).
+
+    One row per ``(project_id, provider, repo, head_sha)``. ``eval_seq`` is
+    bumped (row locked until the evaluating transaction commits) right before
+    readiness is computed, so a higher sequence always read newer state.
+    ``posted_seq`` is advanced by a guarded UPDATE just before a check run /
+    commit status is sent; a post whose sequence is below it is skipped.
+    ``posted_state``/``posted_summary`` hold what the newest claimed post
+    sends, so a poster whose request was overtaken in flight can re-send it.
+    """
+
+    __tablename__ = "merge_check_posts"
+    __table_args__ = (
+        CheckConstraint(
+            "provider IN ('github', 'gitlab')", name="ck_merge_check_posts_provider"
+        ),
+    )
+
+    project_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True
+    )
+    provider: Mapped[str] = mapped_column(String(20), primary_key=True)
+    repo: Mapped[str] = mapped_column(String(200), primary_key=True)
+    head_sha: Mapped[str] = mapped_column(String(64), primary_key=True)
+    eval_seq: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    posted_seq: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=0, server_default="0"
+    )
+    posted_state: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    posted_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
 class Release(Base):
     """A version cut in a project (Review Loop R3, track F1).
 
@@ -8152,7 +8190,14 @@ Index(
 
 ARTIFACT_KINDS = ("dataset", "model", "feature_set", "prompt", "checkpoint")
 ARTIFACT_STAGES = ("candidate", "staging", "production", "archived")
-ARTIFACT_RELATIONS = ("derived_from", "trained_on", "fine_tuned_from", "evaluated_against", "uses")
+ARTIFACT_RELATIONS = (
+    "derived_from",
+    "trained_on",
+    "fine_tuned_from",
+    "distilled_from",
+    "evaluated_against",
+    "uses",
+)
 
 
 class Artifact(Base):
@@ -8216,7 +8261,7 @@ class ArtifactEdge(Base):
     __table_args__ = (
         CheckConstraint(
             "relation IN ('derived_from', 'trained_on', 'fine_tuned_from', "
-            "'evaluated_against', 'uses')",
+            "'distilled_from', 'evaluated_against', 'uses')",
             name="ck_artifact_edges_relation",
         ),
         CheckConstraint("parent_id <> child_id", name="ck_artifact_edges_no_self"),
@@ -8523,3 +8568,67 @@ class EvalCaseResult(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
+
+
+class IdempotencyKey(Base):
+    """One Idempotency-Key reservation or stored response (migration 134).
+
+    ``scope_hash`` is sha256(credential hash, method, route template, key):
+    the raw credential is never stored. ``request_hash`` is sha256 of the
+    method, concrete path, query and canonical body, so reusing a key for a
+    different request is refused. ``lease_token`` fences the holder of an
+    ``in_progress`` row: completion and release only touch the row they
+    still hold, so a request whose lease was taken over can't overwrite the
+    new holder. ``replayable`` is False when the response was too large (or
+    held a credential) to store; a reuse then gets 409. Swept after 24 h.
+    """
+
+    __tablename__ = "idempotency_keys"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('in_progress', 'completed')", name="ck_idempotency_keys_status"
+        ),
+        Index("idx_idempotency_keys_created", "created_at"),
+    )
+
+    scope_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    lease_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    response_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_headers: Mapped[str | None] = mapped_column(Text, nullable=True)
+    response_body: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    replayable: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class OrgConcurrencySlot(Base):
+    """One held concurrency slot for an expensive route class (migration 136).
+
+    ``scope_key`` is ``org:<org id>`` or, for a personal project, ``user:<owner
+    id>``. A request holds one of ``limit`` numbered slots per (scope, route
+    class) while it runs; the row exists only while held. ``holder`` fences the
+    release so a request whose stale slot was reclaimed can't free the new
+    holder's slot. ``expires_at`` bounds a slot whose holder died: a later
+    claim takes it over. Claim and release are each one short transaction on
+    their own session, never held across a provider call.
+    """
+
+    __tablename__ = "org_concurrency_slots"
+
+    scope_key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    route_class: Mapped[str] = mapped_column(String(16), primary_key=True)
+    slot_no: Mapped[int] = mapped_column(Integer, primary_key=True)
+    holder: Mapped[str] = mapped_column(String(32), nullable=False)
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

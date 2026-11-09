@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ChyronEntry } from '../api/client';
 import { CHYRON_LABEL } from './model';
 import { Icon } from './parts';
+import { Tooltip } from '../components/ui';
 
 interface Props {
   entries: ChyronEntry[];
@@ -94,24 +95,30 @@ export default function Chyron({ entries, cleared, reduce, onPick }: Props) {
       <div className="tk-ctrl">
         {reduce && <span className="tk-count mono">{cur + 1} of {n}</span>}
         {reduce && (
-          <button className="tk-btn tk-step" type="button" aria-label="Previous item" onClick={() => setStep(cur - 1)}>
-            <Icon name="prev" />
-          </button>
+          <Tooltip content={'Previous item'} describe={false}>
+            <button className="tk-btn tk-step" type="button" aria-label="Previous item" onClick={() => setStep(cur - 1)}>
+              <Icon name="prev" />
+            </button>
+          </Tooltip>
         )}
         {reduce && (
-          <button className="tk-btn tk-step" type="button" aria-label="Next item" onClick={() => setStep(cur + 1)}>
-            <Icon name="next" />
-          </button>
+          <Tooltip content={'Next item'} describe={false}>
+            <button className="tk-btn tk-step" type="button" aria-label="Next item" onClick={() => setStep(cur + 1)}>
+              <Icon name="next" />
+            </button>
+          </Tooltip>
         )}
         {!reduce && (
-          <button
-            className="tk-btn tk-pause"
-            type="button"
-            aria-label={paused ? 'Play the ticker' : 'Pause the ticker'}
-            onClick={() => setPaused((p) => !p)}
-          >
-            <Icon name={paused ? 'play' : 'pause'} />
-          </button>
+          <Tooltip content={paused ? 'Play the ticker' : 'Pause the ticker'} describe={false}>
+            <button
+              className="tk-btn tk-pause"
+              type="button"
+              aria-label={paused ? 'Play the ticker' : 'Pause the ticker'}
+              onClick={() => setPaused((p) => !p)}
+            >
+              <Icon name={paused ? 'play' : 'pause'} />
+            </button>
+          </Tooltip>
         )}
       </div>
     </section>

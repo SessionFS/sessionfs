@@ -8,6 +8,7 @@ import {
   AwaitingApprovalLines,
   withoutApprovalReasons,
 } from '../../approvals/PendingApprovals';
+import { Term } from '../../help/Term';
 
 interface TrustSealProps {
   readiness: Pick<Readiness, 'ready' | 'reasons' | 'verdict'> & Partial<Pick<Readiness, 'approvals' | 'warnings'>>;
@@ -40,7 +41,7 @@ export function TrustSeal({ readiness, compact = false }: TrustSealProps) {
     return (
       <div className="text-xs text-text-secondary" data-testid="trust-seal-not-ready">
         <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-2 py-0.5 font-medium text-text-secondary">
-          Not ready
+          <Term id="merge-ready">Not ready</Term>
         </span>
         {shown.length > 0 && (
           <ul className="mt-1.5 space-y-0.5 text-text-tertiary">
@@ -60,7 +61,7 @@ export function TrustSeal({ readiness, compact = false }: TrustSealProps) {
     return (
       <span className="inline-block">
         <span className="inline-flex items-center gap-1.5 rounded-full border border-border px-2 py-0.5 text-xs font-medium text-text-secondary">
-          <Check /> Ready
+          <Check /> <Term id="merge-ready">Ready</Term>
         </span>
         <ApprovalWarnings warnings={warnings} />
       </span>
@@ -92,7 +93,9 @@ export function TrustSeal({ readiness, compact = false }: TrustSealProps) {
             <dd className="text-text-primary">{verdict.reviewer || 'Trusted reviewer'}</dd>
           </div>
           <div>
-            <dt className="text-2xs uppercase tracking-[0.04em] text-text-tertiary">Reviewed commit</dt>
+            <dt className="text-2xs uppercase tracking-[0.04em] text-text-tertiary">
+              <Term id="reviewed-commit">Reviewed commit</Term>
+            </dt>
             <dd>{verdict.reviewed_commit ? <MonoText value={verdict.reviewed_commit} copyable /> : <span className="text-text-primary">Not recorded</span>}</dd>
           </div>
           <div>

@@ -1,6 +1,9 @@
 ---
 title: "Meetings"
 description: "Store meeting transcripts, extract action items, promote them to tickets, and keep them under org retention and DLP."
+availability:
+  feature: meetings
+  deployment: both
 ---
 
 Meetings let a project or group capture a meeting transcript and store it server-side. The stored copy is DLP-redacted under the strictest of the caller's org policies, participants can be resolved to org members or personas, transcripts can be extracted into action items and decisions, and those action items can be promoted to tickets. Transcripts age out under an org-level retention window.
@@ -57,7 +60,7 @@ Extraction turns a stored transcript into a list of `participants` and `items` (
 
 The model is given the meeting date (its `meeting_at`, else the day it was stored) so relative due dates such as "by Friday" resolve to the right day, and is asked for names, owners, due dates and 1-based line citations, but everything it returns is validated against the stored text before it is persisted: participants are resolved server-side (same order as [participant resolution](#participant-resolution)), and each item must cite a valid line range (at most 40 lines apart). An item whose owner matches no participant (or whose owner isn't named in the cited lines) is kept with no owner: `owner_participant_id` is null and `owner_hint` carries the owner text the model gave (DLP-redacted, never used to assign anyone). The dashboard shows it as **Owner unknown** and asks you to choose an assignee when you create a ticket from it. `dropped_items` counts only entries that fail validation (bad kind, line range, date or field types).
 
-Extraction uses the same LLM key resolution and monthly token budget as the session helper. With no key configured it returns `409 llm_key_required`; an exhausted org budget returns `429 helper_budget_exceeded`. AI usage is recorded as `meeting_extract`, separately from helper chats, and counts against the same org budget. The provider call has a 240-second deadline (reasoning models can need over two minutes on an hour-long transcript); past it the meeting is marked failed with `timeout`. A provider failure or an unparseable response marks the meeting `extraction_status: "failed"` with a classified `extraction_error` and leaves existing items untouched.
+Extraction uses the same LLM key resolution and monthly token budget as the session helper. With no key configured it returns `409 llm_key_required`; an exhausted org budget returns `429 helper_budget_exceeded`. An organization can run 4 extractions at a time across all servers by default (a personal project counts against its owner); beyond that extraction returns `429 org_concurrency_limit` with `Retry-After` (see [Tenancy and Isolation](/tenancy/)). An upload with `extract: true` is still stored and its response carries the warning `extraction_skipped: org_concurrency_limit`. AI usage is recorded as `meeting_extract`, separately from helper chats, and counts against the same org budget. The provider call has a 240-second deadline (reasoning models can need over two minutes on an hour-long transcript); past it the meeting is marked failed with `timeout`. A provider failure or an unparseable response marks the meeting `extraction_status: "failed"` with a classified `extraction_error` and leaves existing items untouched.
 
 Re-running replaces **pending** items and every **non-manual** participant; **promoted** / **dismissed** / **linked** items and manually overridden participants are kept, so a re-extract never undoes a promotion, a dismissal or a link.
 
@@ -97,6 +100,7 @@ sfs meeting upload --stdin --title "Planning" --group pg_abc123 < notes.txt
 sfs meeting list --query roadmap
 sfs meeting show meet_0123456789abcdef            # numbered transcript, participants, items
 sfs meeting resolve-participant meet_… mp_… --persona atlas
+sfs meeting resolve-participant meet_… --file people.txt   # mp_…,user:<id> | persona:<name> | contact:<id> per line
 sfs meeting promote meet_… mi_… --assignee atlas --due 2026-11-05   # shows the draft, asks to confirm
 sfs meeting promote meet_… mi_… --target-project proj_… --yes       # group meeting, no prompt
 sfs meeting link meet_… mi_… tk_…                                    # tie to an existing ticket (asks first)
@@ -134,6 +138,7 @@ Participants and action items are deleted with the meeting. Uploads, deletes and
 | GET | `/api/v1/meetings/{meeting_id}` | `meetings:read` | Get a meeting with content, participants and action items |
 | DELETE | `/api/v1/meetings/{meeting_id}` | `meetings:write` | Soft-delete a meeting |
 | PUT | `/api/v1/meetings/{meeting_id}/participants/{participant_id}` | user key | Manually override a participant |
+| POST | `/api/v1/meetings/{meeting_id}/participants/resolve-bulk` | user key | Override up to 100 participants at once (body `{"participants": [{"participant_id", one of "user_id" / "persona_name" / "contact_id"}]}`), all or nothing: any refused item means nothing changes and a `422 bulk_item_failed` lists each item. Works for chat threads with `?kind=chat` |
 | POST | `/api/v1/meetings/{meeting_id}/extract` | `meetings:write` | Extract participants and action items (returns `dropped_items`) |
 | POST | `/api/v1/meetings/{meeting_id}/action-items/{item_id}/promote/preview` | `meetings:write` | Draft a ticket from an action item |
 | POST | `/api/v1/meetings/{meeting_id}/action-items/{item_id}/promote` | `meetings:write` | Promote an action item to a ticket (`agent_tickets`) |

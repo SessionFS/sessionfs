@@ -1,5 +1,8 @@
 ---
 title: "CLI Reference"
+availability:
+  feature: all
+  deployment: both
 ---
 
 Complete reference for all `sfs` commands.
@@ -1174,6 +1177,7 @@ Group an org's projects and grant people access to the whole group (v0.26.0). Ev
 | `sfs project group remove GROUP PROJECT_ID` | Remove a project (group admin) |
 | `sfs project group members GROUP` | Members and their roles |
 | `sfs project group grant GROUP USER --role reader\|editor\|admin` | Grant or change a member's role; `USER` is an org member's email or user id (group admin) |
+| `sfs project group grant GROUP --file FILE [--role R]` | Grant up to 100 members at once; one email or user id per line, optionally `email,role` (`--role` is the default). All or nothing |
 | `sfs project group revoke GROUP USER` | Revoke a member's grant (group admin) |
 | `sfs project group access` | Every group you have access to, across your orgs |
 | `sfs project group search GROUP [QUERY] [--entry-type T] [--limit N]` | Search knowledge claims across the group's projects you can read (`QUERY` 3–200 characters; omit it to list top claims) |
@@ -1678,7 +1682,7 @@ $ sfs doctor
 
 ## `sfs dlp scan`
 
-Scan local sessions for secrets and PHI. SessionFS ships with 19 secret patterns (API keys, access tokens, private keys, database URLs) and 14 PHI patterns (SSN, phone, credit card, medical IDs).
+Scan local sessions for secrets and PHI. SessionFS ships with 20 secret patterns (API keys, access tokens, private keys, database URLs) and 14 PHI patterns (SSN, phone, credit card, medical IDs).
 
 ```
 sfs dlp scan [SESSION_ID ...] [--mode MODE] [--format FORMAT]
@@ -2152,7 +2156,8 @@ Store meeting transcripts for a project or a [project group](/project-groups/), 
 | `sfs meeting delete <id> [--yes]` | Delete a meeting |
 | `sfs meeting extract <id>` | Extract participants, action items and decisions with **your own** LLM key (your key, else your org's; never a SessionFS key) |
 | `sfs meeting participants <id>` | Participants and how each was resolved |
-| `sfs meeting resolve-participant <id> <participant_id> --user USER_ID \| --persona NAME` | Resolve a participant manually |
+| `sfs meeting resolve-participant <id> <participant_id> --user USER_ID \| --persona NAME \| --contact ID` | Resolve a participant manually |
+| `sfs meeting resolve-participant <id> --file FILE` | Resolve up to 100 participants at once; each line is `participant_id,user:<id>`, `participant_id,persona:<name>` or `participant_id,contact:<id>`. All or nothing: if any line is refused, nothing changes and the failed lines are listed |
 | `sfs meeting action-items <id>` | Action items and decisions |
 | `sfs meeting promote <id> <item_id> [--title T] [--description D] [--assignee PERSONA \| --user USER_ID] [--due DATE] [--priority P] [--target-project ID] [--jira] [--yes]` | Show the ticket draft and ask before creating it; `--yes` skips the prompt. A group meeting needs `--target-project` |
 | `sfs meeting link <id> <item_id> [TICKET_ID] [--yes]` / `unlink <id> <item_id>` | Tie a pending item to an existing ticket (the item's suggestion when no ticket is given); shows the ticket and the comment it will add, then asks. `unlink` puts a linked item back to pending (v0.29.11) |
@@ -2170,7 +2175,7 @@ Store [chat threads](/chat/) (a Slack export, a DiscordChatExporter export, or a
 | `sfs chat show <id> [--no-messages]` | Numbered messages (`M1`, `M2`, …), participants, action items and decisions |
 | `sfs chat delete <id> [--yes]` | Delete a chat thread |
 | `sfs chat extract <id>` | Extract participants, action items and decisions with **your own** LLM key |
-| `sfs chat participants <id>` / `resolve-participant <id> <participant_id> --user USER_ID \| --persona NAME` | Participants, and resolving one manually |
+| `sfs chat participants <id>` / `resolve-participant <id> <participant_id> --user USER_ID \| --persona NAME` | Participants, and resolving one manually (`--file FILE` resolves many, as for meetings) |
 | `sfs chat action-items <id>` | Action items and decisions |
 | `sfs chat promote <id> <item_id> [same options as sfs meeting promote]` | Show the ticket draft and ask before creating it |
 | `sfs chat link <id> <item_id> [TICKET_ID] [--yes]` / `unlink <id> <item_id>` | Tie an item to an existing ticket (the item's suggestion when no ticket is given; asks first), or put a linked item back to pending (v0.29.11) |
@@ -2223,6 +2228,20 @@ Ask the session helper a question over the sessions and project knowledge you ca
 | `sfs helper conversations rename <id> "TITLE"` | Rename a thread (up to 200 characters, DLP-redacted like your questions) |
 | `sfs helper conversations delete <id> [--yes]` | Permanently delete a thread |
 | `sfs helper status` | Whether the helper is available to you, and which key, provider and model it would use |
+
+## `sfs org`
+
+Organization membership. See [Organizations](/organizations/).
+
+| Command | Description |
+|---|---|
+| `sfs org list` | Every organization you belong to; `*` marks your default org |
+| `sfs org info` / `sfs org members` | Your default organization, its seats and members |
+| `sfs org invite EMAIL [--role member\|admin]` | Invite someone (admin only). When the server sends no email (no email provider configured), the command prints the link to share |
+| `sfs org invite --file FILE [--org ORG_ID]` | Invite up to 100 people at once; one email per line, optionally `email,role`. All or nothing: if any line is refused, nobody is invited and the failed lines are listed |
+| `sfs org invites` | Pending invites addressed to your email |
+| `sfs org accept INVITE_ID` | Accept one of them. You can accept while you belong to other orgs; accepting never changes your default org |
+| `sfs org set-role USER admin\|member` / `sfs org remove USER` | Change a member's role, or remove a member (admin only) |
 
 ## `sfs org delivery-webhook`
 

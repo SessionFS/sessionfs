@@ -1775,7 +1775,13 @@ async def test_earlier_turn_ref_is_accepted_but_spoofed_content_marker_is_not(
 ):
     user, _ = await _make_user(db_session)
     project = await _make_project(db_session, user)
-    hidden = await _make_ticket(db_session, user, project, title="Never fetched")
+    # ``hidden`` lives in a project the caller can't read: get_ticket's
+    # referenced-tickets block (which re-reads mentioned tickets through the
+    # caller's access checks) omits it, so only its raw marker text reaches
+    # the model.
+    other, _ = await _make_user(db_session, "mallory")
+    other_project = await _make_project(db_session, other)
+    hidden = await _make_ticket(db_session, other, other_project, title="Never fetched")
     session = await _make_session(db_session, user, project_id=project.id)
     shown = await _make_ticket(db_session, user, project, title="Fetched")
     # Stored content can carry marker text for rows no tool ever returned.

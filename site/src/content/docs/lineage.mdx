@@ -1,0 +1,70 @@
+---
+title: "Lineage Edge Types"
+description: "What each lineage edge means, which way it points, and how to answer \"which dataset trained the model in production\" from the API, the CLI or an agent."
+availability:
+  feature: evaluations
+  deployment: both
+---
+
+Lineage records where a dataset, model, feature set, prompt or checkpoint came from. Each record is an **edge** from a **parent** artifact to a **child** artifact inside one project. The parent is always the thing that came first; the child is the thing made from it, read as "child *relation* parent".
+
+Edges are records only. SessionFS never fetches an artifact, so an edge is what you or your pipeline say happened, with an optional `context_ref` (a commit, notebook path or run id) to back it. Registering artifacts, promotion and access are covered in [Evaluations and Lineage](/evals/).
+
+## Edge types
+
+| Relation | Parent → child | Read it as | Example |
+| --- | --- | --- | --- |
+| `derived_from` | source → derived artifact | the child was built from the parent | dataset `notes-clean v3` derived from dataset `notes-raw v3` |
+| `trained_on` | dataset → model | the child model was trained on the parent data | model `clin 2.3` trained on dataset `notes v3` |
+| `fine_tuned_from` | base model → fine-tuned model | the child started from the parent's weights | model `clin 2.3` fine-tuned from model `base 8b` |
+| `distilled_from` | teacher model → student model | the child learned from the parent's outputs | model `clin-small 1.0` distilled from model `clin 2.3` |
+| `evaluated_against` | dataset or prompt → model | the child was measured on the parent | model `clin 2.3` evaluated against dataset `holdout v2` |
+| `uses` | dependency → consumer | the child needs the parent at run time | prompt `triage v4` uses feature set `vitals v1` |
+
+`distilled_from` points the same way as `fine_tuned_from`: the teacher is upstream of the student. The data the student was distilled on is a separate `trained_on` edge, so a trace up from the student reaches both its own training data and, through the teacher, the teacher's.
+
+A pair can carry more than one relation (a model can be both fine-tuned from and evaluated against something), but the same relation between the same pair is recorded once (`409`). Self-edges and cycles are refused (`422 lineage_cycle`).
+
+```bash
+sfs artifact link art_teacher art_student --relation distilled_from --context-ref runs:/distill-42
+sfs artifact link art_distill_set art_student --relation trained_on
+```
+
+## Trace a lineage
+
+`up` follows edges to parents (what it came from), `down` follows edges to children (what came from it), `both` does both. A trace stops at depth 25 and 500 nodes and says so with `truncated: true`. Every relation is followed the same way; filter the returned `edges` by `relation` to answer a narrower question.
+
+## Which dataset trained the model in production?
+
+Three steps: find the production model, trace it upward, keep the `trained_on` edges whose parent is a dataset. The edges that point straight at the production model are the data that trained it directly; the rest come from further up, for example the data that trained the teacher it was distilled from.
+
+### API
+
+```bash
+API=https://api.sessionfs.dev/api/v1/projects/$PROJECT
+curl -s -H "Authorization: Bearer $KEY" "$API/artifacts?kind=model&stage=production"
+# -> {"artifacts": [{"id": "art_student", "name": "clin-small", "version": "1.0", ...}], ...}
+
+curl -s -H "Authorization: Bearer $KEY" "$API/artifacts/art_student/lineage?direction=up" \
+  | jq '(.nodes | map({(.id): .kind}) | add) as $kind
+        | [.edges[] | select(.relation == "trained_on" and $kind[.parent_id] == "dataset")]
+        | {direct: [.[] | select(.child_id == "art_student") | .parent_id],
+           upstream: [.[].parent_id] | unique}'
+```
+
+A service key needs `artifacts:read` and must be allowed on the project.
+
+### CLI
+
+```bash
+sfs artifact list --kind model --stage production
+sfs artifact lineage art_student --direction up
+```
+
+The lineage output prints one edge per line, for example `dataset distill-set v1 -trained_on-> model clin-small 1.0`. Add `--json` to either command for JSON output (`list` prints the artifact array, `lineage` the same body as the API).
+
+### Agents (MCP)
+
+Call `list_artifacts` with `kind: "model"` and `stage: "production"`, then `get_artifact_lineage` with the returned `artifact_id` and `direction: "up"`, and read the `trained_on` edges from the result.
+
+There is one production version per family (promoting a new one archives the previous), so with several model families the first step returns one model per family; add `name` to pick one.

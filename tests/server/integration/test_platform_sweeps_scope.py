@@ -48,6 +48,7 @@ SWEEPS: list[tuple[str, dict, str | None]] = [
     ("/api/v1/admin/sweeps/attention-hides", {}, "attention_hides_sweep"),
     ("/api/v1/admin/sweeps/contact-retention", {}, "contact_retention_sweep"),
     ("/api/v1/admin/sweeps/eval-outputs", {}, "eval_output_retention_sweep"),
+    ("/api/v1/admin/sweeps/idempotency-keys", {}, "idempotency_keys_sweep"),
 ]
 SWEEP_PATHS = {path for path, _, _ in SWEEPS}
 
@@ -315,22 +316,12 @@ async def test_scope_is_in_the_vocabulary_and_platform_mint_only() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _api_routes(routes, prefix: str = ""):
-    """(path, route) for every APIRoute. Newer FastAPI keeps included routers
-    as wrappers in ``app.routes`` (their prefix on ``include_context``), older
-    releases flatten them, so walk both shapes."""
-    from fastapi.routing import APIRoute
+def _api_routes(app):
+    """(path, route) for every APIRoute, on every supported FastAPI version."""
+    from sessionfs.server.route_introspection import iter_api_routes
 
-    for route in routes:
-        if isinstance(route, APIRoute):
-            yield prefix + route.path, route
-        elif getattr(route, "original_router", None) is not None:
-            context = getattr(route, "include_context", None)
-            yield from _api_routes(
-                route.original_router.routes, prefix + (getattr(context, "prefix", "") or "")
-            )
-        elif hasattr(route, "routes"):
-            yield from _api_routes(route.routes, prefix + (getattr(route, "path", "") or ""))
+    for entry in iter_api_routes(app):
+        yield entry.path, entry.route
 
 
 def _concrete(path: str) -> str:
@@ -345,7 +336,7 @@ async def test_sweep_key_grants_nothing_beyond_the_sweeps(
     _, _, _, headers = await _sweep_key(db_session)
     app = client._transport.app  # type: ignore[attr-defined]
     checked = 0
-    for path, route in _api_routes(app.routes):
+    for path, route in _api_routes(app):
         if not path.startswith("/api/") or path in SWEEP_PATHS:
             continue
         for method in sorted(route.methods - {"HEAD", "OPTIONS"}):

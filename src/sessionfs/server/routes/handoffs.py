@@ -230,9 +230,26 @@ async def create_handoff(
     user = auth.user
     check_feature(ctx, "handoff")
 
-    # Team handoffs require Team+ tier (gates broadcast/first-come team flow)
+    # Team handoffs require Team+ tier (gates broadcast/first-come team flow).
+    # A team belongs to one org and a person can belong to several, so the
+    # TEAM'S org plan decides when the sender is a member there; otherwise
+    # (unknown team, not a member, service key) the caller's own context
+    # answers as before and the team checks below give the 404/403.
     if body.recipient_team_id is not None:
-        check_feature(ctx, "team_handoff")
+        gate_ctx = ctx
+        if auth.key_kind != "service":
+            from sessionfs.server.tier_gate import build_org_user_context
+
+            team_org_id = (
+                await db.execute(
+                    select(Team.org_id).where(Team.id == body.recipient_team_id)
+                )
+            ).scalar_one_or_none()
+            if team_org_id is not None:
+                gate_ctx = (
+                    await build_org_user_context(user, team_org_id, db)
+                ) or ctx
+        check_feature(gate_ctx, "team_handoff")
 
     # Verify session exists and belongs to sender
     result = await db.execute(

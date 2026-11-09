@@ -680,6 +680,8 @@ async def delete_user(
     await db.execute(
         delete(OrgMember).where(OrgMember.user_id == user_id)
     )
+    # No memberships left, so no default org.
+    user.default_org_id = None
     # Remove ticket-watcher subscriptions so a deactivated user no longer
     # accumulates notification rows (unbounded growth).
     await db.execute(
@@ -862,16 +864,9 @@ async def admin_create_org(
             422, f"User {owner_user_id} is inactive and cannot own an organization"
         )
 
-    # Owner can't already be in an org
-    existing_member = (
-        await db.execute(
-            select(OrgMember).where(OrgMember.user_id == owner_user_id).limit(1)
-        )
-    ).scalar_one_or_none()
-    if existing_member is not None:
-        raise HTTPException(
-            409, f"User {owner_user_id} is already a member of an organization"
-        )
+    # A person can belong to several orgs (CEO decision 2026-11-09): the
+    # owner may already be a member elsewhere. The org is new, so they can't
+    # already be a member of it.
 
     org_id = f"org_{_secrets.token_hex(8)}"
     org = Organization(
@@ -4102,6 +4097,36 @@ async def merge_user_into(
         "source_id": source_id, "target_id": target_id,
         "reason": body.reason, "plan": plan, "admin_action_id": entry.id,
     }
+
+
+@router.post("/sweeps/idempotency-keys")
+async def sweep_idempotency_keys_route(
+    batch_size: int = Query(default=1000, ge=1, le=5000),
+    auth: AuthContext = Depends(require_platform_sweeper()),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete Idempotency-Key rows older than 24 hours (tk_bd80efd511da4a2b).
+
+    Accepts a platform-admin user key or a ``platform_sweeps:run`` service
+    key (run it hourly or daily). Bounded keyset batches, each committed;
+    idempotent.
+    """
+    from sessionfs.server.idempotency import sweep_idempotency_keys
+
+    admin_id = auth.user.id
+    actor = sweep_actor_details(auth)
+    await db.rollback()
+    result = await sweep_idempotency_keys(db, batch_size=batch_size)
+    await _log_action(
+        db,
+        admin_id,
+        "idempotency_keys_sweep",
+        "idempotency_key",
+        "bulk",
+        {**result, **actor},
+    )
+    await db.commit()
+    return result
 
 
 @router.post("/sweeps/attention-hides")

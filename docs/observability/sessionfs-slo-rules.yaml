@@ -1,0 +1,212 @@
+# SessionFS SLO recording and alerting rules (Prometheus rules file format).
+#
+# The SLOs, targets and the reasoning behind them are published at
+# https://sessionfs.dev/slos/. Every SLO is measured over a rolling 28 days.
+#
+#   1. Ticket comment writes: 95% of successful writes finish within 500 ms.
+#   2. Session pushes: 95% of successful pushes finish within 5 s.
+#   3. Meeting/chat extraction: 95% of extractions spend at most 1 s in the
+#      server, not counting the time spent waiting on the model provider.
+#   4. Reminder delivery: in 99% of 5-minute slices, the reminders-due sweep
+#      has run in the last 15 minutes and no due reminder has waited longer
+#      than 15 minutes.
+#
+# Alerts use multi-window burn rates: "page" when the error budget would be
+# gone in about two days (14.4x over 1 h, confirmed over 5 m), "ticket" when
+# it would be gone in about five days (6x over 6 h, confirmed over 30 m).
+#
+# Metrics are per process: the rules sum counters and histograms across
+# replicas and take max() of the lag gauge, as the metrics reference says.
+#
+# If you do not schedule the reminders-due sweep, drop the
+# sessionfs-slo-reminders group: with no sweep runs it reports as failing.
+#
+# This file is shipped twice and must stay identical (a test checks):
+#   charts/sessionfs/files/slo-rules.yaml   (Helm PrometheusRule source)
+#   docs/observability/sessionfs-slo-rules.yaml
+groups:
+  - name: sessionfs-slo-latency
+    rules:
+      # ── 1. ticket comment writes (threshold 500 ms, target 95%) ─────────
+      - record: sessionfs:slo_ticket_comment:error_ratio_rate5m
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{method="POST",route="/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",status_class="2xx",le="0.5"}[5m]))
+            /
+            sum(rate(http_request_duration_seconds_count{method="POST",route="/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",status_class="2xx"}[5m]))
+          )
+      - record: sessionfs:slo_ticket_comment:error_ratio_rate30m
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{method="POST",route="/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",status_class="2xx",le="0.5"}[30m]))
+            /
+            sum(rate(http_request_duration_seconds_count{method="POST",route="/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",status_class="2xx"}[30m]))
+          )
+      - record: sessionfs:slo_ticket_comment:error_ratio_rate1h
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{method="POST",route="/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",status_class="2xx",le="0.5"}[1h]))
+            /
+            sum(rate(http_request_duration_seconds_count{method="POST",route="/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",status_class="2xx"}[1h]))
+          )
+      - record: sessionfs:slo_ticket_comment:error_ratio_rate6h
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{method="POST",route="/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",status_class="2xx",le="0.5"}[6h]))
+            /
+            sum(rate(http_request_duration_seconds_count{method="POST",route="/api/v1/projects/{project_id}/tickets/{ticket_id}/comments",status_class="2xx"}[6h]))
+          )
+      - alert: SessionFSTicketCommentLatencyBudgetBurn
+        expr: |
+          (sessionfs:slo_ticket_comment:error_ratio_rate1h > (14.4 * 0.05)
+            and sessionfs:slo_ticket_comment:error_ratio_rate5m > (14.4 * 0.05))
+        labels:
+          severity: page
+          slo: ticket-comment-write
+        annotations:
+          summary: Ticket comment writes are slower than 500 ms far too often
+          description: More than 72% of ticket comment writes took over 500 ms in the last hour; the 28-day error budget will be gone in about two days.
+      - alert: SessionFSTicketCommentLatencyBudgetBurnSlow
+        expr: |
+          (sessionfs:slo_ticket_comment:error_ratio_rate6h > (6 * 0.05)
+            and sessionfs:slo_ticket_comment:error_ratio_rate30m > (6 * 0.05))
+        labels:
+          severity: ticket
+          slo: ticket-comment-write
+        annotations:
+          summary: Ticket comment writes are steadily slower than 500 ms
+          description: More than 30% of ticket comment writes took over 500 ms in the last 6 hours.
+
+      # ── 2. session pushes (threshold 5 s, target 95%) ──────────────────
+      - record: sessionfs:slo_session_push:error_ratio_rate5m
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{method="PUT",route="/api/v1/sessions/{session_id}/sync",status_class="2xx",le="5.0"}[5m]))
+            /
+            sum(rate(http_request_duration_seconds_count{method="PUT",route="/api/v1/sessions/{session_id}/sync",status_class="2xx"}[5m]))
+          )
+      - record: sessionfs:slo_session_push:error_ratio_rate30m
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{method="PUT",route="/api/v1/sessions/{session_id}/sync",status_class="2xx",le="5.0"}[30m]))
+            /
+            sum(rate(http_request_duration_seconds_count{method="PUT",route="/api/v1/sessions/{session_id}/sync",status_class="2xx"}[30m]))
+          )
+      - record: sessionfs:slo_session_push:error_ratio_rate1h
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{method="PUT",route="/api/v1/sessions/{session_id}/sync",status_class="2xx",le="5.0"}[1h]))
+            /
+            sum(rate(http_request_duration_seconds_count{method="PUT",route="/api/v1/sessions/{session_id}/sync",status_class="2xx"}[1h]))
+          )
+      - record: sessionfs:slo_session_push:error_ratio_rate6h
+        expr: |
+          1 - (
+            sum(rate(http_request_duration_seconds_bucket{method="PUT",route="/api/v1/sessions/{session_id}/sync",status_class="2xx",le="5.0"}[6h]))
+            /
+            sum(rate(http_request_duration_seconds_count{method="PUT",route="/api/v1/sessions/{session_id}/sync",status_class="2xx"}[6h]))
+          )
+      - alert: SessionFSSessionPushLatencyBudgetBurn
+        expr: |
+          (sessionfs:slo_session_push:error_ratio_rate1h > (14.4 * 0.05)
+            and sessionfs:slo_session_push:error_ratio_rate5m > (14.4 * 0.05))
+        labels:
+          severity: page
+          slo: session-push
+        annotations:
+          summary: Session pushes are slower than 5 s far too often
+          description: More than 72% of successful session pushes took over 5 s in the last hour.
+      - alert: SessionFSSessionPushLatencyBudgetBurnSlow
+        expr: |
+          (sessionfs:slo_session_push:error_ratio_rate6h > (6 * 0.05)
+            and sessionfs:slo_session_push:error_ratio_rate30m > (6 * 0.05))
+        labels:
+          severity: ticket
+          slo: session-push
+        annotations:
+          summary: Session pushes are steadily slower than 5 s
+          description: More than 30% of successful session pushes took over 5 s in the last 6 hours.
+
+      # ── 3. extraction server time (threshold 1 s, target 95%) ──────────
+      - record: sessionfs:slo_extraction:error_ratio_rate5m
+        expr: |
+          1 - (
+            sum(rate(sessionfs_extraction_server_seconds_bucket{le="1.0"}[5m]))
+            /
+            sum(rate(sessionfs_extraction_server_seconds_count[5m]))
+          )
+      - record: sessionfs:slo_extraction:error_ratio_rate30m
+        expr: |
+          1 - (
+            sum(rate(sessionfs_extraction_server_seconds_bucket{le="1.0"}[30m]))
+            /
+            sum(rate(sessionfs_extraction_server_seconds_count[30m]))
+          )
+      - record: sessionfs:slo_extraction:error_ratio_rate1h
+        expr: |
+          1 - (
+            sum(rate(sessionfs_extraction_server_seconds_bucket{le="1.0"}[1h]))
+            /
+            sum(rate(sessionfs_extraction_server_seconds_count[1h]))
+          )
+      - record: sessionfs:slo_extraction:error_ratio_rate6h
+        expr: |
+          1 - (
+            sum(rate(sessionfs_extraction_server_seconds_bucket{le="1.0"}[6h]))
+            /
+            sum(rate(sessionfs_extraction_server_seconds_count[6h]))
+          )
+      - alert: SessionFSExtractionServerTimeBudgetBurn
+        expr: |
+          (sessionfs:slo_extraction:error_ratio_rate1h > (14.4 * 0.05)
+            and sessionfs:slo_extraction:error_ratio_rate5m > (14.4 * 0.05))
+        labels:
+          severity: page
+          slo: extraction-server-time
+        annotations:
+          summary: Extractions spend more than 1 s in the server far too often
+          description: More than 72% of meeting/chat extractions spent over 1 s in the server (provider time excluded) in the last hour.
+      - alert: SessionFSExtractionServerTimeBudgetBurnSlow
+        expr: |
+          (sessionfs:slo_extraction:error_ratio_rate6h > (6 * 0.05)
+            and sessionfs:slo_extraction:error_ratio_rate30m > (6 * 0.05))
+        labels:
+          severity: ticket
+          slo: extraction-server-time
+        annotations:
+          summary: Extractions steadily spend more than 1 s in the server
+          description: More than 30% of meeting/chat extractions spent over 1 s in the server (provider time excluded) in the last 6 hours.
+
+  - name: sessionfs-slo-reminders
+    rules:
+      # ── 4. reminder delivery (15 min, target 99% of 5-minute slices) ───
+      # 1 when the sweep ran successfully in the last 15 minutes AND the oldest
+      # due reminder had waited at most 15 minutes when it last ran, else 0.
+      - record: sessionfs:slo_reminders_due:good
+        expr: |
+          (
+            (max(sessionfs_sweep_lag_seconds{sweep="reminders-due"}) <= bool 900)
+            or vector(1)
+          )
+          *
+          (
+            (sum(increase(sessionfs_sweep_runs_total{sweep="reminders-due",result="ok"}[15m])) > bool 0)
+            or vector(0)
+          )
+      - alert: SessionFSReminderDeliveryLate
+        expr: sessionfs:slo_reminders_due:good == 0
+        for: 15m
+        labels:
+          severity: page
+          slo: reminder-delivery
+        annotations:
+          summary: Due reminders are not being delivered
+          description: For 15 minutes either the reminders-due sweep has not run successfully or a due reminder has waited over 15 minutes. Check the scheduler and sessionfs_sweep_denied_total.
+      - alert: SessionFSReminderDeliveryBudgetBurnSlow
+        expr: avg_over_time(sessionfs:slo_reminders_due:good[6h]) < (1 - 6 * 0.01)
+        labels:
+          severity: ticket
+          slo: reminder-delivery
+        annotations:
+          summary: Reminder delivery has been unreliable for hours
+          description: Reminder delivery was late in more than 6% of the last 6 hours.

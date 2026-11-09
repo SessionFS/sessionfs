@@ -49,3 +49,15 @@ export function ticketActionAllowed(
       return false;
   }
 }
+
+/** Same rule as the detail header (TicketDetail): the creator, a project
+ *  admin, or any project editor may reassign. */
+export function canReassignTicket(
+  t: Pick<Ticket, 'created_by_user_id'>,
+  viewer: TicketViewer,
+  isProjectAdminFallback?: boolean,
+): boolean {
+  const isCreator = !!viewer.userId && t.created_by_user_id === viewer.userId;
+  const isAdmin = viewer.isProjectAdmin ?? isProjectAdminFallback ?? false;
+  return isCreator || isAdmin || viewer.canEdit;
+}

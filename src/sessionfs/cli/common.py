@@ -9,12 +9,59 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape as _escape_markup
 
 from sessionfs.daemon.config import load_config
 from sessionfs.store.local import LocalStore
 
 console = Console()
 err_console = Console(stderr=True)
+
+
+def read_bulk_file(path: str) -> list[list[str]]:
+    """Lines of a bulk-input file split on commas (stripped).
+
+    Blank lines and lines starting with # are skipped. Exits on a read
+    error."""
+    try:
+        text = Path(path).expanduser().read_text(encoding="utf-8")
+    except OSError as exc:
+        err_console.print(f"[red]Could not read {path}: {exc.strerror or exc}[/red]")
+        raise SystemExit(1)
+    rows: list[list[str]] = []
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        rows.append([part.strip() for part in line.split(",")])
+    if not rows:
+        err_console.print(f"[red]{path} has no entries.[/red]")
+        raise SystemExit(2)
+    if len(rows) > 100:
+        err_console.print("[red]At most 100 entries per file; split it up.[/red]")
+        raise SystemExit(2)
+    return rows
+
+
+def print_bulk_failures(body: Any, label_key: str) -> bool:
+    """Print the failed items of a bulk route's 422 ``bulk_item_failed``.
+
+    Returns False when ``body`` isn't that refusal (caller prints the usual
+    error instead)."""
+    if not isinstance(body, dict):
+        return False
+    err = body.get("error")
+    if not isinstance(err, dict) or err.get("code") != "bulk_item_failed":
+        return False
+    results = (err.get("details") or {}).get("results") or []
+    err_console.print("[red]Nothing was changed; fix these and run again:[/red]")
+    for r in results:
+        if not r.get("ok"):
+            err_console.print(
+                f"  {_escape_markup(str(r.get(label_key, '')))}: "
+                f"{_escape_markup(str(r.get('message') or r.get('code') or ''))}"
+            )
+    return True
 
 
 def format_api_error(body: Any, status: int) -> str:
@@ -145,33 +192,33 @@ def handle_errors(func):
             )
             raise SystemExit(130)
         except sqlite3.DatabaseError as exc:
-            err_console.print(f"[red]Database error: {exc}[/red]")
+            err_console.print(f"[red]Database error: {_escape_markup(str(exc))}[/red]")
             err_console.print(
                 "[dim]Hint: try deleting ~/.sessionfs/index.db and running "
                 "'sfs daemon rebuild-index'.[/dim]"
             )
             raise SystemExit(1)
         except ConnectionError as exc:
-            err_console.print(f"[red]Connection failed: {exc}[/red]")
+            err_console.print(f"[red]Connection failed: {_escape_markup(str(exc))}[/red]")
             err_console.print(
                 "[dim]Hint: check your network connection and server URL.[/dim]"
             )
             raise SystemExit(1)
         except PermissionError as exc:
-            err_console.print(f"[red]Permission denied: {exc}[/red]")
+            err_console.print(f"[red]Permission denied: {_escape_markup(str(exc))}[/red]")
             err_console.print(
                 "[dim]Hint: check file permissions with "
                 "'chmod 700 ~/.sessionfs'.[/dim]"
             )
             raise SystemExit(1)
         except FileNotFoundError as exc:
-            err_console.print(f"[red]File not found: {exc}[/red]")
+            err_console.print(f"[red]File not found: {_escape_markup(str(exc))}[/red]")
             err_console.print(
                 "[dim]Hint: run 'sfs init' to set up SessionFS.[/dim]"
             )
             raise SystemExit(1)
         except Exception as exc:
-            err_console.print(f"[red]Unexpected error: {exc}[/red]")
+            err_console.print(f"[red]Unexpected error: {_escape_markup(str(exc))}[/red]")
             err_console.print(
                 "[dim]If this persists, please report at "
                 "https://github.com/SessionFS/sessionfs/issues[/dim]"

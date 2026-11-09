@@ -644,7 +644,7 @@ async def test_org_admin_sees_exactly_project_access_allows(db_session, test_use
     ctx = _ctx(db_session, test_user, blob_store=blob_store, audit=RecordingSink())
 
     kb = await _run(ctx, "search_project_knowledge", {"project_id": project.id, "query": "x"})
-    assert kb.content == "No knowledge entries matched."  # allowed to read, sees the (empty) KB
+    assert kb.content.startswith("No knowledge entries matched")  # allowed to read, sees the (empty) KB
 
     summary = await _run(ctx, "get_session_summary", {"session_id": other_session.id})
     assert summary.content == "Session not found."  # not the admin's session
@@ -1259,7 +1259,7 @@ async def test_kb_tools_limited_to_scoped_session_projects(db_session, test_user
         scope=HelperScope(session_ids=(session.id,)), audit=RecordingSink(),
     )
     ok = await _run(ctx, "get_project_context", {"project_id": pa.id})
-    assert ok.content == "# A doc"
+    assert ok.content.endswith("\n# A doc")  # after the compiled_at header
     denied = await _run(ctx, "get_project_context", {"project_id": pb.id})
     assert denied.content == "Project not found."
 

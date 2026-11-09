@@ -29,6 +29,9 @@ REST surface:
     DELETE /api/v1/orgs/{org_id}/groups/{group_id}            — soft delete (org admin)
     PUT    /api/v1/orgs/{org_id}/groups/{group_id}/members/{user_id}
                                                               — grant/update (group admin)
+    POST   /api/v1/orgs/{org_id}/groups/{group_id}/members/bulk
+                                                              — grant/update up to 100,
+                                                                all-or-nothing (group admin)
     DELETE /api/v1/orgs/{org_id}/groups/{group_id}/members/{user_id}
                                                               — revoke (group admin)
     PUT    /api/v1/orgs/{org_id}/groups/{group_id}/projects/{project_id}
@@ -54,6 +57,7 @@ from sqlalchemy import and_, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sessionfs.server.api_contract import StrictRequestModel
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.auth.project_access import (
     GROUP_ROLE_ADMIN,
@@ -76,7 +80,13 @@ from sessionfs.server.db.models import (
 )
 from sessionfs.server.roles import ADMIN_ROLES
 from sessionfs.server.routes.org_members import _org_or_404
+from sessionfs.server.services.org_concurrency import org_slot
 from sessionfs.server.services import group_compiler
+from sessionfs.server.services.bulk import (
+    bulk_refusal,
+    check_bulk_duplicates,
+    check_bulk_size,
+)
 from sessionfs.server.services.project_groups import group_audit_event
 from sessionfs.server.tier_gate import (
     resolve_org_plan_tier,
@@ -734,6 +744,75 @@ async def delete_group(
 # ── Membership grants ──
 
 
+_NOT_ORG_MEMBER_MESSAGE = "Only active members of this org can be group members."
+_GRANT_CONFLICT = {
+    "code": "grant_conflict",
+    "message": "This member's grant changed concurrently; retry.",
+}
+
+
+class _GrantRefused(Exception):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+async def _apply_member_grant(
+    db: AsyncSession,
+    *,
+    org: Organization,
+    group: ProjectGroup,
+    user: User,
+    org_role: str,
+    user_id: str,
+    role: str,
+) -> None:
+    """Grant or update one member's role and add its audit row. Not flushed.
+
+    The caller holds the grantee's user scope lock and the org scope lock and
+    has re-checked its own group-admin standing under them. The grantee's
+    membership row is read FOR SHARE so a concurrent removal either runs
+    before (refused here) or waits for this grant and then deletes it."""
+    grantee = (
+        await db.execute(
+            select(OrgMember.id)
+            .where(OrgMember.org_id == org.id, OrgMember.user_id == user_id)
+            .with_for_update(read=True)
+        )
+    ).first()
+    if grantee is None:
+        raise _GrantRefused("not_org_member", _NOT_ORG_MEMBER_MESSAGE)
+
+    existing = await _explicit_grant(db, group.id, user_id)
+    before = (
+        {"role": existing.role, "user_id": user_id} if existing is not None else None
+    )
+    if existing is not None:
+        existing.role = role
+        existing.granted_by_user_id = user.id
+    else:
+        db.add(
+            ProjectGroupMember(
+                group_id=group.id,
+                user_id=user_id,
+                role=role,
+                granted_by_user_id=user.id,
+                created_at=_now(),
+            )
+        )
+    _audit(
+        db,
+        org=org,
+        user=user,
+        actor_role=org_role,
+        event_type="project_group_member_granted",
+        target_id=group.id,
+        before=before,
+        after={"user_id": user_id, "role": role},
+    )
+
+
 @router.put(
     "/{org_id}/groups/{group_id}/members/{user_id}",
     response_model=ProjectGroupDetail,
@@ -764,65 +843,133 @@ async def grant_member(
     group, my_role = await _visible_group_or_404(db, user, org_id, group_id, org_role)
     _require_group_admin(my_role)
 
-    grantee = (
-        await db.execute(
-            select(OrgMember.id)
-            .where(OrgMember.org_id == org_id, OrgMember.user_id == user_id)
-            .with_for_update(read=True)
+    try:
+        await _apply_member_grant(
+            db,
+            org=org,
+            group=group,
+            user=user,
+            org_role=org_role,
+            user_id=user_id,
+            role=body.role,
         )
-    ).first()
-    if grantee is None:
-        raise HTTPException(
-            422,
-            {
-                "code": "not_org_member",
-                "message": "Only active members of this org can be group members.",
-            },
-        )
-
-    existing = await _explicit_grant(db, group.id, user_id)
-    before = (
-        {"role": existing.role, "user_id": user_id} if existing is not None else None
-    )
-    if existing is not None:
-        existing.role = body.role
-        existing.granted_by_user_id = user.id
-    else:
-        db.add(
-            ProjectGroupMember(
-                group_id=group.id,
-                user_id=user_id,
-                role=body.role,
-                granted_by_user_id=user.id,
-                created_at=_now(),
-            )
-        )
+    except _GrantRefused as exc:
+        raise HTTPException(422, {"code": exc.code, "message": exc.message}) from None
     try:
         await db.flush()
     except IntegrityError:
         # A concurrent first grant for the same (group, user) won the race.
         await db.rollback()
-        raise HTTPException(
-            409,
-            {
-                "code": "grant_conflict",
-                "message": "This member's grant changed concurrently; retry.",
-            },
-        )
-    _audit(
-        db,
-        org=org,
-        user=user,
-        actor_role=org_role,
-        event_type="project_group_member_granted",
-        target_id=group.id,
-        before=before,
-        after={"user_id": user_id, "role": body.role},
-    )
+        raise HTTPException(409, _GRANT_CONFLICT) from None
     await db.commit()
     return await _detail(
         db, group, my_role=await _caller_group_role(db, user, group, org_role)
     )
+
+
+class BulkGrantItem(StrictRequestModel):
+    user_id: str = Field(..., min_length=1, max_length=64)
+    role: Literal["reader", "editor", "admin"]
+
+
+class BulkGrantRequest(StrictRequestModel):
+    # The 100-item cap is checked in the route so it answers too_many_items.
+    grants: list[BulkGrantItem] = Field(..., min_length=1)
+
+
+class BulkGrantResult(BaseModel):
+    index: int
+    user_id: str
+    role: str
+    ok: bool
+    code: str | None = None
+    message: str | None = None
+
+
+class BulkGrantResponse(BaseModel):
+    granted: int
+    results: list[BulkGrantResult]
+    group: ProjectGroupDetail
+
+
+@router.post(
+    "/{org_id}/groups/{group_id}/members/bulk",
+    response_model=BulkGrantResponse,
+)
+async def bulk_grant_members(
+    org_id: str,
+    group_id: str,
+    body: BulkGrantRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> BulkGrantResponse:
+    """Grant or update up to 100 members' roles in one all-or-nothing
+    request. Group admin only, like the single grant.
+
+    Every grantee's user scope lock and the org scope lock are taken first
+    (lock_scopes sorts users, then the org — the single grant's order), the
+    caller's standing is re-read under them, then each item goes through the
+    single grant's own helper. Any refused item means nothing is written and
+    a 422 lists every item."""
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    check_bulk_size(len(body.grants))
+    check_bulk_duplicates([g.user_id for g in body.grants], "user_id")
+
+    org, org_role = await _org_for_member(db, user, org_id)
+    await _require_group_feature(db, org_id)
+    await lock_scopes(db, user_ids=[g.user_id for g in body.grants], org_ids=[org_id])
+    # Re-read the caller's standing under the locks.
+    org, org_role = await _org_for_member(db, user, org_id)
+    group, my_role = await _visible_group_or_404(db, user, org_id, group_id, org_role)
+    _require_group_admin(my_role)
+
+    results: list[BulkGrantResult] = []
+    failed = False
+    for index, item in enumerate(body.grants):
+        try:
+            await _apply_member_grant(
+                db,
+                org=org,
+                group=group,
+                user=user,
+                org_role=org_role,
+                user_id=item.user_id,
+                role=item.role,
+            )
+        except IntegrityError:
+            # An autoflush of an earlier item lost a race on a first grant.
+            await db.rollback()
+            raise HTTPException(409, _GRANT_CONFLICT) from None
+        except _GrantRefused as exc:
+            failed = True
+            results.append(
+                BulkGrantResult(
+                    index=index,
+                    user_id=item.user_id,
+                    role=item.role,
+                    ok=False,
+                    code=exc.code,
+                    message=exc.message,
+                )
+            )
+            continue
+        results.append(
+            BulkGrantResult(index=index, user_id=item.user_id, role=item.role, ok=True)
+        )
+    if failed:
+        await db.rollback()
+        raise bulk_refusal(results)
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(409, _GRANT_CONFLICT) from None
+    await db.commit()
+    detail = await _detail(
+        db, group, my_role=await _caller_group_role(db, user, group, org_role)
+    )
+    return BulkGrantResponse(granted=len(results), results=results, group=detail)
 
 
 @router.delete(
@@ -1190,25 +1337,27 @@ async def compile_group(
         )
 
     before = {"context_compiled_at": _iso(group.context_compiled_at)}
-    stats = await group_compiler.compile_group_context(db, group, user.id)
-    group.updated_at = _now()
-    _audit(
-        db,
-        org=org,
-        user=user,
-        actor_role=org_role,
-        event_type="project_group_compiled",
-        target_id=group.id,
-        before=before,
-        after={
-            "projects": stats["projects"],
-            "claims": stats["claims"],
-            "claims_omitted": stats["claims_omitted"],
-            "truncated": stats["truncated"],
-            "context_compiled_at": _iso(group.context_compiled_at),
-        },
-    )
-    await db.commit()
+    # Per-org compile cap, shared with project compiles and rebuilds.
+    async with org_slot(db, "compile", org_id=org_id, user_id=None):
+        stats = await group_compiler.compile_group_context(db, group, user.id)
+        group.updated_at = _now()
+        _audit(
+            db,
+            org=org,
+            user=user,
+            actor_role=org_role,
+            event_type="project_group_compiled",
+            target_id=group.id,
+            before=before,
+            after={
+                "projects": stats["projects"],
+                "claims": stats["claims"],
+                "claims_omitted": stats["claims_omitted"],
+                "truncated": stats["truncated"],
+                "context_compiled_at": _iso(group.context_compiled_at),
+            },
+        )
+        await db.commit()
     return _group_context_response(group)
 
 

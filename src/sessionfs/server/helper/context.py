@@ -37,6 +37,13 @@ class HelperScope:
     project_id: str | None = None
     group_id: str | None = None
     session_ids: tuple[str, ...] = ()
+    # The one organization an UNSCOPED turn may read (the conversation's
+    # bound org).  Tools then reach that org's projects, groups and sessions
+    # plus the caller's personal (org-less) projects and unattributed
+    # sessions — never another org's rows.  ``None`` = no org boundary (a
+    # caller with no org membership, or a scoped turn, whose project / group /
+    # session set already pins one org).
+    org_boundary: str | None = None
 
 
 class RetrievalBudget:
@@ -297,6 +304,9 @@ class HelperContext:
     seen_session_ids: set[str] = field(default_factory=set)
     seen_message_refs: set[tuple[str, int]] = field(default_factory=set)
     seen_doc_slugs: set[str] = field(default_factory=set)
+    # ``slug#anchor`` (a returned section) or ``slug`` (a whole page) docs
+    # refs — the only ``[doc:…]`` answer citations that are kept.
+    seen_doc_refs: set[str] = field(default_factory=set)
     # Meeting ids tool results surfaced; [meeting:… L<a>-<b>] citations
     # are only kept for these (and only when still readable).
     seen_meeting_ids: set[str] = field(default_factory=set)
@@ -307,3 +317,6 @@ class HelperContext:
     turn_message: str | None = None
     feature_cache: dict[tuple[str, str], bool] = field(default_factory=dict)
     user_context: Any = None
+    # The scope's plan value for docs availability lines (resolved lazily;
+    # "" when it could not be resolved).
+    plan_tier: str | None = None

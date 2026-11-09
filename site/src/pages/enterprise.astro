@@ -158,7 +158,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
         <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Compliance Built In</h2>
-        <p class="text-muted text-lg mb-4 leading-relaxed">DLP scans every session archive server-side &mdash; 14 PHI patterns + 19 secret patterns, with BLOCK / REDACT / WARN modes set per organisation. Every captured manifest carries instruction provenance, persona, ticket, and the AgentRun that signed off. Audit-ready by construction.</p>
+        <p class="text-muted text-lg mb-4 leading-relaxed">DLP scans every session archive server-side &mdash; 14 PHI patterns + 20 secret patterns, with BLOCK / REDACT / WARN modes set per organisation. Every captured manifest carries instruction provenance, persona, ticket, and the AgentRun that signed off. Audit-ready by construction.</p>
         <p class="text-muted text-lg leading-relaxed">HIPAA-ready managed or self-hosted deployment. Helm chart hardened with non-root UID 10001, read-only rootfs, RuntimeDefault seccomp. Deployed at a major healthcare system on AWS EKS.</p>
       </div>
       <div class="lg:w-1/2 w-full fade-up">
@@ -331,14 +331,14 @@ import BaseLayout from '../layouts/BaseLayout.astro';
               <span class="text-accent text-lg mt-0.5">&#10003;</span>
               <div>
                 <div class="font-semibold text-sm mb-1">Organizations + RBAC</div>
-                <div class="text-muted text-base">Admin and member roles with organization management. Team-scoped session visibility with per-repo isolation and tier-based feature gating.</div>
+                <div class="text-muted text-base">Owner, admin and member roles with organization management. People can belong to several organizations, such as their employer&rsquo;s and a client&rsquo;s, and each org keeps its own data, plan, DLP policy and AI key. Team-scoped session visibility with per-repo isolation and tier-based feature gating. See <a href="/organizations/" class="text-brand hover:underline">Organizations</a>.</div>
               </div>
             </div>
             <div class="border-t border-border pt-4 flex items-start gap-3">
               <span class="text-accent text-lg mt-0.5">&#10003;</span>
               <div>
                 <div class="font-semibold text-sm mb-1">DLP / Secret scanning</div>
-                <div class="text-muted text-base">18 PHI identifiers, BLOCK/REDACT/WARN policies per organization. Detects API keys, connection strings, and tokens before sync.</div>
+                <div class="text-muted text-base">14 PHI patterns, BLOCK/REDACT/WARN policies per organization. Detects API keys, connection strings, and tokens before sync.</div>
               </div>
             </div>
             <div class="border-t border-border pt-4 flex items-start gap-3">
@@ -359,7 +359,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
               <span class="text-accent text-lg mt-0.5">&#10003;</span>
               <div>
                 <div class="font-semibold text-sm mb-1">Session helper, scoped to each user</div>
-                <div class="text-muted text-base">Answers only from what the asking user can read, for one project, a whole project group or chosen sessions, re-checks access on every tool call, redacts everything sent to the model with your DLP policy, and writes each lookup to the retrieval audit log. Changes it proposes run only after the user confirms, with that user&rsquo;s own permissions. Admins set model settings, custom instructions and a monthly token budget, see usage per member, and set conversation retention per organization.</div>
+                <div class="text-muted text-base">Answers only from what the asking user can read, for one project, a whole project group or chosen sessions, inside one organization, re-checks access on every tool call, ties every factual sentence to the source it came from and marks the ones it can&rsquo;t back, redacts everything sent to the model with your DLP policy, and writes each lookup to the retrieval audit log. Changes it proposes run only after the user confirms, with that user&rsquo;s own permissions. Admins set model settings, custom instructions and a monthly token budget, see usage per member, and set conversation retention per organization.</div>
               </div>
             </div>
             <div class="border-t border-border pt-4 flex items-start gap-3">
@@ -387,7 +387,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
               <span class="text-accent text-lg mt-0.5">&#10003;</span>
               <div>
                 <div class="font-semibold text-sm mb-1">Operator metrics</div>
-                <div class="text-muted text-base">Prometheus metrics for request latency, pushes, DLP findings and authentication failures, with a ready-made Grafana dashboard for self-hosted deployments.</div>
+                <div class="text-muted text-base">Prometheus metrics for request latency, pushes, DLP findings, authentication failures, tickets, review loops, approvals and scheduled jobs, four service level objectives with ready-made alert rules, and a Grafana dashboard for self-hosted deployments. Per-organization caps on expensive work keep one team from slowing down the rest. See <a href="/slos/" class="text-brand hover:underline">Service Level Objectives</a> and <a href="/tenancy/" class="text-brand hover:underline">Tenancy and Isolation</a>.</div>
               </div>
             </div>
             <div class="border-t border-border pt-4 flex items-start gap-3">

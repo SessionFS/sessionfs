@@ -451,27 +451,83 @@ def participants_impl(meeting_id: str, kind: str | None = None) -> None:
     _print_participants(_get_meeting(meeting_id, kind).get("participants") or [])
 
 
+RESOLVE_FILE_HELP = (
+    "Resolve many participants from a file: one participant_id,user:<id> | "
+    "persona:<name> | contact:<id> per line, up to 100. All or nothing."
+)
+
+
 @meeting_app.command("resolve-participant")
 @handle_errors
 def resolve_participant(
     meeting_id: str = typer.Argument(...),
-    participant_id: str = typer.Argument(...),
+    participant_id: str | None = typer.Argument(None),
     user: str | None = typer.Option(None, "--user", help="User id to resolve to."),
     persona: str | None = typer.Option(None, "--persona", help="Persona name to resolve to."),
     contact: str | None = typer.Option(None, "--contact", help="External contact id (ec_...)."),
+    file: str | None = typer.Option(None, "--file", "-f", help=RESOLVE_FILE_HELP),
 ) -> None:
     """Resolve a participant to an org member, a persona or an external contact (exactly one)."""
-    resolve_participant_impl(meeting_id, participant_id, user, persona, contact=contact)
+    resolve_participant_impl(
+        meeting_id, participant_id, user, persona, contact=contact, file=file
+    )
+
+_TARGET_FIELDS = {"user": "user_id", "persona": "persona_name", "contact": "contact_id"}
+
+
+def _resolve_participants_bulk(meeting_id: str, path: str, kind: str | None) -> None:
+    from sessionfs.cli.common import print_bulk_failures, read_bulk_file
+
+    items: list[dict] = []
+    for row in read_bulk_file(path):
+        target_kind, _, value = (row[1] if len(row) > 1 else "").partition(":")
+        field = _TARGET_FIELDS.get(target_kind.strip())
+        if not row[0] or field is None or not value.strip():
+            err_console.print(
+                f"[red]Bad line for {escape(row[0] or '?')}: use "
+                "participant_id,user:<id> | persona:<name> | contact:<id>[/red]"
+            )
+            raise typer.Exit(2)
+        items.append({"participant_id": row[0], field: value.strip()})
+    api_url, api_key = _get_api_config()
+    status, body, _ = asyncio.run(
+        _api_request(
+            "POST", f"/api/v1/meetings/{meeting_id}/participants/resolve-bulk",
+            api_url, api_key, json_data={"participants": items},
+            params=_kind_params(kind) or None,
+        )
+    )
+    if status == 422 and print_bulk_failures(body, "participant_id"):
+        raise typer.Exit(1)
+    if status >= 400:
+        _fail(status, body)
+    assert isinstance(body, dict)
+    for r in body.get("results") or []:
+        p = r.get("participant") or {}
+        console.print(
+            f"[green]Resolved[/green] {escape(str(p.get('name_raw', r.get('participant_id'))))} → "
+            f"{escape(_participant_label(p))}"
+        )
 
 
 def resolve_participant_impl(
     meeting_id: str,
-    participant_id: str,
+    participant_id: str | None,
     user: str | None,
     persona: str | None,
     kind: str | None = None,
     contact: str | None = None,
+    file: str | None = None,
 ) -> None:
+    if file is not None:
+        if participant_id or user or persona or contact:
+            err_console.print("[red]--file replaces the participant id and target options.[/red]")
+            raise typer.Exit(1)
+        _resolve_participants_bulk(meeting_id, file, kind)
+        return
+    if not participant_id:
+        err_console.print("[red]Give a participant id, or --file.[/red]")
+        raise typer.Exit(1)
     if bool(user) + bool(persona) + bool(contact) != 1:
         err_console.print("[red]Give exactly one of --user, --persona or --contact.[/red]")
         raise typer.Exit(1)

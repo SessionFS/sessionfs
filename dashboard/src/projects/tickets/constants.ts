@@ -1,21 +1,19 @@
-import type { Ticket } from '../../api/client';
+
+/** The one set of status names, in sentence case, used on every surface. */
+export const STATUS_LABEL: Record<string, string> = {
+  suggested: 'Suggested',
+  open: 'Open',
+  in_progress: 'In progress',
+  blocked: 'Blocked',
+  review: 'In review',
+  done: 'Done',
+  closed: 'Closed',
+  cancelled: 'Cancelled',
+};
 
 export const STATUS_FILTERS: { value: string; label: string }[] = [
   { value: '', label: 'All statuses' },
-  { value: 'suggested', label: 'Suggested' },
-  { value: 'open', label: 'Open' },
-  { value: 'in_progress', label: 'In progress' },
-  { value: 'blocked', label: 'Blocked' },
-  { value: 'review', label: 'Review' },
-  { value: 'done', label: 'Done' },
-  { value: 'closed', label: 'Closed' },
-  { value: 'cancelled', label: 'Cancelled' },
-];
-
-export const KIND_FILTERS: { value: string; label: string }[] = [
-  { value: '', label: 'All kinds' },
-  { value: 'issue', label: 'Issues' },
-  { value: 'task', label: 'Tasks' },
+  ...Object.entries(STATUS_LABEL).map(([value, label]) => ({ value, label })),
 ];
 
 /** Statuses that appear as board columns (all non-empty filter values). */
@@ -57,8 +55,24 @@ export const STATUS_DOT: Record<string, string> = {
   cancelled: 'bg-text-tertiary',
 };
 
+/** Sentence-case status name ("In progress"). Unknown values fall back to
+ *  the raw value with underscores as spaces, first letter capitalised. */
 export function formatStatusLabel(status: string): string {
-  return status.replace(/_/g, ' ');
+  const known = STATUS_LABEL[status];
+  if (known) return known;
+  const words = status.replace(/_/g, ' ');
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** Joins the present parts of a meta line with a middle dot, so a missing
+ *  part never leaves a dangling separator. */
+export function joinMeta(parts: (string | false | null | undefined)[]): string {
+  return parts.filter((p): p is string => typeof p === 'string' && p.length > 0).join(' · ');
+}
+
+/** "1 dependency" / "3 dependencies"-style counts. */
+export function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
 }
 
 /** Jira surface details for the ticket detail, resolved by the page owner. */
@@ -70,11 +84,3 @@ export interface TicketJiraSurface {
   canEdit?: boolean;
 }
 
-export interface ViewProps {
-  tickets: Ticket[];
-  projectId: string;
-  selected: string | null;
-  onSelect: (id: string) => void;
-  onNavigate: (targetId: string) => void;
-  jira?: TicketJiraSurface;
-}

@@ -4,6 +4,7 @@ import { useToast } from '../../hooks/useToast';
 import { UPGRADE_MESSAGE, groupErrorMessage, isUpgradeRequired, orgHasProjectGroups } from '../../utils/groups';
 import { useUpdateOrgSettings } from '../useOrgSettings';
 import ConfirmDialog from './ConfirmDialog';
+import { Term } from '../../help/Term';
 
 interface RestrictVisibilitySettingProps {
   orgId: string;
@@ -52,7 +53,9 @@ export default function RestrictVisibilitySetting({ orgId, restricted, canEdit, 
 
   return (
     <section aria-labelledby="org-visibility-heading" className="mt-8">
-      <h3 id="org-visibility-heading">Project visibility</h3>
+      <h3 id="org-visibility-heading">
+        <Term id="restricted-visibility">Project visibility</Term>
+      </h3>
       <div className="mt-2 flex flex-col gap-3 rounded-lg border border-border bg-bg-primary p-4">
         <Switch
           checked={restricted}

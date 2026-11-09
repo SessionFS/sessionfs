@@ -1,5 +1,7 @@
 ---
 title: "Self-Hosted Deployment"
+availability:
+  deployment: self-hosted
 ---
 
 Deploy SessionFS on your own Kubernetes cluster.
@@ -342,7 +344,7 @@ monitoring:
 
 ### Operator metrics
 
-The API serves Prometheus metrics at `GET /api/v1/admin/metrics`: request latency by route, push outcomes and sizes, pulls, handoffs, DLP findings, authentication failures, active users, session count and database pool use. Labels never contain ids or raw paths. The endpoint isn't anonymous: scrape it with a platform admin key or a service key with the `admin_metrics:read` scope, supplied as a Bearer token in your scrape config. Set `api.metrics.scrapeAnnotations: true` to add `prometheus.io/*` scrape annotations to the API pods. A ready-made Grafana dashboard ships in the repository at `docs/observability/sessionfs-ops.json`.
+The API serves Prometheus metrics at `GET /api/v1/admin/metrics`: request latency by route, push outcomes and sizes, pulls, handoffs, DLP findings, authentication failures, active users, session count and database pool use, plus business metrics for scheduled sweeps (runs, duration, lag and refused calls), Jira sync, Confluence publishes, webhook deliveries, agent tokens and runs, approvals and review-loop items. Labels never contain names, ids or raw paths unless you turn on per-tenant labels (`api.metrics.tenantLabels: true`, which adds `org_id` / `project_id` ids to some families). The [Metrics Reference](/metrics/) lists every family, label and label value. The endpoint isn't anonymous: scrape it with a platform admin key or a service key with the `admin_metrics:read` scope, supplied as a Bearer token in your scrape config. Set `api.metrics.scrapeAnnotations: true` to add `prometheus.io/*` scrape annotations to the API pods. A ready-made Grafana dashboard ships in the repository at `docs/observability/sessionfs-ops.json`.
 
 ## Upgrading
 
@@ -388,6 +390,8 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 **Upgrading to v0.29.1** runs migrations 106 (agent run usage, cost, model, role and loop fields), 107 (service-key attribution on wiki revisions), 108 (the reviewed commit on review verdicts) and 109 (service-key attribution on retrieval audit contexts); all are additive. Existing runs carry no usage, and existing verdicts carry no reviewed commit, so merge readiness reports them as not ready until a reviewer posts a verdict bound to the head commit.
 
 **Upgrading to v0.29.2** runs migrations 110 (review loop settings on the parent issue and service-key attribution on work queues), 111 (the `needs_human` work-queue item status) and 112 (the review checklist); all are additive. API keys gain the `loops:read` and `loops:write` scopes. No new settings are needed.
+
+**Upgrading to v0.30.0** runs migrations 134 (`idempotency_keys`), 135 (the `distilled_from` lineage edge; a downgrade turns those edges back into `derived_from`), 136 (`org_concurrency_slots`) and 137 (`merge_check_posts`); all are additive. To clear stored `Idempotency-Key` responses after 24 hours, call `POST /api/v1/admin/sweeps/idempotency-keys` hourly with a `platform_sweeps:run` key, or enable the chart's opt-in `api.idempotencyKeys` CronJob. New optional settings: per-org concurrency caps (`api.limits.orgConcurrency`), the heavy-read timeout (`api.limits.heavyReadTimeoutMs`, 15 s by default), per-tenant metric labels (`api.metrics.tenantLabels`) and SLO alert rules (`api.metrics.prometheusRule`); see [Tenancy and Isolation](/tenancy/), [Metrics Reference](/metrics/) and [Service Level Objectives](/slos/). Signup verification links now use `SFS_PUBLIC_API_URL`, else `SFS_DASHBOARD_URL`; set one of them if you require email verification. People can now belong to more than one organization; nothing needs to change for existing members.
 
 **Upgrading to v0.29.14** runs migrations 131 (`artifacts`, `artifact_edges`, `artifact_tags`), 132 (`eval_suites`, `eval_cases`, `artifact_family_requirements`) and 133 (`eval_runs`, `eval_case_results`, `agent_runs.eval_run_id` and the `grader` run role); all are additive. API keys gain the `evals:read`, `evals:write`, `artifacts:read` and `artifacts:write` scopes. To clear eval outputs past their retention (180 days by default), call `POST /api/v1/admin/sweeps/eval-outputs` daily with a `platform_sweeps:run` key, or enable the chart's opt-in `api.evalOutputs` CronJob. A project holding evaluation or artifact data can't be merged yet.
 
@@ -685,9 +689,10 @@ Since v0.28.0 this is visible up front: minting or rotating such a key returns a
 | Jira sync | `POST /api/v1/admin/sweeps/jira-sync` | Delivers queued outbound Jira changes (status moves, comments, completion evidence) with retry and backoff, and expires old ones. Body `{"limit": N, "budget_seconds": S}` (defaults 100 and 50 s) (v0.26.0). See [Jira Cloud](/integrations/jira/) |
 | Meeting retention | `POST /api/v1/admin/sweeps/meeting-retention` | Deletes stored meeting transcripts older than the org's `meeting_retention_days` (default 180) and meetings deleted more than 30 days ago, together with their participants and action items (v0.29.0). See [Meetings](/meetings/) |
 | For You hides | `POST /api/v1/admin/sweeps/attention-hides` | Deletes For You hides and snoozes older than 90 days in bounded batches (`batch_size`, default 1000, max 5000); idempotent, run it daily (v0.29.8). See [For You](/for-you/) |
+| Idempotency keys | `POST /api/v1/admin/sweeps/idempotency-keys` | Deletes stored `Idempotency-Key` responses older than 24 hours in bounded batches (`batch_size`, default 1000, max 5000); idempotent, run it hourly. See [Idempotent requests](/api/#idempotent-requests) |
 | Confluence publish | `POST /api/v1/admin/sweeps/confluence-publish` | Republishes opted-in wiki pages and, where the mapping allows it, the context document; unchanged pages are skipped and pages edited in Confluence are never overwritten (v0.26.0). See [Confluence Cloud](/integrations/confluence/) |
 
-Suggested schedules: KB compile every 15 minutes, org digest, helper retention, meeting retention and For You hides daily, ticket digest every 10 minutes, **Jira sync every minute** (its first retry is due one minute after a failed delivery; without the job a failed change never reaches Jira) and Confluence publish every 15 minutes. Every sweep is safe to run repeatedly and returns immediately when there is nothing to do.
+Suggested schedules: KB compile every 15 minutes, org digest, helper retention, meeting retention and For You hides daily, idempotency keys hourly, ticket digest every 10 minutes, **Jira sync every minute** (its first retry is due one minute after a failed delivery; without the job a failed change never reaches Jira) and Confluence publish every 15 minutes. Every sweep is safe to run repeatedly and returns immediately when there is nothing to do.
 
 Example CronJob for the KB compile sweep, every 15 minutes:
 
@@ -776,6 +781,12 @@ api:
       schedule: "45 3 * * *"          # daily
       existingSecret: sessionfs-sweep-key
       secretKey: attention-hides-api-key
+  idempotencyKeys:
+    enabled: true
+    cronJob:
+      schedule: "20 * * * *"          # hourly
+      existingSecret: sessionfs-sweep-key
+      secretKey: idempotency-keys-api-key
 ```
 
 Each CronJob pod sends one authenticated request to the API sweep endpoint and exits; the work itself runs in the API pods. The key is read from the Secret into an environment variable and never printed, and the pods don't mount a Kubernetes service account token. When network policies are enabled, the chart adds an ingress rule so each enabled CronJob can reach the API, and an egress policy that lets the CronJob pods reach only DNS and the API, so the key can't be sent anywhere else.

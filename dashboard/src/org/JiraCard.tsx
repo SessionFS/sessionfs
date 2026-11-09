@@ -61,6 +61,7 @@ import type {
   JiraSyncSettingsRequest,
   JiraTemplate,
 } from '../api/client';
+import { Term } from '../help/Term';
 
 const ENTERPRISE_TIER = 'enterprise';
 
@@ -828,7 +829,7 @@ function SyncSettingsForm({
   return (
     <section className="pb-5" aria-labelledby="jira-sync-heading">
       <h3 id="jira-sync-heading" className="text-sm font-semibold text-text-primary">
-        Two-way sync
+        <Term id="jira-two-way-sync">Two-way sync</Term>
       </h3>
       <p className="mt-0.5 mb-4 text-sm text-text-tertiary">
         Saved separately from the connection, so changing these never asks for the API token.

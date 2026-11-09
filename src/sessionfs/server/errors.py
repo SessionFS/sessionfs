@@ -31,6 +31,8 @@ _PG_CHECK_VIOLATION = "23514"
 _PG_DEADLOCK_DETECTED = "40P01"
 _PG_SERIALIZATION_FAILURE = "40001"
 _PG_RETRYABLE_SQLSTATES = frozenset({_PG_DEADLOCK_DETECTED, _PG_SERIALIZATION_FAILURE})
+# A statement cancelled by ``statement_timeout`` (db/timeouts.py).
+_PG_QUERY_CANCELED = "57014"
 
 
 def db_sqlstate(exc: BaseException) -> str | None:
@@ -151,6 +153,19 @@ def _concurrent_update_response() -> JSONResponse:
     return JSONResponse(status_code=409, content=body.model_dump(), headers={"Retry-After": "1"})
 
 
+def _query_timeout_response() -> JSONResponse:
+    """503 for a read cancelled by its statement timeout."""
+    body = ErrorResponse(
+        error=ErrorDetail(
+            code="query_timeout",
+            message="This request took too long to answer. Narrow it (a shorter "
+            "time range, fewer items) or try again later.",
+            details={"status": 503, "retryable": True},
+        )
+    )
+    return JSONResponse(status_code=503, content=body.model_dump(), headers={"Retry-After": "5"})
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Register global exception handlers on the app."""
 
@@ -242,6 +257,11 @@ def register_exception_handlers(app: FastAPI) -> None:
         500 path unchanged. IntegrityError keeps its own handler (more
         specific class)."""
         sqlstate = db_sqlstate(exc)
+        if sqlstate == _PG_QUERY_CANCELED:
+            logger.warning(
+                "Statement timeout on %s %s", request.method, request.url.path
+            )
+            return _query_timeout_response()
         if sqlstate not in _PG_RETRYABLE_SQLSTATES:
             raise exc
         logger.warning(

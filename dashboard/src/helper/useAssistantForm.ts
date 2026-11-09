@@ -83,7 +83,12 @@ export function useAssistantForm(
       for (const k of Object.keys(patch) as Array<keyof Draft>) {
         const field = FIELD_OF[k] ?? (k as FieldKey);
         clearError(field);
-        if (field === 'max_output_tokens' || field === 'max_tool_steps' || field === 'answer_style') {
+        if (
+          field === 'max_output_tokens' ||
+          field === 'max_tool_steps' ||
+          field === 'answer_style' ||
+          field === 'grounding'
+        ) {
           setResets((prev) => {
             if (!prev.has(field)) return prev;
             const next = new Set(prev);

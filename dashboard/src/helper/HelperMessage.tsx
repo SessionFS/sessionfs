@@ -1,7 +1,9 @@
 import { createContext, useContext, useMemo, useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
-import { Alert, Button, Markdown } from '../components/ui';
+import { Alert, Button, Markdown, Tooltip } from '../components/ui';
+import type { HelperGroundingEvidence } from '../api/client';
+import { UNVERIFIED_HREF, applyGrounding, parseEvidenceHref } from './grounding';
 import HelperActionCard from './HelperActionCard';
 import {
   parseCiteHref,
@@ -541,9 +543,14 @@ export function ErrorCard({ error, actions }: { error: HelperError; actions: Err
 
 // ── Assistant ──
 
-const CitationContext = createContext<{ sources: Source[]; onNavigate: () => void }>({
+const CitationContext = createContext<{
+  sources: Source[];
+  onNavigate: () => void;
+  evidence: Map<string, HelperGroundingEvidence>;
+}>({
   sources: [],
   onNavigate: () => {},
+  evidence: new Map(),
 });
 
 function CitationRef({
@@ -576,9 +583,55 @@ function renderCitationLink(href: string): ReactNode | undefined {
   return <CitationRef n={cite.n} messageIndex={cite.messageIndex} lines={cite.lines} />;
 }
 
-/** Citation chips first, then ticket / project / session references. */
+const UNVERIFIED_TIP = 'No source was found for this sentence';
+
+/** A sentence that states a fact with no source behind it: a quiet dotted
+ *  underline, explained on hover or focus. */
+function UnverifiedSentence({ children }: { children: ReactNode }) {
+  return (
+    <Tooltip content={UNVERIFIED_TIP} toggleOnClick>
+      <span
+        tabIndex={0}
+        className="rounded-sm underline decoration-dotted decoration-text-tertiary underline-offset-[3px] outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+      >
+        {children}
+        <span className="sr-only"> (not verified: {UNVERIFIED_TIP.toLowerCase()})</span>
+      </span>
+    </Tooltip>
+  );
+}
+
+/** A sentence backed by a list or search result (no single item to link):
+ *  an inert chip that names the lookup. */
+function EvidenceRef({ id }: { id: string }) {
+  const { evidence } = useContext(CitationContext);
+  const e = evidence.get(id);
+  if (!e) return null;
+  const label = describeToolStep({ name: e.tool, args: e.args ?? {}, status: 'ok' });
+  const at = citationTimestamp(e.at);
+  const title = at ? `Source: ${label} · ${at}` : `Source: ${label}`;
+  return (
+    <Tooltip content={title} describe={false}>
+      <span
+        tabIndex={0}
+        aria-label={title}
+        className="mx-0.5 inline-flex h-[1.15rem] max-w-[12rem] items-center rounded-[5px] bg-bg-sunken px-1 align-[0.12em] text-2xs leading-none text-text-tertiary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+      >
+        <span className="truncate">{label}</span>
+      </span>
+    </Tooltip>
+  );
+}
+
+function renderGroundingLink(href: string, children: ReactNode): ReactNode | undefined {
+  if (href === UNVERIFIED_HREF) return <UnverifiedSentence>{children}</UnverifiedSentence>;
+  const id = parseEvidenceHref(href);
+  return id ? <EvidenceRef id={id} /> : undefined;
+}
+
+/** Citation chips first, then evidence marks, then ticket / project / session references. */
 function renderAnswerLink(href: string, children: ReactNode): ReactNode | undefined {
-  return renderCitationLink(href) ?? renderRefLink(href, children);
+  return renderCitationLink(href) ?? renderGroundingLink(href, children) ?? renderRefLink(href, children);
 }
 
 function ThinkingDots() {
@@ -636,9 +689,15 @@ export function AssistantMessage({
 }) {
   const streaming = turn.status === 'streaming';
   const settled = !streaming;
+  // The evidence map applies once the final text has arrived.
+  const grounding = settled ? turn.grounding : null;
   const { markdown, sources } = useMemo(
-    () => processCitations(turn.content, turn.citations, { streaming, settled }),
-    [turn.content, turn.citations, streaming, settled],
+    () => processCitations(applyGrounding(turn.content, grounding), turn.citations, { streaming, settled }),
+    [turn.content, turn.citations, grounding, streaming, settled],
+  );
+  const evidence = useMemo(
+    () => new Map((grounding?.evidence ?? []).map((e) => [e.id, e] as const)),
+    [grounding],
   );
   const { onNavigate } = actions;
   const { repo } = useHelperRefs();
@@ -647,7 +706,7 @@ export function AssistantMessage({
   // The link renderer keeps one identity for the whole stream (a new one per
   // token would rebuild Markdown's component map and remount every block);
   // the chips read the current sources from context instead.
-  const citeContext = useMemo(() => ({ sources, onNavigate }), [sources, onNavigate]);
+  const citeContext = useMemo(() => ({ sources, onNavigate, evidence }), [sources, onNavigate, evidence]);
 
   const running = turn.toolSteps.some((s) => s.status === 'running');
   const showThinking = streaming && !markdown.trim() && !running && !turn.error;

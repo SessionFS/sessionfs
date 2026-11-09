@@ -229,6 +229,7 @@ function PolicyDialogBody({ onClose, orgId, policy, projects, members }: Props) 
             size="sm"
             variant="secondary"
             disabled={s.requirements.length >= MAX_REQUIREMENTS}
+            disabledReason={`A policy can have at most ${MAX_REQUIREMENTS} requirements`}
             onClick={() => set({ requirements: [...s.requirements, newRow()] })}
           >
             Add requirement

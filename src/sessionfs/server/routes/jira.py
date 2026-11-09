@@ -1500,6 +1500,15 @@ async def _handle_comment_created(
     )
 
 
+def _inbound_metric(result: str, org_id: str, payload: dict | None = None) -> None:
+    """Count one verified inbound Jira event (fail-safe; the org id is only a
+    label when tenant labels are on, and only after the signature passed)."""
+    from sessionfs.server import business_metrics
+
+    lag = business_metrics.jira_inbound_lag_seconds(payload) if payload is not None else None
+    business_metrics.record_jira_sync("inbound", result, org_id=org_id, lag_seconds=lag)
+
+
 @webhook_router.post("/jira/{org_id}")
 async def jira_inbound_webhook(
     org_id: str,
@@ -1539,24 +1548,29 @@ async def jira_inbound_webhook(
 
     event_type = payload.get("webhookEvent") or ""
     if event_type not in {"jira:issue_updated", "comment_created"}:
+        _inbound_metric("ignored", org_id)
         return {"status": "ignored", "reason": "unsupported_event"}
 
     link = await _resolve_inbound_link(db, conn, payload)
     if link is None:
+        _inbound_metric("ignored", org_id)
         return {"status": "ignored", "reason": "unknown_issue"}
     ticket = await db.get(Ticket, link.ticket_id)
     project = await db.get(Project, ticket.project_id) if ticket is not None else None
     if ticket is None or project is None:
+        _inbound_metric("ignored", org_id)
         return {"status": "ignored", "reason": "missing_ticket"}
     if project.org_id != org_id or link.org_id != org_id:
         # The project moved to another org (or to personal); its old link is
         # stale and the former org's Jira must not drive it.
+        _inbound_metric("ignored", org_id)
         return {"status": "ignored", "reason": "stale_link"}
 
     base_event_id = _jira_event_id(
         payload, event_type, request.headers.get(_WEBHOOK_ID_HEADER)
     )
     if await jira_sync.inbound_event_exists(db, link.ticket_id, base_event_id):
+        _inbound_metric("duplicate", org_id)
         return {"status": "duplicate"}
 
     if not await jira_sync.org_has_jira(db, org_id):
@@ -1573,6 +1587,7 @@ async def jira_inbound_webhook(
             error="The org's plan no longer includes the Jira integration.",
         )
         await db.commit()
+        _inbound_metric("ignored", org_id)
         return {"status": "ignored", "reason": "not_entitled"}
 
     org = await db.get(Organization, org_id)
@@ -1594,7 +1609,9 @@ async def jira_inbound_webhook(
     except IntegrityError:
         # A concurrent delivery of the same event won the unique slot.
         await db.rollback()
+        _inbound_metric("duplicate", org_id)
         return {"status": "duplicate"}
+    _inbound_metric("applied", org_id, payload)
     jira_sync.schedule_drain(outbox)
     return {"status": "ok"}
 

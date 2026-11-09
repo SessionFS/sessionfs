@@ -1,6 +1,9 @@
 ---
 title: "Evaluations and Lineage"
 description: "Keep one auditable record of which model version passed which eval suite and what data it came from. Your CI grades; SessionFS records the results, decides whether they are trusted and gates promotion."
+availability:
+  feature: evaluations
+  deployment: both
 ---
 
 Evaluations answer "did v2.3 pass the clinical-note suite?" and lineage answers "what data trained the production model?" from one record instead of Jira comments, READMEs and run names.
@@ -28,7 +31,7 @@ Writes need the **Team** or **Enterprise** plan on the project. Reading, disabli
 | **Result** | One per case: `pass`, `fail`, `error` or `skip`, an optional score from 0 to 1, notes and output. |
 | **Verdict** | `passed`, `failed` or `incomplete`, computed by SessionFS from the results and the acceptance criteria. A client never sets it. |
 | **Artifact** | A pointer to one version of a dataset, model, feature set, prompt or checkpoint: a URI, an optional digest, a schema summary and tags. Never the bytes. |
-| **Edge** | `derived_from`, `trained_on`, `fine_tuned_from`, `evaluated_against` or `uses`, from a parent artifact to a child, inside one project. |
+| **Edge** | `derived_from`, `trained_on`, `fine_tuned_from`, `distilled_from`, `evaluated_against` or `uses`, from a parent artifact to a child, inside one project. See [Lineage edge types](/lineage/) for what each one means. |
 | **Stage** | `candidate`, `staging`, `production` or `archived`. Promotion to staging or production is gated. |
 
 ## Define a suite
@@ -116,7 +119,7 @@ sfs artifact lineage art_model --direction up
 
 URIs must use `s3`, `gs`, `mlflow`, `models`, `runs`, `hf`, `https` or `vertex`. A user name or password, or a query key that carries a credential (`X-Amz-*`, `sig`, `token`, `key`, SAS `sv`/`se`/`sp`, ...), is refused with `uri_has_credentials`, so a pre-signed URL can never be stored. SessionFS never fetches the URI. The dashboard links only `https` and `hf://` (to huggingface.co); every other URI is copy-only.
 
-Edges stay inside one project; cycles and self-edges are refused, and a lineage trace stops at depth 25 and 500 nodes.
+Edges stay inside one project; cycles and self-edges are refused, and a lineage trace stops at depth 25 and 500 nodes. [Lineage edge types](/lineage/) explains each relation and walks through "which dataset trained the model in production".
 
 Set what a family needs before promotion (project owner or org admin, user key):
 

@@ -8,6 +8,7 @@ import { PlanNotice } from './format';
 import { useViewParams } from './params';
 import { RunDetail, RunsList } from './EvalRuns';
 import { CompareView } from './EvalCompare';
+import { Term } from '../../help/Term';
 
 const VIEWS = [
   { key: 'runs', label: 'Runs' },
@@ -108,7 +109,7 @@ function SuitesList({ projectId, onOpen }: { projectId: string; onOpen: (ref: st
       columns={[
         {
           key: 'name',
-          header: 'Suite',
+          header: <Term id="eval-suite">Suite</Term>,
           render: (s) => (
             <button
               type="button"
@@ -121,14 +122,18 @@ function SuitesList({ projectId, onOpen }: { projectId: string; onOpen: (ref: st
           ),
         },
         { key: 'version', header: 'Version', render: (s) => `v${s.version}` },
-        { key: 'grader', header: 'Grader', render: (s) => `${graderLabel(s.grader.kind)} · ${s.grader.persona}` },
+        { key: 'grader', header: <Term id="eval-grader">Grader</Term>, render: (s) => `${graderLabel(s.grader.kind)} · ${s.grader.persona}` },
         {
           key: 'storage',
           header: 'Cases',
           render: (s) => (
             <span className="inline-flex items-center gap-1.5">
               {s.live_cases ?? '—'}
-              {s.case_storage === 'reference' && <Badge variant="info" tint label="Hashes only" />}
+              {s.case_storage === 'reference' && (
+                <Term id="eval-hashes-only">
+                  <Badge variant="info" tint label="Hashes only" />
+                </Term>
+              )}
             </span>
           ),
         },

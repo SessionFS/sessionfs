@@ -151,7 +151,14 @@ export function StartWorkflowDialog({
         {start.error && <Alert variant="danger" className="mt-4">{errorMessage(start.error, 'Could not start the workflow')}</Alert>}
         <DialogFooter>
           <Button type="button" variant="secondary" onClick={close} disabled={pending}>Cancel</Button>
-          <Button type="submit" loading={pending} disabled={templates.length === 0}>Start workflow</Button>
+          <Button
+            type="submit"
+            loading={pending}
+            disabled={templates.length === 0}
+            disabledReason="No workflow templates yet. Create one under Rules & Skills, Workflows."
+          >
+            Start workflow
+          </Button>
         </DialogFooter>
       </form>
     </Dialog>

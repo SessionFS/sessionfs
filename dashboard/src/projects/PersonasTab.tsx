@@ -32,6 +32,7 @@ import { Button, Dialog, DialogHeader, DialogFooter, Input, Switch, Table, Texta
 import type { TableColumn } from '../components/ui/Table';
 import { errorMessage } from '../utils/errorMessage';
 import { readIncludeOrg, writeIncludeOrg } from './agentsIncludeOrg';
+import { Term } from '../help/Term';
 
 interface PersonasTabProps {
   projectId: string;
@@ -158,11 +159,8 @@ export default function PersonasTab({ projectId, canEdit = true }: PersonasTabPr
       header: '',
       width: 'w-0',
       render: () => (
-        <span
-          className="block text-right text-xs text-text-tertiary whitespace-nowrap"
-          title="Org admins manage this on the Organization page. Create a project agent with the same name to override it here."
-        >
-          Managed by org
+        <span className="block text-right text-xs text-text-tertiary whitespace-nowrap">
+          <Term id="org-agent">Managed by org</Term>
         </span>
       ),
     },
@@ -172,7 +170,7 @@ export default function PersonasTab({ projectId, canEdit = true }: PersonasTabPr
     <section aria-labelledby="personas-heading" className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 id="personas-heading" className="text-lg font-semibold">
-          Agents
+          <Term id="agent">Agents</Term>
           <span className="ml-2 text-sm text-text-tertiary">
             {projectAgents.length} {projectAgents.length === 1 ? 'agent' : 'agents'}
           </span>

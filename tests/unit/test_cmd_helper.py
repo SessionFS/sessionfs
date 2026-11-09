@@ -436,6 +436,25 @@ async def test_stream_ask_renders_text_and_citations(monkeypatch, capsys):
     assert "Auth" in out
 
 
+@pytest.mark.asyncio
+async def test_stream_ask_reports_unverified_sentences(monkeypatch, capsys):
+    async def fake_events(client, url, headers, payload):
+        yield ("conversation", '{"conversation_id": "hc_1"}')
+        yield ("text", '{"delta": "Runs fail nightly."}')
+        yield (
+            "grounding",
+            '{"text": "Runs fail nightly (not verified).", "mode": "strict", '
+            '"unverified_count": 1, "sentences": [], "evidence": []}',
+        )
+        yield ("done", '{"stop_reason": "stop", "input_tokens": 1, "output_tokens": 1}')
+
+    monkeypatch.setattr(cmd_helper, "_iter_sse_events", fake_events)
+    await cmd_helper._stream_ask("https://api.test", "key", {"message": "hi"})
+    captured = capsys.readouterr()
+    assert "Runs fail nightly." in captured.out
+    assert "1 sentence had no source" in captured.err + captured.out
+
+
 def test_ask_no_stream_renders_doc_citations(monkeypatch):
     fake = _FakeApiRequest(
         [

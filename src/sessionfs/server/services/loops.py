@@ -111,7 +111,19 @@ def _build_child(
     tokens = usage.tokens
     cost_usd = float(usage.cost_usd) if show_dollars else None
 
+    # The head under review is the newest commit a WORKER recorded (as in
+    # approvals._current_head_sha and the workflow plan): a reviewer run's
+    # head_sha is the commit it read, which may be older than the branch.
     latest = runs[-1] if runs else None
+    worker = next(
+        (
+            r for r in reversed(runs)
+            if r.role in ("implementer", "ui-implementer") and r.head_sha
+        ),
+        None,
+    )
+    if worker is not None:
+        latest = worker
     branch = latest.branch if latest is not None else None
     head_sha = latest.head_sha if latest is not None else None
 

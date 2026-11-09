@@ -1,6 +1,9 @@
 ---
 title: "Workflow Templates"
 description: "Store a repeatable multi-agent plan (dispatch, fan-out implement, review, verify, document), start a review loop from it, and let your own orchestrator run the ready steps. SessionFS records and gates; it never starts an agent."
+availability:
+  feature: review_loop
+  deployment: both
 ---
 
 A workflow template is a repeatable plan for a [worker review loop](/review-loop/): a small graph of steps such as dispatch → implement ×3 → review → verify → document. Each step names a role, the agent that does it, how many copies run in parallel, an exit gate and a brief.

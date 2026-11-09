@@ -1268,6 +1268,9 @@ async def test_compile_takes_scope_lock_before_writes(
     writes = [
         i for i, stmt in enumerate(log)
         if stmt.startswith(("update knowledge", "insert into", "delete from"))
+        # The per-org concurrency slot is claimed and released in its own
+        # short transaction before the compile starts; it isn't a compile write.
+        and "org_concurrency_slots" not in stmt
     ]
     assert writes and min(writes) > lock
 

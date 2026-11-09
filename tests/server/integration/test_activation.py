@@ -415,13 +415,14 @@ class TestPhaseA:
         assert resp.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_activate_user_already_in_org(
+    async def test_activate_user_in_another_org_allowed(
         self,
         client: AsyncClient,
         db_session: AsyncSession,
         unbound_license: HelmLicense,
     ):
-        """User already in an org cannot activate."""
+        """A person can belong to several orgs: membership elsewhere no longer
+        blocks activating a license (it mints a new org)."""
         # Create user and put them in an org
         user = User(
             id=str(uuid.uuid4()),
@@ -459,7 +460,7 @@ class TestPhaseA:
             headers=headers,
             json={"key": unbound_license.id},
         )
-        assert resp.status_code == 409
+        assert resp.status_code == 200, resp.text
 
     @pytest.mark.asyncio
     async def test_activate_unauthenticated(
@@ -683,7 +684,7 @@ class TestPhaseB:
         assert resp.status_code in (410, 403)
 
     @pytest.mark.asyncio
-    async def test_verify_rejects_when_already_member(
+    async def test_verify_allowed_when_member_of_another_org(
         self,
         client: AsyncClient,
         db_session: AsyncSession,
@@ -691,11 +692,10 @@ class TestPhaseB:
         activation_user: User,
         activation_attempt: tuple[int, str],
     ):
-        """Phase B re-checks org membership INSIDE the atomic txn. If the user
-        joined an org between Phase A and Phase B (the race Phase A can't see),
-        /verify must reject with 409 and leave the license unbound — no second
-        OrgMember row, no orphan org. (Shield LOW tk_29b3e43f1ee94130.)
-        """
+        """A person can belong to several orgs (CEO decision 2026-11-09): a user
+        who joined another org between Phase A and Phase B still activates,
+        keeps that membership and gains ownership of the new org; the stored
+        default org pointer is left alone."""
         # Simulate the user joining an org after Phase A created the attempt.
         existing_org = Organization(
             id="org_preexisting",
@@ -724,23 +724,26 @@ class TestPhaseB:
             headers=headers,
             json={"token": raw_token},
         )
-        assert resp.status_code == 409, resp.text
+        assert resp.status_code == 200, resp.text
+        new_org_id = resp.json()["org_id"]
 
-        # License remained unbound — the whole Phase B txn rolled back.
         await db_session.refresh(unbound_license)
-        assert unbound_license.org_id is None
+        assert unbound_license.org_id == new_org_id
 
-        # The user still has exactly ONE membership (the pre-existing one).
         members = (
             await db_session.execute(
                 select(OrgMember).where(OrgMember.user_id == activation_user.id)
             )
         ).scalars().all()
-        assert len(members) == 1
-        assert members[0].org_id == "org_preexisting"
+        assert {(m.org_id, m.role) for m in members} == {
+            ("org_preexisting", "member"),
+            (new_org_id, "owner"),
+        }
+        await db_session.refresh(activation_user)
+        assert activation_user.default_org_id is None  # joining never writes the default
 
     @pytest.mark.asyncio
-    async def test_verify_already_member_with_duplicates_is_409_not_500(
+    async def test_verify_with_two_other_memberships_succeeds(
         self,
         client: AsyncClient,
         db_session: AsyncSession,
@@ -748,11 +751,7 @@ class TestPhaseB:
         activation_user: User,
         activation_attempt: tuple[int, str],
     ):
-        """The Phase B existing-member guard must itself survive the duplicate-
-        membership state it defends against: a user already holding TWO
-        OrgMember rows must get 409 (not a MultipleResultsFound 500).
-        (Codex R1 on tk_29b3e43f1ee94130.)
-        """
+        """A user who already belongs to two orgs can activate a third."""
         for i in (1, 2):
             org = Organization(
                 id=f"org_dup_member_{i}",
@@ -781,10 +780,10 @@ class TestPhaseB:
             headers=headers,
             json={"token": raw_token},
         )
-        assert resp.status_code == 409, resp.text
+        assert resp.status_code == 200, resp.text
 
         await db_session.refresh(unbound_license)
-        assert unbound_license.org_id is None
+        assert unbound_license.org_id == resp.json()["org_id"]
 
     @pytest.mark.asyncio
     async def test_verify_wrong_user_rejected(

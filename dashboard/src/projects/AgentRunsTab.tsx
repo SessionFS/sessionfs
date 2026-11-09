@@ -39,6 +39,7 @@ import {
 import { ApiError, type AgentRun, type AgentRunReplayInput, type AgentRunReplayResult } from '../api/client';
 import { errorMessage } from '../utils/errorMessage';
 import { safeHttpUrl } from '../utils/url';
+import { Term } from '../help/Term';
 
 // AgentRun `ci_run_url` is operator-supplied and stored verbatim, so it is
 // treated as untrusted: safeHttpUrl only links http(s) URLs and falls back to
@@ -143,7 +144,9 @@ export default function AgentRunsTab({ projectId, initialRunId = null }: AgentRu
     <section aria-labelledby="agent-runs-heading" className="space-y-4">
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <h2 id="agent-runs-heading" className="flex items-baseline gap-2">
-          <span className="text-lg font-semibold text-text-primary">Agent runs</span>
+          <span className="text-lg font-semibold text-text-primary">
+            <Term id="agent-run">Agent runs</Term>
+          </span>
           <span className="text-sm text-text-tertiary">
             {runs.length} {runs.length === 1 ? 'run' : 'runs'}
           </span>

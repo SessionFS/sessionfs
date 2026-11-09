@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import AuthContext, require_scope
 from sessionfs.server.db.engine import get_db
+from sessionfs.server.db.timeouts import bound_heavy_reads
 from sessionfs.server.routes.spend import _parse_range, _scope
 from sessionfs.server.routes.tickets import _get_ticket_or_404
 from sessionfs.server.services import review_loop
@@ -34,6 +35,7 @@ async def get_loop_report(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Per-round rollup: findings by harm, class/design counts, tokens, dollars."""
+    await bound_heavy_reads(db)
     project, show_dollars, _ = await _scope(project_id, auth, db)
     ticket = await _get_ticket_or_404(project.id, ticket_id, db)
     result = await review_loop.loop_report(
@@ -57,6 +59,7 @@ async def get_loop_insights(
     schema without the checklist table, report ``null``) plus a zero-filled
     weekly ``series``.
     """
+    await bound_heavy_reads(db)
     project, show_dollars, _ = await _scope(project_id, auth, db)
     from_dt, to_dt = _parse_range(from_raw, to_raw, max_days=366)
     result = await review_loop.loop_insights(
@@ -82,6 +85,7 @@ async def get_ticket_story(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Ordered event stream for a ticket's loop history."""
+    await bound_heavy_reads(db)
     project, show_dollars, _ = await _scope(project_id, auth, db)
     ticket = await _get_ticket_or_404(project.id, ticket_id, db)
     return await review_loop.ticket_story(

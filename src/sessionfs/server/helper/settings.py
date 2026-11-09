@@ -48,6 +48,10 @@ Temperature = Annotated[float, Field(ge=0, le=2)]
 TopP = Annotated[float, Field(ge=0, le=1)]
 ReasoningEffort = Literal["off", "low", "medium", "high"]
 AnswerStyle = Literal["concise", "detailed"]
+# ``strict``: answers name the tool results each factual sentence relies on
+# and sentences without a source are flagged; ``off``: the older
+# marker-only checks.
+Grounding = Literal["strict", "off"]
 
 _CEILING_FIELDS = ("ceiling_max_output_tokens", "ceiling_max_tool_steps")
 
@@ -69,6 +73,7 @@ class HelperModelSettings(BaseModel):
     max_tool_steps: ToolSteps = 8
     reasoning_effort: ReasoningEffort | None = None
     answer_style: AnswerStyle = "concise"
+    grounding: Grounding = "strict"
 
 
 class OrgHelperSettings(HelperModelSettings):
@@ -82,7 +87,7 @@ class HelperSettingsPatch(BaseModel):
     """A partial settings update: omitted keys keep their stored value.
 
     An explicit ``null`` resets a key: ``max_output_tokens``,
-    ``max_tool_steps`` and ``answer_style`` go back to their defaults; for
+    ``max_tool_steps``, ``answer_style`` and ``grounding`` go back to their defaults; for
     ``temperature``, ``top_p`` and ``reasoning_effort`` ``null`` is itself the
     value (provider default / not sent).
     """
@@ -95,6 +100,7 @@ class HelperSettingsPatch(BaseModel):
     max_tool_steps: ToolSteps | None = None
     reasoning_effort: ReasoningEffort | None = None
     answer_style: AnswerStyle | None = None
+    grounding: Grounding | None = None
 
 
 class OrgHelperSettingsPatch(HelperSettingsPatch):

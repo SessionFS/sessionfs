@@ -7,6 +7,7 @@ import { Button, Select } from '../../components/ui';
 import { EntryTypeBadge, ClaimClassBadge, FreshnessDot } from './badges';
 import { SupersedeDialog } from './SupersedeDialog';
 import { errorMessage } from '../../utils/errorMessage';
+import { Term, TermTip } from '../../help/Term';
 
 /**
  * `canEdit` is the project's `can_edit` flag: readers who can only view the
@@ -140,13 +141,13 @@ export default function KnowledgeEntriesTab({
               {health.total_entries} total
             </span>
             <span className="text-brand">
-              {claimCount} claims
+              {claimCount} <Term id="kb-claim">claims</Term>
             </span>
             <span className="text-text-tertiary">
-              {noteCount} notes
+              {noteCount} <Term id="kb-note">notes</Term>
             </span>
             <span className="text-info">
-              {evidenceCount} evidence
+              {evidenceCount} <Term id="kb-evidence">evidence</Term>
             </span>
             <span className="text-text-secondary">
               {activeClaimCount} active claims
@@ -165,11 +166,15 @@ export default function KnowledgeEntriesTab({
             </span>
             <span className="flex items-center gap-1">
               <FreshnessDot freshnessClass="stale" decorative />
-              <span className="text-text-tertiary">{staleCount} stale</span>
+              <span className="text-text-tertiary">
+                {staleCount} <Term id="kb-freshness">stale</Term>
+              </span>
             </span>
             <span className="flex items-center gap-1">
               <FreshnessDot freshnessClass="superseded" decorative />
-              <span className="text-text-tertiary">{supersededCount} superseded</span>
+              <span className="text-text-tertiary">
+                {supersededCount} <Term id="kb-supersede">superseded</Term>
+              </span>
             </span>
           </div>
 
@@ -248,23 +253,27 @@ export default function KnowledgeEntriesTab({
                   </div>
                   {canEdit && (
                   <div className="flex items-center gap-1 shrink-0">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleStillValid(entry)}
-                      disabled={refreshEntry.isPending}
-                      className="font-normal text-brand hover:text-brand"
-                    >
-                      Still valid
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setSupersedeTarget(entry.id)}
-                      className="font-normal text-text-tertiary"
-                    >
-                      Supersede
-                    </Button>
+                    <TermTip id="kb-refresh">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleStillValid(entry)}
+                        disabled={refreshEntry.isPending}
+                        className="font-normal text-brand hover:text-brand"
+                      >
+                        Still valid
+                      </Button>
+                    </TermTip>
+                    <TermTip id="kb-supersede">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setSupersedeTarget(entry.id)}
+                        className="font-normal text-text-tertiary"
+                      >
+                        Supersede
+                      </Button>
+                    </TermTip>
                     <Button
                       variant="ghost"
                       size="sm"
@@ -340,21 +349,25 @@ export default function KnowledgeEntriesTab({
         </div>
         {canEdit && (
         <div className="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            onClick={handleRebuild}
-            disabled={rebuild.isPending}
-            loading={rebuild.isPending}
-          >
-            Rebuild
-          </Button>
-          <Button
-            onClick={handleCompile}
-            disabled={compile.isPending}
-            loading={compile.isPending}
-          >
-            Compile now
-          </Button>
+          <TermTip id="kb-rebuild">
+            <Button
+              variant="secondary"
+              onClick={handleRebuild}
+              disabled={rebuild.isPending}
+              loading={rebuild.isPending}
+            >
+              Rebuild
+            </Button>
+          </TermTip>
+          <TermTip id="kb-compile">
+            <Button
+              onClick={handleCompile}
+              disabled={compile.isPending}
+              loading={compile.isPending}
+            >
+              Compile now
+            </Button>
+          </TermTip>
         </div>
         )}
       </div>
@@ -450,27 +463,29 @@ export default function KnowledgeEntriesTab({
                 {canEdit && (
                 <div className="flex items-center gap-1 shrink-0">
                   {!entry.dismissed && entry.claim_class === 'note' && entry.freshness_class !== 'superseded' && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handlePromote(entry)}
-                      disabled={promote.isPending}
-                      className="font-normal text-brand hover:text-brand"
-                      title="Promote to Claim"
-                    >
-                      Promote
-                    </Button>
+                    <TermTip id="kb-promote">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handlePromote(entry)}
+                        disabled={promote.isPending}
+                        className="font-normal text-brand hover:text-brand"
+                      >
+                        Promote
+                      </Button>
+                    </TermTip>
                   )}
                   {!entry.dismissed && entry.freshness_class !== 'superseded' && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => setSupersedeTarget(supersedeTarget === entry.id ? null : entry.id)}
-                      className="font-normal text-text-tertiary"
-                      title="Mark Superseded"
-                    >
-                      Supersede
-                    </Button>
+                    <TermTip id="kb-supersede">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setSupersedeTarget(supersedeTarget === entry.id ? null : entry.id)}
+                        className="font-normal text-text-tertiary"
+                      >
+                        Supersede
+                      </Button>
+                    </TermTip>
                   )}
                   {!entry.dismissed && !entry.compiled_at && entry.freshness_class !== 'superseded' && (
                     <Button

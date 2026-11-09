@@ -266,3 +266,60 @@ def test_auto_join_remove():
         result = runner.invoke(org_app, ["auto-join", "remove", "EXAMPLE.com"])
     assert result.exit_code == 0, result.output
     assert mock_put.call_args[0][3]["auto_join_domains"] == ["other.com"]
+
+
+# ── multi-org: sfs org list / sfs org accept ───────────────────────────
+
+
+def test_org_list_marks_default():
+    me = {
+        "org_id": "org_a",
+        "orgs": [
+            {"org_id": "org_a", "name": "Acme", "slug": "acme", "role": "member", "is_default": True},
+            {"org_id": "org_b", "name": "Globex", "slug": "globex", "role": "admin", "is_default": False},
+        ],
+    }
+    with patch(
+        "sessionfs.cli.cmd_org._load_api_config", return_value=("http://api.test", "k")
+    ), patch("httpx.get", return_value=FakeResp(200, me)) as mock_get:
+        result = runner.invoke(org_app, ["list"])
+    assert result.exit_code == 0, result.output
+    assert mock_get.call_args[0][0].endswith("/api/v1/auth/me")
+    out = _combined(result)
+    assert "Acme" in out and "Globex" in out
+    acme_line = next(line for line in out.splitlines() if "Acme" in line)
+    globex_line = next(line for line in out.splitlines() if "Globex" in line)
+    assert "*" in acme_line
+    assert "*" not in globex_line
+
+
+def test_org_list_without_orgs():
+    with patch(
+        "sessionfs.cli.cmd_org._load_api_config", return_value=("http://api.test", "k")
+    ), patch("httpx.get", return_value=FakeResp(200, {"org_id": None, "orgs": []})):
+        result = runner.invoke(org_app, ["list"])
+    assert result.exit_code == 0, result.output
+    assert "not part of an organization" in _combined(result)
+
+
+def test_org_accept_into_second_org_mentions_default():
+    body = {"org_id": "org_b", "role": "member", "default_org_id": "org_a"}
+    with patch(
+        "sessionfs.cli.cmd_org._load_api_config", return_value=("http://api.test", "k")
+    ), patch("sessionfs.cli.cmd_org.idempotent_post", return_value=FakeResp(200, body)):
+        result = runner.invoke(org_app, ["accept", "inv_123"])
+    assert result.exit_code == 0, result.output
+    out = _combined(result)
+    assert "Joined org_b as member" in out
+    assert "default org is still org_a" in out
+    assert "sfs config default-org org_b" in out
+
+
+def test_org_accept_first_org_no_default_hint():
+    body = {"org_id": "org_a", "role": "member", "default_org_id": "org_a"}
+    with patch(
+        "sessionfs.cli.cmd_org._load_api_config", return_value=("http://api.test", "k")
+    ), patch("sessionfs.cli.cmd_org.idempotent_post", return_value=FakeResp(200, body)):
+        result = runner.invoke(org_app, ["accept", "inv_123"])
+    assert result.exit_code == 0, result.output
+    assert "default org is still" not in _combined(result)

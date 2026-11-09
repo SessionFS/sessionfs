@@ -1199,6 +1199,84 @@ async def _bounded_stream(
         pass
 
 
+def flatten_for_synthesis(conversation: list[Message], instruction: str) -> list[Message]:
+    """The conversation as alternating plain-text user/assistant messages.
+
+    Tool calls become a line in the assistant text and tool results become
+    user-role text (marked when they failed), so the final no-tools call is
+    valid for every provider (some refuse tool blocks without tool specs).
+    ``instruction`` closes the list as user text.
+    """
+    flat: list[Message] = []
+
+    def _add(role: str, text: str) -> None:
+        if not text:
+            return
+        if flat and flat[-1]["role"] == role:
+            flat[-1] = {"role": role, "content": flat[-1]["content"] + "\n\n" + text}
+        else:
+            flat.append({"role": role, "content": text})
+
+    for m in conversation:
+        role = m.get("role")
+        if role == "user":
+            _add("user", m.get("content") or "")
+        elif role == "assistant":
+            parts = [m.get("content") or ""]
+            for call in m.get("tool_calls") or []:
+                name = getattr(call, "name", "") or ""
+                parts.append(f"(called tool {name})")
+            _add("assistant", "\n".join(p for p in parts if p))
+        elif role == "tool":
+            label = "Tool result (FAILED — no evidence)" if m.get("is_error") else "Tool result"
+            _add("user", f"{label}:\n{m.get('content') or ''}")
+    _add("user", instruction)
+    while flat and flat[0]["role"] != "user":
+        flat.pop(0)
+    return flat
+
+
+async def _synthesize(
+    *,
+    model: str,
+    system: str,
+    conversation: list[Message],
+    instruction: str,
+    api_key: str,
+    provider: str | None,
+    base_url: str | None,
+    temperature: float | None,
+    max_tokens: int,
+    timeout: float,
+    top_p: float | None,
+    reasoning_effort_value: str | None,
+    deadline: float,
+) -> AsyncIterator[AgentEvent]:
+    """One tool-free answer from the collected results (see ``run_agent``)."""
+    try:
+        async for event in _bounded_stream(
+            stream_chat(
+                model=model,
+                system=system + "\n\n" + instruction,
+                messages=flatten_for_synthesis(conversation, instruction),
+                tools=[],
+                api_key=api_key,
+                provider=provider,
+                base_url=base_url,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                top_p=top_p,
+                reasoning_effort_value=reasoning_effort_value,
+            ),
+            deadline,
+        ):
+            if isinstance(event, (TextDelta, Usage)):
+                yield event
+    except ProviderError as exc:
+        logger.warning("Final synthesis call failed (%s)", exc.status)
+
+
 async def run_agent(
     *,
     model: str,
@@ -1218,8 +1296,16 @@ async def run_agent(
     timeout: float = 120,
     top_p: float | None = None,
     reasoning_effort_value: str | None = None,
+    final_synthesis: str | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run the agent loop: stream turns and execute requested tools until it stops.
+
+    ``final_synthesis``: when the step limit is reached while the model still
+    wants tools, make one last call with NO tools, the conversation flattened
+    to plain text (so no provider sees tool blocks without tool definitions)
+    and this instruction appended, so the turn ends with an answer built from
+    what was collected.  A failed synthesis call ends the loop quietly (the
+    caller decides what to say).
 
     Yields each turn's text, tool-call and usage events, a :class:`ToolResultEvent`
     after each tool, and exactly one final :class:`Done`. Hard limits fail closed:
@@ -1238,6 +1324,23 @@ async def run_agent(
 
     while True:
         if steps >= max_steps:
+            if final_synthesis and loop.time() < deadline:
+                async for event in _synthesize(
+                    model=model,
+                    system=system,
+                    conversation=conversation,
+                    instruction=final_synthesis,
+                    api_key=api_key,
+                    provider=provider,
+                    base_url=base_url,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    timeout=timeout,
+                    top_p=top_p,
+                    reasoning_effort_value=reasoning_effort_value,
+                    deadline=deadline,
+                ):
+                    yield event
             yield Done("max_steps")
             return
         steps += 1

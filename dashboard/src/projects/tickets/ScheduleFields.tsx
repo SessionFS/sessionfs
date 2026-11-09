@@ -169,6 +169,7 @@ function EditTrigger({
       size="sm"
       className="!ml-1 !px-1.5 !py-0.5 !text-xs !font-normal !text-brand"
       aria-label={`${hasValue ? 'Edit' : 'Set'} ${label}`}
+      data-schedule-edit={label}
       onClick={onClick}
     >
       {hasValue ? 'Edit' : 'Set'}

@@ -173,16 +173,6 @@ async def _phase_b_commit(
     """
     now = datetime.now(timezone.utc)
 
-    # Re-check the caller is not already in an org — INSIDE the atomic txn.
-    # Phase A enforced this, but Phase B (via /verify) runs later and the user
-    # could have joined an org in between (e.g. accepting an invite). Without
-    # this re-check the user would get a second OrgMember row, which then makes
-    # their own /me ambiguous. Mirrors Phase A + invite-accept.
-    # (Shield LOW tk_29b3e43f1ee94130.)
-    # Use .first() over a LIMIT 1 — we only need existence, and the caller
-    # may ALREADY hold duplicate memberships (the very state this guard
-    # defends against). scalar_one_or_none() would raise MultipleResultsFound
-    # and turn the intended 409 into a 500. (Codex R1 on tk_29b3e43f1ee94130.)
     # GH #70 — membership add/remove: the user's scope lock (then the
     # org's), before any row lock, so it serializes with user delete,
     # member removal and other joins (scope_locks.py global order).
@@ -202,19 +192,16 @@ async def _phase_b_commit(
     if _locked_user is None or not _locked_user.is_active:
         raise HTTPException(403, "Account is inactive")
 
-    # Lock the user row first (the user -> org order shared with invite
-    # acceptance and domain auto-join) so a concurrent membership insert for
-    # this user elsewhere can't slip in between the check and the insert.
+    # Lock the user row (the user -> org order shared with invite acceptance
+    # and domain auto-join) so this serializes with the user's other
+    # membership changes.
+    #
+    # A person can belong to several orgs (CEO decision 2026-11-09), so being
+    # a member elsewhere no longer blocks activation. Activation always mints
+    # a NEW org, so the user can never already be a member of it — the
+    # same-org duplicate guard is structural here (uq_org_members_org_user
+    # is the backstop).
     await db.execute(select(User).where(User.id == user.id).with_for_update())
-    already_member = await db.execute(
-        select(OrgMember.id).where(OrgMember.user_id == user.id).limit(1)
-    )
-    if already_member.first() is not None:
-        raise HTTPException(
-            409,
-            "You are already a member of an organization. "
-            "Leave your current org before activating a new license.",
-        )
 
     # 0. Ensure the slug is unique. A derived slug (from org_name) can collide
     #    with an existing org — e.g. two licenses whose names slugify the same.
@@ -432,16 +419,8 @@ async def activate_phase_a(
             "License key is invalid, expired, or already bound to an organization.",
         )
 
-    # 2. Check caller is not already in an org
-    existing_member = await db.execute(
-        select(OrgMember).where(OrgMember.user_id == user.id)
-    )
-    if existing_member.scalar_one_or_none():
-        raise HTTPException(
-            409,
-            "You are already a member of an organization. "
-            "Leave your current org before activating a new license.",
-        )
+    # 2. Membership in other orgs no longer blocks activation: a person can
+    #    belong to several orgs, and activation mints a new one they own.
 
     # Derive org_name and slug
     org_name = (body.org_name or lic.org_name).strip()

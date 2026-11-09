@@ -1721,12 +1721,19 @@ async def complete_work_queue_step(
     """
     now = datetime.now(timezone.utc)
 
+    # Row lock (PostgreSQL) before the idempotency read: two concurrent
+    # settles of one directive serialize here, and the second one then sees
+    # the first one's settled run and replays instead of settling (and
+    # posting the verdict) again.
     item = (
         await db.execute(
-            select(WorkQueueItem).where(
+            select(WorkQueueItem)
+            .where(
                 WorkQueueItem.id == item_id,
                 WorkQueueItem.work_queue_id == queue.id,
             )
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     if item is None:

@@ -331,7 +331,7 @@ async def _inbound_webhook(
         # well inside that. The event is already in the ledger either way.
         try:
             await asyncio.wait_for(
-                delivery_ingest.send_gitlab_statuses(deferred),
+                delivery_ingest.send_gitlab_statuses(deferred, db),
                 timeout=_STATUS_SEND_DEADLINE_S,
             )
         except asyncio.TimeoutError:

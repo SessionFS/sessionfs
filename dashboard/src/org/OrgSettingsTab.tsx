@@ -38,6 +38,7 @@ import { Button, Input } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
 import { useOrgDigestPrefs, useUpdateOrgDigestPrefs } from './useOrgDigestPrefs';
 import RestrictVisibilitySetting from './groups/RestrictVisibilitySetting';
+import { Term } from '../help/Term';
 
 interface OrgSettingsTabProps {
   orgId: string;
@@ -168,6 +169,11 @@ export default function OrgSettingsTab({ orgId, canEdit, tier }: OrgSettingsTabP
         knobs from the project settings to override. Leave a field
         blank to fall back to the server's built-in default.
       </p>
+      {!canEdit && (
+        <p className="text-xs text-text-tertiary" data-testid="org-settings-readonly">
+          Only org owners and admins can change these settings.
+        </p>
+      )}
       <form onSubmit={handleSubmit} aria-label="Org settings">
         {field(
           'kb_retention_days',
@@ -191,7 +197,9 @@ export default function OrgSettingsTab({ orgId, canEdit, tier }: OrgSettingsTabP
         )}
 
         <div className="flex flex-col gap-2">
-          <span className="text-sm text-text-primary">Auto-join by verified domain</span>
+          <span className="text-sm text-text-primary">
+            <Term id="auto-join">Auto-join</Term> by verified domain
+          </span>
           <span className="text-xs text-text-tertiary">
             When a user verifies an email on one of these domains, they are
             automatically added to this org as a member. Requires a verified
@@ -261,7 +269,7 @@ export default function OrgSettingsTab({ orgId, canEdit, tier }: OrgSettingsTabP
           variant="primary"
           disabled={!canEdit || update.isPending}
           loading={update.isPending}
-          title={canEdit ? undefined : 'Only org admins can change settings'}
+          disabledReason={canEdit ? undefined : 'Only org owners and admins can change settings'}
           aria-label="Save org settings"
         >
           Save settings

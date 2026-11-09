@@ -49,6 +49,7 @@ from sessionfs.server.schemas.trusted_reviewers import (
 )
 from sessionfs.server.tier_gate import (
     UserContext,
+    build_org_user_context,
     check_feature,
     check_role,
     get_user_context,
@@ -61,7 +62,7 @@ router = APIRouter(prefix="/api/v1/orgs", tags=["trusted-reviewers"])
 
 async def _require_org_admin(
     org_id: str, ctx: UserContext, db: AsyncSession
-) -> Organization:
+) -> UserContext:
     """Membership + role + tier gate, mirroring api_keys._require_org_admin.
 
     Cross-org access is existence-hiding: a caller that does not belong to
@@ -69,11 +70,18 @@ async def _require_org_admin(
     existence to a non-member. Owners satisfy check_role(ctx, 'admin')
     because owner (100) >= admin (50) in the role hierarchy.
     """
-    check_feature(ctx, "team_management")
-    check_role(ctx, "admin")
-    if ctx.org is None or ctx.org.id != org_id:
+    # A user can belong to several orgs: gate on the NAMED org's plan and
+    # the caller's role there, not on their default org.
+    org_ctx = await build_org_user_context(ctx.user, org_id, db)
+    if org_ctx is None or org_ctx.org is None:
+        # Not a member: same answers as before (plan, then role, then the
+        # existence-hiding 404).
+        check_feature(ctx, "team_management")
+        check_role(ctx, "admin")
         raise HTTPException(status_code=404, detail="Organization not found")
-    return ctx.org
+    check_feature(org_ctx, "team_management")
+    check_role(org_ctx, "admin")
+    return org_ctx
 
 
 def _to_response(row: TrustedReviewer) -> TrustedReviewerResponse:
@@ -141,7 +149,9 @@ async def register_trusted_reviewer(
     service_key_id must be an org service key; a user_id must be an org
     member; a project_id (when scoped) must be in the org.
     """
-    org = await _require_org_admin(org_id, ctx, db)
+    org_ctx = await _require_org_admin(org_id, ctx, db)
+    org = org_ctx.org
+    assert org is not None
 
     # ── Identity-AND-scope invariant (defense-in-depth over the schema
     # validator + the DB CHECK). Surface a clean 422, never a 500.
@@ -275,7 +285,7 @@ async def register_trusted_reviewer(
         org=org,
         event_type="trusted_reviewer_registered",
         actor=user,
-        actor_role=ctx.role,
+        actor_role=org_ctx.role,
         target_id=row.id,
         before=None,
         after={
@@ -357,7 +367,9 @@ async def revoke_trusted_reviewer(
     rows are never rewritten; only FUTURE verdicts from this identity stop
     being counted. 404 if the row is not in this org (existence-hiding).
     """
-    org = await _require_org_admin(org_id, ctx, db)
+    org_ctx = await _require_org_admin(org_id, ctx, db)
+    org = org_ctx.org
+    assert org is not None
 
     # Belongs-to-org check: org-wide row (org_id==org) OR project-scoped row
     # whose project is in the org.
@@ -396,7 +408,7 @@ async def revoke_trusted_reviewer(
         org=org,
         event_type="trusted_reviewer_revoked",
         actor=user,
-        actor_role=ctx.role,
+        actor_role=org_ctx.role,
         target_id=reviewer_id,
         before=before,
         after={

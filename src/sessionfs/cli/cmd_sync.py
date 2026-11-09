@@ -7,6 +7,7 @@ import asyncio
 import typer
 from rich.table import Table
 
+from sessionfs.http_idempotency import idempotent_async_client
 from sessionfs.cli.common import console, err_console
 
 sync_app = typer.Typer(name="sync", help="Manage session sync.", no_args_is_help=False)
@@ -19,10 +20,8 @@ def _get_sync_cfg():
 
 
 async def _api_get(path: str, api_url: str, api_key: str) -> dict:
-    import httpx
-
     url = f"{api_url.rstrip('/')}{path}"
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
     if resp.status_code >= 400:
         return {"_error": resp.status_code}
@@ -30,10 +29,8 @@ async def _api_get(path: str, api_url: str, api_key: str) -> dict:
 
 
 async def _api_put(path: str, api_url: str, api_key: str, json_data: dict) -> dict:
-    import httpx
-
     url = f"{api_url.rstrip('/')}{path}"
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.put(url, headers={"Authorization": f"Bearer {api_key}"}, json=json_data)
     if resp.status_code >= 400:
         return {"_error": resp.status_code}
@@ -41,10 +38,8 @@ async def _api_put(path: str, api_url: str, api_key: str, json_data: dict) -> di
 
 
 async def _api_post(path: str, api_url: str, api_key: str) -> dict:
-    import httpx
-
     url = f"{api_url.rstrip('/')}{path}"
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.post(url, headers={"Authorization": f"Bearer {api_key}"})
     if resp.status_code >= 400:
         return {"_error": resp.status_code}
@@ -52,10 +47,8 @@ async def _api_post(path: str, api_url: str, api_key: str) -> dict:
 
 
 async def _api_delete(path: str, api_url: str, api_key: str) -> dict:
-    import httpx
-
     url = f"{api_url.rstrip('/')}{path}"
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.delete(url, headers={"Authorization": f"Bearer {api_key}"})
     if resp.status_code >= 400:
         return {"_error": resp.status_code}

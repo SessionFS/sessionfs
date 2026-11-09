@@ -6,6 +6,7 @@ import { errorMessage } from '../../utils/errorMessage';
 import { StartWorkflowDialog } from './StartWorkflowDialog';
 import { TemplateEditorDialog } from './TemplateEditorDialog';
 import { WorkflowGraph } from './WorkflowGraph';
+import { Term } from '../../help/Term';
 
 const TEAM_TIERS = new Set(['team', 'enterprise', 'admin']);
 
@@ -130,7 +131,9 @@ export function TemplatesPanel({
     <section aria-label="Workflow templates" className="space-y-4">
       <div className="flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1">
-          <h2 className="text-md font-semibold text-text-primary">Workflow templates</h2>
+          <h2 className="text-md font-semibold text-text-primary">
+            <Term id="workflow-template">Workflow templates</Term>
+          </h2>
           <p className="text-sm text-text-tertiary">
             Repeatable multi-agent plans. SessionFS records and gates; your orchestrator starts every agent.
           </p>

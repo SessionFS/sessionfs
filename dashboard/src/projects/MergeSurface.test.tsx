@@ -208,11 +208,11 @@ describe('MergeSurface', () => {
 
     // Execute button should be disabled without checkbox
     const executeBtn = screen.getByRole('button', { name: /Execute merge/i });
-    expect(executeBtn).toBeDisabled();
+    expect(executeBtn).toBeUnavailable();
 
     // Check the confirm checkbox
     fireEvent.click(screen.getByLabelText(/I understand/i));
-    expect(executeBtn).not.toBeDisabled();
+    expect(executeBtn).not.toBeUnavailable();
   });
 
   it('flows from confirm to execute to result', async () => {

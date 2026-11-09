@@ -764,7 +764,7 @@ async def test_get_ticket_full_detail_and_surfaced_refs(db_session, test_user):
     assert "kind: task | status: open" in result.content
     assert "acceptance criteria:" in result.content
     assert "works" in result.content
-    assert "description:" in result.content
+    assert "description (written" in result.content
     assert "do the thing" in result.content
     assert "looking good" in result.content
     # parent + dependency ids are also surfaced (so they may be cited)

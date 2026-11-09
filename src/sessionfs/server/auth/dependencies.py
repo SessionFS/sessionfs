@@ -490,18 +490,18 @@ def require_platform_sweeper():
     """
     required = {PLATFORM_SWEEPS_SCOPE}
 
-    async def _dep(
-        request: Request,
-        db: AsyncSession = Depends(get_db),
-        limiter: SlidingWindowRateLimiter = Depends(get_rate_limiter),
+    async def _check(
+        request: Request, db: AsyncSession, limiter: SlidingWindowRateLimiter, stage: list[str]
     ) -> AuthContext:
         ctx = await _authenticate_and_build_context(request, db, limiter)
         if ctx.key_kind != "service":
             await _sso_enforcement_check(ctx, db)
             if ctx.user.tier != "admin":
+                stage[0] = "admin"
                 raise HTTPException(status_code=403, detail="Admin access required")
             return ctx
         if not required.intersection(ctx.scopes):
+            stage[0] = "scope"
             raise HTTPException(
                 status_code=403,
                 detail={
@@ -514,9 +514,38 @@ def require_platform_sweeper():
                     ),
                 },
             )
+        stage[0] = "minter"
         await assert_platform_key_minter_active(
             ctx, db, error="platform_sweeper_denied", scope=PLATFORM_SWEEPS_SCOPE
         )
+        return ctx
+
+    async def _dep(
+        request: Request,
+        db: AsyncSession = Depends(get_db),
+        limiter: SlidingWindowRateLimiter = Depends(get_rate_limiter),
+    ) -> AuthContext:
+        from sessionfs.server import business_metrics
+
+        sweep = business_metrics.sweep_name_for_request(request)
+        stage = ["auth"]
+        try:
+            ctx = await _check(request, db, limiter, stage)
+        except HTTPException as exc:
+            # Operators otherwise only find a refused sweep key in the logs.
+            business_metrics.record_sweep_denied(
+                sweep,
+                business_metrics.sweep_denial_reason(
+                    exc.status_code, exc.detail, stage=stage[0]
+                ),
+            )
+            raise
+        try:
+            # Read by MetricsMiddleware: only authorized calls count as runs.
+            request.state.sweep_authorized = True
+        except Exception:
+            pass
+        await business_metrics.observe_sweep_lag(db, sweep)
         return ctx
 
     return _dep

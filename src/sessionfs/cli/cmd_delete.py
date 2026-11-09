@@ -7,6 +7,7 @@ import shutil
 import typer
 from rich.table import Table
 
+from sessionfs.http_idempotency import idempotent_post
 from sessionfs.cli.common import (
     console,
     err_console,
@@ -266,7 +267,6 @@ def restore(
     from sessionfs.store.deleted import get_entry, remove_exclusion
     from sessionfs.cli.common import get_store_dir
 
-    import httpx
 
     # Active-profile-scoped exclusion store (tk_457d060822bc48c0 R1 MED #3).
     _base = get_store_dir()
@@ -282,7 +282,7 @@ def restore(
     cfg = _load_sync_config()
 
     # Try server restore
-    resp = httpx.post(
+    resp = idempotent_post(
         f"{cfg['api_url']}/api/v1/sessions/{session_id}/restore",
         headers={"Authorization": f"Bearer {cfg['api_key']}"},
         timeout=10.0,

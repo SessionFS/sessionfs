@@ -76,6 +76,10 @@ export function useAcceptInvite() {
       // org membership list also changes — invalidate that too so the
       // org settings page refreshes after acceptance.
       qc.invalidateQueries({ queryKey: ['my-orgs'] });
+      // A person can belong to several orgs: /me lists every membership and
+      // the first one becomes the default org shown on the org page.
+      qc.invalidateQueries({ queryKey: ['me'] });
+      qc.invalidateQueries({ queryKey: ['org-info'] });
     },
   });
 }

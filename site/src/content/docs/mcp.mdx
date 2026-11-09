@@ -898,9 +898,10 @@ Start a loop: adopt an existing issue (`from_ticket_id`) or create a new parent 
 |-----------|------|----------|-------------|
 | `tickets` | array | yes | Child tasks: `{title, description, acceptance_criteria}` |
 | `reviewer_persona` | string | yes | Persona that reviews the children |
-| `title` | string | no | Parent issue title (ignored with `from_ticket_id`) |
+| `title` | string | no | Parent issue title; required unless you adopt an issue (ignored with `from_ticket_id`) |
 | `description` | string | no | Parent issue description |
 | `from_ticket_id` | string | no | Existing issue (`tk_...`) to adopt as the loop parent |
+| `ticket_id` | string | no | Same as `from_ticket_id` (the name `start_workflow` uses). Send one; two different values are refused |
 | `token_budget` | integer | no | Token budget for the loop |
 | `cost_budget_usd` | number | no | Dollar budget (org owner or admin only) |
 | `max_review_rounds` | integer | no | Review-round cap; there is no default cap |

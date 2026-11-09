@@ -536,6 +536,12 @@ class GitLabStatusPost:
     sha: str = ""
     state: str = "pending"
     description: str = ""
+    # Ordering (services/merge_check_order.py): the SessionFS project and
+    # repo key plus the evaluation sequence taken before readiness was read.
+    # seq 0 = unordered (a post built by hand).
+    project_id: str = ""
+    repo: str = ""
+    seq: int = 0
 
     def __repr__(self) -> str:  # never print the token
         return (
@@ -556,10 +562,55 @@ def _retryable(exc: BaseException) -> bool:
     return isinstance(exc, httpx.TransportError)
 
 
-async def send_gitlab_status(post: GitLabStatusPost) -> bool:
+async def send_gitlab_status(
+    post: GitLabStatusPost, db: AsyncSession | None = None
+) -> bool:
     """Send one computed commit status with a bounded retry. Never raises;
-    True when GitLab accepted it. Holds no DB session, so callers commit
-    before calling it and no transaction stays open during the waits."""
+    True when GitLab accepted it.
+
+    With ``db`` and an ordered post (``seq`` > 0) the send is skipped when a
+    newer evaluation of the commit already claimed it, and after a
+    successful send the newest claimed state is re-sent if a newer
+    evaluation claimed while this request was in flight. Each DB step is its
+    own short committed transaction; callers commit before calling, so no
+    transaction stays open during the GitLab call or the retry waits."""
+    from sessionfs.server.services.merge_check_order import REPAIR_ROUNDS, PostGuard
+
+    if db is None or post.seq <= 0 or not post.project_id:
+        return await _send_gitlab_status_once(post, post.state, post.description)
+    guard = PostGuard(
+        db=db,
+        project_id=post.project_id,
+        provider="gitlab",
+        repo=post.repo,
+        head_sha=post.sha,
+        seq=post.seq,
+    )
+    if not await guard.claim(post.state, post.description):
+        logger.info(
+            "GitLab commit status for project %s @ %s skipped: a newer "
+            "evaluation already posted",
+            post.gitlab_project_id,
+            post.sha,
+        )
+        return False
+    sent = await _send_gitlab_status_once(post, post.state, post.description)
+    if sent:
+        written = post.seq
+        for _ in range(REPAIR_ROUNDS):
+            newest = await guard.newest()
+            if newest is None or newest[0] <= written:
+                break
+            written, state, description = newest
+            if not await _send_gitlab_status_once(post, state, description):
+                break
+    return sent
+
+
+async def _send_gitlab_status_once(
+    post: GitLabStatusPost, state: str, description: str
+) -> bool:
+    """The unordered send of one status (bounded retry, no DB access)."""
     from sessionfs.server.gitlab_client import GitLabClient
 
     client = GitLabClient(post.instance_url, post.access_token)
@@ -569,9 +620,9 @@ async def send_gitlab_status(post: GitLabStatusPost) -> bool:
             await client.post_commit_status(
                 post.gitlab_project_id,
                 post.sha,
-                post.state,
+                state,
                 name="SessionFS review loop",
-                description=post.description,
+                description=description,
             )
             return True
         except Exception as exc:
@@ -589,12 +640,14 @@ async def send_gitlab_status(post: GitLabStatusPost) -> bool:
     return False
 
 
-async def send_gitlab_statuses(posts: list[GitLabStatusPost]) -> int:
+async def send_gitlab_statuses(
+    posts: list[GitLabStatusPost], db: AsyncSession | None = None
+) -> int:
     """Send each computed status (see ``send_gitlab_status``); returns how
     many GitLab accepted."""
     sent = 0
     for post in posts:
-        if await send_gitlab_status(post):
+        if await send_gitlab_status(post, db):
             sent += 1
     return sent
 
@@ -634,7 +687,7 @@ async def post_gitlab_status(
         return
     if db.in_transaction():
         await db.commit()
-    await send_gitlab_status(planned)
+    await send_gitlab_status(planned, db)
 
 
 async def prune_delivery_events(db: AsyncSession, *, older_than: datetime) -> int:
@@ -726,6 +779,14 @@ async def _plan_gitlab_status(
     if not ticket_ids:
         return None
 
+    # Ordering: take the evaluation sequence before readiness is read (the
+    # row stays locked until the caller commits, before the send).
+    from sessionfs.server.services.merge_check_order import take_eval_seq
+
+    seq = await take_eval_seq(
+        db, project_id=project.id, provider="gitlab", repo=repo, head_sha=sha
+    )
+
     ready = True
     for ticket_id in ticket_ids:
         ticket = await db.get(Ticket, ticket_id)
@@ -745,4 +806,7 @@ async def _plan_gitlab_status(
         sha=sha,
         state="success" if ready else "pending",
         description="All review checks passed" if ready else "Review in progress",
+        project_id=project.id,
+        repo=repo,
+        seq=seq,
     )

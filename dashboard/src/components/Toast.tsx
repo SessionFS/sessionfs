@@ -1,4 +1,5 @@
 import { createContext, useCallback, useState, useEffect, useRef } from 'react';
+import { Tooltip } from './ui';
 
 export interface Toast {
   id: string;
@@ -102,16 +103,18 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
       style={{ boxShadow: 'var(--shadow-overlay)' }}
     >
       <p className="text-sm text-text-primary">{toast.message}</p>
-      <button
-        type="button"
-        onClick={() => onDismiss(toast.id)}
-        aria-label="Dismiss notification"
-        className="absolute top-2 right-2 text-text-tertiary hover:text-text-secondary transition-colors"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M18 6L6 18M6 6l12 12" />
-        </svg>
-      </button>
+      <Tooltip content={'Dismiss notification'} describe={false}>
+        <button
+          type="button"
+          onClick={() => onDismiss(toast.id)}
+          aria-label="Dismiss notification"
+          className="absolute top-2 right-2 text-text-tertiary hover:text-text-secondary transition-colors"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M18 6L6 18M6 6l12 12" />
+          </svg>
+        </button>
+      </Tooltip>
     </div>
   );
 }

@@ -21,6 +21,7 @@ from sessionfs.server.services.knowledge import (
     compile_work_condition,
     pending_claim_clauses,
 )
+from sessionfs.server.services.org_concurrency import org_slot, project_scope
 from sessionfs.server.services.personas import (
     resolve_persona,
     visible_persona_org_id_for_auth,
@@ -1253,6 +1254,18 @@ async def compile_context(
     db: AsyncSession = Depends(get_db),
 ) -> CompilationResponse:
     """Compile pending knowledge entries into project context."""
+    project = await _get_editable_project_or_404(project_id, db, user.id)
+    org_id, owner_id = project_scope(project)
+    async with org_slot(db, "compile", org_id=org_id, user_id=owner_id):
+        return await _compile_context(project_id, body, user, db)
+
+
+async def _compile_context(
+    project_id: str,
+    body: CompileRequest | None,
+    user: User,
+    db: AsyncSession,
+) -> CompilationResponse:
     await _get_editable_project_or_404(project_id, db, user.id)
 
     from sessionfs.server.services.compiler import (
@@ -2243,6 +2256,18 @@ async def rebuild_project(
     empty AND every claim's compiled_at NULL. That was the
     2026-05-20 data-loss vector on proj_c0242b0fccbd48b4.
     """
+    project = await _get_editable_project_or_404(project_id, db, user.id)
+    org_id, owner_id = project_scope(project)
+    async with org_slot(db, "compile", org_id=org_id, user_id=owner_id):
+        return await _rebuild_project(project_id, body, user, db)
+
+
+async def _rebuild_project(
+    project_id: str,
+    body: CompileRequest | None,
+    user: User,
+    db: AsyncSession,
+) -> RebuildResponse:
     await _get_editable_project_or_404(project_id, db, user.id)
 
     from sessionfs.server.services.compiler import (

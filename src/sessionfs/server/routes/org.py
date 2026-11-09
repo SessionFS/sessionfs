@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, field_validator
@@ -87,6 +87,10 @@ class InviteResponse(BaseModel):
     invite_id: str
     email: str
     role: str
+    # False when no email provider is configured (or the send failed): the
+    # admin then shares ``accept_url`` with the invitee themselves.
+    email_sent: bool = False
+    accept_url: str | None = None
 
 
 # --- Routes ---
@@ -261,15 +265,10 @@ async def create_organization(
         and prefetched.canonical.customer_id in (None, stripe_customer_snapshot)
     )
 
-    # Check user isn't already in an org. This runs before the tier check:
-    # creating an org moves the creator's paid entitlement to the org and
-    # drops their personal tier cache to 'free', so an existing member must
-    # get the accurate 409 rather than an "upgrade to Team" 403.
-    existing_member = await db.execute(
-        select(OrgMember).where(OrgMember.user_id == user_id).limit(1)
-    )
-    if existing_member.scalar_one_or_none():
-        raise HTTPException(409, "You are already a member of an organization")
+    # A person can belong to several orgs (CEO decision 2026-11-09), so
+    # being a member elsewhere no longer blocks creating one. The new org is
+    # funded by the creator's OWN plan (user_tier below, never an org's), so
+    # membership in another org can't be used to mint a paid org.
 
     # Check user has a Team+ subscription. A confirmed pointer-only adoption
     # gates on Stripe's own tier (not the cache): the cache may lag a
@@ -664,104 +663,27 @@ async def invite_member(
             "message": "All seats are in use. Upgrade for more seats.",
         })
 
-    # Lookup ANY existing row for this (org_id, email). Migration 016
-    # enforces uq_org_invites_org_email so at most one row can exist.
-    # We classify by state below — if no row exists we INSERT; if a
-    # stale (declined / expired / orphan-accepted) row exists we
-    # UPDATE in place. An active row (no terminal state) is the only
-    # case that returns 409 here.
-    #
-    # tk_d88678e6fe384de6 — the v0.10.22 R1 MED fix made the active-
-    # invite predicate more permissive at the route layer, but the
-    # DB UniqueConstraint still blocked the INSERT with IntegrityError
-    # (= 409 duplicate_resource via the v0.10.24 envelope). The
-    # UPSERT pattern below resolves that mismatch.
-    #
-    # `.with_for_update()` serializes concurrent re-invites against
-    # the same stale row on PG. Without the lock, two requests can
-    # both load the old primary key; the first commits the new id,
-    # and the second flushes its UPDATE against the now-missing old
-    # id → SQLAlchemy 0-row-update / StaleDataError → 500 instead of
-    # the AC's atomic behavior. SQLite is single-writer at the engine
-    # level, so it ignores FOR UPDATE harmlessly. Codex R1 MED on
-    # this ticket.
-    stale = (
-        await db.execute(
-            select(OrgInvite)
-            .where(
-                OrgInvite.org_id == ctx.org.id,
-                OrgInvite.email == data.email,
-            )
-            .with_for_update()
-        )
-    ).scalar_one_or_none()
-
-    now = datetime.now(timezone.utc)
-    if stale is not None:
-        stale_expires = stale.expires_at
-        # SQLite roundtrips DateTime(timezone=True) as naive; coerce
-        # to tz-aware before comparing so Helm-on-SQLite tests don't
-        # raise offset-naive/offset-aware errors.
-        if stale_expires.tzinfo is None:
-            stale_expires = stale_expires.replace(tzinfo=timezone.utc)
-        is_active = (
-            stale.accepted_at is None
-            and stale.declined_at is None
-            and stale_expires > now
-        )
-        if is_active:
-            raise HTTPException(
-                409, "An active invite already exists for this email"
-            )
-
-    # Check user isn't already a member (covers both: existing member
-    # added via a different path AND orphan-accepted stale invite with
-    # a live OrgMember row).
-    existing_user = await db.execute(
-        select(User).where(User.email == data.email)
-    )
-    target_user = existing_user.scalar_one_or_none()
-    if target_user:
-        existing_membership = await db.execute(
-            select(OrgMember).where(
-                OrgMember.org_id == ctx.org.id,
-                OrgMember.user_id == target_user.id,
-            )
-        )
-        if existing_membership.scalar_one_or_none():
-            raise HTTPException(
-                409, "This user is already a member of your organization"
-            )
+    # The same UPSERT as the multi-org invite route (stale row re-armed in
+    # place, active invite or existing member refused), shared so the two
+    # invite endpoints can't drift (tk_d88678e6fe384de6).
+    from sessionfs.server.routes.org_members import InviteRefused, upsert_org_invite
 
     role = data.role if data.role in ("admin", "member") else "member"
-    new_invite_id = f"inv_{secrets.token_hex(8)}"
-    new_expires_at = now + timedelta(days=7)
-
-    if stale is not None:
-        # UPDATE-in-place: regenerate `id` so stale email-acceptance
-        # links from the prior attempt are invalidated; refresh
-        # `expires_at`; clear all terminal-state fields; update
-        # role/invited_by. Preserve `created_at` as the audit signal
-        # of when the email was first onboarded.
-        stale.id = new_invite_id
-        stale.role = role
-        stale.invited_by = ctx.user.id
-        stale.expires_at = new_expires_at
-        stale.accepted_at = None
-        stale.declined_at = None
-        stale.decline_reason = None
-        stale.last_emailed_at = None
-        invite = stale
-    else:
-        invite = OrgInvite(
-            id=new_invite_id,
+    try:
+        invite = await upsert_org_invite(
+            db,
             org_id=ctx.org.id,
             email=data.email,
             role=role,
-            invited_by=ctx.user.id,
-            expires_at=new_expires_at,
+            inviter=ctx.user,
+            now=datetime.now(timezone.utc),
         )
-        db.add(invite)
+    except InviteRefused as exc:
+        if exc.code == "already_member":
+            raise HTTPException(
+                409, "This user is already a member of your organization"
+            ) from None
+        raise HTTPException(exc.status, exc.detail) from None
 
     await db.commit()
     await db.refresh(invite)
@@ -770,9 +692,12 @@ async def invite_member(
     # v0.10.22 (tk_6afbcfefe5804c1d) — best-effort email send. The
     # invite row is already durable; a transient email failure logs
     # but does not 500 the route (admin can resend later).
-    from sessionfs.server.services.invite_helpers import dispatch_invite_email
+    from sessionfs.server.services.invite_helpers import (
+        dispatch_invite_email,
+        invite_accept_url,
+    )
 
-    await dispatch_invite_email(
+    sent = await dispatch_invite_email(
         request=request,
         db=db,
         invite=invite,
@@ -780,7 +705,13 @@ async def invite_member(
         inviter=ctx.user,
     )
 
-    return InviteResponse(invite_id=invite_id, email=data.email, role=role)
+    return InviteResponse(
+        invite_id=invite_id,
+        email=data.email,
+        role=role,
+        email_sent=sent,
+        accept_url=invite_accept_url(request, invite_id),
+    )
 
 
 @router.post("/invite/{invite_id}/accept")
@@ -834,16 +765,19 @@ async def accept_invite(
         raise HTTPException(403, "Account is inactive")
 
     # Lock the user row first (same user -> org order as domain auto-join),
-    # then check membership, so a concurrent auto-join into another org and
-    # this acceptance can't both see "no membership" and both insert.
+    # then check membership, so a concurrent auto-join into this org and
+    # this acceptance can't both see "not a member" and both insert.
     await db.execute(select(User).where(User.id == user.id).with_for_update())
 
-    # Check user isn't already in an org
+    # A person can belong to several orgs (CEO decision 2026-11-09); only a
+    # second membership in the SAME org is refused.
     existing = await db.execute(
-        select(OrgMember).where(OrgMember.user_id == user.id).limit(1)
+        select(OrgMember.id)
+        .where(OrgMember.user_id == user.id, OrgMember.org_id == invite.org_id)
+        .limit(1)
     )
-    if existing.scalar_one_or_none():
-        raise HTTPException(409, "You are already a member of an organization")
+    if existing.first() is not None:
+        raise HTTPException(409, "You are already a member of this organization")
 
     # Re-check seat capacity at acceptance time (not just invite creation).
     # Lock the Organization row so this serializes with SSO JIT provisioning,
@@ -904,9 +838,21 @@ async def accept_invite(
     from sessionfs.server.services.contacts import link_contacts_best_effort
 
     await link_contacts_best_effort(db, user, org_id=invite.org_id)
+    # The stored default_org_id is never changed by a join. Report the
+    # default the read-time rule resolves (stored pointer if still a member,
+    # else earliest joined) so clients can say which org stays the default.
+    from sessionfs.server.tier_gate import get_user_org_membership
+
+    await db.flush()
+    default_membership = await get_user_org_membership(user.id, db)
+    default_org_id = default_membership.org_id if default_membership else None
     await db.commit()
 
-    return {"org_id": invite.org_id, "role": invite.role}
+    return {
+        "org_id": invite.org_id,
+        "role": invite.role,
+        "default_org_id": default_org_id,
+    }
 
 
 class DeclineInviteRequest(BaseModel):

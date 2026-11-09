@@ -30,6 +30,7 @@ from starlette.concurrency import run_in_threadpool
 
 from sessionfs.server.auth.dependencies import get_current_user, require_verified_user
 from sessionfs.server.db.engine import get_db
+from sessionfs.server.db.timeouts import bound_heavy_reads
 from sessionfs.server.db.models import (
     RetrievalAuditContext,
     Session,
@@ -714,6 +715,89 @@ def _extract_workspace_from_archive(data: bytes) -> dict | None:
     return None
 
 
+async def _push_dlp_policy(
+    db: AsyncSession, user_id: str
+) -> tuple[dict | None, frozenset[str]]:
+    """The DLP policy a session push is scanned under, and the orgs it covers.
+
+    A person can belong to several orgs, and the project a pushed session
+    links to (``_resolve_project_id_for_session``) is only known once the
+    archive is parsed. So the scan covers every org the push could link
+    into — the caller's memberships plus the orgs of projects they own —
+    under the strictest combination of their policies (categories and
+    custom patterns unioned, allowlists intersected, block > redact > warn).
+    A push into an org-B project is therefore scanned at least as strictly
+    as B, and a personal push gets the same union.
+
+    With a single enabled policy it is used exactly as stored (custom
+    pattern names kept, as before). With several, custom pattern names are
+    relabelled ``custom`` so one org's private names don't land in another
+    org's sessions.
+    """
+    from sessionfs.server.db.models import OrgMember, Organization, Project
+    from sessionfs.server.dlp import get_org_dlp_policy
+    from sessionfs.server.helper.redaction import strictest_dlp_policy
+
+    org_ids = set(
+        (
+            await db.execute(select(OrgMember.org_id).where(OrgMember.user_id == user_id))
+        ).scalars().all()
+    )
+    org_ids.update(
+        (
+            await db.execute(
+                select(Project.org_id)
+                .where(Project.owner_id == user_id, Project.org_id.is_not(None))
+                .distinct()
+            )
+        ).scalars().all()
+    )
+    if not org_ids:
+        return None, frozenset()
+    orgs = (
+        await db.execute(
+            select(Organization).where(Organization.id.in_(org_ids)).order_by(Organization.id)
+        )
+    ).scalars().all()
+    enabled = [p for p in (get_org_dlp_policy(o) for o in orgs) if p and p.get("enabled")]
+    if not enabled:
+        policy = None
+    elif len(enabled) == 1:
+        policy = enabled[0]
+    else:
+        policy = strictest_dlp_policy(enabled)
+    return policy, frozenset(org_ids)
+
+
+async def _drop_link_outside_dlp_scope(
+    db: AsyncSession,
+    project_id: str | None,
+    dlp_org_ids: frozenset[str],
+    session_id: str,
+) -> str | None:
+    """Keep a pushed session's project link only when the project's org was
+    part of the DLP scan (it can drift if the caller joined an org or was
+    handed a project between the scan and this write). Otherwise the session
+    stays the user's own, unlinked, like any other session the caller can't
+    link."""
+    if project_id is None:
+        return None
+    from sessionfs.server.db.models import Project
+
+    project_org_id = (
+        await db.execute(select(Project.org_id).where(Project.id == project_id))
+    ).scalar_one_or_none()
+    if project_org_id is None or project_org_id in dlp_org_ids:
+        return project_id
+    logging.getLogger("sessionfs.api").warning(
+        "Session %s not linked to project %s: its org joined the caller's scope "
+        "after the DLP scan",
+        session_id,
+        project_id,
+    )
+    return None
+
+
 async def _resolve_project_id_for_session(
     db: AsyncSession,
     user_id: str,
@@ -1135,64 +1219,36 @@ async def upload_session(
     # M3: Upload size limit
     data = await _read_upload(file)
 
-    # M7: Tar archive validation
-    try:
-        _validate_tar_gz(data)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # Same per-file size guard as sync_push so /sessions and /sessions/{id}/sync
-    # behave consistently when an AI tool produces a runaway transcript. Tier
-    # is resolved here too so paid uploads get the larger per-member ceiling.
+    # The same gate as a sync push — archive validation, the per-file size
+    # cap, the DLP scan of every archive file with BLOCK / REDACT / WARN, and
+    # NUL-safe metadata + git extraction — through the push path's own
+    # functions, so this upload surface can't bypass org DLP. Nothing is
+    # stored until the gate passes.
     from sessionfs.server.tier_gate import get_effective_tier
-    member_limit = _member_size_limit_for_tier(await get_effective_tier(user, db))
-    _check_member_sizes(data, limit=member_limit)
+    from sessionfs.server.timing import PhaseTimer
 
+    effective_tier = await get_effective_tier(user, db)
+    dlp_policy, dlp_org_ids = await _push_dlp_policy(db, user.id)
     session_id = f"ses_{uuid.uuid4().hex[:16]}"
-    etag = hashlib.sha256(data).hexdigest()
+    prepared = await run_in_threadpool(
+        _prepare_sync_archive,
+        data,
+        session_id=session_id,
+        effective_tier=effective_tier,
+        dlp_policy=dlp_policy,
+        timer=PhaseTimer(),
+    )
+    data = prepared.data
+    etag = prepared.new_etag
+    meta = prepared.meta
+    messages_text = prepared.messages_text
+    git_remote_normalized = prepared.git_remote_normalized
+    git_branch = prepared.git_branch
+    git_commit = prepared.git_commit
+    dlp_scan_results = prepared.dlp_scan_results
+
     key = _blob_key(user.id, session_id)
-
     await blob_store.put(key, data)
-
-    # Extract metadata from manifest to fill in any gaps
-    meta = _extract_manifest_metadata(data)
-    messages_text = _extract_messages_text(data)
-
-    # Strip NUL bytes from archive-derived values before binding to PG text
-    # columns (asyncpg rejects \x00 → daemon retries forever). The blob is
-    # never modified; only the derived metadata is sanitized.
-    nul_count = 0
-    meta, n = sanitize_meta(meta)
-    nul_count += n
-    messages_text, n = sanitize_archive_string(messages_text)
-    nul_count += n
-
-    # Extract git metadata for PR matching + session denormalized tag.
-    # C-site (§2.2C C1): session.git_remote_normalized is a per-session
-    # metadata column — NOT project resolution.  The project_id linkage
-    # is resolved below via _resolve_project_id_for_session (A1).
-    workspace_data = _extract_workspace_from_archive(data)
-    git_remote_normalized = ""
-    git_branch = ""
-    git_commit = ""
-    if workspace_data:
-        from sessionfs.git_remote import normalize_git_remote
-        git_remote_normalized = normalize_git_remote(workspace_data.get("git_remote", ""))
-        git_branch = workspace_data.get("git_branch", "")
-        git_commit = workspace_data.get("git_commit", "")
-    git_remote_normalized, n = sanitize_archive_string(git_remote_normalized)
-    nul_count += n
-    git_branch, n = sanitize_archive_string(git_branch)
-    nul_count += n
-    git_commit, n = sanitize_archive_string(git_commit)
-    nul_count += n
-
-    if nul_count:
-        logger.warning(
-            "Stripped %d NUL byte(s) from archive-derived metadata for session %s",
-            nul_count,
-            session_id,
-        )
 
     # v0.10.0 Phase 5 Round 3 (KB entry 287) — mirror the sync_push
     # project_id resolution on this upload surface too. Codex flagged
@@ -1202,6 +1258,9 @@ async def upload_session(
     # project's org. No project / no access → project_id stays NULL.
     resolved_project_id = await _resolve_project_id_for_session(
         db, user.id, git_remote_normalized
+    )
+    resolved_project_id = await _drop_link_outside_dlp_scope(
+        db, resolved_project_id, dlp_org_ids, session_id
     )
     retrieval_audit_id = await _validated_retrieval_audit_id(
         db,
@@ -1251,6 +1310,8 @@ async def upload_session(
         ticket_id=meta.get("ticket_id"),
         retrieval_audit_id=retrieval_audit_id,
     )
+    if dlp_scan_results and hasattr(session, "dlp_scan_results"):
+        session.dlp_scan_results = json.dumps(dlp_scan_results)
     db.add(session)
     await db.commit()
     await db.refresh(session)
@@ -1391,6 +1452,7 @@ async def search_sessions(
     db: AsyncSession = Depends(get_db),
 ):
     """Full-text search across sessions (Starter+ tier required)."""
+    await bound_heavy_reads(db)
     check_feature(ctx, "cloud_sync")
 
     offset = (page - 1) * page_size
@@ -2269,14 +2331,13 @@ async def _sync_push(
             # is repeated under the row lock before anything is written.
             _raise_on_etag_mismatch(if_match, existing.etag, "ETag mismatch — session has been updated")
 
-        # Capture the DLP policy while we still have DB context.
-        dlp_policy = None
-        if ctx.is_org_user and ctx.org:
-            from sessionfs.server.dlp import get_org_dlp_policy
-
-            dlp_policy = get_org_dlp_policy(ctx.org)
-            if not (dlp_policy and dlp_policy.get("enabled")):
-                dlp_policy = None
+        # Capture the DLP policy while we still have DB context. The project
+        # this session links to is only known after the archive is parsed,
+        # and a person can belong to several orgs, so never use the default
+        # org alone: scan under the strictest combination of every org the
+        # push could link into (see _push_dlp_policy). Phase 3 refuses to
+        # link the session to a project whose org wasn't part of the scan.
+        dlp_policy, dlp_org_ids = await _push_dlp_policy(db, user.id)
 
         # Flush client version tracking updates before releasing connection
         await db.commit()
@@ -2362,6 +2423,9 @@ async def _sync_push(
           # that's gone by the time `db2` commits.
           resolved_project_id = await _resolve_project_id_for_session(
               db2, user_id, git_remote_normalized
+          )
+          resolved_project_id = await _drop_link_outside_dlp_scope(
+              db2, resolved_project_id, dlp_org_ids, session_id
           )
           retrieval_audit_id = await _validated_retrieval_audit_id(
               db2,
@@ -3054,6 +3118,7 @@ async def get_session_changes(
     response: Response = None,
 ):
     """Get per-file changes (diffs) derived from a session archive."""
+    await bound_heavy_reads(db)
     _validate_session_id_or_alias(session_id)
     session = await _get_user_session(db, user.id, session_id)
 
@@ -3387,7 +3452,7 @@ async def access_share_link_post(
 # ── Public share view (v0.14.0) ──────────────────────────────────────────
 # Separate router so the view lives at the cleaner /api/v1/share/{token}/view
 # path rather than under /api/v1/sessions/... (it is a public-facing URL).
-share_view_router = APIRouter()
+share_view_router = APIRouter(prefix="/api/v1")
 
 # Per-message content cap (characters) for the public view.  Keeps the
 # JSON payload under ~2 MB even for the longest sessions (500+ messages)

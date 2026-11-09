@@ -298,14 +298,45 @@ async def test_duplicate_slug_rejected(client: AsyncClient, team_headers: dict):
         headers=team_headers,
         json={"name": "First", "slug": "unique-slug"},
     )
-    # Create second user with team tier
-    # The same user can't create a second org, so this is expected to fail
+    # A person can belong to several orgs, but creating the first org moved
+    # their Team plan onto it: a second org needs a plan of its own, so this
+    # is refused as an upgrade, not as "already a member".
     resp = await client.post(
         "/api/v1/org",
         headers=team_headers,
         json={"name": "Second", "slug": "another-slug"},
     )
-    assert resp.status_code == 409  # Already in an org
+    assert resp.status_code == 403
+    assert "Team tier" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_duplicate_slug_rejected_for_other_creator(
+    client: AsyncClient, db_session: AsyncSession, team_headers: dict
+):
+    """A slug already taken by another org returns 409."""
+    from sessionfs.server.auth.keys import generate_api_key, hash_api_key
+    from sessionfs.server.db.models import ApiKey
+
+    resp = await client.post(
+        "/api/v1/org", headers=team_headers, json={"name": "First", "slug": "taken-slug"}
+    )
+    assert resp.status_code == 200
+    other = User(
+        id=str(uuid.uuid4()), email="other-team@example.com", tier="team",
+        email_verified=True, created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(other)
+    raw = generate_api_key()
+    db_session.add(ApiKey(id=str(uuid.uuid4()), user_id=other.id, key_hash=hash_api_key(raw), name="t"))
+    await db_session.commit()
+    resp = await client.post(
+        "/api/v1/org",
+        headers={"Authorization": f"Bearer {raw}"},
+        json={"name": "Second", "slug": "taken-slug"},
+    )
+    assert resp.status_code == 409
+    assert "already taken" in resp.text
 
 
 @pytest.mark.asyncio

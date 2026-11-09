@@ -8,6 +8,7 @@ import { useOrgMembers } from '../org/useOrgMembers';
 import { errorMessage } from '../utils/errorMessage';
 import { summarizeFilter, summarizeRequirements, TARGET_LABEL } from './format';
 import { PolicyDialog } from './PolicyDialog';
+import { Term } from '../help/Term';
 
 /** Org → Governance: approval policies. Everyone reads; owners and admins manage. */
 export default function PoliciesSection({ orgId }: { orgId: string }) {
@@ -61,7 +62,7 @@ export default function PoliciesSection({ orgId }: { orgId: string }) {
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 id="approval-policies-heading" className="text-base font-semibold text-text-primary">
-              Approval policies
+              <Term id="approval-policy">Approval policies</Term>
             </h2>
             <p className="mt-1 max-w-2xl text-sm text-text-tertiary">
               Rules that hold a merge or a knowledge promotion until the right people sign off. Each decision is
@@ -128,12 +129,14 @@ export default function PoliciesSection({ orgId }: { orgId: string }) {
                     <td className="px-3 py-2 text-text-secondary">{TARGET_LABEL[p.target_kind] ?? p.target_kind}</td>
                     <td className="px-3 py-2 text-text-secondary">{summarizeRequirements(p.requirements, memberName)}</td>
                     <td className="px-3 py-2">
-                      <Badge
-                        variant={p.blocking ? 'warning' : 'default'}
-                        tint
-                        label={p.blocking ? 'Blocking' : 'Advisory'}
-                        size="sm"
-                      />
+                      <Term id="approval-policy">
+                        <Badge
+                          variant={p.blocking ? 'warning' : 'default'}
+                          tint
+                          label={p.blocking ? 'Blocking' : 'Advisory'}
+                          size="sm"
+                        />
+                      </Term>
                     </td>
                     <td className="px-3 py-2 text-text-secondary">v{p.version}</td>
                     {canManage && (

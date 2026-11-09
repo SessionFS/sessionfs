@@ -186,7 +186,8 @@ export default function PagesTab({
                   className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-surface-hover transition-colors"
                 >
                   <span className="shrink-0 text-base" title={page.auto_generated ? 'Auto-generated' : 'User-written'}>
-                    {page.auto_generated ? '\uD83D\uDCA1' : '\uD83D\uDCC4'}
+                    <span aria-hidden="true">{page.auto_generated ? '\uD83D\uDCA1' : '\uD83D\uDCC4'}</span>
+                    <span className="sr-only">{page.auto_generated ? 'Auto-generated page' : 'Page written by hand'}</span>
                   </span>
                   <div className="flex-1 min-w-0">
                     <span className="text-sm font-medium text-text-primary">

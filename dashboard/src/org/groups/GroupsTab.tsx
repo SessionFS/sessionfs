@@ -12,6 +12,7 @@ import {
 } from '../../utils/groups';
 import CreateGroupDialog from './CreateGroupDialog';
 import { useOrgGroups } from './useProjectGroups';
+import { Term } from '../../help/Term';
 
 interface GroupsTabProps {
   orgId: string;
@@ -41,7 +42,7 @@ export default function GroupsTab({ orgId, isOrgAdmin, tier }: GroupsTabProps) {
         <div className="flex flex-wrap items-start justify-between gap-3 mb-4">
           <div className="min-w-0 max-w-2xl">
             <h2 id="org-groups-heading" className="text-lg font-semibold text-text-primary">
-              Project groups
+              <Term id="project-group">Project groups</Term>
             </h2>
             <p className="mt-1 text-sm text-text-tertiary">
               Groups collect org projects and give chosen members read or edit access to them.

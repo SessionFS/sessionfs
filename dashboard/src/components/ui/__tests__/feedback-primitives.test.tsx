@@ -33,11 +33,35 @@ describe('Alert', () => {
 });
 
 describe('IconButton', () => {
-  it('exposes label as accessible name and title, defaults to type=button', () => {
+  it('exposes label as accessible name, defaults to type=button, no native title', () => {
     render(<IconButton label="Close"><svg /></IconButton>);
     const btn = screen.getByRole('button', { name: 'Close' });
-    expect(btn).toHaveAttribute('title', 'Close');
+    expect(btn).not.toHaveAttribute('title');
     expect(btn).toHaveAttribute('type', 'button');
+  });
+
+  it('shows its label as a tooltip on keyboard focus', async () => {
+    render(<IconButton label="Close"><svg /></IconButton>);
+    await userEvent.tab();
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Close');
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
+  });
+
+  it('explains why it is disabled and stays focusable', async () => {
+    const onClick = vi.fn();
+    render(
+      <IconButton label="Delete" disabled disabledReason="Only admins can delete" onClick={onClick}>
+        <svg />
+      </IconButton>,
+    );
+    const btn = screen.getByRole('button', { name: 'Delete' });
+    expect(btn).toHaveAttribute('aria-disabled', 'true');
+    expect(btn).not.toBeDisabled();
+    expect(btn).toHaveAccessibleDescription('Only admins can delete');
+    await userEvent.click(btn);
+    expect(onClick).not.toHaveBeenCalled();
   });
 
   it('fires onClick and respects variant/size', async () => {

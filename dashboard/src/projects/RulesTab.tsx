@@ -17,6 +17,7 @@ import { DebouncedTokenInput, type DebouncedTokenInputHandle } from './rules/Deb
 import { CompiledOutputsList } from './rules/CompiledOutputsList';
 import { ToolOutputViewer, VersionViewerModal } from './rules/OutputViewers';
 import { errorMessage } from '../utils/errorMessage';
+import { Term } from '../help/Term';
 
 export type { DebouncedTokenInputHandle };
 
@@ -213,7 +214,7 @@ export default function RulesTab({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <h2 className="text-base font-semibold text-text-primary">
-              Project Rules
+              Project <Term id="rules">Rules</Term>
             </h2>
             <VersionBadge version={rules.version} />
           </div>
@@ -221,6 +222,11 @@ export default function RulesTab({
             Canonical rules for this project. Compile to generate tool-specific files. Updated{' '}
             <RelativeDate iso={rules.updated_at} />.
           </p>
+          {!canEdit && (
+            <p className="text-xs text-text-tertiary mt-1" data-testid="rules-readonly">
+              Read only. Changing rules needs edit access to this project.
+            </p>
+          )}
         </div>
         {canEdit && (
           <Button

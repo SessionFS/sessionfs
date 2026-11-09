@@ -9,6 +9,12 @@
  *   - hex colour literals (#abc, #aabbcc, #aabbccdd)
  *   - Tailwind default-palette utilities (text-red-500, bg-blue-600, ...)
  *
+ * It also fails when any .ts/.tsx/.css file mixes two colours in oklch
+ * (`color-mix(in oklch, var(--danger) 10%, var(--surface))`). Our light
+ * neutrals sit at oklch hue 0, so an oklch mix of a semantic colour with a
+ * neutral swings the hue toward pink. Mix in srgb instead. Fading one colour
+ * into `transparent` is fine in either space and is not flagged.
+ *
  * Plain Node, no dependencies. Run: npm run check:palette
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -55,6 +61,38 @@ const RULES = [
   },
 ];
 
+// Applies to .css as well as .ts/.tsx; the rules above are .ts/.tsx only
+// (index.css is where the token literals live).
+const MIX_RULE = {
+  id: 'oklch-mix',
+  re: /color-mix\(\s*in[\s_]+oklch\b/g,
+  hint: 'mix in srgb: an oklch mix with a hue-0 neutral turns pink',
+  /** Only a mix of two colours counts; a fade to transparent is fine. */
+  keep(line, index) {
+    let depth = 0;
+    let end = index;
+    for (; end < line.length; end++) {
+      if (line[end] === '(') depth++;
+      else if (line[end] === ')' && --depth === 0) break;
+    }
+    const inner = line.slice(line.indexOf('(', index) + 1, end);
+    const parts = [];
+    let level = 0;
+    let start = 0;
+    for (let i = 0; i < inner.length; i++) {
+      if (inner[i] === '(') level++;
+      else if (inner[i] === ')') level--;
+      else if (inner[i] === ',' && level === 0) {
+        parts.push(inner.slice(start, i));
+        start = i + 1;
+      }
+    }
+    parts.push(inner.slice(start));
+    const last = (parts[parts.length - 1] ?? '').replace(/_/g, ' ').trim();
+    return !/^transparent\b/.test(last);
+  },
+};
+
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
@@ -62,7 +100,7 @@ function walk(dir, out = []) {
     if (st.isDirectory()) {
       if (name === '__tests__' || name === 'node_modules') continue;
       walk(p, out);
-    } else if (/\.(ts|tsx)$/.test(name) && !/\.(test|spec)\.(ts|tsx)$/.test(name) && !name.endsWith('.d.ts')) {
+    } else if (/\.(ts|tsx|css)$/.test(name) && !/\.(test|spec)\.(ts|tsx)$/.test(name) && !name.endsWith('.d.ts')) {
       out.push(p);
     }
   }
@@ -82,10 +120,12 @@ const hits = [];
 for (const abs of walk(SRC)) {
   const file = relative(ROOT, abs).split(sep).join('/');
   const lines = stripComments(readFileSync(abs, 'utf8')).split('\n');
+  const rules = file.endsWith('.css') ? [MIX_RULE] : [...RULES, MIX_RULE];
   lines.forEach((line, i) => {
-    for (const rule of RULES) {
+    for (const rule of rules) {
       if (allowed(file, rule.id)) continue;
       for (const m of line.matchAll(rule.re)) {
+        if (rule.keep && !rule.keep(line, m.index)) continue;
         hits.push({ file, line: i + 1, rule: rule.id, text: m[0], hint: rule.hint });
       }
     }

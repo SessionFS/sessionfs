@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, type ReactNode } from 'react';
+import { useState, useEffect, useCallback, useMemo, type ReactNode } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   useProject,
@@ -19,6 +19,7 @@ import RelativeDate from '../components/RelativeDate';
 import RulesTab from './RulesTab';
 import PersonasTab from './PersonasTab';
 import TicketsTab from './TicketsTab';
+import { LIST_PARAM_KEYS, parseListParams, writeListParams, type ListParams } from './tickets/views';
 import type { TicketJiraSurface } from './tickets/constants';
 import AgentRunsTab from './AgentRunsTab';
 import MeetingsTab from '../meetings/MeetingsTab';
@@ -34,7 +35,7 @@ import { TemplatesPanel } from './workflows/TemplatesPanel';
 import EvalsTab from './evals/EvalsTab';
 import ArtifactsTab from './evals/ArtifactsTab';
 import { displayTier } from '../utils/tier';
-import { Card, Button, Textarea, Dialog, DialogHeader, DialogFooter, Tabs, TabPanel, Alert } from '../components/ui';
+import { Card, Button, Textarea, Dialog, DialogHeader, DialogFooter, TabPanel, Alert } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
 import { ApiError } from '../api/client';
 import { useHelper } from '../helper/HelperProvider';
@@ -209,6 +210,7 @@ export default function ProjectDetail() {
       params.delete('sub');
       params.delete('story');
       params.delete('run');
+      for (const k of LIST_PARAM_KEYS) params.delete(k);
       for (const k of EVAL_PARAMS) params.delete(k);
       return params;
     });
@@ -245,29 +247,28 @@ export default function ProjectDetail() {
       params.set('sub', next);
       params.delete('story');
       params.delete('run');
+      for (const k of LIST_PARAM_KEYS) params.delete(k);
       for (const k of EVAL_PARAMS) params.delete(k);
       return params;
     }, { replace: true });
   }, [setSearchParams]);
 
-  // Tickets "Assigned to me" filter lives in the URL (?assignee=me) so a
-  // refresh or a shared link keeps it; toggling replaces the entry.
-  const setAssignedToMe = useCallback((on: boolean) => {
-    setSearchParams((prev) => {
-      const params = new URLSearchParams(prev);
-      if (on) params.set('assignee', 'me');
-      else params.delete('assignee');
-      return params;
-    }, { replace: true });
+  // Tickets list state (view, group, sort, search, quick filters) lives in
+  // the URL so a refresh or a shared link keeps it; changes replace the entry.
+  const ticketParams = useMemo(() => parseListParams((k) => searchParams.get(k)), [searchParams]);
+  const setTicketParams = useCallback((next: ListParams) => {
+    setSearchParams((prev) => writeListParams(new URLSearchParams(prev), next), { replace: true });
   }, [setSearchParams]);
-
-  // Same for the "Overdue" filter (?due=overdue).
-  const setOverdueFilter = useCallback((on: boolean) => {
+  // The open ticket and its pane tab (?ticket=&ticket_tab=), mirrored from
+  // the Tickets tab so a refresh or a copied link reopens the same view.
+  const setOpenTicket = useCallback((ticketId: string | null, tab: string | null) => {
     setSearchParams((prev) => {
-      const params = new URLSearchParams(prev);
-      if (on) params.set('due', 'overdue');
-      else params.delete('due');
-      return params;
+      const next = new URLSearchParams(prev);
+      if (ticketId) next.set('ticket', ticketId);
+      else next.delete('ticket');
+      if (ticketId && tab) next.set('ticket_tab', tab);
+      else next.delete('ticket_tab');
+      return next;
     }, { replace: true });
   }, [setSearchParams]);
 
@@ -432,59 +433,22 @@ export default function ProjectDetail() {
       : undefined;
 
   return (
-    <div className="max-w-6xl w-full mx-auto px-4 py-6">
-      {/* Back link + helper action */}
-      <div className="flex items-center justify-between mb-4">
-        <Button variant="ghost" onClick={() => navigate('/projects')}>
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="15 18 9 12 15 6" />
-          </svg>
-          Back to Projects
-        </Button>
-        {openHelper && (
-          <Button variant="secondary" size="sm" onClick={() => openHelper({ project_id: project.id, label: project.name })}>
-            Ask the helper
-          </Button>
-        )}
-      </div>
-
+    <div className="max-w-6xl w-full mx-auto px-4 py-4">
       <ProjectHeader
         project={project}
-        activeTab={section}
-        badgeTab="knowledge"
-        tabs={SECTIONS}
-        onTabChange={switchSection}
+        sections={SECTIONS}
+        activeSection={section}
+        onSectionChange={switchSection}
+        subTabs={subTabs}
+        activeSub={sub}
+        onSubChange={switchSub}
+        badgeSection="knowledge"
+        badgeSub="entries"
         pendingCount={pendingCount}
         compilePending={compile.isPending}
         onCompile={handleCompileFromContext}
+        onAskHelper={openHelper ? () => openHelper({ project_id: project.id, label: project.name }) : undefined}
       />
-
-      <TabPanel idPrefix="project-section" tabKey={section}>
-      {subTabs && (
-        <div className="mt-4">
-          <Tabs
-            bare
-            variant="subtle"
-            idPrefix="project-sub"
-            aria-label="Section views"
-            activeKey={sub ?? subTabs[0].key}
-            onChange={switchSub}
-            tabs={subTabs.map((t) => ({
-              key: t.key,
-              label: (
-                <span className="inline-flex items-center gap-1.5">
-                  {t.label}
-                  {section === 'knowledge' && t.key === 'entries' && pendingCount > 0 && (
-                    <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-2xs font-semibold bg-brand text-white leading-none">
-                      {pendingCount > 99 ? '99+' : pendingCount}
-                    </span>
-                  )}
-                </span>
-              ),
-            }))}
-          />
-        </div>
-      )}
 
       {section === 'context' && (
         <div className="mt-4">
@@ -612,11 +576,11 @@ export default function ProjectDetail() {
             projectId={project.id}
             jira={jira}
             initialTicketId={searchParams.get('ticket')}
+            initialTicketTab={searchParams.get('ticket_tab')}
+            onOpenTicketChange={setOpenTicket}
             viewer={{ canEdit, userId: me?.user_id ?? null, isProjectAdmin }}
-            assignedToMe={searchParams.get('assignee') === 'me'}
-            onAssignedToMeChange={setAssignedToMe}
-            overdue={searchParams.get('due') === 'overdue'}
-            onOverdueChange={setOverdueFilter}
+            params={ticketParams}
+            onParamsChange={setTicketParams}
           />
         </Panel>
       )}
@@ -686,8 +650,6 @@ export default function ProjectDetail() {
           <ProjectSettings project={project} onRequestDelete={() => setShowDeleteConfirm(true)} />
         </div>
       )}
-
-      </TabPanel>
 
       {/* Confluence publish dialog for the compiled context document. */}
       {publishConfluenceOpen && project.id && (

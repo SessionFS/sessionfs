@@ -9,9 +9,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from sessionfs import __version__
+from sessionfs.server.api_contract import (
+    CONTRACT_EXPOSE_HEADERS,
+    install_ignored_fields_reporting,
+)
 from sessionfs.server.config import ServerConfig
 from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
+from sessionfs.server.idempotency import IdempotencyMiddleware
 from sessionfs.server.middleware import MetricsMiddleware, RequestLoggingMiddleware
 from sessionfs.server.routes import activation, admin, approvals, admin_licenses, agent_feedback, agent_runs, api_keys, artifacts, attention, audit, auth, auth_sso, billing, bookmarks, confluence, contacts, delivery_webhooks, dlp, handoffs, health, helm, helper, helper_settings, jira, knowledge, llm_providers, loop_checklist, loop_needs_you, loop_share_links, loop_workers, loops, marketplace, marketplace_disclosure, marketplace_discovery, marketplace_moderation, marketplace_publishers, marketplace_scanning, me, meeting_actions, meetings, merge_checks, metrics, native_catalogs, org, org_llm_settings, org_members, personas, project_groups, project_transfers, projects, releases, reminders, residents, retrieval_audit, review_loop, rules, sessions, settings, skill_policy, spend, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, uploads, webhooks, wiki, work_queues, workflows, evals
 from sessionfs.server.storage.local import LocalBlobStore
@@ -56,6 +61,26 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     from sessionfs.server.llm_url_guard import guard_llm_base_url
 
     set_base_url_guard(guard_llm_base_url)
+
+    # Per-tenant metric labels are a process-wide switch (default off).
+    from sessionfs.server.metrics import set_tenant_labels
+
+    set_tenant_labels(config.metrics_tenant_labels)
+
+    # Per-org concurrency caps and the heavy-read statement timeout are
+    # process-wide settings read by the routes.
+    from sessionfs.server.db.timeouts import configure_heavy_read_timeout
+    from sessionfs.server.services.org_concurrency import configure_limits
+
+    configure_limits(
+        {
+            "extraction": config.org_concurrency_extraction,
+            "helper": config.org_concurrency_helper,
+            "compile": config.org_concurrency_compile,
+            "export": config.org_concurrency_export,
+        }
+    )
+    configure_heavy_read_timeout(config.heavy_read_timeout_ms)
 
     # Marketplace trusted publishing: resolve environment + OIDC audience ONCE
     # (refusing to start outside development on a generic audience, whatever
@@ -137,6 +162,10 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     )
     app.state.trusted_publishing = trusted_publishing
 
+    # Idempotency-Key on POST routes (tk_bd80efd511da4a2b). Added first so it
+    # is the innermost user middleware: CORS wraps replays and refusals too.
+    app.add_middleware(IdempotencyMiddleware)
+
     # M4: CORS — only add middleware when explicitly configured (default is empty)
     if config.cors_origins:
         app.add_middleware(
@@ -159,7 +188,9 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             # GitHub #103: the unpaged Jira projects list reports a cut-off
             # list through X-Jira-Projects-Truncated; expose it so a
             # cross-origin caller can read it like a same-origin one.
-            expose_headers=["ETag", "X-Jira-Projects-Truncated", "X-Truncated"],
+            # tk_3855ef8b11f94ee2: the API-contract headers (ignored request
+            # fields, deprecation/sunset notices) are readable cross-origin too.
+            expose_headers=["ETag", "X-Jira-Projects-Truncated", "X-Truncated", *CONTRACT_EXPOSE_HEADERS],
             max_age=3600,
         )
 
@@ -179,7 +210,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(sessions.router)
     app.include_router(uploads.router)
     # v0.14.0 — public share view at /api/v1/share/{token}/view
-    app.include_router(sessions.share_view_router, prefix="/api/v1")
+    app.include_router(sessions.share_view_router)
     app.include_router(handoffs.router)
     app.include_router(teams.router)
     # v0.10.10 — scoped service keys (org-scoped admin) + personal user keys
@@ -254,7 +285,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(loop_needs_you.router)
     app.include_router(attention.router)
     app.include_router(loop_share_links.router)
-    app.include_router(loop_share_links.share_router, prefix="/api/v1")
+    app.include_router(loop_share_links.share_router)
     # Meetings' project subpath must precede projects' catch-all
     # `/{git_remote_normalized:path}` (same precedence trick as rules/transfers).
     app.include_router(meetings.project_router)
@@ -302,6 +333,10 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(admin_licenses.router)
     app.include_router(telemetry.router)
     app.include_router(dlp.router)
+
+    # tk_3855ef8b11f94ee2: report request-body fields an existing (lenient)
+    # route dropped, in the X-SessionFS-Ignored-Fields response header.
+    install_ignored_fields_reporting(app)
 
     # Serve dashboard static files if the dist directory exists.
     # The dashboard is a React SPA — all non-API routes serve index.html.

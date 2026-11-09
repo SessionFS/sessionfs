@@ -16,6 +16,7 @@ import { Card } from '../components/ui/Card';
 import Skeleton from '../components/Skeleton';
 import { Dropdown } from '../components/ui/Dropdown';
 import { errorMessage } from '../utils/errorMessage';
+import { Term } from '../help/Term';
 
 interface Props {
   sessionId: string;
@@ -94,7 +95,9 @@ export default function AuditTab({ sessionId, messageCount, sessionTitle, onJump
         <svg className="w-10 h-10 text-text-tertiary mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
           <path d="M9 12l2 2 4-4m6 2a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
         </svg>
-        <p className="text-md font-semibold text-text-primary mb-1">No audit yet</p>
+        <p className="text-md font-semibold text-text-primary mb-1">
+          No <Term id="llm-judge">audit</Term> yet
+        </p>
         <p className="text-sm text-text-tertiary mb-4">
           Auditing evaluates factual claims in the conversation against tool output evidence.
         </p>

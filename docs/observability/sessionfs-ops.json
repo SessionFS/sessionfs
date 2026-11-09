@@ -314,6 +314,797 @@
       ],
       "title": "DB pool saturation",
       "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 43 },
+      "id": 103,
+      "panels": [],
+      "title": "Sweeps",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 44 },
+      "id": 12,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "sum by (sweep, result) (increase(sessionfs_sweep_runs_total[1h]))",
+          "legendFormat": "{{sweep}} {{result}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Sweep runs by result (1h)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 44 },
+      "id": 13,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "sum by (sweep, reason) (increase(sessionfs_sweep_denied_total[1h]))",
+          "legendFormat": "{{sweep}} {{reason}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Sweep refusals by reason (1h)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 52 },
+      "id": 14,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "max by (sweep) (sessionfs_sweep_lag_seconds)",
+          "legendFormat": "{{sweep}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Sweep lag (oldest due item)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 52 },
+      "id": 15,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, sweep) (rate(sessionfs_sweep_duration_seconds_bucket[1h])))",
+          "legendFormat": "{{sweep}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Sweep p95 duration",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 60 },
+      "id": 104,
+      "panels": [],
+      "title": "Integrations",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 61 },
+      "id": 16,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "sum by (direction, result) (rate(sessionfs_jira_sync_total[5m]))",
+          "legendFormat": "{{direction}} {{result}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Jira sync by direction and result",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 61 },
+      "id": 17,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, direction) (rate(sessionfs_jira_sync_lag_seconds_bucket[15m])))",
+          "legendFormat": "{{direction}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Jira sync p95 lag",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 69 },
+      "id": 18,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "sum by (result) (rate(sessionfs_confluence_publish_total[5m]))",
+          "legendFormat": "{{result}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Confluence publishes by result",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 69 },
+      "id": 19,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "sum by (source, result) (rate(sessionfs_webhook_ingest_total[5m]))",
+          "legendFormat": "{{source}} {{result}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Webhook ingest by source and result",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 77 },
+      "id": 105,
+      "panels": [],
+      "title": "Agents & review",
+      "type": "row"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 78 },
+      "id": 20,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "sum by (model_family) (rate(sessionfs_agent_tokens_total[5m]))",
+          "legendFormat": "{{model_family}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Agent tokens by model family",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 78 },
+      "id": 21,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "sum by (status, role) (rate(sessionfs_agent_runs_total[5m]))",
+          "legendFormat": "{{status}} {{role}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Agent runs by status and role",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 86 },
+      "id": 22,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "max by (status) (sessionfs_approval_requests)",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Approval requests by state",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 86 },
+      "id": 23,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, decision) (rate(sessionfs_approval_decision_seconds_bucket[1d])))",
+          "legendFormat": "p50 {{decision}}",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, decision) (rate(sessionfs_approval_decision_seconds_bucket[1d])))",
+          "legendFormat": "p95 {{decision}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Approval time to decision (p50 / p95)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 86 },
+      "id": 24,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "max by (status) (sessionfs_review_loop_items)",
+          "legendFormat": "{{status}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Review-loop items by status",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "palette-classic" },
+          "custom": { "lineWidth": 1, "fillOpacity": 10, "showPoints": "never" }
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 94 },
+      "id": 32,
+      "options": { "legend": { "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "expr": "sum by (route_class) (increase(sessionfs_org_concurrency_rejected_total[$__rate_interval]))",
+          "legendFormat": "{{route_class}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Org concurrency limit refusals",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 102
+      },
+      "id": 106,
+      "panels": [],
+      "title": "SLOs (28 days)",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Share of good events over the last 28 days. See https://sessionfs.dev/slos/.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 0,
+        "y": 103
+      },
+      "id": 25,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(http_request_duration_seconds_bucket{method=\"POST\",route=\"/api/v1/projects/{project_id}/tickets/{ticket_id}/comments\",status_class=\"2xx\",le=\"0.5\"}[28d])) / sum(rate(http_request_duration_seconds_count{method=\"POST\",route=\"/api/v1/projects/{project_id}/tickets/{ticket_id}/comments\",status_class=\"2xx\"}[28d]))",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "title": "Ticket comment writes ≤ 500 ms (target 95%)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Share of good events over the last 28 days. See https://sessionfs.dev/slos/.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 6,
+        "y": 103
+      },
+      "id": 26,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(http_request_duration_seconds_bucket{method=\"PUT\",route=\"/api/v1/sessions/{session_id}/sync\",status_class=\"2xx\",le=\"5.0\"}[28d])) / sum(rate(http_request_duration_seconds_count{method=\"PUT\",route=\"/api/v1/sessions/{session_id}/sync\",status_class=\"2xx\"}[28d]))",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "title": "Session pushes ≤ 5 s (target 95%)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Share of good events over the last 28 days. See https://sessionfs.dev/slos/.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0.95
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 12,
+        "y": 103
+      },
+      "id": 27,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(sessionfs_extraction_server_seconds_bucket{le=\"1.0\"}[28d])) / sum(rate(sessionfs_extraction_server_seconds_count[28d]))",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "title": "Extraction server time ≤ 1 s (target 95%)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Share of good events over the last 28 days. See https://sessionfs.dev/slos/.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 2,
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 0.99
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 6,
+        "x": 18,
+        "y": 103
+      },
+      "id": 28,
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "avg_over_time((((max(sessionfs_sweep_lag_seconds{sweep=\"reminders-due\"}) <= bool 900) or vector(1)) * ((sum(increase(sessionfs_sweep_runs_total{sweep=\"reminders-due\",result=\"ok\"}[15m])) > bool 0) or vector(0)))[28d:5m])",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "title": "Reminder delivery on time (target 99%)",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "description": "Share of the 28-day error budget left: (SLI - target) / (1 - target). Below 0 = objective missed.",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "decimals": 0,
+          "min": -1,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 0
+              },
+              {
+                "color": "green",
+                "value": 0.25
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 108
+      },
+      "id": 29,
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "basic",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "expr": "(sum(rate(http_request_duration_seconds_bucket{method=\"POST\",route=\"/api/v1/projects/{project_id}/tickets/{ticket_id}/comments\",status_class=\"2xx\",le=\"0.5\"}[28d])) / sum(rate(http_request_duration_seconds_count{method=\"POST\",route=\"/api/v1/projects/{project_id}/tickets/{ticket_id}/comments\",status_class=\"2xx\"}[28d])) - 0.95) / (1 - 0.95)",
+          "legendFormat": "Ticket comments",
+          "refId": "A",
+          "instant": true
+        },
+        {
+          "expr": "(sum(rate(http_request_duration_seconds_bucket{method=\"PUT\",route=\"/api/v1/sessions/{session_id}/sync\",status_class=\"2xx\",le=\"5.0\"}[28d])) / sum(rate(http_request_duration_seconds_count{method=\"PUT\",route=\"/api/v1/sessions/{session_id}/sync\",status_class=\"2xx\"}[28d])) - 0.95) / (1 - 0.95)",
+          "legendFormat": "Session pushes",
+          "refId": "B",
+          "instant": true
+        },
+        {
+          "expr": "(sum(rate(sessionfs_extraction_server_seconds_bucket{le=\"1.0\"}[28d])) / sum(rate(sessionfs_extraction_server_seconds_count[28d])) - 0.95) / (1 - 0.95)",
+          "legendFormat": "Extraction",
+          "refId": "C",
+          "instant": true
+        },
+        {
+          "expr": "(avg_over_time((((max(sessionfs_sweep_lag_seconds{sweep=\"reminders-due\"}) <= bool 900) or vector(1)) * ((sum(increase(sessionfs_sweep_runs_total{sweep=\"reminders-due\",result=\"ok\"}[15m])) > bool 0) or vector(0)))[28d:5m]) - 0.99) / (1 - 0.99)",
+          "legendFormat": "Reminders",
+          "refId": "D",
+          "instant": true
+        }
+      ],
+      "title": "Error budget remaining (28 days)",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 108
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{method=\"POST\",route=\"/api/v1/projects/{project_id}/tickets/{ticket_id}/comments\",status_class=\"2xx\"}[5m])))",
+          "legendFormat": "ticket comment (≤ 0.5 s)",
+          "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(http_request_duration_seconds_bucket{method=\"PUT\",route=\"/api/v1/sessions/{session_id}/sync\",status_class=\"2xx\"}[5m])))",
+          "legendFormat": "session push (≤ 5 s)",
+          "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(sessionfs_extraction_server_seconds_bucket[5m])))",
+          "legendFormat": "extraction server time (≤ 1 s)",
+          "refId": "C"
+        }
+      ],
+      "title": "SLO p95 latency (5m)",
+      "type": "timeseries",
+      "id": 30
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 108
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "expr": "max(sessionfs_sweep_lag_seconds{sweep=\"reminders-due\"}) / 60",
+          "legendFormat": "oldest due (target ≤ 15)",
+          "refId": "A"
+        },
+        {
+          "expr": "(((max(sessionfs_sweep_lag_seconds{sweep=\"reminders-due\"}) <= bool 900) or vector(1)) * ((sum(increase(sessionfs_sweep_runs_total{sweep=\"reminders-due\",result=\"ok\"}[15m])) > bool 0) or vector(0))) * 15",
+          "legendFormat": "on time (15) / late (0)",
+          "refId": "B"
+        }
+      ],
+      "title": "Reminder delivery (oldest due reminder, minutes)",
+      "type": "timeseries",
+      "id": 31
     }
   ],
   "refresh": "30s",
@@ -340,6 +1131,6 @@
   "timezone": "browser",
   "title": "SessionFS Ops",
   "uid": "sessionfs-ops",
-  "version": 1,
+  "version": 3,
   "weekStart": ""
 }

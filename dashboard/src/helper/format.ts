@@ -9,6 +9,7 @@ import {
   type HelperCitation,
   type HelperCitationRef,
   type HelperDocCitation,
+  type HelperGrounding,
   type HelperMeetingCitation,
   type HelperTicketCitation,
   type HelperWikiCitation,
@@ -161,6 +162,8 @@ export interface Turn {
   actions?: TurnAction[];
   /** Assistant only: tokens this answer used (the `done` event / stored row). */
   usage?: TokenUsage;
+  /** Assistant only: the per-sentence evidence map (the `grounding` event / stored row). */
+  grounding?: HelperGrounding | null;
 }
 
 // ── Token usage ──

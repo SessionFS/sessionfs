@@ -1151,6 +1151,7 @@ sfs project group add SLUG PROJECT_ID... [--org ORG_ID]
 sfs project group remove SLUG PROJECT_ID [--org ORG_ID]
 sfs project group members SLUG [--org ORG_ID] [--json]
 sfs project group grant SLUG EMAIL_OR_USER_ID --role reader|editor|admin [--org ORG_ID]
+sfs project group grant SLUG --file FILE [--role ROLE] [--org ORG_ID]   # one email-or-id (or email-or-id,role) per line, up to 100, all or nothing
 sfs project group revoke SLUG EMAIL_OR_USER_ID [--org ORG_ID]
 sfs project group access [--json]
 sfs project group search SLUG [QUERY] [--entry-type TYPE] [--limit N] [--org ORG_ID] [--json]
@@ -1681,19 +1682,22 @@ Organization created: Acme Corp (acme-corp)
 
 ### `sfs org invite`
 
-Invite a user to your organization (admin only). Invite expires in 7 days.
+Invite a user to your organization (admin only). Invite expires in 7 days. When the server has no email provider, the command prints the accept link to share instead of saying an email was sent.
 
 ```
 sfs org invite EMAIL [OPTIONS]
+sfs org invite --file FILE [OPTIONS]
 ```
 
 | Argument | Required | Description |
 |----------|----------|-------------|
-| `EMAIL` | yes | Email address of the user to invite |
+| `EMAIL` | unless `--file` | Email address of the user to invite |
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--role` | string | `member` | Role to assign: `member` or `admin` |
+| `--file`, `-f` | path | — | Invite everyone in a file: one email (or `email,role`) per line, up to 100. All or nothing: if any line fails, nobody is invited and each failure is listed |
+| `--org` | string | your organization | Org id to invite into |
 
 **Example:**
 
@@ -1703,6 +1707,34 @@ $ sfs org invite alice@example.com --role admin
 Invitation sent to alice@example.com (role: admin).
   Expires: 2026-04-06
 ```
+
+### `sfs org list`
+
+List every organization you belong to. `*` marks your default organization, which commands use when you don't name one (change it with `sfs config default-org`).
+
+```bash
+$ sfs org list
+```
+
+### `sfs org invites`
+
+List the pending invites addressed to your email address.
+
+```bash
+$ sfs org invites
+```
+
+### `sfs org accept`
+
+Accept an invite addressed to your email. You can belong to more than one organization; accepting doesn't change your default organization unless you have none.
+
+```
+sfs org accept INVITE_ID
+```
+
+| Argument | Required | Description |
+|----------|----------|-------------|
+| `INVITE_ID` | yes | Invite id from `sfs org invites` |
 
 ### `sfs org members`
 
@@ -3295,7 +3327,7 @@ Model and dataset lineage: register versions of datasets, models, feature sets, 
 | `sfs artifact register --kind K --name N --version V --uri URI [--digest D] [--description T] [--schema FILE] [--tag k=v]... [--produced-by RUN] [--output-id]` | Register one version. Schemes: `s3 gs mlflow models runs hf https vertex`; pre-signed URLs and user names are refused |
 | `sfs artifact list [--kind K] [--name N] [--stage S] [--tag k[=v]] [--json]` | Newest first |
 | `sfs artifact show ID [--json]` | One version with tags and edge counts |
-| `sfs artifact link PARENT CHILD --relation R [--context-ref REF]` | `derived_from`, `trained_on`, `fine_tuned_from`, `evaluated_against` or `uses`; cycles are refused |
+| `sfs artifact link PARENT CHILD --relation R [--context-ref REF]` | `derived_from`, `trained_on`, `fine_tuned_from`, `distilled_from`, `evaluated_against` or `uses`; cycles are refused |
 | `sfs artifact lineage ID [--direction up\|down\|both] [--depth N] [--json]` | Trace lineage (depth ≤ 25, ≤ 500 nodes) |
 | `sfs artifact tag ID k=v... [--remove k]` | Set and remove tags (≤ 32) |
 | `sfs artifact deprecate ID` | Keep the version but never promote it again |
@@ -3344,7 +3376,7 @@ Store meeting transcripts for a project or a project group, extract action items
 | `sfs meeting delete <id> [--yes]` | Delete a meeting |
 | `sfs meeting extract <id>` | Extract participants, action items and decisions with your own LLM key |
 | `sfs meeting participants <id>` | Participants and how each was resolved |
-| `sfs meeting resolve-participant <id> <participant_id> --user USER_ID \| --persona NAME \| --contact CONTACT_ID` | Resolve a participant manually (a contact must be an active contact of the meeting's org) |
+| `sfs meeting resolve-participant <id> <participant_id> --user USER_ID \| --persona NAME \| --contact CONTACT_ID` | Resolve a participant manually (a contact must be an active contact of the meeting's org). `--file FILE` resolves many at once: up to 100 lines, all or nothing |
 | `sfs meeting action-items <id>` | Action items and decisions |
 | `sfs meeting promote <id> <item_id> [--title T] [--assignee PERSONA \| --user USER_ID] [--due DATE] [--priority P] [--target-project ID] [--jira] [--yes]` | Show the ticket draft and ask before creating it; a group meeting needs `--target-project` |
 | `sfs meeting dismiss <id> <item_id>` / `restore <id> <item_id>` | Dismiss or restore a pending item |

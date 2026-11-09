@@ -128,6 +128,15 @@ function HeldUpdateRow({ orgId, item, onStale }: { orgId: string; item: HeldUpda
           size="sm"
           onClick={() => void submit()}
           disabled={!ready || (needsAck && !acknowledged) || !item.diff || !item.update_digest}
+          disabledReason={
+            !item.diff || !item.update_digest
+              ? 'The server has not computed the difference for this update yet'
+              : !ready
+                ? 'Loading what this update changes'
+                : needsAck && !acknowledged
+                  ? 'Tick the box above to confirm you reviewed the change'
+                  : undefined
+          }
           loading={advance.isPending}
         >
           Advance

@@ -707,6 +707,7 @@ export function TemplateEditorDialog({
                 variant="secondary"
                 onClick={addSection}
                 disabled={sections.length >= TEMPLATE_MAX_SECTIONS}
+                disabledReason={`A template can have at most ${TEMPLATE_MAX_SECTIONS} sections`}
               >
                 Add section
               </Button>
@@ -758,6 +759,7 @@ export function TemplateEditorDialog({
                       variant="danger"
                       onClick={() => removeSection(s.id)}
                       disabled={sections.length <= 1}
+                      disabledReason="A template needs at least one section"
                     >
                       <CloseIcon />
                     </IconButton>

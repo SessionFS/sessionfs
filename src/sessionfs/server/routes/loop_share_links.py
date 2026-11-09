@@ -52,7 +52,7 @@ from sessionfs.server.tier_gate import UserContext, check_project_feature, get_u
 
 router = APIRouter(prefix="/api/v1/projects", tags=["loop-share-links"])
 logger = logging.getLogger("sessionfs.api")
-share_router = APIRouter()
+share_router = APIRouter(prefix="/api/v1")
 
 _MAX_EXPIRES_DAYS = 90
 _DEFAULT_EXPIRES_DAYS = 30

@@ -3,6 +3,7 @@ import { Card, Button, Badge } from '../components/ui';
 import type { RepresentedPersona } from '../api/client';
 import { displayTier } from '../utils/tier';
 import YourGroupsCard from './YourGroupsCard';
+import { Term } from '../help/Term';
 
 export default function AccountSection({ profile, logout }: { profile: any; logout: () => void }) {
   return (
@@ -29,7 +30,9 @@ export default function AccountSection({ profile, logout }: { profile: any; logo
       {/* GitHub #92 — the org personas that represent this user */}
       {profile?.represented_personas?.length > 0 && (
         <Card level="elevated" className="p-5">
-          <h2 className="text-lg font-semibold text-text-primary mb-3">Represented personas</h2>
+          <h2 className="text-lg font-semibold text-text-primary mb-3">
+            <Term id="represents">Represented</Term> personas
+          </h2>
           <p className="text-sm text-text-tertiary mb-3">
             You represent these org personas. Edit them on the organization page.
           </p>

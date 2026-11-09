@@ -8,7 +8,16 @@ the official docs without the site.  This module is only needed at build time;
 the server reads the committed JSON through :mod:`sessionfs.server.helper.docs`
 and never touches ``site/``.
 
-Each page records its slug, frontmatter title and URL; the page body is split
+Each page records its slug, frontmatter title and URL, and — when the page's
+frontmatter has an ``availability`` block — which plan feature it describes
+and where it runs::
+
+    availability:
+      feature: session_helper   # a feature key from tiers.py, or "all"
+      deployment: both          # cloud | self-hosted | both
+
+The helper's docs tools turn that into an "Availability: …" line computed
+from the caller's plan and this server's deployment.  The page body is split
 into sections at ``##`` / ``###`` headings, each with a GitHub-style anchor
 (duplicate headings on a page get ``-1``, ``-2`` … like github-slugger and
 Starlight), a plain-text body (frontmatter, import/export lines, HTML comments,
@@ -28,6 +37,9 @@ import html
 import json
 import re
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 OUT_PATH = Path(__file__).with_name("docs_index.json")
 _DOCS_SUBDIR = Path("site") / "src" / "content" / "docs"
@@ -38,6 +50,9 @@ SECTION_CAP = 6000
 # Frontmatter block: ``---`` ... ``---``.
 _FRONTMATTER_RE = re.compile(r"\A---[ \t]*\n(.*?)\n---[ \t]*\n?", re.DOTALL)
 _TITLE_RE = re.compile(r"(?m)^title:[ \t]*(.+?)[ \t]*$")
+# The ``availability:`` key and its indented lines.
+_AVAILABILITY_RE = re.compile(r"(?m)^availability:[ \t]*\n((?:[ \t]+.*\n?)+)")
+DEPLOYMENTS = ("cloud", "self-hosted", "both")
 
 # HTML comments (single- or multi-line).
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
@@ -134,6 +149,41 @@ def _strip_frontmatter(raw: str) -> tuple[str, str]:
         if title_match:
             title = _unquote(title_match.group(1))
     return body, title
+
+
+def parse_availability(raw: str, *, source: str = "") -> dict[str, Any] | None:
+    """The page's ``availability`` frontmatter block, validated, or ``None``.
+
+    ``feature`` must be a feature key some plan in ``tiers.py`` includes (or
+    ``all``); ``deployment`` must be cloud, self-hosted or both.  A bad tag
+    fails the build rather than shipping a wrong availability line.
+    """
+    from sessionfs.server.tiers import TIER_FEATURES
+
+    match = _FRONTMATTER_RE.match(raw)
+    if not match:
+        return None
+    block = _AVAILABILITY_RE.search(match.group(1) + "\n")
+    if not block:
+        return None
+    data = yaml.safe_load(block.group(1))
+    if not isinstance(data, dict):
+        raise ValueError(f"{source}: availability must be a mapping")
+    unknown = set(data) - {"feature", "deployment"}
+    if unknown:
+        raise ValueError(f"{source}: unknown availability keys {sorted(unknown)}")
+    out: dict[str, Any] = {}
+    feature = data.get("feature")
+    if feature is not None:
+        known = set().union(*(t["features"] for t in TIER_FEATURES.values()))
+        if feature != "all" and feature not in known:
+            raise ValueError(f"{source}: unknown availability feature {feature!r}")
+        out["feature"] = feature
+    deployment = data.get("deployment", "both")
+    if deployment not in DEPLOYMENTS:
+        raise ValueError(f"{source}: availability deployment must be one of {DEPLOYMENTS}")
+    out["deployment"] = deployment
+    return out
 
 
 def _sub_component(match: re.Match[str]) -> str:
@@ -271,14 +321,16 @@ def build_index(docs_root: Path, out: Path = OUT_PATH) -> None:
         body, title = _strip_frontmatter(raw)
         body = _HTML_COMMENT_RE.sub("", body)
         sections = _finalize_sections(_split_sections(body))
-        pages.append(
-            {
-                "slug": slug,
-                "title": title or slug.rsplit("/", 1)[-1],
-                "url": _page_url(slug),
-                "sections": sections,
-            }
-        )
+        page: dict[str, Any] = {
+            "slug": slug,
+            "title": title or slug.rsplit("/", 1)[-1],
+            "url": _page_url(slug),
+        }
+        availability = parse_availability(raw, source=str(path))
+        if availability is not None:
+            page["availability"] = availability
+        page["sections"] = sections
+        pages.append(page)
     pages.sort(key=lambda page: page["slug"])
     data = {"pages": pages}
     out.parent.mkdir(parents=True, exist_ok=True)

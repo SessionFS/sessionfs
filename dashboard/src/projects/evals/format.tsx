@@ -8,6 +8,7 @@ import type {
   EvalRunVerdict,
 } from '../../api/client';
 import { safeArtifactLink, stageLabel } from './evalUtils';
+import { Term } from '../../help/Term';
 
 const VERDICT_VARIANT: Record<EvalRunVerdict, 'success' | 'danger' | 'warning'> = {
   passed: 'success',
@@ -39,11 +40,19 @@ export function ResultVerdictBadge({ verdict }: { verdict: EvalResultVerdict }) 
  */
 export function TrustBadge({ run }: { run: Pick<EvalRun, 'trusted' | 'trust_label' | 'untrusted_reason' | 'state'> }) {
   if (run.state === 'voided') return null;
-  if (run.trust_label === 'trusted' && run.trusted) return <Badge variant="success" label="Trusted" />;
+  if (run.trust_label === 'trusted' && run.trusted) {
+    return (
+      <Term id="eval-trusted">
+        <Badge variant="success" label="Trusted" />
+      </Term>
+    );
+  }
   if (run.trust_label === 'unverified' || (run.trust_label === 'trusted' && !run.trusted)) {
     return (
       <span className="inline-flex min-w-0 items-center gap-1.5" title={run.untrusted_reason ?? undefined}>
-        <Badge variant="warning" label="Unverified" />
+        <Term id="eval-unverified">
+          <Badge variant="warning" label="Unverified" />
+        </Term>
         {run.untrusted_reason && <span className="sr-only">: {run.untrusted_reason}</span>}
       </span>
     );

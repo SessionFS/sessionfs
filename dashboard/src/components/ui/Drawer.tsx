@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
+import { Tooltip } from './Tooltip';
 
 interface DrawerProps {
   open: boolean;
@@ -97,26 +98,28 @@ export function Drawer({ open, onClose, titleId, children, bare = false, widthCl
         {bare ? children : (
         <>
         {/* X close button */}
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute top-3 right-3 p-2 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-bg-sunken outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
-          aria-label="Close drawer"
-        >
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+        <Tooltip content={'Close'} describe={false} side="bottom">
+          <button
+            type="button"
+            onClick={onClose}
+            className="absolute top-3 right-3 p-2 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-bg-sunken outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+            aria-label="Close drawer"
           >
-            <line x1="18" y1="6" x2="6" y2="18" />
-            <line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </Tooltip>
         <div className="p-6">{children}</div>
         </>
         )}

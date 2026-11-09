@@ -284,14 +284,15 @@ def chat_participants(thread_id: str = typer.Argument(...)) -> None:
 @handle_errors
 def chat_resolve_participant(
     thread_id: str = typer.Argument(...),
-    participant_id: str = typer.Argument(...),
+    participant_id: str | None = typer.Argument(None),
     user: str | None = typer.Option(None, "--user", help="User id to resolve to."),
     persona: str | None = typer.Option(None, "--persona", help="Persona name to resolve to."),
     contact: str | None = typer.Option(None, "--contact", help="External contact id (ec_...)."),
+    file: str | None = typer.Option(None, "--file", "-f", help=_m.RESOLVE_FILE_HELP),
 ) -> None:
     """Resolve a participant to an org member, a persona or an external contact (exactly one)."""
     _m.resolve_participant_impl(
-        thread_id, participant_id, user, persona, kind=_KIND, contact=contact
+        thread_id, participant_id, user, persona, kind=_KIND, contact=contact, file=file
     )
 
 

@@ -35,6 +35,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import AuthContext, get_current_user, require_scope
 from sessionfs.server.db.engine import get_db
+from sessionfs.server.db.timeouts import bound_heavy_reads
+from sessionfs.server.services.org_concurrency import org_slot
 from sessionfs.server.db.models import (
     AttentionHide,
     ExternalContact,
@@ -514,6 +516,7 @@ async def list_contacts(
 ):
     """The org's contacts, newest first. ``format=csv`` (owners/admins with a
     user key) exports up to 10,000 rows with formula-like cells defused."""
+    await bound_heavy_reads(db)
     role = await _standing(db, auth, org_id)
     if format == "csv":
         if auth.key_kind == "service":
@@ -553,31 +556,32 @@ async def list_contacts(
 
     cursor = _parse_before(before)
     if format == "csv":
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        writer.writerow(_CSV_COLUMNS)
-        written = 0
-        cur = cursor
-        while written < _CSV_MAX_ROWS:
-            rows = (await db.execute(_page(stmt, cur).limit(_LIST_LIMIT_MAX))).scalars().all()
-            if not rows:
-                break
-            aliases = await _aliases(db, [c.id for c in rows])
-            for c in rows:
-                writer.writerow([
-                    _csv_cell(v) for v in (
-                        c.id, c.display_name, c.email, c.role, ";".join(svc.load_tags(c.tags)),
-                        ";".join(aliases.get(c.id, [])), c.status, c.linked_user_id,
-                        _iso(c.created_at), _iso(c.updated_at),
-                    )
-                ])
-                written += 1
-                if written >= _CSV_MAX_ROWS:
+        async with org_slot(db, "export", org_id=org_id, user_id=None):
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(_CSV_COLUMNS)
+            written = 0
+            cur = cursor
+            while written < _CSV_MAX_ROWS:
+                rows = (await db.execute(_page(stmt, cur).limit(_LIST_LIMIT_MAX))).scalars().all()
+                if not rows:
                     break
-            last = rows[-1]
-            cur = (last.created_at if last.created_at.tzinfo else last.created_at.replace(tzinfo=timezone.utc), last.id)
-            if len(rows) < _LIST_LIMIT_MAX:
-                break
+                aliases = await _aliases(db, [c.id for c in rows])
+                for c in rows:
+                    writer.writerow([
+                        _csv_cell(v) for v in (
+                            c.id, c.display_name, c.email, c.role, ";".join(svc.load_tags(c.tags)),
+                            ";".join(aliases.get(c.id, [])), c.status, c.linked_user_id,
+                            _iso(c.created_at), _iso(c.updated_at),
+                        )
+                    ])
+                    written += 1
+                    if written >= _CSV_MAX_ROWS:
+                        break
+                last = rows[-1]
+                cur = (last.created_at if last.created_at.tzinfo else last.created_at.replace(tzinfo=timezone.utc), last.id)
+                if len(rows) < _LIST_LIMIT_MAX:
+                    break
         headers = {
             "Content-Disposition": f'attachment; filename="contacts-{org_id}.csv"',
             "Cache-Control": "no-store",

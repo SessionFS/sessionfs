@@ -171,11 +171,9 @@ describe('OrgSettingsTab', () => {
     expect(await screen.findByLabelText(/^KB retention \(days\)$/)).toBeDisabled();
     expect(screen.getByLabelText(/^KB compile word budget$/)).toBeDisabled();
     const save = screen.getByRole('button', { name: /save org settings/i });
-    expect(save).toBeDisabled();
-    expect(save).toHaveAttribute(
-      'title',
-      expect.stringMatching(/admins/i),
-    );
+    expect(save).toBeUnavailable();
+    expect(save).toHaveAccessibleDescription(/admins/i);
+    expect(screen.getByTestId('org-settings-readonly')).toHaveTextContent(/admins/i);
   });
 
   it('surfaces a success toast on save', async () => {

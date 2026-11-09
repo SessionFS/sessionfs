@@ -1,0 +1,189 @@
+---
+title: "Review Loop Guarantees"
+description: "What the review loop guarantees when workers crash, retry or race: delivery semantics, idempotency keys, fencing, what a client does on a timeout, and what is not guaranteed. Every claim names the test that proves it."
+availability:
+  feature: review_loop
+  deployment: both
+---
+
+The [worker review loop](/review-loop/) gates merges on review verdicts, so its behaviour under crashes, retries and concurrent requests has to be stated exactly. This page does that for each operation. Each claim links to the test that proves it. Claims about concurrency are proven on PostgreSQL, which production uses, by forcing the race: a third connection holds the lock both requests need, both requests are seen waiting on it, and only then is the lock released.
+
+## The model in one paragraph
+
+No operation is "exactly once" in the network sense: a client can always lose the response. Each write is instead **at-least-once delivery with an exactly-once effect**. A retry with the same idempotency key returns the stored result and writes nothing new. A conflicting request with a different value for the same key is refused. Writes that race are put in order by one of three mechanisms: the **project lock** (a PostgreSQL advisory transaction lock per project, taken by start worker, finish worker run and record review round), a **guarded transition** (an `UPDATE … WHERE status IN (…)` that only counts when exactly one row changed), or a **unique index**. A worker's claim on a ticket is a **lease** with a number, `lease_epoch`, that goes up by one on every start. Starting work on a ticket another worker holds is how a lease is taken over, and the older holder is then fenced.
+
+## Summary
+
+| Operation | Semantics | Idempotency key | Fencing and ordering | Proof |
+| --- | --- | --- | --- | --- |
+| Start worker (`start_worker_run`) | At-least-once, one run per lease | (ticket, credential, workflow step) while the run is open | Project lock; guarded `open`/`in_progress` → `in_progress` with `lease_epoch + 1` | [^start-retry] [^start-pg] [^epoch] |
+| Finish worker run (`finish_worker_run`) | Exactly-once effect | (run id, `head_sha`) | Project lock; guarded `queued`/`running` → finished; refused once the lease was taken over | [^finish-replay] [^finish-pg] [^takeover] |
+| Record review round (`record_review_round`) | Exactly-once effect | (ticket, stage, round number, workflow step) | Project lock; unique index `uq_agent_run_review_round` | [^round-replay] [^round-pg] [^round-index] |
+| Close item, automatic (clean round) | Exactly-once effect | The item's open state | Guarded `pending`/`active`/`waiting` → `done` | [^same-identity] [^close-pg] |
+| Close item, by a person | Exactly-once effect, a retry gets 409 | The item's `needs_human` state | Guarded `needs_human` → `done` | [^close-retry] [^close-pg] |
+| Merge readiness (`check_merge_readiness`) | Pure read, deterministic | None (no writes) | Bound to one exact commit | [^sha-moved] [^old-sha] |
+| Merge check post (GitHub check run, GitLab status) | Best-effort, at-least-once, ordered per commit | (repo, commit, check name) | Evaluation sequence per commit; a guarded `UPDATE` skips a post older than the newest one sent | [^check-sha] [^check-order] [^check-order-gl] |
+| Budget parking | Exactly-once park and notification | The item's open state | Guarded open → `needs_human`; checks run under the project lock | [^budget-pg] [^budget-usage] |
+| Approval raise | Exactly-once effect | (policy, ticket, commit) for pending requests | Partial unique index with `ON CONFLICT DO NOTHING` | [^approval-pg] [^approval-reraise] |
+| Work-queue claim | Exactly-once effect | The item's claimable state | Guarded claim; an open directive is never claimed again | [^claim-pg] [^reemit] |
+| Work-queue settle (`complete_work_queue_step`) | Exactly-once effect | `directive_id` | Item row lock; directive must be the open one; optional `lease_epoch` | [^settle-pg] [^settle-lease] [^settle-epoch] |
+
+## Start worker
+
+`POST /api/v1/projects/{id}/agent-runs/start-worker` takes the ticket's lease and opens an implementer run.
+
+- **Semantics.** A fresh start bumps `lease_epoch` by exactly one and returns it [^epoch]. While the run is open, a repeat by the **same credential** for the same workflow step returns the same run with `idempotent: true` and does not bump the epoch [^start-retry]. This holds when the retry races the first attempt: both requests get the same run id and epoch, and only one run is opened [^start-pg].
+- **Fencing.** The decision between "this is a retry" and "this is a takeover" is made under the project lock, from the ticket as it is after the lock is taken.
+- **On timeout.** Retry with the same credential and body. You get either the run the first attempt opened or a new one if it never committed; either way there is one open run for your lease.
+- **Refusals.** A parked item gets `409 loop_needs_human`, and a start that finds the budget already spent parks the item in the same call [^round-cap] [^budget-usage].
+
+### Worker A crashes after start: who can take over, and when
+
+There is **no lease timeout**. Any project editor (or a service key with the loop scopes) can call start worker on the in-progress ticket at any time; the call takes the lease immediately and bumps the epoch [^takeover]. SessionFS does not detect that A died: a person or an orchestrator decides that A is gone. A stays recorded as an implementer of the ticket, so A can never be the independent reviewer of B's work [^takeover-identity].
+
+If two workers start at once, both succeed one after the other: the later start holds the lease and the earlier one is fenced [^takeover-pg].
+
+### A finishes after B took over: is A fenced?
+
+Yes. Each start-worker run records the run it continues. Once B's run continues A's, A's finish is refused with `409 lease_superseded` and A's run records no head commit [^takeover] [^takeover-pg]. So a late finish from A can never change which commit the ticket is at: loop status, workflow gates and approval gates keep using B's commit [^late-finish]. A's spend is not lost: A can still report its tokens on the run's usage endpoint, and the budget counts them [^takeover-usage].
+
+## Finish worker run
+
+`POST /api/v1/projects/{id}/agent-runs/{run_id}/finish` closes the run with its head commit, exit reason and usage.
+
+- **Semantics.** Idempotent on (run id, `head_sha`). Repeating a finish with the same head returns the stored result (`idempotent: true`) and does not add usage again; a finish with a different head after the run finished gets `409 head_sha_conflict` [^finish-replay] [^finish-conflict]. Two identical finishes racing add usage once [^finish-pg]; two with different heads racing leave exactly one head and refuse the other [^finish-conflict-pg].
+- **Who can finish.** The credential that started the run, a key rotated from it, or a project admin. Anyone else gets `403 worker_run_not_yours` [^finish-owner] [^rotate-finish].
+- **On timeout.** Retry with the same `head_sha`. Never retry with a different head: if the first attempt landed, the retry is refused.
+
+## Record review round
+
+`POST /api/v1/projects/{id}/loops/{loop_id}/rounds` records the reviewer run, posts the verdict and may close or park the item.
+
+- **Semantics.** The idempotency key is (ticket, stage, round number, workflow step). A retry from the same credential returns the stored round (`idempotent: true`), even if the retried body differs, and never posts a second verdict [^round-replay] [^round-idem]. Two identical rounds racing (one reviewer, two pods) record one round and one verdict [^round-pg]. A unique index backs this up when the read misses the race [^round-race] [^round-index].
+- **Another reviewer, same number.** A different credential asking for a taken round number gets `409 review_round_taken`, including when both race [^round-taken] [^round-taken-pg]. Record the next number.
+- **Trust.** Whether the verdict is trusted comes from the credential and the trusted-reviewer registry, never from the request body [^untrusted].
+- **Refused rounds keep their spend.** A round refused after the review ran (the item is parked or closed) records its tokens on an errored run that takes no round number and posts no verdict [^refused-usage].
+- **On timeout.** Retry with the same round number. If you get `review_round_taken`, someone else holds that number.
+
+### A verdict arrives for an old head commit
+
+A round is accepted for any full commit id. Readiness is always computed for one exact commit, so a clean verdict for an older commit never makes the current head ready, even when it arrives last [^old-sha] [^sha-moved]. A newer `CHANGES-REQUESTED` verdict for any commit makes the ticket not ready [^out-of-order].
+
+**Closing an item does not check the commit.** A trusted clean round on an older commit can close the loop item while the worker has already pushed a newer one. The item stops being worked, but readiness at the newer commit stays false, so the merge gate still holds [^close-sha]. Review the newer commit before merging: it is not ready until a trusted clean verdict is bound to it. Reviewers should review the newest commit the worker reported.
+
+## Close item
+
+**Automatic close** happens in a review round when the verdict is a trusted strict `VERIFIED-CLEAN`, no finding is open, the review history is complete, and the reviewer is independent of every implementer. It fails closed: an unknown implementer, an unresolvable key minter or a truncated history never closes [^same-identity] [^unknown-impl] [^truncated] [^minter]. It is a guarded transition, so it happens at most once.
+
+**A person's close** (`POST …/loops/{loop_id}/children/{ticket_id}/close`) settles a `needs_human` item as done. It is people-only, and a guarded `needs_human` → `done` transition: two closes racing give one `200` and one `409` with a single close record [^close-pg]; a retry of a close that already landed gets `409` [^close-retry]. **On timeout:** read the loop status; a `409` after a timeout usually means your close landed.
+
+Neither close changes the ticket's own status [^close-ticket].
+
+## Merge readiness
+
+`check_merge_readiness` (`GET …/tickets/{ticket_id}/readiness?sha=`) is a pure read with no side effects: it raises no approval requests [^readiness-read]. It is ready only when the latest trusted verdict, in the order verdicts were recorded, is a strict `VERIFIED-CLEAN` bound to exactly the requested full commit, the reviewer is independent of every implementer, and no harmful finding is open [^sha-moved] [^short-sha] [^out-of-order]. A review history longer than the loaded window fails closed [^truncated-readiness].
+
+## Merge check post
+
+After a verdict, an approval decision, a policy change, a pull request webhook or an explicit trigger (`POST …/tickets/{ticket_id}/merge-check`), SessionFS recomputes readiness and posts the **SessionFS review loop** check run on GitHub (or a commit status on GitLab).
+
+- **Semantics.** Best-effort and at-least-once. The post runs in a detached task after the triggering request commits. A GitHub call is tried up to three times on transport errors and `5xx`, and never retried on a `4xx` [^check-retry]. A task lost with its process is not retried later.
+- **Keyed by commit.** Each commit gets its own check run, and a run for an older commit is never flipped green after the fact [^check-sha]. A check covering several tickets is green only when every linked ticket is ready at that commit [^check-all].
+- **Ordered per commit.** Every evaluation of a commit takes the next number in a sequence for that commit just before it reads readiness, so a higher number always saw newer state. Just before sending, the post records its number with a guarded `UPDATE` that only succeeds when no newer evaluation has posted. An evaluation that read "ready" before a newer `CHANGES-REQUESTED` verdict is therefore skipped once the newer `action_required` was sent, and never turns the check green [^check-order]. A retry of the same evaluation still posts. If two posts are in flight at once and the older request reaches GitHub or GitLab last, its sender re-sends the newest recorded state afterwards, so the last request to land carries the newest result [^check-order-repair]. GitLab commit statuses follow the same rule [^check-order-gl]. No database lock is held while a GitHub or GitLab call is made. The readiness call is still the authoritative gate before a merge.
+- **On failure.** Call the merge-check trigger route. It recomputes from the current state.
+
+## Budget parking
+
+Token, dollar and round limits are checked by start worker, finish worker run and record review round, all under the project lock, so each check sees what the others committed. When a finish and a round that each stay under the budget land at once, the second one sees the first one's spend and parks the item exactly once, with one notification [^budget-pg]. Parking is a guarded transition, so it happens once [^round-cap] [^budget-finish].
+
+The plain usage endpoint (`report_agent_run_usage`) records spend but does not park. A limit passed that way is enforced by the next start, finish or round, which parks the item and refuses [^budget-usage]. So the spend of in-flight work can go past a limit; no new work starts after it.
+
+## Approval raise
+
+Approval requests are raised only on write paths (a verdict, a decision, a policy change, a webhook or the merge-check trigger), only for the commit the latest trusted clean verdict is bound to, and only when the ticket is otherwise ready. Readiness reads never raise one [^readiness-read]. The insert uses `ON CONFLICT DO NOTHING` on a unique index over pending requests, keyed by (policy, ticket, commit), so concurrent triggers converge on one request [^approval-pg]. An expired request frees the key, and concurrent triggers then raise exactly one fresh request [^approval-reraise]. Concurrent approvals settle quorum once, and one person voting twice at once records one decision [^approval-pg].
+
+## Work queues
+
+The `review_until_clean` and `implement_until_done` queues under the loop follow the same pattern:
+
+- **Claim.** An item is claimed by a guarded `UPDATE`; two wakes racing for one item have one winner [^claim-pg]. An item whose directive is still open is never claimed again; the next wake re-emits the **same** directive instead [^reemit] [^crash-replay].
+- **Settle.** `complete_work_queue_step` is idempotent on `directive_id`: a repeat returns the stored outcome without posting the verdict again [^settle-replay]. The item row is locked first, so two settles of one directive racing give one settle and one replay with a single verdict [^settle-pg]. A directive that is not the item's open one is refused with `409 directive_mismatch`, posting nothing [^settle-lease]. A settle that passes the ticket's `lease_epoch` is refused with `409 stale_lease_epoch` once the lease moved on, and the directive re-emits [^settle-epoch].
+- **Backoff.** A failed directive backs off 2, 5, 15, then 60 minutes and the item fails after the queue's attempt limit [^backoff].
+
+## A reviewer key rotated mid-loop
+
+Reviewer trust is bound to the exact service key. After a rotation, the new key's verdicts are untrusted, and close nothing, until an org admin registers the new key as a trusted reviewer [^rotate-trust]. A worker whose key is rotated mid-run finishes the run with the new key [^rotate-finish].
+
+Rotation never makes a reviewer independent. A key counts as everyone who minted or rotated it along its rotation chain: the person who rotated the implementer's key cannot close the item or make the ticket ready [^rotate-independence] [^rotate-chain]. A broken or cyclic chain fails closed [^broken-chain].
+
+## What is not guaranteed
+
+- **No ordering across tickets or projects.** Locks are per project and per row. Two loops in different projects run fully in parallel, and events on different tickets have no defined order.
+- **No lease timeout or crash detection.** A crashed worker holds its lease until someone takes it over.
+- **Background work is best-effort.** Merge check posts, checklist proposals from findings and notifications run after the request commits and are not retried if the process dies. Jira outbox rows are retried by their sweep.
+- **Clocks.** Fencing a superseded worker uses the recorded run lineage, not time. Ordering of verdicts and runs uses timestamps written by the API servers, so it assumes their clocks agree to well under the time between two rounds. Approval request expiry and backoff use the server clock.
+- **Only start worker takes over.** The plain ticket start (`start_ticket`) only starts an `open` (or, with force, `blocked`) ticket. If a running worker's ticket is moved out of `in_progress` and started again that way, the lease epoch moves on but the worker's finish is not refused: only a start worker run fences an earlier one.
+- **SQLite.** Self-hosted development on SQLite has no row or advisory locks; SQLite runs one writer at a time, and the unique indexes and guarded transitions above still hold, but the concurrency results on this page are proven on PostgreSQL. Run production on PostgreSQL.
+- **A person still merges.** A green check and a ready answer say the review gate passed for one commit. They do not run your tests or merge for you.
+
+[^start-retry]: `tests/server/integration/test_loop_workers.py::test_start_worker_retry_returns_the_running_run`
+[^start-pg]: `tests/server/integration/test_loop_guarantees_pg.py::test_concurrent_retry_of_a_first_start_opens_one_run`
+[^epoch]: `tests/server/integration/test_loop_guarantees.py::test_start_bumps_lease_epoch_once_per_start`
+[^takeover]: `tests/server/integration/test_loop_guarantees.py::test_takeover_is_immediate_and_fences_the_previous_run`
+[^takeover-pg]: `tests/server/integration/test_loop_guarantees_pg.py::test_concurrent_takeovers_leave_exactly_one_holder`
+[^takeover-identity]: `tests/server/integration/test_loop_workers.py::test_lease_takeover_keeps_previous_holder_as_implementer`, `tests/server/integration/test_merge_readiness.py::test_earlier_lease_implementer_is_not_independent`
+[^takeover-usage]: `tests/server/integration/test_loop_guarantees.py::test_superseded_run_can_still_report_usage`
+[^late-finish]: `tests/server/integration/test_loop_guarantees.py::test_late_finish_cannot_move_the_ticket_head`
+[^finish-replay]: `tests/server/integration/test_loop_guarantees.py::test_finish_replay_adds_usage_once`
+[^finish-conflict]: `tests/server/integration/test_loop_workers.py::test_finish_idempotent_and_conflicting_sha`
+[^finish-pg]: `tests/server/integration/test_loop_guarantees_pg.py::test_concurrent_identical_finishes_add_usage_once`
+[^finish-conflict-pg]: `tests/server/integration/test_loop_guarantees_pg.py::test_concurrent_finishes_with_different_heads_one_wins`
+[^finish-owner]: `tests/server/integration/test_loop_workers.py::test_finish_bound_to_starting_credential_or_admin`
+[^round-replay]: `tests/server/integration/test_loop_guarantees.py::test_round_replay_returns_stored_round_even_with_a_different_body`
+[^round-idem]: `tests/server/integration/test_loop_workers.py::test_round_idempotent_posts_one_verdict`
+[^round-pg]: `tests/server/integration/test_loop_guarantees_pg.py::test_concurrent_identical_rounds_record_one_round`
+[^round-race]: `tests/server/integration/test_loop_workers.py::test_round_race_maps_unique_violation_to_replay`
+[^round-index]: `tests/server/integration/test_loop_workers.py::test_review_round_unique_index`, `tests/server/integration/test_migration_126.py`
+[^round-taken]: `tests/server/integration/test_loop_workers.py::test_round_number_taken_by_another_reviewer_is_409`
+[^round-taken-pg]: `tests/server/integration/test_loop_guarantees_pg.py::test_concurrent_rounds_with_one_number_from_two_reviewers`
+[^untrusted]: `tests/server/integration/test_loop_workers.py::test_untrusted_reviewer_verdict_not_trusted_and_does_not_close`
+[^refused-usage]: `tests/server/integration/test_loop_workers.py::test_refused_round_keeps_its_token_usage`
+[^round-cap]: `tests/server/integration/test_loop_workers.py::test_round_cap_parks_item_and_start_refused`
+[^old-sha]: `tests/server/integration/test_loop_guarantees.py::test_late_verdict_for_an_old_head_is_not_ready_at_the_new_head`
+[^sha-moved]: `tests/server/integration/test_merge_readiness.py::test_readiness_false_when_sha_moved`
+[^short-sha]: `tests/server/integration/test_merge_readiness.py::test_readiness_rejects_short_sha`
+[^out-of-order]: `tests/server/integration/test_merge_readiness.py::test_readiness_false_when_latest_round_is_out_of_order_changes`
+[^close-sha]: `tests/server/integration/test_loop_guarantees.py::test_item_closed_on_an_old_head_is_not_ready_at_the_new_head`
+[^same-identity]: `tests/server/integration/test_loop_workers.py::test_same_identity_reviewer_cannot_close_item`, `::test_resolver_reviewer_cannot_close_item`
+[^unknown-impl]: `tests/server/integration/test_loop_workers.py::test_unknown_implementer_does_not_auto_close`
+[^truncated]: `tests/server/integration/test_loop_workers.py::test_truncated_history_does_not_close_item`
+[^minter]: `tests/server/integration/test_loop_workers.py::test_key_cannot_close_item_implemented_by_its_minter`, `::test_human_cannot_close_item_implemented_with_their_own_key`
+[^close-retry]: `tests/server/integration/test_loop_guarantees.py::test_close_item_retry_after_success_is_409`, `tests/server/integration/test_loops_api.py::test_close_item_refuses_non_needs_human`
+[^close-ticket]: `tests/server/integration/test_loops_api.py::test_close_needs_human_item_settles_queue_without_touching_ticket`
+[^close-pg]: `tests/server/integration/test_loop_guarantees_pg.py::test_concurrent_human_closes_settle_once`
+[^readiness-read]: `tests/server/integration/test_approvals_read_only.py::test_readiness_route_creates_no_request`, `::test_loop_status_read_creates_no_request`
+[^truncated-readiness]: `tests/server/integration/test_merge_readiness.py::test_readiness_fails_closed_when_history_truncated`
+[^check-sha]: `tests/server/integration/test_merge_checks.py::test_success_only_when_ready_for_that_sha`, `::test_new_sha_gets_its_own_run_and_never_flips_old_one`
+[^check-all]: `tests/server/integration/test_merge_checks.py::test_shared_run_requires_every_linked_ticket_ready`
+[^check-retry]: `tests/server/integration/test_loop_guarantees.py::test_merge_check_post_retries_5xx_but_not_4xx`
+[^check-order]: `tests/server/integration/test_loop_guarantees.py::test_stale_merge_check_post_cannot_overwrite_a_newer_one`, `tests/server/integration/test_merge_check_order.py::test_github_newer_posts_first_older_is_skipped`, `::test_github_retry_of_the_same_evaluation_posts`
+[^check-order-repair]: `tests/server/integration/test_merge_check_order.py::test_github_post_overtaken_in_flight_is_repaired`, `::test_gitlab_post_overtaken_in_flight_is_repaired`
+[^check-order-gl]: `tests/server/integration/test_merge_check_order.py::test_gitlab_newer_posts_first_older_is_skipped`, `::test_gitlab_retry_of_the_same_evaluation_posts`
+[^budget-pg]: `tests/server/integration/test_loop_guarantees_pg.py::test_concurrent_spend_parks_the_item_once`
+[^budget-finish]: `tests/server/integration/test_loop_workers.py::test_token_budget_parks_on_finish_and_start_refused`
+[^budget-usage]: `tests/server/integration/test_loop_guarantees.py::test_usage_report_past_the_budget_parks_at_the_next_start`
+[^approval-pg]: `tests/server/integration/test_approvals_pg.py::test_concurrency_on_postgres`
+[^approval-reraise]: `tests/server/integration/test_approvals_pg.py::test_concurrent_reraise_after_expiry_on_postgres`
+[^claim-pg]: `tests/server/integration/test_loop_guarantees_pg.py::test_concurrent_claims_of_one_item_have_one_winner`
+[^reemit]: `tests/server/integration/test_work_queue_engine.py::test_open_directive_re_emits_same_id_no_second_claim`
+[^crash-replay]: `tests/server/integration/test_work_queue_engine.py::test_crash_replay_then_complete`
+[^settle-replay]: `tests/server/integration/test_work_queue_settle_verdict.py::test_settle_verdict_idempotent_no_double_post`
+[^settle-pg]: `tests/server/integration/test_loop_guarantees_pg.py::test_concurrent_settles_of_one_directive_post_one_verdict`
+[^settle-lease]: `tests/server/integration/test_loop_guarantees.py::test_settle_with_a_stale_directive_is_refused`
+[^settle-epoch]: `tests/server/integration/test_loop_guarantees.py::test_settle_with_a_stale_ticket_lease_is_refused`
+[^backoff]: `tests/server/integration/test_work_queue_engine.py::test_failure_backoff_and_failed_after_max_attempts`
+[^rotate-trust]: `tests/server/integration/test_loop_guarantees.py::test_rotated_reviewer_key_is_untrusted_until_registered`
+[^rotate-finish]: `tests/server/integration/test_loop_guarantees.py::test_rotated_worker_key_finishes_its_predecessors_run`
+[^rotate-independence]: `tests/server/integration/test_loop_guarantees.py::test_rotator_of_the_implementer_key_cannot_close_the_item`
+[^rotate-chain]: `tests/server/integration/test_merge_readiness.py::test_readiness_false_when_admin_rotated_the_implementer_key`, `::test_readiness_follows_two_hop_rotation_chain`
+[^broken-chain]: `tests/server/integration/test_merge_readiness.py::test_readiness_fails_closed_on_broken_rotation_chain`

@@ -25,7 +25,7 @@ import { ApiError } from '../api/client';
 
 // vi.mock is hoisted above imports, so any referenced variables must be
 // created inside vi.hoisted() which runs before the mock factory.
-const { hooks, mockAddToast, meData, jiraSurface, ticketViewer, myOrgsData, confluenceLinks } = vi.hoisted(() => ({
+const { hooks, mockAddToast, helperOpen, meData, jiraSurface, ticketViewer, myOrgsData, confluenceLinks } = vi.hoisted(() => ({
   hooks: {
     useProject: vi.fn(),
     useProjects: vi.fn(),
@@ -56,6 +56,7 @@ const { hooks, mockAddToast, meData, jiraSurface, ticketViewer, myOrgsData, conf
     useMergeProject: vi.fn(),
   },
   mockAddToast: vi.fn(),
+  helperOpen: vi.fn(),
   meData: { value: { user_id: 'u_1', tier: 'enterprise', effective_tier: 'enterprise' } },
   jiraSurface: { value: null as { isEnterprise?: boolean } | null },
   ticketViewer: { value: null as { isProjectAdmin?: boolean } | null },
@@ -86,7 +87,7 @@ vi.mock('../hooks/useToast', () => ({
 }));
 
 vi.mock('../helper/HelperProvider', () => ({
-  useHelper: () => ({ openHelper: vi.fn() }),
+  useHelper: () => ({ openHelper: helperOpen }),
 }));
 
 // v0.10.0 Phase 4 added a Transfer tab to ProjectDetail. The
@@ -112,10 +113,8 @@ vi.mock('./TicketsTab', () => ({
   default: (props: {
     projectId: string;
     jira?: { isEnterprise?: boolean };
-    assignedToMe?: boolean;
-    onAssignedToMeChange?: (next: boolean) => void;
-    overdue?: boolean;
-    onOverdueChange?: (next: boolean) => void;
+    params?: { view: string; group: string; q: string };
+    onParamsChange?: (next: Record<string, unknown>) => void;
     viewer?: { isProjectAdmin?: boolean };
   }) => {
     jiraSurface.value = props.jira ?? null;
@@ -123,11 +122,11 @@ vi.mock('./TicketsTab', () => ({
     return (
       <div>
         tickets body
-        <button onClick={() => props.onAssignedToMeChange?.(!props.assignedToMe)}>
-          mine: {String(props.assignedToMe)}
+        <button onClick={() => props.onParamsChange?.({ ...props.params, view: props.params?.view === 'mine' ? 'all' : 'mine' })}>
+          view: {props.params?.view}
         </button>
-        <button onClick={() => props.onOverdueChange?.(!props.overdue)}>
-          overdue: {String(props.overdue)}
+        <button onClick={() => props.onParamsChange?.({ ...props.params, group: 'issue', q: 'webhook' })}>
+          group: {props.params?.group}
         </button>
       </div>
     );
@@ -210,6 +209,17 @@ function renderPage(initial = '/projects/sessionfs%2Fsessionfs') {
       </Routes>
     </MemoryRouter>,
   );
+}
+
+// The section is a menu in the one-line project bar, not a row of tabs.
+const sectionButton = () => screen.getByRole('button', { name: /^Section: / });
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+async function goToSection(user: ReturnType<typeof userEvent.setup>, name: string) {
+  await user.click(sectionButton());
+  await user.click(screen.getByRole('menuitem', { name: new RegExp(`^${escapeRe(name)}`) }));
+}
+function expectSection(name: string) {
+  expect(sectionButton()).toHaveAccessibleName(`Section: ${name}`);
 }
 
 describe('ProjectDetail', () => {
@@ -375,7 +385,7 @@ describe('ProjectDetail', () => {
     renderPage();
     const user = userEvent.setup();
 
-    await user.click(screen.getByRole('tab', { name: /knowledge/i }));
+    await goToSection(user, 'Knowledge');
 
     // The entry text should appear once the tab renders it
     await waitFor(() => {
@@ -385,26 +395,36 @@ describe('ProjectDetail', () => {
     });
   });
 
-  // GitHub #86/#87: all five sections live in the one tablist (no horizontal
-  // scroll needed), and the project's skills sub-tab is not named like the
-  // sidebar Marketplace.
-  it('renders the five sections inside a single tablist', () => {
-    setProjectData();
+  // The project bar is one line: Projects / name / section menu, the active
+  // section's sub-tabs, then the compile and helper actions.
+  it('renders the project bar on one line with a section menu', async () => {
+    setProjectData({ name: 'Acme Widgets' });
     renderPage();
-    const list = screen.getByRole('tablist');
-    const names = screen.getAllByRole('tab').map((t) => t.textContent?.trim());
-    expect(names).toEqual(['Overview', 'Knowledge', 'Work', 'Rules & Skills', 'Settings']);
-    for (const tab of screen.getAllByRole('tab')) expect(list.contains(tab)).toBe(true);
-    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.queryByRole('tab', { name: 'Marketplace' })).not.toBeInTheDocument();
+    const user = userEvent.setup();
+    expect(screen.getByRole('link', { name: 'Projects' })).toHaveAttribute('href', '/projects');
+    expect(screen.getByRole('heading', { level: 1, name: 'Acme Widgets' })).toBeInTheDocument();
+    expectSection('Overview');
+    expect(sectionButton()).toHaveAttribute('aria-haspopup', 'menu');
+    expect(sectionButton()).toHaveAttribute('aria-expanded', 'false');
+    // Details moved to Settings → About; the bar holds no dates or remote.
+    expect(screen.queryByText(/^Created/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Updated/)).not.toBeInTheDocument();
+
+    await user.click(sectionButton());
+    expect(sectionButton()).toHaveAttribute('aria-expanded', 'true');
+    const items = screen.getAllByRole('menuitem').map((t) => t.textContent?.trim());
+    expect(items).toEqual(['Overview', 'Knowledge', 'Work', 'Rules & Skills', 'Settings']);
+    expect(screen.queryByRole('menuitem', { name: 'Marketplace' })).not.toBeInTheDocument();
   });
 
-  it('puts the pending count on the Knowledge tab and the Entries sub-tab', async () => {
+  it('puts the pending count on the Knowledge menu item and the Entries sub-tab', async () => {
     setProjectData();
     hooks.useKnowledgeEntries.mockReturnValue({ data: { entries: [], total: 7 }, isLoading: false });
     renderPage();
-    expect(screen.getByRole('tab', { name: /knowledge/i })).toHaveTextContent('7');
-    await userEvent.setup().click(screen.getByRole('tab', { name: /knowledge/i }));
+    const user = userEvent.setup();
+    await user.click(sectionButton());
+    expect(screen.getByRole('menuitem', { name: /^Knowledge/ })).toHaveTextContent('7');
+    await user.click(screen.getByRole('menuitem', { name: /^Knowledge/ }));
     expect(screen.getByRole('tab', { name: /entries/i })).toHaveTextContent('7');
   });
 
@@ -412,31 +432,45 @@ describe('ProjectDetail', () => {
     setProjectData();
     renderPage();
     const user = userEvent.setup();
-    expect(screen.getAllByRole('tab')).toHaveLength(5);
+    expect(screen.queryAllByRole('tab')).toHaveLength(0);
 
-    await user.click(screen.getByRole('tab', { name: 'Knowledge' }));
+    await goToSection(user, 'Knowledge');
+    expect(screen.getByRole('tablist', { name: 'Knowledge views' })).toBeInTheDocument();
     expect(screen.getAllByRole('tab').map((t) => t.textContent?.trim().replace(/\d+$/, ''))).toEqual([
-      'Overview', 'Knowledge', 'Work', 'Rules & Skills', 'Settings', 'Entries', 'Pages', 'History',
+      'Entries', 'Pages', 'History',
     ]);
 
-    await user.click(screen.getByRole('tab', { name: 'Work' }));
+    await goToSection(user, 'Work');
     expect(screen.getByRole('tab', { name: 'Tickets' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('tab', { name: 'Agent runs' })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: 'Agents' })).toBeInTheDocument();
 
-    await user.click(screen.getByRole('tab', { name: 'Rules & Skills' }));
+    await goToSection(user, 'Rules & Skills');
     expect(screen.getByRole('tab', { name: 'Rules' })).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByRole('tab', { name: 'Skills' })).toBeInTheDocument();
 
-    await user.click(screen.getByRole('tab', { name: 'Settings' }));
-    expect(screen.getAllByRole('tab')).toHaveLength(5);
+    await goToSection(user, 'Settings');
+    expect(screen.queryAllByRole('tab')).toHaveLength(0);
+  });
+
+  it('opens the helper on this project from the bar', async () => {
+    setProjectData({ name: 'Acme Widgets' });
+    renderPage();
+    await userEvent.setup().click(screen.getByRole('button', { name: 'Ask the helper' }));
+    expect(helperOpen).toHaveBeenCalledWith({ project_id: 'proj_abc', label: 'Acme Widgets' });
+  });
+
+  it('shows the repo-reclaimed notice under the bar', () => {
+    setProjectData({ repo_reclaimed_at: '2026-10-01T00:00:00Z' });
+    renderPage();
+    expect(screen.getByText(/all repos were reclaimed/i)).toBeInTheDocument();
   });
 
   describe('URL-driven tabs', () => {
     it('reads ?tab= and &sub= on load', () => {
       setProjectData();
       renderPage('/projects/sessionfs%2Fsessionfs?tab=knowledge&sub=history');
-      expect(screen.getByRole('tab', { name: 'Knowledge' })).toHaveAttribute('aria-selected', 'true');
+      expectSection('Knowledge');
       expect(screen.getByRole('tab', { name: 'History' })).toHaveAttribute('aria-selected', 'true');
     });
 
@@ -445,7 +479,7 @@ describe('ProjectDetail', () => {
       renderPage('/projects/sessionfs%2Fsessionfs?edit=1');
       const user = userEvent.setup();
 
-      await user.click(screen.getByRole('tab', { name: 'Work' }));
+      await goToSection(user, 'Work');
       expect(screen.getByTestId('loc')).toHaveTextContent('tab=work');
       expect(screen.getByTestId('loc')).toHaveTextContent('edit=1');
 
@@ -454,7 +488,7 @@ describe('ProjectDetail', () => {
       expect(screen.getByTestId('loc')).toHaveTextContent('sub=personas');
 
       // Changing section drops the previous section's sub-tab.
-      await user.click(screen.getByRole('tab', { name: 'Knowledge' }));
+      await goToSection(user, 'Knowledge');
       expect(screen.getByTestId('loc')).not.toHaveTextContent('sub=personas');
     });
 
@@ -471,7 +505,7 @@ describe('ProjectDetail', () => {
       setProjectData();
       renderPage('/projects/sessionfs%2Fsessionfs?tab=work&sub=agent-runs&run=run_1&story=tk_1');
       const user = userEvent.setup();
-      await user.click(screen.getByRole('tab', { name: 'Knowledge' }));
+      await goToSection(user, 'Knowledge');
       expect(screen.getByTestId('loc')).not.toHaveTextContent('run=');
       expect(screen.getByTestId('loc')).not.toHaveTextContent('story=');
     });
@@ -480,17 +514,17 @@ describe('ProjectDetail', () => {
       setProjectData();
       renderPage();
       const user = userEvent.setup();
-      await user.click(screen.getByRole('tab', { name: 'Work' }));
+      await goToSection(user, 'Work');
       await user.click(screen.getByRole('tab', { name: 'Agent runs' }));
       await user.click(screen.getByRole('tab', { name: 'Agents' }));
       await user.click(screen.getByRole('button', { name: 'history back' }));
-      expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+      expectSection('Overview');
     });
 
     it('falls back to Overview and the first sub-tab for unknown values', () => {
       setProjectData();
       const { unmount } = renderPage('/projects/sessionfs%2Fsessionfs?tab=nonsense');
-      expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+      expectSection('Overview');
       unmount();
       renderPage('/projects/sessionfs%2Fsessionfs?tab=work&sub=nonsense');
       expect(screen.getByRole('tab', { name: 'Tickets' })).toHaveAttribute('aria-selected', 'true');
@@ -512,7 +546,7 @@ describe('ProjectDetail', () => {
     ])('maps the legacy ?tab=%s key to %s', (legacy, section, subTab) => {
       setProjectData();
       renderPage(`/projects/sessionfs%2Fsessionfs?tab=${legacy}`);
-      expect(screen.getByRole('tab', { name: section })).toHaveAttribute('aria-selected', 'true');
+      expectSection(section);
       if (subTab) {
         expect(screen.getByRole('tab', { name: new RegExp(`^${subTab}\\d*$`) })).toHaveAttribute('aria-selected', 'true');
       }
@@ -543,24 +577,39 @@ describe('ProjectDetail', () => {
     expect(screen.queryByRole('button', { name: /project actions/i })).not.toBeInTheDocument();
   });
 
-  it('shows one Compile action, in the pending notice, not on the Overview card', () => {
+  it('shows one Compile action, in the bar, not on the Overview card', async () => {
     setProjectData();
+    const compile = makeMutation();
+    hooks.useCompileProject.mockReturnValue(compile);
     hooks.useKnowledgeEntries.mockReturnValue({ data: { entries: [], total: 3 }, isLoading: false });
     renderPage();
-    expect(screen.getAllByRole('button', { name: /compile now/i })).toHaveLength(1);
-    expect(screen.getByText(/3 pending entries/i)).toBeInTheDocument();
+    const button = screen.getByRole('button', { name: /^compile 3 pending entries/i });
+    expect(screen.getAllByRole('button', { name: /^compile/i })).toHaveLength(1);
+    expect(button).toHaveTextContent('Compile 3');
+    await userEvent.setup().click(button);
+    expect(compile.mutate).toHaveBeenCalled();
   });
 
-  it('keeps the tickets "Assigned to me" filter in the URL', async () => {
+  it('offers no Compile action to a reader who cannot edit', () => {
+    setProjectData({ can_edit: false });
+    hooks.useKnowledgeEntries.mockReturnValue({ data: { entries: [], total: 3 }, isLoading: false });
+    renderPage();
+    expect(screen.queryByRole('button', { name: /^compile/i })).not.toBeInTheDocument();
+  });
+
+  it('keeps the tickets list view in the URL and maps the old ?assignee=me link to Mine', async () => {
     setProjectData();
     renderPage('/projects/proj_abc?tab=work&sub=tickets&assignee=me');
     await screen.findByText('tickets body');
-    const toggle = screen.getByRole('button', { name: 'mine: true' });
-    fireEvent.click(toggle);
-    expect(screen.getByTestId('loc').textContent).not.toMatch(/assignee=/);
-    fireEvent.click(screen.getByRole('button', { name: 'mine: false' }));
-    expect(screen.getByTestId('loc').textContent).toMatch(/assignee=me/);
+    fireEvent.click(screen.getByRole('button', { name: 'view: mine' }));
+    // Back to All: the default leaves the URL, and so does the legacy key.
+    expect(screen.getByTestId('loc').textContent).not.toMatch(/assignee=|view=/);
+    fireEvent.click(screen.getByRole('button', { name: 'view: all' }));
+    expect(screen.getByTestId('loc').textContent).toMatch(/view=mine/);
     expect(screen.getByTestId('loc').textContent).toMatch(/sub=tickets/);
+    fireEvent.click(screen.getByRole('button', { name: 'group: status' }));
+    expect(screen.getByTestId('loc').textContent).toMatch(/group=issue/);
+    expect(screen.getByTestId('loc').textContent).toMatch(/q=webhook/);
   });
 
   it('gives the tickets tab admin standing from the project, with an owner fallback', async () => {
@@ -581,14 +630,18 @@ describe('ProjectDetail', () => {
     expect(ticketViewer.value?.isProjectAdmin).toBe(true);
   });
 
-  it('keeps the tickets "Overdue" filter in the URL', async () => {
+  it('maps the old ?due=overdue link to the Overdue view', async () => {
     setProjectData();
     renderPage('/projects/proj_abc?tab=work&sub=tickets&due=overdue');
     await screen.findByText('tickets body');
-    fireEvent.click(screen.getByRole('button', { name: 'overdue: true' }));
-    expect(screen.getByTestId('loc').textContent).not.toMatch(/due=/);
-    fireEvent.click(screen.getByRole('button', { name: 'overdue: false' }));
-    expect(screen.getByTestId('loc').textContent).toMatch(/due=overdue/);
+    expect(screen.getByRole('button', { name: 'view: overdue' })).toBeInTheDocument();
+  });
+
+  it("ignores another sub-tab's ?view= on the tickets list", async () => {
+    setProjectData();
+    renderPage('/projects/proj_abc?tab=work&sub=tickets&view=board');
+    await screen.findByText('tickets body');
+    expect(screen.getByRole('button', { name: 'view: all' })).toBeInTheDocument();
   });
 
   describe('Jira enterprise gate (tk_792504a140604e62)', () => {

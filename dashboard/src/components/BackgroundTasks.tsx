@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { useAuth } from '../auth/AuthContext';
+import { IconButton } from './ui';
 
 interface BackgroundTask {
   id: string;
@@ -155,14 +156,11 @@ function TaskToasts({ tasks, onDismiss }: { tasks: BackgroundTask[]; onDismiss: 
           </div>
 
           {/* Dismiss */}
-          <button
-            onClick={() => onDismiss(task.id)}
-            className="text-text-muted hover:text-text-secondary transition-colors"
-          >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <IconButton label="Dismiss" size="sm" onClick={() => onDismiss(task.id)}>
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
-          </button>
+          </IconButton>
         </div>
       ))}
     </div>

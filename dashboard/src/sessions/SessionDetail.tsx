@@ -30,6 +30,7 @@ import { Tabs, TabPanel } from '../components/ui/Tabs';
 import { Dropdown } from '../components/ui/Dropdown';
 import { useHelper } from '../helper/HelperProvider';
 import { errorMessage } from '../utils/errorMessage';
+import { Term } from '../help/Term';
 
 type Tab = 'messages' | 'changes' | 'summary' | 'audit';
 
@@ -399,7 +400,7 @@ export default function SessionDetail() {
           <div className="px-5 mt-2 flex flex-wrap items-center gap-2">
             {session.parent_session_id && (
               <span className="text-sm text-text-tertiary">
-                Forked from{' '}
+                <Term id="fork">Forked</Term> from{' '}
                 <a href={`/sessions/${session.parent_session_id}`} className="text-brand hover:underline font-mono">
                   {session.parent_session_id.slice(0, 16)}
                 </a>
@@ -638,7 +639,9 @@ function DLPScanSection({ session }: { session: object }) {
           <svg className="w-4 h-4 text-danger shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
           </svg>
-          <span className="text-sm font-semibold text-text-primary">DLP Scan</span>
+          <span className="text-sm font-semibold text-text-primary">
+            <Term id="dlp">DLP</Term> scan
+          </span>
         </div>
         <div className="text-xs text-text-tertiary mb-2">
           {scanResult.findings_count} finding{scanResult.findings_count !== 1 ? 's' : ''}

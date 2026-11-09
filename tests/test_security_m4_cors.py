@@ -206,16 +206,28 @@ class TestCORSDefaults:
         tk_1a73a7bf359f41c3); X-Jira-Projects-Truncated is the unpaged Jira
         projects list's truncation flag (GitHub #103) and X-Truncated the
         approval-log CSV export's row-cap flag (GitHub #123); neither carries
-        a secret. Adding to this list means a new cross-origin header read was
+        a secret. CONTRACT_EXPOSE_HEADERS (tk_3855ef8b11f94ee2) are the
+        ignored-fields and deprecation notices, pinned below. Adding to this list means a new cross-origin header read was
         introduced; removing ETag re-breaks the rules PUT round-trip."""
         import inspect
 
         from sessionfs.server import app as app_module
 
         source = inspect.getsource(app_module.create_app)
-        assert 'expose_headers=["ETag", "X-Jira-Projects-Truncated", "X-Truncated"]' in source, (
+        assert (
+            'expose_headers=["ETag", "X-Jira-Projects-Truncated", "X-Truncated", *CONTRACT_EXPOSE_HEADERS]'
+            in source
+        ), (
             "CORS expose_headers drifted from audited set. ETag must be exposed "
             "so the cross-origin dashboard can read the rules ETag and replay "
             "it as If-Match on PUT. If this change is intentional, re-audit the "
             "dashboard cross-origin response-header reads and update this test."
+        )
+        from sessionfs.server.api_contract import CONTRACT_EXPOSE_HEADERS
+
+        assert CONTRACT_EXPOSE_HEADERS == (
+            "X-SessionFS-Ignored-Fields",
+            "X-SessionFS-Deprecated-Fields",
+            "Deprecation",
+            "Sunset",
         )

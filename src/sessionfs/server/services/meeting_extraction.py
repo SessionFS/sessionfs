@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 import unicodedata
 import uuid
 from dataclasses import dataclass
@@ -59,6 +60,7 @@ from sessionfs.judge.agent_stream import (
 )
 from sessionfs.judge.llm_errors import LlmEndpointError
 from sessionfs.server.auth.dependencies import AuthContext
+from sessionfs.server.business_metrics import observe_extraction_server_time
 from sessionfs.server.db.models import (
     ConversationMessageMeta,
     MeetingActionItem,
@@ -617,6 +619,10 @@ async def run_meeting_extraction(
     """
     from sessionfs.server.routes.helper import _acquire_slot
 
+    # Server-side time (wall time minus the provider call) feeds the
+    # extraction SLO histogram on the done and failed paths.
+    started = time.monotonic()
+    provider_seconds = 0.0
     scope_org_id = await _meeting_scope_org_id(db, meeting)
 
     resolved = await resolve_helper_llm(
@@ -677,10 +683,27 @@ async def run_meeting_extraction(
     line_count = meeting.line_count
     user_id = auth.user.id
 
+    # Per-org cap shared across instances (a personal project counts against
+    # its owner). Claimed on its own short transaction, never held open.
+    from sessionfs.server.services.org_concurrency import acquire_org_slot
+
+    cap_owner: str | None = None
+    if scope_org_id is None and meeting.project_id is not None:
+        cap_owner = (
+            await db.execute(select(Project.owner_id).where(Project.id == meeting.project_id))
+        ).scalar_one_or_none()
+
     try:
         slot = _acquire_slot(user_id)
     except HTTPException:
         raise _busy_error() from None
+    try:
+        org_cap = await acquire_org_slot(
+            db, "extraction", org_id=scope_org_id, user_id=cap_owner or user_id
+        )
+    except BaseException:
+        slot.release()
+        raise
 
     acc = _Collected(text_parts=[])
     failure: str | None = None
@@ -703,6 +726,7 @@ async def run_meeting_extraction(
     try:
         # Release the transaction before the (slow) provider call.
         await db.commit()
+        provider_started = time.monotonic()
         try:
             # wait_for, not asyncio.timeout: the package supports Python 3.10.
             await asyncio.wait_for(
@@ -716,8 +740,10 @@ async def run_meeting_extraction(
             raise
         except Exception as exc:  # noqa: BLE001 — classified, never provider text
             failure = _classify_failure(exc)
+        provider_seconds = time.monotonic() - provider_started
     finally:
         slot.release()
+        await org_cap.release()
 
     now = datetime.now(timezone.utc)
 
@@ -750,11 +776,20 @@ async def run_meeting_extraction(
     scope_org_id = await _meeting_scope_org_id(db, meeting)
     policy = await _upload_dlp_policy(db, auth, scope_org_id)
 
+    def _observe(result: str) -> None:
+        observe_extraction_server_time(
+            kind=meeting.kind,
+            result=result,
+            total_seconds=time.monotonic() - started,
+            provider_seconds=provider_seconds,
+        )
+
     async def _fail(code: str) -> tuple[int, str | None]:
         meeting.extraction_status = "failed"
         meeting.extraction_error = code
         meeting.updated_at = now
         await db.commit()
+        _observe("failed")
         return 0, code
 
     if failure is not None:
@@ -983,4 +1018,5 @@ async def run_meeting_extraction(
             db.add(event)
 
     await db.commit()
+    _observe("done")
     return dropped_items, None

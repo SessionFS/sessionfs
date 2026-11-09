@@ -363,6 +363,18 @@ async def start_worker_run(
     await lock_project_scope_authorized(
         db, project, auth=auth, ctx=ctx, feature="review_loop"
     )
+    # Re-read under the lock: the retry-or-takeover decision below must see
+    # a start that committed while this request waited, or a retry racing
+    # the first start opens a second run and bumps the lease twice.
+    ticket = (
+        await db.execute(
+            select(Ticket)
+            .where(Ticket.id == body.ticket_id, Ticket.project_id == project_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if ticket is None:
+        raise _nf()
 
     parent, _config, queue, item = await _loop_for_ticket(db, ticket)
     step_id = await _check_step(
@@ -633,6 +645,31 @@ async def _finish_view(
 _MAX_KEY_CHAIN = 50
 
 
+async def _lease_superseded(db: AsyncSession, run: AgentRun) -> bool:
+    """True when a later start-worker took this run's lease.
+
+    Every start-worker records the ticket's previous implementer run as
+    ``continues_run_id`` while holding the project lock, so a run that
+    another implementer run continues was taken over (or restarted). This
+    uses the recorded lineage, not timestamps, so pod clock skew can't hide
+    a takeover.
+    """
+    if not run.ticket_id:
+        return False
+    newer = await db.scalar(
+        select(AgentRun.id)
+        .where(
+            AgentRun.project_id == run.project_id,
+            AgentRun.ticket_id == run.ticket_id,
+            AgentRun.role.in_(("implementer", "ui-implementer")),
+            AgentRun.continues_run_id == run.id,
+            AgentRun.id != run.id,
+        )
+        .limit(1)
+    )
+    return newer is not None
+
+
 async def _may_finish_run(
     db: AsyncSession, auth: AuthContext, run: AgentRun, project: Project
 ) -> bool:
@@ -706,6 +743,20 @@ async def finish_worker_run(
             },
         )
     dollars = await _show_dollars(db, auth, project)
+    # The project lock orders this finish against start-worker, so the
+    # takeover check below sees every start that committed before it.
+    await lock_project_scope_authorized(
+        db, project, auth=auth, ctx=ctx, feature="review_loop"
+    )
+    run = (
+        await db.execute(
+            select(AgentRun)
+            .where(AgentRun.id == run_id, AgentRun.project_id == project_id)
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        raise _nf()
 
     ticket = await db.get(Ticket, run.ticket_id) if run.ticket_id else None
     step_values: dict[str, Any] = {}
@@ -742,6 +793,21 @@ async def finish_worker_run(
     if run.status not in ("queued", "running"):
         _replay_or_conflict(run)
         return await _finish_view(db, run, ticket, dollars=dollars, idempotent=True)
+
+    if await _lease_superseded(db, run):
+        await db.rollback()
+        raise HTTPException(
+            409,
+            {
+                "error": "lease_superseded",
+                "message": (
+                    "Another worker took over this ticket after this run "
+                    "started, so this run can no longer record a head commit. "
+                    "Report its token usage on the run's usage endpoint and "
+                    "stop."
+                ),
+            },
+        )
 
     usage_in = body.usage
     values: dict[str, Any] = {}
@@ -830,12 +896,52 @@ async def finish_worker_run(
                     service_key_name=auth.service_key_name,
                 )
     await db.commit()
+    _record_run_metrics(
+        provider=run.provider, model=run.model, usage=usage_in, project=project,
+        status=status, role=run.role,
+    )
     db.expire_all()
     run = (
         await db.execute(select(AgentRun).where(AgentRun.id == run_id))
     ).scalar_one()
     ticket = await db.get(Ticket, run.ticket_id) if run.ticket_id else None
     return await _finish_view(db, run, ticket, dollars=dollars, idempotent=False)
+
+
+def _record_run_metrics(
+    *,
+    provider: str | None,
+    model: str | None,
+    usage: Any,
+    status: str,
+    role: str | None,
+    project: Any = None,
+    project_id: str | None = None,
+    org_id: str | None = None,
+) -> None:
+    """Business metrics for a committed worker/review run (fail-safe)."""
+    from sessionfs.server import business_metrics
+
+    try:
+        if project is not None:
+            org_id = project.org_id
+            project_id = project.id
+    except Exception:
+        pass
+    if usage is not None:
+        business_metrics.record_agent_tokens(
+            provider=provider,
+            model=model,
+            input_tokens=getattr(usage, "input_tokens", None),
+            output_tokens=getattr(usage, "output_tokens", None),
+            cache_read_tokens=getattr(usage, "cache_read_tokens", None),
+            cache_write_tokens=getattr(usage, "cache_write_tokens", None),
+            org_id=org_id,
+            project_id=project_id,
+        )
+    business_metrics.record_agent_run_finished(
+        status=status, role=role, org_id=org_id, project_id=project_id
+    )
 
 
 # ── 3. review rounds ──
@@ -1070,6 +1176,7 @@ async def _record_failed_round_usage(
     usage_vals: dict[str, Any],
     reason: str,
     user_id: str,
+    org_id: str | None = None,
 ) -> None:
     """Keep a refused round's token usage on an errored run.
 
@@ -1116,6 +1223,10 @@ async def _record_failed_round_usage(
         )
     )
     await db.commit()
+    _record_run_metrics(
+        provider=body.provider, model=body.model, usage=body.usage,
+        project_id=project_id, org_id=org_id, status="errored", role=role,
+    )
 
 
 @router.post("/{project_id}/loops/{loop_id}/rounds", status_code=201)
@@ -1256,7 +1367,7 @@ async def record_review_round(
             db, auth, body=body, project_id=project_id, ticket=ticket,
             role=role, queue=queue, item=item, step_id=step_id,
             persona=round_persona, now=now, usage_vals=usage_vals,
-            reason=reason, user_id=caller_id,
+            reason=reason, user_id=caller_id, org_id=project.org_id,
         )
         return exc
 
@@ -1430,6 +1541,10 @@ async def record_review_round(
 
     run_id = run.id
     await db.commit()
+    _record_run_metrics(
+        provider=body.provider, model=body.model, usage=body.usage, project=project,
+        status="passed", role=role,
+    )
     if jira_ids:
         # A forwarded trusted verdict: deliver its Jira outbox row now (the
         # sweep retries it if this task is lost).

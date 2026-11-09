@@ -1,154 +1,165 @@
 import type { Ticket } from '../../api/client';
-import { Drawer } from '../../components/ui';
-import { BOARD_STATUSES, PRIORITY_TONE, type ViewProps } from './constants';
-import { KindBadge } from './KindBadge';
-import { AssigneeLabel } from './AssigneeLabel';
-import { TicketDetail } from './TicketDetail';
-import { DueChip } from './DueChip';
+import { AssigneeFace } from './AssignMenu';
+import { Signals } from './Signals';
+import { PriorityIcon, StatusIcon } from './StatusIcon';
+import { assigneeName, boardColumns, dueDisplay, isFinished, priorityText, type ById, type SortBy } from './views';
 
-/* ── Board view ──
+/* ── Board ──
  *
- * Columns are derived from the statuses the tab already knows. There is
- * NO drag-and-drop: every FSM transition that changes status
- * (start/complete/resolve/block/escalate) is CLI/MCP-only and must not
- * be draggable. The only dashboard-side transitions are button actions
- * (approve/dismiss/close) which appear as explicit buttons inside the
- * expanded detail — not via drag. */
+ * Six columns (Triage, Open, In progress, Blocked, In review, Done) that
+ * snap as they scroll. Cancelled tickets are never a column: a short note
+ * says how many there are and opens them in the list. There is no drag and
+ * drop: start, complete, block and resolve run where the work runs, so the
+ * board only reads. A card opens the ticket pane (a slide-over here). */
 
-export function BoardView({ tickets, projectId, selected, onSelect, onNavigate, jira }: ViewProps) {
-  const selectedTicket = tickets.find((t) => t.id === selected) ?? null;
-
+export function BoardView({
+  tickets,
+  byId,
+  sort,
+  selected,
+  onSelect,
+  tabStopId,
+  onFocusCard,
+  finishedHidden,
+  cancelledCount,
+  onShowCancelled,
+}: {
+  /** Tickets on screen (cancelled ones are left out here). */
+  tickets: Ticket[];
+  byId: ById;
+  sort: SortBy;
+  selected: string | null;
+  onSelect: (id: string) => void;
+  /** The one card in the tab order (roving tabindex). */
+  tabStopId: string | null;
+  onFocusCard: (id: string) => void;
+  /** Finished tickets are hidden by the view (All without Show finished). */
+  finishedHidden: boolean;
+  cancelledCount: number;
+  onShowCancelled: () => void;
+}) {
+  const columns = boardColumns(
+    tickets.filter((t) => t.status !== 'cancelled'),
+    sort,
+  );
   return (
-    <>
-      <div className="overflow-x-auto -mx-1 px-1">
-        <div className="flex gap-3 min-w-[980px]">
-          {BOARD_STATUSES.map((status) => {
-            const columnTickets = tickets.filter((t) => t.status === status.value);
-            return (
-              <div key={status.value} className="flex-1 min-w-[130px] max-w-[260px]">
-                {/* Column header */}
-                <h3 className="text-micro uppercase font-semibold text-text-tertiary mb-2 px-1 flex items-center gap-1.5">
-                  {status.label}
-                  <span className="text-text-tertiary/60 tabular-nums">
-                    {columnTickets.length}
-                  </span>
-                </h3>
-
-                {columnTickets.length === 0 ? (
-                  <div className="border border-dashed border-border rounded-lg p-3 text-xs text-text-tertiary text-center">
-                    —
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {columnTickets.map((t) => (
-                      <BoardCard
-                        key={t.id}
-                        ticket={t}
-                        isExpanded={selected === t.id}
-                        onToggle={() => onSelect(t.id)}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Board detail drawer — right-side panel instead of in-column expansion */}
-      <Drawer
-        open={selected !== null}
-        onClose={() => onSelect(selected!)}
-        titleId="ticket-detail-title"
-      >
-        {selectedTicket && (
-          <div className="space-y-3">
-            <h2
-              id="ticket-detail-title"
-              className="text-lg font-semibold text-text-primary"
-            >
-              {selectedTicket.title}
-            </h2>
-            <TicketDetail
-              projectId={projectId}
-              ticketId={selectedTicket.id}
-              fallback={selectedTicket}
-              onNavigate={onNavigate}
-              orgId={jira?.orgId}
-              isProjectAdmin={jira?.isProjectAdmin}
-              isEnterprise={jira?.isEnterprise}
-              canEdit={jira?.canEdit}
-              bare
-            />
-          </div>
-        )}
-      </Drawer>
-    </>
+    <div className="tk-board">
+      {columns.map(({ column, tickets: items }) => {
+        const headId = `tk-col-${column.key}`;
+        return (
+          <section key={column.key} className="tk-col" aria-labelledby={headId}>
+            <h3 id={headId} className="tk-col-head">
+              <StatusIcon status={column.status} size={14} />
+              {column.label}
+              <span className="tk-col-n">
+                {items.length}
+                <span className="sr-only"> {items.length === 1 ? 'ticket' : 'tickets'}</span>
+              </span>
+            </h3>
+            {column.note && <p className="tk-col-note">{column.note}</p>}
+            {items.length ? (
+              <ul className="tk-cards">
+                {items.map((t) => (
+                  <li key={t.id}>
+                    <BoardCard
+                      ticket={t}
+                      byId={byId}
+                      open={selected === t.id}
+                      tabbable={tabStopId === t.id}
+                      onOpen={() => onSelect(t.id)}
+                      onFocus={() => onFocusCard(t.id)}
+                    />
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="tk-col-empty">
+                {column.key === 'done' && finishedHidden ? 'Finished tickets are hidden. Turn on Show finished.' : 'Nothing here'}
+              </p>
+            )}
+          </section>
+        );
+      })}
+      {cancelledCount > 0 && (
+        <section className="tk-col tk-col-aside" aria-labelledby="tk-col-cancelled">
+          <h3 id="tk-col-cancelled" className="tk-col-head">
+            <StatusIcon status="cancelled" size={14} />
+            Cancelled
+            <span className="tk-col-n">{cancelledCount}</span>
+          </h3>
+          <p className="tk-col-note">Not shown on the board.</p>
+          <button type="button" className="tk-col-link" onClick={onShowCancelled}>
+            Show in the list
+          </button>
+        </section>
+      )}
+    </div>
   );
 }
 
-/* ── Board card ── */
-
 function BoardCard({
   ticket: t,
-  isExpanded,
-  onToggle,
+  byId,
+  open,
+  tabbable,
+  onOpen,
+  onFocus,
 }: {
   ticket: Ticket;
-  isExpanded: boolean;
-  onToggle: () => void;
+  byId: ById;
+  open: boolean;
+  tabbable: boolean;
+  onOpen: () => void;
+  onFocus: () => void;
 }) {
+  const due = dueDisplay(t);
+  const who = assigneeName(t);
+  const hasAssignee = !!(t.assigned_to || t.assigned_user_id || t.assigned_contact);
   return (
     <button
       type="button"
-      onClick={onToggle}
-      className={`w-full text-left bg-surface border border-border rounded-lg p-3 hover:bg-bg-elevated hover:border-border-strong transition-[background-color,border-color] duration-150 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
-        isExpanded ? 'border-[var(--brand)] ring-1 ring-[var(--brand)]/30' : ''
-      }`}
-      aria-expanded={isExpanded}
+      className={`tk-card${open ? ' is-open' : ''}${isFinished(t) ? ' is-dim' : ''}`}
+      onClick={onOpen}
+      onFocus={onFocus}
+      tabIndex={tabbable ? 0 : -1}
       aria-haspopup="dialog"
+      aria-expanded={open}
+      data-ticket-row={t.id}
     >
-      {/* Kind + ID row */}
-      <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
-        <KindBadge kind={t.kind} />
-        <span className="text-mono-chip text-2xs">{t.id.slice(0, 12)}</span>
-      </div>
-
-      {/* Title */}
-      <div className="text-sm font-medium text-text-primary mb-2 leading-snug line-clamp-2">
-        {t.title}
-      </div>
-
-      {/* Meta row */}
-      <div className="flex items-center gap-1.5 flex-wrap text-2xs text-text-tertiary">
-        <span className={`uppercase tracking-wide font-semibold ${PRIORITY_TONE[t.priority] ?? ''}`}>
-          {t.priority}
+      <span className="tk-card-meta">
+        <span className="tk-id-text">{t.id}</span>
+        {t.kind === 'issue' && <span className="tk-kind">Issue</span>}
+      </span>
+      <span className="tk-card-title">{t.title}</span>
+      <Sigs ticket={t} byId={byId} />
+      <span className="tk-card-foot">
+        <span className="tk-prio" title={`Priority: ${priorityText(t.priority)}`}>
+          <PriorityIcon priority={t.priority} />
+          <span className="sr-only">Priority {priorityText(t.priority)}</span>
         </span>
-        {(t.assigned_to || t.assigned_user_id || t.assigned_contact_id) && (
-          <span className="inline-flex min-w-0 max-w-full">
-            <AssigneeLabel ticket={t} variant="chip" />
+        {due && (
+          <span className={`tk-due${due.tone ? ` is-${due.tone}` : ''}`} title={`Due ${due.full}`}>
+            <span className="sr-only">Due </span>
+            {due.text}
           </span>
         )}
-        {t.acceptance_criteria.length > 0 && (
-          <>
-            <span className="opacity-40">·</span>
-            <span className="tabular-nums">{t.acceptance_criteria.length} crit</span>
-          </>
+        <span className="tk-card-sp" />
+        {hasAssignee && (
+          <span className="tk-card-asg" title={who ?? undefined}>
+            <AssigneeFace ticket={t} />
+            <span className="sr-only">Assigned to {who ?? 'a removed contact'}</span>
+          </span>
         )}
-        {t.depends_on.length > 0 && (
-          <>
-            <span className="opacity-40">·</span>
-            <span className="tabular-nums">{t.depends_on.length} dep</span>
-          </>
-        )}
-        {t.due_date && (
-          <>
-            <span className="opacity-40">·</span>
-            <DueChip ticket={t} />
-          </>
-        )}
-      </div>
+      </span>
     </button>
+  );
+}
+
+/** The row signals, on their own line (hidden by CSS when there are none). */
+function Sigs({ ticket, byId }: { ticket: Ticket; byId: ById }) {
+  return (
+    <span className="tk-card-sig">
+      <Signals ticket={ticket} byId={byId} compact />
+    </span>
   );
 }

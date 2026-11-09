@@ -21,6 +21,7 @@ import typer
 from rich.table import Table
 from rich.text import Text
 
+from sessionfs.http_idempotency import idempotent_client
 from sessionfs.cli.common import console, err_console, format_api_error, handle_errors
 
 catalog_app = typer.Typer(
@@ -61,7 +62,7 @@ def _request(method: str, path: str, payload: dict | None = None) -> Any:
     auth = _auth()
     url = f"{auth.api_url.rstrip('/')}/api/v1{path}"
     try:
-        with httpx.Client(timeout=60.0) as client:
+        with idempotent_client(timeout=60.0) as client:
             response = client.request(
                 method, url, headers={"Authorization": f"Bearer {auth.api_key}"}, json=payload
             )

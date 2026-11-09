@@ -1,0 +1,81 @@
+---
+title: "API Contract and Versioning"
+description: "What /api/v1 promises, how changes are made, how deprecations are announced, and where the OpenAPI snapshot lives."
+---
+
+This page describes the promises the SessionFS REST API makes to the clients that call it: the CLI, the MCP server, the dashboard, CI jobs and your own scripts.
+
+## The `/api/v1` stability promise
+
+Everything under `/api/v1` is a stable contract. Within `v1`:
+
+- A path or method that works today keeps working.
+- A field you send today is still read.
+- A field you receive today is still returned with the same type.
+- A request that succeeds today does not start failing because a new field became required.
+
+When one of these has to change, the old behaviour stays in place for a deprecation window first (see below). A change that can't keep the old behaviour would ship under a new version prefix, not inside `v1`.
+
+## Additive changes and breaking changes
+
+**Additive changes** can ship in any release without notice. Write clients that tolerate them:
+
+- new paths and methods
+- new optional request fields and new optional query parameters
+- new response fields (ignore fields you don't know)
+- a request field that accepts more values or types than before
+- new error codes on an existing status code
+
+**Breaking changes** need a deprecation window:
+
+- removing a path or method
+- removing or renaming a request or response field
+- changing a field's type
+- making a request field or query parameter required
+- removing a success status code
+
+## Deprecations
+
+A deprecated route or field keeps working for **at least one minor release** after the release that announces it (for example, deprecated in 0.30.0, removed no earlier than 0.31.0). The changelog names every deprecation, and the API announces it on each response that uses it:
+
+| Header | Meaning |
+|--------|---------|
+| `Deprecation` | The route or a field you sent is deprecated. Either `@<unix seconds>` (the date it was deprecated, [RFC 9745](https://www.rfc-editor.org/rfc/rfc9745)) or `true`. |
+| `Sunset` | The earliest date it may be removed, as an HTTP date ([RFC 8594](https://www.rfc-editor.org/rfc/rfc8594)), e.g. `Tue, 01 Jun 2027 00:00:00 GMT`. |
+| `X-SessionFS-Deprecated-Fields` | Comma-separated request fields you sent that are deprecated. |
+| `Link` | When present, `<url>; rel="deprecation"` points at the migration notes. |
+
+Deprecated routes are also marked `deprecated: true` in the OpenAPI document. If your client logs or alerts on `Deprecation`, you'll find out about a removal well before it happens.
+
+## Unknown request fields
+
+Older routes accept request bodies with fields they don't know and ignore them, so older clients keep working. To stop that from hiding mistakes (a typo, or a field that belongs to a different endpoint), those routes now say what they ignored:
+
+```
+X-SessionFS-Ignored-Fields: name,parent
+```
+
+The header lists the top-level JSON fields of your `POST`, `PUT` or `PATCH` body that the route did not read. It appears on any response, including a `422`, so when a request fails because of a missing field you can see whether you sent it under another name. It's absent when every field was read.
+
+New routes added from 0.30.0 on are strict: an unknown field is a `422` that names it, never a silent drop.
+
+For cross-origin callers, `X-SessionFS-Ignored-Fields`, `X-SessionFS-Deprecated-Fields`, `Deprecation` and `Sunset` are listed in `Access-Control-Expose-Headers`, so browser code can read them.
+
+## Field names that mean the same thing
+
+Where two endpoints named the same idea differently, the API accepts both names. For example, starting a review loop (`POST /api/v1/projects/{id}/loops`) adopts an existing issue through `from_ticket_id` or `ticket_id`, the name workflow start uses. Sending both with different values is a `422`; the API never picks one silently.
+
+## The OpenAPI snapshot
+
+The full contract is committed to the repository as [`docs/api/openapi.json`](https://github.com/SessionFS/sessionfs/blob/main/docs/api/openapi.json). It is generated from the server code, with sorted keys and no version string, so its history shows exactly how the API changed between releases. A running server also serves its live document at `/openapi.json`.
+
+The test suite regenerates the snapshot and fails when it differs from the committed file. It classifies every difference: removed paths or methods, removed or renamed fields, type changes and newly required fields are reported as breaking. A breaking change can only land with a deprecation in place, or as an explicit, reviewed update of the snapshot.
+
+To regenerate it in a checkout:
+
+```bash
+PYTHONPATH=src python -m sessionfs.server.openapi_snapshot          # write it
+PYTHONPATH=src python -m sessionfs.server.openapi_snapshot --check  # verify it
+```
+
+The same checks keep the [MCP server](/mcp/) in step with the API: every MCP tool argument must map onto a field its route reads, and every field an MCP tool sends must be one the route accepts.

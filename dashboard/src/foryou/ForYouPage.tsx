@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import type { AttentionFeed, AttentionGroup, AttentionItem } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
-import { Button, Dialog, Switch } from '../components/ui';
+import { Button, Dialog, Switch, Tooltip } from '../components/ui';
 import { useHelper } from '../helper/HelperProvider';
 import { FOR_YOU_KEY, useForYouFeed } from '../hooks/useForYou';
 import { useMe } from '../hooks/useMe';
@@ -38,6 +38,7 @@ import {
 } from './model';
 import { CountUp, Icon } from './parts';
 import './foryou.css';
+import { Term } from '../help/Term';
 
 /** The Undo toast stays at least this long (and while hovered or focused). */
 const UNDO_MS = 10_000;
@@ -649,12 +650,16 @@ export default function ForYouPage() {
         <Chyron entries={feed.chyron} cleared={clearedKeys} reduce={reduce} onPick={goto} />
       )}
       <div className="topbar">
-        <h1>For You</h1>
+        <h1>
+          <Term id="for-you">For You</Term>
+        </h1>
         <span className="crumb">Home</span>
         <div className="grow" />
-        <button className="iconbtn hide-sm" type="button" aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)" onClick={() => setKbdOpen(true)}>
-          <Icon name="keyboard" />
-        </button>
+        <Tooltip content={'Keyboard shortcuts (?)'} describe={false} side="bottom">
+          <button className="iconbtn hide-sm" type="button" aria-label="Keyboard shortcuts" onClick={() => setKbdOpen(true)}>
+            <Icon name="keyboard" />
+          </button>
+        </Tooltip>
       </div>
 
       {feed && (
@@ -946,9 +951,11 @@ export default function ForYouPage() {
           >
             <p>{toast.msg}</p>
             {toast.undo && <button className="btn sm" type="button" onClick={() => void undo()}>Undo <kbd>u</kbd></button>}
-            <button className="iconbtn" type="button" aria-label="Dismiss" style={{ width: 28, height: 28 }} onClick={() => setToast(null)}>
-              <Icon name="x" />
-            </button>
+            <Tooltip content={'Dismiss'} describe={false}>
+              <button className="iconbtn" type="button" aria-label="Dismiss" style={{ width: 28, height: 28 }} onClick={() => setToast(null)}>
+                <Icon name="x" />
+              </button>
+            </Tooltip>
           </div>
         )}
       </div>

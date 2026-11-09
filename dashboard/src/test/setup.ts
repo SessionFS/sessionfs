@@ -1,6 +1,33 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup } from '@testing-library/react';
-import { afterEach, beforeAll, beforeEach, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, expect, vi } from 'vitest';
+
+// A control can be unavailable two ways: natively `disabled`, or
+// `aria-disabled="true"` when it carries a reason (Button/IconButton
+// `disabledReason`) and so stays focusable for its tooltip.
+expect.extend({
+  toBeUnavailable(received: Element) {
+    const native = received instanceof HTMLElement && received.matches(':disabled');
+    const aria = received.getAttribute('aria-disabled') === 'true';
+    const pass = native || aria;
+    return {
+      pass,
+      message: () =>
+        pass
+          ? `expected element to be available, but it is ${native ? 'disabled' : 'aria-disabled'}`
+          : 'expected element to be disabled or aria-disabled="true"',
+    };
+  },
+});
+
+declare module 'vitest' {
+  interface Assertion {
+    toBeUnavailable(): void;
+  }
+  interface AsymmetricMatchersContaining {
+    toBeUnavailable(): void;
+  }
+}
 
 afterEach(() => {
   cleanup();

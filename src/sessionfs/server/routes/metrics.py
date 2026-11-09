@@ -109,6 +109,12 @@ async def _refresh_db_gauges(db: AsyncSession) -> None:
     if overflow is not None:
         DB_POOL_OVERFLOW.set(float(overflow))
 
+    # Business gauges (approval requests, review-loop items): DB-derived on the
+    # same cache so every replica reports the cluster-wide value. Never raises.
+    from sessionfs.server.business_metrics import refresh_business_gauges
+
+    await refresh_business_gauges(db)
+
 
 @router.get("/metrics")
 async def get_metrics(

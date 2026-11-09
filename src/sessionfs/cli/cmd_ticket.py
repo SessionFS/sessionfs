@@ -34,6 +34,7 @@ from pathlib import Path
 import typer
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.markup import escape
 from rich.table import Table
 
 from sessionfs.active_ticket import (
@@ -99,8 +100,16 @@ def _status_style(s: str) -> str:
         "blocked": "red",
         "review": "yellow",
         "done": "green",
+        "closed": "green",
         "cancelled": "dim",
     }.get(s, "")
+
+
+def _styled(value: str, style: str) -> str:
+    """Markup for a server-supplied value: escaped, and plain when the value
+    has no known style (``[]x[/]`` is not valid markup)."""
+    text = escape(value)
+    return f"[{style}]{text}[/]" if style else text
 
 
 def _print_ticket_table(rows: list[dict]) -> None:
@@ -116,10 +125,10 @@ def _print_ticket_table(rows: list[dict]) -> None:
     for t in rows:
         table.add_row(
             t.get("id", ""),
-            t.get("title", ""),
-            f"[{_status_style(t.get('status',''))}]{t.get('status','')}[/]",
-            f"[{_priority_style(t.get('priority',''))}]{t.get('priority','')}[/]",
-            t.get("assigned_to") or "—",
+            escape(t.get("title") or ""),
+            _styled(t.get("status") or "", _status_style(t.get("status") or "")),
+            _styled(t.get("priority") or "", _priority_style(t.get("priority") or "")),
+            escape(t.get("assigned_to") or "—"),
         )
     console.print(table)
 
@@ -181,12 +190,12 @@ def show_ticket(
     kind = body.get("kind", "task")
     kind_label = "[magenta]issue[/magenta]" if kind == "issue" else "task"
     console.print(Panel(
-        f"[bold]{body['title']}[/bold]\n"
+        f"[bold]{escape(body['title'])}[/bold]\n"
         f"[dim]{body['id']}[/dim]  "
         f"kind: {kind_label}  "
-        f"[{_status_style(body['status'])}]{body['status']}[/]  "
-        f"[{_priority_style(body['priority'])}]{body['priority']}[/]  "
-        f"assignee: {body.get('assigned_to') or '—'}",
+        f"{_styled(body['status'], _status_style(body['status']))}  "
+        f"{_styled(body['priority'], _priority_style(body['priority']))}  "
+        f"assignee: {escape(body.get('assigned_to') or '—')}",
         expand=False,
     ))
     # GitHub #113 — creator, due date and estimate.
@@ -197,7 +206,7 @@ def show_ticket(
         creator_label = (
             f"{creator_name} (persona: {creator_persona})" if creator_persona else creator_name
         )
-        console.print(f"[dim]creator:[/dim] {creator_label}")
+        console.print(f"[dim]creator:[/dim] {escape(creator_label)}")
     due = body.get("due_date")
     estimate = body.get("estimated_effort")
     if due or estimate:
@@ -1388,7 +1397,7 @@ def inbox_cmd(
     for n in items:
         table.add_row(
             str(n.get("id", "")),
-            f"[{_kind_style(n.get('kind',''))}]{n.get('kind','')}[/]",
+            _styled(n.get("kind") or "", _kind_style(n.get("kind") or "")),
             n.get("ticket_title") or n.get("ticket_id", ""),
             n.get("summary", ""),
             _ago(n.get("created_at")),
@@ -1460,7 +1469,7 @@ def updates_cmd(
         for n in items:
             table.add_row(
                 str(n.get("id", "")),
-                f"[{_kind_style(n.get('kind',''))}]{n.get('kind','')}[/]",
+                _styled(n.get("kind") or "", _kind_style(n.get("kind") or "")),
                 n.get("ticket_title") or n.get("ticket_id", ""),
                 n.get("summary", ""),
                 _ago(n.get("created_at")),
@@ -1683,8 +1692,7 @@ def jira_status_cmd(
         err_console.print(f"[red]API error ({s}): {format_api_error(body, s)}[/red]")
         raise typer.Exit(1)
     status = body.get("last_known_status") or "unknown"
-    style = _status_style(status.lower())
-    status_text = f"[{style}]{status}[/]" if style else status
+    status_text = _styled(status, _status_style(status.lower()))
     console.print(
         f"[bold]{body.get('issue_key', '')}[/bold]  "
         f"{status_text}\n"

@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useAuth } from '../auth/AuthContext';
 import { Card } from '../components/ui';
+import { Term } from '../help/Term';
 
 export default function SyncSection() {
   const { auth } = useAuth();
@@ -22,7 +23,9 @@ export default function SyncSection() {
 
   return (
     <Card level="elevated" className="p-5">
-      <h2 className="text-lg font-semibold text-text-primary mb-2">Autosync</h2>
+      <h2 className="text-lg font-semibold text-text-primary mb-2">
+        <Term id="autosync">Autosync</Term>
+      </h2>
       <p className="text-sm text-text-tertiary mb-3">
         Automatically sync sessions to the cloud. The daemon pushes changes after a short debounce period.
       </p>

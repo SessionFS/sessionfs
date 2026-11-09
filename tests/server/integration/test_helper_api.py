@@ -219,7 +219,9 @@ def _fake_run_agent_tool_then_text(session_id: str, title: str):
         result = await execute_tool(call)
         yield ToolResultEvent(call, result)
         yield Usage(input_tokens=10, output_tokens=3)
-        yield TextDelta(f"Found it in [session:{session_id} msg:0] ({title}).")
+        # A bare session marker: list_recent_sessions returns sessions, not
+        # message numbers, so a ``msg:<n>`` marker here would be removed.
+        yield TextDelta(f"Found it in [session:{session_id}] ({title}).")
         yield Done("stop")
 
     return _fake
@@ -246,7 +248,8 @@ def _fake_run_agent_multi_step():
 
 def _fake_run_agent_hang():
     async def _fake(*, execute_tool, **kwargs):
-        yield TextDelta("partial answer ")
+        # A whole line: answers stream one finished sentence at a time.
+        yield TextDelta("partial answer.\n")
         await asyncio.Event().wait()
         yield TextDelta("never")
 
@@ -259,7 +262,8 @@ def _fake_run_agent_tool_then_hang():
         yield ToolCallEvent(call)
         result = await execute_tool(call)
         yield ToolResultEvent(call, result)
-        yield TextDelta("partial answer ")
+        # A whole line: answers stream one finished sentence at a time.
+        yield TextDelta("partial answer.\n")
         await asyncio.Event().wait()
         yield TextDelta("never")
 
@@ -340,14 +344,14 @@ async def test_stream_tool_then_text_with_citation(
     assert tool_result["ok"] is True
 
     texts = [e[1]["delta"] for e in events if e[0] == "text"]
-    assert "".join(texts) == f"Found it in [session:{session.id} msg:0] (Refactor notes)."
+    assert "".join(texts) == f"Found it in [session:{session.id}] (Refactor notes)."
 
     citations = [e[1] for e in events if e[0] == "citation"]
     assert citations == [
         {
             "kind": "session",
             "session_id": session.id,
-            "message_index": 0,
+            "message_index": None,
             "title": "Refactor notes",
             "at": citations[0]["at"],
         }
@@ -376,7 +380,7 @@ async def test_stream_tool_then_text_with_citation(
         {
             "kind": "session",
             "session_id": session.id,
-            "message_index": 0,
+            "message_index": None,
             "title": "Refactor notes",
             "at": citations[0]["at"],
         }
@@ -503,6 +507,14 @@ async def test_json_turn_drops_unknown_doc_markers(
     user, key = await _make_user(db_session)
 
     async def _fake(*, execute_tool, **kwargs):
+        # A docs citation is only kept after a docs tool returned that page.
+        call = ToolCall(
+            id="call_doc",
+            name="get_sessionfs_doc",
+            arguments={"slug": "integrations/jira", "anchor": "setup"},
+        )
+        yield ToolCallEvent(call)
+        yield ToolResultEvent(call, await execute_tool(call))
         yield Usage(input_tokens=5, output_tokens=4)
         yield TextDelta("Set it up [doc:integrations/jira#setup] not [doc:made-up-page] or ")
         yield TextDelta("[doc:quickstart#no-such-anchor].")
@@ -1162,7 +1174,7 @@ async def test_disconnect_persists_partial_answer(
     ).scalars().all()
     roles = [r.role for r in rows]
     assert roles == ["user", "assistant"]
-    assert rows[-1].content == "partial answer "
+    assert rows[-1].content == "partial answer.\n"
 
 
 @pytest.mark.asyncio
@@ -1888,7 +1900,7 @@ def test_system_prompt_assembles_answer_style_and_instructions():
     fixed_end = full.index("Today's date is")
     assert fixed_end < full.index("<org-instructions>") < full.index("<personal-instructions>")
     # The sections are clearly delimited so the fixed prompt stays attributable.
-    assert helper_mod._HELPER_SYSTEM_PROMPT_VERSION == "v21"
+    assert helper_mod._HELPER_SYSTEM_PROMPT_VERSION == "v23"
 
 
 @pytest.mark.asyncio
@@ -2220,7 +2232,7 @@ async def test_raw_asgi_disconnect_persists_turn_audit_and_releases_slot(
             ).scalars().all()
             assert [r.role for r in rows] == ["user", "tool", "assistant"]
             assert rows[-1].stop_reason == "client_disconnected"
-            assert rows[-1].content == "partial answer "
+            assert rows[-1].content == "partial answer.\n"
 
             contexts = (await check.execute(select(RetrievalAuditContext))).scalars().all()
             assert len(contexts) == 1
@@ -3285,7 +3297,8 @@ async def test_ticket_citation_outside_scope_is_dropped(
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["answer"] == ""
+    # Every marker was invalid, so the server says it couldn't answer.
+    assert body["answer"] == helper_mod._UNFINISHED_ANSWER
     assert body["citations"] == []
 
 

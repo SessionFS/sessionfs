@@ -10,6 +10,7 @@ import {
 } from '../../hooks/useReviewLoop';
 import { errorMessage } from '../../utils/errorMessage';
 import { plural } from './format';
+import { Term } from '../../help/Term';
 
 const SECTION_TITLE = 'text-md font-semibold text-text-primary';
 const QUIET = 'text-sm text-text-tertiary';
@@ -205,7 +206,9 @@ export function ChecklistPanel({ projectId, canEdit }: { projectId: string; canE
   const items = list.data ?? [];
   return (
     <section aria-labelledby="loop-checklist" className="space-y-3">
-      <h3 id="loop-checklist" className={SECTION_TITLE}>Checklist</h3>
+      <h3 id="loop-checklist" className={SECTION_TITLE}>
+        <Term id="loop-checklist">Checklist</Term>
+      </h3>
       <p className={QUIET}>
         Recurring traps that go into every brief and review once accepted.
       </p>

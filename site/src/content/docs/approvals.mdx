@@ -1,6 +1,9 @@
 ---
 title: "Approvals"
 description: "Approval policies: declarative, enforced and auditable sign-offs on merges and knowledge-base promotion."
+availability:
+  feature: approval_policies
+  deployment: both
 ---
 
 Approval policies turn "someone from security signs off on auth changes" into a rule SessionFS enforces and records. A policy names what it covers, who must approve and how many approvals it needs. A matching **blocking** policy holds the work until enough of the right people approve. An **advisory** policy only adds a warning.

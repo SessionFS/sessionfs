@@ -25,9 +25,9 @@ access revoked):
        org→org admin-initiated transfer.
     3. KB entries authored by the removed member stay; authored_by
        preserved (no FK CASCADE; honoring the audit identity).
-    4. If the removed member's default_org_id was THIS org, null it
-       (Phase 1 FK ON DELETE SET NULL semantics — we apply explicitly
-       since SET NULL fires on org delete, not on member-removal).
+    4. If the removed member's default_org_id was THIS org, null it; the
+       read-time rule then resolves their earliest remaining membership
+       (a person can belong to several orgs; the others are untouched).
     5. Pending transfers where the removed member is the target →
        cancel them (target standing is gone; KB entry 248 invariant).
 
@@ -44,10 +44,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, StrictInt, field_validator
+from pydantic import BaseModel, Field, StrictInt, field_validator
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sessionfs.server.api_contract import StrictRequestModel
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
@@ -67,6 +68,11 @@ from sessionfs.server.db.models import (
     User,
 )
 from sessionfs.server.services.auto_join import org_has_oidc_sso
+from sessionfs.server.services.bulk import (
+    bulk_refusal,
+    check_bulk_duplicates,
+    check_bulk_size,
+)
 from sessionfs.server.services.personas import clear_represented_user
 
 logger = logging.getLogger("sessionfs.api")
@@ -110,6 +116,10 @@ class InviteResponse(BaseModel):
     invite_id: str
     email: str
     role: str
+    # False when no email provider is configured (or the send failed): the
+    # admin then shares ``accept_url`` with the invitee themselves.
+    email_sent: bool = False
+    accept_url: str | None = None
 
 
 class RemoveMemberResponse(BaseModel):
@@ -634,6 +644,124 @@ async def update_my_digest_prefs(
     return DigestPrefsResponse(org_id=org_id, opt_out=member.digest_opt_out)
 
 
+class InviteRefused(Exception):
+    """One invite the UPSERT refuses: ``status`` + ``detail`` are what the
+    single route answers, ``code`` is the per-item code the bulk route uses."""
+
+    def __init__(self, status: int, code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
+        self.code = code
+        self.detail = detail
+
+
+async def upsert_org_invite(
+    db: AsyncSession,
+    *,
+    org_id: str,
+    email: str,
+    role: str,
+    inviter: User,
+    now: datetime,
+) -> OrgInvite:
+    """Create (or re-arm a stale) invite for ``email``. Not committed.
+
+    Shared by the single and bulk invite routes. Raises ``InviteRefused`` for
+    a bad role, an active invite or an existing member; nothing is written
+    in that case.
+    """
+    if role not in ("admin", "member"):
+        raise InviteRefused(400, "invalid_role", "Role must be 'admin' or 'member'")
+
+    # Lookup ANY existing row for this (org_id, email). Migration 016
+    # enforces uq_org_invites_org_email so at most one row can exist.
+    # We classify by state: stale (declined / expired / orphan-
+    # accepted) → UPDATE in place; active → 409.
+    #
+    # tk_d88678e6fe384de6 — pairs with the same fix in routes/org.py
+    # so both invite endpoints behave identically. Without this, the
+    # v0.10.22 R1 MED route predicate is more permissive than the DB
+    # constraint can support, and a fresh INSERT on top of a stale row
+    # raises IntegrityError → 409 duplicate_resource.
+    #
+    # `.with_for_update()` serializes concurrent re-invites against
+    # the same stale row on PG (Codex R1 MED on this ticket). SQLite
+    # ignores FOR UPDATE; the engine's single-writer model serializes
+    # anyway. Without the lock, two requests can both read the old
+    # primary key and the second UPDATE collides against a row whose
+    # id was just rewritten by the first → StaleDataError → 500.
+    stale = (
+        await db.execute(
+            select(OrgInvite)
+            .where(
+                OrgInvite.org_id == org_id,
+                OrgInvite.email == email,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+
+    if stale is not None:
+        stale_expires = stale.expires_at
+        if stale_expires.tzinfo is None:
+            stale_expires = stale_expires.replace(tzinfo=timezone.utc)
+        is_active = (
+            stale.accepted_at is None
+            and stale.declined_at is None
+            and stale_expires > now
+        )
+        if is_active:
+            raise InviteRefused(
+                409, "invite_active", "An active invite already exists for this email"
+            )
+
+    # Existing member? Covers both: user already added via a different
+    # path AND orphan-accepted stale invite with a live OrgMember.
+    target_user = (
+        await db.execute(select(User).where(User.email == email))
+    ).scalar_one_or_none()
+    if target_user:
+        existing = (
+            await db.execute(
+                select(OrgMember).where(
+                    OrgMember.org_id == org_id,
+                    OrgMember.user_id == target_user.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing:
+            raise InviteRefused(409, "already_member", "This user is already a member")
+
+    new_invite_id = f"inv_{secrets.token_hex(8)}"
+    new_expires_at = now.replace(microsecond=0) + _invite_ttl()
+
+    if stale is not None:
+        # UPDATE-in-place: regenerate `id` to invalidate stale email
+        # links, refresh `expires_at`, clear all terminal-state fields,
+        # update role/invited_by. Preserve `created_at` as the audit
+        # signal of when the email was first onboarded.
+        stale.id = new_invite_id
+        stale.role = role
+        stale.invited_by = inviter.id
+        stale.expires_at = new_expires_at
+        stale.accepted_at = None
+        stale.declined_at = None
+        stale.decline_reason = None
+        stale.last_emailed_at = None
+        return stale
+    invite = OrgInvite(
+        id=new_invite_id,
+        org_id=org_id,
+        email=email,
+        role=role,
+        invited_by=inviter.id,
+        created_at=now,
+        expires_at=new_expires_at,
+    )
+    db.add(invite)
+    return invite
+
+
 @router.post("/{org_id}/members/invite", response_model=InviteResponse)
 async def invite_member(
     org_id: str,
@@ -664,95 +792,12 @@ async def invite_member(
             },
         )
 
-    # Lookup ANY existing row for this (org_id, email). Migration 016
-    # enforces uq_org_invites_org_email so at most one row can exist.
-    # We classify by state: stale (declined / expired / orphan-
-    # accepted) → UPDATE in place; active → 409.
-    #
-    # tk_d88678e6fe384de6 — pairs with the same fix in routes/org.py
-    # so both invite endpoints behave identically. Without this, the
-    # v0.10.22 R1 MED route predicate is more permissive than the DB
-    # constraint can support, and a fresh INSERT on top of a stale row
-    # raises IntegrityError → 409 duplicate_resource.
-    #
-    # `.with_for_update()` serializes concurrent re-invites against
-    # the same stale row on PG (Codex R1 MED on this ticket). SQLite
-    # ignores FOR UPDATE; the engine's single-writer model serializes
-    # anyway. Without the lock, two requests can both read the old
-    # primary key and the second UPDATE collides against a row whose
-    # id was just rewritten by the first → StaleDataError → 500.
-    stale = (
-        await db.execute(
-            select(OrgInvite)
-            .where(
-                OrgInvite.org_id == org_id,
-                OrgInvite.email == data.email,
-            )
-            .with_for_update()
+    try:
+        invite = await upsert_org_invite(
+            db, org_id=org_id, email=data.email, role=data.role, inviter=user, now=_now()
         )
-    ).scalar_one_or_none()
-
-    now = _now()
-    if stale is not None:
-        stale_expires = stale.expires_at
-        if stale_expires.tzinfo is None:
-            from datetime import timezone as _tz
-            stale_expires = stale_expires.replace(tzinfo=_tz.utc)
-        is_active = (
-            stale.accepted_at is None
-            and stale.declined_at is None
-            and stale_expires > now
-        )
-        if is_active:
-            raise HTTPException(
-                409, "An active invite already exists for this email"
-            )
-
-    # Existing member? Covers both: user already added via a different
-    # path AND orphan-accepted stale invite with a live OrgMember.
-    target_user = (
-        await db.execute(select(User).where(User.email == data.email))
-    ).scalar_one_or_none()
-    if target_user:
-        existing = (
-            await db.execute(
-                select(OrgMember).where(
-                    OrgMember.org_id == org_id,
-                    OrgMember.user_id == target_user.id,
-                )
-            )
-        ).scalar_one_or_none()
-        if existing:
-            raise HTTPException(409, "This user is already a member")
-
-    new_invite_id = f"inv_{secrets.token_hex(8)}"
-    new_expires_at = now.replace(microsecond=0) + _invite_ttl()
-
-    if stale is not None:
-        # UPDATE-in-place: regenerate `id` to invalidate stale email
-        # links, refresh `expires_at`, clear all terminal-state fields,
-        # update role/invited_by. Preserve `created_at` as the audit
-        # signal of when the email was first onboarded.
-        stale.id = new_invite_id
-        stale.role = data.role
-        stale.invited_by = user.id
-        stale.expires_at = new_expires_at
-        stale.accepted_at = None
-        stale.declined_at = None
-        stale.decline_reason = None
-        stale.last_emailed_at = None
-        invite = stale
-    else:
-        invite = OrgInvite(
-            id=new_invite_id,
-            org_id=org_id,
-            email=data.email,
-            role=data.role,
-            invited_by=user.id,
-            created_at=now,
-            expires_at=new_expires_at,
-        )
-        db.add(invite)
+    except InviteRefused as exc:
+        raise HTTPException(exc.status, exc.detail) from None
 
     await db.commit()
     await db.refresh(invite)
@@ -762,9 +807,12 @@ async def invite_member(
     # invite row is already durable; a transient email failure logs
     # but does not 500 the route (admin can resend later via the
     # /invites/{invite_id}/resend endpoint below).
-    from sessionfs.server.services.invite_helpers import dispatch_invite_email
+    from sessionfs.server.services.invite_helpers import (
+        dispatch_invite_email,
+        invite_accept_url,
+    )
 
-    await dispatch_invite_email(
+    sent = await dispatch_invite_email(
         request=request,
         db=db,
         invite=invite,
@@ -772,7 +820,158 @@ async def invite_member(
         inviter=user,
     )
 
-    return InviteResponse(invite_id=invite_id, email=data.email, role=data.role)
+    return InviteResponse(
+        invite_id=invite_id,
+        email=data.email,
+        role=data.role,
+        email_sent=sent,
+        accept_url=invite_accept_url(request, invite_id),
+    )
+
+
+# ── Bulk invites ──
+
+
+class BulkInviteItem(StrictRequestModel):
+    email: str = Field(..., min_length=1, max_length=320)
+    role: str = "member"
+
+    @field_validator("email")
+    @classmethod
+    def _norm_email(cls, v: str) -> str:
+        return v.strip().lower()
+
+
+class BulkInviteRequest(StrictRequestModel):
+    # The 100-item cap is checked in the route so it answers too_many_items.
+    invites: list[BulkInviteItem] = Field(..., min_length=1)
+
+
+class BulkInviteResult(BaseModel):
+    index: int
+    email: str
+    role: str
+    ok: bool
+    invite_id: str | None = None
+    email_sent: bool = False
+    accept_url: str | None = None
+    code: str | None = None
+    message: str | None = None
+
+
+class BulkInviteResponse(BaseModel):
+    org_id: str
+    invited: int
+    results: list[BulkInviteResult]
+
+
+@router.post("/{org_id}/invites/bulk", response_model=BulkInviteResponse)
+async def bulk_invite_members(
+    org_id: str,
+    data: BulkInviteRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> BulkInviteResponse:
+    """Invite up to 100 people in one all-or-nothing request. Admin only.
+
+    Each item goes through the same UPSERT as the single invite route. The
+    seat cap is checked once for the whole batch (current members plus every
+    invite in this request) under the org lock. If any item is refused
+    nothing is written and the answer is a 422 listing every item. Emails go
+    out after commit, best-effort.
+    """
+    check_bulk_size(len(data.invites))
+    check_bulk_duplicates([i.email for i in data.invites], "email")
+
+    await _org_or_404(db, org_id)
+    await _require_admin(db, user, org_id)
+
+    from sessionfs.server.services.scope_locks import lock_scopes
+
+    # Org scope lock, then the org row (the order invite acceptance uses),
+    # so the seat count can't move under the batch.
+    await lock_scopes(db, org_ids=[org_id])
+    org = (
+        await db.execute(
+            select(Organization)
+            .where(Organization.id == org_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if org is None:
+        raise HTTPException(404, "Org not found")
+    # Re-check standing under the lock.
+    await _require_admin(db, user, org_id)
+
+    seats_used = len(
+        (
+            await db.execute(select(OrgMember.id).where(OrgMember.org_id == org_id))
+        ).scalars().all()
+    )
+    if org.seats_limit is not None and seats_used + len(data.invites) > org.seats_limit:
+        raise HTTPException(
+            403,
+            {
+                "error": "seat_limit",
+                "seats_used": seats_used,
+                "seats_limit": org.seats_limit,
+                "seats_requested": len(data.invites),
+                "message": "Not enough free seats for this batch. Upgrade for more seats.",
+            },
+        )
+
+    now = _now()
+    results: list[BulkInviteResult] = []
+    invites: list[OrgInvite] = []
+    failed = False
+    for index, item in enumerate(data.invites):
+        try:
+            invite = await upsert_org_invite(
+                db, org_id=org_id, email=item.email, role=item.role, inviter=user, now=now
+            )
+        except InviteRefused as exc:
+            failed = True
+            results.append(
+                BulkInviteResult(
+                    index=index,
+                    email=item.email,
+                    role=item.role,
+                    ok=False,
+                    code=exc.code,
+                    message=exc.detail,
+                )
+            )
+            continue
+        invites.append(invite)
+        results.append(
+            BulkInviteResult(index=index, email=item.email, role=item.role, ok=True)
+        )
+
+    if failed:
+        await db.rollback()
+        raise bulk_refusal(results)
+
+    await db.commit()
+
+    from sessionfs.server.services.invite_helpers import (
+        dispatch_invite_email,
+        invite_accept_url,
+    )
+
+    for result, invite in zip(results, invites):
+        await db.refresh(invite)
+        result.invite_id = invite.id
+        result.accept_url = invite_accept_url(request, invite.id)
+
+    # Best-effort, after commit: a failed send never undoes the batch.
+    for result, invite in zip(results, invites):
+        result.email_sent = await dispatch_invite_email(
+            request=request, db=db, invite=invite, org=org, inviter=user
+        )
+
+    return BulkInviteResponse(org_id=org_id, invited=len(results), results=results)
 
 
 def _invite_ttl():
@@ -1302,7 +1501,9 @@ async def perform_member_removal(
         projects_transferred += 1
         ownership_flipped_project_ids.append(project.id)
 
-    # 2. Clear default_org_id pointer if it was this org.
+    # 2. Clear default_org_id if it pointed at this org. The read-time rule
+    #    (tier_gate.get_user_org_membership) then picks their earliest
+    #    remaining membership. Other memberships are untouched.
     await db.execute(
         update(User)
         .where(

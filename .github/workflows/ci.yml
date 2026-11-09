@@ -28,6 +28,28 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v --tb=short -n auto --dist loadgroup
 
+  slo-smoke:
+    name: SLO perf smoke
+    runs-on: ubuntu-latest
+    # Drives each SLO'd operation (ticket comment write, session push,
+    # extraction server time, reminders sweep) on the in-process app and
+    # fails when the best-of-three-rounds p95 passes its budget. Budgets are
+    # documented in tests/server/perf/test_slo_smoke.py. Excluded from the
+    # main test job by the slo_smoke marker.
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+      - name: Run SLO perf smoke
+        run: pytest tests/server/perf -m slo_smoke -s --tb=short
+      - name: Check SLO alert rules with promtool
+        run: |
+          docker run --rm -v "$PWD/docs/observability:/rules:ro" --entrypoint promtool \
+            prom/prometheus:v2.53.2 check rules /rules/sessionfs-slo-rules.yaml
+
   lint:
     runs-on: ubuntu-latest
     steps:

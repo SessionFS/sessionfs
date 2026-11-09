@@ -1,6 +1,9 @@
 ---
 title: "Worker Review Loop"
 description: "Build a change with brief-driven coding agents in isolated worktrees, gated by an independent trusted reviewer, a fix pass and a re-review before merge."
+availability:
+  feature: review_loop
+  deployment: both
 ---
 
 The worker review loop is a way to build a change with several coding agents without letting any of them grade their own work. Workers write code from a written brief, one branch each, in their own git worktree. A separate reviewer reads the code, not the worker's summary, and posts a verdict. The worker's fix pass goes back to the same reviewer, and nothing merges until that reviewer says it is clean.
@@ -172,6 +175,8 @@ The `worker-review-loop` skill (version 2.0 in the [launch catalog](/skills-mark
 5. **The reviewer records each round** with `record_review_round`: the round number, the stage, the full commit it reviewed, the verdict (`VERIFIED-CLEAN` or `CHANGES-REQUESTED`), its findings and its tokens. Each finding has a severity, a class (a checklist slug, or `new`) and a harm (`data-exposed`, `money-spent`, `wrong-actor`, `crash`, `other` or `none`). Whether the verdict is trusted comes from the credential that sent it, never from the request. A finding with class `new` proposes a checklist item, so the next brief warns about it. Going past the round cap or the token budget parks the ticket for a person.
 6. **Harm decides whether there is another round.** A finding with real harm is fixed by a new worker run and re-checked against the new commit. Findings with harm `none` go into one follow-up ticket. After three rounds on one branch, look at why findings keep coming before paying for a fourth.
 7. **Merge.** `check_merge_readiness` is ready only for a trusted clean verdict bound to the exact commit, from a reviewer who is not an implementer, with no harmful finding open. A review round never closes a ticket when the reviewer is one of its implementers or the implementers can't be determined. A person merges.
+
+What each of these calls guarantees when a worker crashes, a client retries or two requests race (idempotency keys, lease fencing and what to do on a timeout) is set out, with the test behind each claim, in [Review Loop Guarantees](/review-loop-guarantees/).
 
 ### Merge check on GitHub and GitLab
 

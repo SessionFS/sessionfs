@@ -13,6 +13,7 @@ import {
 import { ContactAvatar } from './ContactChip';
 import { ContactFormDialog } from './ContactFormDialog';
 import { contactErrorMessage, shortDate } from './format';
+import { Term } from '../../help/Term';
 
 /**
  * "To confirm": names in the last 90 days of meetings and chats you can read
@@ -37,7 +38,7 @@ export function SuggestionsQueue({
       <section aria-labelledby="to-confirm-heading" className="space-y-4 p-5">
         <div>
           <h2 id="to-confirm-heading" className="text-base font-semibold text-text-primary">
-            People to confirm
+            <Term id="people-to-confirm">People to confirm</Term>
           </h2>
           <p className="mt-1 max-w-2xl text-sm text-text-tertiary">
             Names from the last 90 days of meetings and chats you can see that don’t match anyone. Confirm who each one

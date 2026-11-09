@@ -27,6 +27,7 @@ export const RELATION_LABEL: Record<string, string> = {
   derived_from: 'derived from',
   trained_on: 'trained on',
   fine_tuned_from: 'fine-tuned from',
+  distilled_from: 'distilled from',
   evaluated_against: 'evaluated against',
   uses: 'uses',
 };

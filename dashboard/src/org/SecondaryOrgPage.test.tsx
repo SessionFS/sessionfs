@@ -6,14 +6,20 @@
  */
 
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import SecondaryOrgPage from './SecondaryOrgPage';
 
-const { mockUseOrgMembers, mockUseMe, mockUseMyOrgs } = vi.hoisted(() => ({
+const { mockUseOrgMembers, mockUseMe, mockUseMyOrgs, mockSetDefault } = vi.hoisted(() => ({
   mockUseOrgMembers: vi.fn(),
   mockUseMe: vi.fn(),
   mockUseMyOrgs: vi.fn(),
+  mockSetDefault: vi.fn(),
+}));
+
+vi.mock('./useDefaultOrg', () => ({
+  useSetDefaultOrg: () => ({ mutate: mockSetDefault, isPending: false }),
 }));
 
 vi.mock('./useOrgMembers', () => ({
@@ -141,5 +147,20 @@ describe('SecondaryOrgPage', () => {
     expect(screen.getByText(/don.t have access to this organization/i)).toBeInTheDocument();
     expect(screen.queryByText('Loading…')).not.toBeInTheDocument();
     expect(screen.queryByTestId('org-personas-stub')).not.toBeInTheDocument();
+  });
+
+  it('offers to switch the default organization to this one', async () => {
+    mockUseOrgMembers.mockReturnValue({
+      data: { org_id: 'org_2', current_user_role: 'member', members: [] },
+      isLoading: false,
+    });
+    mockUseMe.mockReturnValue({ data: { user_id: 'u_1' } });
+    mockUseMyOrgs.mockReturnValue({ data: [{ org_id: 'org_2', name: 'Globex', role: 'member' }] });
+    mockSetDefault.mockReset();
+
+    renderPage();
+    await userEvent.click(screen.getByRole('button', { name: /switch to this organization/i }));
+
+    expect(mockSetDefault).toHaveBeenCalledWith({ orgId: 'org_2' }, expect.anything());
   });
 });

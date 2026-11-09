@@ -127,6 +127,9 @@ function fieldEdited(e: TicketEvent): string {
   return label ? `edited the ${label}` : 'edited this ticket';
 }
 
+// Status names mid-sentence read lower case ("moved this to in review").
+const statusWord = (status: string) => formatStatusLabel(status).toLowerCase();
+
 /** One readable sentence per event. */
 export function describeTicketEvent(e: TicketEvent, names: UserNames = new Map()): EventSentence {
   const actor = actorName(e.actor);
@@ -138,8 +141,8 @@ export function describeTicketEvent(e: TicketEvent, names: UserNames = new Map()
     case 'status_changed': {
       const from = scalar(e.before);
       const to = scalar(e.after);
-      if (from && to) return { actor, text: `moved this from ${formatStatusLabel(from)} to ${formatStatusLabel(to)}` };
-      if (to) return { actor, text: `moved this to ${formatStatusLabel(to)}` };
+      if (from && to) return { actor, text: `moved this from ${statusWord(from)} to ${statusWord(to)}` };
+      if (to) return { actor, text: `moved this to ${statusWord(to)}` };
       return { actor, text: 'changed the status' };
     }
     case 'assigned': {

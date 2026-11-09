@@ -83,6 +83,23 @@ class ServerConfig(BaseSettings):
     # service only calls public https endpoints. Link-local and cloud-metadata
     # addresses stay blocked either way.
     llm_allow_private_hosts: bool = False
+    # Operator metrics: add org_id / project_id labels to the per-tenant
+    # business metric families (GitHub #131). Ids only, never names. Default
+    # false: the hosted service aggregates across tenants. A self-hosted
+    # opt-in; series grow with the number of orgs/projects.
+    metrics_tenant_labels: bool = False
+    # Per-org concurrency caps on the expensive routes, shared by every API
+    # instance through the org_concurrency_slots table (services/
+    # org_concurrency.py). A personal project counts against its owner.
+    # 0 turns a cap off. Over the cap: 429 org_concurrency_limit.
+    org_concurrency_extraction: int = 4
+    org_concurrency_helper: int = 8
+    org_concurrency_compile: int = 2
+    org_concurrency_export: int = 2
+    # PostgreSQL statement_timeout (ms) on the heavy read routes (search,
+    # For You, loop status/report, spend, approval log, session changes,
+    # exports). A cancelled read answers 503 query_timeout. 0 turns it off.
+    heavy_read_timeout_ms: int = 15_000
     # Public GitHub mirror of the public native catalog, as owner/repo (e.g.
     # SessionFS/marketplace). Set: the public catalog's add commands lead with
     # the keyless GitHub form. A scheduled `sfs catalog export` keeps it in

@@ -185,7 +185,8 @@ describe('Checklist panel', () => {
     hooks.useSeedChecklist.mockReturnValue(mut());
     hooks.usePatchChecklistItem.mockReturnValue(mut());
     render(<ChecklistPanel projectId="proj_1" canEdit={false} />);
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    // The heading's glossary term is a button; no action button may render.
+    expect(screen.queryAllByRole('button').filter((b) => !b.closest('[data-term]'))).toHaveLength(0);
   });
 
   it('disables only the busy item while its write is in flight, then shows an error on failure', async () => {

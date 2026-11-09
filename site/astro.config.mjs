@@ -73,8 +73,10 @@ export default defineConfig({
             { label: 'External contacts', slug: 'contacts' },
             { label: 'Skills Marketplace', slug: 'skills-marketplace' },
             { label: 'Worker Review Loop', slug: 'review-loop' },
+            { label: 'Review Loop Guarantees', slug: 'review-loop-guarantees' },
             { label: 'Workflow Templates', slug: 'workflows' },
             { label: 'Evaluations and Lineage', slug: 'evals' },
+            { label: 'Lineage Edge Types', slug: 'lineage' },
             { label: 'Session Helper', slug: 'session-helper' },
           ],
         },
@@ -102,12 +104,16 @@ export default defineConfig({
           items: [
             { label: 'Self-Hosted (Helm)', slug: 'self-hosted' },
             { label: 'Environment Variables', slug: 'environment' },
+            { label: 'Metrics Reference', slug: 'metrics' },
+            { label: 'Tenancy and Isolation', slug: 'tenancy' },
+            { label: 'Service Level Objectives', slug: 'slos' },
           ],
         },
         {
           label: 'Reference',
           items: [
             { label: 'REST API', slug: 'api' },
+            { label: 'API Contract and Versioning', slug: 'api-contract' },
             { label: 'Telemetry', slug: 'telemetry' },
             { label: 'Troubleshooting', slug: 'troubleshooting' },
           ],

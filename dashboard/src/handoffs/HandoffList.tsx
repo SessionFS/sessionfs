@@ -5,6 +5,7 @@ import RelativeDate from '../components/RelativeDate';
 import { Badge, ToolBadge } from '../components/Badge';
 import { Tabs, TabPanel, PageContainer, PageHeader } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
+import { Term } from '../help/Term';
 
 type Tab = 'inbox' | 'sent';
 
@@ -47,7 +48,7 @@ export default function HandoffList() {
 
   return (
     <PageContainer>
-      <PageHeader title="Handoffs" />
+      <PageHeader title={<Term id="handoff">Handoffs</Term>} />
 
       <Tabs
         tabs={tabItems}

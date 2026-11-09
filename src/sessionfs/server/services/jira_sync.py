@@ -904,16 +904,34 @@ async def process_event(db: AsyncSession, event_id: str) -> str:
     """
     if not await _claim(db, event_id, _now()):
         return "not_due"
+    org_id: str | None = None
+    queued_at: datetime | None = None
     try:
         event = await db.get(TrackerSyncEvent, event_id, populate_existing=True)
         if event is None:
             return "skipped"
+        # Read before delivery: the commits below expire the instance.
+        org_id, queued_at = event.org_id, event.created_at
         outcome = await _deliver(db, event)
         await db.commit()
-        return outcome
     except Exception as exc:  # noqa: BLE001 — recorded on the row
         await db.rollback()
-        return await _mark_failure(db, event_id, exc)
+        outcome = await _mark_failure(db, event_id, exc)
+    _record_outbound_metric(outcome, org_id, queued_at)
+    return outcome
+
+
+def _record_outbound_metric(outcome: str, org_id: str | None, queued_at: datetime | None) -> None:
+    """Count one outbox delivery attempt (fail-safe)."""
+    from sessionfs.server import business_metrics
+
+    if outcome == "missing":
+        return
+    lag = None
+    if outcome == STATE_DONE and queued_at is not None:
+        queued = queued_at if queued_at.tzinfo else queued_at.replace(tzinfo=timezone.utc)
+        lag = (_now() - queued).total_seconds()
+    business_metrics.record_jira_sync("outbound", outcome, org_id=org_id, lag_seconds=lag)
 
 
 def _finish(event: TrackerSyncEvent, state: str, *, error: str | None = None, reason: str | None = None) -> str:

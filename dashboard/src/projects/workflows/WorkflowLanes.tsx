@@ -5,6 +5,7 @@ import { useWorkflowPlan } from '../../hooks/useWorkflows';
 import { errorMessage } from '../../utils/errorMessage';
 import { storyHref } from '../loop/format';
 import { gateLabel } from './graph';
+import { Term } from '../../help/Term';
 
 const STATE_LABEL: Record<PlanStepState, string> = {
   blocked: 'Blocked',
@@ -56,17 +57,28 @@ function Lane({ projectId, step }: { projectId: string; step: PlanStep }) {
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
         <h3 className="min-w-0 flex-1 text-sm font-semibold text-text-primary">{name}</h3>
-        <Badge variant={STATE_VARIANT[step.state]} label={STATE_LABEL[step.state]} tint />
+        {step.state === 'needs_human' ? (
+          <Term id="needs-human">
+            <Badge variant={STATE_VARIANT[step.state]} label={STATE_LABEL[step.state]} tint />
+          </Term>
+        ) : (
+          <Badge variant={STATE_VARIANT[step.state]} label={STATE_LABEL[step.state]} tint />
+        )}
       </div>
       <p className="text-xs text-text-tertiary">
         {step.role}
         {step.agent && ` · ${step.agent}`}
-        {step.fan_out > 1 && ` · ×${step.fan_out}`}
+        {step.fan_out > 1 && (
+          <>
+            {' · '}
+            <Term id="fan-out">×{step.fan_out}</Term>
+          </>
+        )}
         {step.depends_on.length > 0 && ` · after ${step.depends_on.join(', ')}`}
       </p>
       {gate && (
         <p className="text-xs text-text-secondary">
-          {gate}:{' '}
+          <Term id="workflow-gate">{gate}</Term>:{' '}
           <span className={step.gate_status.passed ? 'text-text-secondary' : 'text-text-primary'}>
             {step.gate_status.passed ? 'passed' : `not passed${step.gate_status.reason ? `, ${step.gate_status.reason}` : ''}`}
           </span>

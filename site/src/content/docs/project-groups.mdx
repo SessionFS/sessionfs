@@ -1,6 +1,9 @@
 ---
 title: "Project Groups"
 description: "Group org projects and grant scoped read/edit access, with opt-in restricted project visibility."
+availability:
+  feature: project_groups
+  deployment: both
 ---
 
 Project groups are flat, org-scoped collections of projects. They let a Team or Enterprise organization grant a member read or edit access to a subset of its projects, and — when combined with restricted project visibility — narrow who can see and change each project from "every org member" to a chosen few.
@@ -53,8 +56,11 @@ Membership grants (group admin):
 
 ```
 PUT    /api/v1/orgs/{org_id}/groups/{group_id}/members/{user_id}   {"role": "reader" | "editor" | "admin"}
+POST   /api/v1/orgs/{org_id}/groups/{group_id}/members/bulk        {"grants": [{"user_id": "…", "role": "reader"}, …]}
 DELETE /api/v1/orgs/{org_id}/groups/{group_id}/members/{user_id}
 ```
+
+The bulk route grants or updates up to 100 members in one request, each user id at most once, with the same rules as a single grant. It is all or nothing: if any grant is refused (for example a user who isn't an org member), nothing changes and you get `422 bulk_item_failed` with a `results` list showing which items failed. From the CLI: `sfs project group grant <group> --file members.txt --role reader`, one email or user id per line, optionally `email,role`.
 
 Non-members of the org get `404` on every group route. Grantees must be active members of the group's org; granting a non-member returns `422 not_org_member`. Removing a member from the org, or deactivating their account, deletes their group grants in the same transaction.
 

@@ -23,6 +23,7 @@ import { Button, Select, Table } from '../components/ui';
 import { DeleteConfirmModal, PersonaEditModal, type EditState } from '../projects/PersonasTab';
 import { errorMessage } from '../utils/errorMessage';
 import PersonaDetailDrawer from './PersonaDetailDrawer';
+import { Term } from '../help/Term';
 
 export interface OrgPersonaMember {
   user_id: string;
@@ -125,7 +126,7 @@ export default function OrgPersonasSection({
               ? [
                   {
                     key: 'represents',
-                    header: 'Represents',
+                    header: <Term id="represents">Represents</Term>,
                     render: (p: Persona) => (
                       <Select
                         value={p.represented_user_id ?? ''}

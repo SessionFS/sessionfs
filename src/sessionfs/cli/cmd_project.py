@@ -13,6 +13,7 @@ import typer
 from rich.markdown import Markdown
 from rich.markup import escape
 
+from sessionfs.http_idempotency import idempotent_async_client
 from sessionfs.cli.common import (
     confirm_or_exit,
     console,
@@ -93,12 +94,11 @@ def _extract_search_keywords(question: str) -> list[str]:
 
 async def _api_request(method: str, path: str, api_url: str, api_key: str, json_data: dict | None = None) -> dict:
     """Make an authenticated API request."""
-    import httpx
 
     url = f"{api_url.rstrip('/')}{path}"
     headers = {"Authorization": f"Bearer {api_key}"}
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         if method == "GET":
             resp = await client.get(url, headers=headers)
         elif method == "POST":

@@ -180,7 +180,7 @@ describe('Artifacts', () => {
     expect(screen.getByTestId('lineage-graph')).toBeInTheDocument();
     expect(screen.getByText('Blocked from Staging')).toBeInTheDocument();
     expect(screen.getByText(/clinical-notes has no trusted passed run/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Promote to Staging' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Promote to Staging' })).toBeUnavailable();
     expect(await axe(container)).toHaveNoViolations();
   });
 

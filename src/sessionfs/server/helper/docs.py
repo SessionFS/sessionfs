@@ -21,9 +21,10 @@ import difflib
 import json
 import logging
 import math
+import os
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -139,6 +140,9 @@ class DocsIndex:
     by_slug: dict[str, list[_Section]]
     # stem -> ids (positions in ``sections``) of the sections containing it.
     postings: dict[str, list[int]]
+    # slug -> the page's ``availability`` tag (feature + deployment), when
+    # the page has one.
+    availability: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "DocsIndex":
@@ -148,9 +152,12 @@ class DocsIndex:
         df: dict[str, int] = {}
         by_slug: dict[str, list[_Section]] = {}
         postings: dict[str, list[int]] = {}
+        availability: dict[str, dict[str, Any]] = {}
         total_length = 0
         for page in data["pages"]:
             slug = page["slug"]
+            if isinstance(page.get("availability"), dict):
+                availability[slug] = page["availability"]
             title = page["title"]
             url = page["url"]
             page_sections: list[_Section] = []
@@ -189,6 +196,7 @@ class DocsIndex:
             avg_length=(total_length / len(sections)) if sections else 0.0,
             by_slug=by_slug,
             postings=postings,
+            availability=availability,
         )
 
     def _idf(self, term: str) -> float:
@@ -247,6 +255,7 @@ class DocsIndex:
                     "heading": section.heading,
                     "url": f"{section.url}{anchor_suffix}",
                     "excerpt": self._excerpt(section.text, unique_terms, weights),
+                    "availability": self.availability.get(section.slug),
                 }
             )
         return results
@@ -310,6 +319,7 @@ class DocsIndex:
                     "heading": first.heading,
                     "url": f"{first.url}#{anchor}",
                     "text": " ".join(s.text for s in matching)[:_GET_MAX_CHARS],
+                    "availability": self.availability.get(slug),
                 }
         # Whole page: heading-marked sections so the model keeps the structure.
         # Parts of one long section are joined under a single heading.
@@ -342,6 +352,7 @@ class DocsIndex:
             "heading": None,
             "url": page.url,
             "text": text,
+            "availability": self.availability.get(slug),
         }
 
     def close_slugs(self, slug: str, limit: int = 10) -> list[str]:
@@ -382,6 +393,79 @@ class DocsIndex:
             "title": page.page_title,
             "url": f"{page.url}#{anchor}" if anchor else page.url,
         }
+
+
+# ---------------------------------------------------------------------------
+# Availability (which plans / deployments a docs page applies to)
+# ---------------------------------------------------------------------------
+
+_PLAN_LABELS = {
+    "free": "Free",
+    "starter": "Starter",
+    "pro": "Pro",
+    "team": "Team",
+    "enterprise": "Enterprise",
+}
+
+
+def deployment_mode() -> str:
+    """``cloud`` or ``self-hosted`` for this server.
+
+    ``SFS_DEPLOYMENT`` (the Helm chart sets ``self-hosted``); anything else,
+    including unset, is the hosted cloud service.
+    """
+    raw = (os.environ.get("SFS_DEPLOYMENT") or "").strip().lower().replace("_", "-")
+    return "self-hosted" if raw in ("self-hosted", "selfhosted", "on-prem") else "cloud"
+
+
+def _join_plans(labels: list[str]) -> str:
+    if len(labels) <= 1:
+        return "".join(labels)
+    return ", ".join(labels[:-1]) + " and " + labels[-1]
+
+
+def availability_line(
+    availability: dict[str, Any] | None, plan: str | None, deployment: str
+) -> str:
+    """The "Availability: …" line a docs result carries.
+
+    Computed from the page's tag, the caller's plan for the conversation's
+    scope and this server's deployment, so a docs hit says whether the
+    feature is available here rather than only that it is documented.
+    """
+    from sessionfs.server.tiers import TIER_FEATURES, Tier
+
+    if not availability:
+        return "Availability: not recorded for this page."
+    parts: list[str] = []
+    feature = availability.get("feature")
+    plan_label = _PLAN_LABELS.get(plan or "", (plan or "unknown").title())
+    if feature == "all":
+        parts.append("every plan")
+        if plan:
+            parts.append(f"your plan: {plan_label} (available)")
+    elif isinstance(feature, str):
+        tiers = [t for t in Tier if feature in TIER_FEATURES[t]["features"]]
+        labels = [_PLAN_LABELS[t.value] for t in tiers]
+        parts.append(
+            "every plan" if len(tiers) == len(Tier) else f"{_join_plans(labels)} plans"
+        )
+        if plan:
+            ok = any(t.value == plan for t in tiers)
+            parts.append(f"your plan: {plan_label} ({'available' if ok else 'not available'})")
+    where = availability.get("deployment", "both")
+    if where == "cloud":
+        where_text = "cloud only"
+        if deployment == "self-hosted":
+            where_text += " (not on this self-hosted server)"
+    elif where == "self-hosted":
+        where_text = "self-hosted only"
+        if deployment == "cloud":
+            where_text += " (not on the cloud service)"
+    else:
+        where_text = "cloud and self-hosted"
+    parts.append(where_text)
+    return "Availability: " + "; ".join(parts) + "."
 
 
 @lru_cache(maxsize=1)

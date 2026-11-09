@@ -23,6 +23,7 @@ from mcp.types import TextContent, Tool
 
 from sessionfs.cli.common import read_sfs_messages
 from sessionfs.daemon.config import load_config
+from sessionfs.http_idempotency import idempotent_async_client
 from sessionfs.mcp.search import SessionSearchIndex
 from sessionfs.server.schemas.agent_feedback import (
     ALL_LABELS,
@@ -3475,8 +3476,9 @@ _TOOLS = [
             "ticket ids with their briefs, queue_id, the reviewer setup "
             "status, and the env for each role (implementer/reviewer). "
             "`tickets` is a list of {title, description, acceptance_criteria}; "
-            "`from_ticket_id` optionally adopts an existing issue as the loop "
-            "parent instead of creating a new one. `cost_budget_usd` is org "
+            "`from_ticket_id` (alias `ticket_id`) optionally adopts an existing "
+            "issue as the loop parent instead of creating a new one; without it "
+            "`title` is required. `cost_budget_usd` is org "
             "owner/admin only.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs loop start` or any other sfs CLI command."
@@ -3487,6 +3489,7 @@ _TOOLS = [
                 "title": {"type": "string", "description": "Loop parent issue title (ignored when from_ticket_id is set)."},
                 "description": {"type": "string", "description": "Parent issue description (optional)."},
                 "from_ticket_id": {"type": "string", "description": "Existing issue ticket id (tk_...) to adopt as the loop parent."},
+                "ticket_id": {"type": "string", "description": "Alias of from_ticket_id (the name start_workflow uses). Send one of the two."},
                 "tickets": {
                     "type": "array",
                     "description": "Child tasks: [{title, description, acceptance_criteria}].",
@@ -3873,8 +3876,8 @@ _TOOLS = [
         name="link_artifacts",
         description=(
             "Add a lineage edge parent -> child inside the project: relation "
-            "derived_from | trained_on | fine_tuned_from | evaluated_against | "
-            "uses, optional context_ref (commit, notebook path, run id). "
+            "derived_from | trained_on | fine_tuned_from | distilled_from | "
+            "evaluated_against | uses, optional context_ref (commit, notebook path, run id). "
             "Cycles and self-edges are refused.\n\n"
             "IMPORTANT: Always use this MCP tool instead of running "
             "`sfs artifact link` or any other sfs CLI command."
@@ -3884,7 +3887,7 @@ _TOOLS = [
             "properties": {
                 "parent_id": {"type": "string"},
                 "child_id": {"type": "string"},
-                "relation": {"type": "string", "enum": ["derived_from", "trained_on", "fine_tuned_from", "evaluated_against", "uses"]},
+                "relation": {"type": "string", "enum": ["derived_from", "trained_on", "fine_tuned_from", "distilled_from", "evaluated_against", "uses"]},
                 "context_ref": {"type": "string"},
                 "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
             },
@@ -4612,7 +4615,6 @@ async def _record_retrieval_for_tool(name: str, arguments: dict, result: Any) ->
             api_url, api_key, project_id = await _resolve_project_id(
                 arguments.get("git_remote", "")
             )
-            import httpx
 
             payload = {
                 "context_id": context_id,
@@ -4622,7 +4624,7 @@ async def _record_retrieval_for_tool(name: str, arguments: dict, result: Any) ->
                 "returned_refs": collect_returned_refs(result),
                 "source": "mcp",
             }
-            async with httpx.AsyncClient(timeout=10) as client:
+            async with idempotent_async_client(timeout=10) as client:
                 resp = await client.post(
                     f"{api_url}/api/v1/projects/{project_id}/retrieval-audit-events",
                     headers={"Authorization": f"Bearer {api_key}"},
@@ -4923,8 +4925,7 @@ async def _handle_get_project_context(args: dict) -> str:
                 "To create project context: sfs project init && sfs project edit"
             )
 
-        import httpx
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with idempotent_async_client(timeout=15) as client:
             resp = await client.get(
                 f"{config.sync.api_url.rstrip('/')}/api/v1/projects/{normalized}",
                 headers={"Authorization": f"Bearer {config.sync.api_key}"},
@@ -4954,7 +4955,7 @@ async def _handle_get_project_context(args: dict) -> str:
         try:
             project_id = data.get("id", "")
             if project_id:
-                async with httpx.AsyncClient(timeout=10) as pages_client:
+                async with idempotent_async_client(timeout=10) as pages_client:
                     pages_resp = await pages_client.get(
                         f"{config.sync.api_url.rstrip('/')}/api/v1/projects/{project_id}/pages",
                         headers={"Authorization": f"Bearer {config.sync.api_key}"},
@@ -4973,7 +4974,7 @@ async def _handle_get_project_context(args: dict) -> str:
         try:
             project_id = data.get("id", "")
             if project_id:
-                async with httpx.AsyncClient(timeout=10) as entries_client:
+                async with idempotent_async_client(timeout=10) as entries_client:
                     entries_resp = await entries_client.get(
                         f"{config.sync.api_url.rstrip('/')}/api/v1/projects/{project_id}/entries?limit=20&pending=true",
                         headers={"Authorization": f"Bearer {config.sync.api_key}"},
@@ -5122,10 +5123,9 @@ async def _handle_search_knowledge(args: dict) -> str:
         if not config.sync.api_key:
             return "Not authenticated with SessionFS cloud. Run 'sfs auth login' first."
 
-        import httpx
 
         # First get project ID
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with idempotent_async_client(timeout=15) as client:
             resp = await client.get(
                 f"{config.sync.api_url.rstrip('/')}/api/v1/projects/{normalized}",
                 headers={"Authorization": f"Bearer {config.sync.api_key}"},
@@ -5148,7 +5148,7 @@ async def _handle_search_knowledge(args: dict) -> str:
             query_params["used_in_answer"] = "true"
         params = "?" + urlencode(query_params)
 
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with idempotent_async_client(timeout=15) as client:
             resp = await client.get(
                 f"{config.sync.api_url.rstrip('/')}/api/v1/projects/{project_id}/entries{params}",
                 headers={"Authorization": f"Bearer {config.sync.api_key}"},
@@ -5237,8 +5237,7 @@ async def _resolve_project_id(git_remote: str = "") -> tuple[str, str, str]:
     if not config.sync.api_key:
         raise Exception("Not authenticated. Run 'sfs auth login' first.")
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{config.sync.api_url.rstrip('/')}/api/v1/projects/{normalized}",
             headers={"Authorization": f"Bearer {config.sync.api_key}"},
@@ -5337,7 +5336,6 @@ async def _handle_add_knowledge(args: dict) -> str:
         if bundle_threaded_persona and not author_class:
             author_class = "agent"
 
-        import httpx
         payload: dict = {
             "content": content,
             "entry_type": entry_type,
@@ -5359,7 +5357,7 @@ async def _handle_add_knowledge(args: dict) -> str:
         if upsert:
             payload["upsert"] = True
 
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with idempotent_async_client(timeout=15) as client:
             resp = await client.post(
                 f"{api_url}/api/v1/projects/{project_id}/entries/add",
                 json=payload,
@@ -5448,7 +5446,6 @@ async def _handle_update_wiki_page(args: dict) -> str:
                 # because the local provenance file is corrupt.
                 pass
 
-        import httpx
         payload: dict = {"content": content}
         if title:
             payload["title"] = title
@@ -5457,7 +5454,7 @@ async def _handle_update_wiki_page(args: dict) -> str:
         if ticket_id:
             payload["ticket_id"] = ticket_id
 
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with idempotent_async_client(timeout=15) as client:
             resp = await client.put(
                 f"{api_url}/api/v1/projects/{project_id}/pages/{_path_segment(slug, allow_slash=True)}",
                 json=payload,
@@ -5478,8 +5475,7 @@ async def _handle_list_wiki_pages(args: dict) -> str:
     try:
         api_url, api_key, project_id = await _resolve_project_id(git_remote)
 
-        import httpx
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with idempotent_async_client(timeout=15) as client:
             resp = await client.get(
                 f"{api_url}/api/v1/projects/{project_id}/pages",
                 headers={"Authorization": f"Bearer {api_key}"},
@@ -5592,8 +5588,7 @@ async def _handle_ask_session_helper(args: dict) -> dict:
     if scope:
         payload["scope"] = scope
 
-    import httpx
-    async with httpx.AsyncClient(timeout=_ASK_SESSION_HELPER_TIMEOUT_SECONDS) as client:
+    async with idempotent_async_client(timeout=_ASK_SESSION_HELPER_TIMEOUT_SECONDS) as client:
         resp = await client.post(
             f"{config.sync.api_url.rstrip('/')}/api/v1/helper/turns",
             json=payload,
@@ -5762,9 +5757,8 @@ async def _fetch_kb_entries_raw(args: dict) -> list[dict]:
         if not config.sync.api_key:
             return []
 
-        import httpx
 
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with idempotent_async_client(timeout=15) as client:
             resp = await client.get(
                 f"{config.sync.api_url.rstrip('/')}/api/v1/projects/{normalized}",
                 headers={"Authorization": f"Bearer {config.sync.api_key}"},
@@ -5785,7 +5779,7 @@ async def _fetch_kb_entries_raw(args: dict) -> list[dict]:
             query_params["used_in_answer"] = "true"
         params = "?" + urlencode(query_params)
 
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with idempotent_async_client(timeout=15) as client:
             resp = await client.get(
                 f"{config.sync.api_url.rstrip('/')}/api/v1/projects/{project_id}/entries{params}",
                 headers={"Authorization": f"Bearer {config.sync.api_key}"},
@@ -5818,8 +5812,7 @@ async def _handle_get_rules(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/rules",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -5841,11 +5834,10 @@ async def _handle_get_compiled_rules(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
     payload: dict = {}
     if tool:
         payload["tools"] = [tool]
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/rules/compile",
             json=payload,
@@ -5886,8 +5878,7 @@ async def _handle_get_knowledge_entry(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/entries/{_path_segment(entry_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -5929,8 +5920,7 @@ async def _handle_list_knowledge_entries(args: dict) -> dict:
     if args.get("limit") is not None:
         params["limit"] = str(int(args["limit"]))
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/entries",
             params=params,
@@ -5975,8 +5965,7 @@ async def _handle_get_wiki_page(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/pages/{_path_segment(slug, allow_slash=True)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6012,9 +6001,8 @@ async def _handle_get_wiki_page_history(args: dict) -> dict:
         except (TypeError, ValueError):
             pass
 
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/pages/{_path_segment(slug, allow_slash=True)}/history",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6035,8 +6023,7 @@ async def _handle_get_knowledge_health(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/health",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6058,8 +6045,7 @@ async def _handle_get_context_section(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/context/sections/{_path_segment(slug)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6124,11 +6110,10 @@ async def _handle_rename_session(args: dict) -> dict:
     if not config.sync.api_key:
         return {"error": "Not authenticated. Run 'sfs auth login' first."}
 
-    import httpx
     api_url = config.sync.api_url.rstrip("/")
     headers = {"Authorization": f"Bearer {config.sync.api_key}"}
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         # Resolve the caller-supplied identifier (which may be an alias)
         # to the canonical session id BEFORE any mutation. Codex R1
         # MEDIUM: if the caller passes the alias they're about to clear,
@@ -6190,9 +6175,8 @@ async def _handle_get_session_provenance(args: dict) -> dict:
     if not config.sync.api_key:
         return {"error": "Not authenticated. Run 'sfs auth login' first."}
 
-    import httpx
     api_url = config.sync.api_url.rstrip("/")
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/sessions/{_path_segment(session_id)}/provenance",
             headers={"Authorization": f"Bearer {config.sync.api_key}"},
@@ -6214,11 +6198,9 @@ async def _handle_get_session_retrieval_log(args: dict) -> dict:
         return {"error": "Invalid session_id"}
     config = load_config()
     if config.sync.api_key:
-        import httpx
-
         api_url = config.sync.api_url.rstrip("/")
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with idempotent_async_client(timeout=15) as client:
                 resp = await client.get(
                     f"{api_url}/api/v1/sessions/{_path_segment(session_id)}/retrieval-log",
                     headers={"Authorization": f"Bearer {config.sync.api_key}"},
@@ -6280,8 +6262,7 @@ async def _handle_compile_knowledge_base(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with idempotent_async_client(timeout=60) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/compile",
             json={},
@@ -6344,8 +6325,7 @@ async def _handle_list_personas(args: dict) -> dict:
             _url, org_key, collection = await _org_persona_api_config(org_id)
         except Exception as exc:
             return {"error": str(exc)}
-        import httpx
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with idempotent_async_client(timeout=15) as client:
             resp = await client.get(
                 collection, headers={"Authorization": f"Bearer {org_key}"}
             )
@@ -6363,8 +6343,7 @@ async def _handle_list_personas(args: dict) -> dict:
     if not _strict_bool(args.get("include_org", True), True):
         params["include_org"] = "false"
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/personas",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6394,8 +6373,7 @@ async def _group_config(args: dict) -> tuple[str, str, str]:
 
     org_id = _org_id_arg(args)
     if not org_id:
-        import httpx
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with idempotent_async_client(timeout=15) as client:
             resp = await client.get(
                 f"{api_url}/api/v1/auth/me",
                 headers={"Authorization": f"Bearer {api_key}"},
@@ -6415,8 +6393,7 @@ async def _group_slug_to_id(
     api_url: str, api_key: str, org_id: str, slug: str
 ) -> str:
     """Resolve a group's org-scoped slug to its id via the group list."""
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6437,8 +6414,7 @@ async def _handle_list_project_groups(args: dict) -> dict:
         api_url, api_key, org_id = await _group_config(args)
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6457,8 +6433,7 @@ async def _handle_get_project_group(args: dict) -> dict:
         group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6485,8 +6460,7 @@ async def _handle_create_project_group(args: dict) -> dict:
     if isinstance(description, str) and description.strip():
         body["description"] = description.strip()
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.post(
             f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6506,8 +6480,7 @@ async def _handle_delete_project_group(args: dict) -> dict:
         group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.delete(
             f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6545,8 +6518,7 @@ async def _handle_update_project_group(args: dict) -> dict:
         group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.patch(
             f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6567,8 +6539,7 @@ async def _handle_add_project_to_group(args: dict) -> dict:
         group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.put(
             f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}/projects/{_path_segment(project_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6588,8 +6559,7 @@ async def _handle_remove_project_from_group(args: dict) -> dict:
         group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.delete(
             f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}/projects/{_path_segment(project_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6608,8 +6578,7 @@ async def _handle_list_group_members(args: dict) -> dict:
         group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6637,8 +6606,7 @@ async def _handle_grant_group_access(args: dict) -> dict:
         group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.put(
             f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}/members/{_path_segment(user_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6659,8 +6627,7 @@ async def _handle_revoke_group_access(args: dict) -> dict:
         group_id = await _group_slug_to_id(api_url, api_key, org_id, slug)
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.delete(
             f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(group_id)}/members/{_path_segment(user_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6676,8 +6643,7 @@ async def _handle_list_group_access(args: dict) -> dict:
         api_url, api_key = _group_api_config()
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/me/groups",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6707,8 +6673,7 @@ async def _handle_search_group_knowledge(args: dict) -> dict:
     if isinstance(limit, int):
         params["limit"] = str(max(1, min(int(limit), 100)))
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(slug)}/knowledge/search",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6727,8 +6692,7 @@ async def _handle_get_group_context(args: dict) -> dict:
         api_url, api_key, org_id = await _group_config(args)
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(slug)}/context",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6746,8 +6710,7 @@ async def _handle_compile_group_knowledge(args: dict) -> dict:
         api_url, api_key, org_id = await _group_config(args)
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.post(
             f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/groups/{_path_segment(slug)}/compile",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6831,8 +6794,7 @@ async def _handle_get_persona(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{collection}/{_path_segment(name)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6858,8 +6820,7 @@ async def _handle_list_tickets(args: dict) -> dict:
         if isinstance(val, str) and val.strip():
             params[key] = val.strip()
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/tickets",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6882,8 +6843,7 @@ async def _handle_get_ticket(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6912,8 +6872,7 @@ async def _handle_get_ticket_review_state(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/review-state",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6943,8 +6902,7 @@ async def _handle_check_merge_readiness(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/readiness",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -6986,6 +6944,23 @@ async def _handle_start_review_loop(args: dict) -> dict:
     if not reviewer_persona:
         return {"error": "reviewer_persona is required"}
 
+    # ``ticket_id`` is an alias of ``from_ticket_id`` (start_workflow's name).
+    adopt_ids = {
+        str(args[key]).strip()
+        for key in ("from_ticket_id", "ticket_id")
+        if isinstance(args.get(key), str) and args[key].strip()
+    }
+    if len(adopt_ids) > 1:
+        return {
+            "error": "from_ticket_id and ticket_id are the same field but differ; send only one"
+        }
+    has_title = isinstance(args.get("title"), str) and bool(args["title"].strip())
+    if not adopt_ids and not has_title:
+        return {
+            "error": "title is required to create a new loop issue; or send "
+            "from_ticket_id (alias ticket_id) to adopt an existing issue"
+        }
+
     git_remote = args.get("git_remote", "")
     try:
         api_url, api_key, project_id = await _resolve_project_id(git_remote)
@@ -7000,8 +6975,8 @@ async def _handle_start_review_loop(args: dict) -> dict:
         body["title"] = args["title"].strip()
     if isinstance(args.get("description"), str) and args["description"].strip():
         body["description"] = args["description"].strip()
-    if isinstance(args.get("from_ticket_id"), str) and args["from_ticket_id"].strip():
-        body["from_ticket_id"] = args["from_ticket_id"].strip()
+    if adopt_ids:
+        body["from_ticket_id"] = adopt_ids.pop()
     for key in ("token_budget", "max_review_rounds"):
         val = args.get(key)
         if isinstance(val, int) and not isinstance(val, bool):
@@ -7011,8 +6986,7 @@ async def _handle_start_review_loop(args: dict) -> dict:
     ):
         body["cost_budget_usd"] = args["cost_budget_usd"]
 
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/loops",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -7035,8 +7009,7 @@ async def _handle_get_loop_status(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/loops/{_path_segment(loop_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -7074,8 +7047,7 @@ async def _loop_worker_post(args: dict, path: str, body: dict, timeout: int = 30
         api_url, api_key, project_id = await _resolve_project_id(git_remote)
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with idempotent_async_client(timeout=timeout) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/{path}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -7163,8 +7135,7 @@ def _add_step_id(args: dict, body: dict) -> None:
 
 
 async def _workflow_get(url: str, api_key: str, *, missing: str) -> dict:
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(url, headers={"Authorization": f"Bearer {api_key}"})
     if resp.status_code == 404:
         return {"error": missing}
@@ -7289,9 +7260,8 @@ async def _eval_call(
         api_url, api_key, project_id = await _resolve_project_id(args.get("git_remote", ""))
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.request(
             method,
             f"{api_url}/api/v1/projects/{project_id}/{path}",
@@ -7506,8 +7476,7 @@ async def _handle_get_loop_checklist(args: dict) -> dict:
     if status:
         params["status"] = str(status).strip().lower()
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/loop-checklist",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -7552,8 +7521,7 @@ async def _handle_propose_checklist_item(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/loop-checklist",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -7599,8 +7567,7 @@ async def _handle_update_review_loop(args: dict) -> dict:
         else:
             return {"error": "cost_budget_usd must be a number or null"}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.patch(
             f"{api_url}/api/v1/projects/{project_id}/loops/{_path_segment(loop_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -7629,8 +7596,7 @@ async def _handle_watch_ticket(args: dict) -> dict:
     muted = _strict_bool(args.get("muted"), False)
     url = f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/watch"
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         if unwatch:
             resp = await client.delete(url, headers={"Authorization": f"Bearer {api_key}"})
         else:
@@ -7680,8 +7646,7 @@ async def _handle_get_ticket_updates(args: dict) -> dict:
         except Exception:
             pass
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/me/ticket-updates",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -7693,7 +7658,7 @@ async def _handle_get_ticket_updates(args: dict) -> dict:
     payload = resp.json()
     next_cursor = payload.get("next_cursor")
     if _strict_bool(args.get("ack"), True) and next_cursor is not None:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with idempotent_async_client(timeout=15) as client:
             ack_resp = await client.post(
                 f"{api_url}/api/v1/me/ticket-updates/ack",
                 json={"cursor": next_cursor, "persona": persona},
@@ -7744,8 +7709,7 @@ async def _handle_list_ticket_comments(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/comments",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -7795,8 +7759,7 @@ async def _handle_start_ticket(args: dict) -> dict:
     if isinstance(tool, str) and tool.strip():
         params["tool"] = tool.strip()
 
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/start",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -7874,8 +7837,7 @@ async def _handle_create_ticket(args: dict) -> dict:
     if isinstance(contact, str) and contact.strip():
         body["assigned_contact_id"] = contact.strip()
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/tickets",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8100,8 +8062,7 @@ async def _handle_upload_chat_thread(args: dict) -> dict:
     if args.get("extract") is True:
         body["extract"] = True
 
-    import httpx
-    async with httpx.AsyncClient(timeout=150) as client:
+    async with idempotent_async_client(timeout=150) as client:
         resp = await client.post(
             f"{api_url}{base}/chat-threads",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8138,8 +8099,7 @@ async def _handle_upload_meeting_transcript(args: dict) -> dict:
     if args.get("extract") is True:
         body["extract"] = True
 
-    import httpx
-    async with httpx.AsyncClient(timeout=_MEETING_EXTRACT_TIMEOUT) as client:
+    async with idempotent_async_client(timeout=_MEETING_EXTRACT_TIMEOUT) as client:
         resp = await client.post(
             f"{api_url}{base}/meetings",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8171,8 +8131,7 @@ async def _meeting_list(args: dict, *, default_limit: int) -> dict:
         return _KIND_ERROR
     params.update(kind_params)
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}{base}/meetings",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8208,8 +8167,7 @@ async def _handle_get_meeting_transcript(args: dict) -> dict:
     kind_params = _row_kind_params(args)
     if kind_params is None:
         return _KIND_ERROR
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/meetings/{_path_segment(meeting_id.strip())}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8232,8 +8190,7 @@ async def _handle_extract_meeting_action_items(args: dict) -> dict:
     kind_params = _row_kind_params(args)
     if kind_params is None:
         return _KIND_ERROR
-    import httpx
-    async with httpx.AsyncClient(timeout=_MEETING_EXTRACT_TIMEOUT) as client:
+    async with idempotent_async_client(timeout=_MEETING_EXTRACT_TIMEOUT) as client:
         resp = await client.post(
             f"{api_url}/api/v1/meetings/{_path_segment(meeting_id.strip())}/extract",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8277,10 +8234,9 @@ async def _handle_promote_meeting_action_item(args: dict) -> dict:
         f"/action-items/{_path_segment(item_id.strip())}/promote"
     )
     headers = {"Authorization": f"Bearer {api_key}"}
-    import httpx
     # Publishing to Jira can take a minute; give it more than a plain promote.
     timeout = 150 if confirm and args.get("publish_to_jira") is True else 30
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with idempotent_async_client(timeout=timeout) as client:
         preview = await client.post(f"{root}/preview", headers=headers, params=kind_params)
         if preview.status_code >= 400:
             return _meeting_error(preview)
@@ -8366,8 +8322,7 @@ async def _handle_link_meeting_action_item(args: dict) -> dict:
     )
     headers = {"Authorization": f"Bearer {api_key}"}
     body = {"ticket_id": ticket_id.strip()} if isinstance(ticket_id, str) else None
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         if unlink:
             if not confirm:
                 return {
@@ -8459,8 +8414,7 @@ async def _handle_create_work_queue(args: dict) -> dict:
         if isinstance(val, int) and not isinstance(val, bool):
             body[key] = val
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/work-queues",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8487,8 +8441,7 @@ async def _handle_get_work_queue(args: dict) -> dict:
     if isinstance(args.get("include_items"), bool):
         params["include_items"] = str(args["include_items"]).lower()
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/work-queues/{_path_segment(queue_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8514,8 +8467,7 @@ async def _handle_list_work_queues(args: dict) -> dict:
     if isinstance(status, str) and status.strip():
         params["status"] = status.strip()
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/work-queues",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8549,8 +8501,7 @@ async def _handle_set_work_queue_status(args: dict) -> dict:
         except (TypeError, ValueError):
             return {"error": "lease_epoch must be an integer"}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/work-queues/{_path_segment(queue_id)}/status",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8591,8 +8542,7 @@ async def _handle_run_work_queue_step(args: dict) -> dict:
     if isinstance(max_tickets, int) and not isinstance(max_tickets, bool):
         body["max_tickets"] = max_tickets
 
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/work-queues/{_path_segment(queue_id)}/step",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8651,8 +8601,7 @@ async def _handle_complete_work_queue_step(args: dict) -> dict:
         except (TypeError, ValueError):
             return {"error": "ticket_lease_epoch must be an integer"}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/work-queues/{_path_segment(queue_id)}/step/complete",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8692,8 +8641,7 @@ async def _handle_complete_ticket(args: dict) -> dict:
     if args.get("lease_epoch") is not None:
         body["lease_epoch"] = int(args["lease_epoch"])
 
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/complete",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8740,8 +8688,7 @@ async def _handle_add_ticket_comment(args: dict) -> dict:
     if args.get("lease_epoch") is not None:
         body["lease_epoch"] = int(args["lease_epoch"])
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/comments",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8790,8 +8737,7 @@ async def _handle_create_persona(args: dict) -> dict:
             return {"error": "represented_user applies to org personas only (pass org_id)"}
         body["represented_user"] = represented.strip()
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.post(
             collection,
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8856,8 +8802,7 @@ async def _handle_update_persona(args: dict) -> dict:
             )
         }
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.put(
             f"{collection}/{_path_segment(name)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8907,11 +8852,10 @@ async def _handle_delete_persona(args: dict) -> dict:
         return {"error": str(exc)}
     scope_label = "this org" if org_id else "this project"
 
-    import httpx
     params: dict[str, str] = {}
     if force:
         params["force"] = "true"
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.delete(
             f"{collection}/{_path_segment(name)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8949,8 +8893,7 @@ async def _handle_assign_persona(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.put(
             f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -8978,8 +8921,7 @@ async def _handle_assume_persona(args: dict) -> dict:
         return {"error": str(exc)}
 
     # Verify the persona exists in this project before pretending to be it.
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/personas/{_path_segment(persona_name)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -9060,8 +9002,7 @@ async def _handle_resolve_ticket(args: dict) -> dict:
     if args.get("lease_epoch") is not None:
         params["lease_epoch"] = str(int(args["lease_epoch"]))
 
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         url = f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/accept"
         if params:
             resp = await client.post(
@@ -9103,8 +9044,7 @@ async def _handle_escalate_ticket(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         # Read current priority.
         get_resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}",
@@ -9250,8 +9190,7 @@ async def _handle_update_ticket(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.put(
             f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -9308,8 +9247,7 @@ async def _handle_create_agent_run(args: dict) -> dict:
     # field; we chain a follow-up /start call below.
     start_now = bool(args.get("start_now", False))
 
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/agent-runs",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -9321,7 +9259,7 @@ async def _handle_create_agent_run(args: dict) -> dict:
     run_id = payload.get("id")
 
     if start_now and run_id:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with idempotent_async_client(timeout=30) as client:
             start_resp = await client.post(
                 f"{api_url}/api/v1/projects/{project_id}/agent-runs/{_path_segment(run_id)}/start",
                 headers={"Authorization": f"Bearer {api_key}"},
@@ -9377,8 +9315,7 @@ async def _handle_complete_agent_run(args: dict) -> dict:
     if args.get("occurred_at"):
         body["occurred_at"] = args["occurred_at"]
 
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/agent-runs/{_path_segment(run_id)}/complete",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -9415,8 +9352,7 @@ async def _handle_report_agent_run_usage(args: dict) -> dict:
     if args.get("cost_usd") is not None:
         body["cost_usd"] = args["cost_usd"]
 
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/agent-runs/{_path_segment(run_id)}/usage",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -9448,8 +9384,7 @@ async def _handle_list_agent_runs(args: dict) -> dict:
     if isinstance(limit, int) and limit > 0:
         params["limit"] = str(limit)
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/agent-runs",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -9487,8 +9422,7 @@ async def _handle_replay_agent_run(args: dict) -> dict:
     if isinstance(context_refs, list):
         body["context_refs"] = [str(r) for r in context_refs]
 
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/agent-runs/{_path_segment(run_id)}/replay",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -9557,8 +9491,7 @@ async def _handle_record_agent_feedback(args: dict) -> dict:
         if isinstance(val, str) and val.strip():
             body[key] = val.strip()
 
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/agent-feedback",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -9589,8 +9522,7 @@ async def _handle_list_agent_feedback(args: dict) -> dict:
     if isinstance(limit, int) and limit > 0:
         params["limit"] = str(limit)
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/agent-feedback",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -9615,8 +9547,7 @@ async def _handle_get_agent_feedback_summary(args: dict) -> dict:
         if isinstance(val, str) and val.strip():
             params[key] = val.strip()
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{project_id}/agent-feedback/summary",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -9654,8 +9585,7 @@ async def _handle_get_spend_summary(args: dict) -> dict:
             if isinstance(val, str) and val.strip():
                 params[key] = val.strip()
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}{path}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -9685,7 +9615,6 @@ async def _handle_get_loop_report(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
     if ticket_id:
         path = (
             f"/api/v1/projects/{project_id}/tickets/"
@@ -9699,7 +9628,7 @@ async def _handle_get_loop_report(args: dict) -> dict:
     else:
         path = f"/api/v1/projects/{project_id}/ship-report"
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         if month:
             resp = await client.get(
                 f"{api_url}{path}",
@@ -9740,8 +9669,7 @@ async def _handle_dismiss_knowledge_entry(args: dict) -> dict:
     if isinstance(reason, str) and reason.strip():
         body["reason"] = reason.strip()
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.put(
             f"{api_url}/api/v1/projects/{project_id}/entries/{_path_segment(entry_id)}",
             json=body,
@@ -9775,8 +9703,7 @@ async def _handle_update_entry_confidence(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.put(
             f"{api_url}/api/v1/projects/{project_id}/entries/{_path_segment(entry_id)}/confidence",
             json={"confidence": float(confidence)},
@@ -9806,8 +9733,7 @@ async def _handle_promote_entry(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.put(
             f"{api_url}/api/v1/projects/{project_id}/entries/{_path_segment(entry_id)}/promote",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -9883,10 +9809,9 @@ async def _handle_promote_eligible_entries(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
     # Bulk operation — use a longer timeout. 270 entries × ~50 claims
     # near-dup compare is still trivial CPU work but allow headroom.
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with idempotent_async_client(timeout=60) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/entries/bulk-promote",
             json=body,
@@ -9911,8 +9836,7 @@ async def _handle_approve_ticket(args: dict) -> dict:
     except Exception as exc:
         return {"error": str(exc)}
 
-    import httpx
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{project_id}/tickets/{_path_segment(ticket_id)}/approve",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10004,8 +9928,7 @@ _APPROVAL_NOT_FOUND = {"error": "Approval request not found"}
 
 
 async def _approval_get(url: str, api_key: str, params: dict | None = None) -> Any:
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         return await client.get(
             url, headers={"Authorization": f"Bearer {api_key}"}, params=params or {}
         )
@@ -10072,9 +9995,7 @@ def _contact_error(resp: Any) -> dict:
 async def _contact_request(
     method: str, url: str, api_key: str, **kwargs: Any
 ) -> Any:
-    import httpx
-
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         return await client.request(
             method, url, headers={"Authorization": f"Bearer {api_key}"}, **kwargs
         )
@@ -10248,8 +10169,7 @@ async def _handle_get_my_attention(args: dict) -> dict:
         return conf
     api_url, api_key = conf
 
-    import httpx
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with idempotent_async_client(timeout=20) as client:
         resp = await client.get(
             f"{api_url}/api/v1/me/for-you",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10282,8 +10202,7 @@ async def _handle_list_my_reminders(args: dict) -> dict:
             return {"error": "limit must be an integer between 1 and 200"}
         params["limit"] = limit
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/me/reminders",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10321,8 +10240,7 @@ async def _handle_create_reminder(args: dict) -> dict:
         return conf
     api_url, api_key = conf
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.post(
             f"{api_url}/api/v1/me/reminders",
             json=body,
@@ -10373,8 +10291,7 @@ async def _handle_update_reminder(args: dict) -> dict:
         return conf
     api_url, api_key = conf
 
-    import httpx
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         if method == "PATCH":
             resp = await client.patch(
                 f"{api_url}{path}", json=body, headers={"Authorization": f"Bearer {api_key}"}
@@ -10417,9 +10334,8 @@ async def _handle_create_handoff(args: dict) -> dict:
     if isinstance(args.get("attachments"), list):
         body["attachments"] = args["attachments"]
 
-    import httpx
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.post(
             f"{api_url}/api/v1/handoffs",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10439,9 +10355,8 @@ async def _handle_claim_handoff(args: dict) -> dict:
         return conf
     api_url, api_key = conf
 
-    import httpx
 
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with idempotent_async_client(timeout=60) as client:
         resp = await client.post(
             f"{api_url}/api/v1/handoffs/{_path_segment(handoff_id)}/claim",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10460,9 +10375,8 @@ async def _handle_get_handoff(args: dict) -> dict:
         return conf
     api_url, api_key = conf
 
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/handoffs/{_path_segment(handoff_id)}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10479,9 +10393,8 @@ async def _handle_list_inbox_handoffs(args: dict) -> dict:
         return conf
     api_url, api_key = conf
 
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/handoffs/inbox",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10498,9 +10411,8 @@ async def _handle_list_sent_handoffs(args: dict) -> dict:
         return conf
     api_url, api_key = conf
 
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/handoffs/sent",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10522,9 +10434,8 @@ async def _handle_revoke_handoff(args: dict) -> dict:
         return conf
     api_url, api_key = conf
 
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.post(
             f"{api_url}/api/v1/handoffs/{_path_segment(handoff_id)}/revoke",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10549,9 +10460,8 @@ async def _handle_decline_handoff(args: dict) -> dict:
     if isinstance(reason, str) and reason.strip():
         body["reason"] = reason.strip()
 
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.post(
             f"{api_url}/api/v1/handoffs/{_path_segment(handoff_id)}/decline",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10574,9 +10484,8 @@ async def _handle_add_handoff_comment(args: dict) -> dict:
         return conf
     api_url, api_key = conf
 
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.post(
             f"{api_url}/api/v1/handoffs/{_path_segment(handoff_id)}/comments",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10678,9 +10587,8 @@ async def _handle_search_skill_marketplace(args: dict) -> dict:
     if isinstance(conf, dict):
         return conf
     api_url, api_key = conf
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/marketplace/packages",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10700,9 +10608,8 @@ async def _handle_get_marketplace_package(args: dict) -> dict:
     if isinstance(conf, dict):
         return conf
     api_url, api_key = conf
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/marketplace/packages/{package_id}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10752,9 +10659,8 @@ async def _handle_diff_marketplace_versions(args: dict) -> dict:
     if isinstance(conf, dict):
         return conf
     api_url, api_key = conf
-    import httpx
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with idempotent_async_client(timeout=30) as client:
         resp = await client.get(
             f"{api_url}/api/v1/marketplace/versions/{from_id}/diff/{to_id}",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10776,9 +10682,8 @@ async def _handle_get_skill_policy(args: dict) -> dict:
     if isinstance(conf, dict):
         return conf
     api_url, api_key = conf
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/devices/me/policy",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10809,9 +10714,8 @@ async def _handle_preview_marketplace_skill(args: dict) -> dict:
     if isinstance(conf, dict):
         return conf
     api_url, api_key = conf
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/marketplace/versions/{version_id}/preview",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10846,9 +10750,8 @@ async def _handle_load_marketplace_skill(args: dict) -> dict:
     params = {"project_id": project_id, "tool": tool}
     if device_id:
         params["device_id"] = device_id
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/marketplace/versions/{version_id}/instructions",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10893,9 +10796,8 @@ async def _handle_request_skill_install(args: dict) -> dict:
             return {"error": str(exc)}
     if args.get("session_id"):
         body["requested_by_session_id"] = args["session_id"]
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{quote(project_id, safe='')}/skill-install-requests",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10924,9 +10826,8 @@ async def _handle_get_skill_install_request(args: dict) -> dict:
         api_url, api_key, project_id = await _resolve_project_id(args.get("git_remote", ""))
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{quote(project_id, safe='')}"
             f"/skill-install-requests/{request_id}",
@@ -10946,9 +10847,8 @@ async def _handle_list_skill_install_requests(args: dict) -> dict:
         if not _MARKETPLACE_STATUS_RE.fullmatch(status.strip()):
             return {"error": "status is not a valid filter"}
         params["status"] = status.strip()
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.get(
             f"{api_url}/api/v1/projects/{quote(project_id, safe='')}/skill-install-requests",
             headers={"Authorization": f"Bearer {api_key}"},
@@ -10975,9 +10875,8 @@ async def _handle_install_request_action(args: dict, action: str) -> dict:
         api_url, api_key, project_id = await _resolve_project_id(args.get("git_remote", ""))
     except Exception as exc:
         return {"error": str(exc)}
-    import httpx
 
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with idempotent_async_client(timeout=15) as client:
         resp = await client.post(
             f"{api_url}/api/v1/projects/{quote(project_id, safe='')}/skill-install-requests/"
             f"{request_id}/{action}",

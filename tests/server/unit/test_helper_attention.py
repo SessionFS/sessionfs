@@ -52,7 +52,7 @@ async def test_lists_the_callers_items_with_ticket_refs(db_session, test_user):
 async def test_prompt_routes_what_needs_me_to_the_tool():
     routed = {name for _, names in helper_routes._TOOL_ROUTING for name in names}
     assert "list_my_attention" in routed
-    assert helper_routes._HELPER_SYSTEM_PROMPT_VERSION == "v21"
+    assert helper_routes._HELPER_SYSTEM_PROMPT_VERSION == "v23"
     assert "call list_my_attention first" in helper_routes._HELPER_SYSTEM_PROMPT
 
 

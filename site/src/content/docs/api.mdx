@@ -26,6 +26,49 @@ A project you can't read returns the same `404` as a project that doesn't exist 
 
 Structured 401/403 error codes: `api_key_revoked`, `api_key_expired`, `service_key_not_allowed`, `insufficient_scope` (with `required` + `current` arrays), `cross_org_denied`, `service_key_project_required`, `service_key_project_not_registered`, `service_key_project_ambiguous`.
 
+Stability, deprecation headers, the `X-SessionFS-Ignored-Fields` header and the committed OpenAPI snapshot are covered in [API Contract and Versioning](/api-contract/).
+
+## Idempotent requests
+
+A network retry of a `POST` can run it twice: two tickets, two release records, two eval runs. Send an `Idempotency-Key` header and the server runs the request at most once for that key (v0.30.0):
+
+```
+POST /api/v1/projects/proj_123/tickets
+Authorization: Bearer sk_sfs_...
+Idempotency-Key: 6f1c2f0e-4a51-4f6e-9a0e-2b8b3f7d9c11
+Content-Type: application/json
+```
+
+- The key is 1 to 255 printable ASCII characters; a random UUID per logical request is the usual choice. Anything else returns `400 idempotency_key_invalid`.
+- Keys are scoped to your credential, the HTTP method and the route, so the same key sent with a different API key, or to a different route, never collides.
+- Retry with the **same key and the same body**. The first completed response is stored and replayed: same status code, same body, the same `Content-Type`, `ETag` and `Location` headers, plus `Idempotent-Replayed: true`. JSON bodies are compared by value, so key order and whitespace don't matter; the path and query string must match.
+- Stored responses are kept for 24 hours. After that the key is forgotten and a reuse runs the request again.
+- Without the header, nothing changes.
+
+The `sfs` CLI and the MCP server send a fresh key on every `POST`.
+
+| Status | Code | Meaning |
+|--------|------|---------|
+| `409` | `idempotency_in_progress` | A request with this key is still running. Retry later with the same key. |
+| `422` | `idempotency_key_reused` | The key was already used for a different request (another path, query or body). Use a new key. |
+| `409` | `idempotency_response_unavailable` | The request already ran but its response wasn't stored (larger than 1 MiB, or it held a credential), so it can't be replayed. Check the result before sending it again with a new key. |
+| `503` | `idempotency_unavailable` | The key couldn't be recorded. Nothing ran; retry. |
+
+What is stored and what isn't:
+
+- `2xx` responses and most `4xx` responses are stored and replayed.
+- A `5xx`, a failed request, or a passing refusal (`401`, `408`, `409`, `423`, `425`, `429`) is not stored: the key is released, so a retry with the same key runs the request again.
+- A request still running when its lease runs out (5 minutes; 30 minutes for routes that call a model or another slow service, such as extraction, compile and Jira publish) can be taken over by a retry with the same key.
+
+These requests ignore the header and run exactly as they would without it:
+
+- requests with no `Authorization: Bearer` credential, and request bodies over 4 MiB;
+- `POST /api/v1/helper/turns` (it streams Server-Sent Events);
+- webhook ingest (`/api/v1/webhooks/*` and `/webhooks/*`), which already de-duplicates by each provider's delivery id;
+- session sync uploads (`POST /api/v1/sessions`, `POST /api/v1/sessions/{session_id}/uploads`, `POST /api/v1/uploads/{upload_id}/complete`), which have their own resume and completion idempotency;
+- routes that are unauthenticated or use a credential other than an API key: signup, SSO start and exchange, license activation, Helm license validation, telemetry, public share views and trusted-publishing token exchange and publish;
+- routes whose response shows a secret once, which is never stored: user and service API key create and rotate, admin key minting, resident key rotation, delivery and Jira webhook secrets, session and loop share links, license creation and the GitHub OAuth start and choose steps.
+
 ## Endpoints
 
 ### Auth
@@ -33,7 +76,7 @@ Structured 401/403 error codes: `api_key_revoked`, `api_key_expired`, `service_k
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | POST | `/api/v1/auth/signup` | None | Create account |
-| GET | `/api/v1/auth/me` | Bearer | Current user profile |
+| GET | `/api/v1/auth/me` | Bearer | Current user profile. `orgs` lists every organization you belong to (`org_id`, `name`, `slug`, `role`, `joined_at`, `is_default`); `org_id`, `org_name` and `org_role` describe your default org. See [Your default organization](/organizations/#your-default-organization) |
 | POST | `/api/v1/auth/keys` | Bearer | Create user API key |
 | GET | `/api/v1/auth/keys` | Bearer | List user API keys |
 | DELETE | `/api/v1/auth/keys/{key_id}` | Bearer | Delete a user API key |
@@ -239,7 +282,7 @@ Start and watch a [worker review loop](/review-loop/), set its budgets and keep 
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| POST | `/api/v1/projects/{id}/loops` | Bearer (`loops:write`) | Start a loop on an existing issue (`from_ticket_id`) or a new one (`title`). Files one child task per entry in `tickets` and creates the reviewer's work queue. Optional `token_budget`, `cost_budget_usd` (org owners and admins only) and `max_review_rounds` (no default cap) |
+| POST | `/api/v1/projects/{id}/loops` | Bearer (`loops:write`) | Start a loop on an existing issue (`from_ticket_id`, or its alias `ticket_id` as on workflow start; two different values are a `422`) or a new one (`title`). Files one child task per entry in `tickets` and creates the reviewer's work queue. Optional `token_budget`, `cost_budget_usd` (org owners and admins only) and `max_review_rounds` (no default cap) |
 | GET | `/api/v1/projects/{id}/loops` | Bearer (`loops:read`) | The project's loops with status, children, spend and budget |
 | GET | `/api/v1/projects/{id}/loops/{loop_id}` | Bearer (`loops:read`) | One loop: each child's status, branch, head commit, review rounds, harm, tokens, budget use and merge readiness |
 | PATCH | `/api/v1/projects/{id}/loops/{loop_id}` | Bearer (`loops:write`) | Raise or clear a budget. Only the fields you send change; an explicit `null` clears a limit. Dollar limits need org owner or admin standing |
@@ -310,7 +353,8 @@ Stored meeting transcripts (GitHub #116). A meeting belongs to exactly one proje
 | GET | `/api/v1/groups/{group_id}/meetings` | Bearer (user key, group reader+) | List group meetings newest first. Query: `q` |
 | GET | `/api/v1/meetings/{id}` | Bearer (`meetings:read`) | Get a meeting with its content, participants and action items |
 | DELETE | `/api/v1/meetings/{id}` | Bearer (`meetings:write`) | Soft-delete a meeting (the uploader, a project admin, or a group admin) |
-| PUT | `/api/v1/meetings/{id}/participants/{participant_id}` | Bearer (user key) | Manually override a participant's resolution (body: exactly one of `user_id` or `persona_name`) |
+| PUT | `/api/v1/meetings/{id}/participants/{participant_id}` | Bearer (user key) | Manually override a participant's resolution (body: exactly one of `user_id`, `persona_name` or `contact_id`) |
+| POST | `/api/v1/meetings/{id}/participants/resolve-bulk` | Bearer (user key) | Override up to 100 participants in one all-or-nothing request (`{"participants": [{"participant_id", ...one target}]}`); a refused item gives `422 bulk_item_failed` with `details.results`. `?kind=chat` for chat threads |
 | POST | `/api/v1/meetings/{id}/extract` | Bearer (`meetings:write`) | Extract participants and action items from the transcript (one LLM call; returns `dropped_items`). `409 llm_key_required` with no key, `429 helper_budget_exceeded` over the org budget |
 | POST | `/api/v1/meetings/{id}/action-items/{item_id}/promote/preview` | Bearer (`meetings:write`) | Draft a ticket from a pending action item (project meeting: target is its project; group meeting: returns editable `target_project_options`) |
 | POST | `/api/v1/meetings/{id}/action-items/{item_id}/promote` | Bearer (`meetings:write`, `agent_tickets`) | Promote a pending action item to a ticket (body: `title`, `description`, `priority`, `kind`, optional `assigned_to` / `assigned_user_id` / `due_date` / `target_project_id` / `publish_to_jira`). `409 item_not_pending` on a concurrent promote |
@@ -323,13 +367,14 @@ Stored meeting transcripts (GitHub #116). A meeting belongs to exactly one proje
 |--------|------|------|-------------|
 | POST | `/api/v1/org` | Bearer | Create organization (Team tier or above required) |
 | GET | `/api/v1/org` | Bearer | Get org info, member list, and current user role |
-| POST | `/api/v1/org/invite` | Bearer | Invite a member by email (admin only). Sends invite email best-effort (v0.10.22). UPSERTs over stale `(org_id, email)` rows (declined / expired / orphan-accepted) since v0.10.28 — regenerates `id` to invalidate stale acceptance links and preserves `created_at` as the audit signal. |
+| POST | `/api/v1/org/invite` | Bearer | Invite a member by email (admin only). The response's `email_sent` says whether an email went out and `accept_url` is the link to share when it didn't. Sends invite email best-effort (v0.10.22). UPSERTs over stale `(org_id, email)` rows (declined / expired / orphan-accepted) since v0.10.28 — regenerates `id` to invalidate stale acceptance links and preserves `created_at` as the audit signal. |
 | POST | `/api/v1/org/invite/{invite_id}/accept` | Bearer | Accept an org invite |
 | POST | `/api/v1/org/invite/{invite_id}/decline` | Bearer | Decline a pending invite (recipient only, optional `decline_reason`) — v0.10.22 |
 | GET | `/api/v1/org/invites` | Bearer | List pending invites (admin only) |
 | GET | `/api/v1/org/invites/me` | Bearer | List pending invites addressed to the caller (v0.10.22) |
 | DELETE | `/api/v1/org/invites/{invite_id}` | Bearer | Revoke a pending invite (admin only) |
 | POST | `/api/v1/orgs/{org_id}/invites/{invite_id}/resend` | Bearer | Resend an invite email (admin only) — v0.10.22 |
+| POST | `/api/v1/orgs/{org_id}/invites/bulk` | Bearer (user key) | Invite up to 100 emails in one all-or-nothing request (admin only). Body `{"invites": [{"email", "role"}]}`; duplicates refused (`422 duplicate_items`), more than 100 refused (`422 too_many_items`), any refused item rolls back the batch (`422 bulk_item_failed` with `details.results`). Seat check counts members plus the whole batch. Each result carries `invite_id`, `email_sent` and `accept_url` |
 | POST | `/api/v1/orgs/{org_id}/invite` | Bearer | Org-scoped invite path (admin only). Same UPSERT-over-stale semantics as `/api/v1/org/invite` since v0.10.28. |
 | PUT | `/api/v1/org/members/{user_id}/role` | Bearer | Change a member's role (admin only) |
 | DELETE | `/api/v1/org/members/{user_id}` | Bearer | Remove a member from the org (admin only) |
@@ -357,6 +402,7 @@ Project groups are org-scoped flat collections of projects (Team+). Group roles 
 | PATCH | `/api/v1/orgs/{org_id}/groups/{group_id}` | Bearer | Rename / re-slug / re-describe (group admin) |
 | DELETE | `/api/v1/orgs/{org_id}/groups/{group_id}` | Bearer | Soft-delete the group, freeing its slug (org admin) |
 | PUT | `/api/v1/orgs/{org_id}/groups/{group_id}/members/{user_id}` | Bearer | Grant or update a member's role (group admin). Grantee must be an org member, else `422 not_org_member` |
+| POST | `/api/v1/orgs/{org_id}/groups/{group_id}/members/bulk` | Bearer (user key) | Grant or update up to 100 members (`{"grants": [{"user_id", "role"}]}`), all or nothing, same rules as the single grant; a refused item gives `422 bulk_item_failed` with `details.results` |
 | DELETE | `/api/v1/orgs/{org_id}/groups/{group_id}/members/{user_id}` | Bearer | Revoke a member's grant (group admin) |
 | PUT | `/api/v1/orgs/{org_id}/groups/{group_id}/projects/{project_id}` | Bearer | Add a project to the group (group admin). Project must be in this org, else `422 project_not_in_org`; a non-org-admin needs edit standing on it, and an unreadable project is `404` |
 | DELETE | `/api/v1/orgs/{org_id}/groups/{group_id}/projects/{project_id}` | Bearer | Remove a project from the group (group admin) |
@@ -427,6 +473,7 @@ All package versions are immutable and addressed by `content_hash`. Visibility f
 | POST | `/api/v1/admin/sweeps/helper-retention` | Bearer (admin or `platform_sweeps:run`) | Delete expired session helper messages (v0.23.0) and token-usage ledger rows older than 400 days |
 | POST | `/api/v1/admin/sweeps/ticket-notifications` | Bearer (admin or `platform_sweeps:run`) | Send the ticket notification email digest (v0.24.0) |
 | POST | `/api/v1/admin/sweeps/attention-hides` | Bearer (admin or `platform_sweeps:run`) | Delete For You hides older than 90 days (v0.29.8) |
+| POST | `/api/v1/admin/sweeps/idempotency-keys` | Bearer (admin or `platform_sweeps:run`) | Delete stored `Idempotency-Key` responses older than 24 hours (v0.30.0) |
 | POST | `/api/v1/admin/projects/{project_id}/restore-from-compilation` | Bearer (admin) | Restore `project.context_document` from a prior `ContextCompilation.context_after`; restore `compiled_at` on participating entries. Body: `{compilation_id: int, dry_run: bool = true}`. Single atomic transaction. Audit-logged. (v0.10.13) |
 
 ### Billing

@@ -7,6 +7,8 @@ metadata:
 data:
   SFS_LOG_LEVEL: {{ .Values.api.logLevel | quote }}
   SFS_HOST: "0.0.0.0"
+  # Tells the session helper which docs features apply to this install.
+  SFS_DEPLOYMENT: "self-hosted"
   SFS_PORT: {{ .Values.api.service.port | quote }}
   SFS_RATE_LIMIT_PER_MINUTE: {{ .Values.api.rateLimitPerMinute | quote }}
   {{- if .Values.api.corsOrigins }}
@@ -14,6 +16,18 @@ data:
   {{- end }}
   SFS_GITLAB_ALLOW_PRIVATE_HOSTS: {{ (.Values.api.gitlab).allowPrivateHosts | default false | quote }}
   SFS_LLM_ALLOW_PRIVATE_HOSTS: {{ (.Values.api.llm).allowPrivateHosts | default false | quote }}
+  SFS_METRICS_TENANT_LABELS: {{ (.Values.api.metrics).tenantLabels | default false | quote }}
+  {{- with .Values.api.limits }}
+  {{- with .orgConcurrency }}
+  SFS_ORG_CONCURRENCY_EXTRACTION: {{ .extraction | quote }}
+  SFS_ORG_CONCURRENCY_HELPER: {{ .helper | quote }}
+  SFS_ORG_CONCURRENCY_COMPILE: {{ .compile | quote }}
+  SFS_ORG_CONCURRENCY_EXPORT: {{ .export | quote }}
+  {{- end }}
+  {{- if hasKey . "heavyReadTimeoutMs" }}
+  SFS_HEAVY_READ_TIMEOUT_MS: {{ .heavyReadTimeoutMs | quote }}
+  {{- end }}
+  {{- end }}
   {{- with .Values.api.marketplace }}
   {{- if .publicApiUrl }}
   SFS_PUBLIC_API_URL: {{ .publicApiUrl | quote }}

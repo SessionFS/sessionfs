@@ -1,6 +1,9 @@
 ---
 title: "Session Helper"
 description: Ask questions across the sessions and project knowledge you can already read, with answers that cite the sessions they used. Enterprise.
+availability:
+  feature: session_helper
+  deployment: both
 ---
 
 The session helper answers questions over the sessions and project knowledge you can already read: "find the session where we fixed the SSO redirect", "what did we decide about Redis and why?", "summarize these three sessions". It searches sessions, reads summaries and excerpts, searches project knowledge and finds sessions that touched a file, then answers with citations back to the sessions and messages it used.
@@ -113,6 +116,37 @@ These tools follow the same plan gates as the matching pages: tickets and agent 
 
 In a conversation scoped to a project, nothing from any other project comes back. A session counts as the project's when it is attributed to it, or when it has no project and sits on one of the project's repositories. A session attributed to another project stays out, even on a shared repository.
 
+### One scope per conversation
+
+A conversation stays in the scope it started with: one project, one group, one set of sessions, or an unscoped conversation in one organization. Asking in a different scope with the same conversation id is refused with `409 scope_mismatch`; the dashboard starts a new conversation when you change the scope.
+
+An unscoped question reads **one organization**: the organization the conversation belongs to, or for a new conversation your default organization (pass `scope.org_id` to pick another organization you belong to). It covers that organization's projects, groups, meetings, tickets and your sessions in them, plus your personal projects and sessions that belong to no project. It never returns another organization's data, and the AI key and settings come from that same organization. If you belong to several organizations, start a separate conversation for each. A list of sessions that mixes an organization's sessions with sessions from personal projects (or from two organizations) is refused with `400 scope_mixed_orgs`.
+
+### How answers stay grounded
+
+- A citation is kept only when it points at something a tool returned in this conversation: a session a tool listed or read, a message number (`msg:<n>`) a tool actually showed for that session, a docs page or section a docs tool returned, and tickets, wiki pages, meetings and chat threads the tools returned. Every other marker is removed, and markers are checked before they are streamed, so an invalid one never appears.
+- An answer that cites nothing although its tools returned results ends with "(No sources cited for this answer.)".
+- Earlier answers in the thread are passed back to the model labelled as earlier replies that are not evidence, and failed tool calls stay marked as failed.
+- When the helper runs out of lookup rounds it makes one last call without tools to answer from what it already found and say what it could not check; if that fails too you get "I couldn't finish looking this up" instead of an empty answer.
+- Lists and searches say whether they are complete or truncated (for example `[returned 20 of 57 knowledge entries; truncated]`), and a session whose stored messages can't be read right now says the archive is unavailable rather than "no excerpts". The helper only says something doesn't exist after a complete search found nothing; otherwise it says what it checked.
+- A ticket shows when its description was written ("may be out of date") and the current status of every ticket the description, criteria or comments mention, so the helper reports current state from status fields and dates rather than from older prose. Compiled project and group context shows when it was compiled and whether it is more than 7 days old.
+
+### How answers show their sources
+
+Each result a tool returns is numbered for the model (`[evidence e12]` on its first line). The model puts those numbers after every sentence that states a fact, and the server checks each number against the results this conversation actually returned. You never see the numbers:
+
+- A number that points at one ticket, wiki page, session or docs section becomes that item's normal source chip.
+- A number that points at a list or a search (for example "the 20 most recent sessions") stays as a quiet chip that names the lookup.
+- A sentence that states a fact (a number, date, id, name or status) with no source behind it is marked: in the dashboard it gets a dotted underline with "No source was found for this sentence" when you hover it; in the CLI and API its text ends with "(not verified)".
+- Greetings, questions and sentences about what the helper will check next are never marked.
+- If the model doesn't use the numbers at all, the answer is still shown. The older checks then apply: invalid markers are removed and an answer citing nothing ends with "(No sources cited for this answer.)".
+
+Answers are streamed one sentence at a time, so each sentence arrives with its sources. The final text (with any "(not verified)" marks) arrives once the answer is complete.
+
+The `grounding` setting turns this on or off: `strict` (the default) or `off` (markers only, as before). See [Configure the assistant](#configure-the-assistant).
+
+**Docs and your plan.** A docs result also says whether the feature it describes is available to you, for example `Availability: Enterprise plans; your plan: Team (not available); cloud and self-hosted.` The plan is the one for the conversation's scope (the scope org's plan, or your own), and "cloud only" or "self-hosted only" pages say so on the other kind of install. Pages without a recorded availability say so instead of guessing.
+
 The helper may cite a ticket or wiki page only after one of its tools returned it in that question, and only when it belongs to a project you can read inside the conversation's scope; any other `[ticket:…]` or `[wiki:…]` marker is removed from the answer.
 
 A meeting passage is cited as `[meeting:<id> L<first>-<last>]`. The marker is kept only when a tool returned that meeting earlier in this conversation (this question or a previous one in the same thread), you can still read it in the conversation's scope, and the line range lies inside the transcript (`1 <= first <= last <= line count`); anything else is removed from the answer. In the API a kept citation is `{"kind": "meeting", "meeting_id", "line_start", "line_end", "title", "project_id", "group_id", "at"}`, and a streaming turn sends it as a `meeting_citation` event. Chat messages are cited as `[chat:<id> M<first>-<last>]` under the same rules (the tag, id and range letter must agree with the stored thread); a kept chat citation has `"kind": "chat"` plus `channel_name`, and streams as a `chat_citation` event.
@@ -142,6 +176,9 @@ Model settings live at two scopes — your own (`GET/PUT /api/v1/settings/helper
 | `max_tool_steps` | 1–20 (integer) | 8 |
 | `reasoning_effort` | `off` · `low` · `medium` · `high` | unset |
 | `answer_style` | `concise` · `detailed` | `concise` |
+| `grounding` | `strict` · `off` | `strict` |
+
+`grounding: strict` asks the model to name the source of every factual sentence and marks the ones without a source (see [How answers show their sources](#how-answers-show-their-sources)); `off` keeps only the citation-marker checks. It adds no extra model call.
 
 `max_tool_steps` counts tool rounds: after its last allowed round the model always gets one more step to answer. On Anthropic, setting `top_p` drops `temperature`, since the API refuses both together.
 
@@ -169,7 +206,7 @@ Every settings change writes an audit row carrying the instruction text's **leng
 
 ## API
 
-User API keys only; service keys get `service_key_not_allowed`. Each user can run 2 questions at a time per server process (`409 helper_busy`).
+User API keys only; service keys get `service_key_not_allowed`. Each user can run 2 questions at a time per server process (`409 helper_busy`). An organization can have 8 questions running at a time across all servers by default; beyond that a question gets `429 org_concurrency_limit` with `Retry-After` (see [Tenancy and Isolation](/tenancy/)).
 
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -196,7 +233,7 @@ Request body for `POST /api/v1/helper/turns`:
 }
 ```
 
-`conversation_id` and `scope` are optional. `scope` takes at most one of `project_id`, `group_id` (v0.28.0) or `session_ids` (up to 100 ids). Set `"retry": true` when re-asking after a failed answer: if the thread's last question is still unanswered and identical, it is reused instead of being stored twice. When streaming, the events are `conversation` (always first), `text`, `tool_call`, `tool_result`, `citation`, `doc_citation`, `ticket_citation`, `wiki_citation`, `action_proposed`, `done` and `error`. Every citation carries `kind` (`session`, `doc`, `ticket` or `wiki`); session, ticket and wiki citations also carry `at`, the source's last update as an ISO timestamp. A keep-alive comment is sent every 15 seconds. If the client disconnects, the model call is cancelled and the partial answer is kept.
+`conversation_id` and `scope` are optional. `scope` takes at most one of `project_id`, `group_id` (v0.28.0) or `session_ids` (up to 100 ids); an unscoped question may instead pass `org_id` to choose which of your organizations it reads (see [One scope per conversation](#one-scope-per-conversation)). Set `"retry": true` when re-asking after a failed answer: if the thread's last question is still unanswered and identical, it is reused instead of being stored twice. When streaming, the events are `conversation` (always first), `text`, `tool_call`, `tool_result`, `citation`, `doc_citation`, `ticket_citation`, `wiki_citation`, `grounding`, `action_proposed`, `done` and `error`. `grounding` (sent before the citations when the answer used evidence numbers) carries the final answer `text`, `mode`, `unverified_count`, `sentences` and `evidence` (described below); clients should show its `text` in place of the streamed text. Every citation carries `kind` (`session`, `doc`, `ticket` or `wiki`); session, ticket and wiki citations also carry `at`, the source's last update as an ISO timestamp. A keep-alive comment is sent every 15 seconds. If the client disconnects, the model call is cancelled and the partial answer is kept.
 
 With `"stream": false` the response is:
 
@@ -208,12 +245,25 @@ With `"stream": false` the response is:
     { "kind": "session", "session_id": "ses_…", "message_index": 0, "title": "…", "at": "2026-10-20T09:12:00+00:00" },
     { "kind": "ticket", "ticket_id": "tk_…", "project_id": "proj_…", "title": "…", "at": "…" }
   ],
+  "grounding": {
+    "mode": "strict",
+    "unverified_count": 1,
+    "sentences": [
+      { "start": 0, "end": 41, "status": "supported", "evidence": ["e3"] },
+      { "start": 42, "end": 90, "status": "unverified", "evidence": [], "flag": [74, 89] }
+    ],
+    "evidence": [
+      { "id": "e3", "tool": "get_ticket", "args": { "ticket_id": "tk_…" }, "at": "…", "marker": "[ticket:tk_…]" }
+    ]
+  },
   "tool_calls": [{ "id": "…", "name": "…", "args": {} }],
   "usage": { "input_tokens": 0, "output_tokens": 0 },
   "stop_reason": "stop",
   "key_source": "user"
 }
 ```
+
+`grounding` is `null` when the setting is `off` or the model didn't use evidence numbers. `start`/`end` are offsets into `answer` in UTF-16 code units (JavaScript string positions); `flag` is the range of the " (not verified)" text. Conversation messages (`GET /api/v1/helper/conversations/{id}`) carry the same `grounding` object on answers.
 
 Provider failures return `502 provider_error` with a sanitized message. When the failure has a known cause, `reason` names it (for example `endpoint_not_api` when the base URL is a provider's console, not its API, and the message names the right address).
 

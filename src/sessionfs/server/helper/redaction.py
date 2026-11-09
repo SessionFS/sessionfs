@@ -137,6 +137,42 @@ def union_dlp_policies(
     return result
 
 
+_MODE_RANK = {"warn": 0, "redact": 1, "block": 2}
+
+
+def strictest_dlp_policy(
+    policies: list[dict | None],
+    scope_pattern_names: set[str] | None = None,
+) -> dict | None:
+    """The strictest combination of several org DLP policies, mode included.
+
+    ``union_dlp_policies`` combines categories, custom patterns and
+    allowlists; this also takes the strictest ``mode`` (block beats redact
+    beats warn) and marks the result enabled. A policy without
+    ``categories`` contributes the default ``["secrets"]`` (what a single
+    policy scans by default), so combining never scans less than any one
+    policy would. Returns None when no policy is enabled.
+    """
+    enabled = [p for p in policies if isinstance(p, dict) and p.get("enabled", True)]
+    if not enabled:
+        return None
+    normalized = [
+        p if isinstance(p.get("categories"), list) else {**p, "categories": ["secrets"]}
+        for p in enabled
+    ]
+    union = union_dlp_policies(normalized, scope_pattern_names=scope_pattern_names)
+    if union is None:
+        return None
+    mode = "warn"
+    for p in enabled:
+        m = p.get("mode", "warn")
+        if m in _MODE_RANK and _MODE_RANK[m] > _MODE_RANK[mode]:
+            mode = m
+    union["mode"] = mode
+    union["enabled"] = True
+    return union
+
+
 async def org_dlp_policy(db: AsyncSession, org_id: str | None) -> dict | None:
     """Resolve the DLP policy for ``org_id`` (None → no org → None)."""
     if not org_id:

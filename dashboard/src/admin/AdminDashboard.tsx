@@ -12,7 +12,7 @@ import RelativeDate from '../components/RelativeDate';
 import LicensesTab from './LicensesTab';
 import { getAvatarColor } from '../utils/avatar';
 import { formatBytes } from '../utils/format';
-import { Card, Button, Input, Select, Table, TableShell, Tabs, TabPanel, Dialog, DialogHeader, DialogFooter } from '../components/ui';
+import { Card, Button, Input, Select, Table, TableShell, Tabs, TabPanel, Dialog, DialogHeader, DialogFooter, Tooltip } from '../components/ui';
 
 type AdminTab = 'users' | 'licenses' | 'activity';
 
@@ -360,21 +360,23 @@ function ActionMenu({ children, onToggle }: { children: React.ReactNode; onToggl
 
   return (
     <div ref={menuRef} className="relative">
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          setOpen(!open);
-          onToggle();
-        }}
-        className="w-7 h-7 flex items-center justify-center rounded-md text-text-tertiary hover:text-text-primary hover:bg-surface-hover transition-colors"
-        aria-label="Actions"
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-          <circle cx="8" cy="3" r="1.5" />
-          <circle cx="8" cy="8" r="1.5" />
-          <circle cx="8" cy="13" r="1.5" />
-        </svg>
-      </button>
+      <Tooltip content={'Actions'} describe={false}>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen(!open);
+            onToggle();
+          }}
+          className="w-7 h-7 flex items-center justify-center rounded-md text-text-tertiary hover:text-text-primary hover:bg-surface-hover transition-colors"
+          aria-label="Actions"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+            <circle cx="8" cy="3" r="1.5" />
+            <circle cx="8" cy="8" r="1.5" />
+            <circle cx="8" cy="13" r="1.5" />
+          </svg>
+        </button>
+      </Tooltip>
       {open && (
         <div
           className="absolute right-0 top-8 z-20 rounded-lg py-1 min-w-[140px] shadow-[var(--shadow-md)]"
@@ -444,9 +446,13 @@ function UserRow({
         </td>
         <td className="px-4 py-3 text-center">
           {user.email_verified ? (
-            <span className="text-[var(--accent)]" title="Verified">&#10003;</span>
+            <Tooltip content="Email verified" describe={false}>
+              <span className="text-[var(--accent)]" tabIndex={0} role="img" aria-label="Email verified">&#10003;</span>
+            </Tooltip>
           ) : (
-            <span className="text-danger" title="Not verified">&#10007;</span>
+            <Tooltip content="Email not verified" describe={false}>
+              <span className="text-danger" tabIndex={0} role="img" aria-label="Email not verified">&#10007;</span>
+            </Tooltip>
           )}
         </td>
         <td className="px-4 py-3 text-right text-text-secondary tabular-nums">

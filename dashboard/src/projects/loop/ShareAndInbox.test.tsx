@@ -75,7 +75,8 @@ describe('Review loops page', () => {
         <ReviewLoopsPage />
       </MemoryRouter>,
     );
-    expect(screen.queryAllByRole('button')).toHaveLength(0);
+    // Glossary terms are buttons too; no action button may render.
+    expect(screen.queryAllByRole('button').filter((b) => !b.closest('[data-term]'))).toHaveLength(0);
     const row = screen.getByText('Token budget hit (410,000 tokens spent)').closest('li')!;
     expect(within(row).getByText('View only')).toBeInTheDocument();
     const actionable = screen.getByText(/cleared commit/).closest('li')!;

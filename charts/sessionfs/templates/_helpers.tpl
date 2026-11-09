@@ -133,6 +133,12 @@ is the k8s component label; `path` is the admin sweep endpoint; `schedule` and
   schedule: '15 4 * * *'
   envVar: SFS_EVAL_OUTPUTS_API_KEY
   secretKey: eval-outputs-api-key
+- key: idempotencyKeys
+  component: idempotency-keys
+  path: /api/v1/admin/sweeps/idempotency-keys
+  schedule: '20 * * * *'
+  envVar: SFS_IDEMPOTENCY_KEYS_API_KEY
+  secretKey: idempotency-keys-api-key
 {{- end }}
 
 {{/*

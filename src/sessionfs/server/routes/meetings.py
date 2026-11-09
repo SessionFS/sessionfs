@@ -33,6 +33,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
 from sessionfs.security.secrets import scan_dlp as scan_dlp_full
+from sessionfs.server.api_contract import (
+    StrictRequestModel,
+    raw_json_body,
+    raw_json_body_openapi,
+)
 from sessionfs.server.auth.dependencies import (
     AuthContext,
     assert_service_key_can_access_project,
@@ -59,7 +64,7 @@ from sessionfs.server.dlp import (
     redact_text,
     well_formed_custom_patterns,
 )
-from sessionfs.server.helper.redaction import union_dlp_policies
+from sessionfs.server.helper.redaction import strictest_dlp_policy
 from sessionfs.server.sanitize import sanitize_archive_string
 from sessionfs.server.services.chat_threads import (
     NormalisedThread,
@@ -79,6 +84,11 @@ from sessionfs.server.services.contacts import (
     valid_contact_id,
 )
 from sessionfs.server.services.ticket_writes import resolve_assigned_user_id
+from sessionfs.server.services.bulk import (
+    bulk_refusal,
+    check_bulk_duplicates,
+    check_bulk_size,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["meetings"])
 project_router = APIRouter(prefix="/api/v1/projects", tags=["meetings"])
@@ -569,24 +579,9 @@ async def _upload_dlp_policy(
                 continue
             for pattern in well_formed_custom_patterns(get_org_dlp_policy(org)):
                 scope_pattern_names.add(pattern["name"])
-    union = union_dlp_policies(policies, scope_pattern_names=scope_pattern_names)
-    if union is None:
-        return None
-    # The strictest union also takes the strictest *mode*: block beats redact
-    # beats warn. ``union_dlp_policies`` only carries categories/patterns/
-    # allowlist, so recompute mode from the contributing (enabled) policies.
-    modes = {
-        p.get("mode", "warn")
-        for p in policies
-        if isinstance(p, dict) and p.get("mode") in ("warn", "redact", "block")
-    }
-    if "block" in modes:
-        union["mode"] = "block"
-    elif "redact" in modes:
-        union["mode"] = "redact"
-    else:
-        union["mode"] = "warn"
-    return union
+    # Strictest union, mode included (block beats redact beats warn) — the
+    # same combination session pushes use.
+    return strictest_dlp_policy(policies, scope_pattern_names=scope_pattern_names)
 
 
 def _dlp_scan_content(
@@ -1562,7 +1557,12 @@ async def _paginate_meetings(
 # ── Project routes ──
 
 
-@project_router.post("/{project_id}/meetings", response_model=MeetingDetailResponse)
+@project_router.post(
+    "/{project_id}/meetings",
+    response_model=MeetingDetailResponse,
+    openapi_extra=raw_json_body_openapi(MeetingCreate),
+)
+@raw_json_body(MeetingCreate)
 async def upload_project_meeting(
     project_id: str,
     request: Request,
@@ -1671,7 +1671,12 @@ async def authorize_meeting_upload(
     return None, await authorize_group_meeting_upload(db, auth.user, group_id)
 
 
-@group_router.post("/{group_id}/meetings", response_model=MeetingDetailResponse)
+@group_router.post(
+    "/{group_id}/meetings",
+    response_model=MeetingDetailResponse,
+    openapi_extra=raw_json_body_openapi(MeetingCreate),
+)
+@raw_json_body(MeetingCreate)
 async def upload_group_meeting(
     group_id: str,
     request: Request,
@@ -1703,7 +1708,12 @@ async def _parse_thread(payload: ChatThreadCreate) -> NormalisedThread:
     )
 
 
-@project_router.post("/{project_id}/chat-threads", response_model=MeetingDetailResponse)
+@project_router.post(
+    "/{project_id}/chat-threads",
+    response_model=MeetingDetailResponse,
+    openapi_extra=raw_json_body_openapi(ChatThreadCreate),
+)
+@raw_json_body(ChatThreadCreate)
 async def upload_project_chat_thread(
     project_id: str,
     request: Request,
@@ -1723,7 +1733,12 @@ async def upload_project_chat_thread(
     )
 
 
-@group_router.post("/{group_id}/chat-threads", response_model=MeetingDetailResponse)
+@group_router.post(
+    "/{group_id}/chat-threads",
+    response_model=MeetingDetailResponse,
+    openapi_extra=raw_json_body_openapi(ChatThreadCreate),
+)
+@raw_json_body(ChatThreadCreate)
 async def upload_group_chat_thread(
     group_id: str,
     request: Request,
@@ -1892,43 +1907,34 @@ async def delete_meeting(
     return await _meeting_detail(db, meeting, auth=auth)
 
 
-@router.put(
-    "/meetings/{meeting_id}/participants/{participant_id}",
-    response_model=MeetingParticipantResponse,
-)
-async def override_meeting_participant(
-    meeting_id: str,
-    participant_id: str,
-    body: ParticipantOverride,
-    kind: RowKind | None = Query(default=None),
-    user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    meeting = await _get_meeting(db, meeting_id, kind)
-    if meeting.deleted_at is not None:
-        raise HTTPException(404, "Meeting not found")
-
-    # Authorize the write (project edit or group editor/admin), user key only.
-    # Meeting-level misses are a uniform "Meeting not found" (no oracle).
-    auth = AuthContext(user=user, api_key_id="", key_kind="user")
+async def _authorize_participant_write(
+    db: AsyncSession, meeting: MeetingTranscript, auth: AuthContext
+) -> Project | None:
+    """Authorize a participant write (project edit or group editor/admin).
+    Meeting-level misses are a uniform "Meeting not found" (no oracle).
+    Returns the project for a project meeting, None for a group meeting."""
     if meeting.project_id is not None:
-        project = await _project_for_meeting(db, meeting, auth, write=True)
-    else:
-        await _group_for_meeting(db, meeting, auth, write=True)
+        return await _project_for_meeting(db, meeting, auth, write=True)
+    await _group_for_meeting(db, meeting, auth, write=True)
+    return None
 
-    scope_org_id = await _meeting_scope_org_id(db, meeting)
 
-    participant = (
-        await db.execute(
-            select(MeetingParticipant).where(
-                MeetingParticipant.id == participant_id,
-                MeetingParticipant.transcript_id == meeting.id,
-            )
-        )
-    ).scalar_one_or_none()
-    if participant is None:
-        raise HTTPException(404, "Participant not found")
-
+async def _apply_participant_override(
+    db: AsyncSession,
+    *,
+    meeting: MeetingTranscript,
+    participant: MeetingParticipant,
+    body: ParticipantOverride,
+    user: User,
+    auth: AuthContext,
+    project: Project | None,
+    scope_org_id: str | None,
+    org: Organization | None,
+    actor_role: str | None,
+) -> None:
+    """Resolve one participant to a member, persona or contact by hand and
+    add its audit row. Not committed. Shared by the single and bulk routes;
+    raises the single route's 422 for a target that isn't eligible."""
     has_user = body.user_id is not None
     has_persona = body.persona_name is not None
     has_contact = body.contact_id is not None
@@ -1953,7 +1959,7 @@ async def override_meeting_participant(
         participant.user_id = None
         participant.persona_name = None
     elif has_user:
-        if meeting.project_id is not None:
+        if project is not None:
             try:
                 target = await resolve_assigned_user_id(
                     db, project=project, value=body.user_id, assigner_user_id=user.id
@@ -1971,7 +1977,7 @@ async def override_meeting_participant(
         participant.persona_name = None
         participant.contact_id = None
     else:
-        if meeting.project_id is not None:
+        if project is not None:
             # Project personas resolve first, then the caller's visible org
             # personas (same visibility rule as participant resolution). A
             # retained owner who is no longer a member of the project's live
@@ -2002,9 +2008,6 @@ async def override_meeting_participant(
     participant.resolution_method = "manual"
     participant.resolved_by_user_id = user.id
 
-    # Personal meetings (no org) still get an audit row with org_id NULL.
-    org = await db.get(Organization, scope_org_id) if scope_org_id else None
-    actor_role = await _user_org_role(db, user.id, scope_org_id)
     db.add(
         _meeting_audit_event(
             meeting=meeting,
@@ -2022,10 +2025,218 @@ async def override_meeting_participant(
         )
     )
 
+
+@router.put(
+    "/meetings/{meeting_id}/participants/{participant_id}",
+    response_model=MeetingParticipantResponse,
+)
+async def override_meeting_participant(
+    meeting_id: str,
+    participant_id: str,
+    body: ParticipantOverride,
+    kind: RowKind | None = Query(default=None),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    meeting = await _get_meeting(db, meeting_id, kind)
+    if meeting.deleted_at is not None:
+        raise HTTPException(404, "Meeting not found")
+
+    # Authorize the write (project edit or group editor/admin), user key only.
+    # Meeting-level misses are a uniform "Meeting not found" (no oracle).
+    auth = AuthContext(user=user, api_key_id="", key_kind="user")
+    project = await _authorize_participant_write(db, meeting, auth)
+    scope_org_id = await _meeting_scope_org_id(db, meeting)
+
+    participant = (
+        await db.execute(
+            select(MeetingParticipant).where(
+                MeetingParticipant.id == participant_id,
+                MeetingParticipant.transcript_id == meeting.id,
+            )
+        )
+    ).scalar_one_or_none()
+    if participant is None:
+        raise HTTPException(404, "Participant not found")
+
+    # Personal meetings (no org) still get an audit row with org_id NULL.
+    org = await db.get(Organization, scope_org_id) if scope_org_id else None
+    actor_role = await _user_org_role(db, user.id, scope_org_id)
+    await _apply_participant_override(
+        db,
+        meeting=meeting,
+        participant=participant,
+        body=body,
+        user=user,
+        auth=auth,
+        project=project,
+        scope_org_id=scope_org_id,
+        org=org,
+        actor_role=actor_role,
+    )
+
     await db.commit()
     await db.refresh(participant)
     return _participant_response(
         participant, await participant_contacts(db, meeting, [participant])
+    )
+
+
+class BulkParticipantItem(StrictRequestModel):
+    participant_id: str = Field(..., min_length=1, max_length=64)
+    # Exactly one of the three, as on the single override.
+    user_id: str | None = Field(default=None, max_length=320)
+    persona_name: str | None = Field(default=None, max_length=200)
+    contact_id: str | None = Field(default=None, max_length=64)
+
+
+class BulkParticipantRequest(StrictRequestModel):
+    # The 100-item cap is checked in the route so it answers too_many_items.
+    participants: list[BulkParticipantItem] = Field(..., min_length=1)
+
+
+class BulkParticipantResult(BaseModel):
+    index: int
+    participant_id: str
+    ok: bool
+    code: str | None = None
+    message: str | None = None
+    participant: MeetingParticipantResponse | None = None
+
+
+class BulkParticipantResponse(BaseModel):
+    meeting_id: str
+    updated: int
+    results: list[BulkParticipantResult]
+
+
+def _participant_item_error(exc: HTTPException) -> tuple[str, str]:
+    """(code, message) for a per-item refusal of the single override."""
+    detail = exc.detail
+    if isinstance(detail, dict):
+        return (
+            str(detail.get("error") or detail.get("code") or exc.status_code),
+            str(detail.get("message") or ""),
+        )
+    if exc.status_code == 404:
+        return "participant_not_found", str(detail)
+    return "invalid_target", str(detail)
+
+
+@router.post(
+    "/meetings/{meeting_id}/participants/resolve-bulk",
+    response_model=BulkParticipantResponse,
+)
+async def bulk_override_meeting_participants(
+    meeting_id: str,
+    body: BulkParticipantRequest,
+    kind: RowKind | None = Query(default=None),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Resolve up to 100 participants of one meeting or chat thread by hand,
+    all-or-nothing. Each item is authorized and applied exactly like the
+    single override (PUT .../participants/{participant_id}); any refused item
+    means nothing is written and a 422 lists every item."""
+    check_bulk_size(len(body.participants))
+    check_bulk_duplicates([i.participant_id for i in body.participants], "participant_id")
+
+    meeting = await _get_meeting(db, meeting_id, kind)
+    if meeting.deleted_at is not None:
+        raise HTTPException(404, "Meeting not found")
+    auth = AuthContext(user=user, api_key_id="", key_kind="user")
+    project = await _authorize_participant_write(db, meeting, auth)
+    scope_org_id = await _meeting_scope_org_id(db, meeting)
+
+    wanted = {i.participant_id for i in body.participants}
+    by_id = {
+        p.id: p
+        for p in (
+            await db.execute(
+                select(MeetingParticipant).where(
+                    MeetingParticipant.transcript_id == meeting.id,
+                    MeetingParticipant.id.in_(wanted),
+                )
+            )
+        ).scalars()
+    }
+    org = await db.get(Organization, scope_org_id) if scope_org_id else None
+    actor_role = await _user_org_role(db, user.id, scope_org_id)
+
+    results: list[BulkParticipantResult | None] = [None] * len(body.participants)
+    # Contact items first, in contact-id order, so the contact row locks the
+    # single override takes are always taken in the same (id) order.
+    order = sorted(
+        range(len(body.participants)),
+        key=lambda i: (
+            body.participants[i].contact_id is None,
+            body.participants[i].contact_id or "",
+            i,
+        ),
+    )
+    failed = False
+    for index in order:
+        item = body.participants[index]
+        participant = by_id.get(item.participant_id)
+        if participant is None:
+            failed = True
+            results[index] = BulkParticipantResult(
+                index=index,
+                participant_id=item.participant_id,
+                ok=False,
+                code="participant_not_found",
+                message="Participant not found",
+            )
+            continue
+        override = ParticipantOverride(
+            user_id=item.user_id,
+            persona_name=item.persona_name,
+            contact_id=item.contact_id,
+        )
+        try:
+            await _apply_participant_override(
+                db,
+                meeting=meeting,
+                participant=participant,
+                body=override,
+                user=user,
+                auth=auth,
+                project=project,
+                scope_org_id=scope_org_id,
+                org=org,
+                actor_role=actor_role,
+            )
+        except HTTPException as exc:
+            if exc.status_code not in (404, 422):
+                raise
+            failed = True
+            code, message = _participant_item_error(exc)
+            results[index] = BulkParticipantResult(
+                index=index,
+                participant_id=item.participant_id,
+                ok=False,
+                code=code,
+                message=message,
+            )
+            continue
+        results[index] = BulkParticipantResult(
+            index=index, participant_id=item.participant_id, ok=True
+        )
+
+    final = [r for r in results if r is not None]
+    if failed:
+        await db.rollback()
+        raise bulk_refusal(final)
+
+    await db.commit()
+    touched = [by_id[i.participant_id] for i in body.participants]
+    for p in touched:
+        await db.refresh(p)
+    contacts = await participant_contacts(db, meeting, touched)
+    for result, p in zip(final, touched):
+        result.participant = _participant_response(p, contacts)
+    return BulkParticipantResponse(
+        meeting_id=meeting.id, updated=len(final), results=final
     )
 
 

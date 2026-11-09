@@ -65,6 +65,36 @@ api:
   # `admin_metrics:read` scope in a Bearer header (see docs/observability.md).
   metrics:
     scrapeAnnotations: false
+    # Add org_id / project_id labels (ids only, never names) to the per-tenant
+    # business metric families (SFS_METRICS_TENANT_LABELS). Off by default:
+    # series then aggregate across tenants. With it on, series grow with the
+    # number of orgs and projects (still capped at 10,000 per metric).
+    tenantLabels: false
+    # SLO recording + burn-rate alerting rules as a PrometheusRule
+    # (monitoring.coreos.com/v1; needs the Prometheus Operator CRDs). Off by
+    # default. The SLOs are documented at https://sessionfs.dev/slos/.
+    prometheusRule:
+      enabled: false
+      # Extra labels so your Prometheus ruleSelector picks the rule up
+      # (kube-prometheus-stack usually wants `release: <its release name>`).
+      labels: {}
+      # Keep the reminder-delivery SLO group. Turn it off when you do not
+      # schedule the reminders-due sweep: with no runs it reports as failing.
+      reminderSweep: true
+
+  # Per-org limits on the expensive routes. Concurrency caps are shared by
+  # every API replica (held in the database, not in memory); a personal
+  # project counts against its owner. 0 turns a cap off. Over a cap the API
+  # answers 429 org_concurrency_limit with Retry-After.
+  limits:
+    orgConcurrency:
+      extraction: 4  # meeting / chat action-item extraction
+      helper: 8      # session helper turns
+      compile: 2     # knowledge compile, rebuild, group compile
+      export: 2      # approval-log and contact CSV exports
+    # PostgreSQL statement_timeout (ms) on heavy read routes; a cancelled read
+    # answers 503 query_timeout. 0 turns it off.
+    heavyReadTimeoutMs: 15000
 
   # Organization SSO (OIDC, v0.13+). Enable + set the callback URL you
   # registered with your IdP and the dashboard origin for browser login.
@@ -132,6 +162,8 @@ api:
   marketplace:
     # Public API origin used in catalog clone URLs (SFS_PUBLIC_API_URL), e.g.
     # https://sessionfs.example.com. Empty: the request's own origin.
+    # Also the base of signup verification links (falls back to the
+    # dashboard URL; with neither, no verification email is sent).
     publicApiUrl: ""
     # Public GitHub mirror of the public catalog as owner/repo
     # (SFS_PUBLIC_CATALOG_MIRROR), e.g. SessionFS/marketplace. Set it only when
@@ -322,6 +354,18 @@ api:
       schedule: "15 4 * * *"
       existingSecret: ""
       secretKey: "eval-outputs-api-key"
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
+  # Idempotency-Key sweep: deletes stored Idempotency-Key rows older than
+  # 24 hours in bounded batches (run hourly; idempotent).
+  idempotencyKeys:
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "20 * * * *"
+      existingSecret: ""
+      secretKey: "idempotency-keys-api-key"
       image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3

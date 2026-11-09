@@ -282,6 +282,8 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ## Status
 
+**v0.30.0 — Public Beta.** 11927 backend tests + 2392 dashboard tests passing. Database migrations 001–137 (067 and 068 unused). 145 MCP tools. **Hardening release:** a published API contract with drift checks and ignored-field headers, Idempotency-Key on every create route, business metrics and four SLOs with alert rules, per-org limits on expensive work and timeouts on heavy reads, review-loop guarantees (with ordered merge-check posts), bulk invites, grants and participant resolution, and a `distilled_from` lineage edge. **People can belong to several organizations** (org switcher, `sfs org list|invites|accept`). **Tickets page rebuilt:** saved views, one-line rows with review and blocker signals, a detail pane with a Next step card, keyboard shortcuts, bulk actions and a six-column board. **Glossary tooltips** across the dashboard. **The session helper stays in one scope and org** and ties each sentence to its source. Session uploads now run the DLP gate, pushes are scanned under the strictest policy of every org they could reach, and self-hosted verification links point at your server. Migrations 134–137.
+
 **v0.29.14 — Public Beta.** 11439 backend tests + 2221 dashboard tests passing. Database migrations 001–133 (067 and 068 unused). 145 MCP tools. **Evaluations and model/dataset lineage (#121, #122), record-only:** versioned eval suites (inline or hash-only cases, people-only edits), eval runs posted by your own grader with server-computed verdicts, trusted only from a registered independent grader; compare runs; datasets/models/prompts registered as pointers with lineage edges; promotion to staging/production gated on a trusted pass of every required suite on that exact version. SessionFS never runs a model or fetches an artifact. `sfs eval`, `sfs artifact`, ten MCP tools, Project → Work → Evals/Artifacts. Migrations 131–133.
 
 **v0.29.13 — Public Beta.** 11392 backend tests + 2203 dashboard tests passing. Database migrations 001–130 (067 and 068 unused). 135 MCP tools. **External contacts (#125):** people your org works with who aren't SessionFS users, in Organization → Contacts. Meeting and chat speakers resolve to members, then contacts, then a "To confirm" queue a person works through (extraction never creates contacts); tickets and action items can be owned by a contact (shown as external, never notified); a contact who joins with a verified email becomes the member and their open tickets follow. Emails masked except for owners, admins and the creator; merge, export, erasure and an optional retention sweep. `sfs contact`, four MCP tools, `contacts:read|write` scopes. Migration 130.
@@ -431,7 +433,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### Security, compliance, and billing
 
-- **DLP / Secret Scrubbing** — 14 PHI patterns + 19 secret patterns, BLOCK/REDACT/WARN modes, server-side scan of all archive files, `sfs dlp scan/policy`, dashboard settings tab
+- **DLP / Secret Scrubbing** — 14 PHI patterns + 20 secret patterns, BLOCK/REDACT/WARN modes, server-side scan of all archive files, `sfs dlp scan/policy`, dashboard settings tab
 - **`sfs init` wizard** with auto-detection of 10 tools and optional sync setup
 - **`sfs security scan/fix`** for config permissions, API key exposure, dependency audit
 - **Security pipeline** — pip-audit, Trivy (rendered Helm chart), Bandit, Dependabot, SECURITY.md; CRITICAL/HIGH blocks the pipeline

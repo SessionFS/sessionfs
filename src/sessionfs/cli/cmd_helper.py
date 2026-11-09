@@ -268,6 +268,7 @@ async def _stream_ask(api_url: str, api_key: str, payload: dict) -> None:
     conversation_id: str | None = None
     error_message: str | None = None
     done: dict = {}
+    unverified: object = None
 
     try:
         # The server sends a keep-alive ping every 15 s while a turn runs, so a
@@ -300,6 +301,13 @@ async def _stream_ask(api_url: str, api_key: str, payload: dict) -> None:
                             delta = _parse_event_data(event_type, data).get("delta", "")
                             answer_parts.append(delta)
                             live.update(Markdown("".join(answer_parts)))
+                        elif event_type == "grounding":
+                            # The final text: sources resolved and sentences
+                            # without one marked "(not verified)".
+                            final_text = _parse_event_data(event_type, data).get("text")
+                            if isinstance(final_text, str):
+                                answer_parts = [final_text]
+                                live.update(Markdown(final_text))
                         elif event_type in _CITATION_EVENTS:
                             citations.append(_parse_event_data(event_type, data))
                         elif event_type == "error":
@@ -327,6 +335,8 @@ async def _stream_ask(api_url: str, api_key: str, payload: dict) -> None:
                         sys.stdout.write(delta)
                         sys.stdout.flush()
                         answer_parts.append(delta)
+                    elif event_type == "grounding":
+                        unverified = _parse_event_data(event_type, data).get("unverified_count")
                     elif event_type in _CITATION_EVENTS:
                         citations.append(_parse_event_data(event_type, data))
                     elif event_type == "error":
@@ -340,6 +350,14 @@ async def _stream_ask(api_url: str, api_key: str, payload: dict) -> None:
                 if answer_parts:
                     sys.stdout.write("\n")
                     sys.stdout.flush()
+                if isinstance(unverified, int) and unverified > 0:
+                    # Streamed text carries no marks; say what the saved
+                    # answer marks.
+                    err_console.print(
+                        f"[dim]{unverified} sentence{'s' if unverified != 1 else ''} "
+                        "had no source; the saved answer marks "
+                        f"{'them' if unverified != 1 else 'it'} \"(not verified)\".[/dim]"
+                    )
                 _finish_stream(
                     "".join(answer_parts), citations, conversation_id, done, False, error_message
                 )

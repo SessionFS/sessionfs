@@ -23,6 +23,7 @@ import {
 } from './format';
 import { TrustSeal } from './TrustSeal';
 import { CloseItemDialog, RaiseLimitDialog } from './LoopActions';
+import { Term } from '../../help/Term';
 
 const SECTION_TITLE = 'text-md font-semibold text-text-primary';
 const QUIET = 'text-sm text-text-tertiary';
@@ -491,7 +492,9 @@ export function Scoreboard({ rows }: { rows: ScoreboardRow[] }) {
           <tr className="text-left text-2xs uppercase tracking-[0.04em] text-text-tertiary">
             <th scope="col" className="px-3 py-2">Implementer × reviewer</th>
             <th scope="col" className="px-3 py-2 text-right">Accepted changes</th>
-            <th scope="col" className="px-3 py-2 text-right">Harmful per change</th>
+            <th scope="col" className="px-3 py-2 text-right">
+              <Term id="harmful-finding">Harmful</Term> per change
+            </th>
             <th scope="col" className="px-3 py-2 text-right">Avg rounds to clean</th>
             <th scope="col" className="px-3 py-2 text-right">Cost per change</th>
           </tr>

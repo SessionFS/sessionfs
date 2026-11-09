@@ -235,7 +235,27 @@ describe('ProjectSettings for a view-only reader', () => {
   it('groups the settings into a few titled sections', () => {
     renderSettings();
     const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
-    expect(headings).toEqual(['General', 'Knowledge', 'Repositories', 'Access & ownership', 'Danger zone']);
+    expect(headings).toEqual(['About', 'General', 'Knowledge', 'Repositories', 'Access & ownership', 'Danger zone']);
+  });
+
+  // The details that used to sit in the project header live here now.
+  it('lists the repo path, linked repo count and dates under About', () => {
+    render(
+      <ProjectSettings
+        project={{ ...PROJECT, repos: [{ remote: 'a' }, { remote: 'b' }] } as unknown as typeof PROJECT}
+        onRequestDelete={() => {}}
+      />,
+    );
+    const about = screen.getByRole('region', { name: 'About' });
+    expect(about).toHaveTextContent(PROJECT.git_remote_normalized);
+    expect(about).toHaveTextContent('Linked repos2');
+    expect(about).toHaveTextContent(/Created/);
+    expect(about).toHaveTextContent(/Updated/);
+  });
+
+  it('shows About to a reader who cannot edit', () => {
+    render(<ProjectSettings project={{ ...PROJECT, can_edit: false }} onRequestDelete={() => {}} />);
+    expect(screen.getByRole('region', { name: 'About' })).toHaveTextContent(PROJECT.git_remote_normalized);
   });
 
   it('keeps Rename and Apply quiet until something changes', async () => {

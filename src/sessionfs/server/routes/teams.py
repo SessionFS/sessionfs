@@ -38,6 +38,7 @@ from sessionfs.server.schemas.handoffs import (
 )
 from sessionfs.server.tier_gate import (
     UserContext,
+    build_org_user_context,
     check_feature,
     check_role,
     get_user_context,
@@ -80,6 +81,32 @@ async def _require_org_member(ctx: UserContext) -> str:
     if not ctx.is_org_user or ctx.org is None:
         raise HTTPException(status_code=403, detail="Organization required")
     return ctx.org.id
+
+
+async def _load_team_scoped(
+    team_id: str, ctx: UserContext, db: AsyncSession, *, admin: bool
+) -> Team:
+    """Load a team and authorize against the TEAM'S org.
+
+    A person can belong to several orgs, so the team's own org (its plan and
+    the caller's role there) decides, not the caller's default org. A
+    missing team, or one in an org the caller isn't in, answers exactly as
+    before: the default-org checks first, then the same 404.
+    """
+    require = _require_org_admin if admin else _require_org_member
+    team = (
+        await db.execute(select(Team).where(Team.id == team_id))
+    ).scalar_one_or_none()
+    org_ctx = (
+        await build_org_user_context(ctx.user, team.org_id, db)
+        if team is not None
+        else None
+    )
+    if team is None or org_ctx is None:
+        await require(ctx)
+        raise HTTPException(status_code=404, detail="Team not found")
+    await require(org_ctx)
+    return team
 
 
 @router.post("", status_code=201, response_model=TeamResponse)
@@ -147,13 +174,7 @@ async def get_team(
     db: AsyncSession = Depends(get_db),
 ):
     """Team detail with member count. Any org member of the team's org."""
-    org_id = await _require_org_member(ctx)
-    team = (
-        await db.execute(select(Team).where(Team.id == team_id))
-    ).scalar_one_or_none()
-    # Existence is sensitive cross-org — return 404 not 403.
-    if team is None or team.org_id != org_id:
-        raise HTTPException(status_code=404, detail="Team not found")
+    team = await _load_team_scoped(team_id, ctx, db, admin=False)
     member_count = (
         await db.execute(
             select(func.count(TeamMember.id)).where(TeamMember.team_id == team.id)
@@ -172,12 +193,7 @@ async def delete_team(
     Pending team handoffs targeting this team get recipient_team_id =
     NULL (FK SET NULL) and are effectively orphaned — sender should
     revoke + redirect after team deletion."""
-    org_id = await _require_org_admin(ctx)
-    team = (
-        await db.execute(select(Team).where(Team.id == team_id))
-    ).scalar_one_or_none()
-    if team is None or team.org_id != org_id:
-        raise HTTPException(status_code=404, detail="Team not found")
+    team = await _load_team_scoped(team_id, ctx, db, admin=True)
     await db.delete(team)
     await db.commit()
 
@@ -196,12 +212,8 @@ async def add_team_member(
 ):
     """Add a user to a team. Org admins only. The target user must
     already be a member of the same org — no cross-org membership."""
-    org_id = await _require_org_admin(ctx)
-    team = (
-        await db.execute(select(Team).where(Team.id == team_id))
-    ).scalar_one_or_none()
-    if team is None or team.org_id != org_id:
-        raise HTTPException(status_code=404, detail="Team not found")
+    team = await _load_team_scoped(team_id, ctx, db, admin=True)
+    org_id = team.org_id
 
     # Target user must already be an org member of the team's org.
     target_membership = (
@@ -256,12 +268,7 @@ async def list_team_members(
     db: AsyncSession = Depends(get_db),
 ):
     """List members of a team. Any org member can view."""
-    org_id = await _require_org_member(ctx)
-    team = (
-        await db.execute(select(Team).where(Team.id == team_id))
-    ).scalar_one_or_none()
-    if team is None or team.org_id != org_id:
-        raise HTTPException(status_code=404, detail="Team not found")
+    await _load_team_scoped(team_id, ctx, db, admin=False)
 
     members = list(
         (
@@ -304,12 +311,7 @@ async def remove_team_member(
 ):
     """Remove a user from a team. Org admins only. No-op if the user
     was not a member (404)."""
-    org_id = await _require_org_admin(ctx)
-    team = (
-        await db.execute(select(Team).where(Team.id == team_id))
-    ).scalar_one_or_none()
-    if team is None or team.org_id != org_id:
-        raise HTTPException(status_code=404, detail="Team not found")
+    await _load_team_scoped(team_id, ctx, db, admin=True)
     member = (
         await db.execute(
             select(TeamMember).where(

@@ -25,6 +25,7 @@ SWEEPS = [
     ("remindersDue", "reminders-due", "*/5 * * * *", "/api/v1/admin/sweeps/reminders-due", None),
     ("attentionHides", "attention-hides", "45 3 * * *", "/api/v1/admin/sweeps/attention-hides", None),
     ("evalOutputs", "eval-outputs", "15 4 * * *", "/api/v1/admin/sweeps/eval-outputs", None),
+    ("idempotencyKeys", "idempotency-keys", "20 * * * *", "/api/v1/admin/sweeps/idempotency-keys", None),
 ]
 
 

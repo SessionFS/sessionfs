@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sessionfs"
-version = "0.29.14"
+version = "0.30.0"
 description = "Capture, sync, and resume AI coding sessions across 10 tools — Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, Roo Code, Kilo Code, and Antigravity."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -138,9 +138,11 @@ pythonpath = ["src"]
 asyncio_mode = "auto"
 # Absolute timing budgets depend on machine load; the default run checks
 # linearity (ratios) and generous limits only. Run them with `-m perf`.
-addopts = "-m 'not perf'"
+# The SLO perf smoke (tests/server/perf) runs as its own CI job with -m slo_smoke.
+addopts = "-m 'not perf and not slo_smoke'"
 markers = [
     "perf: strict absolute timing budgets (excluded by default; run with -m perf)",
+    "slo_smoke: SLO perf smoke with generous p95 budgets (own CI job; run with -m slo_smoke)",
     "real_llm_save_check: run the real save-time LLM connection check (the test mocks the upstream)",
 ]
 

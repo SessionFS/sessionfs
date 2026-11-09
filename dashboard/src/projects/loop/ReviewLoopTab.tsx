@@ -9,6 +9,7 @@ import { StoryView } from './StoryView';
 import { DOCS_URL } from './format';
 import { planAllowsWorkflows } from '../workflows/TemplatesPanel';
 import { StartWorkflowButton } from '../workflows/StartWorkflowButton';
+import { Term } from '../../help/Term';
 
 export interface ReviewLoopTabProps {
   projectId: string;
@@ -74,7 +75,9 @@ export default function ReviewLoopTab({ projectId, storyId, onOpenStory, canEdit
     <div className="space-y-8">
       <div className="flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1">
-          <h2 className="text-lg font-semibold text-text-primary">Review Loop</h2>
+          <h2 className="text-lg font-semibold text-text-primary">
+            <Term id="review-loop">Review Loop</Term>
+          </h2>
           <p className="text-sm text-text-tertiary">
             What your agents wrote, what the reviewers caught, and what it cost.
           </p>

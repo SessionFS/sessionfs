@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, StrictInt, field_validator
+from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +36,7 @@ from sessionfs.server.auth.project_access import (
     user_can_access_project,
 )
 from sessionfs.server.db.engine import get_db
+from sessionfs.server.db.timeouts import bound_heavy_reads
 from sessionfs.server.db.models import (
     LoopChecklistItem,
     Project,
@@ -107,7 +108,15 @@ class LoopTicketSpec(BaseModel):
 class LoopCreate(BaseModel):
     title: str = ""
     description: str = ""
+    # The issue to adopt as the loop parent. ``ticket_id`` is accepted as an
+    # alias so loop create and workflow start (which calls it ``ticket_id``)
+    # take the same body (tk_3855ef8b11f94ee2). Sending both with different
+    # values is a 422, never a silent pick.
     from_ticket_id: str | None = None
+    ticket_id: str | None = Field(
+        None,
+        description="Alias of from_ticket_id (same meaning as on workflow start).",
+    )
     tickets: list[LoopTicketSpec] = Field(min_length=1, max_length=50)
     reviewer_persona: str
     token_budget: StrictInt | None = Field(None, ge=1)
@@ -155,6 +164,27 @@ class LoopCreate(BaseModel):
         if v is not None and not math.isfinite(v):
             raise ValueError("cost_budget_usd must be a finite number")
         return v
+
+    @field_validator("from_ticket_id", "ticket_id")
+    @classmethod
+    def _blank_ticket_is_none(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        return v or None
+
+    @model_validator(mode="after")
+    def _reconcile_ticket_alias(self) -> "LoopCreate":
+        if self.ticket_id is not None:
+            if self.from_ticket_id is not None and self.from_ticket_id != self.ticket_id:
+                raise ValueError(
+                    "from_ticket_id and ticket_id are the same field (the issue to "
+                    "adopt as the loop parent) but were sent with different values; "
+                    "send only one of them"
+                )
+            self.from_ticket_id = self.ticket_id
+        self.ticket_id = self.from_ticket_id
+        return self
 
 
 class LoopUpdate(BaseModel):
@@ -362,7 +392,10 @@ async def create_loop_records(
     else:
         if not title.strip():
             raise HTTPException(
-                422, "title is required when from_ticket_id is not supplied"
+                422,
+                "title is missing or blank: send a non-empty title to create a "
+                "new loop issue, or send from_ticket_id (alias ticket_id) to "
+                "adopt an existing issue as the loop parent",
             )
         parent = Ticket(
             id=f"tk_{uuid.uuid4().hex[:16]}",
@@ -675,6 +708,7 @@ async def list_loops(
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     """Every loop in the project (parent tickets with a ``loop_config``)."""
+    await bound_heavy_reads(db)
     project = await _readable_project(project_id, db, auth)
     await check_project_feature(ctx, "review_loop", project, db)
     loops = (
@@ -703,6 +737,7 @@ async def get_loop(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """One loop by id (404 unless it is a loop in this project)."""
+    await bound_heavy_reads(db)
     project = await _readable_project(project_id, db, auth)
     loop = (
         await db.execute(

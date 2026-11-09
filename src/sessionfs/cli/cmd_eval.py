@@ -582,7 +582,7 @@ def artifact_show(artifact_id: str = typer.Argument(...), as_json: bool = typer.
 def artifact_link(
     parent: str = typer.Argument(...),
     child: str = typer.Argument(...),
-    relation: str = typer.Option(..., "--relation", help="derived_from | trained_on | fine_tuned_from | evaluated_against | uses"),
+    relation: str = typer.Option(..., "--relation", help="derived_from | trained_on | fine_tuned_from | distilled_from | evaluated_against | uses"),
     context_ref: str | None = typer.Option(None, "--context-ref"),
 ) -> None:
     body: dict[str, Any] = {"parent_id": parent, "child_id": child, "relation": relation}

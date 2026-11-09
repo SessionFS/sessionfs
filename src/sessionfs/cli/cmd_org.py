@@ -10,6 +10,7 @@ import typer
 from rich.markup import escape
 from rich.table import Table
 
+from sessionfs.http_idempotency import idempotent_post
 from sessionfs.cli.cmd_rules import _api_request
 from sessionfs.cli.common import console, err_console, format_api_error, handle_errors
 
@@ -137,7 +138,7 @@ def org_create(
     api_url, api_key = _load_api_config()
 
     try:
-        resp = httpx.post(
+        resp = idempotent_post(
             f"{api_url}/api/v1/org",
             headers=_headers(api_key),
             json={"name": name, "slug": slug},
@@ -153,19 +154,108 @@ def org_create(
     console.print(f"  Org ID: {data['org_id']}")
 
 
+def _read_invite_file(path: str, default_role: str) -> list[dict]:
+    """Parse an invite file: one ``email`` or ``email,role`` per line.
+
+    Blank lines and lines starting with # are skipped."""
+    from sessionfs.cli.common import read_bulk_file
+
+    return [
+        {"email": row[0], "role": (row[1] if len(row) > 1 and row[1] else default_role)}
+        for row in read_bulk_file(path)
+    ]
+
+
+def _print_accept_hint(accept_url: str | None) -> None:
+    if accept_url:
+        console.print(f"  No email was sent. Share this link: {accept_url}")
+    console.print(
+        "  They can also accept with: sfs org invites, then sfs org accept <invite_id>"
+    )
+
+
+def _org_invite_bulk(
+    api_url: str, api_key: str, items: list[dict], org_id: str | None
+) -> None:
+    import httpx
+    from sessionfs.cli.api_errors import handle_api_response
+    from sessionfs.cli.common import print_bulk_failures
+
+    try:
+        if org_id is None:
+            info = httpx.get(f"{api_url}/api/v1/org", headers=_headers(api_key), timeout=15.0)
+            handle_api_response(info)
+            org = info.json().get("org")
+            if not org:
+                err_console.print("[red]You are not part of an organization.[/red]")
+                raise SystemExit(1)
+            org_id = org["id"]
+        resp = idempotent_post(
+            f"{api_url}/api/v1/orgs/{quote(org_id, safe='')}/invites/bulk",
+            headers=_headers(api_key),
+            json={"invites": items},
+            timeout=30.0,
+        )
+    except httpx.ConnectError:
+        err_console.print(f"[red]Could not reach server at {api_url}[/red]")
+        raise SystemExit(1)
+
+    if resp.status_code == 422:
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+        if print_bulk_failures(body, "email"):
+            raise SystemExit(1)
+    handle_api_response(resp)
+    data = resp.json()
+    table = Table(title=f"Invited {data['invited']}")
+    table.add_column("Email")
+    table.add_column("Role")
+    table.add_column("Invite ID")
+    table.add_column("Emailed")
+    unsent = []
+    for r in data["results"]:
+        table.add_row(r["email"], r["role"], r["invite_id"], "yes" if r["email_sent"] else "no")
+        if not r["email_sent"]:
+            unsent.append(r)
+    console.print(table)
+    if unsent:
+        console.print("\n[yellow]No email went out for these; share their links:[/yellow]")
+        for r in unsent:
+            console.print(f"  {r['email']}: {r.get('accept_url') or ''}")
+    console.print("  Invites expire in 7 days.")
+
+
 @org_app.command("invite")
 def org_invite(
-    email: str = typer.Argument(help="Email address to invite"),
+    email: str = typer.Argument(None, help="Email address to invite"),
     role: str = typer.Option("member", help="Role: 'admin' or 'member'"),
+    file: str = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help="Invite everyone in a file: one email (or email,role) per line, up to 100. "
+        "All or nothing: if any line is refused, nobody is invited.",
+    ),
+    org_id: str = typer.Option(None, "--org", help="Org id (default: your organization)"),
 ) -> None:
-    """Invite a user to your organization (admin only)."""
+    """Invite a user, or a file of users, to your organization (admin only)."""
     import httpx
     from sessionfs.cli.api_errors import handle_api_response
 
+    if (email is None) == (file is None):
+        err_console.print("[red]Give an email address or --file, not both.[/red]")
+        raise SystemExit(2)
+
     api_url, api_key = _load_api_config()
 
+    if file is not None:
+        _org_invite_bulk(api_url, api_key, _read_invite_file(file, role), org_id)
+        return
+
     try:
-        resp = httpx.post(
+        resp = idempotent_post(
             f"{api_url}/api/v1/org/invite",
             headers=_headers(api_key),
             json={"email": email, "role": role},
@@ -177,9 +267,131 @@ def org_invite(
 
     handle_api_response(resp)
     data = resp.json()
-    console.print(f"[green]Invite sent to {data['email']} as {data['role']}[/green]")
+    if data.get("email_sent"):
+        console.print(f"[green]Invite sent to {data['email']} as {data['role']}[/green]")
+    else:
+        console.print(f"[green]Invite created for {data['email']} as {data['role']}[/green]")
     console.print(f"  Invite ID: {data['invite_id']}")
+    if not data.get("email_sent"):
+        _print_accept_hint(data.get("accept_url"))
     console.print("  The invite expires in 7 days.")
+
+
+@org_app.command("invites")
+def org_my_invites() -> None:
+    """List the pending invites addressed to your email."""
+    import httpx
+    from sessionfs.cli.api_errors import handle_api_response
+
+    api_url, api_key = _load_api_config()
+    try:
+        resp = httpx.get(f"{api_url}/api/v1/org/invites/me", headers=_headers(api_key), timeout=15.0)
+    except httpx.ConnectError:
+        err_console.print(f"[red]Could not reach server at {api_url}[/red]")
+        raise SystemExit(1)
+    handle_api_response(resp)
+    invites = resp.json().get("invites") or []
+    if not invites:
+        console.print("No pending invites.")
+        return
+    table = Table(title="Pending invites")
+    table.add_column("Invite ID")
+    table.add_column("Organization")
+    table.add_column("Role")
+    table.add_column("From")
+    table.add_column("Expires")
+    for inv in invites:
+        table.add_row(
+            inv["invite_id"],
+            escape(inv["org_name"]),
+            inv["role"],
+            escape(inv["invited_by_email"]),
+            (inv.get("expires_at") or "")[:10],
+        )
+    console.print(table)
+
+
+@org_app.command("accept")
+def org_accept_invite(
+    invite_id: str = typer.Argument(help="Invite ID (see: sfs org invites)"),
+) -> None:
+    """Accept an invite addressed to your email."""
+    import httpx
+    from sessionfs.cli.api_errors import handle_api_response
+
+    api_url, api_key = _load_api_config()
+    try:
+        resp = idempotent_post(
+            f"{api_url}/api/v1/org/invite/{quote(invite_id, safe='')}/accept",
+            headers=_headers(api_key),
+            timeout=15.0,
+        )
+    except httpx.ConnectError:
+        err_console.print(f"[red]Could not reach server at {api_url}[/red]")
+        raise SystemExit(1)
+    handle_api_response(resp)
+    data = resp.json()
+    console.print(f"[green]Joined {data['org_id']} as {data['role']}.[/green]")
+    # You can belong to several orgs; say which one commands use by default.
+    default_org_id = data.get("default_org_id")
+    if default_org_id and default_org_id != data["org_id"]:
+        console.print(
+            f"Your default org is still {default_org_id}. "
+            f"Switch with: sfs config default-org {data['org_id']}"
+        )
+
+
+@org_app.command("list")
+def org_list() -> None:
+    """List every organization you belong to. * marks your default org."""
+    import httpx
+    from sessionfs.cli.api_errors import handle_api_response
+
+    api_url, api_key = _load_api_config()
+    try:
+        resp = httpx.get(f"{api_url}/api/v1/auth/me", headers=_headers(api_key), timeout=15.0)
+    except httpx.ConnectError:
+        err_console.print(f"[red]Could not reach server at {api_url}[/red]")
+        raise SystemExit(1)
+    handle_api_response(resp)
+    me = resp.json() or {}
+    orgs = me.get("orgs")
+    if orgs is None:
+        # Older server without the `orgs` list: fall back to /orgs.
+        try:
+            resp = httpx.get(f"{api_url}/api/v1/orgs", headers=_headers(api_key), timeout=15.0)
+        except httpx.ConnectError:
+            err_console.print(f"[red]Could not reach server at {api_url}[/red]")
+            raise SystemExit(1)
+        handle_api_response(resp)
+        default_id = me.get("org_id")
+        orgs = [
+            {
+                "org_id": o.get("org_id"),
+                "name": o.get("name"),
+                "slug": "",
+                "role": o.get("role") or "",
+                "is_default": o.get("org_id") == default_id,
+            }
+            for o in (resp.json() or {}).get("orgs") or []
+        ]
+    if not orgs:
+        console.print("You are not part of an organization.")
+        return
+    table = Table(title="Your organizations")
+    table.add_column("")
+    table.add_column("Org ID")
+    table.add_column("Name")
+    table.add_column("Role")
+    for o in orgs:
+        table.add_row(
+            "*" if o.get("is_default") else "",
+            escape(str(o.get("org_id") or "")),
+            escape(str(o.get("name") or "")),
+            escape(str(o.get("role") or "")),
+        )
+    console.print(table)
+    console.print("Change your default org with: sfs config default-org <org_id>")
 
 
 @org_app.command("members")

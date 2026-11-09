@@ -329,6 +329,11 @@ export const tickets = statuses.map((status, i) => ({
   estimated_effort: [null, '3d', '2d 4h', null, '1d', '4h'][i],
   created_by: { user_id: me.user_id, display_name: me.display_name, email: me.email, persona: null, session_id: null },
   resolved_by: status === 'done' ? { user_id: me.user_id, display_name: me.display_name, email: me.email } : null,
+  // List row signals (the list response carries these per row).
+  jira_key: i === 2 ? 'WID-43' : null,
+  open_dependency_count: i === 2 ? 1 : 0,
+  child_counts: i === 3 ? { total: 1, finished: 0 } : null,
+  review_summary: status === 'review' ? { last_round: 1, last_verdict: 'changes', open_findings: 2, trusted: true } : null,
 }));
 
 export const agentRuns = [
@@ -2171,3 +2176,60 @@ export const contactSuggestions = {
     },
   ],
 };
+
+// ── Tickets list redesign: a richer set so rows show every signal ──
+// Due dates are relative to the real today, so "3d late" / "In 2d" always
+// render the same way whenever the harness runs.
+function dayOffset(days: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+function hoursAgo(h: number): string {
+  return new Date(Date.now() - h * 3_600_000).toISOString();
+}
+const PEER = { id: 'user_fixture02', display_name: 'Peer Fixture', email: 'peer@example.test' };
+const ME_REF = { id: me.user_id, display_name: me.display_name, email: me.email };
+
+function richTicket(over: Record<string, unknown>) {
+  return {
+    ...tickets[1],
+    description: 'Short description of the work.',
+    priority: 'medium',
+    assigned_to: null as string | null,
+    assigned_user_id: null as string | null,
+    assigned_user: null as typeof PEER | null,
+    kind: 'task',
+    parent_ticket_id: null as string | null,
+    child_ticket_ids: [] as string[],
+    depends_on: [] as string[],
+    due_date: null as string | null,
+    estimated_effort: null as string | null,
+    completion_notes: null,
+    resolved_at: null as string | null,
+    resolved_by: null,
+    jira_key: null as string | null,
+    open_dependency_count: 0,
+    child_counts: null as { total: number; finished: number } | null,
+    review_summary: null as { last_round: number; last_verdict: 'clean' | 'changes'; open_findings: number; trusted: boolean } | null,
+    ...over,
+  };
+}
+
+export const ticketsRich = [
+  richTicket({ id: 'tk_7a41c09e2b', kind: 'issue', status: 'in_progress', priority: 'high', title: 'Sync worker stalls after a 409 storm', assigned_to: 'compass', due_date: dayOffset(6), updated_at: hoursAgo(18), jira_key: 'WID-40', child_ticket_ids: ['tk_fixture3', 'tk_b19f0a2c4e', 'tk_c55d1e9f03', 'tk_d0e7a3b812'], child_counts: { total: 4, finished: 0 } }),
+  richTicket({ id: 'tk_fixture3', status: 'review', priority: 'high', title: 'Split ProjectDetail into section components', assigned_to: 'prism', due_date: dayOffset(37), updated_at: hoursAgo(17), parent_ticket_id: 'tk_7a41c09e2b', jira_key: 'WID-43', review_summary: { last_round: 2, last_verdict: 'clean', open_findings: 0, trusted: true } }),
+  richTicket({ id: 'tk_b19f0a2c4e', status: 'review', priority: 'high', title: 'Back off per session instead of globally', assigned_to: 'atlas', due_date: dayOffset(-1), updated_at: hoursAgo(19), parent_ticket_id: 'tk_7a41c09e2b', review_summary: { last_round: 1, last_verdict: 'changes', open_findings: 2, trusted: true } }),
+  richTicket({ id: 'tk_3e4f5a6b7c', status: 'review', priority: 'medium', title: 'Mask contact emails for members on the contacts list', assigned_to: 'sentinel', due_date: dayOffset(4), updated_at: hoursAgo(22) }),
+  richTicket({ id: 'tk_c55d1e9f03', status: 'blocked', priority: 'critical', title: 'Rotate the staging signing key before the audit', assigned_user_id: me.user_id, assigned_user: ME_REF, due_date: dayOffset(-5), updated_at: hoursAgo(48), parent_ticket_id: 'tk_7a41c09e2b', depends_on: ['tk_e4f8a0c771'], open_dependency_count: 1 }),
+  richTicket({ id: 'tk_4f5a6b7c8d', status: 'blocked', priority: 'medium', title: 'Publish the worker-review-loop skill to the catalog', assigned_user_id: PEER.id, assigned_user: PEER, updated_at: hoursAgo(216), depends_on: ['tk_c55d1e9f03'], open_dependency_count: 1 }),
+  richTicket({ id: 'tk_e4f8a0c771', status: 'in_progress', priority: 'high', title: 'Request a key-rotation window from infra', assigned_user_id: me.user_id, assigned_user: ME_REF, due_date: dayOffset(2), updated_at: hoursAgo(20) }),
+  richTicket({ id: 'tk_1c2d3e4f5a', status: 'open', priority: 'high', title: 'Make the Jira webhook handler idempotent', assigned_user_id: PEER.id, assigned_user: PEER, due_date: dayOffset(-3), updated_at: hoursAgo(26) }),
+  richTicket({ id: 'tk_d0e7a3b812', status: 'open', priority: 'low', title: 'Show the backoff state in sfs doctor', assigned_to: 'forge', due_date: dayOffset(12), updated_at: hoursAgo(30), parent_ticket_id: 'tk_7a41c09e2b' }),
+  richTicket({ id: 'tk_2d3e4f5a6b', status: 'open', priority: 'low', title: 'Document the persona scope-lock protocol', updated_at: hoursAgo(144) }),
+  richTicket({ id: 'tk_f1a2b3c4d5', status: 'suggested', priority: 'low', title: 'Cache the assignable-users list per project', created_by_persona: 'prism', updated_at: hoursAgo(21) }),
+  richTicket({ id: 'tk_0b9c8d7e6f', status: 'suggested', priority: 'low', title: 'Drop the always-empty Closed column from the board', created_by_persona: 'sentinel', updated_at: hoursAgo(30) }),
+  richTicket({ id: 'tk_9e8d7c6b5a', status: 'done', priority: 'medium', title: 'Fix the For You sidebar badge count', assigned_to: 'prism', updated_at: hoursAgo(72), resolved_at: hoursAgo(72), review_summary: { last_round: 1, last_verdict: 'clean', open_findings: 0, trusted: true } }),
+  richTicket({ id: 'tk_8d7c6b5a49', status: 'done', priority: 'low', title: 'Retire the legacy share-link route', assigned_to: 'atlas', updated_at: hoursAgo(96), resolved_at: hoursAgo(96) }),
+  richTicket({ id: 'tk_7c6b5a4938', status: 'cancelled', priority: 'low', title: 'Prototype a Slack notifier', updated_at: hoursAgo(300) }),
+];

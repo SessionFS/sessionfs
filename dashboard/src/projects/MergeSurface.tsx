@@ -412,6 +412,7 @@ export default function MergeSurface({ projectId, projectName }: MergeSurfacePro
               variant="danger"
               onClick={handleExecute}
               disabled={!confirmChecked || mergeProject.isPending}
+              disabledReason={!confirmChecked ? 'Tick the confirmation box first' : undefined}
               loading={mergeProject.isPending}
             >
               Execute merge

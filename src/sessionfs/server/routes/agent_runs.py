@@ -1194,6 +1194,42 @@ async def _raise_usage_conflict(
     raise HTTPException(409, f"{what}: current status is {current.status!r}.")
 
 
+def _record_run_metrics(
+    provider: str | None,
+    model: str | None,
+    usage: Any,
+    project: Any,
+    *,
+    status: str | None = None,
+    role: str | None = None,
+) -> None:
+    """Business metrics for one committed usage report / completion: the
+    tokens THIS call added, and the terminal status when there is one.
+    Fail-safe: never raises into the request."""
+    from sessionfs.server import business_metrics
+
+    try:
+        org_id = getattr(project, "org_id", None)
+        project_id = getattr(project, "id", None)
+    except Exception:
+        org_id = project_id = None
+    if usage is not None:
+        business_metrics.record_agent_tokens(
+            provider=provider,
+            model=model,
+            input_tokens=getattr(usage, "input_tokens", None),
+            output_tokens=getattr(usage, "output_tokens", None),
+            cache_read_tokens=getattr(usage, "cache_read_tokens", None),
+            cache_write_tokens=getattr(usage, "cache_write_tokens", None),
+            org_id=org_id,
+            project_id=project_id,
+        )
+    if status is not None:
+        business_metrics.record_agent_run_finished(
+            status=status, role=role, org_id=org_id, project_id=project_id
+        )
+
+
 # ── Routes ──
 
 
@@ -1530,6 +1566,10 @@ async def complete_agent_run(
             f"{existing.status!r} (already terminal).",
         )
 
+    # Metric labels, read now: the commit below expires ``existing``.
+    existing_provider, existing_model, existing_role = (
+        existing.provider, existing.model, existing.role
+    )
     findings_str = json.dumps(body.findings)
     findings_count = len(body.findings)
     duration = None
@@ -1611,6 +1651,10 @@ async def complete_agent_run(
         )
 
     await db.commit()
+    _record_run_metrics(
+        existing_provider, existing_model, body, project,
+        status=final_status, role=existing_role,
+    )
     # Review Loop R3 track E1 — findings with class="new" propose checklist
     # items; classes matching an existing item's slug bump its times_found.
     # Best-effort and strictly after the run is durable: a proposal failure
@@ -1682,6 +1726,7 @@ async def report_agent_run_usage(
             "(already terminal).",
         )
 
+    existing_provider, existing_model = existing.provider, existing.model
     usage = _additive_usage(
         input_tokens=body.input_tokens,
         output_tokens=body.output_tokens,
@@ -1708,6 +1753,7 @@ async def report_agent_run_usage(
         )
 
     await db.commit()
+    _record_run_metrics(existing_provider, existing_model, body, project)
     include_cost = await _cost_visible(db, project, auth=auth, user=user)
     return _row_to_response(
         await _get_run_or_404(project_id, run_id, db), include_cost=include_cost
@@ -1762,6 +1808,10 @@ async def cancel_agent_run(
             "(already terminal).",
         )
     await db.commit()
+    _record_run_metrics(
+        None, None, None, project,
+        status="cancelled", role=target.role if target is not None else None,
+    )
     include_cost = await _cost_visible(db, project, user=user)
     return _row_to_response(
         await _get_run_or_404(project_id, run_id, db), include_cost=include_cost

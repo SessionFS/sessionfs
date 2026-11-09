@@ -9,6 +9,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from sessionfs.server.business_metrics import observe_route
 from sessionfs.server.metrics import HTTP_REQUEST_DURATION, method_label, status_class
 
 logger = logging.getLogger("sessionfs.api")
@@ -74,6 +75,7 @@ class MetricsMiddleware(BaseHTTPMiddleware):
                 route=_matched_route(request),
                 status_class="5xx",
             )
+            observe_route(request, None, time.monotonic() - start)
             raise
 
         route_label = "unmatched"
@@ -85,4 +87,6 @@ class MetricsMiddleware(BaseHTTPMiddleware):
             route=route_label,
             status_class=status_class(response.status_code),
         )
+        # Sweep runs and webhook ingest (fail-safe; never raises).
+        observe_route(request, response.status_code, time.monotonic() - start)
         return response

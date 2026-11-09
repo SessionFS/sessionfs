@@ -23,6 +23,7 @@ from urllib.parse import urlencode
 import typer
 from rich.table import Table
 
+from sessionfs.http_idempotency import idempotent_async_client
 from sessionfs.cli.common import console, err_console, format_api_error, handle_errors
 from sessionfs.url_path_safety import _path_segment
 
@@ -109,7 +110,7 @@ async def _request(
     url = f"{api_url.rstrip('/')}{path}"
     headers = {"Authorization": f"Bearer {api_key}"}
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with idempotent_async_client(timeout=30) as client:
             resp = await client.request(method, url, headers=headers, json=json_data)
     except httpx.RequestError as exc:
         err_console.print(f"[red]Could not reach the SessionFS API at {api_url}: {exc}[/red]")
@@ -484,18 +485,37 @@ def group_members(
 @handle_errors
 def group_grant(
     group: str = typer.Argument(..., help="Group slug."),
-    user: str = typer.Argument(..., help="Org member's email or user id."),
-    role: str = typer.Option(..., "--role", help="reader, editor, or admin."),
+    user: str | None = typer.Argument(None, help="Org member's email or user id."),
+    role: str | None = typer.Option(
+        None, "--role", help="reader, editor, or admin (the default for --file lines)."
+    ),
     org: str | None = typer.Option(None, "--org", help=_ORG_OPT_HELP),
+    file: str | None = typer.Option(
+        None,
+        "--file",
+        "-f",
+        help="Grant everyone in a file: one email-or-id (or email,role) per line, up to "
+        "100. All or nothing: if any line is refused, nothing is granted.",
+    ),
 ) -> None:
     """Grant (or update) a member's role in a group (group admin)."""
-    if role not in _ROLES:
+    if (user is None) == (file is None):
+        err_console.print("[red]Give a member or --file, not both.[/red]")
+        raise typer.Exit(2)
+    if file is None and role is None:
+        err_console.print("[red]--role is required.[/red]")
+        raise typer.Exit(2)
+    if role is not None and role not in _ROLES:
         err_console.print(f"[red]--role must be one of: {', '.join(_ROLES)}[/red]")
         raise typer.Exit(2)
 
     api_url, api_key = _client()
     org_id = _resolve_org_id(org, api_url, api_key)
     group_id = _resolve_group_id(org_id, group, api_url, api_key)
+    if file is not None:
+        _group_grant_bulk(org_id, group, group_id, file, role, api_url, api_key)
+        return
+    assert user is not None and role is not None
     user_id = _resolve_user_id(org_id, user, api_url, api_key)
 
     result = asyncio.run(
@@ -513,6 +533,49 @@ def group_grant(
         conflict="This member's grant changed concurrently; retry.",
     )
     console.print(f"[green]Granted[/green] {user} [bold]{role}[/bold] on {group}.")
+
+
+def _group_grant_bulk(
+    org_id: str,
+    group: str,
+    group_id: str,
+    path: str,
+    default_role: str | None,
+    api_url: str,
+    api_key: str,
+) -> None:
+    from sessionfs.cli.common import print_bulk_failures, read_bulk_file
+
+    grants: list[dict] = []
+    for row in read_bulk_file(path):
+        line_role = row[1] if len(row) > 1 and row[1] else default_role
+        if line_role not in _ROLES:
+            err_console.print(
+                f"[red]{row[0]}: role must be one of {', '.join(_ROLES)} "
+                "(add ,role to the line or pass --role).[/red]"
+            )
+            raise typer.Exit(2)
+        grants.append(
+            {"user_id": _resolve_user_id(org_id, row[0], api_url, api_key), "role": line_role}
+        )
+    result = asyncio.run(
+        _request(
+            "POST",
+            f"{_group_path(org_id, group_id)}/members/bulk",
+            api_url,
+            api_key,
+            json_data={"grants": grants},
+        )
+    )
+    if isinstance(result, dict) and result.get("_status") == 422:
+        if print_bulk_failures(result.get("_body"), "user_id"):
+            raise typer.Exit(1)
+    _fail(
+        result,
+        not_found="Project group not found.",
+        conflict="A member's grant changed concurrently; retry.",
+    )
+    console.print(f"[green]Granted[/green] {result.get('granted', len(grants))} members on {group}.")
 
 
 @group_app.command("revoke")

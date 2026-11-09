@@ -1,6 +1,9 @@
 ---
 title: Jira Cloud
 description: Promote SessionFS tickets to Jira Cloud issues with an editable preview, plus an optional two-way sync via a signed inbound webhook. Enterprise.
+availability:
+  feature: jira_integration
+  deployment: both
 ---
 
 Promote a SessionFS ticket to a Jira Cloud issue. Promotion itself is **one way**: SessionFS creates or updates the Jira issue from the ticket and reads its status on demand, never touching status or assignee. Since v0.28.0 a publish can also place the issue in a sprint you pick, set its parent from the ticket's parent, and carry the ticket's due date and estimate.

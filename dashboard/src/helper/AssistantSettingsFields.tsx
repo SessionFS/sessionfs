@@ -13,6 +13,8 @@ import {
   DEFAULTS,
   LIMITS,
   REASONING_LABELS,
+  DEFAULT_GROUNDING,
+  GROUNDING_LABELS,
   STYLE_LABELS,
   charCount,
   describeSettings,
@@ -247,6 +249,28 @@ export function ModelSettingsFields({ draft, errors, resets, onChange, onReset, 
           draftValue={draft.answer_style}
           defaultValue={STYLE_LABELS[DEFAULTS.answer_style]}
           pending={resets.has('answer_style')}
+          onReset={onReset}
+          disabled={disabled}
+        />
+      </div>
+
+      <div className="flex flex-col gap-1">
+        <Select
+          id={id('grounding')}
+          title="Sources"
+          value={draft.grounding}
+          onValueChange={(v) => onChange({ grounding: v as Draft['grounding'] })}
+          options={Object.entries(GROUNDING_LABELS).map(([value, label]) => ({ value, label }))}
+          hint="With sources marked, each factual sentence links to what it came from and a sentence with no source is underlined. Adds no extra model call."
+          error={errors.grounding}
+          disabled={disabled}
+        />
+        <ResetButton
+          field="grounding"
+          label="Sources"
+          draftValue={draft.grounding}
+          defaultValue={GROUNDING_LABELS[DEFAULT_GROUNDING]}
+          pending={resets.has('grounding')}
           onReset={onReset}
           disabled={disabled}
         />

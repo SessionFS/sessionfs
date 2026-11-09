@@ -30,6 +30,7 @@ from sessionfs.server.auth.project_access import (
     user_can_view_spend_dollars,
 )
 from sessionfs.server.db.engine import get_db
+from sessionfs.server.db.timeouts import bound_heavy_reads
 from sessionfs.server.db.models import Project
 from sessionfs.server.routes.knowledge import _get_project_for_auth
 from sessionfs.server.routes.tickets import _get_ticket_or_404
@@ -115,6 +116,7 @@ async def get_project_spend(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Project spend totals, optionally grouped by persona/model/ticket/role/day."""
+    await bound_heavy_reads(db)
     if group_by is not None and group_by not in GROUP_BYS:
         raise HTTPException(422, f"group_by must be one of: {', '.join(GROUP_BYS)}")
 
@@ -150,6 +152,7 @@ async def get_ticket_spend(
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """Ticket spend: totals + per-persona + per-model + review-round count."""
+    await bound_heavy_reads(db)
     project, show_dollars, readable = await _scope(project_id, auth, db)
     ticket = await _get_ticket_or_404(project.id, ticket_id, db)
 

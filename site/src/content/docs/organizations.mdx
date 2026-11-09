@@ -32,7 +32,23 @@ When the org is created, billing moves to the organization so seats, storage, an
 
 Seat count is derived from the organization's subscription. Defaults: 5 seats for Team, 25 for Enterprise.
 
-A user can only belong to one organization at a time.
+A person can belong to several organizations, for example their employer's org and a client's. Being in one org never stops you from creating, joining or activating a license for another. Each org has its own seats: a person counts once in every org they belong to.
+
+### Your default organization
+
+When you belong to more than one org, one of them is your **default organization**. Anything that names an org (an `/api/v1/orgs/{org_id}/...` route, a project, a `--org` flag) uses that org and its plan. Anything that doesn't name one uses your default org:
+
+- the **Organization** page in the dashboard and the `sfs org info`, `sfs org members`, `sfs org invite` and `sfs org remove` commands
+- billing, and plan features that aren't tied to a project or org
+- `sfs project init` without `--org` or `--personal`, and other commands whose `--org` defaults to your default org
+
+Until you choose one, your default org is the org you joined first. Joining another org never changes it. Choose a default with the switcher at the top of the **Organization** page, with `sfs config default-org <org_id>`, or with `PUT /api/v1/auth/me/default-org`. If you leave or are removed from the org you chose, your choice is cleared and the org you joined first among the ones you still belong to is used. Being removed from one org never changes your other memberships.
+
+`sfs project init` without `--org` creates an org project only when you have chosen a default org; otherwise the project is personal.
+
+Your plan for features that aren't tied to an org or project is your default org's plan, not the best plan among all your orgs. Switching your default org can therefore change which of those features you see.
+
+`sfs org list` shows every org you belong to and marks your default. `GET /api/v1/auth/me` returns them as `orgs`, each with `org_id`, `name`, `slug`, `role`, `joined_at` and `is_default`; its `org_id`, `org_name` and `org_role` fields describe your default org.
 
 ## Roles
 
@@ -67,6 +83,31 @@ You cannot invite someone who is already a member, and duplicate pending invites
 
 Starting in **v0.10.22**, both invite endpoints (`/api/v1/org/invite` and the multi-org `/api/v1/orgs/{org_id}/members/invite`) automatically send a notification email to the invitee through the configured email provider. Email dispatch is best-effort — the invite is created even if email delivery fails, and admins can use the `resend` endpoint below to retry delivery.
 
+Every invite response carries `email_sent` and `accept_url`. On a self-hosted server with no email provider (`SFS_EMAIL_PROVIDER=none`), invites still work: `email_sent` is `false`, and you share the `accept_url` with the invitee yourself. The link holds no secret — the invitee still has to sign in with the invited email address. They can also run `sfs org invites` to see the invite and `sfs org accept <invite_id>` to join, or open **Invites** in the dashboard.
+
+### Inviting many people at once
+
+```
+POST /api/v1/orgs/{org_id}/invites/bulk
+```
+
+```json
+{
+  "invites": [
+    {"email": "dev1@company.com"},
+    {"email": "dev2@company.com", "role": "admin"}
+  ]
+}
+```
+
+Up to 100 invites per request, and each email may appear only once. Each invite follows the same rules as a single invite (admin only, no existing members, no active invite for that email). The request is all or nothing: if any invite is refused, none are created and you get `422 bulk_item_failed` with a `results` list showing which items failed and why. The seat check counts current members plus every invite in the batch. A successful answer lists each invite with its `invite_id`, `email_sent` and `accept_url`; emails go out after the invites are saved.
+
+From the CLI, put one email per line (optionally `email,role`) in a file:
+
+```bash
+sfs org invite --file emails.txt
+```
+
 ### Listing and revoking invites
 
 ```
@@ -85,7 +126,7 @@ POST /api/v1/org/invite/{invite_id}/accept
 POST /api/v1/org/invite/{invite_id}/decline   # v0.10.22 — optional body: {"decline_reason": "..."}
 ```
 
-The authenticated user's email must match the invite email. Users already in an organization cannot accept a new invite — they must leave their current org first.
+The authenticated user's email must match the invite email. You can accept an invite while you belong to other organizations; only an invite to an org you are already a member of is refused (`409`). Accepting an invite never changes your chosen default org.
 
 Seat capacity is rechecked at acceptance time. If the org filled up between invite and acceptance, the request is rejected.
 
@@ -126,9 +167,10 @@ PUT /api/v1/orgs/{org_id}/settings          # {"auto_join_domains": ["example.co
 - Auto-join requires a paid plan (the `oidc_sso` feature). If the org loses
   that entitlement, auto-join stops at join time.
 - When a user verifies their email address (by clicking the verification
-  email, or when an administrator verifies them) and they are not yet a member
-  of any org, and exactly one org lists their email domain for auto-join, they
-  are added as a **member** (never admin or owner).
+  email, or when an administrator verifies them) and exactly one org they
+  don't already belong to lists their email domain for auto-join, they are
+  added as a **member** (never admin or owner). Membership in other orgs
+  doesn't prevent this.
 - Auto-join needs email verification switched on, because it relies on users
   proving they own their address. On deployments that skip email verification
   (`SFS_REQUIRE_EMAIL_VERIFICATION=false`), auto-join never runs; use SSO
@@ -196,7 +238,7 @@ Starting in v0.10.0, a user can belong to more than one organization. The new mu
 - `GET /api/v1/orgs` — list the caller's memberships with role.
 - `GET/POST/PUT/DELETE /api/v1/orgs/{org_id}/members[/...]` — list, invite, promote/demote, and remove members in a specific org.
 - `GET/PUT /api/v1/orgs/{org_id}/settings` — read/write the org's knowledge base creation defaults (`kb_retention_days`, `kb_max_context_words`, `kb_section_page_limit`), verified-domain auto-join (`auto_join_domains`) session helper retention (`helper_retention_days`) and meeting retention (`meeting_retention_days`, default 180 days). New org-scoped projects inherit these defaults at create time. Since v0.23.0 a save merges: general settings you leave out are kept, and an explicit `null` returns a setting to its default.
-- `GET /api/v1/auth/me` includes `default_org_id`; `PUT /api/v1/auth/me/default-org` sets it (membership validated).
+- `GET /api/v1/auth/me` includes `default_org_id` and every membership in `orgs`; `PUT /api/v1/auth/me/default-org` sets the default (membership validated). See [Your default organization](#your-default-organization).
 
 Removal preserves all member-authored data — sessions stay user-owned, org-scoped projects auto-transfer to the removing admin (with a `ProjectTransfer` audit row), KB entries keep their authorship, and pending transfers tied to the removed user's standing are cancelled. The legacy `/api/v1/org/members/...` routes still work and delegate to the same services as the multi-org routes, so both URL surfaces enforce the same invariants.
 

@@ -84,7 +84,7 @@ async def _chat(
 
 
 def test_prompt_is_v17_and_teaches_chat_citations():
-    assert helper_mod._HELPER_SYSTEM_PROMPT_VERSION == "v21"
+    assert helper_mod._HELPER_SYSTEM_PROMPT_VERSION == "v23"
     prompt = helper_mod._system_prompt(HelperScope())
     assert "[chat:<id> M<first>-<last>]" in prompt
     assert "[meeting:<id> L<first>-<last>]" in prompt

@@ -30,6 +30,7 @@ import {
 } from './useSso';
 import { Button, Input, Dialog, DialogHeader, DialogFooter } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
+import { Term } from '../help/Term';
 
 interface SsoTabProps {
   orgId: string;
@@ -528,7 +529,9 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
           <h3 className="text-base font-medium text-text-primary mb-2">Enforcement</h3>
 
           <div className="flex items-center gap-3 mb-2">
-            <label className="text-sm font-medium text-text-secondary">Enforce SSO</label>
+            <span className="text-sm font-medium text-text-secondary">
+              <Term id="sso-enforcement">Enforce SSO</Term>
+            </span>
             <button
               type="button"
               role="switch"
@@ -572,7 +575,9 @@ export default function SsoTab({ orgId, canEdit, isOwner }: SsoTabProps) {
       {/* ── Break-glass ── */}
       {isOwner && (
         <div className="bg-surface border border-border rounded-lg p-4 mb-5">
-          <h3 className="text-base font-medium text-text-primary mb-2">Break-glass grants</h3>
+          <h3 className="text-base font-medium text-text-primary mb-2">
+            <Term id="break-glass">Break-glass grants</Term>
+          </h3>
           <p className="text-xs text-text-tertiary mb-3">
             One-hour emergency grants for admins to sign in when SSO enforcement blocks them. Owner only.
           </p>

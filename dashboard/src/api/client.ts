@@ -269,6 +269,8 @@ export interface HelperStatus {
 
 export type HelperReasoningEffort = 'off' | 'low' | 'medium' | 'high';
 export type HelperAnswerStyle = 'concise' | 'detailed';
+/** `strict`: every factual sentence names its source and gaps are marked. */
+export type HelperGroundingMode = 'strict' | 'off';
 
 /** Fully-resolved helper model settings (`helper/settings.py`). */
 export interface HelperModelSettings {
@@ -281,6 +283,8 @@ export interface HelperModelSettings {
   /** null = not sent. */
   reasoning_effort: HelperReasoningEffort | null;
   answer_style: HelperAnswerStyle;
+  /** Missing from older servers (the form then shows the default). */
+  grounding?: HelperGroundingMode;
 }
 
 export interface OrgHelperModelSettings extends HelperModelSettings {
@@ -416,6 +420,34 @@ export type HelperCitationRef =
   | HelperWikiCitation
   | HelperMeetingCitation;
 
+/** One sentence of a grounded answer (offsets are UTF-16 code units). */
+export interface HelperGroundingSentence {
+  start: number;
+  end: number;
+  status: 'supported' | 'unverified';
+  evidence: string[];
+  /** The " (not verified)" text's range, on unverified sentences. */
+  flag?: [number, number];
+}
+
+/** A tool result an answer named as evidence. */
+export interface HelperGroundingEvidence {
+  id: string;
+  tool: string;
+  args: Record<string, unknown>;
+  at: string | null;
+  /** The citation marker when the result is about one item, else null. */
+  marker: string | null;
+}
+
+/** The per-sentence evidence map of a grounded answer. */
+export interface HelperGrounding {
+  mode: 'strict' | 'fallback';
+  unverified_count: number;
+  sentences: HelperGroundingSentence[];
+  evidence: HelperGroundingEvidence[];
+}
+
 export interface HelperMessage {
   id: string;
   /** `note` = a write action's outcome, written for the model; not shown. */
@@ -427,6 +459,8 @@ export interface HelperMessage {
   /** Tool rows that carried a write-action proposal: that action's id. */
   action_id?: string | null;
   citations: HelperCitationRef[] | null;
+  /** Answers only: the per-sentence evidence map (null when not grounded). */
+  grounding?: HelperGrounding | null;
   key_source: string | null;
   input_tokens: number;
   output_tokens: number;
@@ -1771,6 +1805,29 @@ export interface Ticket {
   resolved_by?: TicketUserSummary | null;
   /** Newest events (at most 10); only on the single-ticket GET. */
   recent_events?: TicketEvent[];
+  /** Linked Jira issue key. Absent on older servers. */
+  jira_key?: string | null;
+  /** Dependencies in this project that are not done/closed/cancelled.
+   *  Absent on older servers (count from the list then). */
+  open_dependency_count?: number | null;
+  /** Issues only: child Tasks in total and how many are finished. */
+  child_counts?: TicketChildCounts | null;
+  /** Latest trusted review round; list response only, null when none. */
+  review_summary?: TicketReviewSummary | null;
+}
+
+export interface TicketChildCounts {
+  total: number;
+  finished: number;
+}
+
+/** The latest trusted review round on a ticket (list rows). */
+export interface TicketReviewSummary {
+  last_round: number;
+  /** `clean` covers VERIFIED-CLEAN and its display aliases. */
+  last_verdict: 'clean' | 'changes' | null;
+  open_findings: number;
+  trusted: boolean;
 }
 
 /** A user referenced by a ticket (creator / resolver). */
@@ -2123,6 +2180,7 @@ export type ArtifactRelation =
   | 'derived_from'
   | 'trained_on'
   | 'fine_tuned_from'
+  | 'distilled_from'
   | 'evaluated_against'
   | 'uses';
 
@@ -3991,6 +4049,17 @@ export function createApiClient(baseUrl: string, apiKey: string) {
       org_id: string | null;
       org_name: string | null;
       org_role: string | null;
+      /** Every org the user belongs to (earliest joined first). The
+       *  org_id / org_name / org_role fields above describe the one with
+       *  is_default. Optional: older servers don't send it. */
+      orgs?: {
+        org_id: string;
+        name: string;
+        slug: string;
+        role: string;
+        joined_at: string | null;
+        is_default: boolean;
+      }[];
       created_at: string | null;
       last_client_version: string | null;
       last_client_platform: string | null;

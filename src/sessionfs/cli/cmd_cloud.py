@@ -11,6 +11,7 @@ from typing import Any, Optional
 import typer
 from rich.table import Table
 
+from sessionfs.http_idempotency import idempotent_post
 from sessionfs.cli.common import (
     console,
     err_console,
@@ -484,7 +485,7 @@ def auth_signup(
     import httpx
 
     try:
-        resp = httpx.post(
+        resp = idempotent_post(
             f"{api_url}/api/v1/auth/signup",
             json={"email": email},
             timeout=15.0,
@@ -1263,7 +1264,6 @@ def handoff(
         apply_sync_ack(session_dir, result.etag)
 
         # Create handoff via API
-        import httpx
 
         cfg = _load_sync_config()
         body: dict[str, Any] = {"session_id": full_id}
@@ -1284,7 +1284,7 @@ def handoff(
         if parsed_attachments:
             body["attachments"] = parsed_attachments
 
-        resp = httpx.post(
+        resp = idempotent_post(
             f"{cfg['api_url']}/api/v1/handoffs",
             headers={"Authorization": f"Bearer {cfg['api_key']}"},
             json=body,
@@ -1381,7 +1381,7 @@ def pull_handoff(
             console.print(f"  Message: {handoff_data['message']}")
 
         # Claim the handoff
-        claim_resp = httpx.post(
+        claim_resp = idempotent_post(
             f"{cfg['api_url']}/api/v1/handoffs/{handoff_id}/claim",
             headers=headers,
             timeout=15.0,
@@ -1675,14 +1675,13 @@ def handoffs_revoke(
     reason: str = typer.Option(..., "--reason", "-r", help="Required reason (1-500 chars)."),
 ) -> None:
     """Sender revokes a pending handoff (recipient is notified)."""
-    import httpx
 
     cfg = _load_sync_config()
     if not cfg["api_key"]:
         err_console.print("[red]Not authenticated. Run 'sfs auth login' first.[/red]")
         raise SystemExit(1)
 
-    resp = httpx.post(
+    resp = idempotent_post(
         f"{cfg['api_url']}/api/v1/handoffs/{handoff_id}/revoke",
         headers={"Authorization": f"Bearer {cfg['api_key']}"},
         json={"reason": reason},
@@ -1701,7 +1700,6 @@ def handoffs_decline(
     reason: str = typer.Option(None, "--reason", "-r", help="Optional reason (max 500 chars)."),
 ) -> None:
     """Recipient declines a pending handoff (sender is notified)."""
-    import httpx
 
     cfg = _load_sync_config()
     if not cfg["api_key"]:
@@ -1712,7 +1710,7 @@ def handoffs_decline(
     if reason:
         body["reason"] = reason
 
-    resp = httpx.post(
+    resp = idempotent_post(
         f"{cfg['api_url']}/api/v1/handoffs/{handoff_id}/decline",
         headers={"Authorization": f"Bearer {cfg['api_key']}"},
         json=body,
@@ -1731,14 +1729,13 @@ def handoffs_comment(
     message: str = typer.Option(..., "--message", "-m", help="Comment body (1-10000 chars)."),
 ) -> None:
     """Post a comment on a handoff thread (other party is notified)."""
-    import httpx
 
     cfg = _load_sync_config()
     if not cfg["api_key"]:
         err_console.print("[red]Not authenticated. Run 'sfs auth login' first.[/red]")
         raise SystemExit(1)
 
-    resp = httpx.post(
+    resp = idempotent_post(
         f"{cfg['api_url']}/api/v1/handoffs/{handoff_id}/comments",
         headers={"Authorization": f"Bearer {cfg['api_key']}"},
         json={"content": message},

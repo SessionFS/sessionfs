@@ -44,6 +44,7 @@ from sessionfs.server.schemas.api_keys import (
 )
 from sessionfs.server.tier_gate import (
     UserContext,
+    build_org_user_context,
     check_feature,
     check_role,
     get_user_context,
@@ -97,12 +98,18 @@ async def _require_org_admin(
     org_id: str, ctx: UserContext, db: AsyncSession
 ) -> Organization:
     """Membership + role + tier gate for org-scoped service-key admin."""
-    check_feature(ctx, "team_management")
-    check_role(ctx, "admin")
-    if ctx.org is None or ctx.org.id != org_id:
-        # Existence-hiding: caller doesn't even belong to this org.
+    # A user can belong to several orgs: gate on the NAMED org's plan and
+    # the caller's role there, not on their default org.
+    org_ctx = await build_org_user_context(ctx.user, org_id, db)
+    if org_ctx is None or org_ctx.org is None:
+        # Not a member: same answers as before (plan, then role, then the
+        # existence-hiding 404).
+        check_feature(ctx, "team_management")
+        check_role(ctx, "admin")
         raise HTTPException(status_code=404, detail="Organization not found")
-    return ctx.org
+    check_feature(org_ctx, "team_management")
+    check_role(org_ctx, "admin")
+    return org_ctx.org
 
 
 # Scopes whose routes act across every org (the works-in harness, the

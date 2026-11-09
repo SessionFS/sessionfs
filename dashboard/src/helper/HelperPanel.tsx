@@ -18,6 +18,7 @@ import {
   type HelperCitation,
   type HelperConversationSummary,
   type HelperDocCitation,
+  type HelperGrounding,
   type HelperStoredScope,
   type HelperTicketCitation,
   type HelperWikiCitation,
@@ -372,6 +373,7 @@ export default function HelperPanel({
             content: m.content,
             toolSteps: pendingSteps,
             citations: m.citations ?? [],
+            grounding: m.grounding ?? null,
             status: 'done',
             actions: pendingActions.length ? pendingActions : undefined,
             usage: usageFrom(m),
@@ -581,6 +583,13 @@ export default function HelperPanel({
               { slug: c.slug, anchor: c.anchor ?? null, title: c.title, url: c.url },
             ],
           }));
+        } else if (ev.event === 'grounding') {
+          // The final answer text (evidence ids resolved, unsupported factual
+          // sentences flagged) and its per-sentence map; replaces the
+          // streamed text.
+          const g = JSON.parse(ev.data) as HelperGrounding & { text?: string };
+          const { text, ...map } = g;
+          patchAssistant((t) => ({ ...t, content: typeof text === 'string' ? text : t.content, grounding: map }));
         } else if (ev.event === 'error') {
           const e = JSON.parse(ev.data) as { code?: string; message?: string };
           streamFailed = true;

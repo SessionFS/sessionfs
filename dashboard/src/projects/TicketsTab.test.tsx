@@ -5,7 +5,14 @@ import TicketsTab from './TicketsTab';
 import { ApiError } from '../api/client';
 import { axe } from '../test/axe';
 
-const { hooks, mockAddToast, mockUseMe, mockUseJiraLink, mockUsePersonas } = vi.hoisted(() => ({
+const { hooks, mockAddToast, mockUseMe, mockUseJiraLink, mockUsePersonas, mockClient, mockInvalidate } = vi.hoisted(() => ({
+  mockClient: {
+    approveTicket: vi.fn(),
+    dismissTicket: vi.fn(),
+    watchTicket: vi.fn(),
+    updateTicket: vi.fn(),
+  },
+  mockInvalidate: vi.fn(),
   mockUseJiraLink: vi.fn(),
   mockUsePersonas: vi.fn(),
   hooks: {
@@ -52,6 +59,12 @@ vi.mock('../hooks/useToast', () => ({
 }));
 vi.mock('../hooks/useFocusTrap', () => ({
   useFocusTrap: vi.fn(),
+}));
+// The bulk bar calls the API client directly (one call per ticket).
+vi.mock('../auth/AuthContext', () => ({ useAuth: () => ({ auth: { client: mockClient } }) }));
+vi.mock('@tanstack/react-query', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@tanstack/react-query')>()),
+  useQueryClient: () => ({ invalidateQueries: mockInvalidate }),
 }));
 
 function makeMutation(extra: Record<string, unknown> = {}) {
@@ -165,26 +178,80 @@ beforeEach(() => {
   mockUseJiraLink.mockReturnValue({ data: undefined, refetch: vi.fn() });
 });
 
+const defaultMatchMedia = window.matchMedia;
 afterEach(() => {
   vi.clearAllMocks();
+  window.matchMedia = defaultMatchMedia;
 });
 
+/** The pane opens on Overview; the timeline and the composer are on Activity. */
+function openActivity() {
+  fireEvent.click(screen.getByRole('tab', { name: /^Activity/ }));
+}
+/** The assignee property in the pane header: "Reassign, assigned to <name>". */
+const REASSIGN = /^Reassign,/;
+const ASSIGN = /^Assign,/;
+
+/** Make the split-pane media query (>= 1360 px) match. */
+function wideViewport() {
+  window.matchMedia = vi.fn().mockImplementation((query: string) => ({
+    matches: query === '(min-width: 1360px)',
+    media: query,
+    onchange: null,
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+}
+
 describe('TicketsTab', () => {
-  it('renders ticket rows with status badge', () => {
+  it('renders one-line rows with a status button that names the status', () => {
     render(<TicketsTab projectId="proj_1" />);
-    expect(screen.getByText('Add session export')).toBeInTheDocument();
-    expect(screen.getByText('suggested')).toBeInTheDocument();
-    expect(screen.getByText(/2 criteria/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add session export' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Status: Suggested. Show status actions' })).toBeInTheDocument();
+    // The status group header carries the same words.
+    expect(screen.getByRole('button', { name: /^Suggested/ })).toHaveAttribute('aria-expanded', 'true');
   });
 
-  it('filters by status', async () => {
-    const user = userEvent.setup();
+  it('shows review, blocker, progress and Jira signals on rows', () => {
+    hooks.useTickets.mockReturnValue({
+      data: [
+        ticket({ id: 'tk_r1', title: 'Changes asked', status: 'review', review_summary: { last_round: 1, last_verdict: 'changes', open_findings: 2, trusted: true } }),
+        ticket({ id: 'tk_r2', title: 'Clean one', status: 'review', jira_key: 'WID-43', review_summary: { last_round: 2, last_verdict: 'clean', open_findings: 0, trusted: true } }),
+        ticket({ id: 'tk_r3', title: 'Not reviewed yet', status: 'review' }),
+        ticket({ id: 'tk_b', title: 'Waiting one', status: 'open', open_dependency_count: 1 }),
+        ticket({ id: 'tk_i', title: 'Roll-up', kind: 'issue', status: 'in_progress', child_counts: { total: 4, finished: 1 } }),
+      ],
+      isLoading: false,
+      error: null,
+    });
     render(<TicketsTab projectId="proj_1" />);
-    await user.click(screen.getByRole('button', { name: /Filter by status/i }));
-    await user.click(
-      screen.getByRole('option', { name: 'Review' }),
-    );
-    expect(hooks.useTickets).toHaveBeenLastCalledWith('proj_1', { status: 'review' });
+    const row = (title: string) => screen.getByRole('button', { name: title }).closest('.tk-row') as HTMLElement;
+    expect(within(row('Changes asked').querySelector('.tk-sig') as HTMLElement).getByText('R1 · 2 open')).toBeInTheDocument();
+    expect(within(row('Clean one').querySelector('.tk-sig') as HTMLElement).getByText('R2 clean')).toBeInTheDocument();
+    expect(within(row('Clean one')).getByText('WID-43')).toBeInTheDocument();
+    expect(within(row('Not reviewed yet').querySelector('.tk-sig') as HTMLElement).getByText('Awaiting review')).toBeInTheDocument();
+    expect(within(row('Waiting one').querySelector('.tk-sig') as HTMLElement).getByText('Waiting on 1')).toBeInTheDocument();
+    expect(row('Roll-up')).toHaveTextContent('1/4 child tasks finished');
+    expect(screen.queryByText(/\b0 criteria\b/)).not.toBeInTheDocument();
+  });
+
+  it('switches saved views and fetches the whole list once', async () => {
+    const user = userEvent.setup();
+    hooks.useTickets.mockReturnValue({
+      data: [ticket(), ticket({ id: 'tk_2', title: 'Open one', status: 'open' })],
+      isLoading: false,
+      error: null,
+    });
+    render(<TicketsTab projectId="proj_1" />);
+    expect(screen.getByRole('tab', { name: /Triage.*1 ticket/ })).toBeInTheDocument();
+    await user.click(screen.getByRole('tab', { name: /Triage/ }));
+    expect(screen.getByRole('tab', { name: /Triage/ })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText('Add session export')).toBeInTheDocument();
+    expect(screen.queryByText('Open one')).toBeNull();
+    expect(hooks.useTickets).toHaveBeenLastCalledWith('proj_1');
   });
 
   it('expands ticket detail on click', () => {
@@ -197,19 +264,16 @@ describe('TicketsTab', () => {
   it('status action is independent of row select — opening it does not expand the row (R2)', async () => {
     const user = userEvent.setup();
     render(<TicketsTab projectId="proj_1" />);
-    // The collapsed row has exactly two buttons: the expand trigger (carries
-    // aria-expanded) and the status action (a sibling, not nested in it).
-    const row = screen.getByText('Add session export').closest('li') as HTMLElement;
-    const statusBtn = within(row)
-      .getAllByRole('button')
-      .find((b) => !b.hasAttribute('aria-expanded'));
-    expect(statusBtn).toBeTruthy();
-
-    await user.click(statusBtn!);
-    // The status menu opened (an action is offered) ...
+    const title = screen.getByRole('button', { name: 'Add session export' });
+    const statusBtn = screen.getByRole('button', { name: /^Status: Suggested/ });
+    // Siblings: neither control sits inside the other.
+    expect(title.contains(statusBtn)).toBe(false);
+    expect(statusBtn.contains(title)).toBe(false);
+    await user.click(statusBtn);
     expect(screen.getByRole('menuitem', { name: /Approve/i })).toBeInTheDocument();
-    // ... and the row did NOT expand (detail body stays absent).
+    expect(screen.getByText(/happen where the work runs/)).toBeInTheDocument();
     expect(screen.queryByText('Implement export endpoint.')).toBeNull();
+    expect(title).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('shows approve + dismiss buttons for a suggested ticket', () => {
@@ -227,8 +291,12 @@ describe('TicketsTab', () => {
     });
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('Add session export'));
-    expect(screen.queryByRole('button', { name: /Approve/i })).toBeNull();
-    expect(screen.getByRole('button', { name: /Dismiss/i })).toBeInTheDocument();
+    const pane = screen.getByRole('dialog');
+    expect(within(pane).queryByRole('button', { name: /Approve/i })).toBeNull();
+    // Dismissing an approved ticket is in the status menu, not the next step.
+    fireEvent.click(within(pane).getByRole('button', { name: /Show status actions/ }));
+    expect(within(pane).getByRole('menuitem', { name: /Dismiss/ })).toBeInTheDocument();
+    expect(within(pane).queryByRole('menuitem', { name: 'Approve' })).toBeNull();
   });
 
   it('opens the new ticket modal', () => {
@@ -238,17 +306,27 @@ describe('TicketsTab', () => {
     expect(screen.getByRole('heading', { name: /New ticket/i })).toBeInTheDocument();
   });
 
-  it('filters by kind', async () => {
-    const user = userEvent.setup();
+  it('shows the acceptance-criteria example on separate lines, not a literal backslash-n', () => {
     render(<TicketsTab projectId="proj_1" />);
-    await user.click(screen.getByRole('button', { name: /Filter by kind/i }));
-    await user.click(
-      screen.getByRole('option', { name: 'Issues' }),
-    );
-    expect(hooks.useTickets).toHaveBeenLastCalledWith('proj_1', {
-      status: undefined,
-      kind: 'issue',
+    fireEvent.click(screen.getByRole('button', { name: /New ticket/i }));
+    const placeholder = screen.getByTitle('Acceptance criteria (one per line)').getAttribute('placeholder') ?? '';
+    expect(placeholder.split('\n')).toHaveLength(3);
+    expect(placeholder).not.toContain('\\n');
+  });
+
+  it('filters to Issues with the quick filter chip', async () => {
+    const user = userEvent.setup();
+    hooks.useTickets.mockReturnValue({
+      data: [ticket({ status: 'open' }), ticket({ id: 'tk_i', title: 'An issue', kind: 'issue', status: 'open' })],
+      isLoading: false,
+      error: null,
     });
+    render(<TicketsTab projectId="proj_1" />);
+    const chip = screen.getByRole('button', { name: 'Issues only' });
+    await user.click(chip);
+    expect(chip).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText('An issue')).toBeInTheDocument();
+    expect(screen.queryByText('Add session export')).toBeNull();
   });
 
   it('renders a kind badge on the row', () => {
@@ -261,16 +339,21 @@ describe('TicketsTab', () => {
     expect(screen.getByText('Issue')).toBeInTheDocument();
   });
 
-  it('shows the Issues empty-state explainer when kind=Issues filter has no rows', async () => {
+  it('explains an empty project and an empty view', async () => {
     const user = userEvent.setup();
     hooks.useTickets.mockReturnValue({ data: [], isLoading: false, error: null });
     render(<TicketsTab projectId="proj_1" />);
-    await user.click(screen.getByRole('button', { name: /Filter by kind/i }));
-    await user.click(
-      screen.getByRole('option', { name: 'Issues' }),
-    );
-    expect(screen.getByText(/No Issues yet/i)).toBeInTheDocument();
-    expect(screen.getByText(/PM-triaged container/i)).toBeInTheDocument();
+    expect(screen.getByText('No tickets in this project yet')).toBeInTheDocument();
+    expect(screen.getByText('sfs ticket create')).toBeInTheDocument();
+    cleanup();
+    hooks.useTickets.mockReturnValue({ data: [ticket({ status: 'open' })], isLoading: false, error: null });
+    render(<TicketsTab projectId="proj_1" />);
+    await user.click(screen.getByRole('tab', { name: /Blocked/ }));
+    expect(screen.getByText('Nothing blocked')).toBeInTheDocument();
+    await user.type(screen.getByRole('searchbox', { name: 'Search tickets' }), 'zzz');
+    expect(screen.getByText('No tickets match “zzz”')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(screen.getByRole('searchbox', { name: 'Search tickets' })).toHaveValue('');
   });
 
   it('renders the Children rollup with clickable child links on an expanded Issue', () => {
@@ -306,9 +389,12 @@ describe('TicketsTab', () => {
     ]);
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('CORS preflight rejects If-Match'));
-    expect(screen.getByText(/Children \(2\)/)).toBeInTheDocument();
-    expect(screen.getByText('Sentinel header audit')).toBeInTheDocument();
-    expect(screen.getByText('Dashboard kind filter')).toBeInTheDocument();
+    const tab = screen.getByRole('tab', { name: /^Child tasks/ });
+    expect(tab).toHaveTextContent('Child tasks0/2');
+    fireEvent.click(tab);
+    expect(screen.getByRole('button', { name: /Sentinel header audit/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Dashboard kind filter/ })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: '1 in review, 1 in progress' })).toBeInTheDocument();
   });
 
   it('shows a Back-to-parent breadcrumb on a Task with parent_ticket_id', () => {
@@ -345,9 +431,7 @@ describe('TicketsTab', () => {
     );
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('Implement filter'));
-    const breadcrumb = screen.getByRole('button', { name: /Back to parent Issue/i });
-    expect(breadcrumb).toBeInTheDocument();
-    expect(breadcrumb).toHaveTextContent('tk_issue');
+    const breadcrumb = screen.getByRole('button', { name: /^Parent Issue:/ });
     expect(breadcrumb).toHaveTextContent('CORS preflight rejects If-Match');
   });
 
@@ -386,22 +470,16 @@ describe('TicketsTab', () => {
     expect(screen.queryByRole('button', { name: /Close Issue/i })).toBeNull();
   });
 
-  it('exposes a kind selector and conditional Parent Issue picker in the new ticket modal', async () => {
+  it('exposes a kind switch and a Part of Issue picker for Tasks only in the new ticket dialog', async () => {
     const user = userEvent.setup();
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByRole('button', { name: /New ticket/i }));
-    // Kind selector shows "Task" selected by default
-    const kindTrigger = screen.getByRole('button', { name: 'Kind' });
-    expect(kindTrigger).toHaveTextContent('Task');
-    // Parent Issue picker is visible when kind is task
-    expect(screen.getByRole('button', { name: /Parent Issue/ })).toBeInTheDocument();
-    // Switch to Issue
-    await user.click(kindTrigger);
-    await user.click(
-      screen.getByRole('option', { name: 'Issue' }),
-    );
-    // Parent Issue picker hidden for Issues
-    expect(screen.queryByRole('button', { name: /Parent Issue/ })).toBeNull();
+    const kind = screen.getByRole('group', { name: 'Kind' });
+    expect(within(kind).getByRole('button', { name: 'Task' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: /Part of Issue/ })).toBeInTheDocument();
+    await user.click(within(kind).getByRole('button', { name: 'Issue' }));
+    expect(within(kind).getByRole('button', { name: 'Issue' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.queryByRole('button', { name: /Part of Issue/ })).toBeNull();
   });
 
   /* ── Board view drawer (phase 3 fix C2) ── */
@@ -414,6 +492,24 @@ describe('TicketsTab', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(screen.getByText('Implement export endpoint.')).toBeInTheDocument();
     expect(screen.getByText(/CLI works/)).toBeInTheDocument();
+  });
+
+  it('board cards show the waiting-on signal only when a ticket has open blockers', () => {
+    localStorage.setItem('sfs-tickets-view', 'board');
+    hooks.useTickets.mockReturnValue({
+      data: [
+        ticket({ id: 'tk_none', title: 'No counts', status: 'open', acceptance_criteria: [], depends_on: [] }),
+        ticket({ id: 'tk_two', title: 'Two of each', status: 'open', acceptance_criteria: ['a', 'b'], depends_on: ['tk_x', 'tk_y'] }),
+        ticket({ id: 'tk_x', title: 'Blocker one', status: 'open' }),
+        ticket({ id: 'tk_y', title: 'Blocker two', status: 'in_progress' }),
+      ],
+      isLoading: false,
+      error: null,
+    });
+    render(<TicketsTab projectId="proj_1" />);
+    const card = (title: string) => screen.getByText(title).closest('button')!.textContent ?? '';
+    expect(card('No counts')).not.toMatch(/unfinished|·/);
+    expect(card('Two of each')).toMatch(/2 unfinished dependencies/);
   });
 
   it('closes the board drawer on Escape', () => {
@@ -429,6 +525,7 @@ describe('TicketsTab', () => {
     localStorage.setItem('sfs-tickets-view', 'board');
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('Add session export'));
+    openActivity();
     // Comment textarea and button are inside the drawer
     expect(screen.getByPlaceholderText('Add comment…')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Comment$/ })).toBeInTheDocument();
@@ -441,12 +538,27 @@ describe('TicketsTab', () => {
     expect(card).toHaveAttribute('aria-haspopup', 'dialog');
   });
 
-  it('list view still expands in place without a dialog', () => {
-    // Default view is list (no localStorage override)
+  it('opens the list detail as a slide-over below 1360px', () => {
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('Add session export'));
-    expect(screen.getByText('Implement export endpoint.')).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog', { name: 'Add session export' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(within(dialog).getByText('Implement export endpoint.')).toBeInTheDocument();
+  });
+
+  it('opens the list detail as a split pane beside the list at 1360px and wider', () => {
+    wideViewport();
+    render(<TicketsTab projectId="proj_1" />);
+    const row = screen.getByText('Add session export').closest('button')!;
+    row.focus();
+    fireEvent.click(row);
     expect(screen.queryByRole('dialog')).toBeNull();
+    const pane = screen.getByRole('region', { name: 'Add session export' });
+    expect(within(pane).getByText('Implement export endpoint.')).toBeInTheDocument();
+    // The title takes focus so the pane is announced.
+    expect(within(pane).getByRole('heading', { name: 'Add session export' })).toHaveFocus();
+    // The list stays on screen beside it.
+    expect(row).toBeInTheDocument();
   });
 
   it('shows approve + dismiss buttons in the board drawer', () => {
@@ -543,6 +655,7 @@ describe('TicketsTab', () => {
     hooks.useAddTicketComment.mockReturnValue(makeMutation({ mutateAsync }));
     const { container } = render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('Add session export'));
+    openActivity();
 
     // The link query is only enabled for a linked ticket.
     expect(mockUseJiraLink).toHaveBeenLastCalledWith('proj_1', 'tk_1', true);
@@ -577,6 +690,7 @@ describe('TicketsTab', () => {
     hooks.useAddTicketComment.mockReturnValue(makeMutation({ mutateAsync }));
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('Add session export'));
+    openActivity();
 
     expect(screen.queryByRole('checkbox', { name: /send to jira/i })).toBeNull();
     await user.type(screen.getByPlaceholderText('Add comment…'), 'Looks good');
@@ -598,6 +712,7 @@ describe('TicketsTab', () => {
     });
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('Add session export'));
+    openActivity();
     expect(screen.queryByRole('checkbox', { name: /send to jira/i })).toBeNull();
   });
 
@@ -650,6 +765,7 @@ describe('TicketsTab', () => {
     hooks.useAddTicketComment.mockReturnValue(makeMutation({ mutateAsync }));
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('Add session export'));
+    openActivity();
 
     await user.type(screen.getByPlaceholderText('Add comment…'), 'Ship it');
     await user.click(screen.getByRole('checkbox', { name: /send to jira/i }));
@@ -687,6 +803,7 @@ describe('TicketsTab', () => {
     });
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('Add session export'));
+    openActivity();
     // Exactly one comment is inbound from Jira.
     expect(screen.getByText('Done upstream')).toBeInTheDocument();
     expect(screen.getByText('Noted')).toBeInTheDocument();
@@ -763,6 +880,7 @@ describe('TicketsTab', () => {
     });
     const { container } = render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('Add session export'));
+    openActivity();
 
     // Jira sync events sit in the one activity timeline, in time order.
     const activity = screen.getByRole('region', { name: 'Activity' });
@@ -781,12 +899,16 @@ describe('TicketsTab', () => {
   it('leads with a header of status, assignee and actions', () => {
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('Add session export'));
-    expect(screen.getByText('Assigned to')).toBeInTheDocument();
-    expect(screen.getAllByText('suggested').length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByRole('button', { name: /Approve/i })).toBeInTheDocument();
+    const pane = screen.getByRole('dialog');
+    expect(within(pane).getByRole('heading', { name: 'Add session export' })).toBeInTheDocument();
+    expect(within(pane).getByRole('button', { name: /^Status: Suggested/ })).toBeInTheDocument();
+    expect(within(pane).getByRole('button', { name: REASSIGN })).toHaveTextContent('atlas');
+    const next = within(pane).getByRole('region', { name: 'Next step' });
+    expect(next).toHaveTextContent('Needs approval');
+    expect(within(next).getByRole('button', { name: 'Approve' })).toBeInTheDocument();
   });
 
-  it('folds dependencies away and keeps completion notes open', () => {
+  it('lists dependencies as rows and shows completion notes', () => {
     hooks.useTickets.mockReturnValue({
       data: [ticket({ depends_on: ['tk_dep'], completion_notes: 'Shipped behind a flag.' })],
       isLoading: false,
@@ -794,9 +916,9 @@ describe('TicketsTab', () => {
     });
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('Add session export'));
-    const deps = screen.getByText('Depends on (1)').closest('details')!;
-    expect(deps).not.toHaveAttribute('open');
-    expect(screen.getByText('Completion notes').closest('details')).toHaveAttribute('open');
+    const deps = screen.getByText('Depends on').closest('section')!;
+    expect(within(deps).getByRole('button', { name: /tk_dep/ })).toBeInTheDocument();
+    expect(screen.getByText('Shipped behind a flag.')).toBeInTheDocument();
   });
 
   it('merges comments, trusted verdicts, Jira events and lifecycle events into one timeline', async () => {
@@ -837,6 +959,7 @@ describe('TicketsTab', () => {
     });
     const { container } = render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('Add session export'));
+    openActivity();
 
     const activity = screen.getByRole('region', { name: 'Activity' });
     const rows = within(activity).getAllByRole('listitem').map((li) => li.textContent ?? '');
@@ -884,6 +1007,7 @@ describe('TicketsTab', () => {
     });
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('Add session export'));
+    openActivity();
 
     const activity = screen.getByRole('region', { name: 'Activity' });
     const rows = within(activity).getAllByRole('listitem').map((li) => li.textContent ?? '');
@@ -915,6 +1039,7 @@ describe('TicketsTab', () => {
     });
     render(<TicketsTab projectId="proj_1" />);
     fireEvent.click(screen.getByText('Add session export'));
+    openActivity();
     const rows = within(screen.getByRole('region', { name: 'Activity' })).getAllByRole('listitem').map((li) => li.textContent ?? '');
     expect(rows[0]).toMatch(/Status pushed: In progress → Jira “Start”/);
     expect(rows[1]).toMatch(/Status pushed: Done → Jira “Done”/);
@@ -929,17 +1054,16 @@ describe('TicketsTab', () => {
       assigned_user: { id: 'u2', display_name: 'Sam Rivera', email: 'sam@example.test' },
     };
 
-    it('shows a person assignee with an avatar in the list, a persona as before', () => {
+    it('shows a person assignee with an avatar in the list, a persona by name', () => {
       hooks.useTickets.mockReturnValue({
         data: [ticket(PERSON_TICKET), ticket({ id: 'tk_2', title: 'Second' })],
         isLoading: false,
         error: null,
       });
-      const { container } = render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
-      const person = container.querySelector('[data-assignee="person"]')!;
-      expect(person).toHaveTextContent('SSam Rivera');
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      const person = screen.getByRole('button', { name: 'Assignee: Sam Rivera (person). Reassign' });
       expect(person.querySelector('[aria-hidden="true"]')).toHaveTextContent('S');
-      expect(container.querySelector('[data-assignee="persona"]')).toHaveTextContent('atlas');
+      expect(screen.getByRole('button', { name: 'Assignee: atlas (agent). Reassign' })).toBeInTheDocument();
     });
 
     it('shows a person assignee on board cards', () => {
@@ -947,37 +1071,45 @@ describe('TicketsTab', () => {
       hooks.useTickets.mockReturnValue({ data: [ticket(PERSON_TICKET)], isLoading: false, error: null });
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
       const card = screen.getByRole('button', { name: /Add session export/ });
-      expect(within(card).getByText('Sam Rivera')).toBeInTheDocument();
+      expect(card).toHaveTextContent('Assigned to Sam Rivera');
     });
 
     it('shows a person assignee in the detail header', () => {
       hooks.useTickets.mockReturnValue({ data: [ticket(PERSON_TICKET)], isLoading: false, error: null });
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
       fireEvent.click(screen.getByText('Add session export'));
-      const header = screen.getByRole('button', { name: 'Reassign' }).parentElement!;
-      expect(header).toHaveTextContent(/^Assigned to SSam Rivera/);
-      expect(header.querySelector('[data-assignee="person"]')).toBeInTheDocument();
+      const prop = screen.getByRole('button', { name: REASSIGN });
+      expect(prop).toHaveTextContent(/Sam Rivera/);
+      expect(prop.querySelector('[data-assignee="person"]')).toBeInTheDocument();
     });
 
-    it('filters to tickets assigned to me and says so when there are none', async () => {
+    it('shows tickets assigned to me in Mine and says so when there are none', async () => {
       const user = userEvent.setup();
+      hooks.useTickets.mockReturnValue({
+        data: [ticket({ ...PERSON_TICKET, assigned_user_id: 'u9', assigned_user: { id: 'u9', display_name: 'Me', email: 'me@example.test' } }), ticket({ id: 'tk_2', title: 'Not mine' })],
+        isLoading: false,
+        error: null,
+      });
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
-      const toggle = screen.getByRole('button', { name: 'Assigned to me' });
-      expect(toggle).toHaveAttribute('aria-pressed', 'false');
-      hooks.useTickets.mockReturnValue({ data: [], isLoading: false, error: null });
-      await user.click(toggle);
-      expect(hooks.useTickets).toHaveBeenLastCalledWith('proj_1', expect.objectContaining({ assigned_user: 'me' }));
-      expect(screen.getByRole('button', { name: 'Assigned to me' })).toHaveAttribute('aria-pressed', 'true');
-      expect(screen.getByText('No tickets assigned to you.')).toBeInTheDocument();
+      await user.click(screen.getByRole('tab', { name: /Mine/ }));
+      expect(screen.getByText('Add session export')).toBeInTheDocument();
+      expect(screen.queryByText('Not mine')).toBeNull();
+      expect(screen.getByRole('button', { name: /Assignee: Me \(you\)/ })).toBeInTheDocument();
+      cleanup();
+      hooks.useTickets.mockReturnValue({ data: [ticket()], isLoading: false, error: null });
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      await user.click(screen.getByRole('tab', { name: /Mine/ }));
+      expect(screen.getByText('Nothing assigned to you')).toBeInTheDocument();
     });
 
-    it('follows a controlled filter value', async () => {
+    it('follows controlled list params', async () => {
       const user = userEvent.setup();
       const onChange = vi.fn();
-      render(<TicketsTab projectId="proj_1" assignedToMe onAssignedToMeChange={onChange} />);
-      expect(hooks.useTickets).toHaveBeenLastCalledWith('proj_1', expect.objectContaining({ assigned_user: 'me' }));
-      await user.click(screen.getByRole('button', { name: 'Assigned to me' }));
-      expect(onChange).toHaveBeenCalledWith(false);
+      const params = { view: 'triage', group: 'none', sort: 'priority', q: '', issuesOnly: false, highOnly: false, showFinished: false } as const;
+      render(<TicketsTab projectId="proj_1" params={params} onParamsChange={onChange} />);
+      expect(screen.getByRole('tab', { name: /Triage/ })).toHaveAttribute('aria-selected', 'true');
+      await user.click(screen.getByRole('tab', { name: /Overdue/ }));
+      expect(onChange).toHaveBeenCalledWith({ ...params, view: 'overdue' });
     });
 
     it('creates a ticket assigned to a person, with the persona field cleared', async () => {
@@ -987,11 +1119,11 @@ describe('TicketsTab', () => {
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
       await user.click(screen.getByRole('button', { name: /New ticket/i }));
       await user.type(screen.getByLabelText('Title'), 'Export');
-      await user.type(screen.getByLabelText('Description (markdown)'), 'Body');
+      await user.type(screen.getByLabelText('Description'), 'Body');
       await user.click(screen.getByRole('button', { name: 'Assignee' }));
       await user.click(screen.getByRole('option', { name: /Sam Rivera/ }));
       expect(screen.getByTestId('assignee-note')).toHaveTextContent('Notifies Sam Rivera');
-      await user.click(screen.getByRole('button', { name: 'Create' }));
+      await user.click(screen.getByRole('button', { name: 'Create ticket' }));
       expect(create.mutateAsync).toHaveBeenCalledWith(
         expect.objectContaining({ assigned_user_id: 'u2', assigned_to: null }),
       );
@@ -1004,11 +1136,11 @@ describe('TicketsTab', () => {
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
       await user.click(screen.getByRole('button', { name: /New ticket/i }));
       await user.type(screen.getByLabelText('Title'), 'Export');
-      await user.type(screen.getByLabelText('Description (markdown)'), 'Body');
+      await user.type(screen.getByLabelText('Description'), 'Body');
       await user.click(screen.getByRole('button', { name: 'Assignee' }));
       await user.click(screen.getByRole('option', { name: /atlas/ }));
       expect(screen.getByTestId('assignee-note')).toHaveTextContent(/No one is notified: atlas/);
-      await user.click(screen.getByRole('button', { name: 'Create' }));
+      await user.click(screen.getByRole('button', { name: 'Create ticket' }));
       expect(create.mutateAsync).toHaveBeenCalledWith(
         expect.objectContaining({ assigned_to: 'atlas', assigned_user_id: null }),
       );
@@ -1021,8 +1153,8 @@ describe('TicketsTab', () => {
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
       await user.click(screen.getByRole('button', { name: /New ticket/i }));
       await user.type(screen.getByLabelText('Title'), 'Export');
-      await user.type(screen.getByLabelText('Description (markdown)'), 'Body');
-      await user.click(screen.getByRole('button', { name: 'Create' }));
+      await user.type(screen.getByLabelText('Description'), 'Body');
+      await user.click(screen.getByRole('button', { name: 'Create ticket' }));
       expect(create.mutateAsync).toHaveBeenCalledWith(
         expect.objectContaining({ assigned_to: null, assigned_user_id: null }),
       );
@@ -1039,10 +1171,10 @@ describe('TicketsTab', () => {
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
       await user.click(screen.getByRole('button', { name: /New ticket/i }));
       await user.type(screen.getByLabelText('Title'), 'Export');
-      await user.type(screen.getByLabelText('Description (markdown)'), 'Body');
+      await user.type(screen.getByLabelText('Description'), 'Body');
       await user.click(screen.getByRole('button', { name: 'Assignee' }));
       await user.click(screen.getByRole('option', { name: /kim@example\.test/ }));
-      await user.click(screen.getByRole('button', { name: 'Create' }));
+      await user.click(screen.getByRole('button', { name: 'Create ticket' }));
       expect(await screen.findByRole('alert')).toHaveTextContent("That person can't be assigned tickets in this project.");
       expect(mockAddToast).toHaveBeenCalledWith('error', expect.stringMatching(/can't be assigned/));
       expect(screen.getByRole('dialog')).toBeInTheDocument();
@@ -1054,7 +1186,7 @@ describe('TicketsTab', () => {
       hooks.useUpdateTicket.mockReturnValue(update);
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
       fireEvent.click(screen.getByText('Add session export'));
-      await user.click(screen.getByRole('button', { name: 'Reassign' }));
+      await user.click(screen.getByRole('button', { name: REASSIGN }));
       const picker = screen.getByRole('button', { name: 'Assignee' });
       expect(picker).toHaveFocus();
       expect(picker).toHaveTextContent('atlas');
@@ -1069,7 +1201,7 @@ describe('TicketsTab', () => {
       });
       expect(mockAddToast).toHaveBeenCalledWith('success', 'Assignee updated');
       expect(screen.queryByRole('group', { name: 'Reassign ticket' })).toBeNull();
-      expect(screen.getByRole('button', { name: 'Reassign' })).toHaveFocus();
+      expect(screen.getByRole('button', { name: REASSIGN })).toHaveFocus();
     });
 
     it('reassigns from person to persona and maps a conflict error', async () => {
@@ -1083,7 +1215,7 @@ describe('TicketsTab', () => {
       hooks.useTickets.mockReturnValue({ data: [ticket(PERSON_TICKET)], isLoading: false, error: null });
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
       fireEvent.click(screen.getByText('Add session export'));
-      await user.click(screen.getByRole('button', { name: 'Reassign' }));
+      await user.click(screen.getByRole('button', { name: REASSIGN }));
       await user.click(screen.getByRole('button', { name: 'Assignee' }));
       await user.click(screen.getByRole('option', { name: /sentinel/ }));
       await user.click(screen.getByRole('button', { name: 'Save' }));
@@ -1102,7 +1234,7 @@ describe('TicketsTab', () => {
       hooks.useUpdateTicket.mockReturnValue(update);
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
       fireEvent.click(screen.getByText('Add session export'));
-      await user.click(screen.getByRole('button', { name: 'Reassign' }));
+      await user.click(screen.getByRole('button', { name: REASSIGN }));
       await user.click(screen.getByRole('button', { name: 'Assignee' }));
       await user.click(screen.getByRole('option', { name: /Unassigned/ }));
       await user.click(screen.getByRole('button', { name: 'Save' }));
@@ -1114,7 +1246,7 @@ describe('TicketsTab', () => {
       hooks.useTickets.mockReturnValue({ data: [ticket({ assigned_to: null })], isLoading: false, error: null });
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
       fireEvent.click(screen.getByText('Add session export'));
-      expect(screen.getByRole('button', { name: 'Assign' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: ASSIGN })).toBeInTheDocument();
     });
 
     it('lets an editor who is neither the creator nor a project admin assign and save', async () => {
@@ -1130,7 +1262,7 @@ describe('TicketsTab', () => {
         />,
       );
       fireEvent.click(screen.getByText('Add session export'));
-      await user.click(screen.getByRole('button', { name: 'Assign' }));
+      await user.click(screen.getByRole('button', { name: ASSIGN }));
       // Nothing to clear on an unassigned ticket.
       expect(screen.queryByRole('button', { name: 'Unassign' })).toBeNull();
       await user.click(screen.getByRole('button', { name: 'Assignee' }));
@@ -1152,7 +1284,7 @@ describe('TicketsTab', () => {
       hooks.useTickets.mockReturnValue({ data: [ticket(PERSON_TICKET)], isLoading: false, error: null });
       render(<TicketsTab projectId="proj_1" viewer={{ canEdit: true, userId: 'u9', isProjectAdmin: false }} />);
       fireEvent.click(screen.getByText('Add session export'));
-      await user.click(screen.getByRole('button', { name: 'Reassign' }));
+      await user.click(screen.getByRole('button', { name: REASSIGN }));
       await user.click(screen.getByRole('button', { name: 'Unassign' }));
       expect(update.mutateAsync).toHaveBeenCalledTimes(1);
       expect(update.mutateAsync).toHaveBeenCalledWith({
@@ -1170,7 +1302,7 @@ describe('TicketsTab', () => {
       hooks.useTickets.mockReturnValue({ data: [ticket({ status: 'open' })], isLoading: false, error: null });
       render(<TicketsTab projectId="proj_1" viewer={{ canEdit: false, userId: 'u1' }} />);
       fireEvent.click(screen.getByText('Add session export'));
-      await user.click(screen.getByRole('button', { name: 'Reassign' }));
+      await user.click(screen.getByRole('button', { name: REASSIGN }));
       await user.click(screen.getByRole('button', { name: 'Unassign' }));
       expect(update.mutateAsync).not.toHaveBeenCalled();
       await user.click(screen.getByRole('button', { name: 'Save and send back for approval' }));
@@ -1183,14 +1315,14 @@ describe('TicketsTab', () => {
     it('hides Assign from a reader who is neither the creator nor a project admin', () => {
       render(<TicketsTab projectId="proj_1" viewer={{ canEdit: false, userId: 'u9', isProjectAdmin: false }} />);
       fireEvent.click(screen.getByText('Add session export'));
-      expect(screen.queryByRole('button', { name: 'Reassign' })).toBeNull();
-      expect(screen.queryByRole('button', { name: 'Assign' })).toBeNull();
+      expect(screen.queryByRole('button', { name: REASSIGN })).toBeNull();
+      expect(screen.queryByRole('button', { name: ASSIGN })).toBeNull();
     });
 
     it('offers Reassign to the ticket creator even without edit rights', () => {
       render(<TicketsTab projectId="proj_1" viewer={{ canEdit: false, userId: 'u1' }} />);
       fireEvent.click(screen.getByText('Add session export'));
-      expect(screen.getByRole('button', { name: 'Reassign' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: REASSIGN })).toBeInTheDocument();
     });
   });
   /* ── Scheduling, provenance and history (GitHub #113) ── */
@@ -1230,6 +1362,7 @@ describe('TicketsTab', () => {
         error: null,
       });
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      fireEvent.click(screen.getByRole('button', { name: /1 finished ticket hidden/ }));
       fireEvent.click(screen.getByText('Add session export'));
       const created = screen.getByText('Created', { selector: 'dt' }).closest('div')!;
       expect(created).toHaveTextContent('Ola Dev (atlas) · o***@example.test · May 14, 2026');
@@ -1256,8 +1389,8 @@ describe('TicketsTab', () => {
         error: null,
       });
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
-      // The row shows the compact due date.
-      expect(screen.getByText(/Overdue · Jan 2/)).toBeInTheDocument();
+      // The row says how late it is.
+      expect(screen.getByText(/^\d+d late$/)).toBeInTheDocument();
       fireEvent.click(screen.getByText('Add session export'));
       const due = screen.getByText('Due', { selector: 'dt' }).closest('div')!;
       expect(within(due).getByText(/Jan 2/)).toHaveClass('text-danger');
@@ -1266,8 +1399,9 @@ describe('TicketsTab', () => {
       cleanup();
       hooks.useTickets.mockReturnValue({ data: [ticket({ status: 'done', due_date: '2026-01-02' })], isLoading: false, error: null });
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
-      expect(screen.queryByText(/Overdue ·/)).toBeNull();
-      expect(screen.getByText(/Due Jan 2/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /1 finished ticket hidden/ }));
+      expect(screen.queryByText(/d late$/)).toBeNull();
+      expect(screen.getByText(/^Jan 2/)).toBeInTheDocument();
     });
 
     it('sets, clears and cancels the due date inline', async () => {
@@ -1361,6 +1495,7 @@ describe('TicketsTab', () => {
       );
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
       fireEvent.click(screen.getByText('Add session export'));
+      openActivity();
       const rows = within(screen.getByRole('region', { name: 'Activity' }))
         .getAllByRole('listitem')
         .map((li) => li.textContent ?? '');
@@ -1389,10 +1524,12 @@ describe('TicketsTab', () => {
         eventsResult([evt('e_done', 'status_changed', '2026-05-15T00:00:00Z', { field: 'status', before: 'review', after: 'done' })]),
       );
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      fireEvent.click(screen.getByRole('button', { name: /1 finished ticket hidden/ }));
       fireEvent.click(screen.getByText('Add session export'));
+      openActivity();
       const rows = within(screen.getByRole('region', { name: 'Activity' })).getAllByRole('listitem').map((li) => li.textContent ?? '');
       expect(rows.some((r) => /^Resolved/.test(r))).toBe(false);
-      expect(rows.some((r) => /moved this from review to done/.test(r))).toBe(true);
+      expect(rows.some((r) => /moved this from in review to done/.test(r))).toBe(true);
     });
 
     it('loads earlier history from where the loaded events stop', async () => {
@@ -1406,6 +1543,7 @@ describe('TicketsTab', () => {
       });
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
       fireEvent.click(screen.getByText('Add session export'));
+      openActivity();
       const rows = within(screen.getByRole('region', { name: 'Activity' })).getAllByRole('listitem').map((li) => li.textContent ?? '');
       expect(rows[2]).toMatch(/Show earlier history/);
       expect(rows[3]).toMatch(/approved this ticket/);
@@ -1419,30 +1557,32 @@ describe('TicketsTab', () => {
       );
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
       fireEvent.click(screen.getByText('Add session export'));
+      openActivity();
       // u3 is only known from the assignable-users list, fetched for it.
       expect(screen.getByText(/assigned this to kim@example.test/)).toBeInTheDocument();
       expect(hooks.useAssignableUsers).toHaveBeenCalledWith('proj_1', true);
     });
 
-    it('filters to overdue tickets', async () => {
+    it('shows overdue tickets in the Overdue view', async () => {
       const user = userEvent.setup();
+      hooks.useTickets.mockReturnValue({
+        data: [ticket({ status: 'open', due_date: '2026-01-01' }), ticket({ id: 'tk_2', title: 'On time', status: 'open', due_date: '2999-01-01' })],
+        isLoading: false,
+        error: null,
+      });
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
-      const toggle = screen.getByRole('button', { name: 'Overdue' });
-      expect(toggle).toHaveAttribute('aria-pressed', 'false');
-      await user.click(toggle);
-      expect(toggle).toHaveAttribute('aria-pressed', 'true');
-      expect(hooks.useTickets).toHaveBeenLastCalledWith('proj_1', expect.objectContaining({ overdue: true }));
+      const tab = screen.getByRole('tab', { name: /Overdue.*1 ticket/ });
+      await user.click(tab);
+      expect(tab).toHaveAttribute('aria-selected', 'true');
+      expect(screen.getByText('Add session export')).toBeInTheDocument();
+      expect(screen.queryByText('On time')).toBeNull();
     });
 
-    it('hands the overdue filter to the page when it owns the URL', async () => {
-      const user = userEvent.setup();
-      const onOverdueChange = vi.fn();
-      hooks.useTickets.mockReturnValue({ data: [], isLoading: false, error: null });
-      render(<TicketsTab projectId="proj_1" overdue onOverdueChange={onOverdueChange} />);
-      expect(hooks.useTickets).toHaveBeenLastCalledWith('proj_1', expect.objectContaining({ overdue: true }));
-      expect(screen.getByText('Nothing overdue.')).toBeInTheDocument();
-      await user.click(screen.getByRole('button', { name: 'Overdue' }));
-      expect(onOverdueChange).toHaveBeenCalledWith(false);
+    it('says nothing is overdue in an empty Overdue view', () => {
+      hooks.useTickets.mockReturnValue({ data: [ticket({ status: 'open' })], isLoading: false, error: null });
+      const params = { view: 'overdue', group: 'status', sort: 'priority', q: '', issuesOnly: false, highOnly: false, showFinished: false } as const;
+      render(<TicketsTab projectId="proj_1" params={params} onParamsChange={vi.fn()} />);
+      expect(screen.getByText('Nothing overdue')).toBeInTheDocument();
     });
 
     it('keeps system notes that are not an update diff, and diffs the events cannot show', () => {
@@ -1465,6 +1605,7 @@ describe('TicketsTab', () => {
       );
       render(<TicketsTab projectId="proj_1" />);
       fireEvent.click(screen.getByText('Add session export'));
+      openActivity();
       const text = within(screen.getByRole('region', { name: 'Activity' })).getAllByRole('listitem').map((li) => li.textContent ?? '').join('\n');
       expect(text).toMatch(/needs approval again/);
       expect(text).toMatch(/`description`: "Old" → "New text"/);
@@ -1481,6 +1622,7 @@ describe('TicketsTab', () => {
       );
       render(<TicketsTab projectId="proj_1" />);
       fireEvent.click(screen.getByText('Add session export'));
+      openActivity();
       expect(screen.getByText('Heads up: the deploy is paused.')).toBeInTheDocument();
     });
 
@@ -1495,6 +1637,7 @@ describe('TicketsTab', () => {
       );
       render(<TicketsTab projectId="proj_1" />);
       fireEvent.click(screen.getByText('Add session export'));
+      openActivity();
       const rows = within(screen.getByRole('region', { name: 'Activity' })).getAllByRole('listitem').map((li) => li.textContent ?? '');
       expect(rows.filter((r) => /dismissed this ticket/.test(r))).toHaveLength(1);
       expect(rows.filter((r) => /approved this ticket/.test(r))).toHaveLength(1);
@@ -1509,6 +1652,7 @@ describe('TicketsTab', () => {
       );
       render(<TicketsTab projectId="proj_1" />);
       fireEvent.click(screen.getByText('Add session export'));
+      openActivity();
       expect(screen.getByRole('alert')).toHaveTextContent("Couldn't load earlier history.");
       await user.click(screen.getByRole('button', { name: 'Try again' }));
       expect(fetchNextPage).toHaveBeenCalled();
@@ -1528,6 +1672,7 @@ describe('TicketsTab', () => {
       });
       render(<TicketsTab projectId="proj_1" />);
       fireEvent.click(screen.getByText('Add session export'));
+      openActivity();
       const rows = within(screen.getByRole('region', { name: 'Activity' })).getAllByRole('listitem').map((li) => li.textContent ?? '');
       expect(rows[0]).toMatch(/^Created/);
       expect(rows[1]).toMatch(/Still here/);
@@ -1540,6 +1685,7 @@ describe('TicketsTab', () => {
       hooks.useAssignableUsers.mockImplementation((_p: string, enabled: boolean) => ({ data: enabled ? ASSIGNABLE : undefined, isLoading: false }));
       render(<TicketsTab projectId="proj_1" viewer={{ canEdit: false, userId: 'u9' }} />);
       fireEvent.click(screen.getByText('Add session export'));
+      openActivity();
       expect(hooks.useAssignableUsers).toHaveBeenCalledWith('proj_1', false);
       expect(screen.getByText(/assigned this to a teammate/)).toBeInTheDocument();
     });
@@ -1616,25 +1762,6 @@ describe('TicketsTab', () => {
       expect(screen.getByRole('group', { name: 'Edit estimate' })).toBeInTheDocument();
     });
 
-    it('filters overdue tickets on the client too, for servers that ignore ?overdue', async () => {
-      const user = userEvent.setup();
-      hooks.useTickets.mockReturnValue({
-        data: [
-          ticket({ id: 'tk_late', title: 'Late one', status: 'open', due_date: '2026-01-01' }),
-          ticket({ id: 'tk_fine', title: 'Fine one', status: 'open', due_date: '2999-01-01' }),
-          ticket({ id: 'tk_none', title: 'Undated one', status: 'open' }),
-        ],
-        isLoading: false,
-        error: null,
-      });
-      render(<TicketsTab projectId="proj_1" />);
-      expect(screen.getByText('Fine one')).toBeInTheDocument();
-      await user.click(screen.getByRole('button', { name: 'Overdue' }));
-      expect(screen.getByText('Late one')).toBeInTheDocument();
-      expect(screen.queryByText('Fine one')).toBeNull();
-      expect(screen.queryByText('Undated one')).toBeNull();
-    });
-
     it('shows a due date 422 under the date field in the new ticket form', async () => {
       const user = userEvent.setup();
       const create = makeMutation();
@@ -1647,9 +1774,9 @@ describe('TicketsTab', () => {
       const dialog = screen.getByRole('dialog', { name: 'New ticket' });
       await user.type(within(dialog).getByLabelText('Title'), 'Ship export');
       await user.type(within(dialog).getByLabelText(/Description/), 'Details');
-      const due = within(dialog).getByLabelText('Due date (optional)');
+      const due = within(dialog).getByLabelText('Due date');
       fireEvent.change(due, { target: { value: '2027-01-15' } });
-      await user.click(within(dialog).getByRole('button', { name: 'Create' }));
+      await user.click(within(dialog).getByRole('button', { name: 'Create ticket' }));
       expect(await within(dialog).findByText('Input should be a valid date')).toBeInTheDocument();
       expect(due).toHaveAttribute('aria-invalid', 'true');
     });
@@ -1664,11 +1791,13 @@ describe('TicketsTab', () => {
       // A reader never loads the assignable users, so u3 stays unnamed.
       render(<TicketsTab projectId="proj_1" viewer={{ canEdit: false, userId: 'u9' }} />);
       fireEvent.click(screen.getByText('Add session export'));
+      openActivity();
       expect(screen.getByText(/Assigned to Kim Lee/)).toBeInTheDocument();
       cleanup();
       // An editor resolves u3, so the event says it all and the diff folds.
       render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
       fireEvent.click(screen.getByText('Add session export'));
+      openActivity();
       expect(screen.queryByText(/Assigned to Kim Lee/)).toBeNull();
       expect(screen.getByText(/assigned this to kim@example.test/)).toBeInTheDocument();
     });
@@ -1723,7 +1852,7 @@ describe('TicketsTab', () => {
       hooks.useTickets.mockReturnValue({ data: [ticket({ status: 'open' })], isLoading: false, error: null });
       render(<TicketsTab projectId="proj_1" viewer={{ canEdit: false, userId: 'u1' }} />);
       fireEvent.click(screen.getByText('Add session export'));
-      await user.click(screen.getByRole('button', { name: 'Reassign' }));
+      await user.click(screen.getByRole('button', { name: REASSIGN }));
       await user.click(screen.getByRole('button', { name: 'Assignee' }));
       await user.click(screen.getByRole('option', { name: /Unassigned/ }));
       await user.click(screen.getByRole('button', { name: 'Save' }));
@@ -1746,7 +1875,7 @@ describe('TicketsTab', () => {
       hooks.useUpdateTicket.mockReturnValue(update);
       render(<TicketsTab projectId="proj_1" viewer={{ canEdit: false, userId: 'u1' }} />);
       fireEvent.click(screen.getByText('Add session export'));
-      await user.click(screen.getByRole('button', { name: 'Reassign' }));
+      await user.click(screen.getByRole('button', { name: REASSIGN }));
       await user.click(screen.getByRole('button', { name: 'Assignee' }));
       await user.click(screen.getByRole('option', { name: /Unassigned/ }));
       await user.click(screen.getByRole('button', { name: 'Save' }));
@@ -1762,17 +1891,17 @@ describe('TicketsTab', () => {
       const dialog = screen.getByRole('dialog', { name: 'New ticket' });
       await user.type(within(dialog).getByLabelText('Title'), 'Ship export');
       await user.type(within(dialog).getByLabelText(/Description/), 'Details');
-      fireEvent.change(within(dialog).getByLabelText('Due date (optional)'), { target: { value: `${year + 1}-01-15` } });
-      const estimate = within(dialog).getByLabelText('Estimate (optional)');
+      fireEvent.change(within(dialog).getByLabelText('Due date'), { target: { value: `${year + 1}-01-15` } });
+      const estimate = within(dialog).getByLabelText('Estimate');
       await user.type(estimate, 'soon');
-      await user.click(within(dialog).getByRole('button', { name: 'Create' }));
+      await user.click(within(dialog).getByRole('button', { name: 'Create ticket' }));
       expect(create.mutateAsync).not.toHaveBeenCalled();
       expect(within(dialog).getByRole('alert')).toHaveTextContent('Use Jira durations');
       expect(await axe(baseElement)).toHaveNoViolations();
 
       await user.clear(estimate);
       await user.type(estimate, '1w 2d');
-      await user.click(within(dialog).getByRole('button', { name: 'Create' }));
+      await user.click(within(dialog).getByRole('button', { name: 'Create ticket' }));
       expect(create.mutateAsync).toHaveBeenCalledWith(
         expect.objectContaining({ title: 'Ship export', due_date: `${year + 1}-01-15`, estimated_effort: '1w 2d' }),
       );
@@ -1787,10 +1916,345 @@ describe('TicketsTab', () => {
       const dialog = screen.getByRole('dialog', { name: 'New ticket' });
       await user.type(within(dialog).getByLabelText('Title'), 'Ship export');
       await user.type(within(dialog).getByLabelText(/Description/), 'Details');
-      await user.click(within(dialog).getByRole('button', { name: 'Create' }));
+      await user.click(within(dialog).getByRole('button', { name: 'Create ticket' }));
       const body = create.mutateAsync.mock.calls[0][0];
       expect(body).not.toHaveProperty('due_date');
       expect(body).not.toHaveProperty('estimated_effort');
+    });
+  });
+
+  /* ── Phase 3: keyboard, selection, bulk actions, new-ticket dialog ── */
+
+  describe('keyboard, selection and bulk actions', () => {
+    const LIST = [
+      ticket({ id: 'tk_a', title: 'Alpha suggested', status: 'suggested', priority: 'high' }),
+      ticket({ id: 'tk_b', title: 'Bravo open', status: 'open' }),
+      ticket({ id: 'tk_c', title: 'Charlie running', status: 'in_progress' }),
+      ticket({ id: 'tk_d', title: 'Delta suggested', status: 'suggested' }),
+    ];
+    // Grouped by status: In progress, Open, then Suggested (high first).
+    const ORDER = ['Charlie running', 'Bravo open', 'Alpha suggested', 'Delta suggested'];
+
+    beforeEach(() => {
+      localStorage.removeItem('sfs-tickets-view');
+      hooks.useTickets.mockReturnValue({ data: LIST, isLoading: false, error: null });
+      mockClient.approveTicket.mockResolvedValue({});
+      mockClient.dismissTicket.mockResolvedValue({});
+      mockClient.watchTicket.mockResolvedValue({});
+      mockClient.updateTicket.mockResolvedValue({});
+    });
+
+    const press = (key: string, target: Element = document.activeElement ?? document.body, extra: Record<string, unknown> = {}) =>
+      fireEvent.keyDown(target, { key, ...extra });
+    const rowTitle = (name: string) => screen.getByRole('button', { name });
+    const box = (name: string) => screen.getByRole('checkbox', { name: `Select ${name}` });
+    const bar = () => screen.queryByRole('group', { name: 'Bulk actions' });
+
+    it('moves focus through the rows with j / k and arrows, keeping one row in the tab order', () => {
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      const titles = ORDER.map(rowTitle);
+      expect(titles.map((t) => t.tabIndex)).toEqual([0, -1, -1, -1]);
+      press('j', document.body);
+      expect(titles[0]).toHaveFocus();
+      press('j');
+      expect(titles[1]).toHaveFocus();
+      expect(titles.map((t) => t.tabIndex)).toEqual([-1, 0, -1, -1]);
+      // The other controls on a row follow the same tab stop.
+      expect(box('Bravo open').tabIndex).toBe(0);
+      expect(box('Charlie running').tabIndex).toBe(-1);
+      press('k');
+      expect(titles[0]).toHaveFocus();
+      press('ArrowDown');
+      press('ArrowDown');
+      expect(titles[2]).toHaveFocus();
+      press('ArrowUp');
+      expect(titles[1]).toHaveFocus();
+    });
+
+    it('does not fire while typing in a field or while a dialog is open', () => {
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      const search = screen.getByRole('searchbox', { name: 'Search tickets' });
+      search.focus();
+      press('j', search);
+      press('c', search);
+      press('x', search);
+      expect(search).toHaveFocus();
+      expect(screen.queryByRole('dialog', { name: 'New ticket' })).toBeNull();
+      expect(bar()).toBeNull();
+      search.blur();
+
+      press('?', document.body);
+      expect(screen.getByRole('dialog', { name: 'Keyboard shortcuts' })).toBeInTheDocument();
+      press('c', document.body);
+      press('j', document.body);
+      expect(screen.queryByRole('dialog', { name: 'New ticket' })).toBeNull();
+      expect(rowTitle('Charlie running')).not.toHaveFocus();
+    });
+
+    it('ignores modifier chords such as ⌘K', () => {
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      press('c', document.body, { metaKey: true });
+      press('j', document.body, { ctrlKey: true });
+      expect(screen.queryByRole('dialog', { name: 'New ticket' })).toBeNull();
+      expect(rowTitle('Charlie running')).not.toHaveFocus();
+    });
+
+    it('focuses search with /, switches views with 1–6 and the layout with b, and opens New ticket with c', () => {
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      press('/', document.body);
+      expect(screen.getByRole('searchbox', { name: 'Search tickets' })).toHaveFocus();
+      (document.activeElement as HTMLElement).blur();
+
+      press('2', document.body);
+      expect(screen.getByRole('tab', { name: /Triage/ })).toHaveAttribute('aria-selected', 'true');
+      press('6', document.body);
+      expect(screen.getByRole('tab', { name: /^All/ })).toHaveAttribute('aria-selected', 'true');
+
+      press('b', document.body);
+      expect(screen.getByRole('button', { name: 'Board' })).toHaveAttribute('aria-pressed', 'true');
+      press('b', document.body);
+      expect(screen.getByRole('button', { name: 'List' })).toHaveAttribute('aria-pressed', 'true');
+
+      press('c', document.body);
+      expect(screen.getByRole('dialog', { name: 'New ticket' })).toBeInTheDocument();
+    });
+
+    it('opens the focused ticket with o and Enter', () => {
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      press('j', document.body);
+      press('o');
+      expect(screen.getByRole('dialog', { name: 'Charlie running' })).toBeInTheDocument();
+    });
+
+    it('leaves Enter on other buttons alone', () => {
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      press('j', document.body);
+      const chip = screen.getByRole('button', { name: 'Issues only' });
+      chip.focus();
+      press('Enter', chip);
+      expect(screen.queryByRole('dialog', { name: 'Charlie running' })).toBeNull();
+    });
+
+    it('opens the status menu of the focused row with s and the assignee editor with a', () => {
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      press('j', document.body);
+      press('j');
+      press('j');
+      expect(rowTitle('Alpha suggested')).toHaveFocus();
+      press('s');
+      expect(screen.getByRole('menu', { name: 'Status actions for tk_a' })).toBeInTheDocument();
+      // Keys stay off while the menu is open.
+      press('c', document.activeElement!);
+      expect(screen.queryByRole('dialog', { name: 'New ticket' })).toBeNull();
+      press('Escape', document.activeElement!);
+      expect(screen.queryByRole('menu')).toBeNull();
+
+      rowTitle('Alpha suggested').focus();
+      press('a');
+      expect(screen.getByRole('dialog', { name: 'Reassign tk_a' })).toBeInTheDocument();
+    });
+
+    it('toggles selection with x and clears it with Escape', () => {
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      press('j', document.body);
+      press('x');
+      expect(box('Charlie running')).toBeChecked();
+      expect(bar()).toHaveTextContent('1 selected');
+      press('j');
+      press('x');
+      expect(bar()).toHaveTextContent('2 selected');
+      press('Escape');
+      expect(bar()).toBeNull();
+      expect(box('Charlie running')).not.toBeChecked();
+    });
+
+    it('selects a range with shift-click on a checkbox or a title', () => {
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      fireEvent.click(box('Charlie running'));
+      fireEvent.click(box('Alpha suggested'), { shiftKey: true });
+      expect(box('Charlie running')).toBeChecked();
+      expect(box('Bravo open')).toBeChecked();
+      expect(box('Alpha suggested')).toBeChecked();
+      expect(box('Delta suggested')).not.toBeChecked();
+      expect(bar()).toHaveTextContent('3 selected');
+      // Shift-click on a title selects instead of opening the ticket.
+      fireEvent.click(rowTitle('Delta suggested'), { shiftKey: true });
+      expect(box('Delta suggested')).toBeChecked();
+      expect(screen.queryByRole('dialog', { name: 'Delta suggested' })).toBeNull();
+    });
+
+    it('explains bulk actions that reach none of the selection and counts partial ones', () => {
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      fireEvent.click(box('Charlie running'));
+      const approve = within(bar()!).getByRole('button', { name: 'Approve' });
+      expect(approve).toHaveAttribute('aria-disabled', 'true');
+      expect(approve).toHaveAccessibleDescription('Only Suggested tickets can be approved');
+      const dismiss = within(bar()!).getByRole('button', { name: 'Dismiss' });
+      expect(dismiss).toHaveAccessibleDescription('Only Suggested or Open tickets can be dismissed');
+
+      fireEvent.click(box('Alpha suggested'));
+      expect(within(bar()!).getByRole('button', { name: 'Approve 1 suggested' })).not.toHaveAttribute('aria-disabled');
+      expect(within(bar()!).getByRole('button', { name: 'Dismiss 1 of 2' })).toBeInTheDocument();
+    });
+
+    it('never offers Approve to a viewer who may not approve', () => {
+      render(<TicketsTab projectId="proj_1" viewer={{ canEdit: false, userId: 'u5' }} />);
+      fireEvent.click(box('Alpha suggested'));
+      const approve = within(bar()!).getByRole('button', { name: 'Approve' });
+      expect(approve).toHaveAccessibleDescription('Only project editors can approve tickets');
+      fireEvent.click(approve);
+      expect(mockClient.approveTicket).not.toHaveBeenCalled();
+    });
+
+    it('approves each ticket, reports failures in one line and keeps the failed ones selected', async () => {
+      mockClient.approveTicket.mockImplementation((_p: string, id: string) =>
+        id === 'tk_d' ? Promise.reject(new Error('Ticket changed')) : Promise.resolve({}),
+      );
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      fireEvent.click(box('Alpha suggested'));
+      fireEvent.click(box('Delta suggested'));
+      fireEvent.click(within(bar()!).getByRole('button', { name: 'Approve' }));
+      await waitFor(() => expect(mockAddToast).toHaveBeenCalledWith('error', 'Approved 1 · 1 failed: Ticket changed'));
+      expect(mockClient.approveTicket).toHaveBeenCalledWith('proj_1', 'tk_a');
+      expect(mockClient.approveTicket).toHaveBeenCalledWith('proj_1', 'tk_d');
+      expect(mockInvalidate).toHaveBeenCalledWith({ queryKey: ['tickets', 'proj_1'] });
+      expect(box('Delta suggested')).toBeChecked();
+      expect(box('Alpha suggested')).not.toBeChecked();
+    });
+
+    it('asks before dismissing in bulk and only dismisses Suggested or Open tickets', async () => {
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      fireEvent.click(box('Bravo open'));
+      fireEvent.click(box('Charlie running'));
+      fireEvent.click(within(bar()!).getByRole('button', { name: 'Dismiss 1 of 2' }));
+      const confirm = screen.getByRole('dialog', { name: 'Dismiss 1 ticket?' });
+      expect(mockClient.dismissTicket).not.toHaveBeenCalled();
+      fireEvent.click(within(confirm).getByRole('button', { name: 'Dismiss 1 ticket' }));
+      await waitFor(() => expect(mockAddToast).toHaveBeenCalledWith('success', 'Dismissed 1 ticket'));
+      expect(mockClient.dismissTicket).toHaveBeenCalledTimes(1);
+      expect(mockClient.dismissTicket).toHaveBeenCalledWith('proj_1', 'tk_b');
+      expect(bar()).toBeNull();
+    });
+
+    it('follows every selected ticket', async () => {
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      fireEvent.click(box('Bravo open'));
+      fireEvent.click(box('Charlie running'));
+      fireEvent.click(within(bar()!).getByRole('button', { name: 'Follow' }));
+      await waitFor(() => expect(mockAddToast).toHaveBeenCalledWith('success', 'Following 2 tickets'));
+      expect(mockClient.watchTicket).toHaveBeenCalledTimes(2);
+    });
+
+    it('opens the bulk assign panel with a while rows are selected', () => {
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      fireEvent.click(box('Bravo open'));
+      press('a', document.body);
+      expect(screen.getByRole('dialog', { name: 'Assign 1 ticket' })).toBeInTheDocument();
+    });
+
+    it('has no axe violations with the bulk bar and the shortcuts dialog', async () => {
+      const { container } = render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      fireEvent.click(box('Bravo open'));
+      expect(await axe(container)).toHaveNoViolations();
+      press('?', document.body);
+      expect(await axe(container)).toHaveNoViolations();
+    });
+  });
+
+  describe('board', () => {
+    it('shows six columns, Done holding closed Issues, and Cancelled only as a note', () => {
+      localStorage.setItem('sfs-tickets-view', 'board');
+      hooks.useTickets.mockReturnValue({
+        data: [
+          ticket({ id: 'tk_s', title: 'Suggested one', status: 'suggested' }),
+          ticket({ id: 'tk_r', title: 'In review one', status: 'review' }),
+          ticket({ id: 'tk_closed', title: 'Closed issue', status: 'closed', kind: 'issue' }),
+          ticket({ id: 'tk_done', title: 'Done task', status: 'done' }),
+          ticket({ id: 'tk_x', title: 'Cancelled one', status: 'cancelled' }),
+        ],
+        isLoading: false,
+        error: null,
+      });
+      render(<TicketsTab projectId="proj_1" params={{ view: 'all', group: 'status', sort: 'priority', q: '', issuesOnly: false, highOnly: false, showFinished: true }} />);
+      const heads = screen.getAllByRole('heading', { level: 3 }).map((h) => h.textContent);
+      expect(heads.slice(0, 6)).toEqual([
+        'Triage1 ticket',
+        'Open0 tickets',
+        'In progress0 tickets',
+        'Blocked0 tickets',
+        'In review1 ticket',
+        'Done2 tickets',
+      ]);
+      const done = screen.getByRole('region', { name: /^Done/ });
+      expect(within(done).getByText('Closed issue')).toBeInTheDocument();
+      expect(within(done).getByText('Done task')).toBeInTheDocument();
+      expect(screen.queryByText('Cancelled one')).toBeNull();
+      expect(screen.getByRole('region', { name: /^Cancelled/ })).toHaveTextContent('Not shown on the board');
+    });
+
+    it('says how to see finished tickets when All hides them', () => {
+      localStorage.setItem('sfs-tickets-view', 'board');
+      render(<TicketsTab projectId="proj_1" />);
+      const done = screen.getByRole('region', { name: /^Done/ });
+      expect(done).toHaveTextContent('Finished tickets are hidden. Turn on Show finished.');
+    });
+
+    it('cards carry the id, an Issue badge, priority, due date and assignee', () => {
+      localStorage.setItem('sfs-tickets-view', 'board');
+      hooks.useTickets.mockReturnValue({
+        data: [ticket({ id: 'tk_i', title: 'An issue', status: 'open', kind: 'issue', priority: 'high', due_date: '2099-01-02' })],
+        isLoading: false,
+        error: null,
+      });
+      render(<TicketsTab projectId="proj_1" />);
+      const card = screen.getByRole('button', { name: /An issue/ });
+      expect(card).toHaveTextContent('tk_i');
+      expect(card).toHaveTextContent('Issue');
+      expect(card).toHaveTextContent('Priority High');
+      expect(card).toHaveTextContent(/Due /);
+      expect(card).toHaveTextContent('Assigned to atlas');
+      expect(card.tabIndex).toBe(0);
+    });
+  });
+
+  describe('new ticket dialog', () => {
+    it('focuses the title, keeps the extra fields behind More details, and creates with ⌘↵', async () => {
+      const user = userEvent.setup();
+      const created = ticket({ id: 'tk_new', title: 'Ship it', status: 'open' });
+      const create = makeMutation({ mutateAsync: vi.fn().mockResolvedValue(created) });
+      hooks.useCreateTicket.mockReturnValue(create);
+      hooks.useTicket.mockReturnValue({ data: created });
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      fireEvent.keyDown(document.body, { key: 'c' });
+      const dialog = screen.getByRole('dialog', { name: 'New ticket' });
+      const title = within(dialog).getByLabelText('Title');
+      expect(title).toHaveFocus();
+      const more = within(dialog).getByText(/^More details/).closest('details')!;
+      expect(more.open).toBe(false);
+      expect(more).toContainElement(within(dialog).getByLabelText('Due date'));
+      await user.type(title, 'Ship it');
+      await user.type(within(dialog).getByLabelText('Description'), 'Body');
+      fireEvent.keyDown(within(dialog).getByLabelText('Description'), { key: 'Enter', metaKey: true });
+      await waitFor(() => expect(create.mutateAsync).toHaveBeenCalledTimes(1));
+      expect(create.mutateAsync.mock.calls[0][0]).toEqual(
+        expect.objectContaining({ title: 'Ship it', description: 'Body', kind: 'task', priority: 'medium' }),
+      );
+      // The new ticket opens in the pane.
+      await waitFor(() => expect(screen.getByRole('dialog', { name: 'Ship it' })).toBeInTheDocument());
+    });
+
+    it('creates with Ctrl+Enter too, and not without a title', async () => {
+      const create = makeMutation({ mutateAsync: vi.fn().mockResolvedValue(ticket({ id: 'tk_new' })) });
+      hooks.useCreateTicket.mockReturnValue(create);
+      render(<TicketsTab projectId="proj_1" viewer={ADMIN} />);
+      fireEvent.click(screen.getByRole('button', { name: /New ticket/ }));
+      const dialog = screen.getByRole('dialog', { name: 'New ticket' });
+      fireEvent.keyDown(within(dialog).getByLabelText('Title'), { key: 'Enter', ctrlKey: true });
+      expect(create.mutateAsync).not.toHaveBeenCalled();
+      fireEvent.change(within(dialog).getByLabelText('Title'), { target: { value: 'T' } });
+      fireEvent.change(within(dialog).getByLabelText('Description'), { target: { value: 'D' } });
+      fireEvent.keyDown(within(dialog).getByLabelText('Title'), { key: 'Enter', ctrlKey: true });
+      await waitFor(() => expect(create.mutateAsync).toHaveBeenCalledTimes(1));
     });
   });
 });

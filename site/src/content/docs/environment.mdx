@@ -62,11 +62,18 @@ All SessionFS server environment variables use the `SFS_` prefix.
 | `SFS_HOST` | Listen address | `0.0.0.0` |
 | `SFS_PORT` | Listen port | `8000` |
 | `SFS_LOG_LEVEL` | Log level for the API's own logs: `DEBUG`, `INFO`, `WARNING`, `ERROR`. Applied when the process has no other logging configuration (plain `uvicorn`); `INFO` includes one timing line per session push | `INFO` |
+| `SFS_DEPLOYMENT` | `self-hosted` on your own install; anything else means the hosted cloud service. The session helper uses it to say whether a docs page that is cloud-only or self-hosted-only applies here. The Helm chart sets `self-hosted`. | cloud |
 | `SFS_CORS_ORIGINS` | Allowed CORS origins (comma-separated) | — |
 | `SFS_RATE_LIMIT_PER_MINUTE` | API rate limit per API key per minute. Set to `0` to disable | `120` |
 | `SFS_SMTP_VERIFY_SSL` | Verify SSL certificates for SMTP. Set to `false` for self-signed certs | `true` |
 | `SFS_JUDGE_BASE_URL` | Custom OpenAI-compatible endpoint for LLM Judge (LiteLLM, vLLM, Ollama, etc.) | — |
 | `SFS_DASHBOARD_DIR` | Path to dashboard static files | `./static` |
+| `SFS_METRICS_TENANT_LABELS` | Add `org_id` and `project_id` labels (ids only, never names) to the per-tenant business metric families at `/api/v1/admin/metrics`. Off: those series add up across every tenant. Series grow with the number of orgs and projects when on, still capped at 10,000 per family. Helm: `api.metrics.tenantLabels`. See [Metrics Reference](/metrics/). | `false` |
+| `SFS_ORG_CONCURRENCY_EXTRACTION` | How many meeting or chat extractions one organization can run at once, across every API instance. A personal project counts against its owner. `0` turns the cap off. Helm: `api.limits.orgConcurrency.extraction`. See [Tenancy and Isolation](/tenancy/). | `4` |
+| `SFS_ORG_CONCURRENCY_HELPER` | How many session helper questions one organization can have running at once. Helm: `api.limits.orgConcurrency.helper` | `8` |
+| `SFS_ORG_CONCURRENCY_COMPILE` | How many knowledge compiles, rebuilds and group compiles one organization can run at once. Helm: `api.limits.orgConcurrency.compile` | `2` |
+| `SFS_ORG_CONCURRENCY_EXPORT` | How many CSV exports (approval log, contacts) one organization can run at once. Helm: `api.limits.orgConcurrency.export` | `2` |
+| `SFS_HEAVY_READ_TIMEOUT_MS` | PostgreSQL statement timeout, in milliseconds, on the heavy read routes (search, For You, loop status and reports, spend, approval log, contacts, session changes). A cancelled read answers `503 query_timeout`. `0` turns it off. Helm: `api.limits.heavyReadTimeoutMs` | `15000` |
 
 ## Sync Limits
 
@@ -111,7 +118,7 @@ Hosted billing configuration is SessionFS Cloud infrastructure only. Self-hosted
 | `SFS_APP_URL` | Dashboard URL for links the server generates (invite emails, billing return pages; weekly digest links only when `SFS_DASHBOARD_URL` is unset and this is set explicitly) | `https://app.sessionfs.dev` |
 | `SFS_DASHBOARD_URL` | Dashboard origin for browser SSO login redirects and GitHub installation linking; also the origin of links in the weekly org activity digest. Links are left out of the digest when neither this nor an explicit `SFS_APP_URL` is set | — |
 | `SFS_API_URL` | API URL for share links and internal references | `https://api.sessionfs.dev` |
-| `SFS_PUBLIC_API_URL` | This deployment's public API origin, e.g. `https://api.sessionfs.dev`. Default OIDC audience for marketplace trusted publishing | — |
+| `SFS_PUBLIC_API_URL` | This deployment's public API origin, e.g. `https://api.sessionfs.dev`. Default OIDC audience for marketplace trusted publishing. It is also the base of signup verification links; when unset they use `SFS_DASHBOARD_URL` (the Helm dashboard serves `/api`), and with neither no verification email is sent | — |
 | `SFS_GITLAB_OIDC_ISSUERS` | GitLab instances whose CI ID tokens may be used for marketplace trusted publishing: comma-separated `https://` origins. Listed values replace the default (include `https://gitlab.com` to keep it); `none` disables GitLab. Keys are fetched only for a listed instance, from `<origin>/oauth/discovery/keys`, and only from a public address. An invalid entry refuses startup | `https://gitlab.com` |
 | `SFS_TRUSTED_PUBLISHING_AUDIENCE` | Overrides the OIDC audience for marketplace trusted publishing. Must be unique to the deployment: a generic value such as `sessionfs` refuses to start, and with neither this nor `SFS_PUBLIC_API_URL` trusted publishing is disabled | `SFS_PUBLIC_API_URL` |
 | `SFS_REGISTRY_POLLING_ENABLED` | Server-side polling of organization Git marketplace registries. `false`: the poll endpoint answers `503` and registries report `server_fetch_enabled: false` | `true` |

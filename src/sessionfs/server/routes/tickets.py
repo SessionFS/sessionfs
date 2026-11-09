@@ -447,6 +447,29 @@ class TicketEventsResponse(BaseModel):
     next_before: str | None = None
 
 
+class TicketReviewSummary(BaseModel):
+    """The latest trusted review round on a ticket, for list rows.
+
+    Derived exactly like ``GET .../review-state`` (services/review_state):
+    only server-stamped ``verdict_trusted`` comments count, ``last_verdict``
+    is alias-folded (APPROVED / NO CHANGES NEEDED read as clean), and a
+    finding stays open until a later clean round."""
+
+    last_round: int
+    last_verdict: Literal["clean", "changes"] | None = None
+    open_findings: int = 0
+    # Always true: untrusted verdict-shaped comments never produce a summary.
+    trusted: bool = True
+
+
+class TicketChildCounts(BaseModel):
+    """Issue rollup: child Tasks in total and how many are finished
+    (done, closed or cancelled)."""
+
+    total: int
+    finished: int
+
+
 class TicketResponse(BaseModel):
     id: str
     project_id: str
@@ -498,6 +521,16 @@ class TicketResponse(BaseModel):
     # True when a prior publish timed out mid-create; the row is ``unknown``
     # and a re-publish will search Jira by label and adopt-or-create.
     jira_publish_unknown: bool = False
+    # Dashboard list signals (tickets redesign). ``jira_key`` is the linked
+    # issue key (also set on the detail). ``open_dependency_count`` counts
+    # dependencies in this project that are not done/closed/cancelled;
+    # ``child_counts`` is set on Issues only. ``review_summary`` is filled on
+    # the list response only (the detail reads /review-state) and is null
+    # when no trusted review round exists.
+    jira_key: str | None = None
+    open_dependency_count: int | None = None
+    child_counts: TicketChildCounts | None = None
+    review_summary: TicketReviewSummary | None = None
 
 
 class CompleteTicketRequest(BaseModel):
@@ -1321,6 +1354,86 @@ async def _load_recent_events(
     return await _build_event_responses(db, list(events))
 
 
+_FINISHED_STATUSES = ("done", "closed", "cancelled")
+
+
+async def _open_dependency_counts(
+    db: AsyncSession, project_id: str, ticket_ids: list[str]
+) -> dict[str, int]:
+    """Per ticket, how many of its dependencies in ``project_id`` are still
+    unfinished. One grouped query whatever the number of tickets; a
+    dependency outside the project never counts (same-project rule)."""
+    if not ticket_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(TicketDependency.ticket_id, func.count())
+            .join(Ticket, Ticket.id == TicketDependency.depends_on_id)
+            .where(
+                TicketDependency.ticket_id.in_(ticket_ids),
+                Ticket.project_id == project_id,
+                Ticket.status.notin_(_FINISHED_STATUSES),
+            )
+            .group_by(TicketDependency.ticket_id)
+        )
+    ).all()
+    return {tid: int(n) for tid, n in rows}
+
+
+async def _linked_jira_keys(db: AsyncSession, ticket_ids: list[str]) -> dict[str, str]:
+    """Issue keys of tickets whose Jira link is live (status ``linked``),
+    the same rule the detail's ``jira`` block follows."""
+    from sessionfs.server.db.models import TicketTrackerLink
+
+    if not ticket_ids:
+        return {}
+    rows = (
+        await db.execute(
+            select(TicketTrackerLink.ticket_id, TicketTrackerLink.issue_key).where(
+                TicketTrackerLink.ticket_id.in_(ticket_ids),
+                TicketTrackerLink.status == "linked",
+                TicketTrackerLink.issue_key.is_not(None),
+            )
+        )
+    ).all()
+    return {tid: key for tid, key in rows if key}
+
+
+async def _review_summaries(
+    db: AsyncSession, ticket_ids: list[str]
+) -> dict[str, TicketReviewSummary]:
+    """Latest trusted review round per ticket, in one windowed query.
+
+    Uses the shared loader and ``compute_review_state``, so the summary
+    agrees with ``GET .../review-state``: only trusted verdict comments make
+    rounds (untrusted ones never close findings), the latest round is the
+    chronologically latest, and findings close on any later clean round."""
+    from sessionfs.server.services.review_state import (
+        VERDICT_CLEAN,
+        compute_review_state,
+        load_trusted_review_comments_by_ticket,
+    )
+
+    if not ticket_ids:
+        return {}
+    by_ticket = await load_trusted_review_comments_by_ticket(db, ticket_ids)
+    out: dict[str, TicketReviewSummary] = {}
+    for tid, comments in by_ticket.items():
+        if not comments:
+            continue
+        state = compute_review_state(comments)
+        if state is None or not state.rounds:
+            continue
+        last = state.rounds[-1]
+        out[tid] = TicketReviewSummary(
+            last_round=last.round,
+            last_verdict="clean" if last.verdict == VERDICT_CLEAN else "changes",
+            open_findings=len(state.open_findings),
+            trusted=True,
+        )
+    return out
+
+
 async def _ticket_detail_response(
     ticket: Ticket, db: AsyncSession, *, show_email: bool = False
 ) -> TicketResponse:
@@ -1334,16 +1447,25 @@ async def _ticket_detail_response(
         # (Tasks cannot have children in v1).
         child_rows = (
             await db.execute(
-                select(Ticket.id).where(
+                select(Ticket.id, Ticket.status).where(
                     Ticket.project_id == ticket.project_id,
                     Ticket.parent_ticket_id == ticket.id,
                 )
             )
-        ).scalars().all()
-        child_ticket_ids = list(child_rows)
+        ).all()
+        child_ticket_ids = [cid for cid, _ in child_rows]
+        child_counts = TicketChildCounts(
+            total=len(child_rows),
+            finished=sum(1 for _, st in child_rows if st in _FINISHED_STATUSES),
+        )
     response = await _ticket_response(
         db, ticket, deps, child_ticket_ids, show_email=show_email
     )
+    if ticket.kind == "issue":
+        response.child_counts = child_counts
+    response.open_dependency_count = (
+        await _open_dependency_counts(db, ticket.project_id, [ticket.id])
+    ).get(ticket.id, 0)
     from sessionfs.server.db.models import TicketTrackerLink
 
     link = (
@@ -1358,6 +1480,7 @@ async def _ticket_detail_response(
                 issue_url=link.issue_url,
                 last_known_status=link.last_known_status,
             )
+            response.jira_key = link.issue_key
         elif link.status == "pending":
             # A pending claim is a publish in flight, not a link: reads must
             # never surface a half-written issue.
@@ -1541,6 +1664,7 @@ async def list_tickets(
     # an empty list (they cannot have children in v1).
     issue_ids = [t.id for t in rows if t.kind == "issue"]
     children_by_parent: dict[str, list[str]] = {iid: [] for iid in issue_ids}
+    finished_by_parent: dict[str, int] = {}
     if issue_ids:
         # Codex R1 LOW #4 (tk_dbccde26ed604b3c) — defensive project_id
         # filter on the list rollup. Create path prevents cross-project
@@ -1550,14 +1674,16 @@ async def list_tickets(
         # endpoint's predicate shape.
         child_rows = (
             await db.execute(
-                select(Ticket.id, Ticket.parent_ticket_id).where(
+                select(Ticket.id, Ticket.parent_ticket_id, Ticket.status).where(
                     Ticket.project_id == project_id,
                     Ticket.parent_ticket_id.in_(issue_ids),
                 )
             )
         ).all()
-        for cid, pid in child_rows:
+        for cid, pid, child_status in child_rows:
             children_by_parent.setdefault(pid, []).append(cid)
+            if child_status in _FINISHED_STATUSES:
+                finished_by_parent[pid] = finished_by_parent.get(pid, 0) + 1
     # GitHub #96 — batch-load every person assignment in one query so a
     # long list never issues one SELECT per assigned ticket.
     assigned_user_ids = {t.assigned_user_id for t in rows if t.assigned_user_id}
@@ -1574,7 +1700,12 @@ async def list_tickets(
     } | {t.resolver_user_id for t in rows if t.resolver_user_id}
     provenance_users = await _batch_users(db, provenance_ids)
     assigned_contacts = await _ticket_contacts(db, list(rows))
-    return [
+    # Row signals for the dashboard list: one batched query each, so the
+    # statement count does not grow with the number of tickets.
+    open_deps = await _open_dependency_counts(db, project_id, ids)
+    jira_keys = await _linked_jira_keys(db, ids)
+    review_summaries = await _review_summaries(db, ids)
+    responses = [
         _to_response(
             t,
             deps_by_ticket[t.id],
@@ -1600,6 +1731,16 @@ async def list_tickets(
         )
         for t in rows
     ]
+    for t, r in zip(rows, responses):
+        r.open_dependency_count = open_deps.get(t.id, 0)
+        r.jira_key = jira_keys.get(t.id)
+        r.review_summary = review_summaries.get(t.id)
+        if t.kind == "issue":
+            r.child_counts = TicketChildCounts(
+                total=len(children_by_parent.get(t.id, [])),
+                finished=finished_by_parent.get(t.id, 0),
+            )
+    return responses
 
 
 @router.get(

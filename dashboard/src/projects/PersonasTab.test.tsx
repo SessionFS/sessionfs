@@ -112,9 +112,10 @@ describe('PersonasTab', () => {
     hooks.useCreatePersona.mockReturnValue(create);
     render(<PersonasTab projectId="proj_1" />);
     fireEvent.click(screen.getByRole('button', { name: /New agent/i }));
-    fireEvent.change(screen.getByLabelText(/Name/i), { target: { value: 'taken' } });
-    fireEvent.change(screen.getByLabelText(/Role/i), { target: { value: 'Tester' } });
-    fireEvent.submit(screen.getByRole('dialog').querySelector('form')!);
+    const dialog = screen.getByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText(/Name/i), { target: { value: 'taken' } });
+    fireEvent.change(within(dialog).getByLabelText(/Role/i), { target: { value: 'Tester' } });
+    fireEvent.submit(dialog.querySelector('form')!);
     await new Promise((r) => setTimeout(r, 0));
     expect(mockAddToast).toHaveBeenCalledWith('error', expect.stringMatching(/^Save failed: .*name taken/));
   });

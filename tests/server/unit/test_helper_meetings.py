@@ -119,7 +119,7 @@ def test_meeting_tools_are_registered():
 
 
 def test_prompt_is_v17_and_teaches_meeting_citations():
-    assert helper_mod._HELPER_SYSTEM_PROMPT_VERSION == "v21"
+    assert helper_mod._HELPER_SYSTEM_PROMPT_VERSION == "v23"
     prompt = helper_mod._system_prompt(HelperScope())
     assert "[meeting:<id> L<first>-<last>]" in prompt
     assert "search_meetings" in prompt and "list_my_meeting_actions" in prompt

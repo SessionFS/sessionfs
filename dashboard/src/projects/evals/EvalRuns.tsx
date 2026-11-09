@@ -5,6 +5,7 @@ import { useEvalResults, useEvalRun, useEvalRuns, useEvalSuites, useVoidEvalRun 
 import { errorMessage } from '../../utils/errorMessage';
 import { pct, shortDate, subjectOf } from './evalUtils';
 import { ResultVerdictBadge, RunVerdictBadge, TrustBadge } from './format';
+import { Term } from '../../help/Term';
 
 const STATE_OPTIONS = [
   { value: '', label: 'Any state' },
@@ -117,7 +118,7 @@ export function RunsList({
             { key: 'subject', header: 'Subject', render: (r) => <span className="break-all font-mono text-xs text-text-secondary">{subjectOf(r)}</span> },
             {
               key: 'verdict',
-              header: 'Verdict',
+              header: <Term id="eval-verdict">Verdict</Term>,
               render: (r) => (
                 <span className="inline-flex flex-wrap items-center gap-1.5">
                   <RunVerdictBadge verdict={r.verdict} state={r.state} />

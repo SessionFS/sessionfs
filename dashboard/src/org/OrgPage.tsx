@@ -4,7 +4,8 @@ import { useAuth } from '../auth/AuthContext';
 import { useMe } from '../hooks/useMe';
 import { getAvatarColor } from '../utils/avatar';
 import { useSearchParams } from 'react-router-dom';
-import { Dropdown, Button, Dialog, DialogHeader, DialogFooter, PageContainer, PageHeader, Tabs } from '../components/ui';
+import { Alert, Dropdown, Button, Dialog, DialogHeader, DialogFooter, PageContainer, PageHeader, Select, Tabs } from '../components/ui';
+import { useSetDefaultOrg } from './useDefaultOrg';
 import OrgSettingsTab from './OrgSettingsTab';
 import OrgHelperKeyCard from './OrgHelperKeyCard';
 import OrgAssistantSection from './OrgAssistantSection';
@@ -98,6 +99,10 @@ export default function OrgPage() {
   // ── v0.11.0: ownership transfer ──
   const me = useMe();
   const myUserId = me.data?.user_id;
+  // A person can belong to several orgs; this page shows their default org
+  // and the switcher in the header changes it.
+  const myOrgs = me.data?.orgs ?? [];
+  const setDefaultOrg = useSetDefaultOrg();
   const orgId = data?.org?.id;
   const [showTransferDialog, setShowTransferDialog] = useState(false);
 
@@ -454,7 +459,42 @@ export default function OrgPage() {
       <PageHeader
         title={org.name}
         description={`${org.slug} \u00b7 ${org.tier} tier \u00b7 ${org.seats_used}/${org.seats_limit} seats`}
+        actions={
+          myOrgs.length > 1 ? (
+            <div className="w-56">
+              <Select
+                aria-label="Organization"
+                value={org.id}
+                options={myOrgs.map((o) => ({ value: o.org_id, label: o.name }))}
+                disabled={setDefaultOrg.isPending}
+                onValueChange={(value) => {
+                  if (value === org.id) return;
+                  setDefaultOrg.mutate(
+                    { orgId: value },
+                    {
+                      onSuccess: () =>
+                        setSearchParams(
+                          (prev) => {
+                            const next = new URLSearchParams(prev);
+                            next.delete('org');
+                            return next;
+                          },
+                          { replace: true },
+                        ),
+                    },
+                  );
+                }}
+                hint="Your default organization. It's used wherever an org isn't named."
+              />
+            </div>
+          ) : undefined
+        }
       />
+      {setDefaultOrg.isError && (
+        <Alert variant="danger" className="mb-4">
+          {errorMessage(setDefaultOrg.error)}
+        </Alert>
+      )}
 
       {/* v0.11.0 — pending ownership transfer banner */}
       {pendingTransfer && (

@@ -4,6 +4,7 @@ import { useToast } from '../hooks/useToast';
 import { isOrgAdminRole } from '../utils/roles';
 import { Card } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
+import { Term } from '../help/Term';
 
 const DLP_MODES = [
   { value: 'warn', label: 'Warn -- Flag findings but take no action' },
@@ -105,7 +106,9 @@ export default function DlpPolicyCard() {
   return (
     <div className="space-y-5">
       <Card level="elevated" className="p-5">
-        <h2 className="text-lg font-semibold text-text-primary mb-2">Data Loss Prevention</h2>
+        <h2 className="text-lg font-semibold text-text-primary mb-2">
+          <Term id="dlp">Data Loss Prevention</Term>
+        </h2>
         <p className="text-sm text-text-tertiary mb-4">
           Automatically scan synced sessions for sensitive data such as secrets and protected health information.
         </p>
@@ -136,6 +139,11 @@ export default function DlpPolicyCard() {
                 {enabled ? 'Enabled' : 'Disabled'}
               </span>
             </div>
+            {!enabled && (
+              <p className="-mt-3 mb-4 text-xs text-text-tertiary" data-testid="dlp-off-hint">
+                Turn scanning on to choose a mode and categories.
+              </p>
+            )}
 
             {/* Mode selector */}
             <div className="mb-5">

@@ -18,6 +18,7 @@ import {
 import type { HelperPanelSize } from './panelSize';
 import type { ScopeKind, ScopeOption } from './scope';
 import { TITLE_ID } from './format';
+import { Term } from '../help/Term';
 
 export function ScopeIcon({ kind, size = 14 }: { kind: ScopeKind; size?: number }) {
   if (kind === 'project') return <FolderIcon size={size} />;
@@ -265,7 +266,7 @@ export default function HelperHeader({
           <SparkIcon size={15} />
         </span>
         <h2 id={TITLE_ID} className="min-w-0 flex-1 truncate !text-md !font-semibold !tracking-normal text-text-primary">
-          Session helper
+          <Term id="session-helper">Session helper</Term>
         </h2>
         <div className="flex shrink-0 items-center gap-0.5">
           {showControls && (

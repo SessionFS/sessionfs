@@ -1403,6 +1403,30 @@ def _page_missing_detail(page_id: str | None) -> dict:
 
 
 async def execute_publish(db: AsyncSession, req: PublishRequest) -> dict:
+    """Publish one source (manual or swept) and count the outcome.
+
+    The counting is fail-safe and never changes what the publish returns or
+    raises; see ``_execute_publish`` for the publish itself.
+    """
+    from sessionfs.server import business_metrics
+
+    org_id = req.project.org_id
+    project_id = req.project.id
+    try:
+        result = await _execute_publish(db, req)
+    except BaseException as exc:
+        if isinstance(exc, Exception):
+            business_metrics.record_confluence_publish(
+                business_metrics.confluence_result_for_exception(exc),
+                org_id=org_id,
+                project_id=project_id,
+            )
+        raise
+    business_metrics.record_confluence_publish("published", org_id=org_id, project_id=project_id)
+    return result
+
+
+async def _execute_publish(db: AsyncSession, req: PublishRequest) -> dict:
     """Create/adopt/update the Confluence page for one source.
 
     The claim is taken before any outbound call; the whole outbound sequence

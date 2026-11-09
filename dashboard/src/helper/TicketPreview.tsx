@@ -9,7 +9,7 @@ import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from
 import { Link } from 'react-router-dom';
 
 import { ApiError, type TicketPreview as TicketPreviewData } from '../api/client';
-import { Button, Markdown } from '../components/ui';
+import { Button, Markdown, Tooltip } from '../components/ui';
 import { useTicketPreview } from '../hooks/useTickets';
 import { errorMessage } from '../utils/errorMessage';
 import { KindBadge } from '../projects/tickets/KindBadge';
@@ -210,14 +210,16 @@ export default function TicketPreview({
         <div className="flex shrink-0 items-center gap-2 px-4 pb-1 pt-3">
           {query.data && <KindBadge kind={query.data.kind} />}
           <span className="min-w-0 truncate font-mono text-2xs text-text-tertiary">{ticketId}</span>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close ticket preview"
-            className="-mr-1.5 ml-auto rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-surface-hover hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
-          >
-            <CloseIcon size={15} />
-          </button>
+          <Tooltip content={'Close'} describe={false} side="bottom">
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close ticket preview"
+              className="-mr-1.5 ml-auto rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-surface-hover hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+            >
+              <CloseIcon size={15} />
+            </button>
+          </Tooltip>
         </div>
         <div className="min-h-0 overflow-y-auto overscroll-contain px-4 pb-4">
           <PreviewBody

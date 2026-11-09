@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.30.0] - 2026-11-09
+
+**Hardening release: a published API contract, safe retries, business metrics and SLOs, tenancy limits, review-loop guarantees, multiple organizations per person, a rebuilt Tickets page, glossary tooltips and a more grounded session helper.** Server migrations 134–137.
+
+### Added
+- **API contract.** A published OpenAPI snapshot (`docs/api/openapi.json`) with drift checks. Request bodies that send unknown or deprecated fields get `X-SessionFS-Ignored-Fields` / `X-SessionFS-Deprecated-Fields` (plus `Deprecation` and `Sunset`) instead of silently dropping them. Review loops accept `ticket_id` as well as `from_ticket_id`.
+- **Idempotency-Key on every create route.** Retrying a create with the same key returns the first answer (`Idempotent-Replayed: true`) instead of creating a duplicate; the CLI and MCP send one automatically. Keys expire after 24 hours (`POST /admin/sweeps/idempotency-keys`, Helm CronJob).
+- **Business metrics** on `/api/v1/admin/metrics`: tickets, review loops, approvals, sweeps (runs, duration, lag, denials) and route latency, with closed label sets. Per-org labels only with `SFS_METRICS_TENANT_LABELS` (ids only). New Metrics reference page.
+- **SLOs** for ticket comment writes, session pushes, extraction server time and reminder delivery, with PromQL, Prometheus burn-rate alert rules (optional Helm `PrometheusRule`), Grafana panels and a CI performance check.
+- **Per-org limits on expensive work.** Meeting and chat extraction, helper turns, knowledge compile and CSV exports are capped per organization (defaults 4/8/2/2, `SFS_ORG_CONCURRENCY_*`, Helm `api.limits.orgConcurrency`); over the cap returns 429 `org_concurrency_limit` with `Retry-After`. Heavy reads stop after 15 s with 503 `query_timeout` (`SFS_HEAVY_READ_TIMEOUT_MS`). New Tenancy and Isolation page.
+- **Bulk operations.** `POST /orgs/{org}/invites/bulk`, `POST /orgs/{org}/groups/{group}/members/bulk` and `POST /meetings/{id}/participants/resolve-bulk`: up to 100 items, all or nothing, each item checked like the single route. `sfs org invite --file`, `sfs org invites`, `sfs org accept`, `sfs project group grant --file`, `--file` on resolve-participant.
+- **Multiple organizations per person.** Accept invites to, auto-join, create or activate more than one organization. `/auth/me` lists every membership (`orgs`); requests that name an org use it, others use your chosen default org or the first one you joined. Organization page switcher, `sfs org list`.
+- **Lineage:** a `distilled_from` edge (teacher → student model), and a Lineage page covering every edge type and how to answer "which dataset trained the model in production".
+- **Review loop guarantees** page: each guarantee with the test that proves it.
+- **Tickets page rebuilt:** saved views with counts (Mine, Triage, Needs review, Blocked, Overdue, All), grouping, sorting, search, one-line rows showing review state, blockers, Issue progress and the Jira key, status and assignee menus in the row, and a detail pane (beside the list on wide screens, slide-over or full screen otherwise) with a Next step card and Overview, Activity, Review, Child tasks and Jira tabs. Keyboard shortcuts (j/k, Enter, x, s, a, c, /, b, 1–6, ?), bulk Assign/Approve/Dismiss/Follow, a six-column board, and a shorter new-ticket dialog (⌘/Ctrl+Enter creates). The ticket list returns `review_summary`, `jira_key`, `open_dependency_count` and `child_counts` per row.
+- **Glossary tooltips** across the dashboard: product terms explain themselves on hover, focus or tap with a link to the docs; every icon button has a tooltip; disabled buttons say why.
+- **One-line project header** with a section menu; project details moved to Settings → About.
+
+### Changed
+- **Session helper answers stay grounded.** A conversation is bound to one scope and, for people in several orgs, one organization (its data and its LLM key). Citations must point at what a tool actually returned, and are checked before they stream. Earlier answers are replayed as conversation text, not evidence; failed lookups stay failed. Lists say whether they are complete or truncated, ticket text carries its date and the current status of tickets it mentions, compiled context carries its age, and the helper always ends with an answer. Each sentence is tied to the lookup it came from (setting `grounding: strict|off`, default strict); factual-looking sentences with no source are marked "not verified". Docs answers say whether a feature is on your plan and on cloud or self-hosted (`SFS_DEPLOYMENT`). Ticket comments show whether the list is complete or truncated.
+- Merge-check posts to GitHub and GitLab are ordered per commit, so an older evaluation can no longer overwrite a newer result.
+- Session pushes are scanned under the strictest DLP policy of every organization the session could be linked into.
+- Statuses read in sentence case ("In progress", "In review").
+
+### Fixed
+- `POST /api/v1/sessions` ran no DLP scan; it now runs the same gate as a sync push.
+- Self-hosted signup verification links pointed at api.sessionfs.dev; they now use `SFS_PUBLIC_API_URL`, then `SFS_DASHBOARD_URL`, and never the request's Host header.
+- Five review-loop races: a retried worker start, a stale worker finishing after a takeover, a double-posted verdict, and loop status reporting an older commit as the head.
+- Org admins of a second organization got 404 on that org's service keys, residents, trusted reviewers and teams.
+- Invites created without an email provider now return the accept link; the CLI no longer says "Invite sent" when nothing was sent.
+
 ## [0.29.14] - 2026-11-08
 
 **Evaluations and model/dataset lineage, record-only (GitHub #121, #122).** Server migrations 131–133.

@@ -8,7 +8,8 @@
  */
 
 import { Link, useSearchParams } from 'react-router-dom';
-import { Alert, PageContainer, PageHeader, Tabs } from '../components/ui';
+import { Alert, Button, PageContainer, PageHeader, Tabs } from '../components/ui';
+import { useSetDefaultOrg } from './useDefaultOrg';
 import { useMe } from '../hooks/useMe';
 import { useMyOrgs } from '../transfers/useTransfers';
 import OrgPersonasSection, { type OrgPersonaMember } from './OrgPersonasSection';
@@ -22,6 +23,7 @@ export default function SecondaryOrgPage({ orgId }: { orgId: string }) {
   const { data: me } = useMe();
   const { data: orgs } = useMyOrgs();
   const [searchParams, setSearchParams] = useSearchParams();
+  const setDefaultOrg = useSetDefaultOrg();
   const activeTab: SecondaryTab = searchParams.get('tab') === 'groups' ? 'groups' : 'personas';
   const org = orgs?.find((o) => o.org_id === orgId);
 
@@ -66,6 +68,33 @@ export default function SecondaryOrgPage({ orgId }: { orgId: string }) {
       <PageHeader
         title={org?.name ?? 'Organization'}
         description="Personas and project groups for this organization"
+        actions={
+          org ? (
+            <Button
+              variant="secondary"
+              disabled={setDefaultOrg.isPending}
+              onClick={() =>
+                setDefaultOrg.mutate(
+                  { orgId },
+                  {
+                    onSuccess: () =>
+                      setSearchParams(
+                        (prev) => {
+                          const next = new URLSearchParams(prev);
+                          next.delete('org');
+                          next.delete('tab');
+                          return next;
+                        },
+                        { replace: true },
+                      ),
+                  },
+                )
+              }
+            >
+              Switch to this organization
+            </Button>
+          ) : undefined
+        }
         breadcrumb={
           <Link to="/settings/organization" className="hover:underline">
             ← Back to your organization

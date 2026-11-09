@@ -7,6 +7,8 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
+import logging
+
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
@@ -53,6 +55,7 @@ def verification_links_are_trustworthy() -> bool:
         and len(SFS_VERIFICATION_SECRET) >= 32
     )
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
 
@@ -71,23 +74,19 @@ async def get_me(
     from sessionfs import __version__ as server_version
     from sessionfs.server.tier_gate import get_effective_tier
 
-    # P2: one joined query for org membership + org details.
-    # If the user is an org member, this returns (OrgMember, Organization);
-    # otherwise returns None.
-    #
-    # Use .first() over a deterministic ORDER BY rather than .one_or_none():
-    # multi-org membership is blocked at every normal write path, but a user
-    # racing their own self-activation against an org-join could momentarily
-    # hold two OrgMember rows. We must never let that 500 the caller's own /me
-    # (.one_or_none() raises MultipleResultsFound) — pick the earliest-joined
-    # membership deterministically. (Shield LOW tk_29b3e43f1ee94130.)
-    membership_result = await db.execute(
-        select(OrgMember, Organization)
-        .join(Organization, OrgMember.org_id == Organization.id)
-        .where(OrgMember.user_id == user.id)
-        .order_by(OrgMember.joined_at.asc(), OrgMember.org_id.asc())
+    from sessionfs.server.services.org_membership import list_memberships
+
+    # A person can belong to several orgs. The single-org fields below
+    # (org_id / org_name / org_role) describe the DEFAULT org: the user's
+    # default_org_id while they are still a member there, else the earliest
+    # joined membership (ORDER BY joined_at, org_id) — the same rule
+    # tier_gate.get_user_org_membership applies everywhere else. Every
+    # membership is listed in `orgs`.
+    memberships = await list_memberships(db, user.id)
+    row = next(
+        ((m, o) for m, o in memberships if o.id == user.default_org_id),
+        memberships[0] if memberships else None,
     )
-    row = membership_result.first()
     membership = row[0] if row is not None else None
     org = row[1] if row is not None else None
 
@@ -121,6 +120,19 @@ async def get_me(
         "org_id": org.id if org else None,
         "org_name": org.name if org else None,
         "org_role": membership.role if membership else None,
+        # Every org the user belongs to, earliest joined first; is_default
+        # marks the org the single-org fields above describe.
+        "orgs": [
+            {
+                "org_id": o.id,
+                "name": o.name,
+                "slug": o.slug,
+                "role": m.role,
+                "joined_at": m.joined_at.isoformat() if m.joined_at else None,
+                "is_default": org is not None and o.id == org.id,
+            }
+            for m, o in memberships
+        ],
         "created_at": user.created_at.isoformat() if user.created_at else None,
         "last_client_version": user.last_client_version,
         "last_client_platform": user.last_client_platform,
@@ -258,14 +270,21 @@ async def signup(
         verification_token = jwt.encode(
             verification_payload, SFS_VERIFICATION_SECRET, algorithm="HS256"
         )
-        verification_link = (
-            f"https://api.sessionfs.dev/api/v1/auth/verify?token={verification_token}"
-        )
+        api_base = _verification_api_base(request)
 
         # Send verification email if email service is available
         email_service = getattr(request.app.state, "email_service", None)
-        if email_service is not None:
+        if email_service is not None and api_base:
+            verification_link = (
+                f"{api_base}/api/v1/auth/verify?token={verification_token}"
+            )
             await email_service.send_verification(body.email, verification_link)
+        elif email_service is not None:
+            logger.warning(
+                "Signup verification email not sent: set SFS_PUBLIC_API_URL "
+                "(or SFS_DASHBOARD_URL when the dashboard serves /api) so the "
+                "link points at this server"
+            )
 
         message = "Account created. Verify your email to enable cloud sync."
     else:
@@ -284,6 +303,22 @@ async def signup(
         key_id=key_id,
         message=message,
     )
+
+
+def _verification_api_base(request: Request) -> str:
+    """Origin the signup verification link points at, or "" for no link.
+
+    Uses the operator's configured public API origin, then the dashboard
+    origin (the Helm chart serves /api from the dashboard host). Never the
+    request's Host header: a forged Host would send the token to another
+    server, and a stolen token verifies the address for someone else.
+    """
+    config = getattr(request.app.state, "config", None)
+    for name in ("public_api_url", "dashboard_url"):
+        value = str(getattr(config, name, "") or "").strip().rstrip("/")
+        if value.startswith(("https://", "http://")):
+            return value
+    return ""
 
 
 @router.get("/verify", response_class=HTMLResponse)

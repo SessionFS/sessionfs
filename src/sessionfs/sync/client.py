@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from sessionfs.http_idempotency import idempotent_async_client
 from sessionfs import __version__
 
 logger = logging.getLogger("sessionfs.sync")
@@ -310,7 +311,7 @@ class SyncClient:
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             import platform as _platform
-            self._client = httpx.AsyncClient(
+            self._client = idempotent_async_client(
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "User-Agent": f"sessionfs-cli/{__version__}",

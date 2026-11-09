@@ -202,6 +202,7 @@ export function PackageDialog({ item, state, onClose }: { item: MarketplacePacka
   const [showPreview, setShowPreview] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const deliverable = state === 'active';
+  const undeliverableReason = state === 'active' ? undefined : STATE_COPY[state].help;
   const [requestOpen, setRequestOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -359,7 +360,7 @@ export function PackageDialog({ item, state, onClose }: { item: MarketplacePacka
         </div>
         <div className="sticky bottom-0 flex flex-wrap items-center justify-between gap-2 border-t border-border bg-overlay px-5 py-3 sm:px-6">
           <div className="flex flex-wrap gap-1">
-            <Button size="sm" variant="ghost" onClick={() => setShowPreview((value) => !value)} disabled={!deliverable}>
+            <Button size="sm" variant="ghost" onClick={() => setShowPreview((value) => !value)} disabled={!deliverable} disabledReason={undeliverableReason}>
               {showPreview ? 'Hide preview' : 'Preview instructions'}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setReportOpen(true)}>Report…</Button>
@@ -368,8 +369,8 @@ export function PackageDialog({ item, state, onClose }: { item: MarketplacePacka
             )}
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="secondary" onClick={download} loading={downloading} disabled={!deliverable}>Download archive</Button>
-            <Button size="sm" onClick={() => setRequestOpen(true)} disabled={!deliverable}>Request for project</Button>
+            <Button size="sm" variant="secondary" onClick={download} loading={downloading} disabled={!deliverable} disabledReason={undeliverableReason}>Download archive</Button>
+            <Button size="sm" onClick={() => setRequestOpen(true)} disabled={!deliverable} disabledReason={undeliverableReason}>Request for project</Button>
           </div>
         </div>
       </Dialog>

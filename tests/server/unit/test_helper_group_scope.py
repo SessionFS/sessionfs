@@ -511,7 +511,9 @@ async def test_load_group_context_only_when_compiled_and_readable(db_session, te
 
     name, doc = await helper_routes._load_group_context(db_session, test_user, g.id)
     assert name == "AI-ML"
-    assert doc == "# Compiled overview"
+    # The compile date + stale flag lead the overview (F8).
+    assert doc.startswith("compiled_at: ") and "stale: no" in doc.splitlines()[0]
+    assert doc.endswith("# Compiled overview")
 
     # A source the caller can no longer read (foreign) suppresses the overview.
     g.context_sources = [s["member"].id, s["foreign"].id]
@@ -964,17 +966,26 @@ async def test_parse_citations_keeps_restricted_unscoped_own_session(db_session,
 
 
 @pytest.mark.asyncio
-async def test_parse_citations_session_scope_keeps_unseen_scoped_session(db_session, test_user):
-    """A session-scoped turn cites its scoped session even when it wasn't seen."""
+async def test_parse_citations_session_scope_needs_a_retrieval(db_session, test_user):
+    """A session-scoped turn cites a scoped session only after a tool read it:
+    the selection says what may be read, not what was read (F2)."""
     session = await _make_session(db_session, test_user, title="scoped")
-    citations = await helper_routes._parse_citations(
+    unseen = await helper_routes._parse_citations(
         db_session,
         test_user.id,
         f"see [session:{session.id}]",
         scope=HelperScope(session_ids=(session.id,)),
         seen_session_ids=set(),
     )
-    assert [c["session_id"] for c in citations] == [session.id]
+    assert unseen == []
+    seen = await helper_routes._parse_citations(
+        db_session,
+        test_user.id,
+        f"see [session:{session.id}]",
+        scope=HelperScope(session_ids=(session.id,)),
+        seen_session_ids={session.id},
+    )
+    assert [c["session_id"] for c in seen] == [session.id]
 
 
 @pytest.mark.asyncio

@@ -770,3 +770,61 @@ describe('Select listbox semantics', () => {
     expect(trigger).toHaveFocus();
   });
 });
+
+describe('Tooltip keyboard and touch', () => {
+  it('opens at once on keyboard focus and describes the trigger', async () => {
+    render(<Tooltip content="Help text"><button>Trigger</button></Tooltip>);
+    await userEvent.tab();
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Help text');
+    expect(screen.getByRole('button', { name: 'Trigger' })).toHaveAccessibleDescription('Help text');
+  });
+
+  it('does not add a wrapper element around a single child', () => {
+    const { container } = render(<div><Tooltip content="Help"><button>Only</button></Tooltip></div>);
+    expect(container.firstElementChild?.firstElementChild?.tagName).toBe('BUTTON');
+  });
+
+  it('toggles on tap when asked to', () => {
+    render(<Tooltip content="Why" toggleOnClick><button>Tap</button></Tooltip>);
+    fireEvent.click(screen.getByRole('button', { name: 'Tap' }));
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Why');
+    fireEvent.click(screen.getByRole('button', { name: 'Tap' }));
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+  });
+});
+
+describe('Button disabledReason', () => {
+  it('stays focusable, ignores clicks and explains why', async () => {
+    const onClick = vi.fn();
+    render(
+      <Button disabled disabledReason="Only Suggested tickets can be approved" onClick={onClick}>
+        Approve
+      </Button>,
+    );
+    const btn = screen.getByRole('button', { name: 'Approve' });
+    expect(btn).toHaveAttribute('aria-disabled', 'true');
+    expect(btn).not.toBeDisabled();
+    expect(btn).toHaveAccessibleDescription('Only Suggested tickets can be approved');
+    await userEvent.click(btn);
+    expect(onClick).not.toHaveBeenCalled();
+    expect(screen.getByRole('tooltip')).toHaveTextContent('Only Suggested tickets can be approved');
+  });
+
+  it('does not submit a form while disabled with a reason', () => {
+    const onSubmit = vi.fn((e: React.FormEvent) => e.preventDefault());
+    render(
+      <form onSubmit={onSubmit}>
+        <Button type="submit" disabled disabledReason="Enter a name first">Save</Button>
+      </form>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('behaves like a plain button when enabled or loading', () => {
+    const { rerender } = render(<Button disabledReason="why">Go</Button>);
+    expect(screen.getByRole('button', { name: 'Go' })).not.toHaveAttribute('aria-disabled');
+    rerender(<Button loading disabled disabledReason="why">Go</Button>);
+    expect(screen.getByRole('button', { name: 'Go' })).toBeDisabled();
+  });
+});

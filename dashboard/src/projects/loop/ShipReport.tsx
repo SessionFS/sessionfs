@@ -6,6 +6,7 @@ import { errorMessage } from '../../utils/errorMessage';
 import { safeHttpUrl } from '../../utils/url';
 import { ShareLinkDialog } from './ShareLinkDialog';
 import { HARM_LABEL, formatTokens, formatUsd, isHarmful, plural } from './format';
+import { Term } from '../../help/Term';
 
 const SECTION_TITLE = 'text-md font-semibold text-text-primary';
 const QUIET = 'text-sm text-text-tertiary';
@@ -302,7 +303,9 @@ export function ShipReports({ projectId, canEdit = false }: { projectId: string;
     <section aria-labelledby="ship-heading" className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h3 id="ship-heading" className={SECTION_TITLE}>Ship Reports</h3>
+          <h3 id="ship-heading" className={SECTION_TITLE}>
+            <Term id="ship-report">Ship Reports</Term>
+          </h3>
           <p className={QUIET}>One release, or the whole month, as a factual story.</p>
         </div>
         <Select

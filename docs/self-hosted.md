@@ -551,6 +551,12 @@ api:
       schedule: "45 3 * * *"          # daily
       existingSecret: sessionfs-sweep-key
       secretKey: attention-hides-api-key
+  idempotencyKeys:
+    enabled: true
+    cronJob:
+      schedule: "20 * * * *"          # hourly
+      existingSecret: sessionfs-sweep-key
+      secretKey: idempotency-keys-api-key
 ```
 
 The CronJob pod sends one authenticated request to the API sweep endpoint and
@@ -807,6 +813,23 @@ default 1000, max 5000), committing each batch, and stops after 50 batches;
 the next run picks up the rest. It is idempotent. Without it the rows only
 grow slowly, since each user's feed bounds what they can hide. Enable it in
 the chart with `api.attentionHides` (above).
+
+### Idempotency-Key sweep
+
+POST requests sent with an `Idempotency-Key` header (0.30.0) store one row
+per key, holding the first response so a retry can be replayed. An hourly
+sweep deletes the rows older than 24 hours:
+
+```text
+POST /api/v1/admin/sweeps/idempotency-keys
+```
+
+Authenticate with a platform-admin user key or a `platform_sweeps:run`
+service key. It deletes in keyset batches of `batch_size` (query parameter,
+default 1000, max 5000), committing each batch, and stops after 100 batches;
+the next run picks up the rest. It is idempotent. A key reused after its row
+is swept runs the request again, so clients should not retry a key for more
+than a day. Enable it in the chart with `api.idempotencyKeys` (above).
 
 ### Jira sync and Confluence publish sweeps
 

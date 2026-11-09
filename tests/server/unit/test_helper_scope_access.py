@@ -733,7 +733,8 @@ async def test_global_tool_result_cap(db_session, test_user, monkeypatch):
     project = await _make_project(db_session, owner=test_user, context_document="x" * 5_000)
     ctx = _ctx(db_session, test_user, audit=RecordingSink())
     result = await _run(ctx, "get_project_context", {"project_id": project.id})
-    assert result.content.startswith("x" * 500)
+    assert result.content.startswith("compiled_at: ")  # the F8 header leads
+    assert "x" * 300 in result.content
     assert result.content.endswith("[truncated: tool result exceeded 500 characters]")
     assert len(result.content) < 600
 

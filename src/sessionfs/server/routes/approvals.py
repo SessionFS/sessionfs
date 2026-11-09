@@ -41,6 +41,8 @@ from sessionfs.server.auth.project_access import (
     user_can_access_project,
 )
 from sessionfs.server.db.engine import get_db
+from sessionfs.server.db.timeouts import bound_heavy_reads
+from sessionfs.server.services.org_concurrency import org_slot
 from sessionfs.server.db.models import (
     ApprovalPolicy,
     ApprovalRequest,
@@ -519,6 +521,18 @@ async def decide_request(
         raise
     await db.commit()
     await db.refresh(req)
+    if req.state in ("approved", "rejected"):
+        # The request was pending before this call (decide refuses
+        # otherwise), so this decision settled it.
+        from sessionfs.server import business_metrics
+
+        business_metrics.observe_approval_decision(
+            state=req.state,
+            requested_at=req.requested_at,
+            decided_at=req.decided_at,
+            org_id=req.org_id,
+            project_id=req.project_id,
+        )
     if req.target_kind == "merge" and req.state in ("approved", "rejected"):
         # The GitHub/GitLab check for this ticket's PR reflects the outcome.
         from sessionfs.server.services import merge_checks
@@ -681,6 +695,7 @@ async def approval_log(
     """Every approval decision in the org, newest first (owners and admins,
     any plan). Keyset pages via ``next_before``; ``format=csv`` exports up to
     10,000 matching rows with formula-like cells defused."""
+    await bound_heavy_reads(db)
     from fastapi.responses import Response as RawResponse
 
     from sessionfs.server.db.models import ApprovalDecision
@@ -738,26 +753,27 @@ async def approval_log(
         import csv
         import io
 
-        buf = io.StringIO()
-        writer = csv.writer(buf)
-        writer.writerow(_CSV_COLUMNS)
-        written = 0
-        cur = cursor
-        while written < _CSV_MAX_ROWS:
-            rows = (await db.execute(_page(stmt, cur).limit(_LOG_LIMIT_MAX))).all()
-            if not rows:
-                break
-            for d, req, p, name, email in rows:
-                row = _log_row(d, req, p, name, email)
-                writer.writerow([csv_safe(row[c]) for c in _CSV_COLUMNS])
-                written += 1
-                if written >= _CSV_MAX_ROWS:
+        async with org_slot(db, "export", org_id=org_id, user_id=None):
+            buf = io.StringIO()
+            writer = csv.writer(buf)
+            writer.writerow(_CSV_COLUMNS)
+            written = 0
+            cur = cursor
+            while written < _CSV_MAX_ROWS:
+                rows = (await db.execute(_page(stmt, cur).limit(_LOG_LIMIT_MAX))).all()
+                if not rows:
                     break
-            last = rows[-1][0]
-            last_at = last.decided_at if last.decided_at.tzinfo else last.decided_at.replace(tzinfo=timezone.utc)
-            cur = (last_at, last.id)
-            if len(rows) < _LOG_LIMIT_MAX:
-                break
+                for d, req, p, name, email in rows:
+                    row = _log_row(d, req, p, name, email)
+                    writer.writerow([csv_safe(row[c]) for c in _CSV_COLUMNS])
+                    written += 1
+                    if written >= _CSV_MAX_ROWS:
+                        break
+                last = rows[-1][0]
+                last_at = last.decided_at if last.decided_at.tzinfo else last.decided_at.replace(tzinfo=timezone.utc)
+                cur = (last_at, last.id)
+                if len(rows) < _LOG_LIMIT_MAX:
+                    break
         headers = {
             "Content-Disposition": f'attachment; filename="approval-log-{org_id}.csv"',
             "Cache-Control": "no-store",

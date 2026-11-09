@@ -1,4 +1,5 @@
-import type { ButtonHTMLAttributes, ReactNode, Ref } from 'react';
+import { useId, type ButtonHTMLAttributes, type MouseEvent, type ReactNode, type Ref } from 'react';
+import { Tooltip } from './Tooltip';
 
 type ButtonVariant = 'primary' | 'secondary' | 'ghost' | 'danger';
 type ButtonSize = 'sm' | 'md';
@@ -7,6 +8,10 @@ interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   size?: ButtonSize;
   loading?: boolean;
+  /** Why the button can't be used right now. When the button is disabled
+   *  (not merely loading) it stays focusable via aria-disabled, ignores
+   *  clicks, and shows this in a tooltip and as its description. */
+  disabledReason?: string;
   children: ReactNode;
   /** React 19 passes ref as a prop; it lands on the <button> via ...rest. */
   ref?: Ref<HTMLButtonElement>;
@@ -42,20 +47,49 @@ export function Button({
   size = 'md',
   loading = false,
   disabled,
+  disabledReason,
   children,
   className = '',
+  onClick,
+  'aria-describedby': describedBy,
   ...rest
 }: ButtonProps) {
-  const isDisabled = disabled || loading;
+  const reasonId = useId();
+  const explained = Boolean(disabled && !loading && disabledReason);
+  const isDisabled = explained ? false : disabled || loading;
 
-  return (
+  const button = (
     <button
       disabled={isDisabled}
-      className={`inline-flex items-center justify-center gap-2 font-semibold rounded-lg transition-[background-color,border-color,opacity,transform] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 ${VARIANT_CLASSES[variant]} ${SIZE_CLASSES[size]} ${className}`}
+      aria-disabled={explained ? true : undefined}
+      aria-describedby={explained ? reasonId : describedBy}
+      onClick={(e: MouseEvent<HTMLButtonElement>) => {
+        if (explained) {
+          e.preventDefault();
+          return;
+        }
+        onClick?.(e);
+      }}
+      className={`inline-flex items-center justify-center gap-2 font-semibold rounded-lg transition-[background-color,border-color,opacity,transform] duration-150 ease-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed disabled:scale-100 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:scale-100 ${VARIANT_CLASSES[variant]} ${SIZE_CLASSES[size]} ${className}`}
       {...rest}
     >
       {loading && <Spinner />}
       {children}
     </button>
+  );
+
+  // Always the same tree, so a button that becomes enabled keeps its DOM
+  // node (and focus); the tooltip only shows while there is a reason.
+  return (
+    <>
+      <Tooltip content={explained ? disabledReason : null} multiline describe={false} toggleOnClick>
+        {button}
+      </Tooltip>
+      {explained && (
+        <span id={reasonId} hidden>
+          {disabledReason}
+        </span>
+      )}
+    </>
   );
 }

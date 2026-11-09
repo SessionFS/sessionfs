@@ -125,25 +125,70 @@ def push_size_bytes(bytes_in: int | None, content_length: str | None = None) -> 
     return 0
 
 
+# --- Per-tenant labels (SFS_METRICS_TENANT_LABELS) ------------------------------
+#
+# A metric declared with ``tenant_labels`` takes optional ``org_id`` /
+# ``project_id`` keyword labels. They are recorded only while the process-wide
+# switch is on (a self-hosted opt-in, default off); otherwise they are dropped
+# at the call so the default output aggregates across tenants. Only ids are
+# ever accepted — never names — and a value that doesn't look like an id is
+# dropped rather than echoed.
+
+TENANT_LABEL_NAMES: tuple[str, ...] = ("org_id", "project_id")
+_tenant_labels_enabled = False
+_ID_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
+
+
+def set_tenant_labels(enabled: bool) -> None:
+    """Turn per-tenant (org_id / project_id) labels on or off for this process."""
+    global _tenant_labels_enabled
+    _tenant_labels_enabled = bool(enabled)
+
+
+def tenant_labels_enabled() -> bool:
+    return _tenant_labels_enabled
+
+
+def _tenant_value(value: object) -> str:
+    """An id-shaped tenant label value, else ``""`` (rendered as absent)."""
+    if not _tenant_labels_enabled or not isinstance(value, str):
+        return ""
+    if not value or len(value) > 64 or not set(value) <= _ID_CHARS:
+        return ""
+    return value
+
+
 class _Labels:
     """Label allowlist + canonical key ordering for one metric."""
 
-    def __init__(self, metric_name: str, label_names: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        metric_name: str,
+        label_names: tuple[str, ...],
+        tenant_labels: bool = False,
+    ) -> None:
         self.metric_name = metric_name
-        self.label_names = label_names
+        self.base_names = label_names
+        self.tenant = tenant_labels
+        self.label_names = label_names + (TENANT_LABEL_NAMES if tenant_labels else ())
 
     def validate(self, labels: dict[str, str]) -> None:
-        unknown = sorted(set(labels) - set(self.label_names))
-        missing = sorted(set(self.label_names) - set(labels))
+        allowed = set(self.label_names)
+        unknown = sorted(set(labels) - allowed)
+        missing = sorted(set(self.base_names) - set(labels))
         if unknown or missing:
             raise ValueError(
-                f"{self.metric_name}: expected labels {sorted(self.label_names)}; "
-                f"got unknown={unknown} missing={missing}"
+                f"{self.metric_name}: expected labels {sorted(self.base_names)}"
+                + (f" (+ optional {list(TENANT_LABEL_NAMES)})" if self.tenant else "")
+                + f"; got unknown={unknown} missing={missing}"
             )
 
     def key(self, labels: dict[str, str]) -> tuple[str, ...]:
         self.validate(labels)
-        return tuple(str(labels[name]) for name in self.label_names)
+        base = tuple(str(labels[name]) for name in self.base_names)
+        if not self.tenant:
+            return base
+        return base + tuple(_tenant_value(labels.get(name)) for name in TENANT_LABEL_NAMES)
 
 
 class _Metric:
@@ -154,11 +199,12 @@ class _Metric:
         type_: str,
         label_names: tuple[str, ...] = (),
         max_series: int = DEFAULT_MAX_SERIES,
+        tenant_labels: bool = False,
     ) -> None:
         self.name = name
         self.help = help
         self.type = type_
-        self._labels = _Labels(name, label_names)
+        self._labels = _Labels(name, label_names, tenant_labels)
         self._lock = threading.Lock()
         self._max_series = max_series
         self._dropped = 0
@@ -167,10 +213,22 @@ class _Metric:
     def label_names(self) -> tuple[str, ...]:
         return self._labels.label_names
 
+    @property
+    def base_label_names(self) -> tuple[str, ...]:
+        """The required (closed-vocabulary) labels, without tenant labels."""
+        return self._labels.base_names
+
+    @property
+    def has_tenant_labels(self) -> bool:
+        return self._labels.tenant
+
     def _format_labels(self, key: tuple[str, ...], extra: tuple[tuple[str, str], ...] = ()) -> str:
+        tenant = set(TENANT_LABEL_NAMES) if self._labels.tenant else set()
         parts = [
             f'{name}="{_escape_label_value(value)}"'
             for name, value in zip(self.label_names, key)
+            # An unset tenant label is absent, not an empty-string label.
+            if not (name in tenant and value == "")
         ]
         parts.extend(f'{name}="{_escape_label_value(value)}"' for name, value in extra)
         if not parts:
@@ -193,8 +251,9 @@ class Counter(_Metric):
         help: str,
         label_names: tuple[str, ...] = (),
         max_series: int = DEFAULT_MAX_SERIES,
+        tenant_labels: bool = False,
     ) -> None:
-        super().__init__(name, help, "counter", label_names, max_series)
+        super().__init__(name, help, "counter", label_names, max_series, tenant_labels)
         self._values: dict[tuple[str, ...], float] = {}
         if not label_names:
             # Unlabelled counters render 0 from process start (and after a
@@ -226,9 +285,15 @@ class Gauge(_Metric):
         help: str,
         label_names: tuple[str, ...] = (),
         max_series: int = DEFAULT_MAX_SERIES,
+        tenant_labels: bool = False,
     ) -> None:
-        super().__init__(name, help, "gauge", label_names, max_series)
+        super().__init__(name, help, "gauge", label_names, max_series, tenant_labels)
         self._values: dict[tuple[str, ...], float] = {}
+
+    def clear(self) -> None:
+        """Drop every series (a DB-derived gauge rebuilt from scratch)."""
+        with self._lock:
+            self._values = {}
 
     def set(self, value: float, **labels: str) -> None:
         key = self._labels.key(labels)
@@ -266,8 +331,9 @@ class Histogram(_Metric):
         buckets: tuple[float, ...],
         label_names: tuple[str, ...] = (),
         max_series: int = DEFAULT_MAX_SERIES,
+        tenant_labels: bool = False,
     ) -> None:
-        super().__init__(name, help, "histogram", label_names, max_series)
+        super().__init__(name, help, "histogram", label_names, max_series, tenant_labels)
         if not buckets:
             raise ValueError(f"{name}: histogram needs at least one bucket")
         self._buckets = tuple(sorted(float(b) for b in buckets))
@@ -429,3 +495,366 @@ DB_POOL_CHECKED_OUT = _register(
 DB_POOL_OVERFLOW = _register(
     Gauge("sessionfs_db_pool_overflow", "Database connection pool overflow connections.")
 )
+
+
+# --- Business metrics (0.30.0, GitHub #131) ------------------------------------
+#
+# Every label below is a CLOSED vocabulary. Values arrive through
+# ``clamp_label`` so anything outside the vocabulary collapses to ``"other"``.
+# Never add a user-typed name (persona, template / suite / policy slug, step
+# name) or an id as a label here: ids are only ever the optional tenant labels,
+# and only when SFS_METRICS_TENANT_LABELS is on. No dollar metric exists on
+# purpose — tokens only.
+
+OTHER = "other"
+
+
+def clamp_label(value: object, vocabulary: tuple[str, ...]) -> str:
+    """``value`` if it is in ``vocabulary``, else ``"other"``."""
+    return value if isinstance(value, str) and value in vocabulary else OTHER
+
+
+# Sweep route template → sweep label. Every route guarded by
+# ``require_platform_sweeper`` is listed (a test fails on drift).
+SWEEP_ROUTES: dict[str, str] = {
+    "/api/v1/admin/sweeps/org-digest": "org-digest",
+    "/api/v1/admin/sweeps/ticket-notifications": "ticket-notifications",
+    "/api/v1/admin/sweeps/kb-compile": "kb-compile",
+    "/api/v1/admin/sweeps/jira-sync": "jira-sync",
+    "/api/v1/admin/sweeps/confluence-publish": "confluence-publish",
+    "/api/v1/admin/sweeps/helper-retention": "helper-retention",
+    "/api/v1/admin/sweeps/meeting-retention": "meeting-retention",
+    "/api/v1/admin/sweeps/contact-retention": "contact-retention",
+    "/api/v1/admin/sweeps/eval-outputs": "eval-outputs",
+    "/api/v1/admin/sweeps/reminders-due": "reminders-due",
+    "/api/v1/admin/sweeps/attention-hides": "attention-hides",
+    "/api/v1/admin/sweeps/idempotency-keys": "idempotency-keys",
+    "/api/v1/admin/github-webhook-deliveries/sweep": "github-webhook-deliveries",
+    "/api/v1/admin/github-webhook-deliveries/purge": "github-webhook-deliveries",
+    "/api/v1/admin/skills/verify": "skills-verify",
+    "/api/v1/admin/skills/catalogs/regenerate": "skills-catalogs-regenerate",
+    "/api/v1/admin/skills/rescan": "skills-rescan",
+    "/api/v1/admin/marketplace/freshness/sweep": "marketplace-freshness",
+    "/api/v1/admin/marketplace/publishers/recheck": "marketplace-publishers-recheck",
+}
+SWEEP_NAMES: tuple[str, ...] = tuple(sorted(set(SWEEP_ROUTES.values()))) + (OTHER,)
+SWEEP_RESULTS: tuple[str, ...] = ("ok", "rejected", "error")
+SWEEP_DENIAL_REASONS: tuple[str, ...] = (
+    "unauthenticated",
+    "rate_limited",
+    "auth_rejected",
+    "not_admin",
+    "insufficient_scope",
+    "owner_not_admin",
+    "minter_not_admin",
+    "minter_missing",
+    OTHER,
+)
+
+
+def sweep_result(status: int | None) -> str:
+    """Map an authorized sweep's response status (None = raised) to a result."""
+    if status is None or status >= 500:
+        return "error"
+    if status >= 400:
+        return "rejected"
+    return "ok"
+
+
+JIRA_DIRECTIONS: tuple[str, ...] = ("outbound", "inbound")
+# outbound: the outbox delivery outcome; inbound: what the webhook did.
+JIRA_SYNC_RESULTS: tuple[str, ...] = (
+    "done",
+    "skipped",
+    "failed",
+    "exhausted",
+    "applied",
+    "ignored",
+    "duplicate",
+    OTHER,
+)
+
+CONFLUENCE_RESULTS: tuple[str, ...] = (
+    "published",
+    "in_progress",
+    "drifted",
+    "conflict",
+    "too_large",
+    "timeout",
+    "rejected",
+    "error",
+)
+
+# Webhook route template → source label.
+WEBHOOK_ROUTES: dict[str, str] = {
+    "/webhooks/github": "github",
+    "/webhooks/gitlab": "gitlab",
+    "/api/v1/webhooks/jira/{org_id}": "jira",
+    "/api/v1/webhooks/github/{org_id}": "delivery_github",
+    "/api/v1/webhooks/gitlab/{org_id}": "delivery_gitlab",
+    "/webhooks/stripe": "stripe",
+}
+WEBHOOK_SOURCES: tuple[str, ...] = tuple(sorted(set(WEBHOOK_ROUTES.values())))
+WEBHOOK_RESULTS: tuple[str, ...] = (
+    "ok",
+    "unauthorized",
+    "not_found",
+    "too_large",
+    "rejected",
+    "unavailable",
+    "error",
+)
+
+
+def webhook_result(status: int | None) -> str:
+    """Map a webhook response status (None = the handler raised) to a result."""
+    if status is None:
+        return "error"
+    if status < 400:
+        return "ok"
+    if status in (401, 403):
+        return "unauthorized"
+    if status == 404:
+        return "not_found"
+    if status == 413:
+        return "too_large"
+    if status == 503:
+        return "unavailable"
+    if status < 500:
+        return "rejected"
+    return "error"
+
+
+TOKEN_KINDS: tuple[str, ...] = ("input", "output", "cache_read", "cache_write")
+
+
+def _provider_ids() -> tuple[str, ...]:
+    from sessionfs.judge.provider_registry import PROVIDERS
+
+    return tuple(p.id for p in PROVIDERS)
+
+
+MODEL_FAMILIES: tuple[str, ...] = _provider_ids() + (OTHER,)
+
+
+def model_family(provider: object, model: object) -> str:
+    """Bucket a run's provider/model into the provider registry's ids.
+
+    The stored ``provider`` wins when it is a registry id; otherwise the model
+    name is matched against the registry's detection prefixes (a
+    ``vendor/model`` name counts as that vendor when the vendor is a registry
+    id). Anything else is ``"other"`` — never the raw provider or model text.
+    """
+    from sessionfs.judge.provider_registry import PROVIDER_BY_ID, PROVIDERS
+
+    if isinstance(provider, str):
+        pid = provider.strip().lower()
+        if pid in PROVIDER_BY_ID:
+            return pid
+    if isinstance(model, str) and model.strip():
+        name = model.strip().lower()
+        if "/" in name:
+            vendor = name.split("/", 1)[0]
+            return vendor if vendor in PROVIDER_BY_ID else OTHER
+        for p in PROVIDERS:
+            if any(name.startswith(prefix) for prefix in p.detect_prefixes):
+                return p.id
+    return OTHER
+
+
+AGENT_RUN_STATUSES: tuple[str, ...] = ("passed", "failed", "errored", "cancelled")
+AGENT_ROLES: tuple[str, ...] = (
+    "implementer",
+    "ui-implementer",
+    "reviewer",
+    "design-reviewer",
+    "security-reviewer",
+    "release",
+    "grader",
+    "none",
+    OTHER,
+)
+
+APPROVAL_STATES: tuple[str, ...] = ("pending", "approved", "rejected", "expired", "superseded")
+APPROVAL_DECISIONS: tuple[str, ...] = ("approved", "rejected")
+REVIEW_LOOP_ITEM_STATUSES: tuple[str, ...] = (
+    "pending",
+    "active",
+    "waiting",
+    "done",
+    "failed",
+    "needs_human",
+)
+
+# Long-running jobs: sweeps and sync lags span seconds to hours.
+_LONG_BUCKETS = (0.1, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0, 600.0, 1800.0)
+_LAG_BUCKETS = (1.0, 5.0, 15.0, 60.0, 300.0, 900.0, 3600.0, 4 * 3600.0, 24 * 3600.0)
+_DECISION_BUCKETS = (
+    60.0, 300.0, 900.0, 3600.0, 4 * 3600.0, 24 * 3600.0, 3 * 86400.0, 7 * 86400.0, 14 * 86400.0,
+)
+
+SWEEP_RUNS_TOTAL = _register(
+    Counter(
+        "sessionfs_sweep_runs_total",
+        "Authorized sweep runs by sweep and result (ok / rejected / error).",
+        label_names=("sweep", "result"),
+    )
+)
+
+SWEEP_DURATION = _register(
+    Histogram(
+        "sessionfs_sweep_duration_seconds",
+        "Wall-clock duration of authorized sweep runs.",
+        buckets=_LONG_BUCKETS,
+        label_names=("sweep",),
+    )
+)
+
+SWEEP_LAG = _register(
+    Gauge(
+        "sessionfs_sweep_lag_seconds",
+        "Age of the oldest due item when the sweep last ran on this replica (0 = nothing due).",
+        label_names=("sweep",),
+    )
+)
+
+SWEEP_DENIED_TOTAL = _register(
+    Counter(
+        "sessionfs_sweep_denied_total",
+        "Sweep calls refused before the sweep ran, by bounded reason.",
+        label_names=("sweep", "reason"),
+    )
+)
+
+JIRA_SYNC_TOTAL = _register(
+    Counter(
+        "sessionfs_jira_sync_total",
+        "Jira two-way sync events by direction and result.",
+        label_names=("direction", "result"),
+        tenant_labels=True,
+    )
+)
+
+JIRA_SYNC_LAG = _register(
+    Histogram(
+        "sessionfs_jira_sync_lag_seconds",
+        "Jira sync lag: outbound = queued to delivered; inbound = Jira event time to applied.",
+        buckets=_LAG_BUCKETS,
+        label_names=("direction",),
+        tenant_labels=True,
+    )
+)
+
+CONFLUENCE_PUBLISH_TOTAL = _register(
+    Counter(
+        "sessionfs_confluence_publish_total",
+        "Confluence page publishes (manual and swept) by result.",
+        label_names=("result",),
+        tenant_labels=True,
+    )
+)
+
+WEBHOOK_INGEST_TOTAL = _register(
+    Counter(
+        "sessionfs_webhook_ingest_total",
+        "Inbound webhook deliveries by source and result.",
+        label_names=("source", "result"),
+    )
+)
+
+AGENT_TOKENS_TOTAL = _register(
+    Counter(
+        "sessionfs_agent_tokens_total",
+        "Agent tokens reported on agent runs, by token kind and model family.",
+        label_names=("token_kind", "model_family"),
+        tenant_labels=True,
+    )
+)
+
+AGENT_RUNS_TOTAL = _register(
+    Counter(
+        "sessionfs_agent_runs_total",
+        "Agent runs that reached a terminal status, by status and role.",
+        label_names=("status", "role"),
+        tenant_labels=True,
+    )
+)
+
+APPROVAL_REQUESTS = _register(
+    Gauge(
+        "sessionfs_approval_requests",
+        "Approval requests by state (DB-derived, cached 30 s).",
+        label_names=("status",),
+        tenant_labels=True,
+    )
+)
+
+APPROVAL_DECISION_SECONDS = _register(
+    Histogram(
+        "sessionfs_approval_decision_seconds",
+        "Time from an approval request being raised to it being approved or rejected.",
+        buckets=_DECISION_BUCKETS,
+        label_names=("decision",),
+        tenant_labels=True,
+    )
+)
+
+REVIEW_LOOP_ITEMS = _register(
+    Gauge(
+        "sessionfs_review_loop_items",
+        "Review-loop work-queue items by status (DB-derived, cached 30 s).",
+        label_names=("status",),
+        tenant_labels=True,
+    )
+)
+
+# Route classes capped per org (services/org_concurrency.py).
+CONCURRENCY_ROUTE_CLASSES: tuple[str, ...] = ("extraction", "helper", "compile", "export")
+
+ORG_CONCURRENCY_REJECTED_TOTAL = _register(
+    Counter(
+        "sessionfs_org_concurrency_rejected_total",
+        "Requests refused with 429 org_concurrency_limit, by route class.",
+        label_names=("route_class",),
+        tenant_labels=True,
+    )
+)
+
+# Meeting / chat extraction: the server's own share of an extraction, i.e.
+# wall time minus the time spent waiting on the provider call. Measured so an
+# SLO can hold the server to account without a slow model eating the budget.
+EXTRACTION_KINDS: tuple[str, ...] = ("meeting", "chat", OTHER)
+EXTRACTION_RESULTS: tuple[str, ...] = ("done", "failed", OTHER)
+_SERVER_WORK_BUCKETS = (0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0)
+
+EXTRACTION_SERVER_SECONDS = _register(
+    Histogram(
+        "sessionfs_extraction_server_seconds",
+        "Meeting/chat extraction time spent in the server, excluding the provider call.",
+        buckets=_SERVER_WORK_BUCKETS,
+        label_names=("kind", "result"),
+    )
+)
+
+# Closed vocabulary per label of each business family. The cardinality test
+# multiplies these (tenant labels excluded: they are off by default).
+BUSINESS_LABEL_VOCABULARIES: dict[str, dict[str, tuple[str, ...]]] = {
+    "sessionfs_sweep_runs_total": {"sweep": SWEEP_NAMES, "result": SWEEP_RESULTS},
+    "sessionfs_sweep_duration_seconds": {"sweep": SWEEP_NAMES},
+    "sessionfs_sweep_lag_seconds": {"sweep": SWEEP_NAMES},
+    "sessionfs_sweep_denied_total": {"sweep": SWEEP_NAMES, "reason": SWEEP_DENIAL_REASONS},
+    "sessionfs_jira_sync_total": {"direction": JIRA_DIRECTIONS, "result": JIRA_SYNC_RESULTS},
+    "sessionfs_jira_sync_lag_seconds": {"direction": JIRA_DIRECTIONS},
+    "sessionfs_confluence_publish_total": {"result": CONFLUENCE_RESULTS},
+    "sessionfs_webhook_ingest_total": {"source": WEBHOOK_SOURCES, "result": WEBHOOK_RESULTS},
+    "sessionfs_agent_tokens_total": {"token_kind": TOKEN_KINDS, "model_family": MODEL_FAMILIES},
+    "sessionfs_agent_runs_total": {"status": AGENT_RUN_STATUSES, "role": AGENT_ROLES},
+    "sessionfs_approval_requests": {"status": APPROVAL_STATES},
+    "sessionfs_approval_decision_seconds": {"decision": APPROVAL_DECISIONS},
+    "sessionfs_review_loop_items": {"status": REVIEW_LOOP_ITEM_STATUSES},
+    "sessionfs_org_concurrency_rejected_total": {"route_class": CONCURRENCY_ROUTE_CLASSES},
+    "sessionfs_extraction_server_seconds": {
+        "kind": EXTRACTION_KINDS,
+        "result": EXTRACTION_RESULTS,
+    },
+}

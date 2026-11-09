@@ -27,6 +27,7 @@ from typing import Any
 
 import typer
 
+from sessionfs.http_idempotency import idempotent_async_client
 from sessionfs.cli.common import console, err_console, get_store_dir
 
 rules_app = typer.Typer(
@@ -203,7 +204,7 @@ async def _api_request(
         headers.update(extra_headers)
 
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with idempotent_async_client(timeout=timeout) as client:
             if method == "GET":
                 resp = await client.get(
                     url, headers=headers, **({"params": params} if params else {})
@@ -252,7 +253,31 @@ async def _api_request(
         body = resp.json()
     else:
         body = resp.text
+    _warn_contract_headers(resp.headers)
     return resp.status_code, body, dict(resp.headers)
+
+
+def _warn_contract_headers(headers: Any) -> None:
+    """Surface API-contract notices (tk_3855ef8b11f94ee2) on stderr: fields
+    the server ignored (a CLI/API mismatch) and deprecations."""
+    from rich.markup import escape
+
+    try:
+        ignored = headers.get("x-sessionfs-ignored-fields")
+        deprecation = headers.get("deprecation")
+        sunset = headers.get("sunset")
+    except Exception:  # pragma: no cover - non-mapping test doubles
+        return
+    if isinstance(ignored, str) and ignored:
+        err_console.print(
+            f"[yellow]Warning: the server ignored these fields: {escape(ignored)}. "
+            "Upgrade sfs if this persists.[/yellow]"
+        )
+    if isinstance(deprecation, str) and deprecation:
+        when = f" It may be removed after {escape(sunset)}." if isinstance(sunset, str) and sunset else ""
+        err_console.print(
+            f"[yellow]Warning: this API call is deprecated.{when} Upgrade sfs.[/yellow]"
+        )
 
 
 def _resolve_project_id(api_url: str, api_key: str, normalized: str) -> str:

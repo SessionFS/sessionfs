@@ -256,6 +256,33 @@ async def build_user_context(user: User, db: AsyncSession) -> UserContext:
     )
 
 
+async def build_org_user_context(
+    user: User, org_id: str, db: AsyncSession
+) -> UserContext | None:
+    """The tier + role context for a request that NAMES an org.
+
+    A user can belong to several orgs; a route under ``/orgs/{org_id}`` must
+    use that org's membership and plan, never the caller's default org.
+    Returns None when the user is not a member of ``org_id``.
+    """
+    membership = (
+        await db.execute(
+            select(OrgMember).where(
+                OrgMember.user_id == user.id, OrgMember.org_id == org_id
+            )
+        )
+    ).scalars().first()
+    if membership is None:
+        return None
+    return UserContext(
+        user=user,
+        effective_tier=await resolve_org_plan_tier(org_id, db),
+        org=await _get_org(org_id, db),
+        role=membership.role,
+        is_org_user=True,
+    )
+
+
 def check_feature(ctx: UserContext, feature: str) -> None:
     """Raise 403 if the user's tier doesn't include the feature."""
     user_features = get_features_for_tier(ctx.effective_tier)

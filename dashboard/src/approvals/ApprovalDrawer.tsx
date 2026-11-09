@@ -8,6 +8,7 @@ import { useApprovalRequest, useDecideApproval } from '../hooks/useApprovals';
 import { useToast } from '../hooks/useToast';
 import { errorMessage } from '../utils/errorMessage';
 import { stateLabel, stateVariant, summarizeRequirements, TARGET_LABEL, targetHref } from './format';
+import { Term } from '../help/Term';
 
 /** Drawer for one approval request, opened by `?request=<id>`. */
 export function ApprovalDrawer({ requestId, onClose }: { requestId: string | null; onClose: () => void }) {
@@ -70,7 +71,11 @@ function RequestBody({ request: r }: { request: ApprovalRequestDetail }) {
             {r.approved_count} of {r.required_count} approved
           </span>
           {r.policy.version != null && <span className="text-text-tertiary">Policy v{r.policy.version}</span>}
-          {!r.policy.blocking && <Badge variant="default" tint label="Advisory" size="sm" />}
+          {!r.policy.blocking && (
+            <Term id="approval-advisory">
+              <Badge variant="default" tint label="Advisory" size="sm" />
+            </Term>
+          )}
         </p>
       </div>
 

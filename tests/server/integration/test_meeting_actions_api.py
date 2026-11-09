@@ -336,6 +336,36 @@ async def test_extract_invalid_output_failed(
     assert meeting.extraction_error == "invalid_output"
 
 
+def _extraction_count(result: str) -> float:
+    from sessionfs.server import metrics
+
+    want = f'sessionfs_extraction_server_seconds_count{{kind="meeting",result="{result}"}} '
+    for line in metrics.render_metrics().splitlines():
+        if line.startswith(want):
+            return float(line[len(want):])
+    return 0.0
+
+
+async def test_extract_records_server_time_on_done_and_failed(
+    client: AsyncClient, db_session: AsyncSession, test_user: User, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = await _project(db_session, test_user)
+    headers = await _headers(db_session, test_user)
+
+    done_before, failed_before = _extraction_count("done"), _extraction_count("failed")
+    await _install_extract_mocks(monkeypatch, _EXTRACT_ONE)
+    meeting = await _meeting(db_session, project=project)
+    resp = await client.post(f"/api/v1/meetings/{meeting.id}/extract", headers=headers)
+    assert resp.status_code == 200 and resp.json()["extraction_status"] == "done"
+    assert _extraction_count("done") == done_before + 1
+
+    await _install_extract_mocks(monkeypatch, "not json at all")
+    meeting = await _meeting(db_session, project=project)
+    resp = await client.post(f"/api/v1/meetings/{meeting.id}/extract", headers=headers)
+    assert resp.status_code == 200 and resp.json()["extraction_status"] == "failed"
+    assert _extraction_count("failed") == failed_before + 1
+
+
 async def test_extract_rerun_replaces_pending_keeps_dismissed_and_manual(
     client: AsyncClient, db_session: AsyncSession, test_user: User, monkeypatch: pytest.MonkeyPatch
 ) -> None:

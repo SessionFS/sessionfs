@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import AuthContext, get_current_user, require_scope
 from sessionfs.server.db.engine import get_db
+from sessionfs.server.db.timeouts import bound_heavy_reads
 from sessionfs.server.db.models import User
 from sessionfs.server.services import attention as svc
 
@@ -137,6 +138,7 @@ async def get_for_you(
     ``groups`` the per-section totals. ``chyron`` is the "Right now" ticker
     and ``collaboration`` the "Working with others" block. Poll with
     ``If-None-Match`` — an unchanged feed answers 304."""
+    await bound_heavy_reads(db)
     scope = svc.AttentionScope.from_auth(auth)
     feed = await svc.build_feed(db, scope, collaboration=True)
     body = svc.feed_response(feed, band=band, limit=limit)
@@ -159,6 +161,7 @@ async def get_for_you_count(
     """Full per-band counts (for the sidebar badge). Answers from the counts
     the last feed build left (30 s), else builds the feed without the
     collaboration block."""
+    await bound_heavy_reads(db)
     return await svc.feed_counts(db, svc.AttentionScope.from_auth(auth))
 
 

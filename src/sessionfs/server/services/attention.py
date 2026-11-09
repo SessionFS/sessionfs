@@ -59,6 +59,7 @@ from sessionfs.server.auth.project_access import (
     project_session_clause,
     user_can_access_project,
 )
+from sessionfs.server.db.timeouts import bound_heavy_reads
 from sessionfs.server.db.models import (
     AgentPersona,
     AgentRun,
@@ -1992,6 +1993,9 @@ async def _run_provider(ctx: _Ctx, name: str, fn: Provider) -> tuple[Any, str | 
     started = time.monotonic()
     session = AsyncSession(bind=ctx.db.bind, expire_on_commit=False)
     try:
+        # The database cancels the provider's statements too (PostgreSQL), so
+        # a timed-out section never leaves a query running on the server.
+        await bound_heavy_reads(session, int(PROVIDER_TIMEOUT_S * 1000) + 500)
         # asyncio.wait_for, not asyncio.timeout: the server runs on 3.10.
         result = await asyncio.wait_for(fn(replace(ctx, db=session)), PROVIDER_TIMEOUT_S)
         return result, None
