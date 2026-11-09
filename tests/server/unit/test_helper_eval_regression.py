@@ -26,6 +26,10 @@ from tests.server.unit.test_helper_coverage import RecordingSink, _ctx, _run
 
 _SCRIPT = Path(__file__).resolve().parents[3] / "scripts" / "helper_eval_afromarket.py"
 
+# The eval script is a development tool that the public tree doesn't carry.
+if not _SCRIPT.is_file():
+    pytest.skip("helper eval script not present in this checkout", allow_module_level=True)
+
 
 def _load_script():
     spec = importlib.util.spec_from_file_location("helper_eval_afromarket", _SCRIPT)
