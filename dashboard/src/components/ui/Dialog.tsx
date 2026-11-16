@@ -82,7 +82,7 @@ export function Dialog({ open, onClose, titleId, className: panelClassName, chil
       {/* Backdrop */}
       <div
         className="absolute inset-0"
-        style={{ backgroundColor: 'var(--scrim)', backdropFilter: 'blur(4px)' }}
+        style={{ backgroundColor: 'var(--scrim)' }}
         onClick={onClose}
       />
       {/* Dialog */}

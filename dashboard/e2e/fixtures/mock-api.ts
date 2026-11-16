@@ -82,6 +82,8 @@ export function resolve(method: string, pathname: string): MockResult | null {
   if (path === '/api/v1/share/loop/story-token') return ok(loop.story());
   if (path === '/api/v1/share/loop/ship-token') return ok(loop.publicShipReport());
   if (/^\/api\/v1\/share\/loop\//.test(path)) return { status: 404, body: { detail: 'Share link not found' } };
+  // A session share link that was revoked or never existed.
+  if (/^\/api\/v1\/share\/[^/]+\/view$/.test(path)) return { status: 404, body: { detail: 'Share link not found' } };
 
   // ── account ──
   if (path === '/api/v1/auth/me') return ok(d.me);
@@ -93,6 +95,21 @@ export function resolve(method: string, pathname: string): MockResult | null {
   if (path === '/api/v1/sessions/search') return ok({ results: [], total: 0, page: 1, page_size: 20, has_more: false });
   if (path === '/api/v1/bookmarks/folders') return ok({ folders: [] });
   if (path === '/api/v1/bookmarks') return ok({ bookmarks: [] });
+  // Session detail: ses_fixture01 has everything recorded, ses_fixture02 nothing.
+  const ses = path.match(/^\/api\/v1\/sessions\/([^/]+)(\/[a-z]+)?$/);
+  if (ses) {
+    const id = decodeURIComponent(ses[1]);
+    const rest = ses[2] ?? '';
+    if (!d.sessions.some((s) => s.id === id)) return notFound();
+    const empty = id === d.EMPTY_SESSION_ID;
+    if (rest === '') return ok(d.sessionDetail(id));
+    if (rest === '/messages') return ok(empty ? d.emptySessionMessages : d.sessionMessages);
+    if (rest === '/changes') return ok(empty ? d.emptySessionChanges : d.sessionChanges);
+    // No summary or audit yet answers 404, as the API does.
+    if (rest === '/summary') return empty ? notFound() : ok(d.sessionSummary);
+    if (rest === '/audit') return empty ? notFound() : ok(d.sessionAudit);
+    if (rest === '/audits') return ok([]);
+  }
 
   // ── handoffs ──
   if (path === '/api/v1/handoffs/inbox') return ok(d.handoffInbox);

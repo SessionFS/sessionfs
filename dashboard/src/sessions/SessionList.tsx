@@ -27,6 +27,8 @@ import { FolderDropdown } from './list/FolderDropdown';
 import { ModelFilter } from './list/ModelFilter';
 import { NoSessionsCard, SessionListSkeleton } from './list/EmptyState';
 import { errorMessage } from '../utils/errorMessage';
+import { Icon } from '../components/ui/Icon';
+import { ArrowDown, ArrowUp, LayoutGrid, List } from 'lucide-react';
 
 export default function SessionList() {
   const navigate = useNavigate();
@@ -313,10 +315,7 @@ export default function SessionList() {
                   aria-pressed={viewMode === 'list'}
                   className={`!rounded-none ${viewMode === 'list' ? 'bg-bg-elevated text-text-primary' : ''}`}
                 >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
-                    <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
-                  </svg>
+                  <Icon icon={List} />
                 </IconButton>
                 <IconButton
                   label="Grid view"
@@ -324,10 +323,7 @@ export default function SessionList() {
                   aria-pressed={viewMode === 'grid'}
                   className={`!rounded-none ${viewMode === 'grid' ? 'bg-bg-elevated text-text-primary' : ''}`}
                 >
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                    <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
-                    <rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" />
-                  </svg>
+                  <Icon icon={LayoutGrid} />
                 </IconButton>
               </div>
               <Button variant="secondary" className="font-normal text-text-tertiary" onClick={handleToggleSelect}>
@@ -461,13 +457,7 @@ export default function SessionList() {
             title={sortDir === 'desc' ? 'Showing most first — click for least first' : 'Showing least first — click for most first'}
             onClick={handleSortDirToggle}
           >
-            <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              {sortDir === 'desc' ? (
-                <path d="M12 5v14M5 12l7 7 7-7" />
-              ) : (
-                <path d="M12 19V5M5 12l7-7 7 7" />
-              )}
-            </svg>
+            <Icon icon={sortDir === 'desc' ? ArrowDown : ArrowUp} />
           </IconButton>
         </div>
 

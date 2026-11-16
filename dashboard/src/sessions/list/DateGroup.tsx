@@ -2,6 +2,8 @@ import type { SessionSummary } from '../../api/client';
 import { groupByLineage } from './sessionSort';
 import { Button } from '../../components/ui';
 import { SessionRow } from './SessionRow';
+import { Icon } from '../../components/ui/Icon';
+import { ChevronDown } from 'lucide-react';
 
 /* ── Date-grouped session section with lineage grouping ── */
 
@@ -72,17 +74,11 @@ export function DateGroup({
                     title={isExpanded ? 'Collapse follow-ups' : 'Expand follow-ups'}
                   >
                     <span>{group.children.length === 1 ? '1 follow-up' : `${group.children.length} follow-ups`}</span>
-                    <svg
-                      className={`w-3.5 h-3.5 transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2.5"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    >
-                      <polyline points="6 9 12 15 18 9" />
-                    </svg>
+                    <Icon
+                      icon={ChevronDown}
+                      size={14}
+                      className={`transition-transform duration-200 ${isExpanded ? 'rotate-180' : ''}`}
+                    />
                   </Button>
                 ) : undefined}
               />

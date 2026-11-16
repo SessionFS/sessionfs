@@ -123,7 +123,7 @@ export default function DlpPolicyCard() {
                 onClick={handleToggle}
                 disabled={updatePolicy.isPending}
                 className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] ${
-                  enabled ? 'bg-brand' : 'bg-[var(--border)]'
+                  enabled ? 'bg-brand' : 'bg-[var(--border-control)]'
                 }`}
                 role="switch"
                 aria-checked={enabled}
@@ -176,7 +176,7 @@ export default function DlpPolicyCard() {
                       checked={categories.includes(value)}
                       onChange={() => handleCategoryToggle(value)}
                       disabled={updatePolicy.isPending || !enabled}
-                      className="mt-0.5 rounded border-border bg-surface text-brand focus-visible:ring-[var(--brand)]"
+                      className="mt-0.5 focus-visible:ring-[var(--brand)]"
                     />
                     <div>
                       <span className="text-text-primary font-medium">{label}</span>

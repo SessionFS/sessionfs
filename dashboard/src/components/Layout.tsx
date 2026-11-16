@@ -1,5 +1,5 @@
 import { useState, useEffect, type ReactNode } from 'react';
-import { getStoredTheme, type Theme } from '../utils/theme';
+import { applyTheme, getStoredTheme, getTheme, type Theme } from '../utils/theme';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
 import { useHandoffInbox } from '../hooks/useHandoffs';
@@ -15,80 +15,35 @@ import { useMyApprovalsCount } from '../hooks/useApprovals';
 import SearchBar from './SearchBar';
 import ThemeToggle from './ThemeToggle';
 import { Badge } from './Badge';
-import { Dropdown, IconButton, Tooltip } from './ui';
+import { Dropdown, Icon, IconButton, Tooltip } from './ui';
+import {
+  AlarmClock, ArrowLeftRight, Bell, Building2, ChevronsLeft, ChevronsRight, CircleHelp, CreditCard, Folder,
+  LogOut, Menu, MessageSquare, Repeat, Send, Settings, Shield, ShieldCheck, Sparkles, Star, Store, UserPlus, X,
+} from 'lucide-react';
 import Wordmark from './Wordmark';
 import { displayTier } from '../utils/tier';
 import { useHelper } from '../helper/HelperProvider';
 
-// ── Icon factory ──
-const iconProps = {
-  width: 16, height: 16, viewBox: '0 0 24 24',
-  fill: 'none', stroke: 'currentColor', strokeWidth: 1.5,
-  strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const,
-};
-
-function mkIcon(d: ReactNode) {
-  return <svg {...iconProps}>{d}</svg>;
-}
-
 // ── Sidebar nav item icons ──
-const forYouIcon = mkIcon(
-  <><path d="M12 3l2.6 5.6 6 .7-4.5 4.1 1.2 6L12 16.4 6.7 19.4l1.2-6L3.4 9.3l6-.7z" /></>
-);
-const sessionsIcon = mkIcon(
-  <><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></>
-);
-const projectsIcon = mkIcon(
-  <><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></>
-);
-const marketplaceIcon = mkIcon(
-  <><path d="M4 7h16M7 4v6M17 4v6" /><rect x="3" y="7" width="18" height="14" rx="2" /><path d="M8 13h3v3H8zM14 13h3" /></>
-);
-const handoffsIcon = mkIcon(
-  <><path d="M16 3h5v5M21 3l-7 7M8 21H3v-5M3 21l7-7" /><circle cx="12" cy="12" r="2" /></>
-);
-const transfersIcon = mkIcon(
-  <><polyline points="17 1 21 5 17 9" /><path d="M3 11V9a4 4 0 0 1 4-4h14" /><polyline points="7 23 3 19 7 15" /><path d="M21 13v2a4 4 0 0 1-4 4H3" /></>
-);
-const invitesIcon = mkIcon(
-  <><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><line x1="19" y1="8" x2="19" y2="14" /><line x1="22" y1="11" x2="16" y2="11" /></>
-);
-const loopsIcon = mkIcon(
-  <><path d="M17 2l4 4-4 4" /><path d="M3 11v-1a4 4 0 0 1 4-4h14" /><path d="M7 22l-4-4 4-4" /><path d="M21 13v1a4 4 0 0 1-4 4H3" /></>
-);
-const orgIcon = mkIcon(
-  <><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></>
-);
-const billingIcon = mkIcon(
-  <><rect x="2" y="5" width="20" height="14" rx="2" /><line x1="2" y1="10" x2="22" y2="10" /></>
-);
-const settingsIcon = mkIcon(
-  <><circle cx="12" cy="12" r="3" /><path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72 1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" /></>
-);
-const helpIcon = mkIcon(
-  <><circle cx="12" cy="12" r="9" /><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 .9-1 1.7" /><line x1="12" y1="17" x2="12" y2="17.01" /></>
-);
-const bellIcon = mkIcon(
-  <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></>
-);
-const remindersIcon = mkIcon(
-  <><circle cx="12" cy="13" r="8" /><polyline points="12 9 12 13 14.5 14.5" /><path d="M5 3 2 6M22 6l-3-3" /></>
-);
-const approvalsIcon = mkIcon(
-  <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 12 2 2 4-4" /></>
-);
-const adminIcon = mkIcon(
-  <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></>
-);
-const collapseIcon = mkIcon(
-  <><polyline points="11 17 6 12 11 7" /><polyline points="18 17 13 12 18 7" /></>
-);
-const expandIcon = mkIcon(
-  <><polyline points="13 17 18 12 13 7" /><polyline points="6 17 11 12 6 7" /></>
-);
-const helperIcon = mkIcon(
-  <><path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8L12 3z" /><path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z" /></>
-);
+const forYouIcon = <Icon icon={Star} />;
+const sessionsIcon = <Icon icon={MessageSquare} />;
+const projectsIcon = <Icon icon={Folder} />;
+const marketplaceIcon = <Icon icon={Store} />;
+const handoffsIcon = <Icon icon={Send} />;
+const transfersIcon = <Icon icon={ArrowLeftRight} />;
+const invitesIcon = <Icon icon={UserPlus} />;
+const loopsIcon = <Icon icon={Repeat} />;
+const orgIcon = <Icon icon={Building2} />;
+const billingIcon = <Icon icon={CreditCard} />;
+const settingsIcon = <Icon icon={Settings} />;
+const helpIcon = <Icon icon={CircleHelp} />;
+const bellIcon = <Icon icon={Bell} />;
+const remindersIcon = <Icon icon={AlarmClock} />;
+const approvalsIcon = <Icon icon={ShieldCheck} />;
+const adminIcon = <Icon icon={Shield} />;
+const collapseIcon = <Icon icon={ChevronsLeft} />;
+const expandIcon = <Icon icon={ChevronsRight} />;
+const helperIcon = <Icon icon={Sparkles} />;
 
 // ── Nav config ──
 interface NavItem {
@@ -271,7 +226,21 @@ export default function Layout() {
   }
 
   // Theme
-  const [theme, setTheme] = useState<Theme>(() => getStoredTheme() ?? 'dark');
+  const [theme, setTheme] = useState<Theme>(getTheme);
+
+  // While no explicit choice is stored, follow OS theme changes live.
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = () => {
+      if (getStoredTheme()) return;
+      const next: Theme = mq.matches ? 'dark' : 'light';
+      applyTheme(next);
+      setTheme(next);
+    };
+    mq.addEventListener?.('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, []);
 
   const toggleTheme = () => {
     document.documentElement.classList.add('theme-switching');
@@ -334,9 +303,7 @@ export default function Layout() {
     <Badge variant={tierVariant as 'default' | 'success' | 'info'} label={tierLabel} size="sm" />
   );
 
-  const logoutIconEl = mkIcon(
-    <><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></>
-  );
+  const logoutIconEl = <Icon icon={LogOut} />;
 
   // Account menu = identity + account/utility items (Settings, Help) + sign-out.
   // Primary navigation (Sessions, Projects, Handoffs, Organization, Invites,
@@ -440,7 +407,7 @@ export default function Layout() {
               to="/settings/organization"
               className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-surface-hover transition-colors text-2xs text-text-tertiary font-mono truncate"
             >
-              <span className="shrink-0 w-3.5 h-3.5">{orgIcon}</span>
+              <span className="shrink-0 w-3.5 h-3.5"><Icon icon={Building2} size={14} /></span>
               <span className="truncate">{me.data?.org_name || me.data?.org_id || me.data?.default_org_id}</span>
             </Link>
           </div>
@@ -511,11 +478,7 @@ export default function Layout() {
                 onClick={() => setDrawerOpen(true)}
                 aria-label="Open navigation menu"
               >
-                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                  <line x1="3" y1="5" x2="17" y2="5" />
-                  <line x1="3" y1="10" x2="17" y2="10" />
-                  <line x1="3" y1="15" x2="17" y2="15" />
-                </svg>
+                <Icon icon={Menu} size={20} />
               </button>
             </Tooltip>
           </div>
@@ -605,10 +568,7 @@ export default function Layout() {
                   className="flex items-center justify-center w-8 h-8 rounded-md transition-colors hover:bg-surface-hover"
                   aria-label="Close navigation menu"
                 >
-                  <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                    <line x1="4" y1="4" x2="14" y2="14" />
-                    <line x1="14" y1="4" x2="4" y2="14" />
-                  </svg>
+                  <Icon icon={X} />
                 </button>
               </Tooltip>
             </div>
@@ -678,18 +638,6 @@ export default function Layout() {
 
         {/* ── Main content ── */}
         <main className="relative flex-1 bg-bg-primary overflow-x-clip">
-          <div
-            className="pointer-events-none absolute inset-x-0 top-0 h-48 opacity-80"
-            style={{
-              background: 'radial-gradient(60rem 24rem at 18% -8%, color-mix(in srgb, var(--brand) 12%, transparent), transparent 72%)',
-            }}
-          />
-          <div
-            className="pointer-events-none absolute right-0 top-0 h-56 w-96 opacity-70"
-            style={{
-              background: 'radial-gradient(22rem 18rem at 85% 0%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 76%)',
-            }}
-          />
           <div key={location.pathname} className="page-enter relative flex flex-col flex-1 min-h-0">
             <Outlet />
           </div>
@@ -704,8 +652,10 @@ export default function Layout() {
           v{__APP_VERSION__}
           <span className="mx-2 text-text-tertiary">·</span>
           <a href={siteHref('/quickstart/')} className="text-text-tertiary hover:text-text-secondary transition-colors">Docs</a> &middot;{' '}
-          <a href={siteHref('/')} className="text-text-tertiary hover:text-text-secondary transition-colors">Status</a> &middot;{' '}
-          <a href="mailto:support@sessionfs.dev" className="text-text-tertiary hover:text-text-secondary transition-colors">Support</a>
+          <a href="mailto:support@sessionfs.dev" className="text-text-tertiary hover:text-text-secondary transition-colors">Support</a> &middot;{' '}
+          <a href={siteHref('/terms/')} className="text-text-tertiary hover:text-text-secondary transition-colors">Terms</a> &middot;{' '}
+          <a href={siteHref('/privacy/')} className="text-text-tertiary hover:text-text-secondary transition-colors">Privacy</a> &middot;{' '}
+          <a href="mailto:security@sessionfs.dev" className="text-text-tertiary hover:text-text-secondary transition-colors">Security</a>
         </footer>
       </div>
     </div>

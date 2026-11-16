@@ -1,144 +1,187 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..800&family=Bricolage+Grotesque:opsz,wght@12..96,500..700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..700&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
-/* === Tab Panel Transitions === */
+/* === Design System Tokens ===
+   Foundations: docs/design/foundations-proposal.md. One neutral ladder per
+   theme (--gray-1 … --gray-12), semantic names alias the ladder. Colour is
+   for meaning: brand blue marks the primary action and focus, the semantic
+   colours mark status, nothing else is tinted. */
 
-@keyframes tabFadeIn {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-.tab-panel-enter {
-  animation: tabFadeIn 200ms ease-out both;
-}
-
-/* === Design System Tokens === */
-
-/* ── Dark (default) — OKLCH cool-neutral ladder ── */
+/* ── Dark (default) — cool-neutral OKLCH ladder, hue 260 ── */
 :root, [data-theme="dark"] {
-  --bg-sunken:     oklch(14% 0.012 255);   /* wells, code blocks */
-  --bg-primary:    oklch(16% 0.012 255);   /* canvas */
-  --bg-secondary:  oklch(18% 0.012 255);   /* sidebar / nav */
-  --bg-tertiary:   oklch(18.5% 0.012 255); /* legacy tertiary (between bg-secondary and surface) */
-  --surface:       oklch(22% 0.012 255);   /* cards */
-  --surface-hover: oklch(24.5% 0.012 255); /* card hover */
-  --surface-active:oklch(26% 0.012 255);   /* pressed / active */
-  --bg-elevated:   oklch(26% 0.012 255);   /* hover cards, popovers */
-  --overlay:       oklch(29% 0.012 255);   /* modals, dialogs, dropdowns */
-  --border:        oklch(30% 0.012 255);   /* hairline border */
-  --border-strong: oklch(40% 0.012 255);   /* focus / emphasis border */
+  --gray-1:  oklch(14% 0.006 260);    /* sunken: wells, code blocks */
+  --gray-2:  oklch(17% 0.006 260);    /* canvas */
+  --gray-3:  oklch(18.5% 0.006 260);  /* sidebar, subtle fill */
+  --gray-4:  oklch(21% 0.007 260);    /* cards, inputs */
+  --gray-5:  oklch(23.5% 0.007 260);  /* hover; popovers */
+  --gray-6:  oklch(26% 0.008 260);    /* pressed, selected */
+  --gray-7:  oklch(29% 0.008 260);    /* hairline border */
+  --gray-8:  oklch(38% 0.009 260);    /* strong border, dividers that must show */
+  --gray-9:  oklch(54% 0.010 260);    /* control border (≥3:1), disabled icons */
+  --gray-10: oklch(68% 0.008 260);    /* tertiary text */
+  --gray-11: oklch(80% 0.006 260);    /* secondary text */
+  --gray-12: oklch(95% 0.003 260);    /* primary text */
 
-  --text-primary:   oklch(93% 0 0);
-  --text-secondary: oklch(75% 0 0);
-  --text-tertiary:  oklch(68% 0 0);
-  --text-inverse:   oklch(16% 0 0);
+  --bg-sunken:     var(--gray-1);
+  --bg-primary:    var(--gray-2);
+  --bg-secondary:  var(--gray-3);
+  --bg-tertiary:   oklch(20% 0.007 260);  /* legacy: between sidebar and card */
+  --surface:       var(--gray-4);
+  --surface-hover: var(--gray-5);
+  --surface-active:var(--gray-6);
+  --bg-elevated:   var(--gray-5);
+  --overlay:       var(--gray-5);
+  --border:        var(--gray-7);
+  --border-strong: var(--gray-8);
+  --border-control:var(--gray-9);
 
-  /* Dark-mode shadows: surface steps do the work; only overlay gets a faint ambient lift */
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.15);
-  --shadow-md: 0 4px 8px rgba(0,0,0,0.2);
-  --shadow-lg: 0 0 0 1px rgba(255,255,255,0.03), 0 8px 24px rgba(0,0,0,0.4);
+  --text-primary:   var(--gray-12);
+  --text-secondary: var(--gray-11);
+  --text-tertiary:  var(--gray-10);
+  --text-inverse:   var(--gray-2);
 
-  --brand:       #5ca6f9;
-  --brand-hover: #4793ec;
-  --text-on-brand: oklch(16% 0 0);        /* white on #4f9cf7 is only 2.8:1 */
+  /* Surfaces carry depth in dark mode; shadows only lift floating layers. */
+  --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.3);
+  --shadow-md: 0 4px 12px oklch(0% 0 0 / 0.35);
+  --shadow-lg: 0 0 0 1px oklch(100% 0 0 / 0.04), 0 12px 32px oklch(0% 0 0 / 0.5);
 
-  /* For You (glossy cards, category accents). Text tokens alias the
-     ladder above so contrast stays AA. */
-  --fy-surface-2:   oklch(19.4% 0.012 255);
-  --fy-border-soft: oklch(25% 0.012 255);
-  --fy-glass-top:   oklch(23% 0.015 255);
-  --fy-glass-bot:   oklch(20.4% 0.012 255);
-  --fy-sheen:       oklch(100% 0 0 / 0.075);
-  --fy-shimmer:     oklch(100% 0 0 / 0.06);
-  --fy-edge:        oklch(100% 0 0 / 0.05);
-  --fy-track:       oklch(28% 0.013 255);
-  --fy-dot:         color-mix(in oklch, oklch(66% 0.008 255) 16%, transparent);
-  --fy-skeleton-a:  oklch(24% 0.012 255);
-  --fy-skeleton-b:  oklch(28% 0.012 255);
-  --fy-shadow-card: 0 1px 0 oklch(0% 0 0 / 0.25), 0 12px 26px -14px oklch(0% 0 0 / 0.6);
-  --fy-shadow-lift: 0 2px 0 oklch(0% 0 0 / 0.25), 0 26px 46px -18px oklch(0% 0 0 / 0.75);
-  --fy-shadow-pop:  0 0 0 1px oklch(100% 0 0 / 0.05), 0 16px 36px oklch(0% 0 0 / 0.5);
-  --fy-av-l: 42%; --fy-av-c: 0.09; --fy-av-text: oklch(97% 0 0);
+  /* Brand blue is the logo blue. Dark text on it: white is only 2.83:1. */
+  --brand:       #4f9cf7;
+  --brand-hover: #6cadf9;
+  --text-on-brand: var(--gray-2);
+  /* Check and dash drawn on a checked checkbox, in --text-on-brand. */
+  --check-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5l3 3 6-7' fill='none' stroke='%230e0f12' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  --dash-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8h8' fill='none' stroke='%230e0f12' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  --radio-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='4' fill='%234f9cf7'/%3E%3C/svg%3E");
+
+  /* For You: neutral steps for chips, tracks, skeletons and avatars, plus
+     the hover lift. Cards are flat and have no resting shadow. */
+  --fy-surface-2:   var(--gray-3);
+  --fy-border-soft: oklch(25% 0.007 260);
+  --fy-track:       var(--gray-6);
+  --fy-skeleton-a:  var(--gray-5);
+  --fy-skeleton-b:  var(--gray-6);
+  --fy-shadow-lift: 0 4px 12px oklch(0% 0 0 / 0.35);
+  --fy-av-l: 42%; --fy-av-c: 0.07; --fy-av-text: oklch(97% 0 0);
   --cat-urgent:    #fc7189;
-  --cat-ticket:    #5ca6f9;
+  --cat-ticket:    #4f9cf7;
   --cat-mention:   #b9a2ff;
   --cat-approval:  #e8c15a;
   --cat-reminder:  #4fd1c5;
   --cat-forgotten: #f5a35b;
   --cat-meeting:   #ee9be0;
   --on-danger:     #ffffff;
+
+  /* Code well: always dark, in both themes. */
+  --code-well-bg:             var(--gray-1);
+  --code-well-fg:             var(--gray-12);
+  --code-well-muted:          var(--gray-10);
+  --code-well-border:         var(--gray-7);
+  --code-well-bar-bg:         var(--gray-3);
+  --code-well-bar-border:     var(--gray-7);
+  --code-well-control-bg:     var(--gray-5);
+  --code-well-control-border: var(--gray-8);
+  --code-well-control-fg:     var(--gray-11);
 }
 
-/* ── Light override — OKLCH inverted ── */
+/* ── Light ── */
 [data-theme="light"] {
-  --bg-sunken:     oklch(94% 0.005 255);
-  --bg-primary:    oklch(97% 0.003 255);
-  --bg-secondary:  oklch(95% 0.004 255);
-  --bg-tertiary:   oklch(92% 0.005 255);
-  --surface:       oklch(100% 0 0);
-  --surface-hover: oklch(96% 0.004 255);
-  --surface-active:oklch(93% 0.005 255);
-  --bg-elevated:   oklch(100% 0 0);
-  --overlay:       oklch(100% 0 0);
-  --border:        oklch(89% 0.005 255);
-  --border-strong: oklch(78% 0.005 255);
+  --gray-1:  oklch(100% 0 0);         /* cards, inputs, popovers */
+  --gray-2:  oklch(98.5% 0.002 260);  /* canvas */
+  --gray-3:  oklch(97% 0.003 260);    /* sidebar, hover */
+  --gray-4:  oklch(95.5% 0.003 260);  /* sunken wells, subtle fill */
+  --gray-5:  oklch(94% 0.004 260);    /* pressed, selected */
+  --gray-6:  oklch(91.5% 0.004 260);  /* hairline border */
+  --gray-7:  oklch(85% 0.005 260);    /* strong border */
+  --gray-8:  oklch(76% 0.006 260);    /* dividers that must show */
+  --gray-9:  oklch(60% 0.008 260);    /* control border (≥3:1), disabled icons */
+  --gray-10: oklch(50% 0.010 260);    /* tertiary text */
+  --gray-11: oklch(40% 0.010 260);    /* secondary text */
+  --gray-12: oklch(20% 0.010 260);    /* primary text */
 
-  --text-primary:   oklch(12% 0 0);
-  --text-secondary: oklch(35% 0 0);
-  --text-tertiary:  oklch(45% 0 0);
-  --text-inverse:   oklch(100% 0 0);
+  --bg-sunken:     var(--gray-4);
+  --bg-primary:    var(--gray-2);
+  --bg-secondary:  var(--gray-3);
+  --bg-tertiary:   var(--gray-4);
+  --surface:       var(--gray-1);
+  --surface-hover: var(--gray-3);
+  --surface-active:var(--gray-5);
+  --bg-elevated:   var(--gray-1);
+  --overlay:       var(--gray-1);
+  --border:        var(--gray-6);
+  --border-strong: var(--gray-7);
+  --border-control:var(--gray-9);
 
-  /* Light-mode shadows: soft layered elevation */
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.1), 0 2px 4px rgba(0,0,0,0.06);
-  --shadow-lg: 0 8px 24px rgba(0,0,0,0.12), 0 4px 8px rgba(0,0,0,0.08);
+  --text-primary:   var(--gray-12);
+  --text-secondary: var(--gray-11);
+  --text-tertiary:  var(--gray-10);
+  --text-inverse:   var(--gray-1);
 
-  --brand:       #1558ae;
-  --brand-hover: #0f4690;
+  --shadow-sm: 0 1px 2px oklch(20% 0.01 260 / 0.06);
+  --shadow-md: 0 1px 2px oklch(20% 0.01 260 / 0.05), 0 4px 12px oklch(20% 0.01 260 / 0.08);
+  --shadow-lg: 0 2px 6px oklch(20% 0.01 260 / 0.06), 0 12px 32px oklch(20% 0.01 260 / 0.12);
+
+  /* Same hue as #4f9cf7, darkened until white text passes AA (6.1:1). */
+  --brand:       #1762b6;
+  --brand-hover: #0f529e;
   --text-on-brand: #ffffff;
+  --check-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3.5 8.5l3 3 6-7' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  --dash-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 8h8' fill='none' stroke='%23ffffff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  --radio-mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ccircle cx='8' cy='8' r='4' fill='%231762b6'/%3E%3C/svg%3E");
 
-  /* Light-mode overlays: edge highlight is negative (shadow at top) */
-  --edge-highlight: rgba(0, 0, 0, 0.05);
+  --edge-highlight: transparent;
 
-  --fy-surface-2:   oklch(98.3% 0.005 255);
-  --fy-border-soft: oklch(92.8% 0.005 255);
-  --fy-glass-top:   oklch(100% 0 0);
-  --fy-glass-bot:   oklch(98.4% 0.005 255);
-  --fy-sheen:       oklch(100% 0 0 / 0.95);
-  --fy-shimmer:     oklch(55% 0.14 255 / 0.10);
-  --fy-edge:        oklch(0% 0 0 / 0.04);
-  --fy-track:       oklch(92% 0.007 255);
-  --fy-dot:         color-mix(in oklch, oklch(45% 0.01 255) 14%, transparent);
-  --fy-skeleton-a:  oklch(94% 0.005 255);
-  --fy-skeleton-b:  oklch(90% 0.006 255);
-  --fy-shadow-card: 0 1px 2px oklch(25% 0.02 255 / 0.06), 0 8px 20px -10px oklch(25% 0.04 255 / 0.16);
-  --fy-shadow-lift: 0 2px 4px oklch(25% 0.02 255 / 0.06), 0 22px 40px -16px oklch(25% 0.05 255 / 0.28);
-  --fy-shadow-pop:  0 0 0 1px oklch(0% 0 0 / 0.05), 0 14px 34px oklch(25% 0.03 255 / 0.16);
-  --fy-av-l: 88%; --fy-av-c: 0.075; --fy-av-text: oklch(27% 0.03 255);
+  --fy-surface-2:   var(--gray-2);
+  --fy-border-soft: var(--gray-6);
+  --fy-track:       var(--gray-5);
+  --fy-skeleton-a:  var(--gray-4);
+  --fy-skeleton-b:  var(--gray-6);
+  --fy-shadow-lift: 0 2px 4px oklch(20% 0.01 260 / 0.05), 0 8px 20px oklch(20% 0.01 260 / 0.08);
+  --fy-av-l: 90%; --fy-av-c: 0.06; --fy-av-text: oklch(27% 0.03 260);
   --cat-urgent:    #ac1333;
-  --cat-ticket:    #1558ae;
+  --cat-ticket:    #1762b6;
   --cat-mention:   #5b3cc4;
   --cat-approval:  #7c5100;
   --cat-reminder:  #0a6464;
   --cat-forgotten: #9a3d0c;
   --cat-meeting:   #8a2c7a;
+
+  /* The code well stays dark on the light page. */
+  --code-well-bg:             oklch(19% 0.008 260);
+  --code-well-fg:             oklch(94% 0.003 260);
+  --code-well-muted:          oklch(72% 0.008 260);
+  --code-well-border:         oklch(19% 0.008 260);
+  --code-well-bar-bg:         oklch(22% 0.008 260);
+  --code-well-bar-border:     oklch(29% 0.008 260);
+  --code-well-control-bg:     oklch(25% 0.008 260);
+  --code-well-control-border: oklch(36% 0.009 260);
+  --code-well-control-fg:     oklch(86% 0.005 260);
 }
 
 /* ── Shared tokens (theme-independent) ── */
 :root {
+  /* One sans for dashboard, docs and site (Inter, optical sizes 14–32) and one mono. */
   --font-sans:   'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-display:'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono:   'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  /* For You headings (the approved prototype's display face). */
-  --font-fy-display: 'Bricolage Grotesque', 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  /* For You headings now use the shared sans (was Bricolage Grotesque). */
+  --font-fy-display: var(--font-display);
 
   --accent: #3ddc84;
   --success: #3ddc84;
   --danger: #fc7189;
   --danger-solid: #d6304f;  /* fill behind white text */
   --warning: #f0c040;
-  --info: #5ca6f9;
+  --info: #4f9cf7;
   --scrim: oklch(0% 0 0 / 0.5);  /* modal/drawer backdrop, same in both themes */
+
+  /* Tinted backgrounds for status (badges, alerts). Text on them uses the
+     matching status colour. */
+  --brand-subtle:   color-mix(in srgb, var(--brand) 12%, transparent);
+  --success-subtle: color-mix(in srgb, var(--success) 12%, transparent);
+  --warning-subtle: color-mix(in srgb, var(--warning) 12%, transparent);
+  --danger-subtle:  color-mix(in srgb, var(--danger) 12%, transparent);
+  --info-subtle:    color-mix(in srgb, var(--info) 12%, transparent);
 
   --tool-claude:  #d97706;
   --tool-codex:   #10b981;
@@ -160,15 +203,24 @@
   --role-tool:      #b1b8c1;
   --role-system:    #d29922;
 
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  /* Radius: small and consistent. Controls 6, cards 8, dialogs 12. */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
 
-  --dot-grid: radial-gradient(circle, color-mix(in srgb, var(--text-tertiary) 18%, transparent) 1px, transparent 1px);
+  /* Motion: short, ease-out, nothing bounces. Menus appear instantly. */
+  --duration-fast: 100ms;
+  --duration-base: 150ms;
+  --duration-slow: 200ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
 
-  --brand-glow: color-mix(in srgb, var(--brand) 25%, transparent);
-  --edge-highlight: rgba(255, 255, 255, 0.06);
+
+  /* Focus ring (the name is historical). 70% of the brand passes 3:1
+     against every surface in both themes. */
+  --brand-glow: color-mix(in srgb, var(--brand) 70%, transparent);
+  --focus-ring: var(--brand-glow);
+  --edge-highlight: oklch(100% 0 0 / 0.04);
   --shadow-overlay: inset 0 1px 0 var(--edge-highlight), var(--shadow-lg);
 }
 
@@ -183,7 +235,7 @@
   --danger: #ac1333;
   --danger-solid: #ac1333;
   --warning: #7c5100;
-  --info: #1757ae;
+  --info: #1762b6;
 
   --tool-claude:  #8a4a00;
   --tool-codex:   #03674b;
@@ -199,17 +251,27 @@
   --severity-high:     #844e00;
   --severity-low:      #545c67;
 
-  --role-user:      #1757ae;
+  --role-user:      #1762b6;
   --role-assistant: #086834;
   --role-tool:      #4b5563;
   --role-system:    #7c5100;
   --role-discovery: #6d33d1;
 }
 
-/* Dialog/Drawer enter animation — scale(0.95) + fade, 150ms ease-out */
+/* Dialog/Drawer enter: fade + slight scale, 150ms ease-out */
 @keyframes overlayEnter {
-  from { opacity: 0; transform: scale(0.95); }
+  from { opacity: 0; transform: scale(0.98); }
   to   { opacity: 1; transform: scale(1); }
+}
+
+/* Tab panels: a quiet fade, no travel */
+@keyframes tabFadeIn {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.tab-panel-enter {
+  animation: tabFadeIn var(--duration-base) var(--ease-out) both;
 }
 
 /* === Tailwind v4 theme: map old color classes so existing code keeps working === */
@@ -244,6 +306,7 @@
   --color-surface-hover: var(--surface-hover);
   --color-surface-active: var(--surface-active);
   --color-border-strong: var(--border-strong);
+  --color-border-control: var(--border-control);
   --color-text-tertiary: var(--text-tertiary);
   --color-text-inverse: var(--text-inverse);
   --color-brand: var(--brand);
@@ -296,10 +359,10 @@
 
   /* Radius scale — static (theme-independent). Maps rounded-* utilities to
      our values so rounded-[var(--radius-lg)] becomes rounded-lg. */
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
 }
 
 /* bookmark-pop removed — elastic/overshoot violates motion guidelines.
@@ -311,6 +374,55 @@
   color: var(--text-on-brand);
 }
 
+/* Native checkboxes and radios. Drawn here so the resting edge uses
+   --border-control (>= 3:1) in both themes instead of the browser's own
+   light-theme box. In the base layer, so size utilities on an element
+   (w-4, h-3.5, ...) still win. */
+@layer base {
+  input[type="checkbox"],
+  input[type="radio"] {
+    appearance: none;
+    -webkit-appearance: none;
+    flex: none;
+    width: 16px;
+    height: 16px;
+    margin: 0;
+    vertical-align: middle;
+    border: 1px solid var(--border-control);
+    border-radius: var(--radius-sm);
+    background-color: var(--surface);
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    cursor: pointer;
+    transition: background-color var(--duration-fast) var(--ease-out), border-color var(--duration-fast) var(--ease-out);
+  }
+  input[type="radio"] { border-radius: 9999px; }
+  input:is([type="checkbox"], [type="radio"]):hover:not(:disabled) { border-color: var(--text-tertiary); }
+  input[type="checkbox"]:checked {
+    background-color: var(--brand);
+    border-color: var(--brand);
+    background-image: var(--check-mark);
+  }
+  input[type="checkbox"]:indeterminate {
+    background-color: var(--brand);
+    border-color: var(--brand);
+    background-image: var(--dash-mark);
+  }
+  input[type="radio"]:checked {
+    border-color: var(--brand);
+    background-image: var(--radio-mark);
+  }
+  input:is([type="checkbox"], [type="radio"]):focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+  }
+  input:is([type="checkbox"], [type="radio"]):disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+}
+
 body {
   margin: 0;
   background-color: var(--bg-primary);
@@ -320,26 +432,8 @@ body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   position: relative;
-}
-
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(58rem 28rem at 12% -8%, color-mix(in srgb, var(--brand) 8%, transparent), transparent 72%),
-    radial-gradient(42rem 24rem at 92% 0%, color-mix(in srgb, var(--accent) 4%, transparent), transparent 74%);
-  z-index: 0;
-}
-
-/* The brand wash is decorative; on the light page it reads as a visible tint,
-   so halve its strength there. */
-[data-theme="light"] body::before {
-  background:
-    radial-gradient(58rem 28rem at 12% -8%, color-mix(in srgb, var(--brand) 4%, transparent), transparent 72%),
-    radial-gradient(42rem 24rem at 92% 0%, color-mix(in srgb, var(--accent) 2%, transparent), transparent 74%);
 }
 
 h1, h2, h3, h4, h5, h6 {
@@ -347,9 +441,9 @@ h1, h2, h3, h4, h5, h6 {
   font-optical-sizing: auto;
 }
 
-h1 { font-size: 30px; font-weight: 700; letter-spacing: -0.025em; line-height: 1.2; }
-h2 { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
-h3 { font-size: 16px; font-weight: 600; }
+h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.25; }
+h2 { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.3; }
+h3 { font-size: 15px; font-weight: 600; line-height: 1.4; }
 
 code, pre, kbd, samp {
   font-family: var(--font-mono);
@@ -365,8 +459,8 @@ code, pre, kbd, samp {
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: var(--bg-primary); }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: var(--text-tertiary); }
+::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--border-control); }
 
 /* Skeleton pulse animation */
 @keyframes skeleton-pulse {
@@ -379,10 +473,10 @@ code, pre, kbd, samp {
 
 /* Page enter transition */
 .page-enter {
-  animation: fadeIn 200ms ease-out;
+  animation: fadeIn var(--duration-slow) var(--ease-out);
 }
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(4px); }
+  from { opacity: 0; transform: translateY(2px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
@@ -415,20 +509,23 @@ code, pre, kbd, samp {
 }
 
 /* === Typography Scale ===
-   Ratios check (≥1.25 between adjacent steps):
-   display(32) / headline(24) = 1.33 ✓
-   headline(24) / title(19)   = 1.26 ✓  (bumped from 18→19px)
-   title(19)    / body(15)     = 1.27 ✓
-   body(15)     / caption(12)  = 1.25 ✓  (reduced from 13→12px)
-   caption(12)  / micro(11)    = 1.09 ✗  — kept; distinct micro-label purpose
+   Named roles for page-level text. UI text uses the text-2xs … text-lg
+   utilities from @theme above. Inter's optical sizing tightens the large
+   sizes on its own; letter-spacing only nudges them.
+     display  28/1.2  600   page hero (rare)
+     headline 22/1.3  600   page title
+     title    17/1.4  600   section title
+     body     15/1.55 400   reading text
+     caption  13/1.45 400   secondary text
+     micro    11/1.35 500   eyebrows, labels
 */
 
-.text-display { font-size: 2rem; line-height: 1.2; font-weight: 700; letter-spacing: -0.02em; font-optical-sizing: auto; }
-.text-headline { font-size: 1.5rem; line-height: 1.3; font-weight: 700; letter-spacing: -0.015em; font-optical-sizing: auto; }
-.text-title { font-size: 1.1875rem; line-height: 1.4; font-weight: 600; }
-.text-body { font-size: 0.9375rem; line-height: 1.5; }
-.text-caption { font-size: 0.8125rem; line-height: 1.4; color: var(--text-tertiary); }
-.text-micro { font-size: 0.6875rem; line-height: 1.3; letter-spacing: 0.02em; }
+.text-display { font-size: 1.75rem; line-height: 1.2; font-weight: 600; letter-spacing: -0.02em; font-optical-sizing: auto; }
+.text-headline { font-size: 1.375rem; line-height: 1.3; font-weight: 600; letter-spacing: -0.015em; font-optical-sizing: auto; }
+.text-title { font-size: 1.0625rem; line-height: 1.4; font-weight: 600; letter-spacing: -0.005em; }
+.text-body { font-size: 0.9375rem; line-height: 1.55; }
+.text-caption { font-size: 0.8125rem; line-height: 1.45; color: var(--text-tertiary); }
+.text-micro { font-size: 0.6875rem; line-height: 1.35; letter-spacing: 0.02em; font-weight: 500; }
 
 /* Prose blocks — comfortable reading width */
 .prose-block { max-width: 65ch; }
@@ -455,21 +552,12 @@ code, pre, kbd, samp {
 .card-primary { background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 
 .shell-divider {
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    color-mix(in srgb, var(--brand) 48%, transparent) 24%,
-    color-mix(in srgb, var(--accent) 42%, transparent) 76%,
-    transparent 100%
-  );
+  background: var(--border);
 }
 
 .brand-badge {
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--brand) 12%, transparent), transparent),
-    var(--surface);
-  border: 1px solid color-mix(in srgb, var(--brand) 26%, var(--border));
-  box-shadow: var(--shadow-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
 }
 
 /* === Session helper ===

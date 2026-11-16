@@ -830,7 +830,7 @@ export default function ForYouPage() {
                         onClick={() => toggleSection(g.id)}
                       >
                         {open ? 'Show less' : `Show ${hiddenCount} more`}
-                        <Icon name="chev" />
+                        <Icon name="chev" size={14} />
                       </button>
                     )}
                     {caption && <span className="of">{caption}</span>}

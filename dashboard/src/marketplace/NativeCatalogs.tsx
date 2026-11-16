@@ -122,7 +122,7 @@ export function InstallInYourTool() {
   return (
     <>
       <Button variant="secondary" onClick={() => setOpen(true)}>
-        <TerminalIcon size={15} />
+        <TerminalIcon size={16} />
         Install in your tool
       </Button>
       <Dialog open={open} onClose={() => setOpen(false)} titleId="install-in-tool-title" className="!max-w-xl max-h-[90vh] overflow-y-auto">

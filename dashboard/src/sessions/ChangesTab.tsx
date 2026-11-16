@@ -2,6 +2,8 @@ import { useChanges } from '../hooks/useChanges';
 import { Badge, Card } from '../components/ui';
 import Skeleton from '../components/Skeleton';
 import type { FileChange } from '../api/client';
+import { Icon } from '../components/ui/Icon';
+import { FileText } from 'lucide-react';
 
 interface Props {
   sessionId: string;
@@ -36,13 +38,10 @@ export default function ChangesTab({ sessionId }: Props) {
 
   if (files.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-16">
-        <svg className="w-10 h-10 text-text-tertiary mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-          <polyline points="14 2 14 8 20 8" />
-          <line x1="16" y1="13" x2="8" y2="13" />
-          <line x1="16" y1="17" x2="8" y2="17" />
-        </svg>
+      <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
+        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-surface-active text-text-tertiary">
+          <Icon icon={FileText} size={20} />
+        </div>
         <p className="text-md font-semibold text-text-primary mb-1">No file changes recorded</p>
         <p className="text-sm text-text-tertiary">This tool doesn't record file changes.</p>
       </div>

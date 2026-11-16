@@ -4,6 +4,8 @@ import { getTheme, type Theme } from '../utils/theme';
 import { Badge, Button, Card, Input, PageContainer, PageHeader } from '../components/ui';
 import { useHelper } from '../helper/HelperProvider';
 import mcpToolData from './mcpTools.json';
+import { Icon } from '../components/ui/Icon';
+import { Check, ChevronDown, CircleAlert, Copy } from 'lucide-react';
 
 type Tool = {
   id: string;
@@ -25,14 +27,12 @@ const TOOLS: Tool[] = [
 ];
 
 type UseCase = {
-  icon: string;
   title: string;
   prompts: string[];
 };
 
 const USE_CASES: UseCase[] = [
   {
-    icon: '🔍',
     title: 'Find & Resume',
     prompts: [
       'Search my sessions for the auth middleware bug',
@@ -42,7 +42,6 @@ const USE_CASES: UseCase[] = [
     ],
   },
   {
-    icon: '🤝',
     title: 'Team Handoff',
     prompts: [
       'Hand off this session to sarah@company.com',
@@ -52,7 +51,6 @@ const USE_CASES: UseCase[] = [
     ],
   },
   {
-    icon: '🔎',
     title: 'Audit & Verify',
     prompts: [
       'Show the audit report for my last session (after sfs audit)',
@@ -62,7 +60,6 @@ const USE_CASES: UseCase[] = [
     ],
   },
   {
-    icon: '📚',
     title: 'Project Knowledge',
     prompts: [
       'What does this project use for authentication?',
@@ -72,7 +69,6 @@ const USE_CASES: UseCase[] = [
     ],
   },
   {
-    icon: '🎫',
     title: 'Tickets & Agents',
     prompts: [
       'What tickets are assigned to atlas?',
@@ -84,7 +80,6 @@ const USE_CASES: UseCase[] = [
     ],
   },
   {
-    icon: '🗂️',
     title: 'Sessions & Checkpoints',
     prompts: [
       'Checkpoint this session before the refactor',
@@ -94,7 +89,6 @@ const USE_CASES: UseCase[] = [
     ],
   },
   {
-    icon: '📋',
     title: 'Project Rules',
     prompts: [
       'What are the current project rules?',
@@ -104,7 +98,6 @@ const USE_CASES: UseCase[] = [
     ],
   },
   {
-    icon: '🧩',
     title: 'Skills Marketplace',
     prompts: [
       'Find a skill for writing database migrations',
@@ -200,28 +193,19 @@ function TerminalCopyButton({ text }: { text: string }) {
     >
       {state === 'copied' && (
         <>
-          <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="4 10 8 14 16 6" />
-          </svg>
+          <Icon icon={Check} size={14} />
           Copied
         </>
       )}
       {state === 'error' && (
         <>
-          <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="10" cy="10" r="8" />
-            <line x1="10" y1="6" x2="10" y2="11" />
-            <line x1="10" y1="14" x2="10" y2="14.01" />
-          </svg>
+          <Icon icon={CircleAlert} size={14} />
           Copy failed
         </>
       )}
       {state === 'idle' && (
         <>
-          <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-            <rect x="6" y="6" width="11" height="11" rx="1.5" />
-            <path d="M13 6V4.5A1.5 1.5 0 0 0 11.5 3h-7A1.5 1.5 0 0 0 3 4.5v7A1.5 1.5 0 0 0 4.5 13H6" />
-          </svg>
+          <Icon icon={Copy} size={14} />
           Copy
         </>
       )}
@@ -231,7 +215,7 @@ function TerminalCopyButton({ text }: { text: string }) {
 
 function Terminal({ command, output }: { command: string; output: string }) {
   return (
-    <div className="rounded-md overflow-hidden border border-code-well-border bg-code-well-bg shadow-md">
+    <div className="rounded-md overflow-hidden border border-code-well-border bg-code-well-bg">
       {/* Title bar */}
       <div className="flex items-center justify-between px-3 py-2 bg-code-well-bar-bg border-b border-code-well-bar-border">
         <div className="flex items-center gap-1.5">
@@ -380,12 +364,7 @@ Restart ${selectedTool.label} to activate.`;
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {USE_CASES.map((useCase) => (
             <Card key={useCase.title} level="surface" className="p-5">
-              <div className="flex items-center gap-2 mb-3">
-                <span className="text-lg leading-none" aria-hidden="true">
-                  {useCase.icon}
-                </span>
-                <h3 className="text-md font-semibold text-text-primary">{useCase.title}</h3>
-              </div>
+              <h3 className="mb-3 text-md font-semibold text-text-primary">{useCase.title}</h3>
               <ul className="space-y-2">
                 {useCase.prompts.map((prompt) => (
                   <li key={prompt} className="text-sm italic leading-relaxed text-text-secondary">
@@ -473,7 +452,7 @@ Restart ${selectedTool.label} to activate.`;
           subtitle="The full SessionFS CLI is still here when you want direct control."
         />
 
-        <div className="rounded-md overflow-hidden border border-code-well-border bg-code-well-bg shadow-sm mb-6">
+        <div className="rounded-md overflow-hidden border border-code-well-border bg-code-well-bg mb-6">
           <pre className="px-4 py-4 text-sm font-mono leading-relaxed overflow-x-auto text-code-well-fg">
             {['pip install sessionfs', 'sfs init', 'sfs list', 'sfs push ses_abc123'].map((cmd, idx, all) => (
               <span key={cmd}>
@@ -533,15 +512,15 @@ Restart ${selectedTool.label} to activate.`;
         <SectionHeading title="More resources" />
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-          <ResourceLink href={siteHref('/quickstart/')} icon="📖" label="Full documentation" />
-          <ResourceLink href={siteHref('/cli/')} icon="📋" label="CLI reference" />
-          <ResourceLink href={siteHref('/mcp/')} icon="🔌" label="MCP tools reference" />
-          <ResourceLink href={siteHref('/session-helper/')} icon="💡" label="Session helper" />
-          <ResourceLink href={siteHref('/pricing/')} icon="💰" label="Pricing & plans" />
-          <ResourceLink href={siteHref('/enterprise/')} icon="🏢" label="Enterprise" />
-          <ResourceLink href="https://github.com/SessionFS/sessionfs/issues" icon="🐛" label="Report an issue" external />
-          <ResourceLink href="mailto:support@sessionfs.dev" icon="💬" label="Support" />
-          <ResourceLink href={siteHref('/changelog/')} icon="📝" label="Changelog" />
+          <ResourceLink href={siteHref('/quickstart/')} label="Full documentation" />
+          <ResourceLink href={siteHref('/cli/')} label="CLI reference" />
+          <ResourceLink href={siteHref('/mcp/')} label="MCP tools reference" />
+          <ResourceLink href={siteHref('/session-helper/')} label="Session helper" />
+          <ResourceLink href={siteHref('/pricing/')} label="Pricing & plans" />
+          <ResourceLink href={siteHref('/enterprise/')} label="Enterprise" />
+          <ResourceLink href="https://github.com/SessionFS/sessionfs/issues" label="Report an issue" external />
+          <ResourceLink href="mailto:support@sessionfs.dev" label="Support" />
+          <ResourceLink href={siteHref('/changelog/')} label="Changelog" />
         </div>
       </section>
     </PageContainer>
@@ -642,20 +621,11 @@ function McpToolBrowser({ groups, total }: { groups: McpToolGroupData[]; total: 
                     <span className="text-sm font-semibold text-text-primary">{group.label}</span>
                     <span className="flex items-center gap-2 shrink-0">
                       <Badge label={String(group.tools.length)} />
-                      <svg
-                        aria-hidden="true"
-                        width="14"
-                        height="14"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
+                      <Icon
+                        icon={ChevronDown}
+                        size={14}
                         className={`text-text-tertiary transition-transform ${open ? 'rotate-180' : ''}`}
-                      >
-                        <polyline points="5 8 10 13 15 8" />
-                      </svg>
+                      />
                     </span>
                   </button>
                 </h3>
@@ -686,12 +656,10 @@ function McpToolBrowser({ groups, total }: { groups: McpToolGroupData[]; total: 
 
 function ResourceLink({
   href,
-  icon,
   label,
   external,
 }: {
   href: string;
-  icon: string;
   label: string;
   external?: boolean;
 }) {
@@ -703,9 +671,6 @@ function ResourceLink({
       rel={isExternal && !href.startsWith('mailto:') ? 'noopener noreferrer' : undefined}
       className="flex items-center gap-3 px-4 py-3 rounded-md border transition-colors hover:bg-surface-hover bg-bg-secondary border-border"
     >
-      <span className="text-md leading-none" aria-hidden="true">
-        {icon}
-      </span>
       <span className="text-base flex-1 text-text-primary">{label}</span>
       <span aria-hidden="true" className="text-text-tertiary">
         →

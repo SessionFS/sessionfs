@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 
 import { IconButton } from '../components/ui';
+import type { IconSize } from '../components/ui/Icon';
 import {
   CheckIcon,
   ChevronDownIcon,
@@ -20,7 +21,7 @@ import type { ScopeKind, ScopeOption } from './scope';
 import { TITLE_ID } from './format';
 import { Term } from '../help/Term';
 
-export function ScopeIcon({ kind, size = 14 }: { kind: ScopeKind; size?: number }) {
+export function ScopeIcon({ kind, size = 14 }: { kind: ScopeKind; size?: IconSize }) {
   if (kind === 'project') return <FolderIcon size={size} />;
   if (kind === 'group') return <FoldersIcon size={size} />;
   if (kind === 'session') return <SessionIcon size={size} />;
@@ -110,7 +111,7 @@ function ScopeMenu({
   const chip = (
     <>
       <span className="text-text-tertiary">
-        <ScopeIcon kind={active.kind} size={13} />
+        <ScopeIcon kind={active.kind} size={14} />
       </span>
       <span className="truncate">{active.label}</span>
     </>
@@ -152,7 +153,7 @@ function ScopeMenu({
         className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-md border border-border bg-bg-primary px-2 py-1 text-xs font-medium text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] disabled:cursor-not-allowed disabled:opacity-60"
       >
         {chip}
-        <ChevronDownIcon size={12} className="text-text-tertiary" />
+        <ChevronDownIcon size={14} className="text-text-tertiary" />
       </button>
 
       {open && (
@@ -263,7 +264,7 @@ export default function HelperHeader({
     <div className="shrink-0 border-b border-border px-4 pb-3 pt-3 sm:px-5">
       <div className="flex items-center gap-2.5">
         <span className="grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-[color-mix(in_oklch,var(--brand)_16%,transparent)] text-brand">
-          <SparkIcon size={15} />
+          <SparkIcon size={16} />
         </span>
         <h2 id={TITLE_ID} className="min-w-0 flex-1 truncate !text-md !font-semibold !tracking-normal text-text-primary">
           <Term id="session-helper">Session helper</Term>

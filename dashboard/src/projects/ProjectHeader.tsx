@@ -1,6 +1,8 @@
 import { Link } from 'react-router-dom';
 import type { ProjectContext } from '../api/client';
 import { Alert, Button, Dropdown, Tabs } from '../components/ui';
+import { Icon } from '../components/ui/Icon';
+import { Check as CheckGlyph } from 'lucide-react';
 
 export interface ProjectHeaderTab {
   key: string;
@@ -45,9 +47,7 @@ function Chevron() {
 
 function Check() {
   return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6">
-      <polyline points="2.5,6.5 5,9 9.5,3.5" />
-    </svg>
+    <Icon icon={CheckGlyph} size={14} />
   );
 }
 

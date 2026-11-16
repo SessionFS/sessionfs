@@ -72,7 +72,7 @@ export function Badge({ variant = 'default', label, size = 'sm', tint: tinted = 
       <span
         className={`inline-block rounded-full font-medium ${sizeClass}`}
         style={{
-          backgroundColor: `color-mix(in oklch, ${semanticColor} 15%, transparent)`,
+          backgroundColor: `color-mix(in oklch, ${semanticColor} 10%, transparent)`,
           color: semanticColor,
         }}
       >

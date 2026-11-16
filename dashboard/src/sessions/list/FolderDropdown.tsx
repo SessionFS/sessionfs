@@ -3,6 +3,8 @@ import { FOLDER_COLORS as PRESET_COLORS, DEFAULT_FOLDER_COLOR } from '../../util
 import { useFolders, useCreateFolder, useUpdateFolder, useDeleteFolder } from '../../hooks/useBookmarks';
 import { Button, IconButton, Input } from '../../components/ui';
 import type { NavFilter } from '../../components/BookmarkSidebar';
+import { Icon } from '../../components/ui/Icon';
+import { Bookmark, ChevronDown, Folder, Pencil, Plus, Trash2 } from 'lucide-react';
 
 export function FolderDropdown({
   navFilter,
@@ -102,15 +104,11 @@ export function FolderDropdown({
         variant="secondary"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="!px-3 !py-2 text-base font-medium"
+        className="!px-3 !py-2 text-base font-medium !border-border-control hover:!border-text-tertiary"
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-text-tertiary">
-          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-        </svg>
+        <Icon icon={Folder} size={14} className="shrink-0 text-text-tertiary" />
         <span className="truncate max-w-[140px]">{currentLabel}</span>
-        <svg className="shrink-0 w-3.5 h-3.5 text-text-tertiary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
+        <Icon icon={ChevronDown} size={14} className="shrink-0 text-text-tertiary" />
       </Button>
 
       {open && (
@@ -139,9 +137,7 @@ export function FolderDropdown({
                 : 'text-text-secondary hover:bg-surface-hover'
             }`}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-              <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-            </svg>
+            <Icon icon={Bookmark} size={14} className="shrink-0" />
             <span className="flex-1">Bookmarked</span>
             <span className="text-xs font-medium text-text-tertiary tabular-nums">{bookmarkedCount}</span>
           </button>
@@ -213,10 +209,7 @@ export function FolderDropdown({
                     }}
                     className="mr-1 opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
                   >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-                    </svg>
+                    <Icon icon={Pencil} size={14} />
                   </IconButton>
                   <IconButton
                     label="Delete folder"
@@ -227,10 +220,7 @@ export function FolderDropdown({
                     }}
                     className="hover:text-danger opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
                   >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <polyline points="3 6 5 6 21 6" />
-                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-                    </svg>
+                    <Icon icon={Trash2} size={14} />
                   </IconButton>
                 </div>
               )}
@@ -293,9 +283,7 @@ export function FolderDropdown({
                 onClick={() => setShowCreate(true)}
                 className="w-full justify-start !rounded-none !px-3 !py-1.5 font-normal"
               >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
+                <Icon icon={Plus} size={14} />
                 New Folder
               </Button>
             )}

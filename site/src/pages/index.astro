@@ -5,7 +5,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
 
   <!-- ========== 1. HERO ========== -->
-  <section class="relative pt-32 sm:pt-40 pb-20 sm:pb-28 px-5 noise">
+  <section class="relative pt-32 sm:pt-40 pb-20 sm:pb-28 px-5">
     <div class="max-w-6xl mx-auto flex flex-col lg:flex-row items-center gap-12 lg:gap-8">
       <!-- Left 60% -->
       <div class="lg:w-[58%] text-center lg:text-left">
@@ -16,7 +16,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <circle cx="32" cy="32" r="7" fill="#4f9cf7"/>
           </svg>
         </div>
-        <h1 class="fade-up font-heading text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6">
+        <h1 class="fade-up text-4xl sm:text-5xl lg:text-6xl font-semibold tracking-tight leading-[1.1] mb-6">
           Your AI Coding Agent<br>Never Starts From Zero Again.
         </h1>
         <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-xl mx-auto lg:mx-0 mb-8">
@@ -30,23 +30,22 @@ import BaseLayout from '../layouts/BaseLayout.astro';
           <button onclick="copyText('pipx install sessionfs', this)" class="text-muted-dim hover:text-brand text-[13px] border border-border rounded px-2.5 py-0.5 ml-1 transition-colors">Copy</button>
         </div>
         <div class="fade-up flex flex-col sm:flex-row gap-3 justify-center lg:justify-start">
-          <a href="https://app.sessionfs.dev/login?mode=signup" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition">
+          <a href="https://app.sessionfs.dev/login?mode=signup" class="inline-flex items-center justify-center gap-2 bg-brand text-on-brand font-semibold rounded-md px-7 py-3 hover:bg-brand-hover transition">
             Sign up for cloud
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
           </a>
-          <a href="/quickstart/" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-lg px-7 py-3 hover:border-muted transition">
+          <a href="/quickstart/" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-md px-7 py-3 hover:border-muted transition">
             Read quickstart
           </a>
         </div>
       </div>
       <!-- Right 40% terminal -->
       <div class="lg:w-[42%] w-full relative fade-up">
-        <div class="hero-glow"></div>
-        <div class="term relative z-10">
+        <div class="term code-well relative z-10">
           <div class="term-bar">
-            <div class="term-dot bg-[#ff5f57]"></div>
-            <div class="term-dot bg-[#febc2e]"></div>
-            <div class="term-dot bg-[#28c840]"></div>
+            <div class="term-dot"></div>
+            <div class="term-dot"></div>
+            <div class="term-dot"></div>
             <span class="ml-3 text-muted-dim text-[13px] font-mono">~/ terminal</span>
           </div>
           <div class="p-4 sm:p-5 font-mono text-sm leading-relaxed overflow-x-auto">
@@ -73,7 +72,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   </section>
 
   <!-- ========== 2. SOCIAL PROOF BAR ========== -->
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
   <section class="py-8 px-5 fade-up">
     <div class="max-w-6xl mx-auto flex flex-col gap-3 text-sm items-center">
       <div class="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-5">
@@ -92,45 +91,43 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         <span class="text-muted-dim text-xs">(via integration docs)</span>
       </div>
       <div class="flex flex-col sm:flex-row items-center justify-center gap-3 sm:gap-5">
-        <img src="https://img.shields.io/github/stars/SessionFS/sessionfs?style=flat&color=30363d&labelColor=161b22&logo=github&logoColor=e6edf3" alt="GitHub stars" class="h-5 shrink-0">
-        <div class="border-l border-border h-4 hidden sm:block"></div>
         <span class="font-mono text-muted text-sm">10,000+ backend + 1,800+ UI tests</span>
         <span class="text-muted-dim text-sm">Enterprise-tested in healthcare on AWS EKS</span>
       </div>
     </div>
   </section>
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- ========== 3. THREE PILLARS ========== -->
-  <section class="relative py-20 sm:py-28 px-5 noise">
+  <section class="relative py-20 sm:py-28 px-5">
     <div class="max-w-5xl mx-auto">
       <div class="grid md:grid-cols-3 gap-5">
 
         <!-- Memory -->
-        <a href="/features/knowledge-base/" class="glass fade-up p-6 block group" style="border-top: 3px solid #4f9cf7;">
+        <a href="/features/knowledge-base/" class="site-card fade-up p-6 block group" style="border-top: 3px solid var(--brand);">
           <div class="mb-4">
             <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Memory</div>
-            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Every session builds permanent memory.</h3>
+            <h3 class="font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Every session builds permanent memory.</h3>
           </div>
           <p class="text-muted text-base leading-relaxed mb-4">Each captured session becomes durable knowledge: decisions, patterns, project context, and wiki pages. Your codebase documents itself over time — agents write back discoveries via MCP.</p>
           <div class="font-mono text-sm text-brand">Learn more &rarr;</div>
         </a>
 
         <!-- Portability -->
-        <a href="/features/" class="glass fade-up p-6 block group" style="border-top: 3px solid #3ddc84;">
+        <a href="/features/" class="site-card fade-up p-6 block group" style="border-top: 3px solid var(--accent);">
           <div class="mb-4">
             <div class="text-sm font-mono text-accent uppercase tracking-wider mb-3">Portability</div>
-            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Capture once. Resume anywhere.</h3>
+            <h3 class="font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Capture once. Resume anywhere.</h3>
           </div>
           <p class="text-muted text-base leading-relaxed mb-4">SessionFS captures AI coding sessions from 10 tools into a portable <span class="font-mono text-txt">.sfs</span> record. Switch machines, switch tools, or come back tomorrow without rebuilding context.</p>
           <div class="font-mono text-sm text-accent">Learn more &rarr;</div>
         </a>
 
         <!-- Handoff -->
-        <a href="/features/handoff/" class="glass fade-up p-6 block group" style="border-top: 3px solid #4f9cf7;">
+        <a href="/features/handoff/" class="site-card fade-up p-6 block group" style="border-top: 3px solid var(--brand);">
           <div class="mb-4">
             <div class="text-sm font-mono text-brand uppercase tracking-wider mb-3">Handoff</div>
-            <h3 class="font-heading font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Move work with full context</h3>
+            <h3 class="font-semibold text-xl mb-3 group-hover:text-brand transition-colors">Move work with full context</h3>
           </div>
           <p class="text-muted text-base leading-relaxed mb-4">Send a session to a teammate, another machine, or an agent persona. The recipient gets the conversation, files, git state, rules, ticket, and provenance instead of a pasted summary.</p>
           <div class="font-mono text-sm text-brand">Learn more &rarr;</div>
@@ -141,23 +138,23 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   </section>
 
   <!-- ========== 4. KNOWLEDGE BASE SPOTLIGHT (flagship) ========== -->
-  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
+  <section class="relative py-20 sm:py-28 px-5 bg-surface/50">
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Memory starts with a portable session.</h2>
+        <h2 class="text-3xl sm:text-4xl font-semibold mb-5">Memory starts with a portable session.</h2>
         <p class="text-muted text-lg mb-4 leading-relaxed">SessionFS captures the raw evidence first: transcript, tool, workspace state, git snapshot, rules, persona, and ticket provenance. That portable record is what makes resume, handoff, audit, and memory reliable.</p>
         <p class="text-muted text-lg mb-4 leading-relaxed">Then every captured session is distilled into knowledge entries — architecture decisions, debugging patterns, API contracts, and environment quirks. Your codebase builds its own documentation over time.</p>
         <p class="text-muted text-lg mb-6 leading-relaxed">AI agents don't just read the knowledge base — they write back. When an agent discovers something new during a session, it adds the finding automatically via MCP. The next agent picks it up.</p>
         <div class="flex flex-wrap gap-2 mb-6">
-          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">145 MCP tools</span>
-          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">Auto-compiled wiki</span>
-          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">Agent write-back</span>
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-sm px-3 py-1 text-sm font-mono text-muted">145 MCP tools</span>
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-sm px-3 py-1 text-sm font-mono text-muted">Auto-compiled wiki</span>
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-sm px-3 py-1 text-sm font-mono text-muted">Agent write-back</span>
         </div>
         <a href="/features/knowledge-base/" class="text-brand hover:underline text-sm font-medium">Learn more &rarr;</a>
       </div>
       <div class="lg:w-1/2 w-full fade-up">
-        <div class="term">
-          <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div><span class="ml-3 text-muted-dim text-[13px] font-mono">knowledge base</span></div>
+        <div class="term code-well">
+          <div class="term-bar"><div class="term-dot"></div><div class="term-dot"></div><div class="term-dot"></div><span class="ml-3 text-muted-dim text-[13px] font-mono">knowledge base</span></div>
           <div class="p-5 font-mono text-sm space-y-3">
             <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs project ask "How does auth work?"</span></div>
             <div class="mt-3 border-t border-border pt-3">
@@ -175,47 +172,47 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- ========== 5. BUILT FOR TEAMS & ENTERPRISE ========== -->
-  <section class="relative py-20 sm:py-28 px-5 noise">
+  <section class="relative py-20 sm:py-28 px-5">
     <div class="max-w-5xl mx-auto">
-      <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold text-center mb-4">Built for teams & enterprise.</h2>
+      <h2 class="fade-up text-3xl sm:text-4xl font-semibold text-center mb-4">Built for teams & enterprise.</h2>
       <p class="fade-up text-muted text-center mb-14 max-w-xl mx-auto leading-relaxed">As your team grows, SessionFS adds coordination, governance, and security — shared knowledge, agent tickets, SSO, DLP, and self-hosted deployment.</p>
 
       <!-- Governance Layer -->
       <div class="fade-up text-sm font-mono text-muted-dim uppercase tracking-wider text-center mb-6">Enterprise governance, built in</div>
       <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-6 text-center mb-16">
         <a href="/features/judge/" class="fade-up block hover:opacity-80 transition">
-          <div class="text-xl font-bold text-txt mb-1">LLM Judge</div>
+          <div class="text-xl font-semibold text-txt mb-1">LLM Judge</div>
           <p class="text-muted text-sm leading-relaxed">Cross-references every AI claim against tool output. Contradictions surface before they reach production.</p>
         </a>
         <a href="/enterprise/" class="fade-up block hover:opacity-80 transition">
-          <div class="text-xl font-bold text-txt mb-1">DLP &amp; Secrets</div>
+          <div class="text-xl font-semibold text-txt mb-1">DLP &amp; Secrets</div>
           <p class="text-muted text-sm leading-relaxed">14 PHI patterns + 20 secret patterns scrub session archives at the server. BLOCK / REDACT / WARN modes.</p>
         </a>
         <a href="/features/handoff/" class="fade-up block hover:opacity-80 transition">
-          <div class="text-xl font-bold text-txt mb-1">Audit Trail</div>
+          <div class="text-xl font-semibold text-txt mb-1">Audit Trail</div>
           <p class="text-muted text-sm leading-relaxed">Every captured session carries instruction provenance, persona, ticket, and the AgentRun that signed off.</p>
         </a>
         <a href="/self-hosted/" class="fade-up block hover:opacity-80 transition">
-          <div class="text-xl font-bold text-txt mb-1">Self-hosted Helm</div>
+          <div class="text-xl font-semibold text-txt mb-1">Self-hosted Helm</div>
           <p class="text-muted text-sm leading-relaxed">Hardened chart (UID 10001, read-only rootfs, RuntimeDefault seccomp). Your data stays in your cluster.</p>
         </a>
       </div>
 
       <!-- How It Works (re-ranked under teams) -->
-      <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold text-center mb-4">From session to governed workflow</h2>
+      <h2 class="fade-up text-3xl sm:text-4xl font-semibold text-center mb-4">From session to governed workflow</h2>
       <p class="fade-up text-muted text-center mb-14 max-w-xl mx-auto leading-relaxed">SessionFS starts with capture, then turns that work into reusable context, assigned tasks, and auditable agent runs.</p>
       <div class="grid md:grid-cols-3 gap-8">
         <!-- Step 1 -->
         <div class="fade-up">
           <div class="flex items-center gap-3 mb-5">
-            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">1</span>
-            <h3 class="font-heading font-semibold text-lg">Capture the work</h3>
+            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-semibold border border-brand/20">1</span>
+            <h3 class="font-semibold text-lg">Capture the work</h3>
           </div>
-          <div class="term text-sm">
-            <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div></div>
+          <div class="term code-well text-sm">
+            <div class="term-bar"><div class="term-dot"></div><div class="term-dot"></div><div class="term-dot"></div></div>
             <div class="p-4 font-mono">
               <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs daemon start</span></div>
               <div class="text-muted mt-2">Watching 10 tools... (PID 48201)</div>
@@ -228,11 +225,11 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         <!-- Step 2 -->
         <div class="fade-up">
           <div class="flex items-center gap-3 mb-5">
-            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">2</span>
-            <h3 class="font-heading font-semibold text-lg">Load shared context</h3>
+            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-semibold border border-brand/20">2</span>
+            <h3 class="font-semibold text-lg">Load shared context</h3>
           </div>
-          <div class="term text-sm">
-            <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div></div>
+          <div class="term code-well text-sm">
+            <div class="term-bar"><div class="term-dot"></div><div class="term-dot"></div><div class="term-dot"></div></div>
             <div class="p-4 font-mono">
               <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs ticket start tk_184</span></div>
               <div class="text-muted mt-2">Loading persona: architect</div>
@@ -245,11 +242,11 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         <!-- Step 3 -->
         <div class="fade-up">
           <div class="flex items-center gap-3 mb-5">
-            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">3</span>
-            <h3 class="font-heading font-semibold text-lg">Enforce the outcome</h3>
+            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-semibold border border-brand/20">3</span>
+            <h3 class="font-semibold text-lg">Enforce the outcome</h3>
           </div>
-          <div class="term text-sm">
-            <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div></div>
+          <div class="term code-well text-sm">
+            <div class="term-bar"><div class="term-dot"></div><div class="term-dot"></div><div class="term-dot"></div></div>
             <div class="p-4 font-mono">
               <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs agent run codex-reviewer --fail-on high</span></div>
               <div class="text-muted mt-2">Reviewing PR #184...</div>
@@ -262,13 +259,13 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- ========== 6. LLM JUDGE SPOTLIGHT ========== -->
-  <section class="relative py-20 sm:py-28 px-5 noise">
+  <section class="relative py-20 sm:py-28 px-5">
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Reviewable AI at scale.</h2>
+        <h2 class="text-3xl sm:text-4xl font-semibold mb-5">Reviewable AI at scale.</h2>
         <p class="text-muted text-lg mb-4 leading-relaxed">Every AI coding agent makes claims: "the test passes," "I created the file," "the migration is safe." Most go unverified. LLM Judge cross-references every claim against actual evidence — exit codes, file writes, test output.</p>
         <p class="text-muted text-lg mb-4 leading-relaxed">Confidence-scored findings surface on PRs and in the dashboard. Your team reviews AI work the same way they review human work.</p>
         <p class="text-muted text-base mb-6 leading-relaxed">Verified claims feed the knowledge base — building a trust record your team can reference.</p>
@@ -276,8 +273,8 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         <a href="/features/judge/" class="text-brand hover:underline text-sm font-medium">Read the docs &rarr;</a>
       </div>
       <div class="lg:w-1/2 w-full fade-up">
-        <div class="term">
-          <div class="term-bar"><div class="term-dot bg-[#ff5f57]"></div><div class="term-dot bg-[#febc2e]"></div><div class="term-dot bg-[#28c840]"></div><span class="ml-3 text-muted-dim text-[13px] font-mono">audit report</span></div>
+        <div class="term code-well">
+          <div class="term-bar"><div class="term-dot"></div><div class="term-dot"></div><div class="term-dot"></div><span class="ml-3 text-muted-dim text-[13px] font-mono">audit report</span></div>
           <div class="p-5 font-mono text-sm space-y-4">
             <div>
               <div class="text-muted-dim uppercase tracking-wider text-sm mb-2">Trust Score</div>
@@ -290,16 +287,16 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <div class="border-t border-border pt-4 space-y-3">
               <div class="bg-danger/5 rounded-lg p-3 border border-danger/20">
                 <div class="flex items-center gap-2 mb-2">
-                  <span class="bg-danger/15 text-danger text-[11px] font-bold px-1.5 py-0.5 rounded">CRITICAL</span>
-                  <span class="bg-bg/50 text-muted-dim text-[11px] px-1.5 py-0.5 rounded">test_result</span>
+                  <span class="bg-danger/15 text-danger text-[11px] font-semibold px-1.5 py-0.5 rounded">CRITICAL</span>
+                  <span class="bg-sunken text-muted-dim text-[11px] px-1.5 py-0.5 rounded">test_result</span>
                 </div>
                 <div class="text-muted text-sm mb-1">AI: "The test passes successfully"</div>
-                <div class="bg-bg/60 rounded px-2 py-1.5 text-[12px] text-danger/80 mt-1">FAILED tests/test_auth.py<br>assert status_code == 200, got 401<br>exit code: 1</div>
+                <div class="bg-sunken rounded px-2 py-1.5 text-[12px] text-danger/80 mt-1">FAILED tests/test_auth.py<br>assert status_code == 200, got 401<br>exit code: 1</div>
               </div>
               <div class="bg-warning/5 rounded-lg p-3 border border-warning/20">
                 <div class="flex items-center gap-2 mb-2">
-                  <span class="bg-warning/15 text-warning text-[11px] font-bold px-1.5 py-0.5 rounded">HIGH</span>
-                  <span class="bg-bg/50 text-muted-dim text-[11px] px-1.5 py-0.5 rounded">file_existence</span>
+                  <span class="bg-warning/15 text-warning text-[11px] font-semibold px-1.5 py-0.5 rounded">HIGH</span>
+                  <span class="bg-sunken text-muted-dim text-[11px] px-1.5 py-0.5 rounded">file_existence</span>
                 </div>
                 <div class="text-muted text-sm">AI: "I've created validator.py"</div>
                 <div class="text-muted-dim text-[12px] mt-1">Reality: No Write call to that path</div>
@@ -311,90 +308,90 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- ========== 7. FEATURE GRID (9 cards) ========== -->
-  <section class="relative py-20 sm:py-28 px-5 noise">
+  <section class="relative py-20 sm:py-28 px-5">
     <div class="max-w-5xl mx-auto">
-      <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold text-center mb-14">Everything you need</h2>
+      <h2 class="fade-up text-3xl sm:text-4xl font-semibold text-center mb-14">Everything you need</h2>
       <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
         <!-- AgentRun + CI -->
-        <div class="glass p-6 fade-up" style="border-color: rgba(79,156,247,0.45);">
-          <div class="mb-3 flex items-center gap-2"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
-          <h3 class="font-heading font-semibold text-base mb-2">AgentRun + CI Integration</h3>
+        <div class="site-card p-6 fade-up" style="border-color: color-mix(in srgb, var(--brand) 45%, transparent);">
+          <div class="mb-3 flex items-center gap-2"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
+          <h3 class="font-semibold text-base mb-2">AgentRun + CI Integration</h3>
           <p class="text-muted text-base mb-3 leading-relaxed">An auditable execution record for one persona run &mdash; CI-friendly policy enforcement with severity &times; <span class="font-mono">fail_on</span> &rarr; <span class="font-mono">exit_code</span>. Tracking + enforcement, not model auto-spawning. Replay a run with an edited prompt and compare the findings. GitHub Actions + GitLab CI workflows shipped.</p>
-          <div class="font-mono text-sm text-accent bg-bg/50 rounded-md p-2.5">sfs agent run --persona shield-sr</div>
+          <div class="font-mono text-sm text-accent bg-sunken rounded-md p-2.5">sfs agent run --persona shield-sr</div>
         </div>
         <!-- Personas + Tickets (v0.10.1) -->
-        <div class="glass p-6 fade-up">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg></div>
-          <h3 class="font-heading font-semibold text-base mb-2">Personas + Tickets</h3>
+        <div class="site-card p-6 fade-up">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg></div>
+          <h3 class="font-semibold text-base mb-2">Personas + Tickets</h3>
           <p class="text-muted text-base mb-3 leading-relaxed">Portable AI personas and self-contained tickets with FSM, dependencies, and compiled persona+ticket context. Every captured session is tagged with the active persona and ticket.</p>
-          <div class="font-mono text-sm text-accent bg-bg/50 rounded-md p-2.5">sfs ticket start tkt_8f3a</div>
+          <div class="font-mono text-sm text-accent bg-sunken rounded-md p-2.5">sfs ticket start tkt_8f3a</div>
         </div>
         <!-- Cloud Sync -->
-        <div class="glass p-6 fade-up">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15a4.5 4.5 0 004.5 4.5H18a3.75 3.75 0 001.332-7.257 3 3 0 00-3.758-3.848 5.25 5.25 0 00-10.233 2.33A4.502 4.502 0 002.25 15z"/></svg></div>
-          <h3 class="font-heading font-semibold text-base mb-2">Cloud Sync</h3>
+        <div class="site-card p-6 fade-up">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 15a4.5 4.5 0 004.5 4.5H18a3.75 3.75 0 001.332-7.257 3 3 0 00-3.758-3.848 5.25 5.25 0 00-10.233 2.33A4.502 4.502 0 002.25 15z"/></svg></div>
+          <h3 class="font-semibold text-base mb-2">Cloud Sync</h3>
           <p class="text-muted text-base mb-3 leading-relaxed">Push to the cloud, pull on any machine. Auto-sync available with three modes: off, all, or selective.</p>
-          <div class="font-mono text-sm text-accent bg-bg/50 rounded-md p-2.5">sfs sync auto --mode all</div>
+          <div class="font-mono text-sm text-accent bg-sunken rounded-md p-2.5">sfs sync auto --mode all</div>
         </div>
         <!-- MCP Server -->
-        <div class="glass p-6 fade-up">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg></div>
-          <h3 class="font-heading font-semibold text-base mb-2">MCP Server &middot; 100 Tools</h3>
+        <div class="site-card p-6 fade-up">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg></div>
+          <h3 class="font-semibold text-base mb-2">MCP Server &middot; 145 Tools</h3>
           <p class="text-muted text-base mb-3 leading-relaxed">Your AI agents read project context, search knowledge, and write discoveries back — all via MCP.</p>
-          <div class="font-mono text-sm text-accent bg-bg/50 rounded-md p-2.5">sfs mcp install --for claude-code</div>
+          <div class="font-mono text-sm text-accent bg-sunken rounded-md p-2.5">sfs mcp install --for claude-code</div>
         </div>
         <!-- Skills & Plugins (v0.16.0) -->
-        <div class="glass p-6 fade-up">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#f0c040" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5m8.25 3v6.75m0 0l-3-3m3 3l3-3M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"/></svg></div>
-          <h3 class="font-heading font-semibold text-base mb-2">Skills &amp; Plugins &middot; Marketplace</h3>
+        <div class="site-card p-6 fade-up">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5m8.25 3v6.75m0 0l-3-3m3 3l3-3M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"/></svg></div>
+          <h3 class="font-semibold text-base mb-2">Skills &amp; Plugins &middot; Marketplace</h3>
           <p class="text-muted text-base mb-3 leading-relaxed">Install an Agent Skill or Plugin once, pinned to an exact version, for every supported coding agent. See exactly what a package can do before you install it, re-approve updates that want more access, get scanned, verified-publisher packages, and see which tools each package is verified to work in. Add a SessionFS catalog with your tool&rsquo;s own plugin command. Browse the hosted <a href="/skills-marketplace/" class="text-brand hover:underline">SessionFS Marketplace</a> free.</p>
-          <div class="font-mono text-sm text-accent bg-bg/50 rounded-md p-2.5">sfs skill add &lt;source&gt; --for codex</div>
+          <div class="font-mono text-sm text-accent bg-sunken rounded-md p-2.5">sfs skill add &lt;source&gt; --for codex</div>
         </div>
         <!-- Session Summary -->
-        <div class="glass p-6 fade-up">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15a2.25 2.25 0 012.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z"/></svg></div>
-          <h3 class="font-heading font-semibold text-base mb-2">Session Summary</h3>
+        <div class="site-card p-6 fade-up">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15a2.25 2.25 0 012.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25zM6.75 12h.008v.008H6.75V12zm0 3h.008v.008H6.75V15zm0 3h.008v.008H6.75V18z"/></svg></div>
+          <h3 class="font-semibold text-base mb-2">Session Summary</h3>
           <p class="text-muted text-base mb-3 leading-relaxed">See what happened in 10 seconds. Files, tests, commands — extracted automatically with no LLM cost. The Changes tab shows a diff for every file the agent touched.</p>
-          <div class="text-sm bg-bg/50 rounded-md p-2.5 font-mono"><span class="text-accent">3 modified</span> <span class="text-muted-dim">&middot;</span> <span class="text-accent">5/6 tests</span> <span class="text-muted-dim">&middot;</span> <span class="text-muted">34 cmds</span></div>
+          <div class="text-sm bg-sunken rounded-md p-2.5 font-mono"><span class="text-accent">3 modified</span> <span class="text-muted-dim">&middot;</span> <span class="text-accent">5/6 tests</span> <span class="text-muted-dim">&middot;</span> <span class="text-muted">34 cmds</span></div>
         </div>
         <!-- Team Handoff -->
-        <div class="glass p-6 fade-up">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg></div>
-          <h3 class="font-heading font-semibold text-base mb-2">Team Handoff</h3>
+        <div class="site-card p-6 fade-up">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg></div>
+          <h3 class="font-semibold text-base mb-2">Team Handoff</h3>
           <p class="text-muted text-base mb-3 leading-relaxed">First-class coordination &mdash; ticket + persona provenance carries over, sender curates attachments, recipient claims atomically. Revoke / decline / comment threads with audit events. Team handoffs (Team+) let any member claim.</p>
-          <div class="font-mono text-sm text-accent bg-bg/50 rounded-md p-2.5">sfs handoff --to-team frontend</div>
+          <div class="font-mono text-sm text-accent bg-sunken rounded-md p-2.5">sfs handoff --to-team frontend</div>
         </div>
         <!-- GitHub & GitLab -->
-        <div class="glass p-6 fade-up">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"/></svg></div>
-          <h3 class="font-heading font-semibold text-base mb-2">GitHub, GitLab, Jira &amp; Confluence</h3>
+        <div class="site-card p-6 fade-up">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"/></svg></div>
+          <h3 class="font-semibold text-base mb-2">GitHub, GitLab, Jira &amp; Confluence</h3>
           <p class="text-muted text-base mb-3 leading-relaxed">AI session context on every PR and MR, with contradictions surfaced for reviewers. Enterprise adds two-way Jira sync and Confluence publishing.</p>
-          <div class="font-mono text-sm text-muted-dim bg-bg/50 rounded-md p-2.5">Cloud + self-hosted GitLab</div>
+          <div class="font-mono text-sm text-muted-dim bg-sunken rounded-md p-2.5">Cloud + self-hosted GitLab</div>
         </div>
         <!-- Self-Hosted -->
-        <div class="glass p-6 fade-up">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z"/></svg></div>
-          <h3 class="font-heading font-semibold text-base mb-2">Self-Hosted</h3>
+        <div class="site-card p-6 fade-up">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 14.25h13.5m-13.5 0a3 3 0 01-3-3m3 3a3 3 0 100 6h13.5a3 3 0 100-6m-16.5-3a3 3 0 013-3h13.5a3 3 0 013 3m-19.5 0a4.5 4.5 0 01.9-2.7L5.737 5.1a3.375 3.375 0 012.7-1.35h7.126c1.062 0 2.062.5 2.7 1.35l2.587 3.45a4.5 4.5 0 01.9 2.7m0 0a3 3 0 01-3 3m0 3h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008zm-3 6h.008v.008h-.008v-.008zm0-6h.008v.008h-.008v-.008z"/></svg></div>
+          <h3 class="font-semibold text-base mb-2">Self-Hosted</h3>
           <p class="text-muted text-base mb-3 leading-relaxed">Deploy to any Kubernetes cluster with Helm. Your data never leaves your infrastructure.</p>
-          <div class="font-mono text-sm text-accent bg-bg/50 rounded-md p-2.5">helm install sessionfs ./charts</div>
+          <div class="font-mono text-sm text-accent bg-sunken rounded-md p-2.5">helm install sessionfs ./charts</div>
         </div>
       </div>
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- ========== 8. DEPLOY SECTION ========== -->
-  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
+  <section class="relative py-20 sm:py-28 px-5 bg-surface/50">
     <div class="max-w-5xl mx-auto text-center">
-      <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold mb-4">Your data. Your boundary.</h2>
+      <h2 class="fade-up text-3xl sm:text-4xl font-semibold mb-4">Your data. Your boundary.</h2>
       <p class="fade-up text-muted mb-14 max-w-lg mx-auto leading-relaxed">Choose the deployment model that fits your security requirements.</p>
       <div class="grid md:grid-cols-2 gap-5 max-w-3xl mx-auto">
-        <div class="glass p-8 fade-up text-left">
-          <h3 class="font-heading font-semibold text-xl mb-3">Managed Single-Tenant</h3>
+        <div class="site-card p-8 fade-up text-left">
+          <h3 class="font-semibold text-xl mb-3">Managed Single-Tenant</h3>
           <p class="text-muted text-base mb-4 leading-relaxed">Dedicated infrastructure provisioned for your organization. Isolated compute, storage, and networking. We manage it — you own the data.</p>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent mt-0.5">&#10003;</span>Isolated GCP project per tenant</li>
@@ -402,8 +399,8 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <li class="flex items-start gap-2"><span class="text-accent mt-0.5">&#10003;</span>99.9% SLA</li>
           </ul>
         </div>
-        <div class="glass p-8 fade-up text-left">
-          <h3 class="font-heading font-semibold text-xl mb-3">Self-Hosted</h3>
+        <div class="site-card p-8 fade-up text-left">
+          <h3 class="font-semibold text-xl mb-3">Self-Hosted</h3>
           <p class="text-muted text-base mb-4 leading-relaxed">Deploy to your own Kubernetes cluster — AWS EKS, GCP GKE, Azure AKS, or on-prem. Nothing leaves your network. Air-gapped deployment available.</p>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent mt-0.5">&#10003;</span>Helm chart, enterprise-tested</li>
@@ -415,12 +412,12 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- ========== 9. PRICING ========== -->
-  <section id="pricing" class="relative py-20 sm:py-28 px-5 noise">
+  <section id="pricing" class="relative py-20 sm:py-28 px-5">
     <div class="max-w-2xl mx-auto text-center">
-      <h2 class="fade-up font-heading text-3xl sm:text-5xl font-bold mb-6">Start free. Add team coordination at $14.99/user.</h2>
+      <h2 class="fade-up text-3xl sm:text-5xl font-semibold mb-6">Start free. Add team coordination at $14.99/user.</h2>
       <p class="fade-up text-lg text-muted mb-4 max-w-lg mx-auto leading-relaxed">
         Use SessionFS locally at no cost. Add cloud sync, shared knowledge, tickets, AgentRuns, service keys, and enterprise deployment as your team adopts AI agents.
       </p>
@@ -428,7 +425,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         Transparent pricing for solo developers, teams, and self-hosted enterprise deployments.
       </p>
       <div class="fade-up flex flex-col sm:flex-row gap-3 justify-center">
-        <a href="https://app.sessionfs.dev/login?mode=signup" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition">
+        <a href="https://app.sessionfs.dev/login?mode=signup" class="inline-flex items-center justify-center gap-2 bg-brand text-on-brand font-semibold rounded-md px-7 py-3 hover:bg-brand-hover transition">
           Sign up for cloud
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
         </a>

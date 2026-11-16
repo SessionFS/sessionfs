@@ -2,6 +2,8 @@ import { useEffect, useId, useRef, useState, type FocusEvent } from 'react';
 import type { SessionModelCount } from '../../api/client';
 import { friendlyModelName, isUnknownModelId } from '../../utils/models';
 import { Badge, Checkbox } from '../../components/ui';
+import { Icon } from '../../components/ui/Icon';
+import { ChevronDown } from 'lucide-react';
 
 /** The `?model=` value the dashboard sends for the aggregated unknown bucket
  *  (sessions with a NULL, empty, literal "unknown" or `<synthetic>` model id). */
@@ -137,18 +139,11 @@ export function ModelFilter({ models, selected, onChange, loading = false, error
         className={`${baseField} flex items-center justify-between gap-2 text-left ${selected.length === 0 ? 'text-text-tertiary' : ''}`}
       >
         <span className="truncate">{triggerLabel}</span>
-        <svg
-          className={`w-3.5 h-3.5 text-text-tertiary shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
+        <Icon
+          icon={ChevronDown}
+          size={14}
+          className={`text-text-tertiary shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
+        />
       </button>
 
       <div

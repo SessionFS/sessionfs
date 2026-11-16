@@ -77,7 +77,7 @@ export function PackageCard({ item, state, onOpen }: { item: MarketplacePackage;
           data-testid="capability-summary"
           title={capability.title}
         >
-          {capability.elevated ? <AlertIcon size={13} /> : <ShieldCheckIcon size={13} />}
+          {capability.elevated ? <AlertIcon size={14} /> : <ShieldCheckIcon size={14} />}
           <span className="truncate">{capability.label}</span>
           <span className="sr-only">. {capability.title}</span>
         </span>

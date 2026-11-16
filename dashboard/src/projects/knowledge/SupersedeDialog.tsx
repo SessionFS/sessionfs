@@ -25,14 +25,14 @@ export function SupersedeDialog({
           value={supersedingId}
           onChange={(e) => setSupersedingId(e.target.value)}
           placeholder="Superseding entry ID"
-          className="flex-1 px-2 py-1 text-xs bg-bg-primary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] placeholder:text-text-tertiary"
+          className="flex-1 px-2 py-1 text-xs bg-bg-primary border border-border-control hover:border-text-tertiary rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] placeholder:text-text-tertiary"
         />
       </div>
       <input
         value={reason}
         onChange={(e) => setReason(e.target.value)}
         placeholder="Reason for supersession"
-        className="w-full px-2 py-1 text-xs bg-bg-primary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] placeholder:text-text-tertiary mb-2"
+        className="w-full px-2 py-1 text-xs bg-bg-primary border border-border-control hover:border-text-tertiary rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] placeholder:text-text-tertiary mb-2"
       />
       <div className="flex gap-2 justify-end">
         <Button variant="ghost" size="sm" onClick={onCancel} className="font-normal text-text-tertiary">

@@ -2,6 +2,8 @@ import { useState, useRef, useEffect } from 'react';
 import { DEFAULT_FOLDER_COLOR } from '../../utils/folderColors';
 import { useFolders, useAddBookmark } from '../../hooks/useBookmarks';
 import { IconButton } from '../../components/ui';
+import { Icon } from '../../components/ui/Icon';
+import { Bookmark } from 'lucide-react';
 
 export function BookmarkDropdown({ sessionId, isBookmarked: initialBookmarked }: { sessionId: string; isBookmarked?: boolean }) {
   const [open, setOpen] = useState(false);
@@ -42,9 +44,7 @@ export function BookmarkDropdown({ sessionId, isBookmarked: initialBookmarked }:
         onClick={handleIconClick}
         className={`rounded text-sm duration-150 ${bookmarked ? 'text-brand hover:text-brand' : 'hover:text-brand'} ${popping ? 'scale-125' : ''}`}
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill={bookmarked ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z" />
-        </svg>
+        <Icon icon={Bookmark} size={14} filled={bookmarked} />
       </IconButton>
       {open && (
         <div className="absolute right-0 top-8 z-20 bg-bg-elevated border border-border rounded-lg shadow-[var(--shadow-md)] py-1 min-w-[140px]">

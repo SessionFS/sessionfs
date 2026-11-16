@@ -334,7 +334,7 @@ function PublisherCard({ publisher }: { publisher: PublisherDetail }) {
             {publisher.verified && publisher.badges.length > 0 ? (
               publisher.badges.map((badge) => (
                 <span key={badge} className="inline-flex items-center gap-1 text-text-secondary">
-                  <VerifiedIcon size={13} className="text-brand" />
+                  <VerifiedIcon size={14} className="text-brand" />
                   {badge}
                 </span>
               ))

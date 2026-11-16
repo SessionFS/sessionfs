@@ -66,7 +66,7 @@ export function ReviewTab({ review, assignee }: { review: ReviewState | null | u
         className="flex gap-3 rounded-lg border border-border px-3 py-3"
         style={{ backgroundColor: `color-mix(in srgb, var(--${tone}) 6%, var(--surface))` }}
       >
-        <span className={`mt-0.5 shrink-0 ${TONE_TEXT[tone]}`}>{!last ? <PaneIcon name="eye" size={18} /> : clean ? <PaneIcon name="shield" size={18} /> : <PaneIcon name="warn" size={18} />}</span>
+        <span className={`mt-0.5 shrink-0 ${TONE_TEXT[tone]}`}>{!last ? <PaneIcon name="eye" size={16} /> : clean ? <PaneIcon name="shield" size={16} /> : <PaneIcon name="warn" size={16} />}</span>
         <div className="min-w-0 space-y-0.5">
           <p className="font-semibold text-text-primary">{head.title}</p>
           <p className="text-xs leading-5 text-text-secondary">

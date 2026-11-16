@@ -4,7 +4,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 <BaseLayout title="Knowledge Base — SessionFS" activeNav="features" description="Every AI session feeds your team's knowledge base. AI agents read, search, and write back — your codebase gets smarter with every session.">
 
   <!-- Hero -->
-  <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
+  <section class="relative pt-32 sm:pt-40 pb-16 px-5">
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
         <div class="inline-flex items-center gap-2 text-sm font-mono text-muted-dim mb-6">
@@ -12,29 +12,28 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           <span>&#47;</span>
           <span class="text-txt">Knowledge Base</span>
         </div>
-        <h1 class="font-heading text-4xl sm:text-5xl font-extrabold tracking-tight leading-[1.1] mb-6">
+        <h1 class="text-4xl sm:text-5xl font-semibold tracking-tight leading-[1.1] mb-6">
           Your codebase learns<br>from every AI session.
         </h1>
         <p class="text-muted text-lg mb-4 leading-relaxed">Every session your team runs is automatically distilled into knowledge entries — architecture decisions, debugging patterns, API contracts, environment quirks. Your codebase builds its own documentation over time.</p>
         <p class="text-muted text-lg mb-6 leading-relaxed">AI agents don't just read the knowledge base — they write back. Discoveries, fixes, and patterns flow in automatically. The next agent picks them up.</p>
         <div class="flex flex-wrap gap-2 mb-8">
-          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">145 MCP tools</span>
-          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">Auto-summarize</span>
-          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-full px-3 py-1 text-sm font-mono text-muted">Agent write-back</span>
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-sm px-3 py-1 text-sm font-mono text-muted">145 MCP tools</span>
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-sm px-3 py-1 text-sm font-mono text-muted">Auto-summarize</span>
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-border rounded-sm px-3 py-1 text-sm font-mono text-muted">Agent write-back</span>
         </div>
-        <a href="/quickstart/" class="inline-flex items-center gap-2 bg-brand text-white font-semibold rounded-lg px-6 py-3 hover:brightness-110 transition">
+        <a href="/quickstart/" class="inline-flex items-center gap-2 bg-brand text-on-brand font-semibold rounded-md px-6 py-3 hover:bg-brand-hover transition">
           Get started
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
         </a>
       </div>
       <div class="lg:w-1/2 w-full fade-up">
         <div class="relative">
-          <div class="hero-glow"></div>
-          <div class="term relative z-10">
+          <div class="term code-well relative z-10">
             <div class="term-bar">
-              <div class="term-dot bg-[#ff5f57]"></div>
-              <div class="term-dot bg-[#febc2e]"></div>
-              <div class="term-dot bg-[#28c840]"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
               <span class="ml-3 text-muted-dim text-[13px] font-mono">knowledge base</span>
             </div>
             <div class="p-5 font-mono text-sm space-y-3">
@@ -55,59 +54,59 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- The Loop -->
-  <section class="relative py-20 sm:py-28 px-5 noise">
+  <section class="relative py-20 sm:py-28 px-5">
     <div class="max-w-5xl mx-auto">
-      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-4">The Knowledge Loop</h2>
+      <h2 class="fade-up text-3xl font-semibold text-center mb-4">The Knowledge Loop</h2>
       <p class="fade-up text-muted text-center mb-14 max-w-lg mx-auto leading-relaxed">Every session makes the next session smarter. Fully automatic.</p>
       <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-5">
 
-        <div class="glass fade-up p-6">
+        <div class="site-card fade-up p-6">
           <div class="flex items-center gap-3 mb-3">
-            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">1</span>
-            <h3 class="font-heading font-semibold">Capture</h3>
+            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-semibold border border-brand/20">1</span>
+            <h3 class="font-semibold">Capture</h3>
           </div>
           <p class="text-muted text-base leading-relaxed">Daemon watches 8 AI tools and captures sessions in real time. Messages, tool calls, file changes, and command outputs — all recorded.</p>
         </div>
 
-        <div class="glass fade-up p-6">
+        <div class="site-card fade-up p-6">
           <div class="flex items-center gap-3 mb-3">
-            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">2</span>
-            <h3 class="font-heading font-semibold">Extract</h3>
+            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-semibold border border-brand/20">2</span>
+            <h3 class="font-semibold">Extract</h3>
           </div>
           <p class="text-muted text-base leading-relaxed">Deterministic summarization extracts files changed, tests run, commands executed, packages installed, and key decisions — no LLM cost.</p>
         </div>
 
-        <div class="glass fade-up p-6">
+        <div class="site-card fade-up p-6">
           <div class="flex items-center gap-3 mb-3">
-            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">3</span>
-            <h3 class="font-heading font-semibold">Entries</h3>
+            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-semibold border border-brand/20">3</span>
+            <h3 class="font-semibold">Entries</h3>
           </div>
           <p class="text-muted text-base leading-relaxed">Extracted facts become knowledge entries — tagged by topic, linked to source sessions, and indexed for search. Backlinks connect related entries.</p>
         </div>
 
-        <div class="glass fade-up p-6">
+        <div class="site-card fade-up p-6">
           <div class="flex items-center gap-3 mb-3">
-            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">4</span>
-            <h3 class="font-heading font-semibold">Compile</h3>
+            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-semibold border border-brand/20">4</span>
+            <h3 class="font-semibold">Compile</h3>
           </div>
           <p class="text-muted text-base leading-relaxed">Related entries are compiled into wiki pages — one page per topic, by hand or on a nightly or weekly schedule. Pages update as new sessions add information.</p>
         </div>
 
-        <div class="glass fade-up p-6">
+        <div class="site-card fade-up p-6">
           <div class="flex items-center gap-3 mb-3">
-            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">5</span>
-            <h3 class="font-heading font-semibold">Concepts</h3>
+            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-semibold border border-brand/20">5</span>
+            <h3 class="font-semibold">Concepts</h3>
           </div>
           <p class="text-muted text-base leading-relaxed">Cross-session patterns emerge as concepts. "Auth always uses PyJWT" or "Tests need Redis running" — learned from real sessions, not guesses.</p>
         </div>
 
-        <div class="glass fade-up p-6">
+        <div class="site-card fade-up p-6">
           <div class="flex items-center gap-3 mb-3">
-            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">6</span>
-            <h3 class="font-heading font-semibold">Agent Write-back</h3>
+            <span class="flex items-center justify-center w-8 h-8 rounded-full bg-brand/10 text-brand text-sm font-semibold border border-brand/20">6</span>
+            <h3 class="font-semibold">Agent Write-back</h3>
           </div>
           <p class="text-muted text-base leading-relaxed">AI agents write discoveries back to the knowledge base during sessions via MCP. The next agent reads them. The loop closes.</p>
         </div>
@@ -116,13 +115,13 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Agent Write-back Terminal -->
-  <section class="relative py-20 px-5 bg-surface/50 noise">
+  <section class="relative py-20 px-5 bg-surface/50">
     <div class="max-w-4xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">Agents write back. Automatically.</h2>
+        <h2 class="text-2xl sm:text-3xl font-semibold mb-4">Agents write back. Automatically.</h2>
         <p class="text-muted text-lg mb-6 leading-relaxed">When an AI agent discovers something new — a debugging pattern, an API quirk, a configuration requirement — it writes the finding to the knowledge base via the <code class="text-accent">add_knowledge</code> MCP tool. No manual curation needed.</p>
         <div class="space-y-2">
           <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Works with any MCP-compatible AI tool</div>
@@ -132,17 +131,17 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         </div>
       </div>
       <div class="lg:w-1/2 w-full fade-up">
-        <div class="term">
+        <div class="term code-well">
           <div class="term-bar">
-            <div class="term-dot bg-[#ff5f57]"></div>
-            <div class="term-dot bg-[#febc2e]"></div>
-            <div class="term-dot bg-[#28c840]"></div>
+            <div class="term-dot"></div>
+            <div class="term-dot"></div>
+            <div class="term-dot"></div>
             <span class="ml-3 text-muted-dim text-[13px] font-mono">agent write-back</span>
           </div>
           <div class="p-5 font-mono text-sm space-y-2">
             <div class="text-muted-dim"># Agent discovers a pattern during session</div>
             <div class="text-muted-dim">MCP tool call: <span class="text-accent">add_knowledge</span></div>
-            <div class="mt-2 bg-bg/60 rounded p-3 text-sm">
+            <div class="mt-2 bg-sunken rounded p-3 text-sm">
               <div class="text-muted-dim">topic: <span class="text-txt">"database/migrations"</span></div>
               <div class="text-muted-dim">content: <span class="text-txt">"Alembic migrations must</span></div>
               <div class="text-txt pl-[72px]">run with --sql flag in prod.</div>
@@ -158,18 +157,18 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- 12 MCP Tools -->
-  <section class="relative py-20 sm:py-28 px-5 noise">
+  <section class="relative py-20 sm:py-28 px-5">
     <div class="max-w-5xl mx-auto">
-      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-4">145 MCP tools. Twenty-one categories.</h2>
+      <h2 class="fade-up text-3xl font-bold text-center mb-4">145 MCP tools. Twenty-one categories.</h2>
       <p class="fade-up text-muted text-center mb-14 max-w-lg mx-auto leading-relaxed">Everything your AI agents need to read, search, and contribute to your team's knowledge.</p>
       <div class="grid md:grid-cols-3 gap-5">
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776"/></svg></div>
-          <h3 class="font-heading font-semibold mb-3">Session Tools <span class="text-muted-dim text-sm font-normal">(10)</span></h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 9.776c.112-.017.227-.026.344-.026h15.812c.117 0 .232.009.344.026m-16.5 0a2.25 2.25 0 00-1.883 2.542l.857 6a2.25 2.25 0 002.227 1.932H19.05a2.25 2.25 0 002.227-1.932l.857-6a2.25 2.25 0 00-1.883-2.542m-16.5 0V6A2.25 2.25 0 016 3.75h3.879a1.5 1.5 0 011.06.44l2.122 2.12a1.5 1.5 0 001.06.44H18A2.25 2.25 0 0120.25 9v.776"/></svg></div>
+          <h3 class="font-semibold mb-3">Session Tools <span class="text-muted-dim text-sm font-normal">(10)</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">list_recent_sessions</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_session_context</span></li>
@@ -184,9 +183,9 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           </ul>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg></div>
-          <h3 class="font-heading font-semibold mb-3">Knowledge Read <span class="text-muted-dim text-sm font-normal">(9)</span></h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/></svg></div>
+          <h3 class="font-semibold mb-3">Knowledge Read <span class="text-muted-dim text-sm font-normal">(9)</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_project_context</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_context_section</span></li>
@@ -200,9 +199,9 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           </ul>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10"/></svg></div>
-          <h3 class="font-heading font-semibold mb-3">Knowledge Write <span class="text-muted-dim text-sm font-normal">(8)</span></h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10"/></svg></div>
+          <h3 class="font-semibold mb-3">Knowledge Write <span class="text-muted-dim text-sm font-normal">(8)</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">add_knowledge</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">update_wiki_page</span></li>
@@ -215,18 +214,18 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           </ul>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg></div>
-          <h3 class="font-heading font-semibold mb-3">Rules <span class="text-muted-dim text-sm font-normal">(2)</span></h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg></div>
+          <h3 class="font-semibold mb-3">Rules <span class="text-muted-dim text-sm font-normal">(2)</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_rules</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_compiled_rules</span></li>
           </ul>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg></div>
-          <h3 class="font-heading font-semibold mb-3">Personas <span class="text-muted-dim text-sm font-normal">(7) &middot; every plan</span></h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg></div>
+          <h3 class="font-semibold mb-3">Personas <span class="text-muted-dim text-sm font-normal">(7) &middot; every plan</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">list_personas</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_persona</span></li>
@@ -238,9 +237,9 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           </ul>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#f0c040" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15a2.25 2.25 0 012.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25z"/></svg></div>
-          <h3 class="font-heading font-semibold mb-3">Tickets <span class="text-muted-dim text-sm font-normal">(16) &middot; every plan</span></h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15a2.25 2.25 0 012.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25z"/></svg></div>
+          <h3 class="font-semibold mb-3">Tickets <span class="text-muted-dim text-sm font-normal">(16) &middot; every plan</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">list_tickets</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_ticket</span></li>
@@ -261,9 +260,9 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           </ul>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg></div>
-          <h3 class="font-heading font-semibold mb-3">Work Queues <span class="text-muted-dim text-sm font-normal">(6)</span></h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99"/></svg></div>
+          <h3 class="font-semibold mb-3">Work Queues <span class="text-muted-dim text-sm font-normal">(6)</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">create_work_queue</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_work_queue</span></li>
@@ -274,9 +273,9 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           </ul>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#f0c040" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5m8.25 3v6.75m0 0l-3-3m3 3l3-3M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"/></svg></div>
-          <h3 class="font-heading font-semibold mb-3">Skills Marketplace <span class="text-muted-dim text-sm font-normal">(10)</span></h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 7.5l-.625 10.632a2.25 2.25 0 01-2.247 2.118H6.622a2.25 2.25 0 01-2.247-2.118L3.75 7.5m8.25 3v6.75m0 0l-3-3m3 3l3-3M3.375 7.5h17.25c.621 0 1.125-.504 1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125z"/></svg></div>
+          <h3 class="font-semibold mb-3">Skills Marketplace <span class="text-muted-dim text-sm font-normal">(10)</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">search_skill_marketplace</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_marketplace_package</span></li>
@@ -291,8 +290,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           </ul>
         </div>
 
-        <div class="glass fade-up p-6">
-          <h3 class="font-heading font-semibold mb-3">Agent Runs <span class="text-muted-dim text-sm font-normal">(6) &middot; every plan</span></h3>
+        <div class="site-card fade-up p-6">
+          <h3 class="font-semibold mb-3">Agent Runs <span class="text-muted-dim text-sm font-normal">(6) &middot; every plan</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">create_agent_run</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">complete_agent_run</span></li>
@@ -303,8 +302,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           </ul>
         </div>
 
-        <div class="glass fade-up p-6">
-          <h3 class="font-heading font-semibold mb-3">Agent Feedback <span class="text-muted-dim text-sm font-normal">(3) &middot; every plan</span></h3>
+        <div class="site-card fade-up p-6">
+          <h3 class="font-semibold mb-3">Agent Feedback <span class="text-muted-dim text-sm font-normal">(3) &middot; every plan</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">record_agent_feedback</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">list_agent_feedback</span></li>
@@ -312,8 +311,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           </ul>
         </div>
 
-        <div class="glass fade-up p-6">
-          <h3 class="font-heading font-semibold mb-3">Handoffs <span class="text-muted-dim text-sm font-normal">(8) &middot; Pro+</span></h3>
+        <div class="site-card fade-up p-6">
+          <h3 class="font-semibold mb-3">Handoffs <span class="text-muted-dim text-sm font-normal">(8) &middot; Pro+</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">create_handoff</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">claim_handoff</span></li>
@@ -326,8 +325,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           </ul>
         </div>
 
-        <div class="glass fade-up p-6">
-          <h3 class="font-heading font-semibold mb-3">Checkpoints <span class="text-muted-dim text-sm font-normal">(3)</span></h3>
+        <div class="site-card fade-up p-6">
+          <h3 class="font-semibold mb-3">Checkpoints <span class="text-muted-dim text-sm font-normal">(3)</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">checkpoint_session</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">list_checkpoints</span></li>
@@ -335,8 +334,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           </ul>
         </div>
 
-        <div class="glass fade-up p-6">
-          <h3 class="font-heading font-semibold mb-3">Project Groups <span class="text-muted-dim text-sm font-normal">(15) &middot; Team+</span></h3>
+        <div class="site-card fade-up p-6">
+          <h3 class="font-semibold mb-3">Project Groups <span class="text-muted-dim text-sm font-normal">(15) &middot; Team+</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">list_project_groups</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_project_group</span></li>
@@ -356,8 +355,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           </ul>
         </div>
 
-        <div class="glass fade-up p-6">
-          <h3 class="font-heading font-semibold mb-3">Meetings <span class="text-muted-dim text-sm font-normal">(6)</span></h3>
+        <div class="site-card fade-up p-6">
+          <h3 class="font-semibold mb-3">Meetings <span class="text-muted-dim text-sm font-normal">(6)</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">upload_meeting_transcript</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">list_meeting_transcripts</span></li>
@@ -368,8 +367,8 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           </ul>
         </div>
 
-        <div class="glass fade-up p-6">
-          <h3 class="font-heading font-semibold mb-3">Review Loops <span class="text-muted-dim text-sm font-normal">(9) &middot; Team+</span></h3>
+        <div class="site-card fade-up p-6">
+          <h3 class="font-semibold mb-3">Review Loops <span class="text-muted-dim text-sm font-normal">(9) &middot; Team+</span></h3>
           <ul class="space-y-2 text-base text-muted">
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">start_review_loop</span></li>
             <li class="flex items-start gap-2"><span class="text-accent font-mono text-sm">get_loop_status</span></li>
@@ -387,18 +386,18 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Wiki Structure -->
-  <section class="relative py-20 px-5 bg-surface/50 noise">
+  <section class="relative py-20 px-5 bg-surface/50">
     <div class="max-w-4xl mx-auto">
-      <h2 class="fade-up font-heading text-2xl sm:text-3xl font-bold text-center mb-4">A living wiki. Built from real sessions.</h2>
+      <h2 class="fade-up text-2xl sm:text-3xl font-semibold text-center mb-4">A living wiki. Built from real sessions.</h2>
       <p class="fade-up text-muted text-center mb-12 max-w-lg mx-auto leading-relaxed">Knowledge entries compile into topic pages. Each page links to its source sessions and related topics.</p>
-      <div class="fade-up term">
+      <div class="fade-up term code-well">
         <div class="term-bar">
-          <div class="term-dot bg-[#ff5f57]"></div>
-          <div class="term-dot bg-[#febc2e]"></div>
-          <div class="term-dot bg-[#28c840]"></div>
+          <div class="term-dot"></div>
+          <div class="term-dot"></div>
+          <div class="term-dot"></div>
           <span class="ml-3 text-muted-dim text-[13px] font-mono">sfs project wiki</span>
         </div>
         <div class="p-5 font-mono text-sm">
@@ -424,13 +423,13 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Health Check -->
-  <section class="relative py-20 px-5 noise">
+  <section class="relative py-20 px-5">
     <div class="max-w-4xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">Knowledge health. At a glance.</h2>
+        <h2 class="text-2xl sm:text-3xl font-semibold mb-4">Knowledge health. At a glance.</h2>
         <p class="text-muted text-lg mb-6 leading-relaxed">The health check flags stale entries, conflicting information, and orphaned pages. Keep your knowledge base accurate without manual curation.</p>
         <div class="space-y-2">
           <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> Detects stale entries (no recent sessions)</div>
@@ -440,11 +439,11 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         </div>
       </div>
       <div class="lg:w-1/2 w-full fade-up">
-        <div class="term">
+        <div class="term code-well">
           <div class="term-bar">
-            <div class="term-dot bg-[#ff5f57]"></div>
-            <div class="term-dot bg-[#febc2e]"></div>
-            <div class="term-dot bg-[#28c840]"></div>
+            <div class="term-dot"></div>
+            <div class="term-dot"></div>
+            <div class="term-dot"></div>
             <span class="ml-3 text-muted-dim text-[13px] font-mono">health check</span>
           </div>
           <div class="p-5 font-mono text-sm space-y-3">
@@ -468,26 +467,26 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- CTA -->
-  <section class="relative py-16 px-5 noise">
+  <section class="relative py-16 px-5">
     <div class="max-w-2xl mx-auto text-center fade-up">
-      <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">Start building your knowledge base.</h2>
+      <h2 class="text-2xl sm:text-3xl font-semibold mb-4">Start building your knowledge base.</h2>
       <p class="text-muted mb-8 leading-relaxed">Every session your team runs makes the next one smarter. Start locally, then sync shared knowledge when the team is ready.</p>
       <div class="flex flex-col sm:flex-row gap-3 justify-center">
-        <a href="/quickstart/" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition">
+        <a href="/quickstart/" class="inline-flex items-center justify-center gap-2 bg-brand text-on-brand font-semibold rounded-md px-7 py-3 hover:bg-brand-hover transition">
           Get Started
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
         </a>
-        <a href="https://github.com/SessionFS/sessionfs" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-lg px-7 py-3 hover:border-muted transition">
+        <a href="https://github.com/SessionFS/sessionfs" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-md px-7 py-3 hover:border-muted transition">
           View on GitHub
         </a>
       </div>
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
 </BaseLayout>
 

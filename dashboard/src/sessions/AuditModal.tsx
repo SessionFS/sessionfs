@@ -230,7 +230,6 @@ export default function AuditModal({ open, sessionId, sessionTitle, messageCount
                   type="checkbox"
                   checked={useSavedKey}
                   onChange={(e) => setUseSavedKey(e.target.checked)}
-                  className="rounded border-border"
                 />
                 Use saved API key
               </label>

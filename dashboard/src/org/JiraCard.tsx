@@ -62,6 +62,8 @@ import type {
   JiraTemplate,
 } from '../api/client';
 import { Term } from '../help/Term';
+import { Icon } from '../components/ui/Icon';
+import { ArrowDownLeft, ArrowUpRight } from 'lucide-react';
 
 const ENTERPRISE_TIER = 'enterprise';
 
@@ -1063,19 +1065,7 @@ function SyncStateBadge({ event }: { event: JiraSyncEvent }) {
 function DirectionIcon({ direction }: { direction: 'inbound' | 'outbound' }) {
   // Arrow into SessionFS (inbound) or out to Jira (outbound).
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0 text-text-tertiary">
-      {direction === 'inbound' ? (
-        <>
-          <line x1="17" y1="7" x2="7" y2="17" />
-          <polyline points="17 17 7 17 7 7" />
-        </>
-      ) : (
-        <>
-          <line x1="7" y1="17" x2="17" y2="7" />
-          <polyline points="7 7 17 7 17 17" />
-        </>
-      )}
-    </svg>
+    <Icon icon={direction === 'inbound' ? ArrowDownLeft : ArrowUpRight} size={14} className="shrink-0 text-text-tertiary" />
   );
 }
 

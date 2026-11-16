@@ -1,6 +1,8 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { useFocusTrap } from '../../hooks/useFocusTrap';
 import { Tooltip } from './Tooltip';
+import { Icon } from './Icon';
+import { X } from 'lucide-react';
 
 interface DrawerProps {
   open: boolean;
@@ -81,7 +83,7 @@ export function Drawer({ open, onClose, titleId, children, bare = false, widthCl
       {/* Backdrop */}
       <div
         className="absolute inset-0"
-        style={{ backgroundColor: 'var(--scrim)', backdropFilter: 'blur(4px)' }}
+        style={{ backgroundColor: 'var(--scrim)' }}
         onClick={onClose}
       />
       {/* Drawer panel */}
@@ -105,19 +107,7 @@ export function Drawer({ open, onClose, titleId, children, bare = false, widthCl
             className="absolute top-3 right-3 p-2 rounded-lg text-text-tertiary hover:text-text-primary hover:bg-bg-sunken outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
             aria-label="Close drawer"
           >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
+            <Icon icon={X} />
           </button>
         </Tooltip>
         <div className="p-6">{children}</div>

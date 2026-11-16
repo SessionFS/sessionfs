@@ -6,6 +6,8 @@ import RelativeDate from '../components/RelativeDate';
 import CreateProjectModal from './CreateProjectModal';
 import { Card, Button, IconButton, PageContainer, PageHeader } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
+import { Icon } from '../components/ui/Icon';
+import { GitFork, LayoutGrid, List, MessageSquare } from 'lucide-react';
 
 // v0.10.0 added `projects.org_id` (migration 035). The generated
 // ProjectContext type predates that; responses carry an extra org_id.
@@ -65,22 +67,14 @@ function ProjectCard({ project, onClick }: { project: ProjectContext; onClick: (
       <div className="flex items-center gap-2 flex-wrap">
         {/* Session count badge */}
         <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-bg-tertiary text-text-secondary tabular-nums">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-60">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-          </svg>
+          <Icon icon={MessageSquare} size={14} className="opacity-60" />
           {sessionCount} {sessionCount === 1 ? 'session' : 'sessions'}
         </span>
 
         {/* Multi-repo badge */}
         {repoLength !== undefined && repoLength > 1 && (
           <span className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full bg-brand/10 text-brand tabular-nums">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-70">
-              <circle cx="12" cy="18" r="3" />
-              <circle cx="6" cy="6" r="3" />
-              <circle cx="18" cy="6" r="3" />
-              <path d="M18 9v1a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V9" />
-              <path d="M12 3v4" />
-            </svg>
+            <Icon icon={GitFork} size={14} className="opacity-70" />
             {repoLength} repos
           </span>
         )}
@@ -132,10 +126,7 @@ export default function ProjectsPage() {
               aria-pressed={viewMode === 'list'}
               className={`!rounded-none ${viewMode === 'list' ? 'bg-bg-elevated text-text-primary' : ''}`}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
-                <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
-              </svg>
+              <Icon icon={List} />
             </IconButton>
             <IconButton
               label="Grid view"
@@ -143,10 +134,7 @@ export default function ProjectsPage() {
               aria-pressed={viewMode === 'grid'}
               className={`!rounded-none ${viewMode === 'grid' ? 'bg-bg-elevated text-text-primary' : ''}`}
             >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
-                <rect x="3" y="14" width="7" height="7" /><rect x="14" y="14" width="7" height="7" />
-              </svg>
+              <Icon icon={LayoutGrid} />
             </IconButton>
           </div>
           <Button onClick={() => setShowCreate(true)}>+ New Project</Button>
@@ -193,14 +181,7 @@ export default function ProjectsPage() {
             level="elevated"
             className="max-w-[560px] w-full overflow-hidden"
           >
-            {/* Dot-grid banner */}
-            <div
-              className="relative flex items-center justify-center py-10"
-              style={{
-                backgroundImage: 'var(--dot-grid)',
-                backgroundSize: '16px 16px',
-              }}
-            >
+            <div className="relative flex items-center justify-center py-10">
               {/* Project folder illustration — folder with plus document */}
               <svg
                 width="88"

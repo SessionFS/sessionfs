@@ -7,6 +7,8 @@ import RelativeDate from '../components/RelativeDate';
 import { useFocusTrap } from '../hooks/useFocusTrap';
 import { Button, IconButton, Select } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
+import { Icon } from '../components/ui/Icon';
+import { ListFilter, X } from 'lucide-react';
 
 const TOOLS = [
   { label: 'All Tools', value: '' },
@@ -95,10 +97,7 @@ function MobileFilterSheet({
               onClick={onClose}
               className="h-9 w-9 !rounded-full"
             >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
-                <line x1="4" y1="4" x2="12" y2="12" />
-                <line x1="12" y1="4" x2="4" y2="12" />
-              </svg>
+              <Icon icon={X} />
             </IconButton>
           </div>
 
@@ -214,16 +213,12 @@ export default function SearchResults() {
           <button
             type="button"
             onClick={() => setMobileFiltersOpen(true)}
-            className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-3.5 py-2 text-sm font-medium text-text-secondary shadow-[var(--shadow-sm)] transition-colors hover:bg-surface-hover outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+            className="inline-flex items-center gap-2 rounded-full border border-border bg-surface px-3.5 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
             aria-haspopup="dialog"
             aria-expanded={mobileFiltersOpen}
             aria-label="Open search filters"
           >
-            <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round">
-              <line x1="2" y1="4" x2="13" y2="4" />
-              <line x1="4" y1="8" x2="11" y2="8" />
-              <line x1="6" y1="12" x2="9" y2="12" />
-            </svg>
+            <Icon icon={ListFilter} />
             Filters
             {activeFilterCount > 0 && (
               <span className="rounded-full bg-brand px-1.5 py-0.5 text-2xs font-semibold text-white">

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { IconButton } from './IconButton';
+import { Icon } from './Icon';
+import { Copy } from 'lucide-react';
 
 interface MonoTextProps {
   /** Full value; always available via the title tooltip and the copy button. */
@@ -49,10 +51,7 @@ export function MonoText({ value, tailChars = 12, copyable = false, className = 
       {copyable && (
         <>
           <IconButton label="Copy" size="sm" onClick={handleCopy} className="shrink-0">
-            <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <rect x="6" y="6" width="11" height="11" rx="1.5" />
-              <path d="M13 6V4.5A1.5 1.5 0 0 0 11.5 3h-7A1.5 1.5 0 0 0 3 4.5v7A1.5 1.5 0 0 0 4.5 13H6" />
-            </svg>
+            <Icon icon={Copy} size={14} />
           </IconButton>
           <span role="status" className="text-2xs text-success shrink-0">
             {copied ? 'Copied' : ''}

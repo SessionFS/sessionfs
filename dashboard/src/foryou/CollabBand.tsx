@@ -157,7 +157,7 @@ function FlowRow({ flow, reduce, toast }: { flow: CollabFlow; reduce: boolean; t
   return (
     <li className="flow">
       <div className="fhead">
-        <span className={`fstate ${isDep ? 'dep' : 'onrev'}`}><Icon name={isDep ? 'lock' : 'eye'} />{flow.label}</span>
+        <span className={`fstate ${isDep ? 'dep' : 'onrev'}`}><Icon name={isDep ? 'lock' : 'eye'} size={14} />{flow.label}</span>
         <span className="fref">{flow.ticket.id}</span>
       </div>
       <p className="ftitle"><Link to={flow.ticket.link}>{flow.ticket.title}</Link></p>
@@ -183,7 +183,7 @@ function FlowRow({ flow, reduce, toast }: { flow: CollabFlow; reduce: boolean; t
         ) : (
           <span className="fnote">{isDep ? 'Nobody owns the blocking ticket yet.' : 'No reviewer is named yet.'}</span>
         )}
-        {sent && <span className="fsent"><Icon name="check" />{sent}</span>}
+        {sent && <span className="fsent"><Icon name="check" size={14} />{sent}</span>}
       </div>
       {open && flow.to && (
         <div className="composer" id={`cmp-${uid}`}>

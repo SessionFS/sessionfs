@@ -19,6 +19,8 @@ import IntegrationsTab from './integrations/IntegrationsTab';
 import GroupsTab from './groups/GroupsTab';
 import ContactsSection from './contacts/ContactsSection';
 import { errorMessage } from '../utils/errorMessage';
+import { Icon } from '../components/ui/Icon';
+import { ChevronDown } from 'lucide-react';
 
 type OrgTab = 'members' | 'groups' | 'contacts' | 'personas' | 'policies' | 'governance' | 'security' | 'integrations';
 
@@ -244,7 +246,7 @@ export default function OrgPage() {
                 value={inviteEmail}
                 onChange={(e) => setInviteEmail(e.target.value)}
                 placeholder="colleague@company.com"
-                className="w-full bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                className="w-full bg-surface border border-border-control hover:border-text-tertiary rounded-lg px-3 py-2 text-sm text-text-primary placeholder:text-text-tertiary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
               />
             </div>
             <div>
@@ -260,9 +262,7 @@ export default function OrgPage() {
                     className="flex items-center justify-between gap-2 w-[140px] bg-surface border border-border rounded-lg px-3 py-2 text-sm text-text-secondary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
                   >
                     <span>{inviteRole === 'admin' ? 'Admin' : 'Member'}</span>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0 text-text-tertiary">
-                      <polyline points="6 9 12 15 18 9" />
-                    </svg>
+                    <Icon icon={ChevronDown} size={14} className="shrink-0 text-text-tertiary" />
                   </button>
                 )}
                 items={[

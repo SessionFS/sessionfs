@@ -13,6 +13,8 @@ import LicensesTab from './LicensesTab';
 import { getAvatarColor } from '../utils/avatar';
 import { formatBytes } from '../utils/format';
 import { Card, Button, Input, Select, Table, TableShell, Tabs, TabPanel, Dialog, DialogHeader, DialogFooter, Tooltip } from '../components/ui';
+import { Icon } from '../components/ui/Icon';
+import { Database, EllipsisVertical, Monitor, Users } from 'lucide-react';
 
 type AdminTab = 'users' | 'licenses' | 'activity';
 
@@ -100,12 +102,7 @@ export default function AdminDashboard() {
           <Card level="elevated" className="p-5">
             <div className="flex items-start gap-3">
               <div className="w-9 h-9 rounded-lg bg-info/10 flex items-center justify-center flex-shrink-0">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--info)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                  <circle cx="9" cy="7" r="4" />
-                  <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                  <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-                </svg>
+                <Icon icon={Users} size={20} style={{ color: 'var(--info)' }} />
               </div>
               <div>
                 <p className="text-2xs font-semibold uppercase tracking-[0.08em] text-text-tertiary mb-1">Users</p>
@@ -121,11 +118,7 @@ export default function AdminDashboard() {
           <Card level="elevated" className="p-5">
             <div className="flex items-start gap-3">
               <div className="w-9 h-9 rounded-lg bg-success/10 flex items-center justify-center flex-shrink-0">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
-                  <line x1="8" y1="21" x2="16" y2="21" />
-                  <line x1="12" y1="17" x2="12" y2="21" />
-                </svg>
+                <Icon icon={Monitor} size={20} style={{ color: 'var(--accent)' }} />
               </div>
               <div>
                 <p className="text-2xs font-semibold uppercase tracking-[0.08em] text-text-tertiary mb-1">Sessions</p>
@@ -141,11 +134,7 @@ export default function AdminDashboard() {
           <Card level="elevated" className="p-5">
             <div className="flex items-start gap-3">
               <div className="w-9 h-9 rounded-lg bg-role-discovery/10 flex items-center justify-center flex-shrink-0">
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--role-discovery)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <ellipse cx="12" cy="5" rx="9" ry="3" />
-                  <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3" />
-                  <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5" />
-                </svg>
+                <Icon icon={Database} size={20} style={{ color: 'var(--role-discovery)' }} />
               </div>
               <div className="flex-1">
                 <p className="text-2xs font-semibold uppercase tracking-[0.08em] text-text-tertiary mb-1">Storage</p>
@@ -370,11 +359,7 @@ function ActionMenu({ children, onToggle }: { children: React.ReactNode; onToggl
           className="w-7 h-7 flex items-center justify-center rounded-md text-text-tertiary hover:text-text-primary hover:bg-surface-hover transition-colors"
           aria-label="Actions"
         >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-            <circle cx="8" cy="3" r="1.5" />
-            <circle cx="8" cy="8" r="1.5" />
-            <circle cx="8" cy="13" r="1.5" />
-          </svg>
+          <Icon icon={EllipsisVertical} />
         </button>
       </Tooltip>
       {open && (

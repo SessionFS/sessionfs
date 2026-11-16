@@ -920,7 +920,7 @@ export default function HelperPanel({
             className="absolute bottom-3 left-1/2 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-border bg-overlay px-3 py-1.5 text-xs font-medium text-text-primary transition-colors hover:bg-bg-elevated outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
             style={{ boxShadow: 'var(--shadow-overlay)' }}
           >
-            <ArrowDownIcon size={13} />
+            <ArrowDownIcon size={14} />
             Jump to latest
           </button>
         )}

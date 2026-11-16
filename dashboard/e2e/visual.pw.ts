@@ -20,6 +20,8 @@ import {
   reminderDone,
   confluenceDriftError,
   CONTACT_ID,
+  EMPTY_SESSION_ID,
+  SESSION_ID,
   contactRef,
   meetingDetail,
   confluenceLink,
@@ -2238,6 +2240,88 @@ const CONTACT_SCENARIOS: Scenario[] = [
   },
 ];
 
+// Session detail: a captured session's conversation (user, assistant, tool
+// calls and tool results), its Changes, Summary and Audit tabs, and the same
+// tabs empty for a session with nothing recorded.
+const sessionTab = (tab: string, ready: string) => async (page: Page) => {
+  await page.getByRole('tab', { name: tab }).click();
+  await page.getByText(ready).first().waitFor();
+};
+const SESSION_DETAIL_SCENARIOS: Scenario[] = [
+  {
+    name: 'session-detail-conversation',
+    path: `/sessions/${SESSION_ID}`,
+    prepare: async (page) => {
+      await page.getByText('All 24 billing tests pass.').first().waitFor();
+    },
+  },
+  { name: 'session-detail-changes', path: `/sessions/${SESSION_ID}`, prepare: sessionTab('Changes', 'tests/billing/test_webhooks.py') },
+  { name: 'session-detail-summary', path: `/sessions/${SESSION_ID}`, prepare: sessionTab('Summary', 'Files modified') },
+  {
+    // A report with one finding opened, so its evidence and actions show.
+    name: 'session-detail-audit',
+    path: `/sessions/${SESSION_ID}`,
+    prepare: async (page) => {
+      await sessionTab('Audit', 'Trust Score')(page);
+      await page.getByRole('button', { name: /hallucination 92%/ }).click();
+      await page.getByText('1 failed, 23 passed in 2.41s').first().waitFor();
+    },
+  },
+  {
+    name: 'session-detail-conversation-empty',
+    path: `/sessions/${EMPTY_SESSION_ID}`,
+    prepare: async (page) => {
+      await page.getByText('No messages yet').waitFor();
+    },
+  },
+  { name: 'session-detail-changes-empty', path: `/sessions/${EMPTY_SESSION_ID}`, prepare: sessionTab('Changes', 'No file changes recorded') },
+  { name: 'session-detail-summary-empty', path: `/sessions/${EMPTY_SESSION_ID}`, prepare: sessionTab('Summary', 'No summary yet') },
+  { name: 'session-detail-audit-empty', path: `/sessions/${EMPTY_SESSION_ID}`, prepare: sessionTab('Audit', 'Run Audit') },
+];
+
+// Empty states drawn as a 20 px icon in a 40 px circle (design phase 1c
+// follow-up), and the public share page's error.
+const emptyList = (pathname: string, body: unknown) => async (page: Page) => {
+  await page.route(
+    (u) => u.pathname === pathname,
+    (route) => route.fulfill(fulfillJson(200, body)),
+  );
+};
+const EMPTY_STATE_SCENARIOS: Scenario[] = [
+  {
+    name: 'handoffs-inbox-empty',
+    path: '/handoffs',
+    mock: emptyList('/api/v1/handoffs/inbox', { handoffs: [], total: 0 }),
+    prepare: async (page) => {
+      await page.getByText('No handoffs received yet').waitFor();
+    },
+  },
+  {
+    name: 'handoffs-sent-empty',
+    path: '/handoffs',
+    mock: emptyList('/api/v1/handoffs/sent', { handoffs: [], total: 0 }),
+    prepare: async (page) => {
+      await page.getByRole('tab', { name: 'Sent' }).click();
+      await page.getByText('No handoffs sent yet').waitFor();
+    },
+  },
+  {
+    name: 'agent-runs-empty',
+    path: `/projects/${PROJECT_ID}?tab=work&sub=agent-runs`,
+    mock: emptyList(`/api/v1/projects/${PROJECT_ID}/agent-runs`, []),
+    prepare: async (page) => {
+      await page.getByText('No runs yet').waitFor();
+    },
+  },
+  {
+    name: 'share-not-found',
+    path: '/s/revoked-token',
+    prepare: async (page) => {
+      await page.getByRole('heading', { name: 'Link Not Found' }).waitFor();
+    },
+  },
+];
+
 const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...WIDTHS.map((width) => ({ width, scenarios: PAGES })),
   ...SHELL_WIDTHS.map((width) => ({ width, scenarios: SHELL_SCENARIOS })),
@@ -2265,6 +2349,8 @@ const RUNS: Array<{ width: number; scenarios: Scenario[] }> = [
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: EVAL_SCENARIOS })),
   ...FOR_YOU_WIDTHS.map((width) => ({ width, scenarios: FOR_YOU_SCENARIOS })),
   ...INTEGRATION_WIDTHS.map((width) => ({ width, scenarios: CONTACT_SCENARIOS })),
+  ...WIDTHS.map((width) => ({ width, scenarios: SESSION_DETAIL_SCENARIOS })),
+  ...WIDTHS.map((width) => ({ width, scenarios: EMPTY_STATE_SCENARIOS })),
 ];
 
 for (const theme of THEMES) {

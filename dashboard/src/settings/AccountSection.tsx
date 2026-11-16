@@ -4,6 +4,8 @@ import type { RepresentedPersona } from '../api/client';
 import { displayTier } from '../utils/tier';
 import YourGroupsCard from './YourGroupsCard';
 import { Term } from '../help/Term';
+import { Icon } from '../components/ui/Icon';
+import { RefreshCw } from 'lucide-react';
 
 export default function AccountSection({ profile, logout }: { profile: any; logout: () => void }) {
   return (
@@ -61,11 +63,7 @@ export default function AccountSection({ profile, logout }: { profile: any; logo
       {profile?.last_client_version && (
         <Card level="elevated" className="p-5">
           <div className="flex items-center gap-2 mb-4">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="23 4 23 10 17 10" />
-              <polyline points="1 20 1 14 7 14" />
-              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
-            </svg>
+            <Icon icon={RefreshCw} size={20} style={{ color: 'var(--text-tertiary)' }} />
             <h2 className="text-lg font-semibold text-text-primary">Last Sync</h2>
             {profile.latest_version && profile.last_client_version === profile.latest_version && (
               <span className="ml-auto px-2.5 py-0.5 bg-success/10 text-success rounded-full text-xs font-medium">

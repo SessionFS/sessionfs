@@ -150,9 +150,8 @@ export default function ItemCard({
             }
           }}
         >
-          <span className="sheen" aria-hidden="true" />
           <div className="meta">
-            <span className="kind"><Icon name={meta.icon} />{meta.label}</span>
+            <span className="kind"><Icon name={meta.icon} size={14} />{meta.label}</span>
             {(ctx.ref || item.source.id) && (
               <span className="srcchip" title={`${srcLabel} ${ctx.ref || item.source.id}`}>
                 {srcLabel === meta.label ? <span className="sr-only">{srcLabel} </span> : <span className="st">{srcLabel}</span>}
@@ -242,7 +241,7 @@ export default function ItemCard({
               aria-controls={`more-${uid}`}
               onClick={() => setMoreOpen((o) => !o)}
             >
-              More context<Icon name="chev" />
+              More context<Icon name="chev" size={14} />
             </button>
           </div>
 
@@ -437,7 +436,7 @@ function MoreContext({ item, id, open, api }: { item: AttentionItem; id: string;
                 {related.map((r) => (
                   <li key={r.item_key}>
                     <button type="button" tabIndex={open ? 0 : -1} onClick={() => api.goto(r.item_key)}>
-                      <Icon name="link" /><span>{r.title}</span><em>{r.ref}</em>
+                      <Icon name="link" size={14} /><span>{r.title}</span><em>{r.ref}</em>
                     </button>
                   </li>
                 ))}
@@ -662,7 +661,7 @@ function PromotePanel({ item, id, api, onClose }: { item: AttentionItem; id: str
           </select>
         </label>
       </div>
-      <p className="hint"><Icon name="suspect" />{why}</p>
+      <p className="hint"><Icon name="suspect" size={14} />{why}</p>
       {error && <span className="err" role="alert" id={`err-${uid}`}>{error}</span>}
       <div className="row">
         <button className="btn primary" type="button" disabled={busy || !preview} onClick={submit}>{busy ? 'Creating…' : 'Create ticket'}</button>

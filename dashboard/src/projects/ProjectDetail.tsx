@@ -39,6 +39,8 @@ import { Card, Button, Textarea, Dialog, DialogHeader, DialogFooter, TabPanel, A
 import { errorMessage } from '../utils/errorMessage';
 import { ApiError } from '../api/client';
 import { useHelper } from '../helper/HelperProvider';
+import { Icon } from '../components/ui/Icon';
+import { ChevronLeft } from 'lucide-react';
 
 // The page has five sections. The active one lives in the URL as
 // `?tab=<section>`, and the active sub-tab of the sections that have them as
@@ -135,7 +137,7 @@ function resolveView(tabParam: string | null, subParam: string | null): { sectio
 function Panel({ children, padded = false, sub }: { children: ReactNode; padded?: boolean; sub: string }) {
   return (
     <TabPanel idPrefix="project-sub" tabKey={sub}>
-      <Card level="elevated" className={`mt-4 min-w-0 rounded-xl shadow-[var(--shadow-sm)] ${padded ? 'p-4' : ''}`}>
+      <Card level="elevated" className={`mt-4 min-w-0 rounded-xl ${padded ? 'p-4' : ''}`}>
         {children}
       </Card>
     </TabPanel>
@@ -369,9 +371,7 @@ export default function ProjectDetail() {
     return (
       <div className="p-8">
         <Button variant="ghost" onClick={() => navigate('/projects')}>
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="15 18 9 12 15 6" />
-          </svg>
+          <Icon icon={ChevronLeft} />
           Back to Projects
         </Button>
         <p className="text-danger mt-4">Failed to load project: {errorMessage(error)}</p>
@@ -475,7 +475,7 @@ export default function ProjectDetail() {
 
           {/* Context hero header card */}
           {!editing && (
-            <Card level="elevated" className="mb-3 rounded-xl shadow-[var(--shadow-sm)] px-5 py-4">
+            <Card level="elevated" className="mb-3 rounded-xl px-5 py-4">
               <div className="flex items-center justify-between">
                 <div>
                   <h2 className="text-base font-semibold text-text-primary">Compiled Context</h2>
@@ -518,7 +518,7 @@ export default function ProjectDetail() {
           )}
 
           {/* Context document body */}
-          <Card level="elevated" className="rounded-xl shadow-[var(--shadow-sm)]">
+          <Card level="elevated" className="rounded-xl">
             <div className="px-4 py-5 sm:px-8 sm:py-7">
               {editing ? (
                 <div>

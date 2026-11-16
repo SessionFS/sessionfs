@@ -5,6 +5,8 @@ import { StatusIcon } from './StatusIcon';
 import { TicketRow } from './TicketRow';
 import type { TicketJiraSurface } from './constants';
 import type { ById, TicketGroup } from './views';
+import { Icon } from '../../components/ui/Icon';
+import { ChevronDown } from 'lucide-react';
 
 /* ── Grouped list ──
  *
@@ -14,14 +16,7 @@ import type { ById, TicketGroup } from './views';
 
 function Chevron({ open }: { open: boolean }) {
   return (
-    <svg
-      viewBox="0 0 24 24"
-      aria-hidden="true"
-      focusable="false"
-      className={`tk-chev${open ? '' : ' is-collapsed'}`}
-    >
-      <path d="M6 9l6 6 6-6" />
-    </svg>
+    <Icon icon={ChevronDown} size={14} className={`tk-chev${open ? '' : ' is-collapsed'}`} />
   );
 }
 

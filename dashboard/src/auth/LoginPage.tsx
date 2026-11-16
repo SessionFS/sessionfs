@@ -157,12 +157,6 @@ export default function LoginPage() {
 
   return (
     <div className="relative flex items-center justify-center min-h-screen px-4">
-      <div
-        className="pointer-events-none absolute inset-x-0 top-0 h-72 opacity-80"
-        style={{
-          background: 'radial-gradient(48rem 20rem at 50% -10%, color-mix(in srgb, var(--brand) 16%, transparent), transparent 72%)',
-        }}
-      />
       <Card level="elevated" className="w-full max-w-sm p-8 relative">
         <div className="flex flex-col items-center mb-6 text-center">
           <div className="brand-badge rounded-2xl px-4 py-3">
@@ -303,6 +297,17 @@ export default function LoginPage() {
             </p>
           </form>
         )}
+        <p className="mt-6 text-center text-text-tertiary text-xs">
+          {mode === 'signup' && <>By creating an account you agree to the{' '}</>}
+          <a href="https://sessionfs.dev/terms/" className="hover:text-text-secondary underline-offset-2 hover:underline">
+            {mode === 'signup' ? 'Terms of Service' : 'Terms'}
+          </a>
+          {mode === 'signup' ? ' and ' : ' · '}
+          <a href="https://sessionfs.dev/privacy/" className="hover:text-text-secondary underline-offset-2 hover:underline">
+            {mode === 'signup' ? 'Privacy Policy' : 'Privacy'}
+          </a>
+          {mode === 'signup' && '.'}
+        </p>
       </Card>
     </div>
   );

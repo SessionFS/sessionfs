@@ -301,7 +301,7 @@ export function PackageDialog({ item, state, onClose }: { item: MarketplacePacka
                   label: alertCount > 0 ? (
                     <span className="inline-flex items-center gap-1.5">
                       Install details
-                      <AlertIcon size={13} className="text-warning" />
+                      <AlertIcon size={14} className="text-warning" />
                       <span className="sr-only">({alertCount} {alertCount === 1 ? 'alert' : 'alerts'})</span>
                     </span>
                   ) : 'Install details',

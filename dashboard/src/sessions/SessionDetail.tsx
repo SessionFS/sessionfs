@@ -31,6 +31,9 @@ import { Dropdown } from '../components/ui/Dropdown';
 import { useHelper } from '../helper/HelperProvider';
 import { errorMessage } from '../utils/errorMessage';
 import { Term } from '../help/Term';
+import { Icon } from '../components/ui/Icon';
+import { isToolOnly, previewText } from './content/previewText';
+import { ChevronLeft, EllipsisVertical, Folder, ShieldAlert } from 'lucide-react';
 
 type Tab = 'messages' | 'changes' | 'summary' | 'audit';
 
@@ -210,18 +213,9 @@ export default function SessionDetail() {
     const messages = lastMessagesData?.messages;
     if (!messages || messages.length === 0) return null;
     const last3 = messages.slice(0, 3).map((m) => {
-      const role = String(m.role || 'unknown');
-      let text = '';
-      if (typeof m.content === 'string') {
-        text = m.content;
-      } else if (Array.isArray(m.content)) {
-        const textBlock = m.content.find(
-          (b: unknown) => typeof b === 'object' && b !== null && (b as Record<string, unknown>).type === 'text',
-        ) as Record<string, unknown> | undefined;
-        if (textBlock) text = String(textBlock.text || '');
-      } else if (m.messages_text) {
-        text = String(m.messages_text);
-      }
+      const role = isToolOnly(m.content) ? 'tool' : String(m.role || 'unknown');
+      let text = previewText(m.content);
+      if (!text && m.messages_text) text = String(m.messages_text);
       return { role, text: text.slice(0, 120) + (text.length > 120 ? '…' : '') };
     });
     return last3;
@@ -237,9 +231,7 @@ export default function SessionDetail() {
           onClick={() => navigate('/sessions')}
           className="gap-1 text-brand hover:text-brand"
         >
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <polyline points="15 18 9 12 15 6" />
-          </svg>
+          <Icon icon={ChevronLeft} />
           Back to Sessions
         </Button>
       </div>
@@ -247,8 +239,8 @@ export default function SessionDetail() {
       {/* Header card — tool-colored left edge per Phase 1b card pattern */}
       <Card level="elevated" toolEdge={toolColor} className="mx-4 mt-2">
         {/* Top row: tool name + actions */}
-        <div className="px-5 pt-4 flex items-start justify-between">
-          <div className="flex items-center gap-3">
+        <div className="px-5 pt-4 flex flex-wrap items-start justify-between gap-x-3 gap-y-2">
+          <div className="flex items-center gap-3 min-w-0">
             <span className="text-base font-semibold text-text-primary">
               {fullToolName(session.source_tool)}
             </span>
@@ -258,7 +250,7 @@ export default function SessionDetail() {
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             {openHelper && (
               <Button onClick={() => openHelper({ session_ids: [session.id], label: session.title || undefined })} size="sm" variant="secondary">
                 Ask the helper
@@ -273,11 +265,7 @@ export default function SessionDetail() {
             <Dropdown
               trigger={
                 <IconButton label="Session actions" aria-haspopup="menu">
-                  <svg className="w-5 h-5" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                    <circle cx="12" cy="5" r="2" />
-                    <circle cx="12" cy="12" r="2" />
-                    <circle cx="12" cy="19" r="2" />
-                  </svg>
+                  <Icon icon={EllipsisVertical} size={20} />
                 </IconButton>
               }
               items={moreMenuItems}
@@ -301,7 +289,7 @@ export default function SessionDetail() {
                   autoFocus
                   placeholder="Session title"
                   aria-label="Session title"
-                  className="w-full px-2 py-1 text-base bg-bg-primary border border-border rounded-lg text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                  className="w-full px-2 py-1 text-base bg-bg-primary border border-border-control hover:border-text-tertiary rounded-lg text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
                 />
               </label>
               <label className="w-56">
@@ -313,7 +301,7 @@ export default function SessionDetail() {
                   onKeyDown={handleMetaKeyDown}
                   placeholder="e.g. auth-debug"
                   aria-label="Session alias"
-                  className="w-full px-2 py-1 text-sm bg-bg-primary border border-border rounded-lg text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                  className="w-full px-2 py-1 text-sm bg-bg-primary border border-border-control hover:border-text-tertiary rounded-lg text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
                 />
               </label>
               <div className="flex items-center gap-2 mt-5">
@@ -331,16 +319,16 @@ export default function SessionDetail() {
           </div>
         ) : (
           <div className="px-5 mt-2 group">
-            <h1
-              onClick={handleMetaEdit}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleMetaEdit(); } }}
-              aria-label="Edit title and alias"
-              title="Click to rename title and alias"
-              className="text-2xl font-semibold text-text-primary break-words leading-snug cursor-text hover:underline decoration-[var(--text-tertiary)] decoration-dotted underline-offset-4"
-            >
-              {session.title || 'Untitled session'}
+            <h1 className="text-2xl font-semibold text-text-primary break-words leading-snug">
+              <button
+                type="button"
+                onClick={handleMetaEdit}
+                title="Click to rename title and alias"
+                className="text-left break-words cursor-text rounded-sm hover:underline decoration-[var(--text-tertiary)] decoration-dotted underline-offset-4 focus-visible:outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+              >
+                {session.title || 'Untitled session'}
+                <span className="sr-only">, edit title and alias</span>
+              </button>
             </h1>
           </div>
         )}
@@ -387,9 +375,7 @@ export default function SessionDetail() {
               to={`/projects/${encodeURIComponent(session.git_remote_normalized)}`}
               className="text-sm text-brand hover:underline inline-flex items-center gap-1"
             >
-              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-              </svg>
+              <Icon icon={Folder} size={14} />
               {session.git_remote_normalized}
             </Link>
           </div>
@@ -457,7 +443,7 @@ export default function SessionDetail() {
                           ? 'bg-info/10 text-info'
                           : 'bg-text-tertiary/10 text-text-tertiary'
                     }`}>
-                      {m.role === 'assistant' ? 'AI' : m.role === 'user' ? 'You' : m.role}
+                      {m.role === 'assistant' ? 'AI' : m.role === 'user' ? 'You' : m.role === 'tool' ? 'Tool' : m.role}
                     </span>
                     <span className="text-text-tertiary truncate">{m.text || '(no text)'}</span>
                   </div>
@@ -636,9 +622,7 @@ function DLPScanSection({ session }: { session: object }) {
     <div className="px-5 mt-3">
       <div className="border border-danger/20 bg-danger/5 rounded-lg p-3">
         <div className="flex items-center gap-2 mb-2">
-          <svg className="w-4 h-4 text-danger shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-          </svg>
+          <Icon icon={ShieldAlert} className="text-danger shrink-0" />
           <span className="text-sm font-semibold text-text-primary">
             <Term id="dlp">DLP</Term> scan
           </span>

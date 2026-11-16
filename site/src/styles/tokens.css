@@ -1,0 +1,151 @@
+/* Shared design tokens for the marketing site and the docs.
+   Values match dashboard/src/index.css (docs/design/foundations-proposal.md):
+   one neutral ladder per theme (--gray-1 … --gray-12), semantic names alias
+   the ladder, colour is for meaning. Keep the two files in step until they
+   are shared from one place. */
+
+/* ── Dark (default) — cool-neutral OKLCH ladder, hue 260 ── */
+:root,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --gray-1:  oklch(14% 0.006 260);    /* sunken: wells, code blocks */
+  --gray-2:  oklch(17% 0.006 260);    /* canvas */
+  --gray-3:  oklch(18.5% 0.006 260);  /* sidebar, subtle fill */
+  --gray-4:  oklch(21% 0.007 260);    /* cards, inputs */
+  --gray-5:  oklch(23.5% 0.007 260);  /* hover; popovers */
+  --gray-6:  oklch(26% 0.008 260);    /* pressed, selected */
+  --gray-7:  oklch(29% 0.008 260);    /* hairline border */
+  --gray-8:  oklch(38% 0.009 260);    /* strong border */
+  --gray-9:  oklch(54% 0.010 260);    /* control border (≥3:1) */
+  --gray-10: oklch(68% 0.008 260);    /* tertiary text */
+  --gray-11: oklch(80% 0.006 260);    /* secondary text */
+  --gray-12: oklch(95% 0.003 260);    /* primary text */
+
+  --bg-sunken:      var(--gray-1);
+  --bg-primary:     var(--gray-2);
+  --bg-secondary:   var(--gray-3);
+  --surface:        var(--gray-4);
+  --surface-hover:  var(--gray-5);
+  --surface-active: var(--gray-6);
+  --bg-elevated:    var(--gray-5);
+  --border:         var(--gray-7);
+  --border-strong:  var(--gray-8);
+  --border-control: var(--gray-9);
+
+  --text-primary:   var(--gray-12);
+  --text-secondary: var(--gray-11);
+  --text-tertiary:  var(--gray-10);
+
+  --shadow-md: 0 4px 12px oklch(0% 0 0 / 0.35);
+
+  /* Brand blue is the logo blue. Dark text on it: white is only 2.83:1. */
+  --brand:         #4f9cf7;
+  --brand-hover:   #6cadf9;
+  --text-on-brand: var(--gray-2);
+
+  --accent:  #3ddc84;
+  --success: #3ddc84;
+  --danger:  #fc7189;
+  --warning: #f0c040;
+  --info:    #4f9cf7;
+  --discovery: #b9a2ff;  /* = dashboard --cat-mention; Starlight "tip" asides */
+
+  /* Code well (terminal mockups, code samples): always dark. */
+  --code-well-bg:     var(--gray-1);
+  --code-well-bar-bg: var(--gray-3);
+  --code-well-border: var(--gray-7);
+  --code-well-dot:    var(--gray-8);
+}
+
+/* ── Light ── */
+[data-theme="light"] {
+  color-scheme: light;
+  --gray-1:  oklch(100% 0 0);
+  --gray-2:  oklch(98.5% 0.002 260);
+  --gray-3:  oklch(97% 0.003 260);
+  --gray-4:  oklch(95.5% 0.003 260);
+  --gray-5:  oklch(94% 0.004 260);
+  --gray-6:  oklch(91.5% 0.004 260);
+  --gray-7:  oklch(85% 0.005 260);
+  --gray-8:  oklch(76% 0.006 260);
+  --gray-9:  oklch(60% 0.008 260);
+  --gray-10: oklch(50% 0.010 260);
+  --gray-11: oklch(40% 0.010 260);
+  --gray-12: oklch(20% 0.010 260);
+
+  --bg-sunken:      var(--gray-4);
+  --bg-primary:     var(--gray-2);
+  --bg-secondary:   var(--gray-3);
+  --surface:        var(--gray-1);
+  --surface-hover:  var(--gray-3);
+  --surface-active: var(--gray-5);
+  --bg-elevated:    var(--gray-1);
+  --border:         var(--gray-6);
+  --border-strong:  var(--gray-7);
+  --border-control: var(--gray-9);
+
+  --shadow-md: 0 1px 2px oklch(20% 0.01 260 / 0.05), 0 4px 12px oklch(20% 0.01 260 / 0.08);
+
+  /* Same hue as #4f9cf7, darkened until white text passes AA (6.1:1). */
+  --brand:         #1762b6;
+  --brand-hover:   #0f529e;
+  --text-on-brand: #ffffff;
+
+  --accent:  #086834;
+  --success: #086834;
+  --danger:  #ac1333;
+  --warning: #7c5100;
+  --info:    #1762b6;
+  --discovery: #5b3cc4;
+
+  /* The code well stays dark on the light page. */
+  --code-well-bg:     oklch(19% 0.008 260);
+  --code-well-bar-bg: oklch(22% 0.008 260);
+  --code-well-border: oklch(19% 0.008 260);
+  --code-well-dot:    oklch(38% 0.009 260);
+}
+
+/* ── Code well: terminal mockups and code samples stay dark in both
+   themes, like the dashboard's code well. Re-declaring the dark text and
+   status values here lets the usual utilities (text-muted, text-accent, …)
+   work unchanged inside a sample. ── */
+.code-well {
+  --bg-primary:     oklch(17% 0.006 260);
+  --bg-secondary:   oklch(18.5% 0.006 260);
+  --bg-sunken:      oklch(14% 0.006 260);
+  --surface:        oklch(21% 0.007 260);
+  --surface-hover:  oklch(23.5% 0.007 260);
+  --border-strong:  oklch(38% 0.009 260);
+  --text-primary:   oklch(94% 0.003 260);
+  --text-secondary: oklch(80% 0.006 260);
+  --text-tertiary:  oklch(72% 0.008 260);
+  --border:         oklch(29% 0.008 260);  /* rules inside the well */
+  --brand:   #4f9cf7;
+  --accent:  #3ddc84;
+  --success: #3ddc84;
+  --danger:  #fc7189;
+  --warning: #f0c040;
+  color-scheme: dark;
+}
+
+/* ── Theme-independent ── */
+:root {
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  --brand-subtle:   color-mix(in srgb, var(--brand) 12%, transparent);
+  --success-subtle: color-mix(in srgb, var(--success) 12%, transparent);
+  --warning-subtle: color-mix(in srgb, var(--warning) 12%, transparent);
+  --danger-subtle:  color-mix(in srgb, var(--danger) 12%, transparent);
+  --focus-ring:     color-mix(in srgb, var(--brand) 70%, transparent);
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+
+  --duration-fast: 100ms;
+  --duration-base: 150ms;
+  --duration-slow: 200ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+}

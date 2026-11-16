@@ -399,7 +399,7 @@ export function DeleteConfirmModal({ persona, onClose, onConfirm, noun = 'person
           type="checkbox"
           checked={force}
           onChange={(e) => setForce(e.target.checked)}
-          className="w-4 h-4 rounded border-border accent-[var(--brand)]"
+          className="w-4 h-4"
         />
         <span>Force — proceed even if tickets reference this {noun}</span>
       </label>

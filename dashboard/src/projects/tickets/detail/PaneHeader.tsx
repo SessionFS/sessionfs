@@ -116,7 +116,7 @@ export function PaneHeader({ titleRef, reassignRef, ...p }: PaneHeaderProps) {
         <StatusIcon status={t.status} size={14} />
         <span className="truncate font-mono text-xs text-text-tertiary">{t.id}</span>
         <IconButton label="Copy ticket id" variant="ghost" size="sm" onClick={p.onCopyId}>
-          {<PaneIcon name="copy" size={13} />}
+          {<PaneIcon name="copy" size={14} />}
         </IconButton>
         {t.kind === 'issue' && (
           <span className="inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-2xs font-semibold uppercase tracking-wide bg-info/15 text-info">
@@ -176,7 +176,7 @@ export function PaneHeader({ titleRef, reassignRef, ...p }: PaneHeaderProps) {
           onClick={() => p.onOpenTicket(t.parent_ticket_id!)}
           className="flex max-w-full min-w-0 items-center gap-1.5 rounded text-xs text-text-tertiary hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
         >
-          {<PaneIcon name="tree" size={13} />}
+          {<PaneIcon name="tree" size={14} />}
           <span className="sr-only">Parent Issue:</span>
           {p.parent ? (
             <span className="truncate">{p.parent.title}</span>

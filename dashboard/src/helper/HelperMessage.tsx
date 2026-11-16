@@ -39,6 +39,8 @@ import {
 import { linkButtonSmall } from './styles';
 import { renderRefLink, useHelperRefs } from './refs';
 import AnswerBoundary from './AnswerBoundary';
+import { Icon } from '../components/ui/Icon';
+import { MessagesSquare } from 'lucide-react';
 
 // ── User ──
 
@@ -528,7 +530,7 @@ export function ErrorCard({ error, actions }: { error: HelperError; actions: Err
   if (!action && actions.onRetry && error.kind !== 'upgrade_required' && error.kind !== 'budget') {
     action = (
       <Button size="sm" variant="secondary" onClick={actions.onRetry}>
-        <RetryIcon size={13} />
+        <RetryIcon size={14} />
         Retry
       </Button>
     );
@@ -570,9 +572,7 @@ function CitationRef({
 /** A small "meeting" mark so a meeting source reads as one at a glance. */
 function MeetingIcon() {
   return (
-    <svg className="h-3 w-3 shrink-0 text-text-tertiary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-    </svg>
+    <Icon icon={MessagesSquare} size={14} className="shrink-0 text-text-tertiary" />
   );
 }
 
@@ -661,7 +661,7 @@ function CopyAnswer({ text }: { text: string }) {
       aria-label={copied ? 'Copied' : 'Copy answer'}
       className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-xs text-text-tertiary transition-colors hover:bg-surface-hover hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
     >
-      {copied ? <CheckIcon size={13} className="text-success" /> : <CopyIcon size={13} />}
+      {copied ? <CheckIcon size={14} className="text-success" /> : <CopyIcon size={14} />}
       <span aria-hidden="true">{copied ? 'Copied' : 'Copy'}</span>
     </button>
   );

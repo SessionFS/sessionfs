@@ -1,9 +1,149 @@
-/* SessionFS accent + font overrides for Starlight.
-   All other colors are intentionally left to Starlight's built-in light/dark theme. */
+/* Docs on the shared foundations (docs/design/foundations-proposal.md).
+   tokens.css carries the same values as the dashboard for both themes; the
+   Starlight variables below only point at those tokens. They are declared
+   once on :root: Starlight switches theme with data-theme on <html>, which
+   re-points every token, so no per-theme block is needed here. Unlayered,
+   so they win over Starlight's own (layered) defaults in both themes. */
+@import "./tokens.css";
+
 :root {
-  --sl-color-accent-low: #1a2744;
-  --sl-color-accent: #4f9cf7;
-  --sl-color-accent-high: #a8d0ff;
-  --sl-font: 'Plus Jakarta Sans', system-ui, sans-serif;
-  --sl-font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  /* Type: Inter and JetBrains Mono, as in the dashboard and on the site. */
+  --sl-font: var(--font-sans);
+  --sl-font-mono: var(--font-mono);
+
+  /* Ink and surfaces. Starlight's scale runs from --sl-color-white (strongest
+     ink) to --sl-color-black (page), flipping between themes; mapping each
+     step to a semantic token keeps that flip. */
+  --sl-color-white:  var(--text-primary);
+  --sl-color-gray-1: var(--text-primary);
+  --sl-color-gray-2: var(--text-secondary);
+  --sl-color-gray-3: var(--text-tertiary);
+  --sl-color-gray-4: var(--border-control);
+  --sl-color-gray-5: var(--border);
+  --sl-color-gray-6: var(--surface-active);
+  --sl-color-gray-7: var(--bg-secondary);
+  --sl-color-black:  var(--bg-primary);
+
+  --sl-color-accent-low:  var(--brand-subtle);
+  --sl-color-accent:      var(--brand);
+  --sl-color-accent-high: var(--brand);
+
+  --sl-color-text:         var(--text-secondary);
+  --sl-color-text-accent:  var(--brand);
+  --sl-color-text-invert:  var(--text-on-brand);
+  --sl-color-bg:           var(--bg-primary);
+  --sl-color-bg-nav:       var(--bg-primary);
+  --sl-color-bg-sidebar:   var(--bg-primary);
+  --sl-color-bg-inline-code: var(--bg-sunken);
+  --sl-color-bg-accent:    var(--brand);
+  --sl-color-hairline-light: var(--border);
+  --sl-color-hairline:       var(--border);
+  --sl-color-hairline-shade: var(--border);
+  --sl-color-backdrop-overlay: oklch(0% 0 0 / 0.5);
+
+  /* Asides and badges: status colours carry meaning (note = brand,
+     tip = discovery, caution = warning, danger = danger, success = success). */
+  --sl-color-blue-low:   var(--brand-subtle);
+  --sl-color-blue:       var(--brand);
+  --sl-color-blue-high:  var(--brand);
+  --sl-color-purple-low: color-mix(in srgb, var(--discovery) 12%, transparent);
+  --sl-color-purple:     var(--discovery);
+  --sl-color-purple-high:var(--discovery);
+  --sl-color-orange-low: var(--warning-subtle);
+  --sl-color-orange:     var(--warning);
+  --sl-color-orange-high:var(--warning);
+  --sl-color-red-low:    var(--danger-subtle);
+  --sl-color-red:        var(--danger);
+  --sl-color-red-high:   var(--danger);
+  --sl-color-green-low:  var(--success-subtle);
+  --sl-color-green:      var(--success);
+  --sl-color-green-high: var(--success);
+
+  --sl-shadow-sm: none;
+  --sl-shadow-md: var(--shadow-md);
+  --sl-shadow-lg: var(--shadow-md);
+
+  /* Reading text: .text-body (15 / 1.55). Headings: the proposal scale. */
+  --sl-text-body: 0.9375rem;
+  --sl-text-body-sm: 0.8125rem;
+  --sl-text-code: 0.8125rem;
+  --sl-text-code-sm: 0.75rem;
+  --sl-line-height: 1.55;
+  --sl-line-height-headings: 1.3;
+  --sl-text-h1: 1.5rem;      /* 24 */
+  --sl-text-h2: 1.375rem;    /* 22, headline */
+  --sl-text-h3: 1.0625rem;   /* 17, title */
+  --sl-text-h4: 0.9375rem;   /* 15 */
+  --sl-text-h5: 0.9375rem;
+}
+
+@media (min-width: 50em) {
+  :root {
+    --sl-text-h1: 1.75rem;   /* 28, display */
+    --sl-text-h2: 1.375rem;
+    --sl-text-h3: 1.0625rem;
+    --sl-text-h4: 0.9375rem;
+  }
+}
+
+/* Headings: 600, optical sizing, slight negative tracking on the large ones. */
+.sl-markdown-content :is(h1, h2, h3, h4, h5, h6),
+.content-panel h1 {
+  font-weight: 600;
+  font-optical-sizing: auto;
+}
+.content-panel h1, .sl-markdown-content h2 { letter-spacing: -0.02em; }
+.sl-markdown-content h3 { letter-spacing: -0.005em; }
+
+/* Current page in the sidebar: a quiet brand tint, not a filled pill. */
+.sidebar-content a[aria-current='page'],
+.sidebar-content a[aria-current='page']:hover,
+.sidebar-content a[aria-current='page']:focus {
+  background-color: var(--brand-subtle);
+  color: var(--brand);
+  font-weight: 500;
+}
+
+/* Radii follow the proposal: controls 6, cards 8. */
+.sl-markdown-content :is(.card, .sl-link-card) { border-radius: var(--radius-lg); }
+.sl-markdown-content .starlight-aside { border-radius: var(--radius-md); }
+
+/* Focus ring as in the dashboard: 3 px at 70% brand, 2 px off links. */
+:where(a, button, select, input, summary, [tabindex]):focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Sidebar group labels: same size as the links (14), told apart by weight
+   and ink, as in the dashboard sidebar. */
+.sidebar-content .group-label .large {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Untitled terminal frames: no title bar. Expressive Code draws an empty bar
+   (just the window dots) above every terminal block; without a title it reads
+   as unfinished, so the block shows as a plain code well with its full border
+   and corners. Titled frames keep their header. */
+.expressive-code .frame.is-terminal:not(.has-title) {
+  --button-spacing: 0.4rem;
+}
+/* Visually hidden, not display:none, so its "Terminal window" label still
+   reaches screen readers. */
+.expressive-code .frame.is-terminal:not(.has-title) .header {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.expressive-code .frame.is-terminal:not(.has-title) pre {
+  border-top: var(--ec-brdWd) solid var(--ec-brdCol);
+  border-top-left-radius: calc(var(--ec-brdRad) + var(--ec-brdWd));
+  border-top-right-radius: calc(var(--ec-brdRad) + var(--ec-brdWd));
 }

@@ -44,7 +44,7 @@ const HelperComposer = forwardRef<HTMLTextAreaElement, {
     <div className="shrink-0 border-t border-border bg-surface px-3 pb-3 pt-3 sm:px-4 md:group-data-[size=large]/helper:px-8">
       {/* In the large panel the composer lines up with the transcript's reading column. */}
       <div className="mx-auto w-full group-data-[size=large]/helper:max-w-[52rem]">
-      <div className="rounded-xl border border-border bg-bg-primary transition-[border-color,box-shadow] focus-within:border-[var(--brand)] focus-within:shadow-[0_0_0_3px_var(--brand-glow)]">
+      <div className="rounded-xl border border-border-control hover:border-text-tertiary bg-bg-primary transition-[border-color,box-shadow] focus-within:border-[var(--brand)] focus-within:shadow-[0_0_0_3px_var(--brand-glow)]">
         <textarea
           ref={(el) => {
             innerRef.current = el;

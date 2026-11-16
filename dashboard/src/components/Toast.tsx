@@ -1,5 +1,7 @@
 import { createContext, useCallback, useState, useEffect, useRef } from 'react';
 import { Tooltip } from './ui';
+import { Icon } from './ui/Icon';
+import { X } from 'lucide-react';
 
 export interface Toast {
   id: string;
@@ -110,9 +112,7 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: (id: string)
           aria-label="Dismiss notification"
           className="absolute top-2 right-2 text-text-tertiary hover:text-text-secondary transition-colors"
         >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M18 6L6 18M6 6l12 12" />
-          </svg>
+          <Icon icon={X} size={14} />
         </button>
       </Tooltip>
     </div>

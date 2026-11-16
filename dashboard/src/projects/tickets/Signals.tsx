@@ -1,4 +1,6 @@
+import { Eye, Lock, ShieldCheck, TriangleAlert, type LucideIcon } from 'lucide-react';
 import type { Ticket } from '../../api/client';
+import { Icon } from '../../components/ui/Icon';
 import {
   childRollup,
   jiraKey,
@@ -17,18 +19,9 @@ import {
  * its meaning in words (icon + text), so colour is never the only cue.
  * `compact` is the phone layout (no Jira, a bare blocker count). */
 
-function Ic({ d }: { d: string }) {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" className="tk-pill-ic">
-      <path d={d} />
-    </svg>
-  );
+function Ic({ icon }: { icon: LucideIcon }) {
+  return <Icon icon={icon} size={14} className="tk-pill-ic" />;
 }
-
-const SHIELD = 'M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6zM8.5 12l2.5 2.5 4.5-5';
-const WARN = 'M12 3l9.5 17h-19zM12 10v4M12 17v.01';
-const EYE = 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6';
-const LOCK = 'M7 11V8a5 5 0 0 1 10 0v3M5 11h14v10H5z';
 
 export function Signals({ ticket: t, byId, compact = false }: { ticket: Ticket; byId: ById; compact?: boolean }) {
   const review = reviewSignal(t);
@@ -40,7 +33,7 @@ export function Signals({ ticket: t, byId, compact = false }: { ticket: Ticket; 
     <>
       {review && (
         <span className={`tk-pill tk-pill-${review.kind}`} title={reviewSignalTitle(review)}>
-          <Ic d={review.kind === 'clean' ? SHIELD : review.kind === 'changes' ? WARN : EYE} />
+          <Ic icon={review.kind === 'clean' ? ShieldCheck : review.kind === 'changes' ? TriangleAlert : Eye} />
           {reviewSignalText(review)}
         </span>
       )}
@@ -49,7 +42,7 @@ export function Signals({ ticket: t, byId, compact = false }: { ticket: Ticket; 
           className="tk-pill tk-pill-blocked"
           title={`Waiting on ${blockers} unfinished ticket${blockers === 1 ? '' : 's'}`}
         >
-          <Ic d={LOCK} />
+          <Ic icon={Lock} />
           {compact ? (
             <>
               {blockers}

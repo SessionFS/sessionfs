@@ -13,19 +13,26 @@ export default defineConfig({
           tag: 'script',
           content: `(function(){var p=new URLSearchParams(window.location.search);var t=p.get('theme');if(t==='dark'||t==='light'){document.documentElement.setAttribute('data-theme',t);try{localStorage.setItem('starlight-theme',t)}catch(e){}}})();`,
         },
+        {
+          // Wide tables scroll sideways; make the ones that do reachable by
+          // keyboard so they can be scrolled without a mouse (WCAG 2.1.1).
+          tag: 'script',
+          content: `document.addEventListener('DOMContentLoaded',function(){var m=function(){document.querySelectorAll('.sl-markdown-content table').forEach(function(t){if(t.scrollWidth>t.clientWidth+1){t.setAttribute('tabindex','0')}else{t.removeAttribute('tabindex')}})};m();var r;window.addEventListener('resize',function(){clearTimeout(r);r=setTimeout(m,150)})});`,
+        },
         { tag: 'link', attrs: { rel: 'preconnect', href: 'https://fonts.googleapis.com' } },
         { tag: 'link', attrs: { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossorigin: true } },
         {
           tag: 'link',
           attrs: {
             rel: 'stylesheet',
-            href: 'https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap',
+            href: 'https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,400..700&family=JetBrains+Mono:wght@400;500&display=swap',
           },
         },
       ],
       logo: {
-        light: './src/assets/logo.svg',
+        light: './src/assets/logo-light.svg',
         dark: './src/assets/logo.svg',
+        replacesTitle: true,
       },
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/SessionFS/sessionfs' },
@@ -39,6 +46,9 @@ export default defineConfig({
             { label: 'Features', link: '/features/' },
             { label: 'Pricing', link: '/pricing/' },
             { label: 'Enterprise', link: '/enterprise/' },
+            { label: 'Terms', link: '/terms/' },
+            { label: 'Privacy', link: '/privacy/' },
+            { label: 'Report a security issue', link: 'mailto:security@sessionfs.dev' },
           ],
         },
         {

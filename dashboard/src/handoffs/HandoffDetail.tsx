@@ -10,6 +10,8 @@ import { Badge } from '../components/Badge';
 import { Card, Button } from '../components/ui';
 import type { HandoffDetail as HandoffDetailType, HandoffSessionSummary } from '../api/client';
 import { errorMessage } from '../utils/errorMessage';
+import { Icon } from '../components/ui/Icon';
+import { Check, X } from 'lucide-react';
 
 /** Map handoff statuses to Badge variants. */
 const STATUS_VARIANT: Record<string, 'warning' | 'success' | 'danger'> = {
@@ -77,13 +79,9 @@ function HandoffStepper({ handoff }: { handoff: HandoffDetailType }) {
                   style={state === 'future' ? { backgroundColor: 'var(--bg-elevated)' } : undefined}
                 >
                   {state === 'completed' ? (
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-                    </svg>
+                    <Icon icon={Check} />
                   ) : state === 'expired' ? (
-                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-                    </svg>
+                    <Icon icon={X} />
                   ) : (
                     <span>{i + 1}</span>
                   )}
@@ -312,7 +310,7 @@ export default function HandoffDetail() {
 
       {/* Sender message */}
       {handoff.message && (
-        <div className="mb-5 pl-4" style={{ borderLeft: '2px solid var(--brand-glow)' }}>
+        <div className="mb-5 pl-4" style={{ borderLeft: '2px solid var(--border-strong)' }}>
           <p className="text-micro text-text-tertiary mb-1">Message from {handoff.sender_email}</p>
           <p className="text-sm text-text-secondary whitespace-pre-wrap">{handoff.message}</p>
         </div>

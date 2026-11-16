@@ -16,6 +16,8 @@ import {
   type AssigneeNote,
 } from './assignee';
 import { PersonAvatar, PersonaGlyph } from './AssigneeLabel';
+import { Icon } from '../../components/ui/Icon';
+import { Bell, TriangleAlert } from 'lucide-react';
 
 /* ── Assignee picker ──
  *
@@ -220,18 +222,12 @@ function SettingsLink({ to, children }: { to: string; children: ReactNode }) {
 
 function WarningIcon() {
   return (
-    <svg className="mt-px h-3 w-3 shrink-0 text-warning" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
-      <path d="M12 9v4M12 17h.01" />
-    </svg>
+    <Icon icon={TriangleAlert} size={14} className="mt-px shrink-0 text-warning" />
   );
 }
 
 function BellIcon() {
   return (
-    <svg className="h-3 w-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
-      <path d="M13.7 21a2 2 0 0 1-3.4 0" />
-    </svg>
+    <Icon icon={Bell} size={14} className="shrink-0" />
   );
 }

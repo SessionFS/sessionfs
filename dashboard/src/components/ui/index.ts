@@ -18,3 +18,4 @@ export { Checkbox } from './Checkbox';
 export { Switch } from './Switch';
 export { MonoText } from './MonoText';
 export { Markdown } from './Markdown';
+export { Icon, type IconSize } from './Icon';

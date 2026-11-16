@@ -40,6 +40,8 @@ import { ChatMessages } from './ChatMessages';
 import { messagesLabel, providerLabel } from './chat';
 import { Term } from '../help/Term';
 import type { GlossaryId } from '../help/glossary';
+import { Icon } from '../components/ui/Icon';
+import { ChevronLeft } from 'lucide-react';
 
 interface MeetingDetailViewProps {
   meetingId: string;
@@ -111,9 +113,7 @@ export function MeetingDetailView({
 
   const back = (
     <Button variant="ghost" size="sm" onClick={onBack} className="-ml-2">
-      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <polyline points="15 18 9 12 15 6" />
-      </svg>
+      <Icon icon={ChevronLeft} />
       All conversations
     </Button>
   );

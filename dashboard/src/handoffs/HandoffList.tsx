@@ -6,6 +6,8 @@ import { Badge, ToolBadge } from '../components/Badge';
 import { Tabs, TabPanel, PageContainer, PageHeader } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
 import { Term } from '../help/Term';
+import { Icon } from '../components/ui/Icon';
+import { Inbox, Send } from 'lucide-react';
 
 type Tab = 'inbox' | 'sent';
 
@@ -128,10 +130,9 @@ export default function HandoffList() {
         <div className="text-center py-16">
           {isInbox ? (
             <>
-              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mx-auto mb-4 opacity-30">
-                <polyline points="22 12 16 12 14 15 10 15 8 12 2 12" />
-                <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
-              </svg>
+              <div className="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-full bg-surface-active text-text-tertiary">
+                <Icon icon={Inbox} size={20} />
+              </div>
               <p className="text-md font-semibold text-text-primary mb-1">No handoffs received yet</p>
               <p className="text-sm text-text-tertiary mb-4">
                 When a teammate hands off a session to you, it will appear here.
@@ -147,10 +148,9 @@ export default function HandoffList() {
             </>
           ) : (
             <>
-              <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mx-auto mb-4 opacity-30">
-                <line x1="22" y1="2" x2="11" y2="13" />
-                <polygon points="22 2 15 22 11 13 2 9 22 2" />
-              </svg>
+              <div className="mx-auto mb-4 flex h-10 w-10 items-center justify-center rounded-full bg-surface-active text-text-tertiary">
+                <Icon icon={Send} size={20} />
+              </div>
               <p className="text-md font-semibold text-text-primary mb-1">No handoffs sent yet</p>
               <p className="text-sm text-text-tertiary mb-4">
                 Hand off a session to share context with a teammate.

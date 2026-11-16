@@ -7,6 +7,8 @@ import { renderSnippet } from '../utils/highlight';
 import RelativeDate from './RelativeDate';
 import { Kbd } from './ui/Kbd';
 import { useHelper } from '../helper/HelperProvider';
+import { Icon } from './ui/Icon';
+import { Search, Sparkles } from 'lucide-react';
 
 interface GroupedResults {
   sessions: SearchResult[];
@@ -257,19 +259,7 @@ export default function SearchBar({ inputId, className }: { inputId?: string; cl
   return (
     <div ref={wrapperRef} className={className || 'relative flex-1 max-w-md mx-4'}>
       <div className="relative">
-        <svg
-          className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-text-muted"
-          fill="none"
-          stroke="currentColor"
-          viewBox="0 0 24 24"
-        >
-          <path
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth={2}
-            d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
-          />
-        </svg>
+        <Icon icon={Search} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-text-muted" />
         <input
           ref={inputRef}
           id={inputId}
@@ -289,7 +279,7 @@ export default function SearchBar({ inputId, className }: { inputId?: string; cl
           }}
           onKeyDown={handleKeyDown}
           placeholder="Search sessions…"
-          className="w-full pl-8 pr-12 py-1.5 bg-bg-sunken border border-border rounded-lg text-sm text-text-primary placeholder:text-text-tertiary focus-visible:outline-none focus-visible:border-[var(--brand)] transition-[background-color,border-color,box-shadow] duration-150 ease-out focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+          className="w-full pl-8 pr-12 py-1.5 bg-bg-sunken border border-border-control hover:border-text-tertiary rounded-lg text-sm text-text-primary placeholder:text-text-tertiary focus-visible:outline-none focus-visible:border-[var(--brand)] transition-[background-color,border-color,box-shadow] duration-150 ease-out focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
         />
         <span className="absolute right-2.5 top-1/2 -translate-y-1/2 hidden sm:inline-flex">
           <Kbd>{'\u2318'}K</Kbd>
@@ -316,19 +306,7 @@ export default function SearchBar({ inputId, className }: { inputId?: string; cl
             }}
             className="flex items-center gap-2 px-3 py-2 text-sm text-text-secondary hover:bg-surface-hover hover:text-text-primary cursor-pointer transition-colors duration-150 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
           >
-            <svg
-              className="w-4 h-4 text-brand shrink-0"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              viewBox="0 0 24 24"
-              aria-hidden="true"
-            >
-              <path d="M12 3l1.8 4.2L18 9l-4.2 1.8L12 15l-1.8-4.2L6 9l4.2-1.8L12 3z" />
-              <path d="M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z" />
-            </svg>
+            <Icon icon={Sparkles} className="text-brand shrink-0" />
             Ask the helper…
           </li>
         </ul>

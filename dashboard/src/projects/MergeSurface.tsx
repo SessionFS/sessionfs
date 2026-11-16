@@ -15,6 +15,8 @@ import {
   Select,
 } from '../components/ui';
 import { errorMessage } from '../utils/errorMessage';
+import { Icon } from '../components/ui/Icon';
+import { CircleCheck, CircleX } from 'lucide-react';
 
 function isDryRun(r: MergeDryRunResponse | MergeExecuteResponse): r is MergeDryRunResponse {
   return r.dry_run === true;
@@ -190,16 +192,9 @@ function ExecuteOutcome({ result }: { result: MergeExecuteResponse }) {
     >
       <div className="flex items-center gap-2 mb-2">
         {isSuccess ? (
-          <svg className="w-5 h-5 text-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
-            <polyline points="22 4 12 14.01 9 11.01" />
-          </svg>
+          <Icon icon={CircleCheck} size={20} className="text-success" />
         ) : (
-          <svg className="w-5 h-5 text-[var(--danger)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="10" />
-            <line x1="15" y1="9" x2="9" y2="15" />
-            <line x1="9" y1="9" x2="15" y2="15" />
-          </svg>
+          <Icon icon={CircleX} size={20} className="text-[var(--danger)]" />
         )}
         <span className={`text-sm font-semibold ${isSuccess ? 'text-success' : 'text-[var(--danger)]'}`}>
           Merge {isSuccess ? 'completed' : 'failed'}

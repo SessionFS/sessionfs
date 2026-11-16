@@ -9,6 +9,8 @@ import {
   withoutApprovalReasons,
 } from '../../approvals/PendingApprovals';
 import { Term } from '../../help/Term';
+import { Icon } from '../../components/ui/Icon';
+import { Check as CheckGlyph } from 'lucide-react';
 
 interface TrustSealProps {
   readiness: Pick<Readiness, 'ready' | 'reasons' | 'verdict'> & Partial<Pick<Readiness, 'approvals' | 'warnings'>>;
@@ -18,9 +20,7 @@ interface TrustSealProps {
 
 function Check() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M20 6 9 17l-5-5" />
-    </svg>
+    <Icon icon={CheckGlyph} size={14} />
   );
 }
 

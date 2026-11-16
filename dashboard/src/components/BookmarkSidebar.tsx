@@ -168,7 +168,7 @@ export default function BookmarkSidebar({
                     if (e.key === 'Escape') setEditingFolder(null);
                   }}
                   autoFocus
-                  className="w-full px-1.5 py-0.5 text-sm bg-bg-primary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                  className="w-full px-1.5 py-0.5 text-sm bg-bg-primary border border-border-control hover:border-text-tertiary rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
                 />
                 <div className="flex gap-1">
                   {PRESET_COLORS.map((c) => (
@@ -232,7 +232,7 @@ export default function BookmarkSidebar({
             {menuFolder === f.id && (
               <div
                 ref={menuRef}
-                className="absolute right-0 top-8 z-10 bg-bg-primary border border-border rounded shadow-lg py-1 min-w-[100px]"
+                className="absolute right-0 top-8 z-10 bg-overlay border border-border rounded shadow-[var(--shadow-overlay)] py-1 min-w-[100px]"
               >
                 <button
                   onClick={() => handleStartEdit(f)}
@@ -264,7 +264,7 @@ export default function BookmarkSidebar({
               }}
               placeholder="Folder name"
               autoFocus
-              className="w-full px-2 py-1 text-sm bg-bg-secondary border border-border rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+              className="w-full px-2 py-1 text-sm bg-bg-secondary border border-border-control hover:border-text-tertiary rounded text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
             />
             <div className="flex gap-1">
               {PRESET_COLORS.map((c) => (

@@ -6,6 +6,8 @@ import { Button } from '../components/ui/Button';
 import { Alert } from '../components/ui/Alert';
 import { errorMessage } from '../utils/errorMessage';
 import type { MessageTarget } from '../api/client';
+import { Icon } from '../components/ui/Icon';
+import { MessageSquare } from 'lucide-react';
 
 const PAGE_SIZE = 50;
 const HIGHLIGHT_MS = 2400;
@@ -166,10 +168,10 @@ export default function ConversationView({ sessionId, targetMessage, targetKey }
       )}
 
       {messages.length === 0 && !isLoading && (
-        <div className="flex flex-col items-center justify-center py-16">
-          <svg className="w-10 h-10 text-text-tertiary mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-          </svg>
+        <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
+          <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-surface-active text-text-tertiary">
+            <Icon icon={MessageSquare} size={20} />
+          </div>
           <p className="text-md font-semibold text-text-primary mb-1">No messages yet</p>
           <p className="text-sm text-text-tertiary">This session contains no messages.</p>
         </div>

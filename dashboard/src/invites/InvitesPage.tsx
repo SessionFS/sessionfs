@@ -24,6 +24,8 @@ import { useAcceptInvite, useDeclineInvite, useMyInvites } from './useInvites';
 import { Button, Card, Textarea, PageContainer, PageHeader } from '../components/ui';
 import { Badge } from '../components/Badge';
 import { errorMessage } from '../utils/errorMessage';
+import { Icon } from '../components/ui/Icon';
+import { UserPlus } from 'lucide-react';
 
 export default function InvitesPage() {
   const invites = useMyInvites();
@@ -75,12 +77,9 @@ export default function InvitesPage() {
 
       {rows.length === 0 ? (
         <div className="text-center py-12">
-          <svg className="mx-auto mb-3 opacity-30" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-            <circle cx="9" cy="7" r="4" />
-            <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-            <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-          </svg>
+          <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-surface-active text-text-tertiary">
+            <Icon icon={UserPlus} size={20} />
+          </div>
           <p className="text-md font-semibold text-text-primary mb-1">No pending invites</p>
           <p className="text-sm text-text-tertiary">
             You don't have any pending organization invitations.
@@ -95,7 +94,7 @@ export default function InvitesPage() {
               <Card
                 key={inv.invite_id}
                 className="p-4"
-                style={isHighlight ? { boxShadow: '0 0 0 2px var(--brand-glow)' } : undefined}
+                style={isHighlight ? { boxShadow: '0 0 0 2px var(--brand)' } : undefined}
                 data-testid={`invite-${inv.invite_id}`}
               >
                 <div className="flex items-center justify-between gap-3 mb-2">

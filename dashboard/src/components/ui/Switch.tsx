@@ -21,7 +21,7 @@ export function Switch({ checked, onChange, label, id, disabled, className = '',
         aria-checked={checked}
         disabled={disabled}
         onClick={() => onChange(!checked)}
-        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border border-border transition-colors duration-150 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] disabled:cursor-not-allowed disabled:opacity-50 ${checked ? 'bg-brand' : 'bg-bg-tertiary'}`}
+        className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors duration-150 outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] disabled:cursor-not-allowed disabled:opacity-50 ${checked ? 'bg-brand border-brand' : 'bg-[var(--border-control)] border-[var(--border-control)]'}`}
       >
         <span
           aria-hidden="true"

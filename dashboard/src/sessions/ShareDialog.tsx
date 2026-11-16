@@ -123,7 +123,7 @@ export default function ShareDialog({ sessionId, open, onClose }: Props) {
               </div>
               {link.has_password && (
                 <p className="text-xs text-text-tertiary">
-                  🔒 Password-protected — viewers must enter the password.
+                  Password-protected — viewers must enter the password.
                 </p>
               )}
               <p className="text-xs text-text-tertiary">

@@ -16,6 +16,8 @@ import { ContactAvatar, ExternalBadge } from './ContactChip';
 import { ContactFormDialog } from './ContactFormDialog';
 import { MergeContactDialog } from './MergeContactDialog';
 import { contactErrorMessage, conversationHref, shortDate, ticketHref } from './format';
+import { Icon } from '../../components/ui/Icon';
+import { ChevronLeft } from 'lucide-react';
 
 /**
  * One contact: who they are, every name transcripts use for them, and where
@@ -48,9 +50,7 @@ export function ContactDetail({
 
   const back = (
     <Button variant="ghost" size="sm" onClick={onBack} className="-ml-2">
-      <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <polyline points="15 18 9 12 15 6" />
-      </svg>
+      <Icon icon={ChevronLeft} />
       All contacts
     </Button>
   );

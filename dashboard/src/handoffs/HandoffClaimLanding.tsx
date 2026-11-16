@@ -207,7 +207,7 @@ export default function HandoffClaimLanding() {
                 className="text-sm text-text-secondary px-3 py-2 rounded-lg border border-border bg-surface line-clamp-4"
               >
                 <span className="text-micro text-text-tertiary block mb-0.5">
-                  {msg.role === 'assistant' ? '🤖 Assistant' : msg.role === 'user' ? '👤 User' : msg.role}
+                  {msg.role === 'assistant' ? 'Assistant' : msg.role === 'user' ? 'User' : msg.role}
                 </span>
                 <p className="whitespace-pre-wrap">{msg.text}</p>
               </div>

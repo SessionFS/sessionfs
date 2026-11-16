@@ -390,7 +390,7 @@ export default function HelperActionCard({
         action={
           gone ? undefined : (
             <Button size="sm" variant="secondary" onClick={() => void query.refetch()}>
-              <RetryIcon size={13} />
+              <RetryIcon size={14} />
               Retry
             </Button>
           )
@@ -590,7 +590,7 @@ export default function HelperActionCard({
           }`}
           aria-hidden="true"
         >
-          {isTrash ? <TrashIcon size={15} /> : <LayersIcon size={15} />}
+          {isTrash ? <TrashIcon size={16} /> : <LayersIcon size={16} />}
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-2 gap-y-1">
@@ -643,7 +643,7 @@ export default function HelperActionCard({
             action={
               lastDecision ? (
                 <Button size="sm" variant="secondary" onClick={() => run(lastDecision)}>
-                  <RetryIcon size={13} />
+                  <RetryIcon size={14} />
                   Retry
                 </Button>
               ) : undefined

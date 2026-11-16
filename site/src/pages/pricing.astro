@@ -5,7 +5,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 
   <!-- Positioning Banner -->
   <div class="bg-brand/10 border-b border-brand/20 py-3 px-5 text-center">
-    <span class="pulse-badge inline-flex items-center gap-2 bg-surface border border-brand/30 rounded-full px-5 py-2 text-sm font-mono">
+    <span class="inline-flex items-center gap-2 bg-surface border border-brand/30 rounded-sm px-5 py-2 text-sm font-mono">
       <span class="w-2 h-2 rounded-full bg-brand inline-block"></span>
       <span class="text-brand font-medium">Start free</span>
       <span class="text-muted-dim">— add coordination, governance, and enterprise deployment when you need them</span>
@@ -13,9 +13,9 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   </div>
 
   <!-- Hero -->
-  <section class="relative pt-24 sm:pt-32 pb-16 px-5 noise">
+  <section class="relative pt-24 sm:pt-32 pb-16 px-5">
     <div class="max-w-3xl mx-auto text-center">
-      <h1 class="fade-up font-heading text-4xl sm:text-5xl font-extrabold tracking-tight mb-5">
+      <h1 class="fade-up text-4xl sm:text-5xl font-semibold tracking-tight mb-5">
         Pricing for the agent coordination stack.
       </h1>
       <p class="fade-up text-lg text-muted leading-relaxed max-w-xl mx-auto mb-3">
@@ -25,10 +25,10 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Pricing Tiers -->
-  <section class="relative py-16 sm:py-20 px-5 noise">
+  <section class="relative py-16 sm:py-20 px-5">
     <div class="max-w-5xl mx-auto">
       <p class="fade-up text-center text-base text-muted-dim mb-8 border border-border rounded-lg px-5 py-3 max-w-xl mx-auto">
         These tiers map to how teams adopt agents: local memory first, shared memory next, then governed coordination and enterprise deployment.
@@ -36,10 +36,10 @@ import BaseLayout from '../layouts/BaseLayout.astro';
       <div class="grid sm:grid-cols-2 lg:grid-cols-4 gap-5">
 
         <!-- Free -->
-        <div class="glass price-card p-6 fade-up flex flex-col">
+        <div class="site-card p-6 fade-up flex flex-col">
           <div class="mb-5">
             <div class="text-sm font-medium text-muted-dim mb-1">Free</div>
-            <div class="font-heading text-3xl font-extrabold mb-1">$0</div>
+            <div class="text-3xl font-semibold mb-1">$0</div>
             <div class="text-sm text-muted-dim">forever</div>
           </div>
           <ul class="space-y-2.5 text-base text-muted flex-1 mb-6">
@@ -49,14 +49,14 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <li class="flex items-start gap-2"><span class="text-accent mt-0.5">&#10003;</span>Skills marketplace (browse + download)</li>
             <li class="flex items-start gap-2"><span class="text-accent mt-0.5">&#10003;</span>Agents, tickets + agent runs</li>
           </ul>
-          <a href="/quickstart/" class="block text-center border border-border text-txt font-semibold rounded-lg px-5 py-2.5 hover:border-muted transition text-sm">Get started</a>
+          <a href="/quickstart/" class="block text-center border border-border text-txt font-semibold rounded-md px-5 py-2.5 hover:border-muted transition text-sm">Get started</a>
         </div>
 
         <!-- Starter -->
-        <div class="glass price-card p-6 fade-up flex flex-col">
+        <div class="site-card p-6 fade-up flex flex-col">
           <div class="mb-5">
             <div class="text-sm font-medium text-muted-dim mb-1">Starter</div>
-            <div class="font-heading text-3xl font-extrabold mb-1">$4.99<span class="text-base font-normal text-muted-dim">/mo</span></div>
+            <div class="text-3xl font-semibold mb-1">$4.99<span class="text-base font-normal text-muted-dim">/mo</span></div>
             <div class="text-sm text-muted-dim">~500MB storage</div>
           </div>
           <ul class="space-y-2.5 text-base text-muted flex-1 mb-6">
@@ -69,17 +69,17 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <li class="flex items-start gap-2"><span class="text-accent mt-0.5">&#10003;</span>Private skill publishing</li>
             <li class="flex items-start gap-2"><span class="text-accent mt-0.5">&#10003;</span>Personal native plugin catalog</li>
           </ul>
-          <a href="/quickstart/" class="block text-center border border-border text-txt font-semibold rounded-lg px-5 py-2.5 hover:border-muted transition text-sm">Get started</a>
+          <a href="/quickstart/" class="block text-center border border-border text-txt font-semibold rounded-md px-5 py-2.5 hover:border-muted transition text-sm">Get started</a>
         </div>
 
         <!-- Pro (highlighted) -->
-        <div class="relative glass price-card p-6 fade-up flex flex-col" style="border-color: rgba(79,156,247,0.45); background: rgba(79,156,247,0.05);">
+        <div class="relative site-card p-6 fade-up flex flex-col" style="border-color: var(--brand);">
           <div class="absolute -top-3 left-1/2 -translate-x-1/2">
-            <span class="bg-brand text-white text-[11px] font-bold px-3 py-1 rounded-full tracking-wide uppercase">Most popular</span>
+            <span class="bg-brand text-on-brand text-[11px] font-semibold px-3 py-1 rounded-sm tracking-wide uppercase">Most popular</span>
           </div>
           <div class="mb-5">
             <div class="text-sm font-medium text-brand mb-1">Pro</div>
-            <div class="font-heading text-3xl font-extrabold mb-1">$14.99<span class="text-base font-normal text-muted-dim">/mo</span></div>
+            <div class="text-3xl font-semibold mb-1">$14.99<span class="text-base font-normal text-muted-dim">/mo</span></div>
             <div class="text-sm text-muted-dim">~2GB storage</div>
           </div>
           <ul class="space-y-2.5 text-base text-muted flex-1 mb-6">
@@ -96,14 +96,14 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <li class="flex items-start gap-2"><span class="text-accent mt-0.5">&#10003;</span>Portable rules (5 tools)</li>
             <li class="flex items-start gap-2"><span class="text-accent mt-0.5">&#10003;</span>DLP / secret scrubbing</li>
           </ul>
-          <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Demo%20Request" class="block text-center bg-brand text-white font-semibold rounded-lg px-5 py-2.5 hover:brightness-110 transition text-sm">Book a Demo</a>
+          <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Demo%20Request" class="block text-center bg-brand text-on-brand font-semibold rounded-md px-5 py-2.5 hover:bg-brand-hover transition text-sm">Book a Demo</a>
         </div>
 
         <!-- Team -->
-        <div class="glass price-card p-6 fade-up flex flex-col">
+        <div class="site-card p-6 fade-up flex flex-col">
           <div class="mb-5">
             <div class="text-sm font-medium text-muted-dim mb-1">Team</div>
-            <div class="font-heading text-3xl font-extrabold mb-1">$14.99<span class="text-base font-normal text-muted-dim">/user/mo</span></div>
+            <div class="text-3xl font-semibold mb-1">$14.99<span class="text-base font-normal text-muted-dim">/user/mo</span></div>
             <div class="text-sm text-muted-dim">1GB per user</div>
           </div>
           <ul class="space-y-2.5 text-base text-muted flex-1 mb-6">
@@ -122,29 +122,29 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <li class="flex items-start gap-2"><span class="text-accent mt-0.5">&#10003;</span>Weekly org activity digest</li>
             <li class="flex items-start gap-2"><span class="text-accent mt-0.5">&#10003;</span>Priority support</li>
           </ul>
-          <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Demo%20Request" class="block text-center border border-border text-txt font-semibold rounded-lg px-5 py-2.5 hover:border-muted transition text-sm">Book a Demo</a>
+          <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Demo%20Request" class="block text-center border border-border text-txt font-semibold rounded-md px-5 py-2.5 hover:border-muted transition text-sm">Book a Demo</a>
         </div>
 
       </div>
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Enterprise CTA -->
-  <section class="relative py-16 px-5 noise">
+  <section class="relative py-16 px-5">
     <div class="max-w-2xl mx-auto">
-      <div class="glass fade-up p-8 sm:p-10 text-center" style="border-color: rgba(79,156,247,0.3);">
-        <div class="text-3xl mb-4"><svg class="w-6 h-6" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21"/></svg></div>
-        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-3">Enterprise</h2>
+      <div class="site-card fade-up p-8 sm:p-10 text-center" style="border-color: color-mix(in srgb, var(--brand) 30%, transparent);">
+        <div class="text-3xl mb-4"><svg class="w-6 h-6 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 21h16.5M4.5 3h15M5.25 3v18m13.5-18v18M9 6.75h1.5m-1.5 3h1.5m-1.5 3h1.5m3-6H15m-1.5 3H15m-1.5 3H15M9 21v-3.375c0-.621.504-1.125 1.125-1.125h3.75c.621 0 1.125.504 1.125 1.125V21"/></svg></div>
+        <h2 class="text-2xl sm:text-3xl font-semibold mb-3">Enterprise</h2>
         <p class="text-muted mb-2 leading-relaxed">Self-hosted Kubernetes deployment on your infrastructure. Your data never leaves your network.</p>
         <p class="text-muted-dim text-base mb-8 leading-relaxed">HIPAA-ready, single sign-on (OIDC), SLA, dedicated support, air-gapped deployment options, an org skills policy compiled into each tool&rsquo;s managed settings, a session helper that answers questions across your sessions with citations (your own model key), two-way Jira Cloud sync with custom story templates, Confluence publishing, and approval policies that hold merges and knowledge-base promotion until the right people sign off.</p>
         <div class="flex flex-col sm:flex-row gap-3 justify-center">
-          <a href="/enterprise/" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition">
+          <a href="/enterprise/" class="inline-flex items-center justify-center gap-2 bg-brand text-on-brand font-semibold rounded-md px-7 py-3 hover:bg-brand-hover transition">
             Learn about Enterprise
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
           </a>
-          <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Enterprise" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-lg px-7 py-3 hover:border-muted transition">
+          <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Enterprise" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-md px-7 py-3 hover:border-muted transition">
             Contact sales
           </a>
         </div>
@@ -152,32 +152,32 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- FAQ -->
-  <section class="relative py-16 sm:py-20 px-5 noise">
+  <section class="relative py-16 sm:py-20 px-5">
     <div class="max-w-3xl mx-auto">
-      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-12">Frequently asked questions</h2>
+      <h2 class="fade-up text-3xl font-semibold text-center mb-12">Frequently asked questions</h2>
 
       <div class="space-y-5">
 
-        <div class="glass fade-up p-6">
-          <h3 class="font-heading font-semibold text-base mb-2">Can I start for free?</h3>
+        <div class="site-card fade-up p-6">
+          <h3 class="font-semibold text-base mb-2">Can I start for free?</h3>
           <p class="text-muted text-base leading-relaxed">Yes. Local capture, resume, search, agents, tickets, and agent runs are free. Paid plans add hosted sync, team-wide knowledge, review loops, service keys, governance controls, and enterprise deployment options.</p>
         </div>
 
-        <div class="glass fade-up p-6">
-          <h3 class="font-heading font-semibold text-base mb-2">Why storage-based pricing instead of per seat?</h3>
+        <div class="site-card fade-up p-6">
+          <h3 class="font-semibold text-base mb-2">Why storage-based pricing instead of per seat?</h3>
           <p class="text-muted text-base leading-relaxed">Session data is the actual cost driver — not headcount. A solo developer running intensive sessions can generate more storage than a large team of occasional users. Storage pricing is honest: you pay proportional to what you actually use and what it costs us to store and serve.</p>
         </div>
 
-        <div class="glass fade-up p-6">
-          <h3 class="font-heading font-semibold text-base mb-2">Do I need to provide an LLM API key?</h3>
+        <div class="site-card fade-up p-6">
+          <h3 class="font-semibold text-base mb-2">Do I need to provide an LLM API key?</h3>
           <p class="text-muted text-base leading-relaxed">Only for LLM-powered features like the Judge and narrative summaries. Bring your own key (BYOK) — a saved key is encrypted at rest, never shown again, and only sent to the provider you saved it for. Works with 14 built-in providers (Anthropic, OpenAI, Google Gemini, DeepSeek, Mistral, Groq and more) or any OpenAI-compatible endpoint including OpenRouter, LiteLLM, vLLM, Ollama, and Azure OpenAI. Deterministic features like session capture, resume, search, and basic summaries require no API key at all.</p>
         </div>
 
-        <div class="glass fade-up p-6">
-          <h3 class="font-heading font-semibold text-base mb-2">What is the difference between cloud sync and local mode?</h3>
+        <div class="site-card fade-up p-6">
+          <h3 class="font-semibold text-base mb-2">What is the difference between cloud sync and local mode?</h3>
           <p class="text-muted text-base leading-relaxed">The daemon defaults to local-only — sessions stay on your machine. Cloud sync is an explicit opt-in. You can push individual sessions or enable auto-sync. Enterprise users can self-host the entire backend so nothing ever leaves their network.</p>
         </div>
 
@@ -185,7 +185,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
 </BaseLayout>
 

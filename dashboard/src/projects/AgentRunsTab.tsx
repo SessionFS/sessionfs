@@ -40,6 +40,8 @@ import { ApiError, type AgentRun, type AgentRunReplayInput, type AgentRunReplayR
 import { errorMessage } from '../utils/errorMessage';
 import { safeHttpUrl } from '../utils/url';
 import { Term } from '../help/Term';
+import { Icon } from '../components/ui/Icon';
+import { Activity } from 'lucide-react';
 
 // AgentRun `ci_run_url` is operator-supplied and stored verbatim, so it is
 // treated as untrusted: safeHttpUrl only links http(s) URLs and falls back to
@@ -172,7 +174,7 @@ export default function AgentRunsTab({ projectId, initialRunId = null }: AgentRu
             placeholder="persona"
             value={personaFilter}
             onChange={(e) => setPersonaFilter(e.target.value)}
-            className="w-28 bg-bg-sunken border border-border rounded-lg px-3 py-2 text-sm text-text-primary font-mono placeholder:text-text-tertiary outline-none focus:border-[var(--brand)] focus:shadow-[0_0_0_3px_var(--brand-glow)]"
+            className="w-28 bg-bg-sunken border border-border-control hover:border-text-tertiary rounded-lg px-3 py-2 text-sm text-text-primary font-mono placeholder:text-text-tertiary outline-none focus:border-[var(--brand)] focus:shadow-[0_0_0_3px_var(--brand-glow)]"
           />
           <Button
             variant="secondary"
@@ -202,9 +204,9 @@ export default function AgentRunsTab({ projectId, initialRunId = null }: AgentRu
 
       {runs.length === 0 ? (
         <div className="rounded-lg border border-border p-8 text-center bg-surface">
-          <svg className="mx-auto mb-3 opacity-30" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="var(--text-tertiary)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
-          </svg>
+          <div className="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-surface-active text-text-tertiary">
+            <Icon icon={Activity} size={20} />
+          </div>
           <p className="text-md font-semibold text-text-primary mb-1">No runs yet</p>
           <p className="text-sm text-text-tertiary">
             Wire up <code className="font-mono text-text-secondary">sfs agent run</code> in

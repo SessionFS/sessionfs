@@ -17,6 +17,8 @@ import Skeleton from '../components/Skeleton';
 import { Dropdown } from '../components/ui/Dropdown';
 import { errorMessage } from '../utils/errorMessage';
 import { Term } from '../help/Term';
+import { Icon } from '../components/ui/Icon';
+import { Check, ChevronDown, ChevronRight, CircleCheck, X } from 'lucide-react';
 
 interface Props {
   sessionId: string;
@@ -70,7 +72,7 @@ export default function AuditTab({ sessionId, messageCount, sessionTitle, onJump
   if (isRunning) {
     const estimatedSeconds = Math.max(5, Math.round(messageCount * 0.5));
     return (
-      <div className="flex flex-col items-center justify-center py-16">
+      <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
         <div className="bg-bg-secondary border border-border rounded-lg p-6 text-center max-w-sm">
           <div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin mx-auto mb-4" />
           <p className="text-text-primary font-medium mb-1">Audit in progress…</p>
@@ -91,10 +93,10 @@ export default function AuditTab({ sessionId, messageCount, sessionTitle, onJump
 
   if (!isLoading && (is404 || (!report && !error))) {
     return (
-      <div className="flex flex-col items-center justify-center py-16">
-        <svg className="w-10 h-10 text-text-tertiary mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M9 12l2 2 4-4m6 2a9 9 0 1 1-18 0 9 9 0 0 1 18 0z" />
-        </svg>
+      <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
+        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-surface-active text-text-tertiary">
+          <Icon icon={CircleCheck} size={20} />
+        </div>
         <p className="text-md font-semibold text-text-primary mb-1">
           No <Term id="llm-judge">audit</Term> yet
         </p>
@@ -236,8 +238,9 @@ function AuditReportView({
       {/* Confidence filter + badges + actions */}
       <div className="flex items-center gap-2 mb-6 flex-wrap">
         <div className="flex items-center gap-2 mr-2">
-          <label className="text-xs text-text-muted whitespace-nowrap">Min confidence:</label>
+          <label htmlFor="audit-min-confidence" className="text-xs text-text-muted whitespace-nowrap">Min confidence:</label>
           <input
+            id="audit-min-confidence"
             type="range"
             min={0}
             max={100}
@@ -248,13 +251,13 @@ function AuditReportView({
           <span className="text-xs text-text-secondary tabular-nums w-7">{minConfidence}%</span>
         </div>
         {contradictions.length > 0 && (
-          <span className="px-2 py-0.5 text-xs rounded-full bg-danger/20 text-danger">{contradictions.length} contradictions</span>
+          <span className="px-2 py-0.5 text-xs rounded-full bg-danger/12 text-danger">{contradictions.length} contradictions</span>
         )}
         {unverified.length > 0 && (
-          <span className="px-2 py-0.5 text-xs rounded-full bg-warning/20 text-warning">{unverified.length} unverified</span>
+          <span className="px-2 py-0.5 text-xs rounded-full bg-warning/12 text-warning">{unverified.length} unverified</span>
         )}
         {verified.length > 0 && (
-          <span className="px-2 py-0.5 text-xs rounded-full bg-success/20 text-success">{verified.length} verified</span>
+          <span className="px-2 py-0.5 text-xs rounded-full bg-success/12 text-success">{verified.length} verified</span>
         )}
         <div className="flex-1" />
         <Button variant="secondary" size="sm" onClick={() => setShowModal(true)}>
@@ -266,7 +269,7 @@ function AuditReportView({
       {/* Contradictions */}
       {activeContradictions.length > 0 && (
         <section className="mb-6">
-          <h3 className="text-sm font-medium text-danger mb-1">Contradictions</h3>
+          <h2 className="text-md! leading-[1.4]! tracking-normal! font-medium text-danger mb-1">Contradictions</h2>
           <p className="text-xs text-text-muted mb-3">Claims that directly contradict tool outputs</p>
           <div className="flex flex-col gap-2">
             {activeContradictions.map(({ finding, key }) => (
@@ -355,11 +358,11 @@ function AuditReportView({
 /* ── FindingCard ── */
 
 const SEVERITY_STYLES: Record<string, string> = {
-  critical: 'bg-danger/20 text-danger',
-  high: 'bg-warning/20 text-warning',
+  critical: 'bg-danger/12 text-danger',
+  high: 'bg-warning/12 text-warning',
   low: 'bg-bg-tertiary text-text-muted',
-  major: 'bg-danger/20 text-danger',
-  moderate: 'bg-warning/20 text-warning',
+  major: 'bg-danger/12 text-danger',
+  moderate: 'bg-warning/12 text-warning',
   minor: 'bg-bg-tertiary text-text-muted',
 };
 
@@ -370,9 +373,9 @@ const VERDICT_STYLES: Record<string, string> = {
 };
 
 const VERDICT_BADGE_STYLES: Record<string, string> = {
-  verified: 'bg-success/20 text-success',
-  hallucination: 'bg-danger/20 text-danger',
-  unverified: 'bg-warning/20 text-warning',
+  verified: 'bg-success/12 text-success',
+  hallucination: 'bg-danger/12 text-danger',
+  unverified: 'bg-warning/12 text-warning',
 };
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -470,12 +473,11 @@ function FindingCard({
           <ConfidenceBar confidence={finding.confidence} />
         )}
         <span className="text-text-muted text-xs ml-auto shrink-0">#{finding.message_index}</span>
-        <svg
-          className={`w-3 h-3 text-text-muted transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`}
-          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
-        >
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-        </svg>
+        <Icon
+          icon={ChevronRight}
+          size={14}
+          className={`text-text-muted transition-transform shrink-0 ${expanded ? 'rotate-90' : ''}`}
+        />
       </button>
 
       {/* Claim text always visible */}
@@ -543,9 +545,7 @@ function FindingCard({
               className="gap-1 !px-2 !py-1 font-normal text-success border-success/30 hover:bg-success/10"
               title="Confirm finding"
             >
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
+              <Icon icon={Check} size={14} />
               Confirm
             </Button>
             <Button
@@ -555,9 +555,7 @@ function FindingCard({
               className="gap-1 !px-2 !py-1 font-normal text-text-muted"
               title="Dismiss finding"
             >
-              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
+              <Icon icon={X} size={14} />
               Dismiss
             </Button>
           </div>
@@ -571,7 +569,7 @@ function FindingCard({
                 value={dismissReason}
                 onChange={e => setDismissReason(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') handleDismiss(); }}
-                className="flex-1 px-2 py-1 text-xs bg-bg-tertiary border border-border rounded text-text-primary placeholder:text-text-muted/50 outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                className="flex-1 px-2 py-1 text-xs bg-bg-tertiary border border-border-control hover:border-text-tertiary rounded text-text-primary placeholder:text-text-muted/50 outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
                 autoFocus
               />
               <Button variant="secondary" size="sm" onClick={handleDismiss} className="!px-2 !py-1 font-normal">
@@ -612,10 +610,7 @@ function CollapsibleSection({ title, defaultOpen, children, badge }: { title: st
     <section className="mb-4">
       <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
         className="flex items-center gap-2 text-sm text-text-muted hover:text-text-secondary mb-2 w-full text-left rounded outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]">
-        <svg className={`w-3 h-3 transition-transform ${open ? 'rotate-90' : ''}`}
-          fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-        </svg>
+        <Icon icon={ChevronRight} size={14} className={`transition-transform ${open ? 'rotate-90' : ''}`} />
         {title}
         {badge && (
           <span className="px-2 py-0.5 rounded text-xs font-medium bg-bg-tertiary text-text-muted ml-1">
@@ -644,7 +639,7 @@ function AuditHistory({ sessionId }: { sessionId: string }) {
 
   return (
     <section className="mt-6">
-      <h3 className="text-sm text-text-muted mb-2">Audit History</h3>
+      <h2 className="text-md! leading-[1.4]! tracking-normal! text-text-muted mb-2">Audit History</h2>
       <div className="space-y-1">
         {history.map((h) => {
           const pct = h.trust_score;
@@ -685,9 +680,7 @@ function DownloadDropdown({ report, sessionTitle }: { report: AuditReport; sessi
       trigger={
         <Button variant="secondary" size="sm" className="gap-1 font-normal">
           Export
-          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden="true">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-          </svg>
+          <Icon icon={ChevronDown} size={14} />
         </Button>
       }
       items={items}

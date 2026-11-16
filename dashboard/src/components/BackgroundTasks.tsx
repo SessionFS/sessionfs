@@ -1,6 +1,8 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { useAuth } from '../auth/AuthContext';
 import { IconButton } from './ui';
+import { Icon } from './ui/Icon';
+import { Check, X } from 'lucide-react';
 
 interface BackgroundTask {
   id: string;
@@ -115,10 +117,10 @@ function TaskToasts({ tasks, onDismiss }: { tasks: BackgroundTask[]; onDismiss: 
           key={task.id}
           role={task.status === 'failed' ? 'alert' : 'status'}
           className={`
-            flex items-start gap-3 px-4 py-3 rounded-lg border shadow-lg backdrop-blur-sm
-            ${task.status === 'running' ? 'bg-bg-secondary/95 border-accent/30' : ''}
-            ${task.status === 'completed' ? 'bg-bg-secondary/95 border-success/30' : ''}
-            ${task.status === 'failed' ? 'bg-bg-secondary/95 border-danger/30' : ''}
+            flex items-start gap-3 px-4 py-3 rounded-lg border bg-overlay shadow-[var(--shadow-overlay)]
+            ${task.status === 'running' ? 'border-accent/30' : ''}
+            ${task.status === 'completed' ? 'border-success/30' : ''}
+            ${task.status === 'failed' ? 'border-danger/30' : ''}
           `}
         >
           {/* Icon */}
@@ -127,14 +129,10 @@ function TaskToasts({ tasks, onDismiss }: { tasks: BackgroundTask[]; onDismiss: 
               <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
             )}
             {task.status === 'completed' && (
-              <svg className="w-4 h-4 text-success" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-              </svg>
+              <Icon icon={Check} className="text-success" />
             )}
             {task.status === 'failed' && (
-              <svg className="w-4 h-4 text-danger" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
+              <Icon icon={X} className="text-danger" />
             )}
           </div>
 
@@ -157,9 +155,7 @@ function TaskToasts({ tasks, onDismiss }: { tasks: BackgroundTask[]; onDismiss: 
 
           {/* Dismiss */}
           <IconButton label="Dismiss" size="sm" onClick={() => onDismiss(task.id)}>
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
+            <Icon icon={X} />
           </IconButton>
         </div>
       ))}

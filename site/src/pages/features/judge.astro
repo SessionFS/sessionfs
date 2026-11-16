@@ -4,7 +4,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 <BaseLayout title="LLM Judge — SessionFS" activeNav="features" description="LLM Judge: severity-classified findings with actual tool output evidence.">
 
   <!-- Hero -->
-  <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
+  <section class="relative pt-32 sm:pt-40 pb-16 px-5">
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
         <div class="inline-flex items-center gap-2 text-sm font-mono text-muted-dim mb-6">
@@ -12,25 +12,24 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           <span>&#47;</span>
           <span class="text-txt">LLM Judge</span>
         </div>
-        <h1 class="font-heading text-4xl sm:text-5xl font-extrabold tracking-tight leading-[1.1] mb-6">
+        <h1 class="text-4xl sm:text-5xl font-semibold tracking-tight leading-[1.1] mb-6">
           Your AI's claims.<br>Verified.
         </h1>
         <p class="text-muted text-lg mb-4 leading-relaxed">The LLM Judge cross-references every AI claim against actual tool outputs. When the AI says "the test passes" but the exit code was 1 — that's a critical contradiction, flagged with full evidence.</p>
         <p class="text-muted text-lg mb-6 leading-relaxed">Severity-classified findings: <span class="text-danger font-medium">CRITICAL</span> for test failures and failed commands. <span class="text-warning font-medium">HIGH</span> for file mismatches and data misreads. Every finding links to the exact message.</p>
         <p class="text-base text-muted-dim border-l-2 border-brand/30 pl-4 mb-8 leading-relaxed">BYOK — your own key, encrypted at rest and never shown again. Works with 14 built-in providers or any OpenAI-compatible endpoint: OpenRouter, LiteLLM, vLLM, Ollama.</p>
-        <a href="/judge/" class="inline-flex items-center gap-2 bg-brand text-white font-semibold rounded-lg px-6 py-3 hover:brightness-110 transition">
+        <a href="/judge/" class="inline-flex items-center gap-2 bg-brand text-on-brand font-semibold rounded-md px-6 py-3 hover:bg-brand-hover transition">
           Read the docs
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
         </a>
       </div>
       <div class="lg:w-1/2 w-full fade-up">
         <div class="relative">
-          <div class="hero-glow"></div>
-          <div class="term relative z-10">
+          <div class="term code-well relative z-10">
             <div class="term-bar">
-              <div class="term-dot bg-[#ff5f57]"></div>
-              <div class="term-dot bg-[#febc2e]"></div>
-              <div class="term-dot bg-[#28c840]"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
               <span class="ml-3 text-muted-dim text-[13px] font-mono">audit report</span>
             </div>
             <div class="p-5 font-mono text-sm space-y-4">
@@ -51,16 +50,16 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
               <div class="border-t border-border pt-4 space-y-3">
                 <div class="bg-danger/5 rounded-lg p-3 border border-danger/20">
                   <div class="flex items-center gap-2 mb-2">
-                    <span class="bg-danger/15 text-danger text-[11px] font-bold px-1.5 py-0.5 rounded">CRITICAL</span>
-                    <span class="bg-bg/50 text-muted-dim text-[11px] px-1.5 py-0.5 rounded">test_result</span>
+                    <span class="bg-danger/15 text-danger text-[11px] font-semibold px-1.5 py-0.5 rounded">CRITICAL</span>
+                    <span class="bg-sunken text-muted-dim text-[11px] px-1.5 py-0.5 rounded">test_result</span>
                   </div>
                   <div class="text-muted text-sm mb-1">AI: "The test passes successfully"</div>
-                  <div class="bg-bg/60 rounded px-2 py-1.5 text-[12px] text-danger/80 mt-1">FAILED tests/test_auth.py<br>assert status_code == 200, got 401<br>exit code: 1</div>
+                  <div class="bg-sunken rounded px-2 py-1.5 text-[12px] text-danger/80 mt-1">FAILED tests/test_auth.py<br>assert status_code == 200, got 401<br>exit code: 1</div>
                 </div>
                 <div class="bg-warning/5 rounded-lg p-3 border border-warning/20">
                   <div class="flex items-center gap-2 mb-2">
-                    <span class="bg-warning/15 text-warning text-[11px] font-bold px-1.5 py-0.5 rounded">HIGH</span>
-                    <span class="bg-bg/50 text-muted-dim text-[11px] px-1.5 py-0.5 rounded">file_existence</span>
+                    <span class="bg-warning/15 text-warning text-[11px] font-semibold px-1.5 py-0.5 rounded">HIGH</span>
+                    <span class="bg-sunken text-muted-dim text-[11px] px-1.5 py-0.5 rounded">file_existence</span>
                   </div>
                   <div class="text-muted text-sm">AI: "I've created validator.py"</div>
                   <div class="text-muted-dim text-[12px] mt-1">Reality: No Write call to that path</div>
@@ -73,29 +72,29 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Sub-feature cards -->
-  <section class="relative py-20 sm:py-28 px-5 noise">
+  <section class="relative py-20 sm:py-28 px-5">
     <div class="max-w-5xl mx-auto">
-      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-12">How the Judge works</h2>
+      <h2 class="fade-up text-3xl font-semibold text-center mb-12">How the Judge works</h2>
       <div class="grid md:grid-cols-3 gap-5">
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12"/></svg></div>
-          <h3 class="font-heading font-semibold mb-2">Severity classification</h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12"/></svg></div>
+          <h3 class="font-semibold mb-2">Severity classification</h3>
           <p class="text-muted text-base leading-relaxed">CRITICAL for test failures and failed commands. HIGH for file mismatches. LOW for ambiguous claims. Auto-assigned from category — no LLM judgment on severity, fully deterministic.</p>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z"/></svg></div>
-          <h3 class="font-heading font-semibold mb-2">Auto-audit</h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5.25 5.653c0-.856.917-1.398 1.667-.986l11.54 6.348a1.125 1.125 0 010 1.971l-11.54 6.347a1.125 1.125 0 01-1.667-.985V5.653z"/></svg></div>
+          <h3 class="font-semibold mb-2">Auto-audit</h3>
           <p class="text-muted text-base leading-relaxed">Trigger audits automatically: on every sync push, when a PR/MR is opened, or manual only. Configure the trigger mode in dashboard Settings.</p>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/></svg></div>
-          <h3 class="font-heading font-semibold mb-2">Audit history</h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/></svg></div>
+          <h3 class="font-semibold mb-2">Audit history</h3>
           <p class="text-muted text-base leading-relaxed">Every audit stored in the database. Compare runs over time, track trust score trends, and see which models produce better results.</p>
         </div>
 
@@ -103,13 +102,13 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- BYOK section -->
-  <section class="relative py-20 px-5 bg-surface/50 noise">
+  <section class="relative py-20 px-5 bg-surface/50">
     <div class="max-w-4xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">Your key. Your endpoint.</h2>
+        <h2 class="text-2xl sm:text-3xl font-semibold mb-4">Your key. Your endpoint.</h2>
         <p class="text-muted text-lg mb-6 leading-relaxed">BYOK means your API key is never sent to SessionFS servers. Connect directly to any OpenAI-compatible endpoint — your company gateway, a local Ollama instance, or an external provider.</p>
         <div class="space-y-2">
           <div class="flex items-center gap-2 text-sm text-muted"><span class="text-accent">&#10003;</span> OpenRouter (multi-model consensus)</div>
@@ -119,11 +118,11 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         </div>
       </div>
       <div class="lg:w-1/2 w-full fade-up">
-        <div class="term">
+        <div class="term code-well">
           <div class="term-bar">
-            <div class="term-dot bg-[#ff5f57]"></div>
-            <div class="term-dot bg-[#febc2e]"></div>
-            <div class="term-dot bg-[#28c840]"></div>
+            <div class="term-dot"></div>
+            <div class="term-dot"></div>
+            <div class="term-dot"></div>
             <span class="ml-3 text-muted-dim text-[13px] font-mono">judge config</span>
           </div>
           <div class="p-5 font-mono text-sm space-y-2">
@@ -140,7 +139,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
 </BaseLayout>
 

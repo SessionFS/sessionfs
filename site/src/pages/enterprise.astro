@@ -4,9 +4,9 @@ import BaseLayout from '../layouts/BaseLayout.astro';
 <BaseLayout title="Enterprise — SessionFS" activeNav="enterprise" description="AI session portability, governance, and coordination for enterprise. Capture, resume, handoff, personas, tickets, AgentRuns, a session helper, approval policies, Jira and Confluence, project groups, and the audit trail your compliance team needs.">
 
   <!-- Section 1: Hero -->
-  <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
+  <section class="relative pt-32 sm:pt-40 pb-16 px-5">
     <div class="max-w-4xl mx-auto text-center">
-      <h1 class="fade-up font-heading text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6">
+      <h1 class="fade-up text-4xl sm:text-5xl lg:text-6xl font-semibold tracking-tight leading-[1.1] mb-6">
         Portable AI sessions, governed for enterprise.
       </h1>
       <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-2xl mx-auto mb-4">
@@ -16,35 +16,35 @@ import BaseLayout from '../layouts/BaseLayout.astro';
         Easy handoffs from humans to agents. Same sessions, same tickets, same knowledge, same system.
       </p>
       <div class="fade-up mt-10 flex flex-col sm:flex-row gap-3 justify-center">
-        <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Enterprise" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-7 py-3 hover:brightness-110 transition">
+        <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Enterprise" class="inline-flex items-center justify-center gap-2 bg-brand text-on-brand font-semibold rounded-md px-7 py-3 hover:bg-brand-hover transition">
           Contact Enterprise Sales
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
         </a>
-        <a href="/quickstart/" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-lg px-7 py-3 hover:border-muted transition">
+        <a href="/quickstart/" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-md px-7 py-3 hover:border-muted transition">
           View docs
         </a>
       </div>
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Section 2: The Problem — 3 stat cards -->
-  <section class="relative py-20 sm:py-28 px-5 noise">
+  <section class="relative py-20 sm:py-28 px-5">
     <div class="max-w-5xl mx-auto">
-      <h2 class="fade-up font-heading text-3xl sm:text-4xl font-bold text-center mb-4">The shadow AI problem</h2>
+      <h2 class="fade-up text-3xl sm:text-4xl font-semibold text-center mb-4">The shadow AI problem</h2>
       <p class="fade-up text-muted text-center mb-14 max-w-lg mx-auto leading-relaxed">AI coding agents are already on your network. The question is whether you can see what they do.</p>
       <div class="grid md:grid-cols-3 gap-5">
-        <div class="glass fade-up p-6 text-center">
-          <div class="font-heading text-4xl sm:text-5xl font-extrabold text-brand mb-3">80.9%</div>
+        <div class="site-card fade-up p-6 text-center">
+          <div class="text-4xl sm:text-5xl font-semibold text-brand mb-3">80.9%</div>
           <p class="text-muted text-base leading-relaxed">of engineering teams run AI agents without full security approval</p>
         </div>
-        <div class="glass fade-up p-6 text-center">
-          <div class="font-heading text-4xl sm:text-5xl font-extrabold text-brand mb-3">24.4%</div>
+        <div class="site-card fade-up p-6 text-center">
+          <div class="text-4xl sm:text-5xl font-semibold text-brand mb-3">24.4%</div>
           <p class="text-muted text-base leading-relaxed">have visibility into AI agent communications</p>
         </div>
-        <div class="glass fade-up p-6 text-center">
-          <div class="font-heading text-4xl sm:text-5xl font-extrabold text-brand mb-3">$670K</div>
+        <div class="site-card fade-up p-6 text-center">
+          <div class="text-4xl sm:text-5xl font-semibold text-brand mb-3">$670K</div>
           <p class="text-muted text-base leading-relaxed">more per incident when shadow AI is involved</p>
         </div>
       </div>
@@ -52,15 +52,15 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Section 3: Three Pillars -->
 
   <!-- Pillar 1: Session Portability + Agent Coordination -->
-  <section class="relative py-20 sm:py-28 px-5 noise">
+  <section class="relative py-20 sm:py-28 px-5">
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Session Portability + Agent Coordination</h2>
+        <h2 class="text-3xl sm:text-4xl font-semibold mb-5">Session Portability + Agent Coordination</h2>
         <p class="text-muted text-lg mb-4 leading-relaxed">Every agent run starts as a captured, portable session your team can inspect, resume, or hand off. Personas claim tickets. AgentRuns enforce CI policy. The orchestration layer your team would otherwise build in-house &mdash; portable across 10 local tools and cloud-agent-ready for AWS Bedrock, Google Vertex, and custom API clients via integration docs.</p>
         <div class="flex flex-wrap gap-3">
           <span class="font-mono text-sm bg-surface border border-border rounded px-3 py-1.5 text-muted-dim">Claude Code</span>
@@ -77,12 +77,11 @@ import BaseLayout from '../layouts/BaseLayout.astro';
       </div>
       <div class="lg:w-1/2 w-full fade-up">
         <div class="relative">
-          <div class="hero-glow"></div>
-          <div class="term relative z-10">
+          <div class="term code-well relative z-10">
             <div class="term-bar">
-              <div class="term-dot bg-[#ff5f57]"></div>
-              <div class="term-dot bg-[#febc2e]"></div>
-              <div class="term-dot bg-[#28c840]"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
               <span class="ml-3 text-muted-dim text-[13px] font-mono">session list</span>
             </div>
             <div class="p-5 font-mono text-sm leading-relaxed">
@@ -110,37 +109,36 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Pillar 2: Organizational Memory -->
-  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
+  <section class="relative py-20 sm:py-28 px-5 bg-surface/50">
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Organizational Memory</h2>
+        <h2 class="text-3xl sm:text-4xl font-semibold mb-5">Organizational Memory</h2>
         <p class="text-muted text-lg mb-4 leading-relaxed">Memory is not a loose summary. It is derived from captured sessions with transcripts, file changes, commands, git state, and provenance. Every session distils into knowledge claims your agents read &mdash; and write back to. Architecture decisions, debugging patterns, API contracts, environment quirks. Your codebase documents itself.</p>
         <p class="text-muted text-lg mb-4 leading-relaxed">LLM Judge cross-references every AI claim against actual tool output and feeds verified findings into the same knowledge base. Trust scores surface in GitHub PR and GitLab MR threads.</p>
         <p class="text-muted text-lg leading-relaxed">Ask that memory directly. The <a href="/session-helper/" class="text-brand hover:underline">session helper</a> answers questions like &ldquo;what did we decide about Redis and why?&rdquo; from the sessions and project knowledge each person can already read, cites the sessions it used, and runs on your own model key, never one SessionFS supplies. It can also propose cleanup &mdash; moving stale sessions to Trash, switching Auto Narrative &mdash; that only happens when you press Confirm.</p>
       </div>
       <div class="lg:w-1/2 w-full fade-up">
         <div class="relative">
-          <div class="hero-glow"></div>
-          <div class="term relative z-10">
+          <div class="term code-well relative z-10">
             <div class="term-bar">
-              <div class="term-dot bg-[#ff5f57]"></div>
-              <div class="term-dot bg-[#febc2e]"></div>
-              <div class="term-dot bg-[#28c840]"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
               <span class="ml-3 text-muted-dim text-[13px] font-mono">audit report</span>
             </div>
             <div class="p-5 font-mono text-sm leading-relaxed">
               <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs audit ses_a1b2</span></div>
-              <div class="mt-3 text-muted">Trust Score: <span class="text-txt font-semibold">87%</span>&nbsp; |&nbsp; Claims: <span class="text-txt">23</span>&nbsp; |&nbsp; Verified: <span class="text-accent">18</span>&nbsp; |&nbsp; Contradictions: <span class="text-[#ff5f57]">2</span></div>
+              <div class="mt-3 text-muted">Trust Score: <span class="text-txt font-semibold">87%</span>&nbsp; |&nbsp; Claims: <span class="text-txt">23</span>&nbsp; |&nbsp; Verified: <span class="text-accent">18</span>&nbsp; |&nbsp; Contradictions: <span class="text-danger">2</span></div>
               <div class="border-t border-border mt-3 pt-3">
-                <div class="text-[#ff5f57] font-semibold">CRITICAL [CWE-393] Confidence: 94%</div>
+                <div class="text-danger font-semibold">CRITICAL [CWE-393] Confidence: 94%</div>
                 <div class="text-muted-dim mt-1 pl-2">Claim: "All tests pass with exit code 0"</div>
                 <div class="text-muted pl-2">Evidence: exit code 1, 3 tests failed</div>
               </div>
               <div class="border-t border-border mt-3 pt-3">
-                <div class="text-[#febc2e] font-semibold">HIGH [CWE-552] Confidence: 78%</div>
+                <div class="text-warning font-semibold">HIGH [CWE-552] Confidence: 78%</div>
                 <div class="text-muted-dim mt-1 pl-2">Claim: "Created config.yaml with database settings"</div>
                 <div class="text-muted pl-2">Evidence: File not found in workspace</div>
               </div>
@@ -151,31 +149,30 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Pillar 3: Compliance Built In -->
-  <section class="relative py-20 sm:py-28 px-5 noise">
+  <section class="relative py-20 sm:py-28 px-5">
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Compliance Built In</h2>
+        <h2 class="text-3xl sm:text-4xl font-semibold mb-5">Compliance Built In</h2>
         <p class="text-muted text-lg mb-4 leading-relaxed">DLP scans every session archive server-side &mdash; 14 PHI patterns + 20 secret patterns, with BLOCK / REDACT / WARN modes set per organisation. Every captured manifest carries instruction provenance, persona, ticket, and the AgentRun that signed off. Audit-ready by construction.</p>
         <p class="text-muted text-lg leading-relaxed">HIPAA-ready managed or self-hosted deployment. Helm chart hardened with non-root UID 10001, read-only rootfs, RuntimeDefault seccomp. Deployed at a major healthcare system on AWS EKS.</p>
       </div>
       <div class="lg:w-1/2 w-full fade-up">
         <div class="relative">
-          <div class="hero-glow"></div>
-          <div class="term relative z-10">
+          <div class="term code-well relative z-10">
             <div class="term-bar">
-              <div class="term-dot bg-[#ff5f57]"></div>
-              <div class="term-dot bg-[#febc2e]"></div>
-              <div class="term-dot bg-[#28c840]"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
               <span class="ml-3 text-muted-dim text-[13px] font-mono">dlp scan</span>
             </div>
             <div class="p-5 font-mono text-sm leading-relaxed">
               <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs push ses_abc</span></div>
               <div class="mt-3 text-muted">DLP scan...</div>
-              <div class="text-[#febc2e] mt-1 pl-2">AWS_ACCESS_KEY detected in message 23</div>
-              <div class="text-[#febc2e] pl-2">CONNECTION_STRING detected in message 41</div>
+              <div class="text-warning mt-1 pl-2">AWS_ACCESS_KEY detected in message 23</div>
+              <div class="text-warning pl-2">CONNECTION_STRING detected in message 41</div>
               <div class="border-t border-border mt-3 pt-3">
                 <div class="text-muted">Policy: <span class="text-txt font-semibold">REDACT</span></div>
                 <div class="text-accent mt-1">2 secrets redacted. Session pushed.</div>
@@ -187,36 +184,36 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Section 3b: Hybrid Operator Phases -->
-  <section class="relative py-20 sm:py-28 px-5 noise">
+  <section class="relative py-20 sm:py-28 px-5">
     <div class="max-w-5xl mx-auto">
       <div class="text-center mb-14 fade-up">
-        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-4">Easy handoffs from humans to agents.</h2>
+        <h2 class="text-3xl sm:text-4xl font-semibold mb-4">Easy handoffs from humans to agents.</h2>
         <p class="text-muted text-lg max-w-2xl mx-auto leading-relaxed">Same tickets, same knowledge, same system &mdash; whether the operator is an engineer or an AI agent. The transition happens one persona at a time.</p>
       </div>
       <div class="grid md:grid-cols-3 gap-5">
-        <div class="glass fade-up p-6">
+        <div class="site-card fade-up p-6">
           <div class="flex items-center gap-3 mb-4">
-            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">1</span>
-            <h3 class="font-heading font-semibold text-lg">Engineers load personas</h3>
+            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-semibold border border-brand/20">1</span>
+            <h3 class="font-semibold text-lg">Engineers load personas</h3>
           </div>
           <p class="text-muted text-base leading-relaxed mb-3">Every engineer assumes a persona (atlas, sentinel, scribe&hellip;) on their tickets. Sessions inherit the persona's rules, context, and identity. Define a persona once for the organization and every project in it can use it. Captured work flows back into the knowledge base.</p>
           <p class="text-muted-dim text-sm leading-relaxed">Where most teams start. No AI autonomy yet &mdash; just consistent rules and a growing audit trail.</p>
         </div>
-        <div class="glass fade-up p-6">
+        <div class="site-card fade-up p-6">
           <div class="flex items-center gap-3 mb-4">
-            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">2</span>
-            <h3 class="font-heading font-semibold text-lg">Routine personas operate</h3>
+            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-semibold border border-brand/20">2</span>
+            <h3 class="font-semibold text-lg">Routine personas operate</h3>
           </div>
           <p class="text-muted text-base leading-relaxed mb-3">Trusted personas run autonomously on routine tickets &mdash; security review, dependency bumps, doc sync &mdash; under human supervision. AgentRuns enforce CI policy; LLM Judge flags contradictions before they merge.</p>
           <p class="text-muted-dim text-sm leading-relaxed">Hybrid operation. The persona does the work; the engineer reviews the AgentRun like a pull request.</p>
         </div>
-        <div class="glass fade-up p-6">
+        <div class="site-card fade-up p-6">
           <div class="flex items-center gap-3 mb-4">
-            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-bold border border-brand/20">3</span>
-            <h3 class="font-heading font-semibold text-lg">Autonomous on routine; humans on exceptions</h3>
+            <span class="flex items-center justify-center w-9 h-9 rounded-full bg-brand/10 text-brand text-sm font-semibold border border-brand/20">3</span>
+            <h3 class="font-semibold text-lg">Autonomous on routine; humans on exceptions</h3>
           </div>
           <p class="text-muted text-base leading-relaxed mb-3">Whole categories of routine work move to autonomous personas. Humans handle exceptions, novel problems, and the work that requires judgement. The audit trail is the same regardless of which side of the line did the work.</p>
           <p class="text-muted-dim text-sm leading-relaxed">The endgame. Custom orchestration was never built &mdash; the same tickets and knowledge base carry the workload through every phase.</p>
@@ -225,20 +222,20 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Section 4: Deployment Options -->
-  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
+  <section class="relative py-20 sm:py-28 px-5 bg-surface/50">
     <div class="max-w-5xl mx-auto">
       <div class="text-center mb-14 fade-up">
-        <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-4">Your data. Your boundary.</h2>
+        <h2 class="text-3xl sm:text-4xl font-semibold mb-4">Your data. Your boundary.</h2>
         <p class="text-muted text-lg max-w-2xl mx-auto leading-relaxed">Session data never touches shared infrastructure. Choose how you deploy — we isolate the data either way.</p>
       </div>
       <div class="flex flex-col md:flex-row gap-6">
         <!-- Managed Single-Tenant -->
-        <div class="glass fade-up flex-1 p-6 sm:p-8" style="border-color: rgba(79,156,247,0.5);">
-          <span class="inline-block bg-brand text-white text-xs font-semibold rounded-full px-3 py-1 mb-4">MOST POPULAR</span>
-          <h3 class="font-heading text-xl font-bold mb-1">Managed &middot; Single-Tenant</h3>
+        <div class="site-card fade-up flex-1 p-6 sm:p-8" style="border-color: color-mix(in srgb, var(--brand) 50%, transparent);">
+          <span class="inline-block bg-brand text-on-brand text-xs font-semibold rounded-sm px-3 py-1 mb-4">MOST POPULAR</span>
+          <h3 class="text-xl font-semibold mb-1">Managed &middot; Single-Tenant</h3>
           <p class="text-muted-dim text-sm mb-3">We operate it. Your data stays yours.</p>
           <p class="text-muted text-base leading-relaxed mb-5">Dedicated database and storage bucket — no shared infra. We handle updates, monitoring, scaling, and support. Zero DevOps on your side.</p>
           <ul class="space-y-2.5 mb-6">
@@ -248,14 +245,14 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <li class="flex items-start gap-2.5"><span class="text-accent mt-0.5">&#10003;</span><span class="text-muted text-sm">99.9% uptime SLA</span></li>
             <li class="flex items-start gap-2.5"><span class="text-accent mt-0.5">&#10003;</span><span class="text-muted text-sm">Zero Kubernetes required</span></li>
           </ul>
-          <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Managed%20Enterprise" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-6 py-2.5 text-sm hover:brightness-110 transition">
+          <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Managed%20Enterprise" class="inline-flex items-center justify-center gap-2 bg-brand text-on-brand font-semibold rounded-md px-6 py-2.5 text-sm hover:bg-brand-hover transition">
             Contact Sales
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
           </a>
         </div>
         <!-- Self-Hosted -->
-        <div class="glass fade-up flex-1 p-6 sm:p-8">
-          <h3 class="font-heading text-xl font-bold mb-1 mt-6">Self-Hosted &middot; Your Cloud</h3>
+        <div class="site-card fade-up flex-1 p-6 sm:p-8">
+          <h3 class="text-xl font-semibold mb-1 mt-6">Self-Hosted &middot; Your Cloud</h3>
           <p class="text-muted-dim text-sm mb-3">You operate it. We support it.</p>
           <p class="text-muted text-base leading-relaxed mb-5">Helm chart deploys to AWS EKS, GCP GKE, Azure AKS, or on-prem. Full network isolation. Bring your own PostgreSQL and object store.</p>
           <ul class="space-y-2.5 mb-6">
@@ -265,11 +262,11 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <li class="flex items-start gap-2.5"><span class="text-accent mt-0.5">&#10003;</span><span class="text-muted text-sm">Your S3 / GCS bucket</span></li>
             <li class="flex items-start gap-2.5"><span class="text-accent mt-0.5">&#10003;</span><span class="text-muted text-sm">HIPAA BAA available</span></li>
           </ul>
-          <div class="term mb-5">
+          <div class="term code-well mb-5">
             <div class="term-bar">
-              <div class="term-dot bg-[#ff5f57]"></div>
-              <div class="term-dot bg-[#febc2e]"></div>
-              <div class="term-dot bg-[#28c840]"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
               <span class="ml-3 text-muted-dim text-[13px] font-mono">helm deploy</span>
             </div>
             <div class="p-4 font-mono text-xs sm:text-sm leading-relaxed">
@@ -284,7 +281,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
               </div>
             </div>
           </div>
-          <a href="/self-hosted/" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-lg px-6 py-2.5 text-sm hover:border-muted transition">
+          <a href="/self-hosted/" class="inline-flex items-center justify-center gap-2 border border-border text-txt font-semibold rounded-md px-6 py-2.5 text-sm hover:border-muted transition">
             View Helm docs
           </a>
         </div>
@@ -293,19 +290,19 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Section 5: Security & Compliance Checklist -->
-  <section class="relative py-20 sm:py-28 px-5 noise">
+  <section class="relative py-20 sm:py-28 px-5">
     <div class="max-w-5xl mx-auto">
       <div class="flex flex-col lg:flex-row items-start gap-12">
         <div class="lg:w-1/2 fade-up">
-          <h2 class="font-heading text-3xl sm:text-4xl font-bold mb-5">Security &amp; compliance</h2>
+          <h2 class="text-3xl sm:text-4xl font-semibold mb-5">Security &amp; compliance</h2>
           <p class="text-muted text-lg mb-6 leading-relaxed">Designed for regulated industries and security-conscious teams. SessionFS self-hosted gives you complete control over access, storage, and audit trails.</p>
           <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Compliance" class="text-brand hover:underline text-sm font-medium">Ask about compliance requirements &rarr;</a>
         </div>
         <div class="lg:w-1/2 fade-up">
-          <div class="glass p-6 space-y-4">
+          <div class="site-card p-6 space-y-4">
             <div class="flex items-start gap-3">
               <span class="text-accent text-lg mt-0.5">&#10003;</span>
               <div>
@@ -410,12 +407,12 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Section 6: Social Proof -->
-  <section class="relative py-16 sm:py-20 px-5 noise">
+  <section class="relative py-16 sm:py-20 px-5">
     <div class="max-w-3xl mx-auto">
-      <div class="glass fade-up p-8 sm:p-10" style="border-left: 3px solid rgba(79,156,247,0.5);">
+      <div class="site-card fade-up p-8 sm:p-10" style="border-left: 3px solid color-mix(in srgb, var(--brand) 50%, transparent);">
         <blockquote class="text-lg sm:text-xl text-muted leading-relaxed italic mb-6">
           "A major healthcare organization deploys SessionFS on AWS EKS with full network isolation for HIPAA compliance."
         </blockquote>
@@ -424,17 +421,17 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Section 7: CTA -->
-  <section class="relative py-16 px-5 noise">
+  <section class="relative py-16 px-5">
     <div class="max-w-2xl mx-auto">
-      <div class="glass fade-up p-8 sm:p-10 text-center" style="border-color: rgba(79,156,247,0.3);">
-        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-3">Talk to the team</h2>
+      <div class="site-card fade-up p-8 sm:p-10 text-center" style="border-color: color-mix(in srgb, var(--brand) 30%, transparent);">
+        <h2 class="text-2xl sm:text-3xl font-semibold mb-3">Talk to the team</h2>
         <p class="text-muted mb-2 leading-relaxed">Self-hosted deployment, compliance requirements, custom SLA, and pricing for large teams.</p>
         <p class="text-muted-dim text-sm mb-2">14-day trial license available for self-hosted evaluation.</p>
         <p class="text-muted-dim text-sm mb-8">We typically respond within one business day.</p>
-        <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Enterprise" class="inline-flex items-center justify-center gap-2 bg-brand text-white font-semibold rounded-lg px-8 py-3.5 hover:brightness-110 transition">
+        <a href="mailto:enterprise@sessionfs.dev?subject=SessionFS%20Enterprise" class="inline-flex items-center justify-center gap-2 bg-brand text-on-brand font-semibold rounded-md px-8 py-3.5 hover:bg-brand-hover transition">
           Contact Enterprise Sales
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
         </a>
@@ -442,7 +439,7 @@ import BaseLayout from '../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
 </BaseLayout>
 

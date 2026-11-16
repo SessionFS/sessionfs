@@ -217,7 +217,7 @@ export default function TicketPreview({
               aria-label="Close ticket preview"
               className="-mr-1.5 ml-auto rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-surface-hover hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
             >
-              <CloseIcon size={15} />
+              <CloseIcon size={16} />
             </button>
           </Tooltip>
         </div>

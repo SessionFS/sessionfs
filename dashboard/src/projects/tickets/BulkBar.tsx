@@ -10,6 +10,8 @@ import { RowPopover } from './RowPopover';
 import { UNASSIGNED, assigneePayload, sameAssignee, ticketAssignee, type Assignee } from './assignee';
 import { BULK_CONCURRENCY, bulkSummary, bulkTargets, runBounded, type BulkResult } from './bulk';
 import { useTicketViewer } from './viewer';
+import { Icon } from '../../components/ui/Icon';
+import { X } from 'lucide-react';
 
 /* ── Bulk bar ──
  *
@@ -163,9 +165,7 @@ export function BulkBar({
       </Button>
       <span className="tk-bulk-div" aria-hidden="true" />
       <IconButton label="Clear selection (Esc)" size="sm" onClick={onClear} disabled={busy !== null}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-          <path d="M6 6l12 12M18 6L6 18" />
-        </svg>
+        <Icon icon={X} size={14} />
       </IconButton>
 
       <BulkDismissConfirm

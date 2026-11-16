@@ -6,6 +6,8 @@ import { Button } from '../components/ui/Button';
 import Skeleton from '../components/Skeleton';
 import { Alert } from '../components/ui/Alert';
 import { Card } from '../components/ui/Card';
+import { Icon } from '../components/ui/Icon';
+import { FileText } from 'lucide-react';
 
 interface Props {
   sessionId: string;
@@ -46,13 +48,10 @@ export default function SummaryTab({ sessionId }: Props) {
 
   if (!isLoading && (is404 || (!summary && !error))) {
     return (
-      <div className="flex flex-col items-center justify-center py-16">
-        <svg className="w-10 h-10 text-text-tertiary mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-          <polyline points="14 2 14 8 20 8" />
-          <line x1="16" y1="13" x2="8" y2="13" />
-          <line x1="16" y1="17" x2="8" y2="17" />
-        </svg>
+      <div className="flex flex-col items-center justify-center py-16 px-4 text-center">
+        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-surface-active text-text-tertiary">
+          <Icon icon={FileText} size={20} />
+        </div>
         <p className="text-md font-semibold text-text-primary mb-1">No summary yet</p>
         <p className="text-sm text-text-tertiary mb-4">
           Generate a summary to see files changed, activity, and metrics.
@@ -98,16 +97,16 @@ export default function SummaryTab({ sessionId }: Props) {
       {summary.branch && (
         <p className="text-sm text-text-muted mb-6">
           Branch: <span className="text-text-secondary">{summary.branch}</span>
-          {summary.commit && <span className="text-text-muted/50"> @ {summary.commit}</span>}
+          {summary.commit && <span className="text-text-tertiary"> @ {summary.commit}</span>}
         </p>
       )}
 
       {/* Files */}
       {summary.files_modified.length > 0 && (
         <section className="mb-4">
-          <h3 className="text-lg font-semibold text-text-primary mb-1">
+          <h2 className="text-md! leading-[1.4]! tracking-normal! font-semibold text-text-primary mb-1">
             Files modified ({summary.files_modified.length})
-          </h3>
+          </h2>
           <div className="space-y-0.5">
             {summary.files_modified.map((f) => (
               <p key={f} className="font-mono text-sm text-text-tertiary">{f}</p>
@@ -118,9 +117,9 @@ export default function SummaryTab({ sessionId }: Props) {
 
       {summary.files_read.length > 0 && (
         <section className="mb-4">
-          <h3 className="text-lg font-semibold text-text-primary mb-1">
+          <h2 className="text-md! leading-[1.4]! tracking-normal! font-semibold text-text-primary mb-1">
             Files read ({summary.files_read.length})
-          </h3>
+          </h2>
           <div className="space-y-0.5">
             {(showAllRead ? summary.files_read : summary.files_read.slice(0, 5)).map((f) => (
               <p key={f} className="font-mono text-sm text-text-tertiary">{f}</p>
@@ -137,7 +136,7 @@ export default function SummaryTab({ sessionId }: Props) {
 
       {/* Activity */}
       <section className="mb-4">
-        <h3 className="text-lg font-semibold text-text-primary mb-1">Activity</h3>
+        <h2 className="text-md! leading-[1.4]! tracking-normal! font-semibold text-text-primary mb-1">Activity</h2>
         <div className="space-y-0.5 text-sm text-text-muted">
           <p>Commands: {summary.commands_executed}</p>
           {summary.tests_run > 0 && (
@@ -169,16 +168,16 @@ export default function SummaryTab({ sessionId }: Props) {
       {/* Narrative Summary */}
       {summary.what_happened ? (
         <Card className="mb-4 p-4">
-          <h3 className="text-lg font-semibold text-text-primary mb-3">Narrative Summary</h3>
+          <h2 className="text-md! leading-[1.4]! tracking-normal! font-semibold text-text-primary mb-3">Narrative Summary</h2>
 
           <div className="mb-3">
-            <h4 className="text-micro text-text-tertiary uppercase mb-1">What happened</h4>
+            <h3 className="text-micro text-text-tertiary uppercase mb-1">What happened</h3>
             <p className="text-sm text-text-primary">{summary.what_happened}</p>
           </div>
 
           {summary.key_decisions && summary.key_decisions.length > 0 && (
             <div className="mb-3">
-              <h4 className="text-micro text-text-tertiary uppercase mb-1">Key decisions</h4>
+              <h3 className="text-micro text-text-tertiary uppercase mb-1">Key decisions</h3>
               <ul className="text-sm text-text-primary space-y-0.5 list-disc list-inside">
                 {summary.key_decisions.map((d, i) => <li key={i}>{d}</li>)}
               </ul>
@@ -187,14 +186,14 @@ export default function SummaryTab({ sessionId }: Props) {
 
           {summary.outcome && (
             <div className="mb-3">
-              <h4 className="text-micro text-text-tertiary uppercase mb-1">Outcome</h4>
+              <h3 className="text-micro text-text-tertiary uppercase mb-1">Outcome</h3>
               <p className="text-sm text-text-primary">{summary.outcome}</p>
             </div>
           )}
 
           {summary.open_issues && summary.open_issues.length > 0 && (
             <div className="mb-3">
-              <h4 className="text-micro text-text-tertiary uppercase mb-1">Open issues</h4>
+              <h3 className="text-micro text-text-tertiary uppercase mb-1">Open issues</h3>
               <ul className="text-sm text-text-primary space-y-0.5 list-disc list-inside">
                 {summary.open_issues.map((d, i) => <li key={i}>{d}</li>)}
               </ul>
@@ -236,7 +235,7 @@ export default function SummaryTab({ sessionId }: Props) {
       )}
 
       {summary.generated_at && (
-        <p className="text-xs text-text-muted/50 mt-6">
+        <p className="text-xs text-text-tertiary mt-6">
           Generated {new Date(summary.generated_at).toLocaleString()}
         </p>
       )}

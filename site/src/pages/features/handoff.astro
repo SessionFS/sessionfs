@@ -4,14 +4,14 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 <BaseLayout title="Team Handoff — SessionFS" activeNav="features" description="Hand off AI coding sessions to teammates with full context.">
 
   <!-- Hero -->
-  <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
+  <section class="relative pt-32 sm:pt-40 pb-16 px-5">
     <div class="max-w-4xl mx-auto text-center">
       <div class="fade-up inline-flex items-center gap-2 text-sm font-mono text-muted-dim mb-6">
         <a href="/features/" class="hover:text-brand transition-colors">Features</a>
         <span>&#47;</span>
         <span class="text-txt">Team Handoff</span>
       </div>
-      <h1 class="fade-up font-heading text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6">
+      <h1 class="fade-up text-4xl sm:text-5xl lg:text-6xl font-semibold tracking-tight leading-[1.1] mb-6">
         Hand off a session,<br>not a Slack message
       </h1>
       <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-xl mx-auto">
@@ -20,19 +20,19 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Terminal demo -->
-  <section class="relative py-20 sm:py-28 px-5 noise">
+  <section class="relative py-20 sm:py-28 px-5">
     <div class="max-w-5xl mx-auto">
       <div class="grid md:grid-cols-2 gap-5 mb-12">
         <div class="fade-up">
           <div class="text-sm text-muted-dim mb-2 font-mono uppercase tracking-wider">Developer A</div>
-          <div class="term">
+          <div class="term code-well">
             <div class="term-bar">
-              <div class="term-dot bg-[#ff5f57]"></div>
-              <div class="term-dot bg-[#febc2e]"></div>
-              <div class="term-dot bg-[#28c840]"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
             </div>
             <div class="p-4 font-mono text-sm">
               <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs handoff ses_abc \</span></div>
@@ -47,11 +47,11 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         </div>
         <div class="fade-up">
           <div class="text-sm text-muted-dim mb-2 font-mono uppercase tracking-wider">Developer B (Sarah)</div>
-          <div class="term">
+          <div class="term code-well">
             <div class="term-bar">
-              <div class="term-dot bg-[#ff5f57]"></div>
-              <div class="term-dot bg-[#febc2e]"></div>
-              <div class="term-dot bg-[#28c840]"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
             </div>
             <div class="p-4 font-mono text-sm">
               <div><span class="text-muted-dim">$</span> <span class="text-accent">sfs pull-handoff hnd_x7k9</span></div>
@@ -68,47 +68,47 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Sub-feature cards -->
-  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
+  <section class="relative py-20 sm:py-28 px-5 bg-surface/50">
     <div class="max-w-5xl mx-auto">
-      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-12">How handoff works</h2>
+      <h2 class="fade-up text-3xl font-semibold text-center mb-12">How handoff works</h2>
       <div class="grid md:grid-cols-3 gap-5">
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
-          <h3 class="font-heading font-semibold mb-2">Provenance carry-through</h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
+          <h3 class="font-semibold mb-2">Provenance carry-through</h3>
           <p class="text-muted text-base leading-relaxed">Attach <code class="text-accent">--ticket</code> and <code class="text-accent">--persona</code> at create time. On claim, the recipient's CLI writes the active-ticket payload to <code class="text-accent">~/.sessionfs/active_ticket.json</code> so the next captured session is automatically tagged with that context.</p>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg></div>
-          <h3 class="font-heading font-semibold mb-2">Team handoffs (Team+)</h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z"/></svg></div>
+          <h3 class="font-semibold mb-2">Team handoffs (Team+)</h3>
           <p class="text-muted text-base leading-relaxed">Hand off to a team with <code class="text-accent">--to-team-id</code>; any team member can claim with atomic race protection. <code class="text-accent">UPDATE WHERE status='pending'</code> runs first &mdash; race losers never write blobs.</p>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 8.25H7.5a2.25 2.25 0 00-2.25 2.25v9a2.25 2.25 0 002.25 2.25h9a2.25 2.25 0 002.25-2.25v-1.5M16.5 3.75l3.75 3.75m0 0l-3.75 3.75M20.25 7.5H10.5"/></svg></div>
-          <h3 class="font-heading font-semibold mb-2">Curated attachments</h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9 8.25H7.5a2.25 2.25 0 00-2.25 2.25v9a2.25 2.25 0 002.25 2.25h9a2.25 2.25 0 002.25-2.25v-1.5M16.5 3.75l3.75 3.75m0 0l-3.75 3.75M20.25 7.5H10.5"/></svg></div>
+          <h3 class="font-semibold mb-2">Curated attachments</h3>
           <p class="text-muted text-base leading-relaxed">Attach KB entries, wiki pages, or ticket refs with <code class="text-accent">--attach kind:ref_id</code>. Validated against the sender's project at create time and re-validated against the recipient's accessible projects on claim; inaccessible refs are silently dropped with structured reasons.</p>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M18 12H6m12 0c0 3.314-2.686 6-6 6s-6-2.686-6-6m12 0c0-3.314-2.686-6-6-6S6 8.686 6 12"/></svg></div>
-          <h3 class="font-heading font-semibold mb-2">Revoke / decline / comment</h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M18 12H6m12 0c0 3.314-2.686 6-6 6s-6-2.686-6-6m12 0c0-3.314-2.686-6-6-6S6 8.686 6 12"/></svg></div>
+          <h3 class="font-semibold mb-2">Revoke / decline / comment</h3>
           <p class="text-muted text-base leading-relaxed">Sender can revoke with a required reason; recipient can decline. Both parties can post comments; every state change emits an audit event. Email notifications fire for claim, revoke, decline, and comment (all <code class="text-accent">html.escape()</code>'d).</p>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg></div>
-          <h3 class="font-heading font-semibold mb-2">404-not-403 existence hiding</h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z"/></svg></div>
+          <h3 class="font-semibold mb-2">404-not-403 existence hiding</h3>
           <p class="text-muted text-base leading-relaxed">Non-parties get 404 (not 403) on all handoff routes &mdash; recipients can't distinguish pending vs claimed vs revoked via response codes. Eligibility is checked before any lazy-expire write or status-specific response.</p>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/></svg></div>
-          <h3 class="font-heading font-semibold mb-2">Email notifications</h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/></svg></div>
+          <h3 class="font-semibold mb-2">Email notifications</h3>
           <p class="text-muted text-base leading-relaxed">Recipients get an email with session details and the pull command. Lifecycle events (claim, revoke, decline, comment) fire to the other party. Supports Resend, SMTP, or no email for air-gapped enterprise deployments.</p>
         </div>
 
@@ -116,21 +116,21 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- What transfers -->
-  <section class="relative py-20 px-5 noise">
+  <section class="relative py-20 px-5">
     <div class="max-w-4xl mx-auto flex flex-col lg:flex-row items-start gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">What transfers in a handoff</h2>
+        <h2 class="text-2xl sm:text-3xl font-semibold mb-4">What transfers in a handoff</h2>
         <p class="text-muted text-lg mb-6 leading-relaxed">Everything the recipient needs to continue exactly where you left off — not just the messages, but the full context.</p>
-        <a href="/handoff/" class="inline-flex items-center gap-2 bg-brand text-white font-semibold rounded-lg px-6 py-3 hover:brightness-110 transition">
+        <a href="/handoff/" class="inline-flex items-center gap-2 bg-brand text-on-brand font-semibold rounded-md px-6 py-3 hover:bg-brand-hover transition">
           Read the handoff docs
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
         </a>
       </div>
       <div class="lg:w-1/2 fade-up">
-        <div class="glass p-6 space-y-4">
+        <div class="site-card p-6 space-y-4">
           <div class="flex items-start gap-3">
             <span class="text-accent text-lg mt-0.5">&#10003;</span>
             <div>
@@ -164,7 +164,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
 </BaseLayout>
 

@@ -4,7 +4,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 <BaseLayout title="Session Summary — SessionFS" activeNav="features" description="Automatic session summaries — files, tests, commands extracted in seconds.">
 
   <!-- Hero -->
-  <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
+  <section class="relative pt-32 sm:pt-40 pb-16 px-5">
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
         <div class="inline-flex items-center gap-2 text-sm font-mono text-muted-dim mb-6">
@@ -12,14 +12,14 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
           <span>&#47;</span>
           <span class="text-txt">Session Summary</span>
         </div>
-        <h1 class="font-heading text-4xl sm:text-5xl font-extrabold tracking-tight leading-[1.1] mb-6">
+        <h1 class="text-4xl sm:text-5xl font-semibold tracking-tight leading-[1.1] mb-6">
           Know what happened.<br>In 10 seconds.
         </h1>
         <p class="text-muted text-lg mb-4 leading-relaxed">Every session automatically summarized — files changed, tests run, commands executed, key decisions made. No more reading 2,000 messages to understand what the AI did.</p>
         <p class="text-muted text-lg mb-6 leading-relaxed">Deterministic extraction runs instantly with no LLM cost. Parses pytest, jest, and go test output automatically.</p>
         <div class="font-mono text-sm text-accent bg-surface border border-border rounded-md p-3 inline-block mb-8">sfs summary ses_abc</div>
         <div class="block">
-          <a href="/summary/" class="inline-flex items-center gap-2 bg-brand text-white font-semibold rounded-lg px-6 py-3 hover:brightness-110 transition">
+          <a href="/summary/" class="inline-flex items-center gap-2 bg-brand text-on-brand font-semibold rounded-md px-6 py-3 hover:bg-brand-hover transition">
             Read the docs
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
           </a>
@@ -27,12 +27,11 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
       </div>
       <div class="lg:w-1/2 w-full fade-up">
         <div class="relative">
-          <div class="hero-glow"></div>
-          <div class="term relative z-10">
+          <div class="term code-well relative z-10">
             <div class="term-bar">
-              <div class="term-dot bg-[#ff5f57]"></div>
-              <div class="term-dot bg-[#febc2e]"></div>
-              <div class="term-dot bg-[#28c840]"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
+              <div class="term-dot"></div>
               <span class="ml-3 text-muted-dim text-[13px] font-mono">session summary</span>
             </div>
             <div class="p-5 font-mono text-sm space-y-3">
@@ -62,29 +61,29 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Sub-feature cards -->
-  <section class="relative py-20 sm:py-28 px-5 noise">
+  <section class="relative py-20 sm:py-28 px-5">
     <div class="max-w-5xl mx-auto">
-      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-12">How summaries are built</h2>
+      <h2 class="fade-up text-3xl font-semibold text-center mb-12">How summaries are built</h2>
       <div class="grid md:grid-cols-3 gap-5">
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#f0c040" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg></div>
-          <h3 class="font-heading font-semibold mb-2">No LLM needed</h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg></div>
+          <h3 class="font-semibold mb-2">No LLM needed</h3>
           <p class="text-muted text-base leading-relaxed">Deterministic extraction parses tool calls directly. Files, commands, test results, packages, and errors — extracted in milliseconds, zero API cost.</p>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
-          <h3 class="font-heading font-semibold mb-2">Test framework support</h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div>
+          <h3 class="font-semibold mb-2">Test framework support</h3>
           <p class="text-muted text-base leading-relaxed">Parses pytest ("5 passed, 1 failed"), jest ("Tests: 10 passed"), and go test ("ok / FAIL") output automatically — no configuration required.</p>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/></svg></div>
-          <h3 class="font-heading font-semibold mb-2">Dashboard + CLI</h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v6.75C7.5 20.496 6.996 21 6.375 21h-2.25A1.125 1.125 0 013 19.875v-6.75zM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v11.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V8.625zM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v15.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 01-1.125-1.125V4.125z"/></svg></div>
+          <h3 class="font-semibold mb-2">Dashboard + CLI</h3>
           <p class="text-muted text-base leading-relaxed">Summary tab in the web dashboard with metric cards. CLI with <span class="font-mono text-accent text-sm">sfs summary --today</span> for daily overviews across all sessions.</p>
         </div>
 
@@ -92,13 +91,13 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- LLM narrative option -->
-  <section class="relative py-20 px-5 bg-surface/50 noise">
+  <section class="relative py-20 px-5 bg-surface/50">
     <div class="max-w-4xl mx-auto flex flex-col lg:flex-row items-center gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">Optional: LLM narrative</h2>
+        <h2 class="text-2xl sm:text-3xl font-semibold mb-4">Optional: LLM narrative</h2>
         <p class="text-muted text-lg mb-4 leading-relaxed">The deterministic layer is always free. When you want a "what happened" and "key decisions" paragraph, add your own LLM key and the summary goes narrative.</p>
         <p class="text-muted text-base mb-6 leading-relaxed">Works with the same BYOK setup as the Judge — your own key, any OpenAI-compatible endpoint, encrypted at rest.</p>
         <div class="space-y-2">
@@ -108,11 +107,11 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
         </div>
       </div>
       <div class="lg:w-1/2 w-full fade-up">
-        <div class="term">
+        <div class="term code-well">
           <div class="term-bar">
-            <div class="term-dot bg-[#ff5f57]"></div>
-            <div class="term-dot bg-[#febc2e]"></div>
-            <div class="term-dot bg-[#28c840]"></div>
+            <div class="term-dot"></div>
+            <div class="term-dot"></div>
+            <div class="term-dot"></div>
             <span class="ml-3 text-muted-dim text-[13px] font-mono">narrative summary</span>
           </div>
           <div class="p-5 font-mono text-sm space-y-3">
@@ -132,7 +131,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
 </BaseLayout>
 

@@ -14,7 +14,7 @@ export function Checkbox({ label, description, id, className = '', disabled, ...
         id={inputId}
         type="checkbox"
         disabled={disabled}
-        className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer rounded border-border accent-[var(--brand)] outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] disabled:cursor-not-allowed disabled:opacity-50"
+        className="mt-0.5 h-4 w-4 shrink-0 cursor-pointer rounded outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] disabled:cursor-not-allowed disabled:opacity-50"
         {...rest}
       />
       {(label || description) && (

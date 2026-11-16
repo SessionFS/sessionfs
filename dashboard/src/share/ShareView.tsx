@@ -4,6 +4,8 @@ import MessageBlock from '../sessions/MessageBlock';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
 import { resolveApiBaseUrl } from '../auth/apiBase';
+import { Icon } from '../components/ui/Icon';
+import { CircleAlert } from 'lucide-react';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -149,7 +151,7 @@ export default function ShareView() {
   // ── Password prompt ─────────────────────────────────────────
   if (state.kind === 'password_required') {
     return (
-      <div className="min-h-screen bg-surface flex items-center justify-center p-4">
+      <main className="min-h-screen bg-surface flex items-center justify-center p-4">
         <div className="w-full max-w-sm space-y-6">
           <div className="text-center space-y-2">
             <h1 className="text-xl font-semibold text-text-primary">Password Required</h1>
@@ -173,20 +175,17 @@ export default function ShareView() {
             </Button>
           </form>
         </div>
-      </div>
+      </main>
     );
   }
 
   // ── Error / dead link ───────────────────────────────────────
   if (state.kind === 'error') {
     return (
-      <div className="min-h-screen bg-surface flex items-center justify-center p-4">
+      <main className="min-h-screen bg-surface flex items-center justify-center p-4">
         <div className="text-center space-y-4 max-w-md">
           <div className="w-12 h-12 mx-auto rounded-full bg-bg-sunken flex items-center justify-center">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-text-tertiary">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M12 8v4M12 16h.01" />
-            </svg>
+            <Icon icon={CircleAlert} size={20} className="text-text-tertiary" />
           </div>
           <h1 className="text-xl font-semibold text-text-primary">
             {state.status === 404 ? 'Link Not Found' : state.status === 451 ? 'Content Blocked' : 'Something Went Wrong'}
@@ -199,16 +198,16 @@ export default function ShareView() {
                 : state.detail}
           </p>
         </div>
-      </div>
+      </main>
     );
   }
 
   // ── Loading ─────────────────────────────────────────────────
   if (state.kind === 'loading') {
     return (
-      <div className="min-h-screen bg-surface flex items-center justify-center">
+      <main className="min-h-screen bg-surface flex items-center justify-center">
         <p className="text-text-muted">Loading session…</p>
-      </div>
+      </main>
     );
   }
 

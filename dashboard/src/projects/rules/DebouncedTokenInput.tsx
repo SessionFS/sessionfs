@@ -171,7 +171,7 @@ export const DebouncedTokenInput = forwardRef<DebouncedTokenInputHandle, Debounc
         }}
         disabled={disabled}
         aria-label={ariaLabel}
-        className="w-24 text-xs px-2 py-1 rounded"
+        className="w-24 text-xs px-2 py-1 rounded bg-bg-sunken text-text-primary border border-border-control hover:border-text-tertiary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)] disabled:opacity-50"
       />
     );
   },

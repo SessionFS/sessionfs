@@ -62,9 +62,9 @@ export function PromoteDialog({ meetingId, item, onClose, chat = false, orgId, o
 
       {preview.isLoading && (
         <div className="space-y-3" aria-busy="true" aria-label="Loading the draft">
-          <div className="h-9 rounded-md bg-bg-elevated animate-pulse" />
-          <div className="h-40 rounded-md bg-bg-elevated animate-pulse" />
-          <div className="h-9 rounded-md bg-bg-elevated animate-pulse" />
+          <div className="h-9 rounded-md bg-surface-active animate-pulse" />
+          <div className="h-40 rounded-md bg-surface-active animate-pulse" />
+          <div className="h-9 rounded-md bg-surface-active animate-pulse" />
         </div>
       )}
 

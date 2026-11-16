@@ -1,0 +1,141 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+const updated = 'November 10, 2026';
+---
+<BaseLayout title="Privacy Policy — SessionFS" description="How SessionFS collects, uses, stores and protects your information, and the choices and rights you have.">
+  <section class="relative pt-32 sm:pt-40 pb-20 px-5">
+    <article class="legal max-w-3xl mx-auto">
+      <h1>Privacy Policy</h1>
+      <p class="meta">Last updated: {updated}</p>
+
+      <p>This policy explains what information SessionFS ("SessionFS", "we", "us") collects when you use the SessionFS website at sessionfs.dev, the dashboard at app.sessionfs.dev, the hosted API, and the <code>sfs</code> command-line tool and background daemon (together, the "Service"), how we use it, and the choices you have. If you have questions, email <a href="mailto:privacy@sessionfs.dev">privacy@sessionfs.dev</a>.</p>
+
+      <h2>The short version</h2>
+      <ul>
+        <li>SessionFS is local-first. The daemon captures your AI coding sessions on your own machine. Nothing is uploaded unless you sign in and turn on cloud sync, or choose to push, share or hand off a session.</li>
+        <li>We don't sell your information, and we don't use it for advertising.</li>
+        <li>We don't run AI models with our own keys. When you use an AI feature, your content goes to the AI provider you configured, with your key or your organization's key.</li>
+        <li>The website and dashboard load no analytics or advertising trackers.</li>
+        <li>The CLI sends a small amount of anonymous usage telemetry, which you can turn off. The <a href="/telemetry/">telemetry page</a> lists every field.</li>
+        <li>You can delete your synced data, and you can ask us for a copy of it or to delete your account.</li>
+      </ul>
+
+      <h2>Self-hosted deployments</h2>
+      <p>If your organization runs SessionFS on its own infrastructure, your data stays on that infrastructure and SessionFS does not receive it. Your organization is responsible for how that data is handled, and its own policies apply. This policy then covers only what you send us directly, such as an email to support.</p>
+
+      <h2>Information we collect</h2>
+      <h3>Account information</h3>
+      <p>When you create an account we collect your email address and, if you provide them, your display name and organization details. If you sign in through your organization's single sign-on, we receive the identifier and email address your identity provider shares with us. If you link a GitHub account, we receive your GitHub user and installation identifiers. We store hashed API keys, never the raw key after it is shown to you.</p>
+
+      <h3>Content you choose to sync or upload</h3>
+      <p>If you turn on sync or use team features, we store the content you send us. This can include captured AI coding sessions (messages, tool calls and their results, file paths relative to your workspace, model names and token counts), project context and knowledge entries, wiki pages, tickets and comments, agent run records, handoffs, rules, meeting transcripts and chat threads you upload, conversations with the session helper, and anything else you put into the Service. Session content can contain source code and anything else that appeared in your coding session, so please review what you sync. SessionFS includes secret and sensitive-data scanning that can block or redact some secrets before storage, but it cannot catch everything.</p>
+
+      <h3>Billing information</h3>
+      <p>Payments are processed by Stripe. We receive your billing name, email, plan, subscription status and the last digits and brand of your card. We never receive or store your full card number.</p>
+
+      <h3>Usage telemetry from the CLI</h3>
+      <p>The <code>sfs</code> tool sends a few anonymous events, such as "installed" or "first session captured", with a random install ID, the SessionFS version, your operating system and a timestamp. It never sends session content, file paths, project names, email addresses or credentials. It tells you about telemetry before the first event is sent, and you can turn it off at any time. Details and opt-out instructions are on the <a href="/telemetry/">telemetry page</a>. Self-hosted installs send telemetry to their own server, not to us.</p>
+
+      <h3>Technical and log information</h3>
+      <p>When you use the hosted Service, our servers record standard request information such as IP address, user agent, the requested URL, response status and timing. We use it to run, secure and rate-limit the Service and to investigate errors and abuse.</p>
+
+      <h3>Information from integrations you connect</h3>
+      <p>If you connect an integration such as Jira, Confluence, GitHub or GitLab, we receive and store the data needed for that integration to work, such as issue keys, page links, repository names, pull request details and webhook events. Credentials for these integrations are stored encrypted.</p>
+
+      <h3>Messages you send us</h3>
+      <p>If you email support, sales or privacy, we keep that correspondence so we can help you.</p>
+
+      <h2>How we use information</h2>
+      <ul>
+        <li>To provide the Service: store and sync your sessions, run search and team features, send the emails you ask for (account verification, invitations, handoffs, notifications and digests) and process payments.</li>
+        <li>To keep the Service secure: authenticate you, prevent abuse and fraud, enforce rate limits and investigate incidents.</li>
+        <li>To support you and to tell you about important changes to the Service or these terms.</li>
+        <li>To understand adoption and improve the product, using anonymous telemetry and aggregate usage.</li>
+        <li>To meet legal obligations, such as tax and accounting records.</li>
+      </ul>
+      <p>We do not use your synced content to train AI models, and we do not sell or rent your information.</p>
+
+      <h2>AI providers you configure</h2>
+      <p>Some features call a large language model, for example the session helper, security audits, narrative summaries and meeting action-item extraction. SessionFS does not supply a model key for these. They run with a key you or your organization saved, and the relevant content is sent to the provider you chose (for example Anthropic, OpenAI, Google or another supported provider). That provider's terms and privacy policy govern what it does with the data. If you don't configure a key, these features don't run.</p>
+
+      <h2>Organization accounts</h2>
+      <p>If you use SessionFS as a member of an organization, the organization's owners and admins can manage your membership and can see content shared with the organization's projects. When we process data for an organization, we do so on its behalf and under its instructions. Please contact your organization about its data practices.</p>
+
+      <h2>Legal bases (EEA and UK)</h2>
+      <p>If you are in the European Economic Area or the United Kingdom, we rely on these legal bases:</p>
+      <ul>
+        <li><strong>Contract:</strong> to provide the Service you signed up for, including storage, sync, team features and billing.</li>
+        <li><strong>Legitimate interests:</strong> to secure the Service, prevent abuse, provide support, and measure adoption with anonymous telemetry, which you can turn off.</li>
+        <li><strong>Legal obligation:</strong> to keep records the law requires.</li>
+        <li><strong>Consent:</strong> where we ask for it, which you can withdraw at any time.</li>
+      </ul>
+
+      <h2>Who we share information with</h2>
+      <p>We share information only with service providers that help us run the Service, under contracts that limit their use of it:</p>
+      <ul>
+        <li><strong>Google Cloud</strong>: hosting, databases, file storage and logs, in the United States.</li>
+        <li><strong>Vercel</strong>: hosting for the website and dashboard.</li>
+        <li><strong>Stripe</strong>: payment processing.</li>
+        <li><strong>Resend</strong>: sending transactional email.</li>
+        <li><strong>Google Fonts</strong>: the website loads its fonts from Google, which receives your IP address when it serves them.</li>
+      </ul>
+      <p>We also share information when you direct us to, for example with the AI provider you configured, an integration you connected, a teammate you hand a session to, or anyone who opens a share link you create. We may disclose information if the law requires it, to protect the rights and safety of our users or the public, or as part of a merger, acquisition or sale of assets, in which case this policy continues to apply.</p>
+
+      <h2>Cookies and browser storage</h2>
+      <p>We don't use advertising or analytics cookies. Single sign-on and GitHub account linking use short-lived, strictly necessary cookies to complete the flow safely. The dashboard keeps your sign-in and display preferences, such as list or grid view and theme, in your browser's local storage.</p>
+
+      <h2>How long we keep information</h2>
+      <ul>
+        <li>Account information: while your account is open, then deleted when you close it, except what we must keep for legal or accounting reasons.</li>
+        <li>Synced content: until you delete it. Deleted sessions go to Trash first, where you can restore them, and are then permanently removed.</li>
+        <li>Session helper conversations: 90 days by default. Organizations can change this.</li>
+        <li>Meeting transcripts and chat threads: 180 days by default. Organizations can change this.</li>
+        <li>AI usage records (token counts, not content): up to about 13 months, for budgets and billing.</li>
+        <li>Server logs: about 30 days.</li>
+        <li>Billing records: as long as tax and accounting law requires.</li>
+      </ul>
+      <p>Backups may keep deleted data for a short period before they expire.</p>
+
+      <h2>Your rights and choices</h2>
+      <ul>
+        <li>Delete sessions, projects and other content in the dashboard or with the <code>sfs</code> CLI.</li>
+        <li>Turn off cloud sync, or keep SessionFS entirely local by never signing in.</li>
+        <li>Turn off CLI telemetry, as described on the <a href="/telemetry/">telemetry page</a>.</li>
+        <li>Ask us for a copy of your information, to correct it, to delete your account, or to restrict or object to how we use it.</li>
+      </ul>
+      <p>Email <a href="mailto:privacy@sessionfs.dev">privacy@sessionfs.dev</a> to make a request. We'll respond within 30 days and may need to verify your identity first. If you are in the EEA or UK, you also have the right to complain to your local data protection authority.</p>
+      <p><strong>California residents:</strong> we do not sell or share personal information for cross-context behavioral advertising, and we don't use sensitive personal information to infer characteristics about you. You may request access to or deletion of your information as described above, and we won't treat you differently for doing so.</p>
+
+      <h2>International transfers</h2>
+      <p>We store data in the United States. If you use the Service from outside the United States, your information is transferred there. Where the law requires it, we rely on appropriate safeguards for these transfers, such as the European Commission's Standard Contractual Clauses.</p>
+
+      <h2>Security</h2>
+      <p>We encrypt data in transit with TLS and at rest. Integration credentials and saved AI keys are encrypted separately, and API keys are stored hashed. Access is limited by role and project, and we log administrative actions. No system is perfectly secure; if we learn of a breach that affects your information, we will notify you as the law requires. To report a security issue, email <a href="mailto:security@sessionfs.dev">security@sessionfs.dev</a>.</p>
+
+      <h2>Children</h2>
+      <p>The Service is not intended for anyone under 16, and we don't knowingly collect information from them. If you believe a child has given us information, contact us and we will delete it.</p>
+
+      <h2>Changes to this policy</h2>
+      <p>We'll post any changes on this page and update the date at the top. If a change is significant, we'll tell you by email or in the dashboard before it takes effect.</p>
+
+      <h2>Contact</h2>
+      <p>SessionFS<br />
+      Privacy: <a href="mailto:privacy@sessionfs.dev">privacy@sessionfs.dev</a><br />
+      Security: <a href="mailto:security@sessionfs.dev">security@sessionfs.dev</a></p>
+    </article>
+  </section>
+</BaseLayout>
+
+<style>
+  .legal h1 { font-size: 2.25rem; line-height: 1.2; font-weight: 600; letter-spacing: -0.02em; margin-bottom: 0.5rem; }
+  .legal .meta { color: var(--text-tertiary); font-size: 0.875rem; margin-bottom: 2rem; }
+  .legal h2 { font-size: 1.375rem; line-height: 1.3; font-weight: 600; letter-spacing: -0.01em; margin: 2.5rem 0 0.75rem; }
+  .legal h3 { font-size: 1.05rem; font-weight: 600; margin: 1.5rem 0 0.5rem; }
+  .legal p, .legal li { line-height: 1.7; color: var(--text-secondary); }
+  .legal p { margin-bottom: 1rem; }
+  .legal ul { list-style: disc; padding-left: 1.4rem; margin-bottom: 1rem; }
+  .legal li { margin-bottom: 0.4rem; }
+  .legal a { color: var(--brand); text-decoration: underline; text-underline-offset: 2px; }
+  .legal code { font-family: var(--font-mono); font-size: 0.9em; }
+  .legal strong { color: var(--text-primary); }
+</style>

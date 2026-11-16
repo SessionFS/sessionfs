@@ -212,7 +212,7 @@ export function FiltersMenu({ filters, onChange }: { filters: MarketplaceFilterS
             : 'border-border bg-bg-sunken text-text-secondary hover:border-border-strong hover:text-text-primary'
         }`}
       >
-        <FilterIcon size={15} />
+        <FilterIcon size={16} />
         <span>Filters</span>
         {count > 0 && (
           <span className="rounded-full bg-brand px-1.5 text-2xs font-semibold leading-4 text-text-inverse">
@@ -241,7 +241,7 @@ export function ActiveFilterChips({ filters, onChange }: { filters: MarketplaceF
           className="inline-flex items-center gap-1 rounded-full border border-border bg-surface py-0.5 pl-2.5 pr-1.5 text-xs text-text-secondary transition-colors hover:border-border-strong hover:text-text-primary outline-none focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
         >
           {chip.label}
-          <CloseIcon size={12} />
+          <CloseIcon size={14} />
         </button>
       ))}
       <button
@@ -354,7 +354,7 @@ export function BrowseToolbar({
     <section aria-label="Search and filter packages" className="@container">
       <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 @2xl:grid-cols-[minmax(0,1fr)_10.5rem_9rem_auto]">
         <div className="relative col-span-3 @2xl:col-span-1">
-          <SearchIcon size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
+          <SearchIcon size={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
           <Input
             type="search"
             aria-label="Search marketplace"

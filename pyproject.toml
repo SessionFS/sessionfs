@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sessionfs"
-version = "0.30.0"
+version = "0.31.0"
 description = "Capture, sync, and resume AI coding sessions across 10 tools — Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, Roo Code, Kilo Code, and Antigravity."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -84,8 +84,10 @@ server = [
     # OIDC SSO domain verification resolves DNS TXT records (no stdlib TXT
     # resolver exists). dnspython is the established async-capable resolver.
     # Floor 2.9.0: GHSA-45c3-73f7-pv4m (name decompression CPU DoS). 2.9.0
-    # needs Python 3.11+, so 3.10 keeps the previous floor.
-    "dnspython>=2.9.0,<3.0; python_version >= '3.11'",
+    # needs Python 3.11+, so 3.10 keeps the previous floor. Floor 2.9.2:
+    # GHSA-vvf4-9x63-8xvv (WKS from_text memory DoS; we never parse zone text,
+    # defense in depth).
+    "dnspython>=2.9.2,<3.0; python_version >= '3.11'",
     "dnspython>=2.6,<3.0; python_version < '3.11'",
 ]
 dev = [

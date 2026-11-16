@@ -4,14 +4,14 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 <BaseLayout title="MCP Server — SessionFS" activeNav="features" description="MCP server lets AI agents search past sessions and read project context.">
 
   <!-- Hero -->
-  <section class="relative pt-32 sm:pt-40 pb-16 px-5 noise">
+  <section class="relative pt-32 sm:pt-40 pb-16 px-5">
     <div class="max-w-4xl mx-auto text-center">
       <div class="fade-up inline-flex items-center gap-2 text-sm font-mono text-muted-dim mb-6">
         <a href="/features/" class="hover:text-brand transition-colors">Features</a>
         <span>&#47;</span>
         <span class="text-txt">MCP Server</span>
       </div>
-      <h1 class="fade-up font-heading text-4xl sm:text-5xl lg:text-6xl font-extrabold tracking-tight leading-[1.1] mb-6">
+      <h1 class="fade-up text-4xl sm:text-5xl lg:text-6xl font-semibold tracking-tight leading-[1.1] mb-6">
         Your AI remembers
       </h1>
       <p class="fade-up text-lg sm:text-xl text-muted leading-relaxed max-w-xl mx-auto">
@@ -20,18 +20,17 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Terminal -->
-  <section class="relative py-20 sm:py-28 px-5 noise">
+  <section class="relative py-20 sm:py-28 px-5">
     <div class="max-w-3xl mx-auto">
       <div class="fade-up relative">
-        <div class="hero-glow"></div>
-        <div class="term relative z-10">
+        <div class="term code-well relative z-10">
           <div class="term-bar">
-            <div class="term-dot bg-[#ff5f57]"></div>
-            <div class="term-dot bg-[#febc2e]"></div>
-            <div class="term-dot bg-[#28c840]"></div>
+            <div class="term-dot"></div>
+            <div class="term-dot"></div>
+            <div class="term-dot"></div>
             <span class="ml-3 text-muted-dim text-[13px] font-mono">mcp install</span>
           </div>
           <div class="p-5 font-mono text-sm space-y-1">
@@ -182,29 +181,29 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- Sub-feature cards -->
-  <section class="relative py-20 sm:py-28 px-5 bg-surface/50 noise">
+  <section class="relative py-20 sm:py-28 px-5 bg-surface/50">
     <div class="max-w-5xl mx-auto">
-      <h2 class="fade-up font-heading text-3xl font-bold text-center mb-12">What the MCP server gives you</h2>
+      <h2 class="fade-up text-3xl font-semibold text-center mb-12">What the MCP server gives you</h2>
       <div class="grid md:grid-cols-3 gap-5">
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#f0c040" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg></div>
-          <h3 class="font-heading font-semibold mb-2">One-command install</h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M3.75 13.5l10.5-11.25L12 10.5h8.25L9.75 21.75 12 13.5H3.75z"/></svg></div>
+          <h3 class="font-semibold mb-2">One-command install</h3>
           <p class="text-muted text-base leading-relaxed">Works with Claude Code, Cursor, and Copilot. Adds SessionFS to your tool's MCP config file automatically — no manual JSON editing.</p>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#4f9cf7" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg></div>
-          <h3 class="font-heading font-semibold mb-2">Project context</h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z"/></svg></div>
+          <h3 class="font-semibold mb-2">Project context</h3>
           <p class="text-muted text-base leading-relaxed">Share architecture decisions, coding conventions, and API contracts with every AI agent on your team. One document per repo, always current.</p>
         </div>
 
-        <div class="glass fade-up p-6">
-          <div class="mb-3"><svg class="w-7 h-7" fill="none" stroke="#3ddc84" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418"/></svg></div>
-          <h3 class="font-heading font-semibold mb-2">Local, No Network Needed</h3>
+        <div class="site-card fade-up p-6">
+          <div class="mb-3"><svg class="w-7 h-7 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 008.716-6.747M12 21a9.004 9.004 0 01-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 017.843 4.582M12 3a8.997 8.997 0 00-7.843 4.582m15.686 0A11.953 11.953 0 0112 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0121 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0112 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 013 12c0-1.605.42-3.113 1.157-4.418"/></svg></div>
+          <h3 class="font-semibold mb-2">Local, No Network Needed</h3>
           <p class="text-muted text-base leading-relaxed">Local MCP server on stdio for desktop tools — no network required.</p>
         </div>
 
@@ -212,32 +211,32 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
   <!-- How agents use it -->
-  <section class="relative py-20 px-5 noise">
+  <section class="relative py-20 px-5">
     <div class="max-w-5xl mx-auto flex flex-col lg:flex-row items-start gap-12">
       <div class="lg:w-1/2 fade-up">
-        <h2 class="font-heading text-2xl sm:text-3xl font-bold mb-4">How agents use session memory</h2>
+        <h2 class="text-2xl sm:text-3xl font-semibold mb-4">How agents use session memory</h2>
         <p class="text-muted text-lg mb-6 leading-relaxed">When you start a new session, your AI agent can automatically search for related past sessions and load their context — so it already knows what you tried last time.</p>
         <p class="text-muted text-base mb-6 leading-relaxed">The <span class="font-mono text-accent text-sm">find_related_sessions</span> tool maps file paths and error strings to previous sessions. If you're debugging the same file you touched last week, the agent knows.</p>
-        <a href="/mcp/" class="inline-flex items-center gap-2 bg-brand text-white font-semibold rounded-lg px-6 py-3 hover:brightness-110 transition">
+        <a href="/mcp/" class="inline-flex items-center gap-2 bg-brand text-on-brand font-semibold rounded-md px-6 py-3 hover:bg-brand-hover transition">
           Read the MCP docs
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/></svg>
         </a>
       </div>
       <div class="lg:w-1/2 fade-up">
-        <div class="term">
+        <div class="term code-well">
           <div class="term-bar">
-            <div class="term-dot bg-[#ff5f57]"></div>
-            <div class="term-dot bg-[#febc2e]"></div>
-            <div class="term-dot bg-[#28c840]"></div>
+            <div class="term-dot"></div>
+            <div class="term-dot"></div>
+            <div class="term-dot"></div>
             <span class="ml-3 text-muted-dim text-[13px] font-mono">agent using MCP</span>
           </div>
           <div class="p-5 font-mono text-sm space-y-3">
             <div>
               <div class="text-muted-dim text-[11px] uppercase tracking-wider mb-1">Agent calls MCP tool</div>
-              <div class="bg-bg/60 rounded p-2.5 text-sm">
+              <div class="bg-sunken rounded p-2.5 text-sm">
                 <span class="text-brand">find_related_sessions</span>
                 <span class="text-muted-dim">(</span><span class="text-accent">"tokens.py"</span><span class="text-muted-dim">)</span>
               </div>
@@ -257,7 +256,7 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
     </div>
   </section>
 
-  <div class="grad-divider"></div>
+  <div class="divider"></div>
 
 </BaseLayout>
 

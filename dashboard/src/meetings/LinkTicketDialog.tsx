@@ -92,7 +92,7 @@ export function LinkTicketDialog({ meetingId, item, onClose, chat = false }: Lin
         />
 
         {ticketId && preview.isLoading && (
-          <div className="h-16 rounded-md bg-bg-elevated animate-pulse" aria-busy="true" aria-label="Loading the comment" />
+          <div className="h-16 rounded-md bg-surface-active animate-pulse" aria-busy="true" aria-label="Loading the comment" />
         )}
         {preview.isError && <Alert variant="danger">{meetingActionError(preview.error)}</Alert>}
         {preview.data && (

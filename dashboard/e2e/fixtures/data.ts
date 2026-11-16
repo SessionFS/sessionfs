@@ -2233,3 +2233,217 @@ export const ticketsRich = [
   richTicket({ id: 'tk_8d7c6b5a49', status: 'done', priority: 'low', title: 'Retire the legacy share-link route', assigned_to: 'atlas', updated_at: hoursAgo(96), resolved_at: hoursAgo(96) }),
   richTicket({ id: 'tk_7c6b5a4938', status: 'cancelled', priority: 'low', title: 'Prototype a Slack notifier', updated_at: hoursAgo(300) }),
 ];
+
+// ── Session detail (conversation, summary, changes, audit) ──
+
+/** A captured session with a full conversation, summary, changes and audit. */
+export const SESSION_ID = 'ses_fixture01';
+/** A captured session with nothing recorded yet: every tab shows its empty state. */
+export const EMPTY_SESSION_ID = 'ses_fixture02';
+const SESSION_MODEL = sessions[0].model_id ?? 'gpt-5';
+
+export const sessionDetail = (id: string) => {
+  const base = sessions.find((s) => s.id === id) ?? sessions[0];
+  return {
+    ...base,
+    message_count: id === EMPTY_SESSION_ID ? 0 : base.message_count,
+    original_session_id: '46ba40cb-0000-4000-8000-000000000001',
+    source_tool_version: '2.1.0',
+    model_provider: 'anthropic',
+    duration_ms: 42 * 60_000,
+    uploaded_at: NOW,
+    git_remote_normalized: PROJECT_REMOTE,
+    dlp_scan_results: null,
+    is_deleted: false,
+  };
+};
+
+const msgAt = (minute: number) => `2026-10-20T11:${String(minute).padStart(2, '0')}:00Z`;
+
+/** Newest first, as the page asks for by default. */
+const sessionMessagesOldest: Record<string, unknown>[] = [
+  {
+    role: 'user',
+    content: [{ type: 'text', text: 'The billing webhook handler processes a retried Stripe event twice. Make it idempotent and add a test.' }],
+    timestamp: msgAt(2),
+  },
+  {
+    role: 'assistant',
+    model: SESSION_MODEL,
+    content: [
+      { type: 'thinking', thinking: 'Look at how the handler records processed event ids before changing anything.' },
+      { type: 'text', text: 'I will read the handler first to see where the event is recorded.' },
+      { type: 'tool_use', id: 'tu_1', name: 'Read', input: { file_path: 'src/billing/webhooks.py' } },
+    ],
+    timestamp: msgAt(3),
+  },
+  {
+    role: 'user',
+    content: [
+      {
+        type: 'tool_result',
+        tool_use_id: 'tu_1',
+        content: 'async def handle_event(event):\n    await apply_event(event)\n    await record_event(event.id)\n',
+        is_error: false,
+      },
+    ],
+    timestamp: msgAt(3),
+  },
+  {
+    role: 'assistant',
+    model: SESSION_MODEL,
+    content: [
+      { type: 'text', text: 'The event id is recorded **after** it is applied, so a retry that arrives in between runs it again. I will claim the id first.' },
+      {
+        type: 'tool_use',
+        id: 'tu_2',
+        name: 'Edit',
+        input: {
+          file_path: 'src/billing/webhooks.py',
+          old_string: '    await apply_event(event)\n    await record_event(event.id)\n',
+          new_string: '    if not await claim_event(event.id):\n        return\n    await apply_event(event)\n',
+        },
+      },
+    ],
+    timestamp: msgAt(5),
+  },
+  {
+    role: 'user',
+    content: [{ type: 'tool_result', tool_use_id: 'tu_2', content: 'The file src/billing/webhooks.py has been updated.', is_error: false }],
+    timestamp: msgAt(5),
+  },
+  {
+    role: 'assistant',
+    model: SESSION_MODEL,
+    content: [{ type: 'tool_use', id: 'tu_3', name: 'Bash', input: { command: 'pytest tests/billing -q' } }],
+    timestamp: msgAt(6),
+  },
+  {
+    role: 'user',
+    content: [
+      {
+        type: 'tool_result',
+        tool_use_id: 'tu_3',
+        content: 'FAILED tests/billing/test_webhooks.py::test_retry_is_ignored - NameError: claim_event\n1 failed, 23 passed in 2.41s',
+        is_error: true,
+      },
+    ],
+    timestamp: msgAt(7),
+  },
+  {
+    role: 'assistant',
+    model: SESSION_MODEL,
+    content: [
+      {
+        type: 'text',
+        text: 'Done. The handler now claims the event id in one `INSERT … ON CONFLICT DO NOTHING` before applying it:\n\n- `claim_event` returns false for a retry, so the event is applied once.\n- `test_retry_is_ignored` sends the same event twice and checks one charge.\n\nAll 24 billing tests pass.',
+      },
+    ],
+    timestamp: msgAt(9),
+  },
+];
+
+export const sessionMessages = {
+  messages: [...sessionMessagesOldest].reverse(),
+  message_indexes: sessionMessagesOldest.map((_, i) => i).reverse(),
+  total: sessionMessagesOldest.length,
+  page: 1,
+  page_size: 50,
+  has_more: false,
+};
+
+export const emptySessionMessages = { messages: [], message_indexes: [], total: 0, page: 1, page_size: 50, has_more: false };
+
+export const sessionSummary = {
+  session_id: SESSION_ID,
+  title: sessions[0].title,
+  tool: 'claude-code',
+  model: SESSION_MODEL,
+  duration_minutes: 42,
+  message_count: sessionMessagesOldest.length,
+  tool_call_count: 3,
+  branch: 'fix/webhook-idempotency',
+  commit: '9f2c1ab',
+  files_modified: ['src/billing/webhooks.py', 'tests/billing/test_webhooks.py'],
+  files_read: ['src/billing/webhooks.py', 'src/billing/models.py', 'src/billing/stripe_client.py'],
+  commands_executed: 2,
+  tests_run: 24,
+  tests_passed: 24,
+  tests_failed: 0,
+  packages_installed: [],
+  errors_encountered: ['NameError: claim_event'],
+  what_happened: 'The webhook handler recorded an event id after applying it, so a retried delivery ran twice. The handler now claims the id first.',
+  key_decisions: ['Claim the event id with INSERT … ON CONFLICT DO NOTHING before applying it.'],
+  outcome: 'Fixed; all billing tests pass.',
+  open_issues: ['Old duplicate charges are not refunded automatically.'],
+  narrative_model: SESSION_MODEL,
+  narrative_error: null,
+  generated_at: NOW,
+};
+
+export const sessionChanges = {
+  git_ref: 'fix/webhook-idempotency @ 9f2c1ab',
+  truncated: false,
+  files: [
+    {
+      path: 'src/billing/webhooks.py',
+      operation: 'edited',
+      diff: '@@ -12,6 +12,7 @@ async def handle_event(event):\n-    await apply_event(event)\n-    await record_event(event.id)\n+    if not await claim_event(event.id):\n+        return\n+    await apply_event(event)\n',
+      added_lines: 3,
+      removed_lines: 2,
+      message_indexes: [3],
+      truncated: false,
+    },
+    {
+      path: 'tests/billing/test_webhooks.py',
+      operation: 'created',
+      diff: '@@ -0,0 +1,6 @@\n+async def test_retry_is_ignored(client, event):\n+    await client.post("/webhooks/stripe", json=event)\n+    await client.post("/webhooks/stripe", json=event)\n+    assert await charges_for(event) == 1\n',
+      added_lines: 4,
+      removed_lines: 0,
+      message_indexes: [5],
+      truncated: false,
+    },
+  ],
+};
+
+export const emptySessionChanges = { files: [], git_ref: null, truncated: false };
+
+export const sessionAudit = {
+  session_id: SESSION_ID,
+  model: SESSION_MODEL,
+  timestamp: NOW,
+  summary: { total_claims: 3, verified: 1, unverified: 1, hallucinations: 1, trust_score: 0.67 },
+  findings: [
+    {
+      message_index: 7,
+      claim: 'All 24 billing tests pass.',
+      verdict: 'hallucination',
+      severity: 'high',
+      evidence: 'The last test run reported 1 failed, 23 passed; no later run was recorded.',
+      explanation: 'The claim is contradicted by the only recorded test output.',
+      category: 'test_results',
+      confidence: 92,
+      evidence_snippets: [{ text: '1 failed, 23 passed in 2.41s', message_index: 6 }],
+    },
+    {
+      message_index: 3,
+      claim: 'The event id is recorded after it is applied.',
+      verdict: 'verified',
+      severity: 'low',
+      evidence: 'The file read shows apply_event before record_event.',
+      explanation: 'Matches the tool output.',
+      category: 'code_behavior',
+      confidence: 97,
+    },
+    {
+      message_index: 7,
+      claim: 'claim_event uses INSERT … ON CONFLICT DO NOTHING.',
+      verdict: 'unverified',
+      severity: 'medium',
+      evidence: 'No tool call shows the body of claim_event.',
+      explanation: 'Nothing in the session confirms or contradicts it.',
+      category: 'code_behavior',
+      confidence: 70,
+    },
+  ],
+};

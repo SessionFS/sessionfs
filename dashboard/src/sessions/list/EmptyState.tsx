@@ -30,10 +30,7 @@ export function NoSessionsCard() {
     level="elevated"
     className="max-w-[560px] w-full overflow-hidden"
       >
-    {/* Dot-grid banner */}
-    <div
-      className="relative flex items-center justify-center py-10 bg-[image:var(--dot-grid)] bg-[length:16px_16px]"
-    >
+    <div className="relative flex items-center justify-center py-10">
       {/* Session card illustration — two overlapping cards with a plus */}
       <svg
         width="88"

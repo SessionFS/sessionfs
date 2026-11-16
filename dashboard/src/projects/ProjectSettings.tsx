@@ -24,7 +24,7 @@ function SettingsGroup({ id, title, description, children }: { id: string; title
         {title}
       </h2>
       {description && <p className="mt-0.5 text-sm text-text-tertiary">{description}</p>}
-      <Card level="elevated" className="mt-3 rounded-xl shadow-[var(--shadow-sm)] divide-y divide-border">
+      <Card level="elevated" className="mt-3 rounded-xl divide-y divide-border">
         {children}
       </Card>
     </section>
@@ -229,7 +229,7 @@ export default function ProjectSettings({ project, onRequestDelete }: ProjectSet
                 onChange={(e) => setNameDraft(e.target.value)}
                 aria-label="Project name"
                 placeholder={project.git_remote_normalized}
-                className="min-w-0 flex-[1_1_14rem] max-w-md bg-bg-sunken border border-border rounded-lg px-3 py-2 text-sm text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
+                className="min-w-0 flex-[1_1_14rem] max-w-md bg-bg-sunken border border-border-control hover:border-text-tertiary rounded-lg px-3 py-2 text-sm text-text-primary outline-none focus-visible:border-[var(--brand)] focus-visible:shadow-[0_0_0_3px_var(--brand-glow)]"
               />
               <Button
                 type="submit"

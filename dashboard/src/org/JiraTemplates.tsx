@@ -44,6 +44,8 @@ import type {
   JiraTemplateSection,
   JiraTemplateSectionRequest,
 } from '../api/client';
+import { Icon } from '../components/ui/Icon';
+import { ChevronDown, ChevronUp, Info, X } from 'lucide-react';
 
 /* ── Org-custom Jira story templates (Enterprise, owner/admin) ──
  *
@@ -93,11 +95,7 @@ const FIELD_HELP: Record<string, string> = {
 
 function InfoIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="12" cy="12" r="9" />
-      <line x1="12" y1="11" x2="12" y2="16" />
-      <line x1="12" y1="8" x2="12.01" y2="8" />
-    </svg>
+    <Icon icon={Info} size={14} />
   );
 }
 
@@ -192,26 +190,19 @@ function toSectionRequests(sections: SectionDraft[]): JiraTemplateSectionRequest
 
 function ArrowUpIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <polyline points="18 15 12 9 6 15" />
-    </svg>
+    <Icon icon={ChevronUp} size={14} />
   );
 }
 
 function ArrowDownIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <polyline points="6 9 12 15 18 9" />
-    </svg>
+    <Icon icon={ChevronDown} size={14} />
   );
 }
 
 function CloseIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <line x1="18" y1="6" x2="6" y2="18" />
-      <line x1="6" y1="6" x2="18" y2="18" />
-    </svg>
+    <Icon icon={X} size={14} />
   );
 }
 
@@ -399,9 +390,7 @@ function BuiltinTemplates({ templates }: { templates: JiraTemplate[] }) {
           {templates.length} built-in template{templates.length === 1 ? '' : 's'}
           <span className="ml-2 text-xs text-text-tertiary">Read-only</span>
         </span>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}>
-          <polyline points="6 9 12 15 18 9" />
-        </svg>
+        <Icon icon={ChevronDown} size={14} className={`shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
         <ul id={listId} className="divide-y divide-border border-t border-border">

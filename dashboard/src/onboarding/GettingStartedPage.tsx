@@ -6,6 +6,8 @@ import { setItem } from '../utils/storage';
 import CopyButton from '../components/CopyButton';
 import Wordmark from '../components/Wordmark';
 import { Card, Button, Alert } from '../components/ui';
+import { Icon } from '../components/ui/Icon';
+import { Check } from 'lucide-react';
 
 /**
  * Scope the dismissal flag to (baseUrl, apiKey-hash) so different accounts
@@ -250,9 +252,7 @@ function StepCard({
           aria-label={done ? `Step ${number} complete` : `Step ${number}`}
         >
           {done ? (
-            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="4 10 8 14 16 6" />
-            </svg>
+            <Icon icon={Check} />
           ) : (
             number
           )}

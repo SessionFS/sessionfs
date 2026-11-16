@@ -1,6 +1,8 @@
 import type { RefObject } from 'react';
 import { Button, Kbd, Select, Tabs } from '../../components/ui';
 import { VIEWS, type GroupBy, type ListParams, type SortBy, type ViewId } from './views';
+import { Icon } from '../../components/ui/Icon';
+import { List, Search, SquareKanban } from 'lucide-react';
 
 /* ── Toolbar ──
  *
@@ -25,27 +27,19 @@ export const VIEWS_ID_PREFIX = 'tk-views';
 
 function ListIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-      <path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
-    </svg>
+    <Icon icon={List} size={14} />
   );
 }
 
 function BoardIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="4" width="7" height="16" rx="1.5" />
-      <rect x="14" y="4" width="7" height="10" rx="1.5" />
-    </svg>
+    <Icon icon={SquareKanban} size={14} />
   );
 }
 
 function SearchIcon() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true" className="tk-search-ic">
-      <circle cx="11" cy="11" r="7" />
-      <path d="M20 20l-3.5-3.5" />
-    </svg>
+    <Icon icon={Search} size={14} className="tk-search-ic" />
   );
 }
 

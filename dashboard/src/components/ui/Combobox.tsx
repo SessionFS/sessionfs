@@ -11,6 +11,8 @@ import {
 } from 'react';
 import { FieldWrapper } from './Input';
 import { baseField, describedBy, errorField } from './fieldStyles';
+import { Icon } from './Icon';
+import { Check, ChevronDown } from 'lucide-react';
 
 /* ── Combobox ──
  *
@@ -312,18 +314,11 @@ export function Combobox({
             )}
             <span className="truncate">{selectedLabel || placeholder}</span>
           </span>
-          <svg
-            className={`w-3.5 h-3.5 text-text-tertiary shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <polyline points="6 9 12 15 18 9" />
-          </svg>
+          <Icon
+            icon={ChevronDown}
+            size={14}
+            className={`text-text-tertiary shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
+          />
         </button>
 
         {open && (
@@ -391,9 +386,7 @@ export function Combobox({
                       >
                         <span className="w-4 shrink-0" aria-hidden="true">
                           {isSelected && (
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                              <polyline points="20 6 9 17 4 12" />
-                            </svg>
+                            <Icon icon={Check} size={14} />
                           )}
                         </span>
                         {opt.icon && (

@@ -250,14 +250,10 @@ describe('AdminDashboard', () => {
 
     // The user row has an ActionMenu (three-dot button) that opens a
     // dropdown with Manage / Verify Email / Delete User. Find the button
-    // by its svg content — it's the only three-dot menu on a single-row
-    // user table.
-    const buttons = screen.getAllByRole('button');
-    const actionBtn = buttons.find(
-      (b) => b.querySelector('svg circle[cx="8"][cy="3"]'),
-    );
-    expect(actionBtn).toBeDefined();
-    await user.click(actionBtn!);
+    // by its accessible name — it's the only "Actions" menu on a
+    // single-row user table.
+    const actionBtn = screen.getByRole('button', { name: 'Actions' });
+    await user.click(actionBtn);
 
     // The action buttons become visible — find Delete User
     const deleteBtn = await screen.findByRole('button', { name: /delete user/i });

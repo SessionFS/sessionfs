@@ -1,85 +1,111 @@
 @import "tailwindcss";
+@import "./tokens.css";
 
-@theme {
-  --color-brand: #4f9cf7;
-  --color-accent: #3ddc84;
-  --color-bg: #0a0c10;
-  --color-surface: #161b22;
-  --color-border: #30363d;
-  --color-txt: #e6edf3;
-  --color-muted: #c9d1d9;
-  --color-muted-dim: #9ca3af;
-  --color-danger: #f04060;
-  --color-warning: #f0c040;
-  --font-heading: 'Plus Jakarta Sans', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+/* Marketing pages. Colours, type, radii and motion come from tokens.css,
+   which matches the dashboard (docs/design/foundations-proposal.md).
+   `inline` makes each utility read the token where it is used, so the
+   always-dark code well (.code-well) can re-declare tokens for its subtree. */
+@theme inline {
+  --color-brand: var(--brand);
+  --color-brand-hover: var(--brand-hover);
+  --color-on-brand: var(--text-on-brand);
+  --color-accent: var(--accent);
+  --color-bg: var(--bg-primary);
+  --color-surface: var(--surface);
+  --color-sunken: var(--bg-sunken);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-txt: var(--text-primary);
+  --color-muted: var(--text-secondary);
+  --color-muted-dim: var(--text-tertiary);
+  --color-danger: var(--danger);
+  --color-warning: var(--warning);
+  --default-transition-duration: var(--duration-fast);
+  --default-transition-timing-function: var(--ease-out);
 }
 
-/* Marketing pages — dark theme always */
+/* Marketing pages (Starlight pages carry .sl-container and style themselves). */
 body:not(:has(.sl-container)) {
-  background: #0a0c10;
-  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
-  color: #e6edf3;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.55;
+  text-rendering: optimizeLegibility;
 }
 
-/* Noise texture overlay */
-.noise { position: relative; }
-.noise::before {
-  content: ''; position: absolute; inset: 0; opacity: 0.03; pointer-events: none;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+/* Headings: Inter at 600 with optical sizing and slight negative tracking
+   (proposal type scale). Sizes stay on the page; weights and leading follow
+   the scale. */
+body:not(:has(.sl-container)) :is(h1, h2, h3, h4) {
+  font-optical-sizing: auto;
+  font-weight: 600;
+  text-wrap: balance;
+}
+body:not(:has(.sl-container)) :is(h1, h2) { letter-spacing: -0.02em; line-height: 1.2; }
+body:not(:has(.sl-container)) :is(h3, h4) { letter-spacing: -0.005em; line-height: 1.4; }
+
+code, pre, kbd, samp { font-family: var(--font-mono); }
+
+/* Focus: a 3 px ring at --focus-ring, 2 px off links (proposal "Focus"). */
+:where(a, button, [tabindex]):focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
 }
 
-/* Gradient divider */
-.grad-divider { height: 1px; background: linear-gradient(90deg, transparent, #4f9cf7, #3ddc84, transparent); }
+/* The inline logo in the nav draws its wordmark for a dark page. On the light
+   page the wordmark takes the same ink as assets/logo-light.svg; the markup
+   itself is unchanged. */
+[data-theme="light"] #main-nav a[aria-label="SessionFS home"] svg > text { fill: #1f2328; }
 
-/* Terminal mockup */
-.term { background: #161b22; border: 1px solid #30363d; border-radius: 10px; overflow: hidden; }
-.term-bar { background: #1c2128; padding: 10px 14px; display: flex; gap: 7px; border-bottom: 1px solid #30363d; }
-.term-dot { width: 12px; height: 12px; border-radius: 50%; }
+/* Section divider: a hairline. */
+.divider { height: 1px; background: var(--border); }
+
+/* Terminal mockup: an always-dark code well (see .code-well in tokens.css). */
+.term {
+  background: var(--code-well-bg);
+  border: 1px solid var(--code-well-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  color: var(--text-primary);
+}
+.term-bar {
+  background: var(--code-well-bar-bg);
+  padding: 10px 14px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border-bottom: 1px solid var(--border);
+}
+.term-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--code-well-dot); }
 .term-body { padding: 16px 20px; font-family: var(--font-mono); font-size: 14px; line-height: 1.6; overflow-x: auto; }
 
-/* Glass cards */
-.glass {
-  backdrop-filter: blur(12px);
-  background: rgba(22,27,34,0.6);
-  border: 1px solid rgba(48,54,61,0.5);
-  border-radius: 12px;
-  transition: transform 0.2s, border-color 0.2s;
+/* Cards: flat surface, hairline border, no lift. The border answers hover. */
+.site-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  transition: border-color var(--duration-fast) var(--ease-out);
 }
-.glass:hover { transform: translateY(-2px); border-color: rgba(79,156,247,0.4); }
+a.site-card:hover { border-color: var(--border-strong); }
 
-/* Pricing card hover */
-.price-card { transition: transform 0.2s, box-shadow 0.2s; }
-.price-card:hover { transform: translateY(-4px); box-shadow: 0 0 24px rgba(79,156,247,0.15); }
-
-/* Fade-up animation */
-.fade-up { opacity: 1; transform: translateY(0); }
+/* Scroll reveal: a quiet fade, at most 2 px of travel (proposal "Motion"). */
+.fade-up { opacity: 1; transform: none; }
 @media (prefers-reduced-motion: no-preference) {
-  .fade-up { opacity: 0; transform: translateY(24px); transition: opacity 0.6s ease-out, transform 0.6s ease-out; }
-  .fade-up.visible { opacity: 1; transform: translateY(0); }
+  .fade-up { opacity: 0; transform: translateY(2px); transition: opacity var(--duration-slow) var(--ease-out), transform var(--duration-slow) var(--ease-out); }
+  .fade-up.visible { opacity: 1; transform: none; }
 }
 
-/* Pulse glow */
-@keyframes pulse-glow { 0%, 100% { box-shadow: 0 0 8px rgba(79,156,247,0.3); } 50% { box-shadow: 0 0 20px rgba(79,156,247,0.6); } }
-.pulse-badge { animation: pulse-glow 3s ease-in-out infinite; }
-
-/* Hero glow */
-.hero-glow {
-  position: absolute; width: 420px; height: 420px; border-radius: 50%; pointer-events: none;
-  background: radial-gradient(circle, rgba(79,156,247,0.12) 0%, transparent 70%);
-  top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 0;
+/* Links inside running text carry an underline, not colour alone
+   (WCAG 1.4.1). Link lists (nav, footer) stay plain. */
+body:not(:has(.sl-container)) :is(p, li, [class*="text-muted"]):not(footer *) > a:not([class*="inline-flex"]),
+body:not(:has(.sl-container)) :is(p, li):not(footer *) a:not([class*="inline-flex"]) {
+  text-decoration-line: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
 }
-
-/* Utility classes */
-.text-txt       { color: #e6edf3; }
-.text-brand     { color: #4f9cf7; }
-.text-accent    { color: #3ddc84; }
-.text-muted     { color: #c9d1d9; }
-.text-muted-dim { color: #9ca3af; }
-.text-danger    { color: #f04060; }
-.text-warning   { color: #f0c040; }
-.bg-brand       { background-color: #4f9cf7; }
-.bg-surface     { background-color: #161b22; }
-.border-border  { border-color: #30363d; }
-.font-heading   { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; }
-.font-mono      { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+body:not(:has(.sl-container)) :is(p, li, [class*="text-muted"]):not(footer *) a:not([class*="inline-flex"]):hover {
+  text-decoration-color: currentColor;
+}

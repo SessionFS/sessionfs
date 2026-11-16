@@ -69,7 +69,7 @@ export default function MessageBlock({ message, index, highlighted = false }: Me
       data-highlighted={highlighted || undefined}
       tabIndex={index != null ? -1 : undefined}
       className={`${rail} ${bgClass} rounded-lg px-4 py-3 scroll-mt-4 outline-none motion-safe:transition-shadow motion-safe:duration-500 ${
-        highlighted ? 'shadow-[0_0_0_2px_var(--brand),0_0_0_6px_var(--brand-glow)]' : ''
+        highlighted ? 'shadow-[0_0_0_2px_var(--brand)]' : ''
       }`}
     >
       {/* Top bar — role label, model, timestamp */}

@@ -69,7 +69,7 @@ function ApprovalRow({ item: r, onOpen }: { item: ApprovalQueueItem; onOpen: (id
             {href && (
               <>
                 {' · '}
-                <Link to={href} className="text-brand hover:underline">
+                <Link to={href} className="text-brand underline underline-offset-2">
                   Open target
                 </Link>
               </>

@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.31.0] - 2026-11-16
+
+**A quieter, more precise look across the dashboard, the site and the docs, plus Terms of Service and a Privacy Policy.** No server changes and no migrations.
+
+### Added
+- Terms of Service and Privacy Policy pages, linked from the site footer, the dashboard footer and the login page.
+- Light mode on the marketing site. It follows your system setting, and the docs theme switch and the site agree.
+
+### Changed
+- One set of design tokens (colours, type, radii, motion) shared by the dashboard, the site and the docs. Inter for text, JetBrains Mono for code.
+- Dashboard icons are drawn with Lucide through one icon component, with a lighter 1.25 px stroke.
+- Empty states use one pattern everywhere: a small icon in a subtle circle that stays visible in both themes.
+- Decorative effects are gone: no noise overlay, glows, gradient text or gradient dividers. Form controls have a visible edge.
+- Site feature icons all use the brand blue.
+- Docs code blocks follow the page theme.
+- The session quick preview shows a "Tool" label and a short summary for tool-only messages instead of "(no text)".
+
+### Fixed
+- The dashboard theme now follows the system setting until you pick one; it no longer saves the default on first load.
+- Meeting tiles and loading placeholders no longer disappear on white in light mode.
+- Changelog bullets no longer break into narrow columns; the docs logo is readable in light mode.
+- Overflowing docs tables can be scrolled with the keyboard.
+
+### Security
+- dnspython raised to 2.9.2 or later (GHSA-vvf4-9x63-8xvv); the site's Astro moved to 7.4.12 (GHSA-mh32-jxcr-mh9f, GHSA-r3h5-4585-7x3w). Neither affected how SessionFS uses them.
+
 ## [0.30.0] - 2026-11-09
 
 **Hardening release: a published API contract, safe retries, business metrics and SLOs, tenancy limits, review-loop guarantees, multiple organizations per person, a rebuilt Tickets page, glossary tooltips and a more grounded session helper.** Server migrations 134–137.

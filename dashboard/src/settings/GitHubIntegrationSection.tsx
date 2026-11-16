@@ -224,7 +224,7 @@ export function GitHubIntegrationSection() {
                 type="checkbox"
                 checked={ghSettings.auto_comment ?? true}
                 onChange={(e) => updateSettings.mutate({ auto_comment: e.target.checked })}
-                className="rounded border-border bg-surface text-brand focus-visible:ring-[var(--brand)]"
+                className="focus-visible:ring-[var(--brand)]"
               />
               Auto-comment on PRs
             </label>
@@ -233,7 +233,7 @@ export function GitHubIntegrationSection() {
                 type="checkbox"
                 checked={ghSettings.include_trust_score ?? true}
                 onChange={(e) => updateSettings.mutate({ include_trust_score: e.target.checked })}
-                className="rounded border-border bg-surface text-brand focus-visible:ring-[var(--brand)]"
+                className="focus-visible:ring-[var(--brand)]"
               />
               Include trust scores
             </label>
@@ -242,7 +242,7 @@ export function GitHubIntegrationSection() {
                 type="checkbox"
                 checked={ghSettings.include_session_links ?? true}
                 onChange={(e) => updateSettings.mutate({ include_session_links: e.target.checked })}
-                className="rounded border-border bg-surface text-brand focus-visible:ring-[var(--brand)]"
+                className="focus-visible:ring-[var(--brand)]"
               />
               Include session links
             </label>

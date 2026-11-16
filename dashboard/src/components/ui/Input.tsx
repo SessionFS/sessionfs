@@ -1,5 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useId, type InputHTMLAttributes, type TextareaHTMLAttributes, type ReactNode, type Ref } from 'react';
 import { baseField, describedBy, errorField } from './fieldStyles';
+import { Icon } from './Icon';
+import { Check, ChevronDown } from 'lucide-react';
 
 /* ── field wrapper ── */
 
@@ -270,17 +272,11 @@ export function Select({
           onKeyDown={handleTriggerKeyDown}
         >
           <span className="truncate">{selectedLabel || placeholder}</span>
-          <svg
-            className={`w-3.5 h-3.5 text-text-tertiary shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          >
-            <polyline points="6 9 12 15 18 9" />
-          </svg>
+          <Icon
+            icon={ChevronDown}
+            size={14}
+            className={`text-text-tertiary shrink-0 transition-transform duration-150 ${open ? 'rotate-180' : ''}`}
+          />
         </button>
 
         {open && (
@@ -324,9 +320,7 @@ export function Select({
                   >
                     <span className="w-4 shrink-0">
                       {isSelected && (
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                          <polyline points="20 6 9 17 4 12" />
-                        </svg>
+                        <Icon icon={Check} size={14} />
                       )}
                     </span>
                     <span className="flex-1 truncate">{opt.label}</span>

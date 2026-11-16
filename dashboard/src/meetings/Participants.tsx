@@ -8,6 +8,8 @@ import { RESOLUTION_LABEL, isResolved, meetingActionError } from './format';
 import { participantName, type MeetingPeople } from './people';
 import { ContactAvatar, ExternalBadge } from '../org/contacts/ContactChip';
 import { ContactFormDialog } from '../org/contacts/ContactFormDialog';
+import { Icon } from '../components/ui/Icon';
+import { Bot } from 'lucide-react';
 
 interface ParticipantsProps {
   meetingId: string;
@@ -247,11 +249,7 @@ export function ParticipantPicker({
 function PersonaBadge() {
   return (
     <span aria-hidden="true" className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-surface-hover text-text-tertiary">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="4" y="8" width="16" height="12" rx="2" />
-        <path d="M12 8V4" />
-        <path d="M9 13h.01M15 13h.01" />
-      </svg>
+      <Icon icon={Bot} size={14} />
     </span>
   );
 }
