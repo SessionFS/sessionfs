@@ -740,18 +740,38 @@ async def create_project(
         verification_method="legacy_backfill",
         added_by_user_id=user.id,
     ))
+    # Backfill knowledge from sessions already synced before this project was
+    # created: a durable job committed with the project (the kb-compile sweep
+    # runs it when the post-response fast path never does,
+    # tk_e3eecad8c3874d92).
+    from sessionfs.server import post_response
+    from sessionfs.server.services import deferred_jobs
+
+    blob_store = getattr(request.app.state, "blob_store", None)
+    recorded = (
+        await deferred_jobs.record_job(db, deferred_jobs.KIND_KNOWLEDGE_BACKFILL, project.id)
+        if blob_store
+        else False
+    )
     await db.commit()
     await db.refresh(project)
-
-    # Backfill knowledge from sessions already synced before this project was created
-    blob_store = getattr(request.app.state, "blob_store", None)
-    if blob_store:
-        background_tasks.add_task(
-            _backfill_knowledge_for_project,
+    if blob_store and recorded:
+        deferred_jobs.spawn_job(
+            deferred_jobs.KIND_KNOWLEDGE_BACKFILL,
             project.id,
-            body.git_remote_normalized,
-            user.id,
-            blob_store,
+            context={"blob_store": blob_store},
+            background_tasks=background_tasks,
+        )
+    elif blob_store:
+        # The job row could not be written: run the backfill directly, as
+        # before the job existed.
+        post_response.spawn(
+            _backfill_knowledge_for_project(
+                project.id, body.git_remote_normalized, user.id, blob_store
+            ),
+            name="knowledge-backfill-direct",
+            background_tasks=background_tasks,
+            force=True,
         )
 
     effective_tier = (await resolve_project_plan_tier(project, db)).value

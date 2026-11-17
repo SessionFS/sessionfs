@@ -702,6 +702,17 @@ class _InFlightSlot:
         if self.org_slot is not None:
             self.org_slot.release_soon()
 
+    async def release_async(self) -> None:
+        """Release both slots, awaiting the org slot's DB delete (shielded) so
+        it finishes inside the request rather than on a task that may get no
+        CPU after the response (tk_e3eecad8c3874d92)."""
+        if self._released:
+            return
+        self._released = True
+        _release(self.user_id)
+        if self.org_slot is not None:
+            await self.org_slot.release()
+
 
 def _acquire_slot(user_id: str) -> _InFlightSlot:
     """Acquire one in-flight slot, returning an idempotent release handle.
@@ -3090,7 +3101,7 @@ async def _turn_events(
                         )
     finally:
         if slot is not None:
-            slot.release()
+            await slot.release_async()
 
 
 def _tool_result_event(event: ToolResultEvent, refs: dict[str, Any] | None) -> dict[str, Any]:

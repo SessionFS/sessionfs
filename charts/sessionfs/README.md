@@ -130,7 +130,8 @@ helm install sessionfs sessionfs/sessionfs \
 | `api.autoscaling.maxReplicas` | Max API replicas | `10` |
 | `api.logLevel` | Application log level | `INFO` |
 | `api.corsOrigins` | Allowed CORS origins | `""` |
-| `api.rateLimitPerMinute` | Rate limit per minute | `100` |
+| `api.rateLimitPerMinute` | Rate limit per minute per API key | `120` |
+| `api.trustedProxies` | Proxies trusted to report the client IP in `X-Forwarded-For` (CIDRs, addresses, presets `private`, `gcp-lb`, `cloud-run`, `cloudflare`); sets `SFS_TRUSTED_PROXIES` | `[private]` |
 | `api.podDisruptionBudget.enabled` | Enable PDB | `true` |
 | `mcp.enabled` | Deploy MCP server | `true` |
 | `mcp.replicaCount` | MCP server replicas | `1` |
@@ -155,6 +156,42 @@ helm install sessionfs sessionfs/sessionfs \
 | `security.podSecurityStandards.enforce` | PSS enforcement level | `baseline` |
 | `migrations.enabled` | Run DB migrations on install/upgrade | `true` |
 | `monitoring.serviceMonitor.enabled` | Enable Prometheus ServiceMonitor | `false` |
+
+## Scheduled Jobs
+
+The API has no scheduler of its own. The chart ships one opt-in CronJob per
+scheduled sweep; each is off by default and needs `api.<key>.enabled=true`
+plus `api.<key>.cronJob.existingSecret` naming a Secret that holds a
+`platform_sweeps:run` service key (`sfs admin service-keys create ... --scope
+platform_sweeps:run`). The registry poll job (`api.registryPolling.cronJob`)
+takes a `skills_registry:poll` key instead.
+
+| Values key | Default schedule | Switch on for self-hosted |
+|-----------|------------------|---------------------------|
+| `githubWebhookSweep` | `*/5 * * * *` | Always (also aborts expired multipart uploads) |
+| `helperRetention` | `0 3 * * *` | Always |
+| `idempotencyKeys` | `20 * * * *` | Always |
+| `attentionHides` | `45 3 * * *` | Always |
+| `ticketNotifications` | `*/10 * * * *` | If you want ticket emails |
+| `orgDigest` | `0 4 * * *` | Team / Enterprise orgs |
+| `kbCompile` | `*/15 * * * *` | If projects use compile schedules |
+| `remindersDue` | `*/5 * * * *` | If people use reminders |
+| `meetingRetention` | `30 3 * * *` | If people use meetings / chat threads |
+| `evalOutputs` | `15 4 * * *` | If you use evaluations |
+| `jiraSync` | `* * * * *` | With the Jira integration |
+| `confluencePublish` | `*/15 * * * *` | With the Confluence integration |
+| `marketplaceFreshness` | `15 4 * * *` | If you use the skill marketplace |
+| `skillsRescan` | `40 * * * *` | If you use the skill marketplace |
+| `publisherRecheck` | `45 5 * * *` | If you verify publishers |
+| `catalogRegenerate` | `20 * * * *` | If people use `sfs catalog add` |
+| `registryPolling.cronJob` | `*/5 * * * *` | If orgs poll Git skill registries |
+
+Every job runs a digest-pinned curl image as non-root on a read-only root
+filesystem, mounts no service-account token, reads its key from the Secret
+into an environment variable, passes any body through `SWEEP_BODY`, and never
+overlaps a previous run. With `security.networkPolicies.enabled` the job pods
+may reach only DNS and the API. See `docs/self-hosted.md` for what each sweep
+does.
 
 ## Upgrading
 

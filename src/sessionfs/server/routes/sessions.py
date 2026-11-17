@@ -2490,17 +2490,24 @@ async def _sync_push(
                 # Commit succeeded — we own the row. Now promote blob.
                 await _promote_blob()
                 session.blob_key = key
+                # C-site (§2.2C C2): git_remote_normalized used as a
+                # boolean "has remote?" gate for auto-extract — NOT
+                # project resolution.  The job resolves via
+                # resolve_project_by_remote internally. The job row
+                # commits with the blob key, so extraction survives a
+                # post-response task that never runs (tk_e3eecad8c3874d92).
+                extract = meta["message_count"] >= 5 and bool(git_remote_normalized)
+                recorded = (
+                    await _request_knowledge_extract(db2, session.id) if extract else False
+                )
                 await db2.commit()
                 # Both commits succeeded — safe to clean up temp blob
                 await _cleanup_temp_blob()
-
-                # C-site (§2.2C C2): git_remote_normalized used as a
-                # boolean "has remote?" gate for auto-extract — NOT
-                # project resolution.  The background task resolves via
-                # resolve_project_by_remote internally.
-                if meta["message_count"] >= 5 and git_remote_normalized:
-                    background_tasks.add_task(
-                        _auto_extract_knowledge, session.id, data, git_remote_normalized, user_id
+                if extract:
+                    _spawn_knowledge_extract(
+                        session.id, session.etag, data, blob_store, background_tasks,
+                        recorded=recorded, git_remote=git_remote_normalized or "",
+                        user_id=user_id,
                     )
 
                 return Response(
@@ -2613,15 +2620,19 @@ async def _sync_push(
             # Commit succeeded (FOR UPDATE lock released). Now promote blob.
             await _promote_blob()
             sess.blob_key = key
+            # C-site (§2.2C C2): same boolean gate as POST path; the job
+            # row commits with the blob key.
+            extract = meta["message_count"] >= 5 and bool(git_remote_normalized)
+            recorded = await _request_knowledge_extract(db2, sess.id) if extract else False
             await db2.commit()
             # Both commits succeeded — safe to clean up temp blob
             await _cleanup_temp_blob()
             await db2.refresh(sess)
-
-            # C-site (§2.2C C2): same boolean gate as POST path.
-            if meta["message_count"] >= 5 and git_remote_normalized:
-                background_tasks.add_task(
-                    _auto_extract_knowledge, sess.id, data, git_remote_normalized, user_id
+            if extract:
+                _spawn_knowledge_extract(
+                    sess.id, sess.etag, data, blob_store, background_tasks,
+                    recorded=recorded, git_remote=git_remote_normalized or "",
+                    user_id=user_id,
                 )
 
             return SyncPushResponse(
@@ -2803,10 +2814,55 @@ async def initiate_upload(
     )
 
 
+async def _request_knowledge_extract(db: AsyncSession, session_id: str) -> bool:
+    """Record the durable knowledge-extraction job in the push transaction
+    (a savepoint). Returns False when it could not be written: the push never
+    fails for it, and the extraction then runs directly after the response
+    as it did before the job existed."""
+    from sessionfs.server.services import deferred_jobs
+
+    return await deferred_jobs.record_job(db, deferred_jobs.KIND_KNOWLEDGE_EXTRACT, session_id)
+
+
+def _spawn_knowledge_extract(
+    session_id: str,
+    etag: str,
+    archive: bytes,
+    blob_store: object,
+    background_tasks: BackgroundTasks | None,
+    *,
+    recorded: bool,
+    git_remote: str,
+    user_id: str,
+) -> None:
+    """Fast path: run the recorded extraction job after the response, reusing
+    the archive already in memory (only while the session's etag is
+    unchanged). The kb-compile sweep runs it when this task never does.
+    Without a recorded job, run the extraction directly (the old path)."""
+    from sessionfs.server import post_response
+    from sessionfs.server.services import deferred_jobs
+
+    if not recorded:
+        post_response.spawn(
+            _auto_extract_knowledge(session_id, archive, git_remote, user_id),
+            name="knowledge-extract-direct",
+            background_tasks=background_tasks,
+            force=True,
+        )
+        return
+    deferred_jobs.spawn_job(
+        deferred_jobs.KIND_KNOWLEDGE_EXTRACT,
+        session_id,
+        context={"archive": archive, "archive_etag": etag, "blob_store": blob_store},
+        background_tasks=background_tasks,
+    )
+
+
 async def _auto_extract_knowledge(
     session_id: str, archive_data: bytes, git_remote: str, user_id: str
 ) -> None:
-    """Background task: summarize session and extract knowledge entries."""
+    """Summarize a pushed session and extract knowledge entries (the
+    ``knowledge_extract`` deferred job; see services/deferred_jobs.py)."""
     from sessionfs.server.db.engine import get_db as _get_db_gen
     from sessionfs.server.services.summarizer import summarize_session
 

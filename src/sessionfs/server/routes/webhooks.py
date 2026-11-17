@@ -13,7 +13,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Request
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import case, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sessionfs.server.db.models import (
     GitHubInstallation,
@@ -498,6 +498,44 @@ async def _finish_delivery(fingerprint: str, ok: bool, lease: int) -> bool:
         return False
 
 
+async def _defer_delivery(fingerprint: str, lease: int) -> bool:
+    """Release the attempt holding ``lease`` as due now, without counting it
+    (nothing was tried): status 'failed', ``next_attempt_at`` now, attempts
+    back to what they were before the claim. Fenced on the lease like
+    ``_finish_delivery``. On a DB error the row stays 'processing' and the
+    sweep takes it over once it is stale."""
+    from sessionfs.server.db.engine import _session_factory
+
+    if _session_factory is None:
+        return False
+    now = datetime.now(timezone.utc)
+    try:
+        async with _session_factory() as db:
+            res = await db.execute(
+                update(GitHubWebhookDelivery)
+                .where(
+                    GitHubWebhookDelivery.fingerprint == fingerprint,
+                    GitHubWebhookDelivery.lease_generation == lease,
+                    GitHubWebhookDelivery.status == "processing",
+                )
+                .values(
+                    status="failed",
+                    completed_at=None,
+                    next_attempt_at=now,
+                    attempts=case(
+                        (GitHubWebhookDelivery.attempts > 0, GitHubWebhookDelivery.attempts - 1),
+                        else_=0,
+                    ),
+                )
+                .execution_options(synchronize_session=False)
+            )
+            await db.commit()
+            return res.rowcount == 1  # type: ignore[attr-defined]
+    except Exception:
+        logger.warning("Failed to defer GitHub delivery %s", fingerprint[:12], exc_info=True)
+        return False
+
+
 def _parse_payload(raw: str | None) -> dict | None:
     try:
         payload = json.loads(raw or "")
@@ -673,13 +711,14 @@ async def _apply_installation_event(payload: dict) -> None:
                 await db.commit()
 
 
-_background_tasks: set[asyncio.Task] = set()
+def _spawn(coro, name: str) -> None:
+    """Post-response fast path (``server/post_response.py``). Every caller's
+    work is already durable in ``github_webhook_deliveries`` (a claimed
+    'processing' row with a lease, or a failed row due for retry), so a task
+    that never runs is finished by the webhook delivery sweep."""
+    from sessionfs.server import post_response
 
-
-def _spawn(coro) -> None:
-    task = asyncio.create_task(coro)
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    post_response.spawn(coro, name=name)
 
 
 @router.post("/github")
@@ -712,16 +751,26 @@ async def github_webhook(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
     if _canonical_event(payload) == "pull_request":
+        from sessionfs.server import post_response
+
+        if not post_response.enabled():
+            # No work after the response (SFS_POST_RESPONSE_TASKS=off): hand
+            # the claimed row back as due right away so the next delivery
+            # sweep runs it (within its interval), instead of leaving it
+            # 'processing' until the stale window passes. Nothing has been
+            # sent to GitHub yet, so this can't double-post.
+            await _defer_delivery(fingerprint, lease)
+            return {"status": "ok"}
         # Run in background -- don't block the webhook response. The task
         # records completion, or failure for a later retry, and then gives a
         # couple of older failed deliveries another chance.
-        _spawn(_process_then_retry(event, payload, fingerprint, lease))
+        _spawn(_process_then_retry(event, payload, fingerprint, lease), "github-pr-delivery")
         return {"status": "ok"}
 
     ok = await _process_delivery(event, payload, fingerprint, lease)
     # Opportunistic retries of earlier failed work (no server scheduler),
     # started only after this delivery's own work is recorded.
-    _spawn(retry_due_deliveries(_OPPORTUNISTIC_RETRY_LIMIT))
+    _spawn(retry_due_deliveries(_OPPORTUNISTIC_RETRY_LIMIT), "github-delivery-retry")
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to apply webhook event")
     return {"status": "ok"}
@@ -1577,6 +1626,10 @@ async def _handle_release_event(payload: dict, fence: tuple[str, int] | None = N
 
 # ---- GitLab Webhooks ----
 
+# Hard deadline for the MR comment work done before the webhook response
+# (GitLab's own webhook timeout is 10 s).
+_GITLAB_MR_DEADLINE_S = 8.0
+
 
 @router.post("/gitlab")
 async def gitlab_webhook(request: Request):
@@ -1630,13 +1683,94 @@ async def gitlab_webhook(request: Request):
     if action not in ("open", "update", "reopen"):
         return {"status": "ignored", "reason": f"Action not handled: {action}"}
 
-    asyncio.ensure_future(_handle_gitlab_mr(payload, request, auth_user_id))
+    # tk_e3eecad8c3874d92: a detached task may get no CPU once the response
+    # is sent, so the comment is recorded as a durable deferred job and run
+    # before the response. GitLab gives up on a hook after ~10 s and disables
+    # hooks that keep failing, so the inline attempt gets a hard deadline
+    # inside that; one that misses it gives its claim back and the GitHub
+    # webhook delivery sweep finishes it (the hidden marker in the note means
+    # a retry edits the note instead of posting a second one).
+    from sessionfs.server.db.engine import _session_factory
+    from sessionfs.server.services import deferred_jobs
+
+    job = _gitlab_mr_job(payload, auth_user_id)
+    recorded = False
+    if job is not None and _session_factory is not None:
+        subject_id, job_payload = job
+        try:
+            async with _session_factory() as db:
+                recorded = await deferred_jobs.record_job(
+                    db, deferred_jobs.KIND_GITLAB_MR_COMMENT, subject_id, payload=job_payload
+                )
+                if recorded:
+                    await db.commit()
+        except Exception:
+            logger.warning("GitLab MR comment job not recorded", exc_info=True)
+            recorded = False
+    try:
+        if recorded and job is not None:
+            await asyncio.wait_for(
+                deferred_jobs.run_job(
+                    deferred_jobs.KIND_GITLAB_MR_COMMENT,
+                    job[0],
+                    session_factory=_session_factory,
+                ),
+                timeout=_GITLAB_MR_DEADLINE_S,
+            )
+        else:
+            await asyncio.wait_for(
+                _handle_gitlab_mr(payload, request, auth_user_id),
+                timeout=_GITLAB_MR_DEADLINE_S,
+            )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "GitLab MR comment passed the %ss webhook deadline%s",
+            _GITLAB_MR_DEADLINE_S,
+            "; the delivery sweep retries it" if recorded else "",
+        )
     return {"status": "processing"}
+
+
+def _gitlab_mr_job(payload: dict, auth_user_id: str | None) -> tuple[str, str] | None:
+    """(subject id, payload) for the deferred MR-comment job: only the
+    webhook fields the handler reads, keyed by the normalized repo + MR iid
+    (the newest event for an MR wins)."""
+    mr = payload.get("object_attributes") or {}
+    project = payload.get("project") or {}
+    if not isinstance(mr, dict) or not isinstance(project, dict):
+        return None
+    iid = mr.get("iid")
+    normalized = normalize_git_remote(project.get("git_http_url", "") or "") or (
+        normalize_git_remote(project.get("git_ssh_url", "") or "")
+    )
+    if not normalized or not _is_int(iid):
+        return None
+    subject = hashlib.sha256(f"{normalized}!{iid}".encode()).hexdigest()[:48]
+    stored = {
+        "object_attributes": {
+            "iid": iid,
+            "source_branch": mr.get("source_branch"),
+            "action": mr.get("action"),
+        },
+        "project": {
+            "id": project.get("id"),
+            "git_http_url": project.get("git_http_url"),
+            "git_ssh_url": project.get("git_ssh_url"),
+        },
+        "auth_user_id": auth_user_id,
+    }
+    return subject, json.dumps(stored, separators=(",", ":"))
+
+
+def _gitlab_mr_marker(repo: str, mr_iid: int) -> str:
+    """Hidden, stable marker on SessionFS's MR note, so a note posted by an
+    attempt that was cut off before recording it is adopted, not duplicated."""
+    return f"<!-- sessionfs-mr:{repo}:{mr_iid} -->"
 
 
 async def _handle_gitlab_mr(
     payload: dict,
-    request: Request,
+    request: Request | None,
     auth_user_id: str | None,
 ):
     """Match MR to sessions and post comment."""
@@ -1698,7 +1832,9 @@ async def _handle_gitlab_mr(
                     "trust_score": None,
                 })
 
-            comment_body = build_pr_comment(session_data)
+            comment_body = (
+                f"{build_pr_comment(session_data)}\n\n{_gitlab_mr_marker(normalized, mr_iid)}"
+            )
 
             # Find GitLab token. For per-user secret auth, use that user's
             # settings directly (not sessions[0].user_id which could belong
@@ -1738,8 +1874,16 @@ async def _handle_gitlab_mr(
                 mr_comment.session_ids = json.dumps([s.id for s in sessions])
                 mr_comment.updated_at = datetime.now(timezone.utc)
             else:
-                note_resp = await client.post_mr_comment(project_id, mr_iid, comment_body)
-                note_id = note_resp.get("id")
+                # A note posted by an attempt cut off before it was recorded
+                # carries the marker: adopt it instead of posting again.
+                note_id = await client.find_mr_note_with_marker(
+                    project_id, mr_iid, _gitlab_mr_marker(normalized, mr_iid)
+                )
+                if note_id is not None:
+                    await client.update_mr_comment(project_id, mr_iid, note_id, comment_body)
+                else:
+                    note_resp = await client.post_mr_comment(project_id, mr_iid, comment_body)
+                    note_id = note_resp.get("id")
                 if mr_comment:
                     mr_comment.comment_id = note_id
                     mr_comment.session_ids = json.dumps([s.id for s in sessions])

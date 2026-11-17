@@ -716,16 +716,9 @@ async def refresh_gitlab_statuses(db: AsyncSession, ticket_id: str) -> int:
     return posted
 
 
-_background_tasks: set[asyncio.Task] = set()
-
-
-def _spawn(coro) -> None:
-    task = asyncio.create_task(coro)
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
-
-
 async def _recheck_with_fresh_session(ticket_id: str) -> None:
+    """Run one recheck on its own session (the fallback when no durable job
+    could be recorded)."""
     from sessionfs.server.db.engine import _session_factory
 
     if _session_factory is None:
@@ -741,16 +734,61 @@ async def _recheck_with_fresh_session(ticket_id: str) -> None:
         )
 
 
+async def record_recheck(db: AsyncSession, ticket_id: str) -> bool:
+    """Record a durable ``merge_recheck`` job in the caller's transaction
+    (call before the caller commits, then :func:`after_commit_recheck`).
+    Returns False when the row could not be written."""
+    from sessionfs.server.services import deferred_jobs
+
+    return await deferred_jobs.record_job(db, deferred_jobs.KIND_MERGE_RECHECK, ticket_id)
+
+
+def after_commit_recheck(ticket_id: str, recorded: bool) -> None:
+    """After the caller's commit: try the recorded job on a post-response task
+    (the GitHub webhook delivery sweep runs it when that task never gets
+    CPU). When the job could not be recorded, run the recheck on a detached
+    task as before, since that task is then the only copy of the work."""
+    if recorded:
+        schedule_recheck(ticket_id)
+        return
+    from sessionfs.server import post_response
+
+    post_response.spawn(
+        _recheck_with_fresh_session(ticket_id), name="merge-recheck-direct", force=True
+    )
+
+
+async def request_recheck(db: AsyncSession, ticket_id: str) -> None:
+    """Post-commit form of :func:`record_recheck` + :func:`after_commit_recheck`
+    for callers with no transaction of their own left: records the job in a
+    new short transaction on ``db``, then runs the fast path (or the direct
+    fallback when the record failed). Refreshes both the GitHub check and the
+    GitLab commit status."""
+    recorded = await record_recheck(db, ticket_id)
+    if recorded:
+        try:
+            await db.commit()
+        except Exception:
+            logger.warning("merge recheck job for %s not committed", ticket_id, exc_info=True)
+            await db.rollback()
+            recorded = False
+    after_commit_recheck(ticket_id, recorded)
+
+
 def schedule_recheck(ticket_id: str) -> None:
-    """Spawn a detached re-evaluation (the work-queue settle path calls this
-    after its commit so a merge check never delays the request). Refreshes
-    both the GitHub check and the GitLab commit status."""
-    _spawn(_recheck_with_fresh_session(ticket_id))
+    """The fast path: run the recorded ``merge_recheck`` job on a
+    post-response task (a no-op when no job is due)."""
+    from sessionfs.server.services import deferred_jobs
+
+    deferred_jobs.spawn_job(deferred_jobs.KIND_MERGE_RECHECK, ticket_id)
 
 
 # ── Org-wide recheck (approval policy writes) ──────────────────────
 
 ORG_RECHECK_PAGE = 200
+# How many tickets an org recheck handles between checkpoints (each one
+# stores the resume point and extends the deferred job's lease).
+ORG_RECHECK_CHECKPOINT_EVERY = 25
 
 
 async def org_open_pr_ticket_page(
@@ -774,25 +812,42 @@ async def org_open_pr_ticket_page(
 
 
 async def recheck_org(
-    org_id: str, *, session_factory: Any, page_size: int = ORG_RECHECK_PAGE
+    org_id: str,
+    *,
+    session_factory: Any,
+    page_size: int = ORG_RECHECK_PAGE,
+    after: Optional[str] = None,
+    on_page: Any = None,
 ) -> int:
     """Re-evaluate every open-PR ticket of ``org_id`` (GitHub + GitLab),
     page by page: each page runs in its own short session and is committed
     before the next, so the work per transaction stays bounded while no
-    ticket is dropped. Returns the number of tickets rechecked."""
-    after: Optional[str] = None
+    ticket is dropped. Returns the number of tickets rechecked.
+
+    ``after`` resumes past a ticket id; ``on_page(last_ticket_id)`` is
+    awaited after each committed page (the deferred job stores it as its
+    resume point and extends its lease) and stops the run when it returns
+    False."""
     done = 0
     while True:
         async with session_factory() as db:
             page = await org_open_pr_ticket_page(db, org_id, after=after, limit=page_size)
             if not page:
                 return done
-            for ticket_id in page:
+            for n, ticket_id in enumerate(page, start=1):
                 await on_verdict_recorded(db, ticket_id)
+                # Commit + checkpoint every few tickets, not just per page: a
+                # page of provider calls can outlast the job's lease.
+                if n % ORG_RECHECK_CHECKPOINT_EVERY == 0 and n < len(page):
+                    await db.commit()
+                    if on_page is not None and not await on_page(ticket_id):
+                        return done + n
             await db.commit()
         done += len(page)
         after = page[-1]
         if len(page) < page_size:
+            return done
+        if on_page is not None and not await on_page(after):
             return done
 
 
@@ -807,7 +862,43 @@ async def _recheck_org_with_fresh_session(org_id: str) -> None:
         logger.warning("org merge check re-evaluation failed for %s", org_id, exc_info=True)
 
 
+async def record_org_recheck(db: AsyncSession, org_id: str) -> bool:
+    """Record ONE durable ``merge_org_recheck`` job in the caller's
+    transaction (an approval policy was created, edited or deactivated)."""
+    from sessionfs.server.services import deferred_jobs
+
+    return await deferred_jobs.record_job(db, deferred_jobs.KIND_MERGE_ORG_RECHECK, org_id)
+
+
+def after_commit_org_recheck(org_id: str, recorded: bool) -> None:
+    """After the caller's commit: the fast path for the recorded job, or the
+    direct detached recheck when it could not be recorded."""
+    if recorded:
+        schedule_org_recheck(org_id)
+        return
+    from sessionfs.server import post_response
+
+    post_response.spawn(
+        _recheck_org_with_fresh_session(org_id), name="merge-org-recheck-direct", force=True
+    )
+
+
+async def request_org_recheck(db: AsyncSession, org_id: str) -> None:
+    """Post-commit form of :func:`record_org_recheck` +
+    :func:`after_commit_org_recheck`."""
+    recorded = await record_org_recheck(db, org_id)
+    if recorded:
+        try:
+            await db.commit()
+        except Exception:
+            logger.warning("org recheck job for %s not committed", org_id, exc_info=True)
+            await db.rollback()
+            recorded = False
+    after_commit_org_recheck(org_id, recorded)
+
+
 def schedule_org_recheck(org_id: str) -> None:
-    """Spawn ONE detached task that rechecks every open-PR ticket in the org
-    (an approval policy was created, edited or deactivated)."""
-    _spawn(_recheck_org_with_fresh_session(org_id))
+    """The fast path of :func:`request_org_recheck`."""
+    from sessionfs.server.services import deferred_jobs
+
+    deferred_jobs.spawn_job(deferred_jobs.KIND_MERGE_ORG_RECHECK, org_id)

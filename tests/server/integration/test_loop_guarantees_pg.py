@@ -56,12 +56,9 @@ async def db_engine():
         await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
     yield engine
-    from sessionfs.server.services import jira_sync, merge_checks
+    from sessionfs.server import post_response
 
-    pending = [
-        t for t in (*merge_checks._background_tasks, *jira_sync._background_tasks)
-        if not t.done()
-    ]
+    pending = [t for t in post_response._tasks if not t.done()]
     if pending:
         await asyncio.wait(pending, timeout=10)
     async with engine.begin() as conn:

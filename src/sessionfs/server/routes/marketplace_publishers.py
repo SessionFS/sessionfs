@@ -49,6 +49,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs import __version__ as sessionfs_version
 from sessionfs.server import github_app
+from sessionfs.server.client_ip import client_ip_or_unknown
 from sessionfs.server.auth.dependencies import (
     AuthContext,
     require_platform_sweeper,
@@ -1182,7 +1183,7 @@ async def remove_trusted_publisher(
 
 
 def _client_ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
+    return client_ip_or_unknown(request)
 
 
 def _trusted_publishing_settings(request: Request) -> github_oidc.TrustedPublishingSettings:

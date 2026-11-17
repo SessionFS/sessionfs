@@ -82,6 +82,11 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     )
     configure_heavy_read_timeout(config.heavy_read_timeout_ms)
 
+    # Client IP: X-Forwarded-For is honoured only from these proxies.
+    from sessionfs.server.client_ip import configure_trusted_proxies
+
+    configure_trusted_proxies(config.trusted_proxies)
+
     # Marketplace trusted publishing: resolve environment + OIDC audience ONCE
     # (refusing to start outside development on a generic audience, whatever
     # its source); the routes use exactly this value.

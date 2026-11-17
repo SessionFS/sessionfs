@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from pydantic import BaseModel
 
+from sessionfs.server.client_ip import client_ip_or_unknown
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.auth.keys import generate_api_key, hash_api_key
 from sessionfs.server.db.engine import get_db
@@ -227,7 +228,7 @@ async def signup(
     generates the initial API key needed for all other operations.
     """
     # Rate limit by IP
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = client_ip_or_unknown(request)
     if not _signup_limiter.is_allowed(client_ip):
         raise HTTPException(429, "Too many signup attempts. Try again later.")
 

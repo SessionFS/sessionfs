@@ -60,6 +60,8 @@ sfs config set audit.trigger on_pr      # Audit when PR/MR is opened
 sfs config set audit.trigger manual     # Only when you run sfs audit
 ```
 
+With `on_sync`, the daemon audits a session after each push on a background worker, one audit at a time, so capture and sync never wait for it. Sessions with 500 or more messages are skipped (the daemon log says so): audit those from the dashboard or with `sfs audit`.
+
 ## Consensus mode
 
 Run 3 passes and only report findings where 2+ agree:

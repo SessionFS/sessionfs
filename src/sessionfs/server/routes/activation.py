@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.dependencies import get_current_user
 from sessionfs.server.auth.rate_limit import SlidingWindowRateLimiter
+from sessionfs.server.client_ip import client_ip_or_unknown
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import (
     ActivationAttempt,
@@ -353,7 +354,7 @@ async def activation_info(
     App-layer IP rate-limit (Cloud Armor is the durable multi-replica layer).
     """
     # IP rate-limit
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = client_ip_or_unknown(request)
     if not _info_limiter.is_allowed(client_ip):
         raise HTTPException(
             429,
@@ -399,7 +400,7 @@ async def activate_phase_a(
     commit it, then best-effort email the raw token to the license contact.
     """
     # Rate-limit by user.id + IP
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = client_ip_or_unknown(request)
     if not _activate_limiter.is_allowed(f"user:{user.id}"):
         raise HTTPException(
             429, "Too many activation attempts. Please try again later."
@@ -573,7 +574,7 @@ async def activate_phase_b(
       6. COMMIT — all writes land together or none do (zero orphans).
     """
     # Rate-limit by user.id + IP
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = client_ip_or_unknown(request)
     if not _verify_limiter.is_allowed(f"user:{user.id}"):
         raise HTTPException(
             429, "Too many verification attempts. Please try again later."

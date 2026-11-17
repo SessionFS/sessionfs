@@ -68,6 +68,8 @@ The inbound URL is `https://<your-sessionfs-domain>/api/v1/webhooks/github/<org_
 
 SessionFS supports GitLab merge request comments for both cloud and self-hosted instances.
 
+SessionFS keeps one comment per merge request and edits it when the merge request changes. The comment is recorded before SessionFS tries to post it, so a webhook that runs past GitLab's time limit, or a server restart, doesn't lose it: a scheduled sweep finishes the job, and a retry edits the existing comment instead of posting a second one. SessionFS only ever edits a comment written by the access token's own GitLab user.
+
 ### Setup
 
 1. Create a GitLab personal or project access token with `api` scope

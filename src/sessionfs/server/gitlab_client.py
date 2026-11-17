@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import ipaddress
 import logging
 from urllib.parse import urlparse
@@ -71,6 +72,10 @@ def _resolve_any(host: str) -> list[str]:
     return list({str(i[4][0]) for i in infos})
 
 
+# (instance URL, sha256 of the token) -> the token's GitLab user id.
+_TOKEN_USER_IDS: dict[tuple[str, str], int] = {}
+
+
 class GitLabClient:
     """Client for GitLab API."""
 
@@ -99,6 +104,77 @@ class GitLabClient:
             )
             resp.raise_for_status()
             return resp.json()
+
+    async def current_user_id(self) -> int | None:
+        """Id of the user this token belongs to (GET /user), cached per
+        instance + token for the life of the process; None if unknown."""
+        key = (self.base_url, hashlib.sha256(self.access_token.encode()).hexdigest())
+        if key in _TOKEN_USER_IDS:
+            return _TOKEN_USER_IDS[key]
+        await self._guard()
+        async with self._client(30) as client:
+            resp = await client.get(
+                f"{self.base_url}/api/v4/user",
+                headers={"PRIVATE-TOKEN": self.access_token},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        user_id = data.get("id") if isinstance(data, dict) else None
+        if not isinstance(user_id, int) or isinstance(user_id, bool):
+            return None
+        if len(_TOKEN_USER_IDS) >= 1024:
+            _TOKEN_USER_IDS.clear()
+        _TOKEN_USER_IDS[key] = user_id
+        return user_id
+
+    async def find_mr_note_with_marker(
+        self, project_id: int, mr_iid: int, marker: str, *, max_pages: int = 3
+    ) -> int | None:
+        """Id of the newest MR note that THIS token's user wrote and whose
+        body contains ``marker``, looking at up to ``max_pages`` pages of 100
+        notes (newest first); None if absent.
+
+        The marker is predictable, so a note is only adopted when its author
+        is the token's own user and it isn't a system note: a participant who
+        pre-posts the marker can neither block our comment nor get their note
+        overwritten.
+        """
+        own_id = await self.current_user_id()
+        if own_id is None:
+            return None
+        url = f"{self.base_url}/api/v4/projects/{project_id}/merge_requests/{mr_iid}/notes"
+        await self._guard()
+        async with self._client(30) as client:
+            for page in range(1, max_pages + 1):
+                resp = await client.get(
+                    url,
+                    headers={"PRIVATE-TOKEN": self.access_token},
+                    params={
+                        "per_page": 100,
+                        "page": page,
+                        "sort": "desc",
+                        "order_by": "created_at",
+                    },
+                )
+                resp.raise_for_status()
+                notes = resp.json()
+                if not isinstance(notes, list) or not notes:
+                    return None
+                for note in notes:
+                    if not isinstance(note, dict) or note.get("system") is True:
+                        continue
+                    author = note.get("author")
+                    if not isinstance(author, dict) or author.get("id") != own_id:
+                        continue
+                    if (
+                        isinstance(note.get("body"), str)
+                        and marker in note["body"]
+                        and isinstance(note.get("id"), int)
+                    ):
+                        return note["id"]
+                if len(notes) < 100:
+                    return None
+        return None
 
     async def update_mr_comment(self, project_id: int, mr_iid: int, note_id: int, body: str) -> dict:
         """Update an existing MR comment."""

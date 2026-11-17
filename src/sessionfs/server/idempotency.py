@@ -512,6 +512,42 @@ class IdempotencyMiddleware:
         assert token is not None
 
         captured = _Captured()
+        settled = False
+
+        async def settle() -> None:
+            """Store the response (or release the key) exactly once.
+
+            Runs just before the final body chunk is passed on, so the key
+            is settled while the request still holds CPU (tk_e3eecad8c3874d92):
+            with CPU billed only during requests, work after the last byte
+            may never run, which would leave the key in_progress and let a
+            retry after the lease run the write twice. It also no longer waits
+            for the route's post-response work to finish.
+            """
+            nonlocal settled
+            if settled:
+                return
+            settled = True
+            state = scope.get("state") or {}
+            authenticated = state.get("auth_context") is not None
+            status_code = captured.status
+            if (
+                status_code is None
+                or not captured.finished
+                or not authenticated
+                or status_code >= 500
+                or status_code in _RELEASE_STATUSES
+                or captured.streaming
+            ):
+                await _release(scope, s_hash, token)
+                return
+
+            response_body: bytes | None = b"".join(captured.chunks)
+            if captured.too_large or (response_body and _SECRET_RE.search(response_body)):
+                response_body = None
+            await _complete(
+                scope, s_hash, token, status_code, captured.headers, response_body
+            )
 
         async def capture_send(message: Message) -> None:
             if message["type"] == "http.response.start":
@@ -531,36 +567,21 @@ class IdempotencyMiddleware:
                         captured.chunks.append(chunk)
                 if not message.get("more_body", False):
                     captured.finished = True
+                    await settle()
             await send(message)
 
         scope.setdefault("state", {})
         try:
             await self.app(scope, replay_receive, capture_send)
         except Exception:
-            await _release(scope, s_hash, token)
+            if not settled:
+                settled = True
+                await _release(scope, s_hash, token)
             raise
         # A cancelled request (CancelledError, a BaseException) is NOT
         # released: the route may already have written, so the row stays
         # in_progress until its lease passes.
-
-        state = scope.get("state") or {}
-        authenticated = state.get("auth_context") is not None
-        status_code = captured.status
-        if (
-            status_code is None
-            or not captured.finished
-            or not authenticated
-            or status_code >= 500
-            or status_code in _RELEASE_STATUSES
-            or captured.streaming
-        ):
-            await _release(scope, s_hash, token)
-            return
-
-        response_body: bytes | None = b"".join(captured.chunks)
-        if captured.too_large or (response_body and _SECRET_RE.search(response_body)):
-            response_body = None
-        await _complete(scope, s_hash, token, status_code, captured.headers, response_body)
+        await settle()
 
     @staticmethod
     async def _answer_existing(send: Send, reservation: _Reservation) -> None:

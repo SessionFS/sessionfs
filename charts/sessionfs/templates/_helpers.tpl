@@ -76,7 +76,9 @@ Scheduled platform sweeps (GitHub #115). One entry per sweep drives both the
 shared sweep-cronjob template and the NetworkPolicy ingress rules so the
 sweeps stay in lock-step. `key` names the api.<key> values section; `component`
 is the k8s component label; `path` is the admin sweep endpoint; `schedule` and
-`secretKey` are the cron defaults (override via api.<key>.cronJob).
+`secretKey` are the cron defaults (override via api.<key>.cronJob). An optional
+`body` is the default JSON request body (api.<key>.cronJob.body overrides it);
+endpoints whose body is required carry one here.
 */}}
 {{- define "sessionfs.sweepDefs" -}}
 - key: ticketNotifications
@@ -139,6 +141,37 @@ is the k8s component label; `path` is the admin sweep endpoint; `schedule` and
   schedule: '20 * * * *'
   envVar: SFS_IDEMPOTENCY_KEYS_API_KEY
   secretKey: idempotency-keys-api-key
+- key: githubWebhookSweep
+  component: github-webhook-sweep
+  path: /api/v1/admin/github-webhook-deliveries/sweep
+  schedule: '*/5 * * * *'
+  envVar: SFS_GITHUB_WEBHOOK_SWEEP_API_KEY
+  secretKey: github-webhook-sweep-api-key
+- key: marketplaceFreshness
+  component: marketplace-freshness
+  path: /api/v1/admin/marketplace/freshness/sweep
+  schedule: '15 4 * * *'
+  envVar: SFS_MARKETPLACE_FRESHNESS_API_KEY
+  secretKey: marketplace-freshness-api-key
+- key: publisherRecheck
+  component: publisher-recheck
+  path: /api/v1/admin/marketplace/publishers/recheck
+  schedule: '45 5 * * *'
+  envVar: SFS_PUBLISHER_RECHECK_API_KEY
+  secretKey: publisher-recheck-api-key
+- key: skillsRescan
+  component: skills-rescan
+  path: /api/v1/admin/skills/rescan
+  schedule: '40 * * * *'
+  envVar: SFS_SKILLS_RESCAN_API_KEY
+  secretKey: skills-rescan-api-key
+- key: catalogRegenerate
+  component: catalog-regenerate
+  path: /api/v1/admin/skills/catalogs/regenerate
+  schedule: '20 * * * *'
+  envVar: SFS_CATALOG_REGENERATE_API_KEY
+  secretKey: catalog-regenerate-api-key
+  body: '{"limit":50}'
 {{- end }}
 
 {{/*
@@ -262,6 +295,19 @@ seconds are accepted: "300" or "300s".
 {{- $raw := ternary "300s" (toString $value) (kindIs "invalid" $value) -}}
 {{- if not (regexMatch "^[1-9][0-9]*s?$" $raw) -}}
 {{- fail (printf "dashboard.apiProxyTimeout must be whole seconds such as \"300s\", got %q" $raw) -}}
+{{- end -}}
+{{- trimSuffix "s" $raw -}}
+{{- end -}}
+
+{{/*
+dashboard.auditProxyTimeout as whole seconds ("1200" or "1200s"): how long the
+dashboard nginx waits on POST /api/v1/sessions/{id}/audit.
+*/}}
+{{- define "sessionfs.auditProxyTimeoutSeconds" -}}
+{{- $value := .Values.dashboard.auditProxyTimeout -}}
+{{- $raw := ternary "1200s" (toString $value) (kindIs "invalid" $value) -}}
+{{- if not (regexMatch "^[1-9][0-9]*s?$" $raw) -}}
+{{- fail (printf "dashboard.auditProxyTimeout must be whole seconds such as \"1200s\", got %q" $raw) -}}
 {{- end -}}
 {{- trimSuffix "s" $raw -}}
 {{- end -}}

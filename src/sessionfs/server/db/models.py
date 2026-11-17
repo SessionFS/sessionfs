@@ -8632,3 +8632,39 @@ class OrgConcurrencySlot(Base):
     holder: Mapped[str] = mapped_column(String(32), nullable=False)
     acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class DeferredJob(Base):
+    """Durable marker for work that used to run only after the response
+    (migration 138, tk_e3eecad8c3874d92).
+
+    One row per ``(kind, subject_id)``: a merge check recheck of a ticket, an
+    org-wide merge recheck, knowledge extraction for a pushed session, or the
+    knowledge backfill of a new project. The request writes the row, may try
+    the job right away on a post-response task (``server/post_response.py``),
+    and an existing scheduled sweep drains whatever is left, so the job runs
+    even when that task never gets CPU. ``generation`` is bumped by every new
+    request: a run only deletes the row when the generation it started from is
+    still current, so a request that lands mid-run is never lost.
+    ``claim_token`` + ``available_at`` fence a run in flight (a lapsed claim
+    can be taken over) and hold the backoff after a failed attempt.
+    """
+
+    __tablename__ = "deferred_jobs"
+    __table_args__ = (Index("idx_deferred_jobs_kind_requested", "kind", "requested_at"),)
+
+    kind: Mapped[str] = mapped_column(String(32), primary_key=True)
+    subject_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    generation: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=1, server_default="1"
+    )
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    # Small JSON input for kinds whose subject id alone isn't enough (a GitLab
+    # MR comment keeps the few webhook fields it needs); the newest request
+    # wins. ``cursor`` is a resume point a long job advances as it goes.
+    payload: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cursor: Mapped[str | None] = mapped_column(String(64), nullable=True)

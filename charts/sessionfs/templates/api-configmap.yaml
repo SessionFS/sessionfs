@@ -11,6 +11,14 @@ data:
   SFS_DEPLOYMENT: "self-hosted"
   SFS_PORT: {{ .Values.api.service.port | quote }}
   SFS_RATE_LIMIT_PER_MINUTE: {{ .Values.api.rateLimitPerMinute | quote }}
+  {{- /* Proxies trusted to report the client IP in X-Forwarded-For. A list or
+         a comma-separated string; the API refuses to start on a bad entry. */}}
+  {{- $trustedProxies := .Values.api.trustedProxies | default list }}
+  {{- if kindIs "string" $trustedProxies }}
+  SFS_TRUSTED_PROXIES: {{ $trustedProxies | quote }}
+  {{- else }}
+  SFS_TRUSTED_PROXIES: {{ join "," $trustedProxies | quote }}
+  {{- end }}
   {{- if .Values.api.corsOrigins }}
   SFS_CORS_ORIGINS: {{ .Values.api.corsOrigins | quote }}
   {{- end }}

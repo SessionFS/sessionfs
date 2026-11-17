@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.32.0] - 2026-11-17
+
+**Work that used to run after the response is now durable, the API trusts forwarded client IPs only from your own proxies, and the Helm chart gains the scheduled jobs it was missing.** One migration (138). No dashboard changes.
+
+### Added
+- Durable deferred jobs (migration 138). Merge-check rechecks, org-wide rechecks after an approval policy change, knowledge extraction after a push and the knowledge backfill of a new project are recorded in the same transaction as the write that causes them, then picked up by the existing sweeps if the in-process attempt never runs. Long org-wide rechecks checkpoint every 25 tickets and resume where they stopped.
+- `SFS_POST_RESPONSE_TASKS` (`on` by default). Set it to `off` when the server only gets CPU during requests; the scheduled sweeps then carry all follow-up work. The environment variable docs list which sweeps must be scheduled and how long each kind of work waits.
+- `SFS_TRUSTED_PROXIES`: forwarded client IPs (`X-Forwarded-For`) are trusted only from these ranges, with presets for Cloud Run and Cloudflare. Rate limits, audit logs and activation records use the real client IP. Hand-written ranges broader than /8 (IPv4) or /16 (IPv6) refuse startup. Helm value `api.trustedProxies`.
+- Helm chart: five opt-in scheduled jobs that production already runs — GitHub webhook sweep (also aborts expired multipart uploads; recommended for every install), catalog regenerate, skills rescan, marketplace freshness and publisher re-check. Each uses the hardened sweep pattern (digest-pinned image, no service-account token, DNS + API-only egress).
+- Helm value `dashboard.auditProxyTimeout` (default 1200 s) for the audit route.
+
+### Changed
+- Every audit runs inside the request, including sessions with 500+ messages (previously a detached task that could stall and never wrote the audit history row). The audit releases its database transaction while the judge runs.
+- The daemon runs auto-audits on one worker thread, skips sessions of 500+ messages with a log line and logs timeouts as warnings.
+- GitLab merge request comments are recorded before the first attempt and finished by the delivery sweep if the 8 s webhook deadline passes. A comment cut off mid-post is found and edited instead of posted twice, and only notes written by the token's own user are adopted.
+- With post-response tasks off, a claimed GitHub PR delivery goes straight back to the sweep instead of waiting out the 10-minute stale window.
+
+### Fixed
+- Idempotency-Key rows are settled before the final response chunk, so a retry can no longer re-run a write whose key was left `in_progress`.
+- The org helper concurrency slot is released inside the request.
+
 ## [0.31.0] - 2026-11-16
 
 **A quieter, more precise look across the dashboard, the site and the docs, plus Terms of Service and a Privacy Policy.** No server changes and no migrations.

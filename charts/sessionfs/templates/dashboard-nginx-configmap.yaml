@@ -29,6 +29,19 @@ data:
         proxy_send_timeout {{ include "sessionfs.apiProxyTimeoutSeconds" . }}s;
       }
 
+      # A session audit runs every judge call inside the request (up to 10
+      # calls of up to 120 s each for a large session), so it gets its own,
+      # longer timeout (dashboard.auditProxyTimeout).
+      location ~ ^/api/v1/sessions/[^/]+/audit$ {
+        proxy_pass http://{{ include "sessionfs.fullname" . }}-api:{{ .Values.api.service.port }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout {{ include "sessionfs.auditProxyTimeoutSeconds" . }}s;
+        proxy_send_timeout {{ include "sessionfs.auditProxyTimeoutSeconds" . }}s;
+      }
+
       # Session helper turns stream Server-Sent Events: pass each event through
       # as it is written instead of buffering the whole answer.
       location = /api/v1/helper/turns {

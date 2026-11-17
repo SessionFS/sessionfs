@@ -801,23 +801,18 @@ async def enqueue_comment(
 
 # ── Outbox: drain + deliver ──
 
-_background_tasks: set[asyncio.Task] = set()
-
-
-def _spawn(coro) -> None:
-    task = asyncio.create_task(coro)
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
-
-
 def schedule_drain(event_ids: list[str]) -> None:
-    """Deliver freshly queued outbox rows in the background, after commit.
+    """Deliver freshly queued outbox rows on a post-response task, after
+    commit (``server/post_response.py``).
 
-    A lost task (instance shutdown) is harmless: the rows stay ``pending`` and
-    the sweep delivers them.
+    A lost or starved task (instance shutdown, CPU only during requests, or
+    ``SFS_POST_RESPONSE_TASKS=off``) is harmless: the rows stay ``pending``
+    and the jira-sync sweep delivers them.
     """
     if event_ids:
-        _spawn(_drain_job(list(event_ids)))
+        from sessionfs.server import post_response
+
+        post_response.spawn(_drain_job(list(event_ids)), name="jira-outbox-drain")
 
 
 async def _drain_job(event_ids: list[str]) -> None:

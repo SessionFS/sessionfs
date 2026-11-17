@@ -1660,6 +1660,8 @@ async def sweep_github_webhook_deliveries(
        retry a couple opportunistically.
     0b. Republish created PR comments that are behind their newest desired
        version and have no live publishing lease (same limit).
+    0c. Run due merge check rechecks (``deferred_jobs``) whose post-response
+       task never ran, up to body {"merge_recheck_limit": N} (default 100).
     1. Delete github_webhook_deliveries older than the retention window
        (default 30 days; override with body {"retention_days": N}); stored
        payloads go with them.
@@ -1701,6 +1703,23 @@ async def sweep_github_webhook_deliveries(
     await db.rollback()
     retry_stats = await retry_due_deliveries(retry_limit)
     comment_stats = await republish_dirty_comments(retry_limit)
+    # 0c. Merge check rechecks recorded by verdicts, approval decisions and
+    # approval policy writes whose post-response task never ran
+    # (tk_e3eecad8c3874d92). Each job commits on its own.
+    from sessionfs.server.db.engine import _session_factory
+    from sessionfs.server.services import deferred_jobs
+
+    recheck_limit = 100
+    if body and isinstance(body.get("merge_recheck_limit"), int) and not isinstance(
+        body.get("merge_recheck_limit"), bool
+    ):
+        recheck_limit = max(0, min(500, body["merge_recheck_limit"]))
+    recheck_stats = await deferred_jobs.drain(
+        deferred_jobs.MERGE_KINDS,
+        session_factory=_session_factory,
+        limit=recheck_limit,
+        budget_seconds=60.0,
+    )
 
     now = datetime.now(timezone.utc)
     retention_days = _GITHUB_WEBHOOK_DELIVERY_RETENTION_DAYS
@@ -1779,6 +1798,8 @@ async def sweep_github_webhook_deliveries(
         "retries_succeeded": retry_stats["succeeded"],
         "retries_failed": retry_stats["failed"],
         **comment_stats,
+        "merge_rechecks_run": recheck_stats["done"],
+        "merge_rechecks_failed": recheck_stats["failed"] + recheck_stats["dropped"],
     }
     await _log_action(
         db,
@@ -2419,6 +2440,7 @@ async def _digest_recipients(
 
 @router.post("/sweeps/kb-compile")
 async def sweep_kb_compile(
+    request: Request,
     body: dict | None = None,
     auth: AuthContext = Depends(require_platform_sweeper()),
     db: AsyncSession = Depends(get_db),
@@ -2435,8 +2457,14 @@ async def sweep_kb_compile(
     ``errors`` and does not stop the batch. Safe to run repeatedly: a
     compiled project advances ``last_scheduled_compile_at`` and is not
     selected again until its schedule lapses.
+
+    Before compiling, it runs due knowledge jobs (``deferred_jobs``):
+    extraction for pushed sessions and the backfill of new projects whose
+    post-response task never ran (tk_e3eecad8c3874d92), up to body
+    {"extract_limit": N} (0–500, default 50) within 120 seconds.
     """
     from sessionfs.server.db.engine import _session_factory
+    from sessionfs.server.services import deferred_jobs
     from sessionfs.server.services.scheduled_compile import run_kb_compile_sweep
 
     limit = 100
@@ -2449,14 +2477,31 @@ async def sweep_kb_compile(
 
     admin_id = auth.user.id
     actor = sweep_actor_details(auth)
+    extract_limit = 50
+    if body and isinstance(body.get("extract_limit"), int) and not isinstance(
+        body.get("extract_limit"), bool
+    ):
+        extract_limit = max(0, min(500, body["extract_limit"]))
     # End the request session's auth transaction; the sweep selects in a
     # fresh short transaction and compiles each project in its own session.
     await db.rollback()
+    extract_stats = await deferred_jobs.drain(
+        deferred_jobs.KNOWLEDGE_KINDS,
+        session_factory=_session_factory,
+        context={"blob_store": getattr(request.app.state, "blob_store", None)},
+        limit=extract_limit,
+        budget_seconds=120.0,
+    )
     result = await run_kb_compile_sweep(
         db,
         limit=limit,
         session_factory=_session_factory,
     )
+    result = {
+        **result,
+        "knowledge_jobs_run": extract_stats["done"],
+        "knowledge_jobs_failed": extract_stats["failed"] + extract_stats["dropped"],
+    }
     await _log_action(
         db,
         admin_id,

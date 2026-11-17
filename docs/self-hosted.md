@@ -557,12 +557,59 @@ api:
       schedule: "20 * * * *"          # hourly
       existingSecret: sessionfs-sweep-key
       secretKey: idempotency-keys-api-key
+  githubWebhookSweep:
+    enabled: true
+    cronJob:
+      schedule: "*/5 * * * *"         # every 5 minutes
+      existingSecret: sessionfs-sweep-key
+      secretKey: github-webhook-sweep-api-key
+  marketplaceFreshness:
+    enabled: true
+    cronJob:
+      schedule: "15 4 * * *"          # daily
+      existingSecret: sessionfs-sweep-key
+      secretKey: marketplace-freshness-api-key
+  publisherRecheck:
+    enabled: true
+    cronJob:
+      schedule: "45 5 * * *"          # daily
+      existingSecret: sessionfs-sweep-key
+      secretKey: publisher-recheck-api-key
+  skillsRescan:
+    enabled: true
+    cronJob:
+      schedule: "40 * * * *"          # hourly
+      existingSecret: sessionfs-sweep-key
+      secretKey: skills-rescan-api-key
+  catalogRegenerate:
+    enabled: true
+    cronJob:
+      schedule: "20 * * * *"          # hourly
+      existingSecret: sessionfs-sweep-key
+      secretKey: catalog-regenerate-api-key
+      # body defaults to '{"limit":50}' (the endpoint requires a body)
 ```
+
+| Values key | Endpoint | What it does | Self-hosted |
+|---|---|---|---|
+| `githubWebhookSweep` | `POST /api/v1/admin/github-webhook-deliveries/sweep` | Retries failed GitHub App webhook deliveries, republishes PR comments that fell behind, prunes stored deliveries (30 days) and the org delivery-webhook ledger, deletes spent GitHub claim attempts, and aborts expired multipart session uploads with their staged parts | **On** for every install (the upload cleanup applies even without the GitHub App) |
+| `marketplaceFreshness` | `POST /api/v1/admin/marketplace/freshness/sweep` | Recomputes stale / unmaintained flags, per-tool last-updated dates and ranking inputs, and prunes install-count dedupe rows older than 30 days | On if you use the skill marketplace |
+| `publisherRecheck` | `POST /api/v1/admin/marketplace/publishers/recheck` | Re-checks verified publishers (DNS record missing 7 days lapses the badge; a removed or suspended GitHub App installation revokes it) and deletes expired trusted-publishing tokens | On if you verify publishers; harmless otherwise |
+| `skillsRescan` | `POST /api/v1/admin/skills/rescan` | Rescans live skill versions due under the current scanner ruleset (after an upgrade changes the ruleset, or weekly) and quarantines critical findings. A service key can't send `force` or `report_only` | On if you use the skill marketplace |
+| `catalogRegenerate` | `POST /api/v1/admin/skills/catalogs/regenerate` | Safety net that rebuilds the public catalog and up to `limit` personal / org native catalogs whose inputs changed (each catalog fetch also does this). Requires a body; the chart sends `{"limit":50}` | Optional; on if people run `sfs catalog add` against your server |
+
+All five take the same `platform_sweeps:run` service key as the other sweeps.
+Two production jobs have no chart CronJob on purpose: the **catalog mirror**
+export (`sfs catalog export`, which pushes the public catalog to SessionFS's
+GitHub mirror with a deploy key; it needs the CLI image, an SSH key and
+outbound GitHub access, and a self-hosted server has no public mirror to keep)
+and the **skills verify** sweep (it queues works-in harness jobs that only the
+separate sandboxed harness runner consumes; it is paused in production too).
 
 The CronJob pod sends one authenticated request to the API sweep endpoint and
 exits; the work itself runs in the API pods, so it inherits the API's egress
 policy. Each job sends its body inline (`jira-sync` sends
-`{"limit":100,"budget_seconds":50}`), reads the key from the Secret into an
+`{"limit":100,"budget_seconds":50}`, `catalog-regenerate` sends `{"limit":50}`), reads the key from the Secret into an
 environment variable, and never prints it. Overlapping runs are `Forbid`den
 because every sweep is idempotent and bounded. When network policies are
 enabled, the chart adds an ingress rule so each enabled sweep CronJob can
@@ -978,6 +1025,64 @@ api:
     SFS_RATE_LIMIT_PER_MINUTE: "0"   # Disable for internal deployments
 ```
 
+## Client IP behind a proxy
+
+The API uses the caller's IP address for per-IP rate limits (signup, license activation, the trusted-publishing token exchange), the 4xx request log, each API key's last-used IP and license validation records. Behind a proxy the API's direct peer is the proxy, so it needs to know which proxies it may believe when they report the client address in `X-Forwarded-For`.
+
+```yaml
+api:
+  trustedProxies:        # SFS_TRUSTED_PROXIES
+    - private            # default: loopback, 10/8, 172.16/12, 192.168/16, ::1, fc00::/7
+```
+
+How the address is chosen:
+
+- If the direct peer is not in `trustedProxies`, the peer is the client and every forwarding header is ignored, so a caller can't claim another address.
+- If it is, `X-Forwarded-For` is read from right to left and the first address that isn't a trusted proxy is the client. Each proxy appends the address it saw, so everything to the left of that entry was written by the caller and is not believed.
+- Only `X-Forwarded-For` is read. `X-Real-IP`, `CF-Connecting-IP` and `Forwarded` are ignored. Cloudflare, Google Cloud load balancers, nginx and ingress-nginx all append to `X-Forwarded-For`.
+- IPv6 works, and IPv4-mapped IPv6 addresses (`::ffff:203.0.113.7`) are treated as IPv4.
+
+The default `private` fits the chart: requests reach the API through your ingress controller and the dashboard nginx, both on pod addresses. Adjust it when:
+
+- **Your users also connect from private addresses** (an internal-only install). Narrow the list to your pod and ingress CIDRs (for example `10.244.0.0/16`); otherwise a user on the private network could claim another private address.
+- **A load balancer sits in front of the ingress controller.** It must append to `X-Forwarded-For`, and its addresses must be in the list. On Google Cloud use `gcp-lb` plus the load balancer's forwarding-rule IP (`gcp-lb,203.0.113.10`). If the ingress controller's Service uses `externalTrafficPolicy: Cluster`, the controller sees a node address instead of the client; use `Local` or the PROXY protocol.
+- **Cloudflare proxies your DNS straight to the origin.** Add `cloudflare`, but only if your origin accepts nothing but your own zone. Cloudflare's ranges carry every Cloudflare customer's traffic, so without that a Worker on someone else's account could reach your origin and claim any address. Turn on Authenticated Origin Pulls with a zone-specific certificate, or limit the origin firewall to your zone. A Cloudflare Tunnel avoids the problem: the peer is the `cloudflared` pod, which `private` already covers, and nothing else can reach the origin.
+
+Leave the list empty to trust no proxy: every request then counts as coming from the dashboard nginx pod, and all callers share each per-IP limit. A malformed entry, or a hand-written range broader than `/8` (IPv4) or `/16` (IPv6), stops the API from starting; the presets are exempt.
+
+With `private`, any pod that can reach the API Service directly could set `X-Forwarded-For` and claim another address. Limit who can connect to the API with a NetworkPolicy, for example allowing only the dashboard nginx (which every external request passes through), the MCP server and the chart's CronJobs:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sessionfs-api-callers
+  namespace: sessionfs
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sessionfs
+      app.kubernetes.io/component: api
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sessionfs
+              app.kubernetes.io/component: dashboard
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: sessionfs
+              app.kubernetes.io/component: mcp
+      ports:
+        - port: 8000
+          protocol: TCP
+```
+
+Add a `from` entry for each scheduled job you enable (their pods carry `app.kubernetes.io/component` values such as `registry-poll` or `helper-retention`).
+
+The API no longer takes the request scheme from `X-Forwarded-Proto`. On a service mesh whose sidecar connects from `127.0.0.1` (Istio, Linkerd), set the public URL settings explicitly (`SFS_PUBLIC_API_URL`, `SFS_DASHBOARD_URL`, `SFS_APP_URL`) rather than relying on forwarded headers.
+
 ## Architecture
 
 SessionFS uses a reverse proxy architecture. All external traffic routes through the dashboard nginx, which proxies `/api/` and `/mcp/` to internal ClusterIP services:
@@ -1020,6 +1125,18 @@ The chart's Ingress carries matching `nginx.ingress.kubernetes.io/proxy-read-tim
 ingress:
   annotations:
     alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=300
+```
+
+### Session audit time limit
+
+`POST /api/v1/sessions/{id}/audit` runs every judge call inside the request, so auditing a large session can take many minutes (up to 10 calls of up to 120 seconds each). The chart's dashboard nginx gives that route its own timeout, `dashboard.auditProxyTimeout` (whole seconds, default `1200s`). The chart's Ingress keeps `apiProxyTimeout`, so with ingress-nginx raise `nginx.ingress.kubernetes.io/proxy-read-timeout` under `ingress.annotations` as well, and keep any load balancer idle timeout in front of the chart at least as long:
+
+```yaml
+dashboard:
+  auditProxyTimeout: "1200s"
+ingress:
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "1200"
 ```
 
 ## GitLab Integration

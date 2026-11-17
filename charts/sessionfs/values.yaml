@@ -141,6 +141,35 @@ api:
     privateKeyKey: "github-private-key"      # App private key (PEM)
     webhookSecretKey: "github-webhook-secret"  # webhook HMAC secret
   rateLimitPerMinute: 120  # Requests per minute per API key. Set to 0 to disable.
+  # Proxies allowed to report the real client address in X-Forwarded-For
+  # (SFS_TRUSTED_PROXIES). Used for per-IP rate limits (signup, activation,
+  # trusted-publishing exchange), the 4xx request log, API keys' last-used IP
+  # and license validation records. Entries are CIDRs, addresses or presets:
+  #   private    - loopback + RFC 1918 + IPv6 ULA (in-cluster ingress, the
+  #                chart's dashboard nginx, a cloudflared pod)
+  #   gcp-lb     - 35.191.0.0/16, 130.211.0.0/22 (add the load balancer's own
+  #                forwarding-rule IP too; it appends that to the header)
+  #   cloud-run  - 169.254.0.0/16 (Cloud Run's in-sandbox proxy)
+  #   cloudflare - Cloudflare's edge ranges (proxied DNS; behind a Tunnel the
+  #                peer is cloudflared, which "private" already covers).
+  #                These ranges carry every Cloudflare customer's traffic,
+  #                so a Worker on another account could forge the header.
+  #                Only use it when your origin accepts nothing but your own
+  #                zone (Authenticated Origin Pulls with a zone-specific
+  #                certificate, or an origin firewall limited to your zone).
+  # Hand-written ranges must be /8 or narrower (IPv4) and /16 or narrower
+  # (IPv6); the API refuses to start otherwise.
+  # The default fits this chart: requests reach the API through the dashboard
+  # nginx and your ingress controller, both on pod IPs. X-Forwarded-For is read
+  # right to left and the first address outside these ranges is the client, so
+  # if your USERS also connect from private addresses (an internal-only
+  # install), narrow this to your pod/ingress CIDRs, otherwise a user can claim
+  # another private address. Empty = trust no proxy (every request counts as
+  # coming from the dashboard nginx pod).
+  # A load balancer in front of the ingress (AWS NLB/ALB, GCP LB, Cloudflare)
+  # must append to X-Forwarded-For, and its addresses must be listed here.
+  trustedProxies:
+    - private
   # Per-user GitLab integration (MR comments). Self-hosted installs normally
   # point at an internal GitLab, so private / loopback / plain-http hosts are
   # allowed by default here (SFS_GITLAB_ALLOW_PRIVATE_HOSTS). Link-local and
@@ -369,6 +398,87 @@ api:
       image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
       successfulJobsHistoryLimit: 1
       failedJobsHistoryLimit: 3
+  # GitHub webhook + upload housekeeping (POST
+  # /api/v1/admin/github-webhook-deliveries/sweep): retries failed GitHub App
+  # webhook deliveries and republishes PR comments that fell behind, prunes
+  # stored deliveries (30 d) and the org delivery-webhook ledger, deletes
+  # spent GitHub claim attempts, and aborts expired multipart session uploads
+  # (deleting their staged parts). Recommended ON for every self-hosted install
+  # (the upload cleanup applies even without the GitHub App). A service key may
+  # only set retry_limit in the body; retention overrides need an admin user key.
+  githubWebhookSweep:
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "*/5 * * * *"
+      existingSecret: ""
+      secretKey: "github-webhook-sweep-api-key"
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
+  # Skill marketplace freshness (POST /api/v1/admin/marketplace/freshness/sweep):
+  # recomputes stale/unmaintained flags, per-tool last-updated and ranking
+  # inputs, and prunes install-count dedupe rows older than 30 days. One
+  # bounded page per run (limit 500, 20 s budget). Recommended ON when the
+  # marketplace is in use.
+  marketplaceFreshness:
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "15 4 * * *"
+      existingSecret: ""
+      secretKey: "marketplace-freshness-api-key"
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
+  # Verified publisher re-check (POST /api/v1/admin/marketplace/publishers/recheck):
+  # live DNS re-check of domain-verified publishers (7 days missing lapses the
+  # badge), GitHub App installation liveness, and deletion of expired
+  # trusted-publishing tokens. The API pods need outbound DNS and, for GitHub
+  # badges, api.github.com. Recommended ON when you verify publishers; harmless
+  # otherwise.
+  publisherRecheck:
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "45 5 * * *"
+      existingSecret: ""
+      secretKey: "publisher-recheck-api-key"
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
+  # Skill instruction rescan (POST /api/v1/admin/skills/rescan): rescans live
+  # skill versions that are due under the current scanner ruleset (after a
+  # ruleset upgrade, or weekly) and auto-quarantines critical findings. A
+  # service key can't send force or report_only (admin user key only).
+  # Recommended ON when the marketplace is in use.
+  skillsRescan:
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "40 * * * *"
+      existingSecret: ""
+      secretKey: "skills-rescan-api-key"
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
+  # Native catalog regenerate (POST /api/v1/admin/skills/catalogs/regenerate):
+  # safety net that rebuilds the public catalog and up to `limit` personal/org
+  # catalogs whose approved inputs changed (every catalog fetch also does this).
+  # The endpoint requires a JSON body, so a default is set. Optional: turn it ON
+  # if people use `sfs catalog add` against this server.
+  catalogRegenerate:
+    enabled: false
+    cronJob:
+      enabled: true
+      schedule: "20 * * * *"
+      # Required request body: catalogs (besides public) rebuilt per run, 1-500.
+      body: '{"limit":50}'
+      existingSecret: ""
+      secretKey: "catalog-regenerate-api-key"
+      image: curlimages/curl@sha256:94e9e444bcba979c2ea12e27ae39bee4cd10bc7041a472c4727a558e213744e6  # curlimages/curl:8.12.1 (multi-arch index)
+      successfulJobsHistoryLimit: 1
+      failedJobsHistoryLimit: 3
 
 ## MCP Server
 mcp:
@@ -462,6 +572,12 @@ dashboard:
   # timeout (SFS_UPLOAD_TIMEOUT, default 300s) or nginx answers 504 first.
   # Whole seconds only ("300s" or "300"); also applied to ingress-nginx.
   apiProxyTimeout: "300s"
+  # How long nginx waits on POST /api/v1/sessions/{id}/audit. The audit runs
+  # every judge call inside the request (up to 10 calls of up to 120 s for a
+  # large session). ingress-nginx keeps apiProxyTimeout: raise
+  # nginx.ingress.kubernetes.io/proxy-read-timeout in ingress.annotations too
+  # if large audits time out at the ingress.
+  auditProxyTimeout: "1200s"
   nodeSelector: {}
   tolerations: []
   affinity: {}

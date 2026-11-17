@@ -43,18 +43,11 @@ async def db_engine():
     # dispose doesn't race their connection.
     import asyncio
 
-    from sessionfs.server.routes import webhooks
-    from sessionfs.server.services import jira_sync, merge_checks
+    from sessionfs.server import post_response
 
     loop = asyncio.get_running_loop()
     pending = [
-        t
-        for t in (
-            *jira_sync._background_tasks,
-            *webhooks._background_tasks,
-            *merge_checks._background_tasks,
-        )
-        if not t.done() and t.get_loop() is loop
+        t for t in post_response._tasks if not t.done() and t.get_loop() is loop
     ]
     if pending:
         await asyncio.wait(pending, timeout=10)

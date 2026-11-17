@@ -105,6 +105,12 @@ class ServerConfig(BaseSettings):
     # the keyless GitHub form. A scheduled `sfs catalog export` keeps it in
     # sync. Anything but owner/repo refuses startup.
     public_catalog_mirror: str = ""
+    # Proxies allowed to report the client address in X-Forwarded-For
+    # (server/client_ip.py): comma-separated CIDRs, addresses and presets
+    # (private, gcp-lb, cloud-run, cloudflare). Unset = trust no proxy and use
+    # the TCP peer. A bad entry, or a hand-written range broader than /8
+    # (IPv4) or /16 (IPv6), refuses startup.
+    trusted_proxies: str = ""
 
     # Stripe billing
     stripe_secret_key: str = ""
@@ -119,6 +125,14 @@ class ServerConfig(BaseSettings):
         from sessionfs.skills.catalog_mirror import parse_mirror
 
         return parse_mirror(value) or ""
+
+    @field_validator("trusted_proxies")
+    @classmethod
+    def _check_trusted_proxies(cls, value: str) -> str:
+        from sessionfs.server.client_ip import parse_trusted_proxies
+
+        parse_trusted_proxies(value)  # raises on a bad entry → refuse startup
+        return value.strip()
 
 
 def dashboard_link_base(config) -> str:

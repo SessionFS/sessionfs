@@ -40,6 +40,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from sessionfs.server.auth.keys import hash_api_key
 from sessionfs.server.auth.rate_limit import SlidingWindowRateLimiter
+from sessionfs.server.client_ip import client_ip as request_client_ip
+from sessionfs.server.client_ip import client_ip_or_unknown
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import ApiKey, Project, User
 from sessionfs.server.metrics import AUTH_FAILURES_TOTAL
@@ -102,14 +104,8 @@ def set_rate_limiter(limiter: SlidingWindowRateLimiter) -> None:
 
 
 def _client_ip(request: Request) -> str | None:
-    """Best-effort caller IP. Strips port; honors X-Forwarded-For first hop."""
-    xff = request.headers.get("x-forwarded-for", "")
-    if xff:
-        # First hop only — anything after is appended by intermediaries.
-        return xff.split(",")[0].strip()[:45]
-    if request.client and request.client.host:
-        return request.client.host[:45]
-    return None
+    """Caller IP for ``last_used_ip`` (forwarding headers only from trusted proxies)."""
+    return request_client_ip(request)
 
 
 def _parse_scope_list(raw: str | None) -> list[str]:
@@ -169,7 +165,7 @@ async def _authenticate_and_build_context(
     already_charged = getattr(request.state, "rate_limit_charged_key", None) == key_hash
     request.state.rate_limit_charged_key = key_hash
     if not already_charged and not _rate_limit_disabled and not limiter.is_allowed(key_hash):
-        client_ip = request.client.host if request.client else "unknown"
+        client_ip = client_ip_or_unknown(request)
         logger.warning(
             "Rate limited: client=%s limit=%d/min",
             client_ip,

@@ -251,3 +251,29 @@ def test_explicit_secret_values_still_win():
     )
     assert base64.b64decode(data["verification-secret"]).decode() == "abc"
     assert base64.b64decode(data["encryption-key"]).decode() == "def"
+
+
+def test_session_audit_gets_its_own_longer_proxy_timeout():
+    """Audits run every judge call inside the request (tk_e3eecad8c3874d92)."""
+    conf = _doc(_render(), "ConfigMap", "dashboard-nginx")["data"]["default.conf"]
+    block = conf.split("location ~ ^/api/v1/sessions/[^/]+/audit$")[1].split("}")[0]
+    assert "proxy_read_timeout 1200s;" in block
+    assert "proxy_send_timeout 1200s;" in block
+    # A regex location must pass the original URI (no path on proxy_pass).
+    assert "proxy_pass http://sessionfs-api:8000;" in block
+    conf = _doc(
+        _render("--set", "dashboard.auditProxyTimeout=1800s"), "ConfigMap", "dashboard-nginx"
+    )["data"]["default.conf"]
+    assert "proxy_read_timeout 1800s;" in conf
+    # Everything else keeps apiProxyTimeout.
+    generic = conf.split("location /api/ {")[1].split("}")[0]
+    assert "proxy_read_timeout 300s;" in generic
+
+
+@pytest.mark.parametrize("bad", ["20m", "0", "abc"])
+def test_audit_proxy_timeout_must_be_whole_seconds(bad):
+    cmd = ["helm", "template", "sessionfs", CHART_DIR,
+           "--set-string", f"dashboard.auditProxyTimeout={bad}"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "auditProxyTimeout must be whole seconds" in result.stderr

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio as _asyncio
 import io
 import json
 import logging
@@ -138,10 +137,6 @@ def _report_to_response(report) -> AuditResponse:
     return AuditResponse(**data)
 
 
-# Track running audit jobs: session_id -> task
-_audit_jobs: dict[str, _asyncio.Task] = {}
-# Store completed results: session_id -> AuditResponse (temp cache until stored in blob)
-_audit_results: dict[str, dict] = {}
 
 
 @router.get("/{session_id}/audit/status")
@@ -153,12 +148,6 @@ async def audit_status(
 ):
     """Check if an audit is running, completed, or not started."""
     await _get_session_or_404(session_id, user, db)
-
-    if session_id in _audit_jobs and not _audit_jobs[session_id].done():
-        return {"status": "running", "session_id": session_id}
-
-    if session_id in _audit_results:
-        return {"status": "completed", "session_id": session_id}
 
     # Check blob store for stored report
     blob_store = _get_blob_store(request)
@@ -184,8 +173,7 @@ async def run_audit(
 ):
     """Run LLM-as-a-Judge audit on a session.
 
-    For large sessions, returns 202 Accepted and runs in background.
-    For small sessions (<500 messages), runs synchronously.
+    Runs inside the request for every session size and returns the report.
     The llm_api_key is used for the single LLM call and is NEVER logged
     or persisted.
     """
@@ -264,43 +252,18 @@ async def run_audit(
             "Tools that don't expose tool calls: Gemini CLI, Amp."
         )
 
-    # For large sessions (500+ messages), run in background
-    BACKGROUND_THRESHOLD = 500
-    if len(messages) >= BACKGROUND_THRESHOLD:
-        # Launch background task and return 202
-        async def _run_audit_background():
-            try:
-                report = await _run_judge_pipeline(
-                    session_id, messages, model, llm_api_key, provider, base_url,
-                )
-                report.warnings = audit_warnings
-                report_key = f"sessions/{user.id}/{session_id}_audit.json"
-                from dataclasses import asdict
-                report_data = json.dumps(asdict(report), indent=2).encode("utf-8")
-                await blob_store.put(report_key, report_data)
-                _audit_results[session_id] = asdict(report)
-                logger.info("Background audit completed for %s", session_id)
-            except Exception as exc:
-                logger.error(
-                    "Background audit failed for %s: %s", session_id, type(exc).__name__
-                )
-                _audit_results[session_id] = {"error": _audit_failure_text(exc, llm_api_key)}
-            finally:
-                _audit_jobs.pop(session_id, None)
-
-        task = _asyncio.create_task(_run_audit_background())
-        _audit_jobs[session_id] = task
-
-        return JSONResponse(
-            status_code=202,
-            content={
-                "status": "accepted",
-                "session_id": session_id,
-                "message": f"Audit started in background ({len(messages)} messages). Poll GET /audit/status to check progress.",
-            },
-        )
-
-    # Small sessions — run synchronously
+    # Every audit runs inside the request (tk_e3eecad8c3874d92). Large
+    # sessions used to return 202 and run on a detached task, which gets no
+    # CPU once the response is sent when CPU is billed only during requests,
+    # and whose state lived in one process's memory. The caller's LLM key is
+    # never persisted, so the job can't be handed to a sweep either.
+    #
+    # The judge calls can take many minutes: end the transaction first so no
+    # pooled connection sits idle in a transaction for the whole pipeline.
+    # Only plain values are used from here on (a rollback expires the ORM
+    # rows); the report is written in a fresh short transaction afterwards.
+    user_id = user.id
+    await db.rollback()
     try:
         report = await _run_judge_pipeline(
             session_id, messages, model, llm_api_key, provider, base_url,
@@ -365,14 +328,28 @@ async def run_audit(
     # Attach warnings to report
     report.warnings = audit_warnings
 
+    # The session may have been purged (or its ownership changed) while the
+    # judge ran: re-check with the same predicate as the lookup above.
+    still_owned = (
+        await db.execute(
+            select(Session.id).where(
+                Session.id == session_id,
+                Session.user_id == user_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if still_owned is None:
+        await db.rollback()
+        raise HTTPException(status_code=404, detail="Session not found")
+
     # Store in blob storage
-    report_key = f"sessions/{user.id}/{session_id}_audit.json"
+    report_key = f"sessions/{user_id}/{session_id}_audit.json"
     from dataclasses import asdict
     report_data = json.dumps(asdict(report), indent=2).encode("utf-8")
     await blob_store.put(report_key, report_data)
 
-    # Store in database for history
-    await _store_audit_report(db, report, user.id, provider or "", base_url or "")
+    # Store in database for history (one short transaction)
+    await _store_audit_report(db, report, user_id, provider or "", base_url or "")
 
     return _report_to_response(report)
 
@@ -397,7 +374,7 @@ async def _run_judge_pipeline(
     provider: str | None,
     base_url: str | None = None,
 ):
-    """Run the judge pipeline — extracted for sync and background use."""
+    """Run the judge pipeline."""
     from sessionfs.judge.evidence import gather_evidence
     from sessionfs.judge.extractor import extract_claims
     from sessionfs.judge.judge import (

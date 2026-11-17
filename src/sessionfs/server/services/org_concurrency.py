@@ -170,13 +170,21 @@ class OrgSlot:
         await asyncio.shield(self._delete())
 
     def release_soon(self) -> None:
-        """Schedule the release from synchronous code (idempotent)."""
+        """Schedule the release from synchronous code (idempotent).
+
+        Prefer awaiting :meth:`release` inside the request: a task started
+        after the response may get no CPU (tk_e3eecad8c3874d92) and then the
+        slot is held until its lease lapses. The task goes through
+        ``post_response.spawn`` with ``force`` (it is tiny, and skipping it
+        would leave only the lease to free the slot).
+        """
         if self._released:
             return
         self._released = True
-        try:
-            task = asyncio.get_running_loop().create_task(self._delete())
-        except RuntimeError:
+        from sessionfs.server import post_response
+
+        task = post_response.spawn(self._delete(), name="org-slot-release", force=True)
+        if task is None:
             return  # no loop: the lease expires on its own
         _pending_releases.add(task)
         task.add_done_callback(_pending_releases.discard)

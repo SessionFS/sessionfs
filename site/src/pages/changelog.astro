@@ -17,6 +17,29 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.32.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-sm px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.32.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">November 17, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-semibold px-2.5 py-0.5 rounded-sm bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="text-xl font-semibold mb-4">Real client IPs and follow-up work that survives a restart</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Real client IPs behind a proxy.</strong> The API believes <span class="font-mono text-accent text-sm">X-Forwarded-For</span> only from proxies you list in <span class="font-mono text-accent text-sm">SFS_TRUSTED_PROXIES</span> (Helm <span class="font-mono text-accent text-sm">api.trustedProxies</span>), with presets for private networks, Google Cloud load balancers, Cloud Run and Cloudflare. Per-IP rate limits, the request log and an API key&rsquo;s last-used IP now see the real caller, and a caller can no longer claim another address. See <a href="/self-hosted/#client-ip-behind-a-proxy" class="text-brand hover:underline">Client IP behind a proxy</a>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Follow-up work survives a restart.</strong> Merge check rechecks, knowledge extraction after a push, Jira delivery, GitHub pull request follow-ups and GitLab merge request comments are recorded with the request that causes them and finished by a scheduled sweep if the server stops first. <span class="font-mono text-accent text-sm">SFS_POST_RESPONSE_TASKS=off</span> hands all of it to the sweeps, for hosts that only allocate CPU during a request. See <a href="/environment/" class="text-brand hover:underline">Environment Variables</a>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Reliable GitLab merge request comments.</strong> A retried or interrupted comment edits the existing one instead of posting a duplicate, and SessionFS only edits comments written by your token&rsquo;s own GitLab user. See <a href="/git-integration/#gitlab" class="text-brand hover:underline">Git Integration</a>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>More scheduled jobs in the Helm chart.</strong> Five new opt-in CronJobs: the GitHub webhook sweep (which also cleans up abandoned multipart uploads; recommended for every install), catalog regenerate, skills rescan, marketplace freshness and publisher re-check. See <a href="/self-hosted/#scheduled-sweeps" class="text-brand hover:underline">Scheduled Sweeps</a>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Changed:</strong> auditing a large session runs to completion inside the request (raise proxy timeouts, see <a href="/self-hosted/#session-audit-time-limit" class="text-brand hover:underline">Session audit time limit</a>); the daemon&rsquo;s automatic audit after sync runs in the background, skips sessions with 500 or more messages and logs timeouts.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Fixed:</strong> a retry with the same <span class="font-mono text-accent text-sm">Idempotency-Key</span> can no longer repeat a write whose first attempt was cut off at the end of the response; large-session audits now always record their history; the per-organization helper limit frees its slot as soon as the answer finishes.</span></li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="min-w-0 [overflow-wrap:anywhere]"><span class="text-muted-dim">Migrations 001&ndash;138 (138 adds durable follow-up jobs; additive). Self-hosted: run migration 138, set <span class="font-mono text-accent text-sm">api.trustedProxies</span> if you sit behind a load balancer or Cloudflare, and schedule the GitHub webhook, Jira sync and KB compile sweeps (see <a href="/self-hosted/#upgrading" class="text-brand hover:underline">Self-Hosted</a>). 12,055 backend tests + 2405 dashboard UI tests passing. 145 MCP tools (unchanged). No dashboard changes.</span></span></li>
+        </ul>
+      </article>
+
+      <div class="divider"></div>
+
       <!-- v0.31.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +47,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.31.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">November 16, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-semibold px-2.5 py-0.5 rounded-sm bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="text-xl font-semibold mb-4">A quieter, more precise look, plus Terms and Privacy</h2>
         <ul class="space-y-2 text-base text-muted">

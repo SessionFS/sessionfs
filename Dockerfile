@@ -53,4 +53,8 @@ USER 10001
 
 EXPOSE 8000
 
-CMD ["uvicorn", "sessionfs.server.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+# --no-proxy-headers: request.client stays the real TCP peer. The app decides
+# which proxies may report a client address (SFS_TRUSTED_PROXIES,
+# sessionfs/server/client_ip.py); uvicorn's own X-Forwarded-For handling would
+# be a second, differently-configured trust rule.
+CMD ["uvicorn", "sessionfs.server.app:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]

@@ -239,16 +239,28 @@ async def _prepared(
     }
 
 
-async def _recheck_org_merges(db: AsyncSession, org_id: str, target_kind: str) -> None:
-    """A merge policy write can turn a green check non-green (or back): one
-    detached task re-evaluates every ticket linked to an open PR/MR in the
-    org, page by page (GitHub checks and GitLab statuses). Called after the
-    commit."""
+async def _record_org_merges(db: AsyncSession, org_id: str, target_kind: str) -> bool | None:
+    """A merge policy write can turn a green check non-green (or back): record
+    one durable org recheck in the policy write's transaction (call before
+    its commit). Returns None for non-merge policies, else whether the job
+    row was written."""
     if target_kind != "merge":
+        return None
+    from sessionfs.server.services import merge_checks
+
+    return await merge_checks.record_org_recheck(db, org_id)
+
+
+def _recheck_org_merges(org_id: str, recorded: bool | None) -> None:
+    """After the commit: re-evaluate every ticket linked to an open PR/MR in
+    the org, page by page (GitHub checks and GitLab statuses), on a
+    post-response task; the GitHub webhook delivery sweep runs the recorded
+    job when that task never gets CPU."""
+    if recorded is None:
         return
     from sessionfs.server.services import merge_checks
 
-    merge_checks.schedule_org_recheck(org_id)
+    merge_checks.after_commit_org_recheck(org_id, recorded)
 
 
 def _has_scope(auth: AuthContext, scope: str) -> bool:
@@ -355,9 +367,10 @@ async def create_policy(
         db, org=await db.get(Organization, org_id), event_type="approval_policy_created",
         actor=user, role=role, before=None, after=policy,
     )
+    recorded = await _record_org_merges(db, org_id, policy.target_kind)
     await db.commit()
     await db.refresh(policy)
-    await _recheck_org_merges(db, org_id, policy.target_kind)
+    _recheck_org_merges(org_id, recorded)
     return _policy_view(policy, full=True)
 
 
@@ -410,9 +423,10 @@ async def update_policy(
         db, org=await db.get(Organization, org_id), event_type="approval_policy_updated",
         actor=user, role=role, before=before_view, after=new,
     )
+    recorded = await _record_org_merges(db, org_id, new.target_kind)
     await db.commit()
     await db.refresh(new)
-    await _recheck_org_merges(db, org_id, new.target_kind)
+    _recheck_org_merges(org_id, recorded)
     return _policy_view(new, full=True)
 
 
@@ -443,10 +457,12 @@ async def deactivate_policy(
             event_type="approval_policy_deactivated",
             actor=user, role=role, before=before_view, after=policy,
         )
+    recorded = (
+        await _record_org_merges(db, org_id, policy.target_kind) if changed else None
+    )
     await db.commit()
     await db.refresh(policy)
-    if changed:
-        await _recheck_org_merges(db, org_id, policy.target_kind)
+    _recheck_org_merges(org_id, recorded)
     return _policy_view(policy, full=True)
 
 
@@ -519,6 +535,14 @@ async def decide_request(
         else:
             await db.rollback()
         raise
+    # A decision settles the request, so the GitHub/GitLab check for this
+    # ticket's PR must reflect it: record the recheck with the decision.
+    from sessionfs.server.services import merge_checks
+
+    merge_target = req.target_id if req.target_kind == "merge" else None
+    recheck_recorded = (
+        await merge_checks.record_recheck(db, merge_target) if merge_target else False
+    )
     await db.commit()
     await db.refresh(req)
     if req.state in ("approved", "rejected"):
@@ -533,11 +557,8 @@ async def decide_request(
             org_id=req.org_id,
             project_id=req.project_id,
         )
-    if req.target_kind == "merge" and req.state in ("approved", "rejected"):
-        # The GitHub/GitLab check for this ticket's PR reflects the outcome.
-        from sessionfs.server.services import merge_checks
-
-        merge_checks.schedule_recheck(req.target_id)
+    if merge_target:
+        merge_checks.after_commit_recheck(merge_target, recheck_recorded)
     return await svc.request_view(db, req, viewer=user)
 
 

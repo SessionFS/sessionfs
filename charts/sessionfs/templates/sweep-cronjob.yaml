@@ -2,6 +2,7 @@
 {{- range $s := $sweeps }}
 {{- $cfg := index $.Values.api $s.key | default dict }}
 {{- $cron := $cfg.cronJob | default dict }}
+{{- $body := $cron.body | default $s.body }}
 {{- if and $cfg.enabled $cron.enabled }}
 {{- $secret := required (printf "api.%s.cronJob.existingSecret is required when the %s CronJob is enabled" $s.key $s.component) $cron.existingSecret }}
 ---
@@ -52,11 +53,11 @@ spec:
                   drop:
                     - ALL
               env:
-                {{- if $cron.body }}
+                {{- if $body }}
                 # Passed through the environment so a quote in the configured
                 # body can't break out of the shell command below.
                 - name: SWEEP_BODY
-                  value: {{ $cron.body | quote }}
+                  value: {{ $body | quote }}
                 {{- end }}
                 - name: {{ $s.envVar }}
                   valueFrom:
@@ -74,7 +75,7 @@ spec:
                     -H "Authorization: Bearer ${{ $s.envVar }}" \
                     -H "Content-Type: application/json" \
                     -X POST \
-                    {{- if $cron.body }}
+                    {{- if $body }}
                     -d "$SWEEP_BODY" \
                     {{- end }}
                     "http://{{ include "sessionfs.fullname" $ }}-api:{{ $.Values.api.service.port }}{{ $s.path }}"

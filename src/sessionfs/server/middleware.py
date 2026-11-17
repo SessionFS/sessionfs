@@ -10,6 +10,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from sessionfs.server.business_metrics import observe_route
+from sessionfs.server.client_ip import client_ip_or_unknown
 from sessionfs.server.metrics import HTTP_REQUEST_DURATION, method_label, status_class
 
 logger = logging.getLogger("sessionfs.api")
@@ -38,7 +39,7 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         elapsed_ms = (time.monotonic() - start) * 1000
 
         if 400 <= response.status_code < 500:
-            client_ip = request.client.host if request.client else "unknown"
+            client_ip = client_ip_or_unknown(request)
             logger.warning(
                 "%s %s -> %d (%.1fms) client=%s",
                 request.method,

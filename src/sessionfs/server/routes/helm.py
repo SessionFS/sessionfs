@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import JSONResponse
 
+from sessionfs.server.client_ip import client_ip as request_client_ip
 from sessionfs.server.db.engine import get_db
 from sessionfs.server.db.models import HelmLicense, LicenseValidation
 from sessionfs.server.tiers import get_features_for_tier
@@ -74,7 +75,7 @@ async def validate_helm_license(
     )
     lic = result.scalar_one_or_none()
 
-    client_ip = request.client.host if request.client else None
+    client_ip = request_client_ip(request)
 
     # License not found
     if not lic:

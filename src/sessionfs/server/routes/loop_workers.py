@@ -1540,6 +1540,11 @@ async def record_review_round(
                 )
 
     run_id = run.id
+    # The merge check re-evaluation is recorded with the round (a durable
+    # job) and run off the request path below.
+    from sessionfs.server.services import merge_checks
+
+    recheck_recorded = await merge_checks.record_recheck(db, ticket_pk)
     await db.commit()
     _record_run_metrics(
         provider=body.provider, model=body.model, usage=body.usage, project=project,
@@ -1573,11 +1578,10 @@ async def record_review_round(
         )
         await db.rollback()
 
-    # Re-evaluate the ticket's merge check on a detached task so a slow or
-    # failing provider never delays or fails the round.
-    from sessionfs.server.services import merge_checks
-
-    merge_checks.schedule_recheck(ticket_pk)
+    # Re-evaluate the ticket's merge check off the request path (the durable
+    # job above + a post-response fast path) so a slow or failing provider
+    # never delays or fails the round.
+    merge_checks.after_commit_recheck(ticket_pk, recheck_recorded)
 
     db.expire_all()
     run = (await db.execute(select(AgentRun).where(AgentRun.id == run_id))).scalar_one()

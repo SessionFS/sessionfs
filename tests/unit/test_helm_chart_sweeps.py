@@ -26,6 +26,14 @@ SWEEPS = [
     ("attentionHides", "attention-hides", "45 3 * * *", "/api/v1/admin/sweeps/attention-hides", None),
     ("evalOutputs", "eval-outputs", "15 4 * * *", "/api/v1/admin/sweeps/eval-outputs", None),
     ("idempotencyKeys", "idempotency-keys", "20 * * * *", "/api/v1/admin/sweeps/idempotency-keys", None),
+    # Production Cloud Scheduler jobs that self-hosted installs were missing
+    # (tk_fb08fe3b22c34abf); schedules match production.
+    ("githubWebhookSweep", "github-webhook-sweep", "*/5 * * * *", "/api/v1/admin/github-webhook-deliveries/sweep", None),
+    ("marketplaceFreshness", "marketplace-freshness", "15 4 * * *", "/api/v1/admin/marketplace/freshness/sweep", None),
+    ("publisherRecheck", "publisher-recheck", "45 5 * * *", "/api/v1/admin/marketplace/publishers/recheck", None),
+    ("skillsRescan", "skills-rescan", "40 * * * *", "/api/v1/admin/skills/rescan", None),
+    # The regenerate endpoint's body is required, so the chart sends one.
+    ("catalogRegenerate", "catalog-regenerate", "20 * * * *", "/api/v1/admin/skills/catalogs/regenerate", '{"limit":50}'),
 ]
 
 
@@ -164,3 +172,51 @@ def test_sweep_cronjob_requires_a_key_secret() -> None:
         text=True,
     )
     assert result.returncode != 0 and "existingSecret is required" in result.stderr
+
+
+def _every_cronjob_sets() -> list[str]:
+    return [
+        *_sweep_sets(),
+        "--set", "api.helperRetention.enabled=true",
+        "--set", "api.helperRetention.cronJob.existingSecret=sweep-key",
+        "--set", "api.registryPolling.cronJob.enabled=true",
+        "--set", "api.registryPolling.cronJob.existingSecret=sweep-key",
+        "--set", "security.networkPolicies.enabled=true",
+    ]
+
+
+def test_every_enabled_cronjob_is_hardened() -> None:
+    """Every CronJob the chart renders holds a service key, so each one must
+    run non-root on a read-only root filesystem with no capabilities, mount no
+    service-account token, never overlap, use a digest-pinned image, read its
+    key from a Secret, and be covered by the DNS + API-only egress policy."""
+    docs = _render(*_every_cronjob_sets())
+    cronjobs = [doc for doc in docs if doc.get("kind") == "CronJob"]
+    expected = {component for _, component, _, _, _ in SWEEPS} | {"helper-retention", "registry-poll"}
+    rendered = {cron["metadata"]["labels"]["app.kubernetes.io/component"] for cron in cronjobs}
+    assert expected <= rendered, expected - rendered
+    egress_components = set(_cronjob_policy_components(docs))
+    for cron in cronjobs:
+        component = cron["metadata"]["labels"]["app.kubernetes.io/component"]
+        assert component in egress_components, component
+        assert cron["spec"]["concurrencyPolicy"] == "Forbid", component
+        pod = cron["spec"]["jobTemplate"]["spec"]["template"]["spec"]
+        assert pod["automountServiceAccountToken"] is False, component
+        assert pod["restartPolicy"] == "Never", component
+        assert pod["securityContext"]["runAsNonRoot"] is True, component
+        assert pod["securityContext"]["seccompProfile"]["type"] == "RuntimeDefault", component
+        for container in pod["containers"]:
+            assert "@sha256:" in container["image"], component
+            sc = container["securityContext"]
+            assert sc["allowPrivilegeEscalation"] is False, component
+            assert sc["readOnlyRootFilesystem"] is True, component
+            assert sc["runAsNonRoot"] is True, component
+            assert sc["capabilities"]["drop"] == ["ALL"], component
+            assert not sc["capabilities"].get("add"), component
+            secret_env = [
+                e for e in container.get("env", []) if "secretKeyRef" in e.get("valueFrom", {})
+            ]
+            assert secret_env, component
+            for e in secret_env:
+                # The key is only ever referenced from a Secret, never inlined.
+                assert "value" not in e, component

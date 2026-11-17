@@ -3341,15 +3341,17 @@ async def create_ticket_comment(
     except HTTPException:
         await db.rollback()
         raise
+    # A trusted verdict: raise any approval requests it makes due and refresh
+    # the merge check off the request path, as a durable job committed with
+    # the verdict (readiness reads never raise requests).
+    from sessionfs.server.services import merge_checks
+
+    recheck = verdict_trusted and ticket_watchers.parse_verdict(body.content) is not None
+    recheck_recorded = await merge_checks.record_recheck(db, ticket_id) if recheck else False
     await db.commit()
     jira_sync.schedule_drain(jira_ids)
-    if verdict_trusted and ticket_watchers.parse_verdict(body.content) is not None:
-        # A trusted verdict was recorded: raise any approval requests it makes
-        # due and refresh the merge check, on a detached task (readiness reads
-        # never raise requests).
-        from sessionfs.server.services import merge_checks
-
-        merge_checks.schedule_recheck(ticket_id)
+    if recheck:
+        merge_checks.after_commit_recheck(ticket_id, recheck_recorded)
     comment = (
         await db.execute(select(TicketComment).where(TicketComment.id == comment_id))
     ).scalar_one()

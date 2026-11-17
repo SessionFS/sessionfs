@@ -30,6 +30,14 @@ _SWEEP_KEYS = [
     "confluencePublish",
     "meetingRetention",
     "remindersDue",
+    "attentionHides",
+    "evalOutputs",
+    "idempotencyKeys",
+    "githubWebhookSweep",
+    "marketplaceFreshness",
+    "publisherRecheck",
+    "skillsRescan",
+    "catalogRegenerate",
     "helperRetention",
 ]
 

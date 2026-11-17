@@ -53,7 +53,19 @@ async def test_policy_never_raised_still_honours_the_filter(db_session: AsyncSes
 
 
 @pytest.mark.asyncio
-async def test_policy_writes_are_audited(client: AsyncClient, db_session: AsyncSession):
+async def test_policy_writes_are_audited(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch
+):
+    # Every test session shares ONE SQLite connection (StaticPool): the org
+    # recheck a policy write starts after its response would run on that
+    # connection while the next request is mid-transaction, and its session
+    # closing (a ROLLBACK) undoes that request's uncommitted UPDATE. The
+    # recheck jobs are still recorded; only the post-response fast path is
+    # stubbed, as in the other approvals route tests.
+    from sessionfs.server.services import merge_checks
+
+    monkeypatch.setattr(merge_checks, "schedule_recheck", lambda t: None)
+    monkeypatch.setattr(merge_checks, "schedule_org_recheck", lambda o: None)
     w = await make_world(db_session)
     body = {
         "name": "Auth changes",

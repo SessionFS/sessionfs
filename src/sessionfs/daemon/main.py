@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from sessionfs.daemon.auto_audit import AUTO_AUDIT_MAX_MESSAGES, AuditTarget, AutoAuditWorker
 from sessionfs.daemon.config import DaemonConfig, ensure_config, load_config, DEFAULT_CONFIG_PATH
 from sessionfs.daemon.status import (
     DaemonStatus,
@@ -34,6 +35,8 @@ from sessionfs.watchers.base import Watcher
 from sessionfs.watchers.claude_code import ClaudeCodeWatcher
 
 logger = logging.getLogger("sfsd")
+
+
 
 
 class DaemonSyncer:
@@ -67,6 +70,9 @@ class DaemonSyncer:
             config.sync.auto,
         )
         self._last_settings_check = 0.0
+        # Auto-audit runs off the main loop: one worker thread, one audit in
+        # flight, a bounded queue with one entry per session.
+        self.auto_audit = AutoAuditWorker()
         # Per-session push failure counter. Resets to 0 on successful push.
         self.sync_failures: dict[str, int] = {}
         # Backoff for repeated transient failures (tk_14864c41f6344820).
@@ -523,27 +529,53 @@ class DaemonSyncer:
         except Exception:
             pass  # Non-critical — status is cosmetic
 
+    def _session_message_count(self, session_id: str) -> int | None:
+        """Message count from the local manifest, else the transcript's line
+        count; None when neither can be read."""
+        try:
+            manifest = self.store.get_session_manifest(session_id)
+        except Exception:
+            manifest = None
+        if isinstance(manifest, dict):
+            stats = manifest.get("stats")
+            count = stats.get("message_count") if isinstance(stats, dict) else None
+            if isinstance(count, int) and not isinstance(count, bool):
+                return count
+        try:
+            session_dir = self.store.get_session_dir(session_id)
+            messages = Path(session_dir) / "messages.jsonl" if session_dir else None
+            if messages is None or not messages.is_file():
+                return None
+            with messages.open("rb") as fh:
+                return sum(1 for line in fh if line.strip())
+        except Exception:
+            return None
+
     async def _maybe_auto_audit(self, session_id: str, client) -> None:
-        """Trigger audit after sync if user has audit_trigger=on_sync."""
+        """Queue an audit after sync if the user has audit_trigger=on_sync.
+
+        Never waits for the audit: the server runs it inside the request, so
+        it goes to the auto-audit worker thread and capture, sync and the
+        status heartbeat keep running. Large sessions (or ones whose size
+        can't be read) are skipped with a log line.
+        """
         if not hasattr(self, '_audit_trigger'):
             self._audit_trigger = "manual"
         if self._audit_trigger != "on_sync":
             return
-        try:
-            import httpx
-
-            async with httpx.AsyncClient(timeout=30) as http:
-                resp = await http.post(
-                    f"{client.api_url}/api/v1/sessions/{session_id}/audit",
-                    headers={"Authorization": f"Bearer {client.api_key}"},
-                    json={},
-                )
-                if resp.status_code in (200, 201, 202):
-                    logger.info("Auto-audit triggered for %s", session_id[:12])
-                else:
-                    logger.debug("Auto-audit skipped for %s: %d", session_id[:12], resp.status_code)
-        except Exception as e:
-            logger.debug("Auto-audit failed for %s: %s", session_id[:12], e)
+        count = self._session_message_count(session_id)
+        if count is None or count >= AUTO_AUDIT_MAX_MESSAGES:
+            logger.info(
+                "Auto-audit skipped for %s: %s messages (limit %d); run it from the "
+                "dashboard or with `sfs audit`",
+                session_id[:12],
+                "unknown" if count is None else count,
+                AUTO_AUDIT_MAX_MESSAGES,
+            )
+            return
+        self.auto_audit.submit(
+            session_id, AuditTarget(api_url=client.api_url, api_key=client.api_key)
+        )
 
     def _maybe_check_remote_settings(self) -> None:
         """Poll API for settings changes every 60 seconds. Non-blocking."""
@@ -1164,6 +1196,10 @@ class Daemon:
             # Ask a running skill reconcile to stop between steps.
             try:
                 self._skill_reconciler.stop(timeout=5.0)
+            except Exception:  # never block shutdown on it
+                pass
+            try:
+                self._syncer.auto_audit.stop(timeout=2.0)
             except Exception:  # never block shutdown on it
                 pass
             for watcher in self.watchers:
