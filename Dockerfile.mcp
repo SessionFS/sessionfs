@@ -1,7 +1,7 @@
 # Remote MCP server — deployed to Cloud Run at mcp.sessionfs.dev
 # Thin proxy that delegates to the SessionFS Cloud API.
 
-FROM python:3.11-slim
+FROM python:3.15-slim
 
 # Non-root user matching the Helm chart's runAsUser (10001).
 RUN groupadd --system --gid 10001 sessionfs \

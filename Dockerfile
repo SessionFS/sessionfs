@@ -1,4 +1,4 @@
-FROM python:3.11-slim AS builder
+FROM python:3.15-slim AS builder
 
 WORKDIR /app
 COPY pyproject.toml README.md ./
@@ -8,7 +8,7 @@ COPY src/ src/
 RUN pip install --no-cache-dir --upgrade "pip>=26.1.2" "setuptools>=80.10" "wheel>=0.46.2" \
     && pip install --no-cache-dir ".[server]"
 
-FROM python:3.11-slim AS runtime
+FROM python:3.15-slim AS runtime
 
 # Non-root user matching the Helm chart's runAsUser (10001). Cloud Run and
 # Kubernetes already enforce non-root at the orchestration layer; baking it
