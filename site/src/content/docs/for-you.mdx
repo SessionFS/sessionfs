@@ -20,17 +20,19 @@ At the top, the **Right now** ticker scrolls through the most important items on
 | **Your team is asking** | The newest unanswered question or `@mention` from someone else on a ticket you own or created (in the last week), and reminders other people set for you |
 | **From your meetings and chats** | Action items from [meetings](/meetings/) and [chat threads](/chat/) that you own. Acknowledge a suggested item to turn it into a ticket in the project or group |
 | **Coming up** | Reminders and ticket due dates in the next week |
-| **Worth a second look** | Assigned tickets that went quiet for a week, and handoffs that have waited two days |
+| **Worth a second look** | Assigned tickets that went quiet for a week, handoffs that have waited two days, and tickets you created that wait on someone else (a teammate, someone else's agent or an external contact), with who they wait on (v0.33.0). These never count toward the sidebar badge |
 | **What changed this week** | Decisions and knowledge that changed in projects you worked in, grouped per project, and a weekly proof card for the Review Loop (dollars only for org owners and admins) |
 | **Working with others** | Per project, who you work with and what your work is waiting for |
 
 Each section shows its first 10 items; **Show more** opens the rest and **Show less** folds them away again (v0.29.11).
 
+For You shows only what involves you. Review Loop cards are the loop items you created, are assigned or whose agent represents you, not every loop in your org (v0.33.0).
+
 Ranking is deterministic and explainable, with no model and no learned weighting: band (Now, Your turn, Coming up, Lately), then your involvement (owner or assignee before watcher), then urgency (overdue, then due soonest, then harm, then priority), then recency.
 
 ## Every card says why
 
-Each card links to its record and carries a "why" line, for example "Assigned to you · due today · priority high". **More context** shows the details, related items and why the card ranks where it does. Cards for tickets assigned to you also have **Before you start**: related knowledge and your past sessions for that area, fetched only when you open it.
+Each card links to its record and carries a "why" line, for example "Assigned to you · due today · priority high". Every card also explains itself in plain sentences built from its own facts: the ticket and project, the meeting and the lines an action item came from, who sent a handoff, or why a loop stopped. The explanation never shows record ids or emails (v0.33.0). **More context** leads with that explanation, then shows the details, related items and why the card ranks where it does. Cards for tickets assigned to you also have **Before you start**: related knowledge and your past sessions for that area, fetched only when you open it.
 
 ## Acting from the card
 

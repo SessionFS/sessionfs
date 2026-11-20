@@ -41,8 +41,8 @@ from sessionfs.server.db.models import (
 from sessionfs.server.services import publishers as publishers_service
 from sessionfs.server.services.policy_compiler.base import CatalogSource
 from sessionfs.server.services import skill_disclosure
-from sessionfs.server.services.entitlements import resolve_entitlement
-from sessionfs.server.tiers import Tier, get_features_for_tier
+from sessionfs.server.tier_gate import resolve_org_plan_tier
+from sessionfs.server.tiers import get_features_for_tier
 from sessionfs.skills import disclosure
 from sessionfs.skills.policy import (
     PolicyDocument,
@@ -76,12 +76,10 @@ async def catalog_sources(db: AsyncSession, org: Organization) -> list[CatalogSo
 
 
 async def org_has_policy_feature(db: AsyncSession, org: Organization) -> bool:
-    entitlement = await resolve_entitlement("org", org.id, db)
-    raw = entitlement.tier if entitlement else org.tier
-    try:
-        tier = Tier(raw)
-    except ValueError:
-        tier = Tier.ENTERPRISE if raw == "admin" else Tier.FREE
+    # The org's plan goes through the chokepoint, so the Community edition
+    # clamps a stored Enterprise plan to Pro and the Enterprise-only
+    # skills_policy feature is unavailable.
+    tier = await resolve_org_plan_tier(org.id, db)
     return FEATURE in get_features_for_tier(tier)
 
 

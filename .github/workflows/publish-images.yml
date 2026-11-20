@@ -23,6 +23,9 @@ env:
   BUILD_REF: ${{ github.event.workflow_run.head_branch || github.event.inputs.ref || 'main' }}
   # Lets a dispatch rebuild a released version from a later ref.
   BUILD_VERSION: ${{ github.event.inputs.version }}
+  # The triggering ref, read in shell steps from the environment (never
+  # substituted into a script) so a ref name can't inject shell syntax.
+  RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
 
 permissions:
   contents: read
@@ -40,7 +43,52 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ env.BUILD_REF }}
+          # A release build checks out the exact commit the Release run used
+          # (head_sha), never the tag name, which could have moved since.
+          ref: ${{ github.event.workflow_run.head_sha || env.BUILD_REF }}
+          fetch-depth: 0
+
+      - name: Verify this is a public commit
+        run: |
+          set -euo pipefail
+          git fetch --quiet --tags origin main
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            tag="$RUN_HEAD_BRANCH"
+            if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "refusing to publish: release run ref '$tag' is not a v* version tag" >&2
+              exit 1
+            fi
+            if [ "$(git rev-parse "refs/tags/$tag^{commit}")" != "$(git rev-parse HEAD)" ]; then
+              echo "refusing to publish: tag $tag no longer points at the released commit" >&2
+              exit 1
+            fi
+          fi
+          on_main=no
+          if git merge-base --is-ancestor HEAD origin/main; then
+            on_main=yes
+          fi
+          tagged_on_main=no
+          tag="$(git tag --points-at HEAD --list 'v*' | head -n 1 || true)"
+          if [ -n "$tag" ] && git merge-base --is-ancestor "$tag" origin/main; then
+            tagged_on_main=yes
+          fi
+          if [ "$on_main" = "no" ] && [ "$tagged_on_main" = "no" ]; then
+            echo "refusing to publish public images: $(git rev-parse --short HEAD) is neither reachable from origin/main nor a v* tag on main" >&2
+            exit 1
+          fi
+          echo "public commit verified: $(git rev-parse --short HEAD)"
+
+      # The public-commit check above only proves the commit is on main; this
+      # proves the checked-out source tree itself is Community-only, so the
+      # build context below can never carry Enterprise code.
+      - name: Verify the source tree is Community-only
+        run: |
+          set -euo pipefail
+          if [ -n "$(git ls-files -- 'ee/' 'dashboard/src/ee/')" ]; then
+            echo "refusing to publish: Enterprise paths present in the source tree" >&2
+            exit 1
+          fi
+          echo "source tree is Community-only"
 
       - name: Get version
         id: version
@@ -61,6 +109,30 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Plain `docker build` (single arch, docker driver) so the image lands in
+      # the local daemon for filesystem inspection. This inspects a native
+      # single-arch build of the same Community-only source context proved
+      # above; inspecting the exact multi-arch pushed digest is a known
+      # follow-up. The multi-arch push below stays on the buildx
+      # docker-container driver.
+      - name: Build API image for inspection
+        run: |
+          docker build --file ./Dockerfile \
+            --tag ${{ env.IMAGE_PREFIX }}/sessionfs-api:${{ steps.version.outputs.version }}-inspect \
+            .
+
+      - name: Inspect API image for Enterprise-only content
+        run: |
+          set -euo pipefail
+          image="${{ env.IMAGE_PREFIX }}/sessionfs-api:${{ steps.version.outputs.version }}-inspect"
+          cid="$(docker create "$image")"
+          fs="$(mktemp -d)"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1; rm -rf "$fs"' EXIT
+          docker export "$cid" | tar -x -C "$fs"
+          python3 .github/scripts/check_public_artifacts.py \
+            "$fs/app" \
+            "$fs"/usr/local/lib/python3.11/site-packages/sessionfs*
 
       - name: Build and push API image
         uses: docker/build-push-action@v7
@@ -93,7 +165,52 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ env.BUILD_REF }}
+          # A release build checks out the exact commit the Release run used
+          # (head_sha), never the tag name, which could have moved since.
+          ref: ${{ github.event.workflow_run.head_sha || env.BUILD_REF }}
+          fetch-depth: 0
+
+      - name: Verify this is a public commit
+        run: |
+          set -euo pipefail
+          git fetch --quiet --tags origin main
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            tag="$RUN_HEAD_BRANCH"
+            if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "refusing to publish: release run ref '$tag' is not a v* version tag" >&2
+              exit 1
+            fi
+            if [ "$(git rev-parse "refs/tags/$tag^{commit}")" != "$(git rev-parse HEAD)" ]; then
+              echo "refusing to publish: tag $tag no longer points at the released commit" >&2
+              exit 1
+            fi
+          fi
+          on_main=no
+          if git merge-base --is-ancestor HEAD origin/main; then
+            on_main=yes
+          fi
+          tagged_on_main=no
+          tag="$(git tag --points-at HEAD --list 'v*' | head -n 1 || true)"
+          if [ -n "$tag" ] && git merge-base --is-ancestor "$tag" origin/main; then
+            tagged_on_main=yes
+          fi
+          if [ "$on_main" = "no" ] && [ "$tagged_on_main" = "no" ]; then
+            echo "refusing to publish public images: $(git rev-parse --short HEAD) is neither reachable from origin/main nor a v* tag on main" >&2
+            exit 1
+          fi
+          echo "public commit verified: $(git rev-parse --short HEAD)"
+
+      # The public-commit check above only proves the commit is on main; this
+      # proves the checked-out source tree itself is Community-only, so the
+      # build context below can never carry Enterprise code.
+      - name: Verify the source tree is Community-only
+        run: |
+          set -euo pipefail
+          if [ -n "$(git ls-files -- 'ee/' 'dashboard/src/ee/')" ]; then
+            echo "refusing to publish: Enterprise paths present in the source tree" >&2
+            exit 1
+          fi
+          echo "source tree is Community-only"
 
       - name: Get version
         id: version
@@ -114,6 +231,24 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build MCP image for inspection
+        run: |
+          docker build --file ./Dockerfile.mcp \
+            --tag ${{ env.IMAGE_PREFIX }}/sessionfs-mcp:${{ steps.version.outputs.version }}-inspect \
+            .
+
+      - name: Inspect MCP image for Enterprise-only content
+        run: |
+          set -euo pipefail
+          image="${{ env.IMAGE_PREFIX }}/sessionfs-mcp:${{ steps.version.outputs.version }}-inspect"
+          cid="$(docker create "$image")"
+          fs="$(mktemp -d)"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1; rm -rf "$fs"' EXIT
+          docker export "$cid" | tar -x -C "$fs"
+          python3 .github/scripts/check_public_artifacts.py \
+            "$fs/app" \
+            "$fs"/usr/local/lib/python3.11/site-packages/sessionfs*
 
       - name: Build and push MCP image
         uses: docker/build-push-action@v7
@@ -146,7 +281,52 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
-          ref: ${{ env.BUILD_REF }}
+          # A release build checks out the exact commit the Release run used
+          # (head_sha), never the tag name, which could have moved since.
+          ref: ${{ github.event.workflow_run.head_sha || env.BUILD_REF }}
+          fetch-depth: 0
+
+      - name: Verify this is a public commit
+        run: |
+          set -euo pipefail
+          git fetch --quiet --tags origin main
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            tag="$RUN_HEAD_BRANCH"
+            if ! printf '%s' "$tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "refusing to publish: release run ref '$tag' is not a v* version tag" >&2
+              exit 1
+            fi
+            if [ "$(git rev-parse "refs/tags/$tag^{commit}")" != "$(git rev-parse HEAD)" ]; then
+              echo "refusing to publish: tag $tag no longer points at the released commit" >&2
+              exit 1
+            fi
+          fi
+          on_main=no
+          if git merge-base --is-ancestor HEAD origin/main; then
+            on_main=yes
+          fi
+          tagged_on_main=no
+          tag="$(git tag --points-at HEAD --list 'v*' | head -n 1 || true)"
+          if [ -n "$tag" ] && git merge-base --is-ancestor "$tag" origin/main; then
+            tagged_on_main=yes
+          fi
+          if [ "$on_main" = "no" ] && [ "$tagged_on_main" = "no" ]; then
+            echo "refusing to publish public images: $(git rev-parse --short HEAD) is neither reachable from origin/main nor a v* tag on main" >&2
+            exit 1
+          fi
+          echo "public commit verified: $(git rev-parse --short HEAD)"
+
+      # The public-commit check above only proves the commit is on main; this
+      # proves the checked-out source tree itself is Community-only, so the
+      # build context below can never carry Enterprise code.
+      - name: Verify the source tree is Community-only
+        run: |
+          set -euo pipefail
+          if [ -n "$(git ls-files -- 'ee/' 'dashboard/src/ee/')" ]; then
+            echo "refusing to publish: Enterprise paths present in the source tree" >&2
+            exit 1
+          fi
+          echo "source tree is Community-only"
 
       - name: Get version
         id: version
@@ -167,6 +347,24 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build Dashboard image for inspection
+        run: |
+          docker build --file ./dashboard/Dockerfile \
+            --build-arg VITE_API_URL=https://api.sessionfs.dev \
+            --build-arg SFS_VERSION=${{ steps.version.outputs.version }} \
+            --tag ${{ env.IMAGE_PREFIX }}/sessionfs-dashboard:${{ steps.version.outputs.version }}-inspect \
+            ./dashboard
+
+      - name: Inspect Dashboard image for Enterprise-only content
+        run: |
+          set -euo pipefail
+          image="${{ env.IMAGE_PREFIX }}/sessionfs-dashboard:${{ steps.version.outputs.version }}-inspect"
+          cid="$(docker create "$image")"
+          fs="$(mktemp -d)"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1; rm -rf "$fs"' EXIT
+          docker export "$cid" | tar -x -C "$fs"
+          python3 .github/scripts/check_public_artifacts.py "$fs/usr/share/nginx/html"
 
       - name: Build and push Dashboard image
         uses: docker/build-push-action@v7

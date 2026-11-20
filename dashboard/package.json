@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:visual": "playwright test -c e2e/playwright.config.ts",
-    "check:palette": "node scripts/check-palette.mjs"
+    "check:palette": "node scripts/check-palette.mjs",
+    "check:edition": "node scripts/check-edition-build.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.95.2",

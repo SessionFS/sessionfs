@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.0] - 2026-11-19
+
+**SessionFS now comes in two editions. Community is open source under Apache-2.0 and runs with no licence key; Enterprise is the hosted cloud and licensed self-hosted installs. For You shows what involves you and says why, the merge check no longer lets an unreviewed commit pass, and the first piece of the auto-reviewer lands: review requests served by a runner on your own machine.** One migration (139). Three new MCP tools (148).
+
+### Added
+- Editions. `SFS_EDITION=community` (self-hosted, no licence key) gives every account the Pro features, with Team and Enterprise features turned off. `enterprise` keeps each account's plan and is what the hosted cloud and licensed installs run; the Helm chart picks it automatically when a licence key is set. Platform admins stay Enterprise in both editions. Enterprise code loads through one extension registry, which Community never imports, and a broken Enterprise install fails at startup instead of quietly running as Community.
+- Review requests and personal runners, server side (migration 139). Ask for a draft review of a pull request or merge request at an exact commit; a runner you enrol pulls it over HTTP, reviews it on your own machine with your own model key and posts the findings back. SessionFS never receives code and never runs a review itself. Pressing Review twice at the same commit returns the same request; a new commit replaces a pending one. The reviewer's instructions are pinned when the request is made, findings are DLP-scanned under the strictest policy of every org you belong to, and secrets are always redacted. Community allows one active runner per installation. `sfs review request|list|show`, MCP `request_review`, `get_review_request` and `list_my_review_requests`, and the runner API under `/api/v1/me/review-runners`. The `sfs runner` program and the dashboard Review button come in a later release.
+- For You: tickets you created that wait on someone else (a teammate, someone else's agent or an external contact) appear in Worth a second look with who they wait on. They never count toward the badge.
+
+### Changed
+- Licence: SessionFS is Apache-2.0 from this release (`LICENSE`, `NOTICE`). 0.32.x and earlier stay MIT.
+- For You shows only what involves you: review-loop cards are the loop items you created, are assigned or whose agent represents you, instead of every loop in your org.
+- Every For You card explains itself in plain sentences built from its own facts (the ticket and project, the meeting and the lines it came from, who sent a handoff, why a loop stopped), with no record ids or emails. More context leads with that explanation.
+
+### Fixed
+- Merge check: a commit with no review verdict reported a neutral check, which GitHub treats as passing for a required check, so unreviewed code could merge. Every commit that isn't ready now reports action required. GitLab already reported pending.
+
 ## [0.32.0] - 2026-11-17
 
 **Work that used to run after the response is now durable, the API trusts forwarded client IPs only from your own proxies, and the Helm chart gains the scheduled jobs it was missing.** One migration (138). No dashboard changes.

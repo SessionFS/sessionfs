@@ -49,6 +49,7 @@ SWEEPS: list[tuple[str, dict, str | None]] = [
     ("/api/v1/admin/sweeps/contact-retention", {}, "contact_retention_sweep"),
     ("/api/v1/admin/sweeps/eval-outputs", {}, "eval_output_retention_sweep"),
     ("/api/v1/admin/sweeps/idempotency-keys", {}, "idempotency_keys_sweep"),
+    ("/api/v1/admin/sweeps/review-requests", {}, "review_requests_sweep"),
 ]
 SWEEP_PATHS = {path for path, _, _ in SWEEPS}
 

@@ -150,6 +150,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs org delivery-webhook rotate\|status` | Per-org GitHub and GitLab webhooks for pull requests, releases and deploys (Team+) |
 | `sfs agent replay\|compare` | Re-run a recorded agent run with an edited prompt or context, and compare two runs side by side |
 | `sfs agent feedback add\|list\|summary` | Record and summarize whether agent work was useful (Team+) |
+| `sfs review request\|list\|show` | Ask your personal reviewer for a draft review of a PR/MR at an exact commit; a runner on your own machine serves it (server side in this release) |
 | `sfs resident run\|health` | Run an operator-hosted resident reviewer or implementer against a work queue |
 | `sfs helper ask "..." [--project ID] [--session ID ...] [--conversation ID] [--no-stream] [--json]` | Ask the session helper over sessions you can read, streaming the answer to your terminal (Enterprise, BYOK) |
 | `sfs helper conversations list\|show\|delete` | List, inspect, and delete your helper conversations |
@@ -166,7 +167,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs auth use\|profiles\|whoami` | Switch between named account profiles |
 | `sfs auth keys list\|create\|revoke` | Manage your personal API keys |
 | `sfs config show\|set\|default-org` | Manage configuration and your default organization |
-| `sfs mcp serve` | Start MCP server (145 tools) for AI tool integration |
+| `sfs mcp serve` | Start MCP server (148 tools) for AI tool integration |
 | `sfs mcp install\|uninstall --for TOOL` | Add or remove the MCP registration for any of the 10 supported tools |
 | `sfs mcp index` | Rebuild the local full-text search index |
 | `sfs init` | Interactive setup wizard — auto-detects tools, optional sync |
@@ -281,6 +282,8 @@ Sessions are stored as `.sfs` directories:
 All file paths are relative to workspace root. Sessions are append-only — conflict resolution appends both sides rather than merging.
 
 ## Status
+
+**v0.33.0 — Public Beta.** 13382 backend tests + 2408 dashboard tests passing. Database migrations 001–139 (067 and 068 unused). 148 MCP tools. **Two editions:** Community is open source under Apache-2.0 and runs with no licence key (every account gets the Pro features, one review runner per installation); Enterprise is the hosted cloud and licensed self-hosted installs (`SFS_EDITION`, Helm `edition`). **Review requests (server side):** ask for a draft review of a PR/MR at an exact commit, served by a runner on your own machine with your own model key; SessionFS never receives code (`sfs review`, three MCP tools, migration 139). **For You** shows only what involves you and explains every card in plain sentences, and the GitHub merge check no longer passes a commit that has no review.
 
 **v0.32.0 — Public Beta.** 12055 backend tests + 2405 dashboard tests passing. Database migrations 001–138 (067 and 068 unused). 145 MCP tools. **Durable follow-up work:** merge rechecks, knowledge extraction and GitLab MR comments are recorded with the write that causes them and finished by the scheduled sweeps if the server never gets to them (`SFS_POST_RESPONSE_TASKS`, migration 138); every audit runs inside the request. **Real client IPs:** `X-Forwarded-For` is trusted only from `SFS_TRUSTED_PROXIES` (presets for Cloud Run, Google load balancers, Cloudflare and private networks). **Helm:** five opt-in scheduled jobs production already runs (GitHub webhook sweep, catalog regenerate, skills rescan, marketplace freshness, publisher re-check).
 
@@ -428,7 +431,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### MCP and dashboard
 
-- **MCP server** (local, stdio) with 145 tools — sessions, knowledge read and write, rules, personas, tickets, external contacts, evaluations and model/dataset lineage, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), meetings and chat threads, reminders, read-only approvals, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
+- **MCP server** (local, stdio) with 148 tools — sessions, knowledge read and write, rules, personas, tickets, external contacts, evaluations and model/dataset lineage, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), meetings and chat threads, reminders, read-only approvals, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
 - **`sfs mcp install --for <tool>`** for all 10 tools (stale registration repair, malformed config handling)
 - **Web dashboard** with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, command palette (Cmd+K), mobile nav, accessibility (focus trapping, ARIA live regions), product identity
 - **`/help` page** — MCP-first guidance, 10-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference
@@ -471,4 +474,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, testing, and PR gu
 
 ## License
 
-Apache 2.0 — Core. FSL (Functional Source License) — Enterprise extensions in `ee/`.
+See LICENSE.

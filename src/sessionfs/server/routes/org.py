@@ -32,7 +32,8 @@ from sessionfs.server.services.entitlements import (
     apply_entitlement,
     lock_billing_rows,
 )
-from sessionfs.server.tier_gate import UserContext, check_role, get_user_context
+from sessionfs.server.tier_gate import UserContext, apply_edition_gating, check_role, get_user_context
+from sessionfs.server.tiers import Tier
 
 logger = logging.getLogger("sessionfs.api")
 router = APIRouter(prefix="/api/v1/org", tags=["organization"])
@@ -274,11 +275,23 @@ async def create_organization(
     # gates on Stripe's own tier (not the cache): the cache may lag a
     # just-completed Team checkout, or carry a stale paid tier a cancellation
     # webhook already cleared.
-    if pointer_confirmed:
+    if user_tier == "admin":
+        # Platform admins keep their exception in every edition, whatever a
+        # Stripe snapshot says.
+        effective_tier = "admin"
+    elif pointer_confirmed:
         assert prefetched is not None
         effective_tier = prefetched.tier or user_tier
     else:
         effective_tier = user_tier
+    # The plan that funds the org goes through the edition chokepoint (a
+    # keyless Community install resolves every plan to Pro); platform admins
+    # keep their exception.
+    if effective_tier != "admin":
+        try:
+            effective_tier = apply_edition_gating(Tier(effective_tier)).value
+        except ValueError:
+            effective_tier = Tier.FREE.value
     if effective_tier not in ("team", "enterprise", "admin"):
         raise HTTPException(403, "Organizations require Team tier or above. Upgrade at https://sessionfs.dev/pricing")
 

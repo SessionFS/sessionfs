@@ -44,8 +44,8 @@ from sessionfs.server.db.models import (
     Organization,
     User,
 )
-from sessionfs.server.services.entitlements import resolve_entitlement
-from sessionfs.server.tiers import Tier, get_features_for_tier
+from sessionfs.server.tier_gate import resolve_org_plan_tier
+from sessionfs.server.tiers import get_features_for_tier
 
 logger = logging.getLogger("sessionfs.auto_join")
 
@@ -73,20 +73,12 @@ async def org_has_oidc_sso(org: Organization, db: AsyncSession) -> bool:
     """Whether the org currently has the oidc_sso feature (entitlement-first).
 
     Auto-join is gated on the org's SSO entitlement; if the org loses it,
-    auto-join stops — checked at join time, not at settings-write time.
+    auto-join stops — checked at join time, not at settings-write time. The
+    org's plan goes through the chokepoint, so the Community edition clamps a
+    stored Team/Enterprise plan to Pro like every other plan resolution.
     """
-    tier: str | Tier = org.tier
-    ent = await resolve_entitlement("org", org.id, db)
-    if ent is not None:
-        tier = ent.tier
-    if not isinstance(tier, Tier):
-        try:
-            tier_enum = Tier(tier)
-        except ValueError:
-            tier_enum = Tier.ENTERPRISE if tier == "admin" else Tier.FREE
-    else:
-        tier_enum = tier
-    return "oidc_sso" in get_features_for_tier(tier_enum)
+    tier = await resolve_org_plan_tier(org.id, db)
+    return "oidc_sso" in get_features_for_tier(tier)
 
 
 def _email_domain(email: str) -> str | None:

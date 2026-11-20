@@ -24,7 +24,7 @@ TIER_ORDER = {
 TIER_FEATURES: dict[Tier, dict] = {
     Tier.FREE: {
         # 0.29.10 — agents, tickets and agent runs are on every plan.
-        "features": {"meetings", "agent_personas", "agent_tickets", "agent_runs"},
+        "features": {"meetings", "agent_personas", "agent_tickets", "agent_runs", "review_requests"},
         "storage_bytes": 0,
         "description": "Capture + resume + local search only",
     },
@@ -43,6 +43,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "agent_personas",
             "agent_tickets",
             "agent_runs",
+            "review_requests",
         },
         "storage_bytes": 500 * 1024 * 1024,  # 500 MB
         "description": "Cloud sync + dashboard + manual judge",
@@ -70,6 +71,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "agent_personas",
             "agent_tickets",
             "agent_runs",
+            "review_requests",
             "oidc_sso",
             "marketplace_access",
             "meetings",
@@ -103,6 +105,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "agent_personas",
             "agent_tickets",
             "agent_runs",
+            "review_requests",
             # Review loops, workflows, releases, merge checks and loop share
             # links stay Team+ even though tickets and runs are on every plan.
             "review_loop",
@@ -144,6 +147,7 @@ TIER_FEATURES: dict[Tier, dict] = {
             "agent_personas",
             "agent_tickets",
             "agent_runs",
+            "review_requests",
             # Review loops, workflows, releases, merge checks and loop share
             # links stay Team+ even though tickets and runs are on every plan.
             "review_loop",

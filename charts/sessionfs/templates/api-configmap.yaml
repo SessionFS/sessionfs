@@ -9,6 +9,7 @@ data:
   SFS_HOST: "0.0.0.0"
   # Tells the session helper which docs features apply to this install.
   SFS_DEPLOYMENT: "self-hosted"
+  SFS_EDITION: {{ include "sessionfs.edition" . | quote }}
   SFS_PORT: {{ .Values.api.service.port | quote }}
   SFS_RATE_LIMIT_PER_MINUTE: {{ .Values.api.rateLimitPerMinute | quote }}
   {{- /* Proxies trusted to report the client IP in X-Forwarded-For. A list or

@@ -117,7 +117,12 @@ async def test_meeting_suggestions_owned_and_attended(client: AsyncClient, db_se
     assert ctx["meeting"]["id"] == m.id and ctx["meeting"]["item_id"] == owned.id
     sugg = _by_kind(body, "meeting_suggestion")[0]["context"]["suggest"]
     assert sugg["level"] == 1 and sugg["wording"] == "Might be an action for you"
-    assert body["groups"]["meetings"] == 2
+    # An unowned item in a meeting you attended is awareness, not a task for
+    # you: it moves to the "lately" band and section, so only the named owner
+    # counts in "From your meetings" and nothing unowned reaches the badge.
+    assert _by_kind(body, "meeting_suggestion")[0]["band"] == "lately"
+    assert _by_kind(body, "meeting_suggestion")[0]["group"] == "lately"
+    assert body["groups"]["meetings"] == 1
 
 
 async def test_unowned_items_need_attendance(client: AsyncClient, db_session: AsyncSession):

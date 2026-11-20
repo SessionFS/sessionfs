@@ -367,7 +367,7 @@ async def test_not_ready_when_verdict_bound_elsewhere(
 
 
 @pytest.mark.asyncio
-async def test_no_verdict_is_neutral(
+async def test_no_verdict_blocks_with_action_required(
     client: AsyncClient, db_session: AsyncSession, gh: _CheckRuns
 ):
     owner, _ = await _make_user(db_session)
@@ -381,7 +381,8 @@ async def test_no_verdict_is_neutral(
     )
     assert result["ready"] is False
     posts = [r for r in gh.requests if r.method == "POST" and r.url.path.endswith("/check-runs")]
-    assert json.loads(posts[0].content)["conclusion"] == "neutral"
+    # neutral would count as passing for a required check (tk_8107785545e44a83).
+    assert json.loads(posts[0].content)["conclusion"] == "action_required"
 
 
 @pytest.mark.asyncio
@@ -805,3 +806,21 @@ async def test_truncated_history_is_never_success(
     assert result["ready"] is False
     posts = [r for r in gh.requests if r.method == "POST" and r.url.path.endswith("/check-runs")]
     assert posts and json.loads(posts[0].content)["conclusion"] != "success"
+
+
+@pytest.mark.parametrize(
+    ("ready", "verdict", "expected"),
+    [
+        (True, {"v": 1}, "success"),
+        (True, None, "success"),
+        (False, {"v": 1}, "action_required"),
+        (False, None, "action_required"),
+    ],
+)
+def test_only_ready_commits_get_a_passing_conclusion(ready, verdict, expected):
+    """GitHub counts success, neutral and skipped as passing for a required
+    check, so a not-ready commit must never get one of them."""
+    conclusion = merge_checks._check_run_conclusion(ready, verdict)
+    assert conclusion == expected
+    if not ready:
+        assert conclusion not in {"success", "neutral", "skipped"}

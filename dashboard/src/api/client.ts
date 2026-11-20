@@ -3769,7 +3769,18 @@ export interface AttentionMeetingRef {
   meeting_at: string | null;
 }
 
+/** Plain-language explanation of a For You card, built server-side from
+ * fixed templates on every plan (no AI): what it is, why it's yours, what
+ * acting does, and where it came from. */
+export interface AttentionExplain {
+  what: string;
+  why: string;
+  act: string;
+  from: string;
+}
+
 export interface AttentionContext {
+  explain?: AttentionExplain;
   source_label?: string;
   ref?: string;
   project_name?: string | null;

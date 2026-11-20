@@ -17,6 +17,28 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.33.0 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-sm px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.33.0</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">November 19, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-semibold px-2.5 py-0.5 rounded-sm bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="text-xl font-semibold mb-4">Two editions, a For You that&rsquo;s about you, and review requests</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Two editions.</strong> Community is open source under Apache-2.0 and runs with no licence key: with <span class="font-mono text-accent text-sm">SFS_EDITION=community</span> every account gets the Pro features, Team and Enterprise features are off, and one review runner is allowed per installation. Enterprise is what the hosted cloud and licensed self-hosted installs run, and keeps each account&rsquo;s plan. The Helm chart picks Enterprise automatically when a licence key is set and Community otherwise; set <span class="font-mono text-accent text-sm">edition</span> to choose. Platform admins stay Enterprise in both. See <a href="/self-hosted/#editions" class="text-brand hover:underline">Self-Hosted</a> and <a href="/environment/" class="text-brand hover:underline">Environment Variables</a>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Review requests, served on your own machine.</strong> Ask for a draft review of a pull request or merge request at an exact commit; a runner you enrol pulls the request over HTTP, reviews it with your own model key and posts the findings back. SessionFS never receives code and never runs a review itself. Asking twice at the same commit returns the same request, and a new commit replaces a pending one. The reviewer&rsquo;s instructions are pinned when the request is made, findings are DLP-scanned under the strictest policy of every org you belong to, and secrets are always redacted. <span class="font-mono text-accent text-sm">sfs review request|list|show</span>, MCP <span class="font-mono text-accent text-sm">request_review</span>, <span class="font-mono text-accent text-sm">get_review_request</span> and <span class="font-mono text-accent text-sm">list_my_review_requests</span>, and the runner API under <span class="font-mono text-accent text-sm">/api/v1/me/review-runners</span>. This release is the server side only: the <span class="font-mono text-accent text-sm">sfs runner</span> program and the dashboard Review button come in a later release. See <a href="/cli/#sfs-review" class="text-brand hover:underline">CLI Reference</a> and <a href="/mcp/#review-requests" class="text-brand hover:underline">MCP</a>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>For You is about you.</strong> Review-loop cards now show only loop items you created, are assigned or whose agent represents you, instead of every loop in your org. Every card explains itself in plain sentences built from its own facts (the ticket and project, the meeting and the lines it came from, who sent a handoff, why a loop stopped), with no record ids or emails, and More context leads with that explanation. Tickets you created that wait on someone else (a teammate, someone else&rsquo;s agent or an external contact) appear in Worth a second look with who they wait on; they never count toward the badge. See <a href="/for-you/" class="text-brand hover:underline">For You</a>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Changed:</strong> SessionFS is licensed under Apache-2.0 from this release. 0.32.x and earlier stay MIT.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Fixed:</strong> the GitHub merge check reported a commit with no review verdict as neutral, which GitHub treats as passing for a required check, so unreviewed code could merge. Every commit that isn&rsquo;t ready now reports action required. GitLab already reported pending. See <a href="/git-integration/" class="text-brand hover:underline">Git Integration</a>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="min-w-0 [overflow-wrap:anywhere]"><span class="text-muted-dim">Migrations 001&ndash;139 (139 adds review requests and runners; additive). Self-hosted: run migration 139, choose an edition (see <a href="/self-hosted/#upgrading" class="text-brand hover:underline">Self-Hosted</a>), and schedule the review-requests sweep if you enrol a runner. 13382 backend tests + 2408 dashboard UI tests passing. 148 MCP tools (+3).</span></span></li>
+        </ul>
+      </article>
+
+      <div class="divider"></div>
+
       <!-- v0.32.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +46,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.32.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">November 17, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-semibold px-2.5 py-0.5 rounded-sm bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="text-xl font-semibold mb-4">Real client IPs and follow-up work that survives a restart</h2>
         <ul class="space-y-2 text-base text-muted">

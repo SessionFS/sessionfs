@@ -18,7 +18,8 @@ from sessionfs.server.db.engine import close_engine, init_engine
 from sessionfs.server.errors import register_exception_handlers
 from sessionfs.server.idempotency import IdempotencyMiddleware
 from sessionfs.server.middleware import MetricsMiddleware, RequestLoggingMiddleware
-from sessionfs.server.routes import activation, admin, approvals, admin_licenses, agent_feedback, agent_runs, api_keys, artifacts, attention, audit, auth, auth_sso, billing, bookmarks, confluence, contacts, delivery_webhooks, dlp, handoffs, health, helm, helper, helper_settings, jira, knowledge, llm_providers, loop_checklist, loop_needs_you, loop_share_links, loop_workers, loops, marketplace, marketplace_disclosure, marketplace_discovery, marketplace_moderation, marketplace_publishers, marketplace_scanning, me, meeting_actions, meetings, merge_checks, metrics, native_catalogs, org, org_llm_settings, org_members, personas, project_groups, project_transfers, projects, releases, reminders, residents, retrieval_audit, review_loop, rules, sessions, settings, skill_policy, spend, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, uploads, webhooks, wiki, work_queues, workflows, evals
+from sessionfs.server.routes import activation, admin, approvals, admin_licenses, agent_feedback, agent_runs, api_keys, artifacts, attention, audit, auth, auth_sso, billing, bookmarks, confluence, contacts, delivery_webhooks, dlp, handoffs, health, helm, helper, helper_settings, jira, knowledge, llm_providers, loop_checklist, loop_needs_you, loop_share_links, loop_workers, loops, marketplace, marketplace_disclosure, marketplace_discovery, marketplace_moderation, marketplace_publishers, marketplace_scanning, me, meeting_actions, meetings, merge_checks, metrics, native_catalogs, org, org_llm_settings, org_members, personas, project_groups, project_transfers, projects, releases, reminders, residents, retrieval_audit, review_loop, review_requests, review_runners, rules, sessions, settings, skill_policy, spend, sso_admin, summaries, sync, teams, telemetry, tickets, trusted_reviewers, uploads, webhooks, wiki, work_queues, workflows, evals
+from sessionfs.features import register_routes, register_sweeps
 from sessionfs.server.storage.local import LocalBlobStore
 
 
@@ -94,6 +95,11 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
 
     trusted_publishing = resolve_trusted_publishing(config)
 
+    # Plan gating reads the validated edition from this config.
+    from sessionfs.server.tier_gate import configure_edition
+
+    configure_edition(config.edition)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         # Startup
@@ -155,6 +161,8 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
 
         warm_docs_index_in_background()
 
+        # Enterprise sweep hooks start only once startup state exists.
+        register_sweeps()
         yield
 
         # Shutdown
@@ -289,6 +297,8 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(artifacts.router)
     app.include_router(loop_needs_you.router)
     app.include_router(attention.router)
+    app.include_router(review_requests.router)
+    app.include_router(review_runners.router)
     app.include_router(loop_share_links.router)
     app.include_router(loop_share_links.share_router)
     # Meetings' project subpath must precede projects' catch-all
@@ -313,6 +323,10 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(native_catalogs.router)
     app.include_router(skill_policy.router)
     app.include_router(marketplace_discovery.router)
+    # Enterprise extension seams — early phase. Enterprise routes that need to
+    # beat the projects catch-all (/{git_remote_normalized:path}) register
+    # before it so a more specific path like /api/v1/projects/{id}/ee-... wins.
+    register_routes(app, phase="early")
     app.include_router(projects.router)
     app.include_router(summaries.router)
     app.include_router(summaries.batch_router)
@@ -338,6 +352,9 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
     app.include_router(admin_licenses.router)
     app.include_router(telemetry.router)
     app.include_router(dlp.router)
+
+    # Enterprise extension seams — late phase (after every Community router).
+    register_routes(app, phase="late")
 
     # tk_3855ef8b11f94ee2: report request-body fields an existing (lenient)
     # route dropped, in the X-SessionFS-Ignored-Fields response header.

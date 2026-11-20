@@ -311,3 +311,21 @@ dashboard nginx waits on POST /api/v1/sessions/{id}/audit.
 {{- end -}}
 {{- trimSuffix "s" $raw -}}
 {{- end -}}
+
+{{/*
+Product edition. An explicit .Values.edition wins. Left empty, an install
+with a licence key is "enterprise" (so licensed self-hosted customers keep
+their plan on upgrade) and one without a key is "community".
+*/}}
+{{- define "sessionfs.edition" -}}
+{{- if .Values.edition -}}
+{{- if not (has .Values.edition (list "community" "enterprise")) -}}
+{{- fail (printf "edition must be community or enterprise, got %q" .Values.edition) -}}
+{{- end -}}
+{{- .Values.edition -}}
+{{- else if .Values.license.key -}}
+enterprise
+{{- else -}}
+community
+{{- end -}}
+{{- end -}}

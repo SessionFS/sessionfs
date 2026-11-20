@@ -228,6 +228,39 @@ def test_hostile_state_with_thousands_of_duplicate_outputs_is_bounded(tmp_path):
     assert len(reads) <= 2  # the shared output is hashed once, never per entry
 
 
+def test_repeated_output_path_is_checked_once_per_state_file(tmp_path, monkeypatch):
+    """A state file repeating one output path thousands of times walks that
+    path's components once, not per entry (slow on Python 3.12's pathlib),
+    and the package is still reported `unverified`."""
+    import json
+
+    from sessionfs.spec import instruction_provenance
+
+    output = tmp_path / ".codex" / "skills" / "x" / "SKILL.md"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"# x\n")
+    digest = "sha256:" + __import__("hashlib").sha256(output.read_bytes()).hexdigest()
+    state_dir = tmp_path / ".sessionfs"
+    state_dir.mkdir()
+    entry = {"path": str(output), "output_hash": digest, "tool": "codex", "tools": ["codex"]}
+    (state_dir / "skills.state.json").write_text(json.dumps({"version": 1, "packages": {
+        "skp_hostile": {"package_id": "skp_hostile", "name": "x", "content_hash": digest, "targets": ["codex"],
+                        "source": {"source_type": "git", "locator": "https://x/y"}, "outputs": [entry] * 5_000},
+    }}), encoding="utf-8")
+    calls = []
+    real_check = instruction_provenance._safe_managed_output
+
+    def counting_check(raw_path, **kwargs):
+        calls.append(raw_path)
+        return real_check(raw_path, **kwargs)
+
+    monkeypatch.setattr(instruction_provenance, "_safe_managed_output", counting_check)
+    prov = discover(tmp_path, tool="codex", home_dir=tmp_path / "home")
+    status = {item["package_id"]: item["integrity_status"] for item in prov.managed_packages}
+    assert status["skp_hostile"] == "unverified"
+    assert len(calls) <= 2  # once for the integrity check, once for the aux-scan exclusions
+
+
 def test_rules_source_stays_rules_only_and_skills_source_is_separate(tmp_path):
     """R20 P3-1: managed skill packages never flip `rules_source`; the new
     `skills_source` field reports managed | manual | mixed | none."""

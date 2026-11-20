@@ -1,6 +1,6 @@
 """`sfs attention` — what needs you right now (For You, tk_dc118ffd6e804a9a).
 
-    sfs attention [--band now|your_turn|upcoming|lately] [--limit N] [--json]
+    sfs attention [--band now|your_turn|upcoming|lately] [--limit N] [--json] [--explain]
 
 A thin client of ``GET /api/v1/me/for-you``: ranking, access and the
 per-source rules all live on the server.
@@ -52,10 +52,25 @@ def _what(it: dict[str, Any]) -> str:
     return title
 
 
+def _explain_text(it: dict[str, Any]) -> str:
+    """The card's four plain sentences (what / why / act / from), or empty."""
+    ctx = it.get("context") if isinstance(it.get("context"), dict) else {}
+    ex = ctx.get("explain") if isinstance(ctx, dict) else None
+    if not isinstance(ex, dict):
+        return ""
+    parts: list[str] = []
+    for key, label in (("what", "What"), ("why", "Why"), ("act", "Act"), ("from", "From")):
+        value = str(ex.get(key) or "")
+        if value:
+            parts.append(f"{label}: {value}")
+    return "\n".join(parts)
+
+
 def attention(
     band: Band | None = typer.Option(None, "--band", help="Only one band: now, your_turn, upcoming or lately."),
     limit: int = typer.Option(100, "--limit", min=1, max=100, help="At most this many items."),
     as_json: bool = typer.Option(False, "--json", help="Print the raw JSON response."),
+    explain: bool = typer.Option(False, "--explain", help="Add the plain-language reason each card is yours."),
 ) -> None:
     """Show what needs your attention: reminders, approvals, tickets, loops,
     meeting actions, knowledge changes and the weekly proof card."""
@@ -82,13 +97,15 @@ def attention(
             table = Table(title=f"{label} ({counts.get(key, len(rows))})", show_lines=False)
             table.add_column("What", overflow="fold")
             table.add_column("Why", overflow="fold")
+            if explain:
+                table.add_column("Explain", overflow="fold")
             table.add_column("Link", overflow="fold", style="dim")
             for it in rows:
-                table.add_row(
-                    escape(_what(it)),
-                    escape(str(it.get("why", ""))),
-                    escape(str(it.get("link", ""))),
-                )
+                cells = [escape(_what(it)), escape(str(it.get("why", "")))]
+                if explain:
+                    cells.append(escape(_explain_text(it)))
+                cells.append(escape(str(it.get("link", ""))))
+                table.add_row(*cells)
             console.print(table)
         if body.get("truncated"):
             console.print(f"[dim]Showing {len(items)} of {counts.get('total', len(items))}.[/dim]")

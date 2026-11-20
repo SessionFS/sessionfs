@@ -1,9 +1,41 @@
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
+
+// Build-time edition gate. An Enterprise build must declare its edition AND
+// ship the Enterprise routes module; without this, an Enterprise Docker build
+// that forgot to pass VITE_SFS_EDITION would silently emit a Community bundle
+// (ee.tsx renders nothing when the flag is unset or src/ee/routes.tsx is
+// absent). A Community build with src/ee/ present is left alone: that is the
+// develop checkout, and the public tree never ships src/ee/.
+const HAS_EE_SOURCES = existsSync(resolve(dirname(fileURLToPath(import.meta.url)), 'src', 'ee'))
+// With Enterprise sources in the tree (the private develop checkout) the
+// edition must be named explicitly, so an Enterprise build can't fall back to
+// Community by forgetting the flag. The public tree has no src/ee/ and keeps
+// the community default.
+// Vitest loads this config too; tests don't emit a bundle, so they keep the
+// community default instead of demanding the flag.
+if (HAS_EE_SOURCES && !process.env.VITE_SFS_EDITION && !process.env.VITEST) {
+  throw new Error(
+    'dashboard/src/ee/ exists: set VITE_SFS_EDITION=community or enterprise explicitly'
+  )
+}
+// An empty value (an unset Docker ARG) also means community.
+const EDITION = process.env.VITE_SFS_EDITION || 'community'
+if (EDITION !== 'community' && EDITION !== 'enterprise') {
+  throw new Error(
+    `VITE_SFS_EDITION must be 'community' or 'enterprise', got ${JSON.stringify(EDITION)}`
+  )
+}
+const HERE = dirname(fileURLToPath(import.meta.url))
+if (EDITION === 'enterprise' && !existsSync(resolve(HERE, 'src', 'ee', 'routes.tsx'))) {
+  throw new Error(
+    'VITE_SFS_EDITION=enterprise requires dashboard/src/ee/routes.tsx'
+  )
+}
 
 // Resolution order:
 //   1. SFS_VERSION env (CI / Docker build-arg / explicit override)

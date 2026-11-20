@@ -145,3 +145,34 @@ def test_inline_comments_in_path_lines_stripped(helper, tmp_path):
     manifest.write_text("docs/pricing.md  # marketing\n.agents/  # internal personas\n")
     paths = helper.parse_private_paths(manifest)
     assert paths == ["docs/pricing.md", ".agents/"]
+
+
+def test_find_leaks_matches_glob_entries_not_exact_names(helper):
+    """Wildcard entries such as `v*-implementation-brief` must be matched as
+    globs. The old bug matched them as exact filenames, so a real brief named
+    `v0.10.0-org-admin-console-brief` survived sanitization."""
+    tracked = {
+        "v0.10.0-implementation-brief",
+        "v0.11.0-resume-atlas-brief",
+        "v0.10.0-org-admin-console-brief",
+        "README.md",
+    }
+    private = [
+        "v*-implementation-brief",
+        "v*-resume-*-brief",
+        "v0.10.0-org-admin-console-brief",
+    ]
+    leaks = helper.find_leaks(tracked, private)
+    assert sorted(leaks.keys()) == sorted(private)
+    assert leaks["v*-implementation-brief"] == ["v0.10.0-implementation-brief"]
+    assert leaks["v*-resume-*-brief"] == ["v0.11.0-resume-atlas-brief"]
+    assert leaks["v0.10.0-org-admin-console-brief"] == ["v0.10.0-org-admin-console-brief"]
+
+
+def test_find_leaks_glob_does_not_match_unrelated_suffix(helper):
+    """`v*-implementation-brief` matches the brief itself, not an arbitrary
+    file that merely shares a prefix."""
+    tracked = {"v0.10.0-implementation-brief.archive", "README.md"}
+    private = ["v*-implementation-brief"]
+    leaks = helper.find_leaks(tracked, private)
+    assert leaks == {}

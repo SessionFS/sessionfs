@@ -62,6 +62,11 @@ class ServerConfig(BaseSettings):
     # Deployment environment ("development"/"test" relax production-only
     # checks; unset = development when the database is SQLite).
     environment: str = ""
+    # Product edition: "community" (self-hosted, keyless) or "enterprise"
+    # (hosted cloud + commercial self-hosted licences). Default enterprise:
+    # the hosted cloud runs the same code, and a default of community would
+    # silently downgrade hosted plans. Anything else refuses startup.
+    edition: str = "enterprise"
     # Canonical public API origin, e.g. https://api.sessionfs.dev. Default
     # OIDC audience for marketplace trusted publishing.
     public_api_url: str = ""
@@ -118,6 +123,17 @@ class ServerConfig(BaseSettings):
     stripe_price_starter: str = ""
     stripe_price_pro: str = ""
     stripe_price_team: str = ""
+
+    @field_validator("edition")
+    @classmethod
+    def _check_edition(cls, value: str) -> str:
+        value = (value or "").strip().lower() or "enterprise"
+        if value not in ("community", "enterprise"):
+            raise ValueError(
+                "SFS_EDITION must be 'community' or 'enterprise' "
+                f"(got {value!r})"
+            )
+        return value
 
     @field_validator("public_catalog_mirror")
     @classmethod

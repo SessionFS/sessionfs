@@ -95,7 +95,9 @@ async def test_chat_suggestion_when_nobody_was_named(client: AsyncClient, db_ses
     p = await _project(db_session, me)
     await _chat_item(db_session, p, me, owned=False)
     body = await _feed(client, key)
-    assert [i["kind"] for i in body["items"] if i["group"] == "meetings"] == ["chat_suggestion"]
+    # Nobody was named, so this is awareness: "lately", not "your turn".
+    assert [i["kind"] for i in body["items"] if i["group"] == "lately"] == ["chat_suggestion"]
+    assert [i for i in body["items"] if i["band"] == "your_turn"] == []
 
 
 async def test_chat_card_actions_use_the_meeting_routes(client: AsyncClient, db_session: AsyncSession) -> None:
@@ -143,37 +145,84 @@ async def test_handoff_card_offers_claim(client: AsyncClient, db_session: AsyncS
 
 
 async def test_paused_loop_offers_raise_limit_only_to_editors_on_a_limit(
-    db_session: AsyncSession, monkeypatch
+    db_session: AsyncSession,
 ) -> None:
+    import json
+
+    from sessionfs.server.db.models import AgentRun, Ticket, TicketComment
+
     me, _ = await _user(db_session)
-    p = await _project(db_session, me)
+    p = await _project(db_session, me)  # me owns it -> editor
 
-    base = {"project_id": p.id, "project_name": p.name, "loop_id": "tk_loop1",
-            "ticket_id": "tk_child1", "ticket_title": "Child", "title": "Round cap hit",
-            "kind": "needs_human"}
+    async def seed(project, *, config: dict, tokens: int = 0, verdict: str | None = None) -> str:
+        parent = Ticket(
+            id=_id("tk"), project_id=project.id, title="loop", kind="issue",
+            status="open", created_by_user_id=me.id, loop_config=json.dumps(config),
+        )
+        db_session.add(parent)
+        await db_session.flush()
+        child = Ticket(
+            id=_id("tk"), project_id=project.id, title="Child", kind="task",
+            status="open", parent_ticket_id=parent.id, created_by_user_id=me.id,
+        )
+        db_session.add(child)
+        await db_session.flush()
+        if tokens:
+            db_session.add(
+                AgentRun(
+                    id=_id("run"), project_id=project.id, persona_name="atlas",
+                    role="implementer", ticket_id=child.id, head_sha="a1b2c3d4e5f6a7b8",
+                    branch="feat/loop", input_tokens=tokens,
+                    triggered_by_user_id=me.id, created_at=NOW,
+                )
+            )
+        if verdict is not None:
+            db_session.add(
+                TicketComment(
+                    id=_id("tc"), ticket_id=child.id, author_user_id=me.id,
+                    author_persona="codex-reviewer", content=verdict,
+                    verdict_trusted=True, reviewed_commit="a1b2c3d4e5f6a7b8", created_at=NOW,
+                )
+            )
+        await db_session.commit()
+        return child.id
 
-    async def fake_needs_you(db, *, user_id):
-        return {
-            "items": [
-                {**base, "reason": "round cap hit (6 of 6)", "can_act": True},
-                {**base, "ticket_id": "tk_child2", "reason": "token budget hit (2.0M of 2.0M)", "can_act": False},
-                {**base, "ticket_id": "tk_child3", "reason": "worker crashed", "can_act": True},
-            ],
-            "counts": {"total": 3},
-        }
+    # An editor's child that hit the round cap offers Raise limit (rounds).
+    rounds_child = await seed(
+        p, config={"reviewer_persona": "reviewer", "max_review_rounds": 1},
+        verdict="Codex R1 review on tk_x: CHANGES-REQUESTED",
+    )
+    # An editor's child that hit the token budget offers Raise limit (tokens).
+    tokens_child = await seed(
+        p, config={"reviewer_persona": "reviewer", "token_budget": 10}, tokens=20,
+    )
 
-    import sessionfs.server.services.loop_needs_you as lny
+    # A captured-session reader can read a project but not edit it.
+    reader, _ = await _user(db_session, "reader")
+    other = await _project(db_session, reader)
+    db_session.add(
+        Session(
+            id=_id("ses"), user_id=me.id, title="synced from the same repo",
+            tags="[]", source_tool="claude-code", blob_key="x", blob_size_bytes=0,
+            etag="x", git_remote_normalized=other.git_remote_normalized,
+            created_at=NOW, updated_at=NOW, uploaded_at=NOW,
+        )
+    )
+    await db_session.commit()
+    reader_child = await seed(
+        other, config={"reviewer_persona": "reviewer", "token_budget": 10}, tokens=20,
+    )
 
-    monkeypatch.setattr(lny, "needs_you", fake_needs_you)
     feed = await svc.build_feed(db_session, svc.AttentionScope(user_id=me.id))
     cards = {i.source_id.split("#")[0]: i for i in feed.items if i.kind == "loop_needs_human"}
-    assert cards["tk_child1"].actions[0] == "raise"
-    assert cards["tk_child1"].context["loop"] == {
-        "id": "tk_loop1", "project_id": p.id, "ticket_id": "tk_child1", "limit": "rounds",
-    }
-    # Not an editor, or not a limit: no Raise limit.
-    assert "raise" not in cards["tk_child2"].actions and "loop" not in cards["tk_child2"].context
-    assert "raise" not in cards["tk_child3"].actions
+
+    assert cards[rounds_child].actions[0] == "raise"
+    assert cards[rounds_child].context["loop"]["limit"] == "rounds"
+    assert cards[tokens_child].actions[0] == "raise"
+    assert cards[tokens_child].context["loop"]["limit"] == "tokens"
+    # Not an editor: the same limit does not offer Raise limit.
+    assert "raise" not in cards[reader_child].actions
+    assert "loop" not in cards[reader_child].context
 
 
 async def test_pending_suggestion_shows_in_the_why_line(

@@ -19,6 +19,26 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # PyPI and the GitHub Release publish whatever `v*` tag triggered this
+      # run, so prove the tag is a real commit on main and that the build tree
+      # is Community-only before anything is built. Fail closed.
+      - name: Verify the tag is on main and Community-only
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "refusing release: $GITHUB_SHA is not reachable from origin/main" >&2
+            exit 1
+          fi
+          if [ -n "$(git ls-files -- 'ee/' 'dashboard/src/ee/')" ]; then
+            echo "refusing release: Enterprise paths present in the build tree" >&2
+            exit 1
+          fi
+          echo "public commit verified: $GITHUB_SHA"
+
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -26,6 +46,8 @@ jobs:
         run: pip install build twine
       - name: Build package
         run: python -m build
+      - name: Check public artifacts are Community-only
+        run: python .github/scripts/check_public_artifacts.py dist/*.whl dist/*.tar.gz
       - name: Verify package
         run: |
           pip install dist/sessionfs-*.whl

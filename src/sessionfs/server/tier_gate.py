@@ -11,6 +11,7 @@ entitlement mutations (via apply_entitlement) become authoritative.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -79,6 +80,75 @@ async def _get_org(org_id: str, db: AsyncSession) -> Organization | None:
     return result.scalar_one_or_none()
 
 
+_COMMUNITY = "community"
+
+
+# Set from the validated ServerConfig by create_app(). SFS_EDITION in the
+# environment still wins (it is what ServerConfig reads in production, and
+# tests flip it per test); this covers create_app(ServerConfig(edition=...))
+# with the variable unset.
+_configured_edition: str | None = None
+
+
+def configure_edition(edition: str | None) -> None:
+    """Pin the edition from ``ServerConfig.edition`` (called by create_app)."""
+    global _configured_edition
+    _configured_edition = edition
+
+
+def get_edition() -> str:
+    """The active product edition, read from ``SFS_EDITION`` (default enterprise).
+
+    The edition alone decides the Community keyless floor: ``community``
+    means every resolved plan becomes Pro, and ``enterprise`` keeps the
+    stored plan unchanged. Matches ``ServerConfig.edition``'s default so the
+    chokepoint never downgrades the hosted cloud. Licensed self-hosted
+    installs run as ``enterprise`` — the Helm chart picks that automatically
+    when a licence key is set — so no licence probe is needed here. Read from
+    the environment at call time so tests can flip it per-test with
+    ``monkeypatch.setenv``.
+    """
+    env = (os.environ.get("SFS_EDITION") or "").strip().lower()
+    return env or _configured_edition or "enterprise"
+
+
+def _community_gate_enabled() -> bool:
+    """Whether the Community keyless floor applies right now."""
+    return get_edition() == _COMMUNITY
+
+
+def _apply_community_floor(tier: Tier, *, gate: bool) -> Tier:
+    """The single Community keyless rule: with gating enabled, every resolved
+    plan becomes Pro — a stored Free/Starter plan is raised to the keyless
+    floor and Team/Enterprise is clamped down to it. In the Enterprise
+    edition ``tier`` passes through."""
+    if gate:
+        return Tier.PRO
+    return tier
+
+
+def apply_edition_gating(tier: Tier) -> Tier:
+    """The single Community keyless chokepoint.
+
+    Enterprise edition returns ``tier`` unchanged. In Community, every plan
+    resolution yields Pro — whatever is stored on users/orgs/entitlements —
+    so keyless installs keep Pro features but never Team/Enterprise features,
+    and a stored Free or Starter plan is raised to the keyless Pro floor.
+
+    The edition is read straight from ``SFS_EDITION``; nothing here queries
+    the database (licensed installs run as Enterprise via the chart), so a
+    community-edition resolution never pays a per-resolution DB lookup just
+    to decide the edition.
+
+    Platform-admin ENTERPRISE never reaches this function: callers
+    short-circuit ``user.tier == "admin"`` before resolution
+    (``get_effective_tier``, ``build_user_context`` and
+    ``resolve_project_plan_tiers.owner_tier``), so admins keep ENTERPRISE
+    regardless of edition.
+    """
+    return _apply_community_floor(tier, gate=_community_gate_enabled())
+
+
 async def get_effective_tier(
     user: User, db: AsyncSession, *, membership: OrgMember | None = None
 ) -> Tier:
@@ -110,7 +180,7 @@ async def get_effective_tier(
         ent = await resolve_entitlement("org", membership.org_id, db)
         if ent is not None:
             try:
-                return Tier(ent.tier)
+                return apply_edition_gating(Tier(ent.tier))
             except ValueError:
                 pass
 
@@ -121,7 +191,7 @@ async def get_effective_tier(
         org = result.scalar_one_or_none()
         if org:
             try:
-                return Tier(org.tier)
+                return apply_edition_gating(Tier(org.tier))
             except ValueError:
                 pass
 
@@ -129,15 +199,15 @@ async def get_effective_tier(
     ent = await resolve_entitlement("user", user.id, db)
     if ent is not None:
         try:
-            return Tier(ent.tier)
+            return apply_edition_gating(Tier(ent.tier))
         except ValueError:
             pass
 
     # Fallback: legacy user.tier column.
     try:
-        return Tier(user.tier)
+        return apply_edition_gating(Tier(user.tier))
     except ValueError:
-        return Tier.FREE
+        return apply_edition_gating(Tier.FREE)
 
 
 async def _resolve_user_for_context(
@@ -192,6 +262,24 @@ async def build_user_context(user: User, db: AsyncSession) -> UserContext:
     """
     membership = await get_user_org_membership(user.id, db)
 
+    # Platform admins keep ENTERPRISE regardless of edition (mirrors
+    # get_effective_tier). Resolve org/role for the context, but never let
+    # an admin's plan be clamped by Community keyless gating.
+    if user.tier == "admin":
+        admin_org = await _get_org(membership.org_id, db) if membership else None
+        return UserContext(
+            user=user,
+            effective_tier=Tier.ENTERPRISE,
+            org=admin_org,
+            role=membership.role if membership else None,
+            is_org_user=membership is not None,
+        )
+
+    tier: Tier
+    org: Organization | None = None
+    role: str | None = None
+    is_org_user = False
+
     if membership:
         # Resolve org entitlement FIRST, fall back to legacy org.tier.
         ent = await resolve_entitlement("org", membership.org_id, db)
@@ -200,59 +288,45 @@ async def build_user_context(user: User, db: AsyncSession) -> UserContext:
                 tier = Tier(ent.tier)
             except ValueError:
                 tier = Tier.TEAM
-            return UserContext(
-                user=user,
-                effective_tier=tier,
-                org=await _get_org(membership.org_id, db),
-                role=membership.role,
-                is_org_user=True,
-            )
+            org = await _get_org(membership.org_id, db)
+            role = membership.role
+            is_org_user = True
+        else:
+            # Fallback: legacy org.tier column.
+            org = (
+                await db.execute(
+                    select(Organization).where(Organization.id == membership.org_id)
+                )
+            ).scalar_one_or_none()
+            if org is not None:
+                try:
+                    tier = Tier(org.tier)
+                except ValueError:
+                    tier = Tier.TEAM
+                role = membership.role
+                is_org_user = True
 
-        # Fallback: legacy org.tier column.
-        result = await db.execute(
-            select(Organization).where(Organization.id == membership.org_id)
-        )
-        org = result.scalar_one_or_none()
-        if org:
+    if not is_org_user:
+        # Resolve user entitlement FIRST, fall back to legacy user.tier.
+        ent = await resolve_entitlement("user", user.id, db)
+        if ent is not None:
             try:
-                tier = Tier(org.tier)
+                tier = Tier(ent.tier)
             except ValueError:
-                tier = Tier.TEAM
-            return UserContext(
-                user=user,
-                effective_tier=tier,
-                org=org,
-                role=membership.role,
-                is_org_user=True,
-            )
-
-    # Resolve user entitlement FIRST, fall back to legacy user.tier.
-    ent = await resolve_entitlement("user", user.id, db)
-    if ent is not None:
-        try:
-            tier = Tier(ent.tier)
-        except ValueError:
-            tier = Tier.FREE
-        return UserContext(
-            user=user,
-            effective_tier=tier,
-            org=None,
-            role=None,
-            is_org_user=False,
-        )
-
-    # Fallback: legacy user.tier column.
-    try:
-        tier = Tier(user.tier)
-    except ValueError:
-        tier = Tier.ENTERPRISE if user.tier == "admin" else Tier.FREE
+                tier = Tier.FREE
+        else:
+            # Fallback: legacy user.tier column.
+            try:
+                tier = Tier(user.tier)
+            except ValueError:
+                tier = Tier.FREE
 
     return UserContext(
         user=user,
-        effective_tier=tier,
-        org=None,
-        role=None,
-        is_org_user=False,
+        effective_tier=apply_edition_gating(tier),
+        org=org,
+        role=role,
+        is_org_user=is_org_user,
     )
 
 
@@ -276,7 +350,11 @@ async def build_org_user_context(
         return None
     return UserContext(
         user=user,
-        effective_tier=await resolve_org_plan_tier(org_id, db),
+        # Platform admins keep Enterprise in every edition, as in
+        # get_effective_tier and build_user_context.
+        effective_tier=(
+            Tier.ENTERPRISE if user.tier == "admin" else await resolve_org_plan_tier(org_id, db)
+        ),
         org=await _get_org(org_id, db),
         role=membership.role,
         is_org_user=True,
@@ -317,21 +395,22 @@ PROJECT_SCOPED_FEATURES = frozenset(
 async def resolve_org_plan_tier(org_id: str, db: AsyncSession) -> Tier:
     """An org's plan: its active entitlement, else the legacy org.tier.
 
-    An unrecognised value maps to TEAM, as in get_user_context.
+    An unrecognised value maps to TEAM, as in get_user_context. The result
+    passes through the Community keyless chokepoint.
     """
     ent = await resolve_entitlement("org", org_id, db)
     if ent is not None:
         try:
-            return Tier(ent.tier)
+            return apply_edition_gating(Tier(ent.tier))
         except ValueError:
-            return Tier.TEAM
+            return apply_edition_gating(Tier.TEAM)
     org = await _get_org(org_id, db)
     if org is not None:
         try:
-            return Tier(org.tier)
+            return apply_edition_gating(Tier(org.tier))
         except ValueError:
-            return Tier.TEAM
-    return Tier.FREE
+            return apply_edition_gating(Tier.TEAM)
+    return apply_edition_gating(Tier.FREE)
 
 
 def raise_project_upgrade_required(feature: str, plan: Tier, project_id: str | None) -> None:
@@ -364,7 +443,7 @@ async def resolve_project_plan_tier(project: Project, db: AsyncSession) -> Tier:
         return await resolve_org_plan_tier(project.org_id, db)
     owner = await db.get(User, project.owner_id)
     if owner is None:
-        return Tier.FREE
+        return apply_edition_gating(Tier.FREE)
     return await get_effective_tier(owner, db)
 
 
@@ -496,6 +575,12 @@ async def resolve_project_plan_tiers(
                 {owner_id: tier for owner_id, tier in user_ent_rows}
             )
 
+    # Community keyless gating: the same floor rule as apply_edition_gating,
+    # applied per resolved plan. The gate is read from SFS_EDITION (no DB
+    # lookup), so a community-edition batch never touches the database just
+    # to decide the edition.
+    gate = _community_gate_enabled()
+
     def _tier(value: str | None, *, unrecognised: Tier) -> Tier:
         if value is None:
             return unrecognised
@@ -508,18 +593,23 @@ async def resolve_project_plan_tiers(
         # resolve_org_plan_tier semantics: unrecognised values map to TEAM,
         # but a missing org (deleted since selection) is FREE.
         if org_id in org_ent_tiers:
-            return _tier(org_ent_tiers[org_id], unrecognised=Tier.TEAM)
+            return _apply_community_floor(
+                _tier(org_ent_tiers[org_id], unrecognised=Tier.TEAM), gate=gate
+            )
         if org_id in org_legacy_tiers:
-            return _tier(org_legacy_tiers[org_id], unrecognised=Tier.TEAM)
-        return Tier.FREE
+            return _apply_community_floor(
+                _tier(org_legacy_tiers[org_id], unrecognised=Tier.TEAM), gate=gate
+            )
+        return _apply_community_floor(Tier.FREE, gate=gate)
 
     def owner_tier(user_id: str) -> Tier:
-        # get_effective_tier semantics: admin always ENTERPRISE; otherwise
-        # org membership first, then the user's own entitlement/tier, with
-        # an unrecognised value falling THROUGH to the next source.
+        # get_effective_tier semantics: admin always ENTERPRISE (and bypasses
+        # the Community floor); otherwise org membership first, then the
+        # user's own entitlement/tier, with an unrecognised value falling
+        # THROUGH to the next source.
         user = owners.get(user_id)
         if user is None:
-            return Tier.FREE
+            return _apply_community_floor(Tier.FREE, gate=gate)
         if user.tier == "admin":
             return Tier.ENTERPRISE
         member = primary_membership.get(user_id)
@@ -527,29 +617,29 @@ async def resolve_project_plan_tiers(
             ent_tier = org_ent_tiers.get(member.org_id)
             if ent_tier is not None:
                 try:
-                    return Tier(ent_tier)
+                    return _apply_community_floor(Tier(ent_tier), gate=gate)
                 except ValueError:
                     pass
             legacy_tier = org_legacy_tiers.get(member.org_id)
             if legacy_tier is not None:
                 try:
-                    return Tier(legacy_tier)
+                    return _apply_community_floor(Tier(legacy_tier), gate=gate)
                 except ValueError:
                     pass
         ent_tier = user_ent_tiers.get(user_id)
         if ent_tier is not None:
             try:
-                return Tier(ent_tier)
+                return _apply_community_floor(Tier(ent_tier), gate=gate)
             except ValueError:
                 pass
         try:
-            return Tier(user.tier)
+            return _apply_community_floor(Tier(user.tier), gate=gate)
         except ValueError:
-            return Tier.FREE
+            return _apply_community_floor(Tier.FREE, gate=gate)
 
     resolved: dict[str, Tier] = {}
     for project in org_projects:
-        resolved[project.id] = org_plan(project.org_id) if project.org_id else Tier.FREE
+        resolved[project.id] = org_plan(project.org_id) if project.org_id else _apply_community_floor(Tier.FREE, gate=gate)
     for project in personal_projects:
         resolved[project.id] = owner_tier(project.owner_id)
     return resolved

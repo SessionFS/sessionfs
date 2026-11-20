@@ -529,6 +529,7 @@ SWEEP_ROUTES: dict[str, str] = {
     "/api/v1/admin/sweeps/reminders-due": "reminders-due",
     "/api/v1/admin/sweeps/attention-hides": "attention-hides",
     "/api/v1/admin/sweeps/idempotency-keys": "idempotency-keys",
+    "/api/v1/admin/sweeps/review-requests": "review-requests",
     "/api/v1/admin/github-webhook-deliveries/sweep": "github-webhook-deliveries",
     "/api/v1/admin/github-webhook-deliveries/purge": "github-webhook-deliveries",
     "/api/v1/admin/skills/verify": "skills-verify",

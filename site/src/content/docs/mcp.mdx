@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 145 tools in twenty-one categories: Session, Knowledge Read, Knowledge Write, Rules, Personas, Tickets, AgentRun, Agent Feedback, Review Checklist, Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Workflow Templates, Skills Marketplace, Project Groups (Team+), Meetings and chat, Reminders, Approvals (Enterprise), External contacts, For You, and Evaluations and Lineage (Team+ for writes).
+The MCP server exposes 148 tools in twenty-two categories: Session, Knowledge Read, Knowledge Write, Rules, Personas, Tickets, AgentRun, Agent Feedback, Review Checklist, Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Workflow Templates, Skills Marketplace, Project Groups (Team+), Meetings and chat, Reminders, Approvals (Enterprise), External contacts, For You, Review requests, and Evaluations and Lineage (Team+ for writes).
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -1149,6 +1149,18 @@ People your org works with who are not SessionFS users ([External contacts](/con
 | Tool | Purpose |
 |------|---------|
 | `get_my_attention` | What needs you: the ranked For You feed across reminders, approvals, assigned tickets, Review Loop items, meeting and chat action items, knowledge changes and the weekly proof card. Filters: `band` (`now`, `your_turn`, `upcoming`, `lately`), `limit` (1–100). Service keys need `attention:read` and see only their org and project allowlist; each section also needs its own read scope (approvals need `approvals:read`) |
+
+### Review requests
+
+Ask your personal reviewer for a draft review of a pull request or merge request at an exact commit (v0.33.0). A runner you enrol pulls the request over HTTP, reviews it on your own machine with your own model key and posts the findings back; SessionFS never receives code and never runs a review itself. The runner program ships in a later release; until then a runner uses the API under `/api/v1/me/review-runners` directly. Community installations allow one active runner. User keys only: these tools only see requests you created.
+
+| Tool | Purpose |
+|------|---------|
+| `request_review` | Create (or reuse) a review request: a target (`repo`, `pr_number`, full `head_sha`, optional `provider` `github`/`gitlab` and `base_sha`) or a `ticket_id` with a linked PR, plus optional `profile` (a persona name or `default`), `budget_tokens` (default 200000) and `budget_seconds` (default 1800). The same head commit returns the existing request; a new commit replaces a pending one for the same PR and profile. Give `project_id` or `git_remote` |
+| `get_review_request` | One of your requests by id (`rvq_…`), with the draft findings and usage once finished |
+| `list_my_review_requests` | Your requests, newest first: `limit` (1–100, default 50), keyset `before` + `before_id` |
+
+Findings are DLP-scanned under the strictest policy of every org you belong to, and secrets are always redacted. CLI: `sfs review request|list|show`.
 
 ### Evaluations and Lineage
 

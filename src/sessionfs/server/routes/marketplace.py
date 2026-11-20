@@ -81,7 +81,7 @@ from sessionfs.server.services.skill_packages import (
     validate_hosted_package,
 )
 from sessionfs.server.storage.base import BlobStore
-from sessionfs.server.tier_gate import get_effective_tier
+from sessionfs.server.tier_gate import get_effective_tier, resolve_org_plan_tier
 from sessionfs.server.tiers import Tier, get_features_for_tier, get_storage_limit
 from sessionfs.skills.adapters import PROJECT_SKILL_ROOTS, USER_SKILL_ROOTS
 from sessionfs.skills import discovery as discovery_rules
@@ -1319,12 +1319,10 @@ async def _org_access(
 
 
 async def _org_tier(db: AsyncSession, org: Organization) -> Tier:
-    entitlement = await resolve_entitlement("org", org.id, db)
-    raw_tier = entitlement.tier if entitlement else org.tier
-    try:
-        return Tier(raw_tier)
-    except ValueError:
-        return Tier.ENTERPRISE if raw_tier == "admin" else Tier.FREE
+    # The org's plan goes through the chokepoint so the Community edition
+    # clamps a stored Team/Enterprise plan down to Pro exactly like every
+    # other plan resolution.
+    return await resolve_org_plan_tier(org.id, db)
 
 
 async def _org_has_feature(db: AsyncSession, org: Organization, feature: str) -> bool:

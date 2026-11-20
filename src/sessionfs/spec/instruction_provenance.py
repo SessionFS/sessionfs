@@ -189,6 +189,27 @@ def _safe_managed_output(
     return None
 
 
+def _checked_managed_output(
+    cache: dict[str, Path | None],
+    raw_path: str,
+    *,
+    scope: str,
+    project_root: Path,
+    home_dir: Path,
+) -> Path | None:
+    """`_safe_managed_output`, checked once per raw path within one state file.
+
+    The check walks every path component and is slow on Python 3.12's pathlib,
+    so a state file that repeats one output thousands of times must not pay it
+    per entry. The cache lives for a single read of one state file only.
+    """
+    if raw_path not in cache:
+        cache[raw_path] = _safe_managed_output(
+            raw_path, scope=scope, project_root=project_root, home_dir=home_dir
+        )
+    return cache[raw_path]
+
+
 def _iter_aux_files(
     root: Path,
     limit: int = 30,
@@ -276,6 +297,7 @@ def _managed_package_provenance(
             if not isinstance(packages, dict):
                 continue
             hashed_paths: dict[str, bool] = {}  # abspath -> matched expected hash
+            safe_paths: dict[str, Path | None] = {}  # raw path -> checked path
             entries_seen = 0
             bytes_hashed = 0
             budget_tripped = False
@@ -305,7 +327,8 @@ def _managed_package_provenance(
                     if not isinstance(path_raw, str) or not isinstance(expected, str):
                         drift = True
                         break
-                    safe_path = _safe_managed_output(
+                    safe_path = _checked_managed_output(
+                        safe_paths,
                         path_raw,
                         scope=scope,
                         project_root=project_root,
@@ -383,6 +406,8 @@ def _managed_output_paths(project_root: Path, home_dir: Path) -> set[Path]:
             packages = value.get("packages") if isinstance(value, dict) else None
             if not isinstance(packages, dict):
                 continue
+            safe_paths: dict[str, Path | None] = {}
+            entries_seen = 0
             for row in packages.values():
                 if not isinstance(row, dict):
                     continue
@@ -390,7 +415,11 @@ def _managed_output_paths(project_root: Path, home_dir: Path) -> set[Path]:
                     path_raw = output.get("path") if isinstance(output, dict) else None
                     if not isinstance(path_raw, str):
                         continue
-                    path = _safe_managed_output(
+                    entries_seen += 1
+                    if entries_seen > MANAGED_OUTPUT_ENTRY_CAP:
+                        break  # padded state: stop, the integrity check marks it unverified
+                    path = _checked_managed_output(
+                        safe_paths,
                         path_raw,
                         scope=scope,
                         project_root=project_root,

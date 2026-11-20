@@ -99,6 +99,7 @@ MCP_WRITE_ROUTES: dict[str, list[tuple[str, str]]] = {
     "rename_session": [("PATCH", "/api/v1/sessions/{session_id}")],
     "replay_agent_run": [("POST", f"{P}/agent-runs/{{run_id}}/replay")],
     "report_agent_run_usage": [("POST", f"{P}/agent-runs/{{run_id}}/usage")],
+    "request_review": [("POST", f"{P}/review-requests")],
     "request_skill_install": [("POST", f"{P}/skill-install-requests")],
     "resolve_ticket": [("POST", f"{T}/accept")],
     "revoke_handoff": [("POST", "/api/v1/handoffs/{handoff_id}/revoke")],

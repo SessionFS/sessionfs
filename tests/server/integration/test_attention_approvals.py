@@ -45,7 +45,7 @@ async def test_eligible_approver_sees_the_request_with_its_facts(
     rid = await _raise(db_session, w)
 
     body = await _feed(client, w.admin_key)
-    assert body["sections"]["approvals"] == {"count": 1, "error": None}
+    assert body["sections"]["approvals"] == {"count": 1, "error": None, "truncated": False}
     (it,) = _approvals(body)
     assert it["source"] == {"type": "approval_request", "id": rid}
     assert it["band"] == "now" and it["group"] == "radar"

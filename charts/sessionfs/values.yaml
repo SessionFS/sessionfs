@@ -5,6 +5,14 @@ global:
   imagePullSecrets: []
   storageClass: ""
 
+## Product edition: "community" or "enterprise".
+# Leave empty to choose automatically: "enterprise" when license.key is set
+# (licensed installs keep their plan on upgrade), otherwise "community".
+# The edition alone decides: in community every plan resolves to Pro, so
+# Team and Enterprise features are off and a stored Free/Starter plan is
+# raised to Pro. Enterprise keeps the stored plan unchanged.
+edition: ""
+
 ## API Server
 api:
   replicaCount: 2
@@ -680,7 +688,7 @@ email:
 
 ## License (self-hosted only)
 license:
-  key: ""           # Helm license key (sfs_helm_xxx) — required for self-hosted
+  key: ""           # Helm license key (sfs_helm_xxx) — optional for Community; required for Enterprise features
   server: ""        # License validation server (default: https://api.sessionfs.dev)
   mode: "cloud"     # "cloud" or "local" — cloud validates against remote server, local validates against own API
   tier: "enterprise"  # Local mode tier (ignored in cloud mode)

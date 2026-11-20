@@ -1992,6 +1992,17 @@ const FOR_YOU_SCENARIOS: Scenario[] = [
     path: '/',
     prepare: async (page) => {
       await page.getByRole('button', { name: /More context/ }).first().click();
+      await page.getByText("Why you're seeing it").first().waitFor();
+      await page.waitForTimeout(400);
+    },
+  },
+  {
+    name: 'for-you-more-context-details',
+    path: '/',
+    prepare: async (page) => {
+      await page.getByRole('button', { name: /More context/ }).first().click();
+      await page.getByText("Why you're seeing it").first().waitFor();
+      await page.locator('details.techbox > summary').first().click();
       await page.getByText('Why it ranks here').first().waitFor();
       await page.waitForTimeout(400);
     },

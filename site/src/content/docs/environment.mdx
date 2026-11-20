@@ -61,6 +61,7 @@ All SessionFS server environment variables use the `SFS_` prefix.
 |----------|-------------|---------|
 | `SFS_HOST` | Listen address | `0.0.0.0` |
 | `SFS_PORT` | Listen port | `8000` |
+| `SFS_EDITION` | Product edition: `community` (self-hosted, keyless) or `enterprise` (hosted cloud + commercial self-hosted licences). The edition alone decides: in `community` every plan resolves to Pro — Team features (review loops) and Enterprise features (session helper) are gated off while Pro features (project context) stay available. `enterprise` keeps the stored plan. Platform admins stay Enterprise. Licensed installs run as `enterprise` (the Helm chart picks it automatically when a key is set). Helm: `edition` | `enterprise` |
 | `SFS_LOG_LEVEL` | Log level for the API's own logs: `DEBUG`, `INFO`, `WARNING`, `ERROR`. Applied when the process has no other logging configuration (plain `uvicorn`); `INFO` includes one timing line per session push | `INFO` |
 | `SFS_DEPLOYMENT` | `self-hosted` on your own install; anything else means the hosted cloud service. The session helper uses it to say whether a docs page that is cloud-only or self-hosted-only applies here. The Helm chart sets `self-hosted`. | cloud |
 | `SFS_CORS_ORIGINS` | Allowed CORS origins (comma-separated) | — |

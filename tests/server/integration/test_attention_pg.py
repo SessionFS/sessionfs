@@ -38,9 +38,11 @@ async def test_feed_on_postgres() -> None:
                 feed = await svc.build_feed(db, svc.AttentionScope(user_id=me.id))
                 timings.append(time.perf_counter() - started)
             kinds = {i.kind for i in feed.items}
+            # Proposed checklist items never reach For You (anyone may accept
+            # them), so loop_checklist is gone from the expected kinds.
             assert {
                 "ticket", "reminder", "meeting_action", "knowledge_changes", "proof",
-                "loop_harmful_findings", "loop_checklist",
+                "loop_harmful_findings",
             } <= kinds
             assert all(sec["error"] is None for sec in feed.sections.values()), feed.sections
             p95 = sorted(timings)[int(len(timings) * 0.95) - 1]

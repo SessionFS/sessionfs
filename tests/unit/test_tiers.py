@@ -14,9 +14,11 @@ from sessionfs.server.tiers import (
 class TestTierFeatures:
     def test_free_has_meetings(self):
         # GitHub #116 — meetings is available on every tier, including free;
-        # agents, tickets and agent runs are on every tier since 0.29.10.
+        # agents, tickets and agent runs are on every tier since 0.29.10;
+        # review requests (one personal runner) on every tier since 0.33.0.
         assert get_features_for_tier(Tier.FREE) == {
-            "meetings", "agent_personas", "agent_tickets", "agent_runs"
+            "meetings", "agent_personas", "agent_tickets", "agent_runs",
+            "review_requests",
         }
 
     def test_tickets_and_runs_on_every_tier_review_loop_team_plus(self):

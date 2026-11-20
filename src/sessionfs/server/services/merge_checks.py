@@ -74,11 +74,16 @@ def _check_run_summary(ready: bool, reasons: list[str]) -> str:
 
 
 def _check_run_conclusion(ready: bool, verdict: Optional[dict]) -> str:
+    """Only a ready commit passes. Every other case must block a merge.
+
+    GitHub treats ``success``, ``neutral`` and ``skipped`` as passing for a
+    required status check, so a not-ready commit never gets ``neutral`` —
+    with or without a verdict (tk_8107785545e44a83). The verdict argument is
+    kept so callers don't change; the summary already explains the reason.
+    """
     if ready:
         return "success"
-    if verdict is not None:
-        return "action_required"
-    return "neutral"
+    return "action_required"
 
 
 # Bounded retry for check-run calls: up to 3 attempts with these waits

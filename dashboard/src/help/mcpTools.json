@@ -132,6 +132,15 @@
       ]
     },
     {
+      "id": "review",
+      "label": "Review requests",
+      "tools": [
+        { "name": "request_review", "desc": "Ask your personal auto-reviewer to draft a review of a pull request or merge request" },
+        { "name": "get_review_request", "desc": "Get one of your review requests, including draft findings and usage" },
+        { "name": "list_my_review_requests", "desc": "List your review requests, newest first" }
+      ]
+    },
+    {
       "id": "rules",
       "label": "Rules",
       "tools": [

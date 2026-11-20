@@ -17,9 +17,11 @@ For a pull request whose repository is reachable through a linked
 "SessionFS review loop" on the PR's head commit:
 
 - **`success`** when the head commit is ready to merge.
-- **`action_required`** when there is a trusted strict clean verdict but it is
-  not yet ready (for example the verdict is bound to an older commit).
-- **`neutral`** when there is no trusted strict clean verdict yet.
+- **`action_required`** in every other case: no trusted strict clean verdict
+  yet, or a verdict that doesn't make the commit ready (for example one bound
+  to an older commit). GitHub treats `action_required` as failing, so making
+  this check required in branch protection blocks the merge until the commit
+  is ready.
 
 Readiness is strict. For the check run to be green, all of these must hold for
 that exact commit:

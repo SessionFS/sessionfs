@@ -406,27 +406,27 @@ const FACTOR_LABEL = { band: 'Band', involvement: 'Involvement', urgency: 'Urgen
 function MoreContext({ item, id, open, api }: { item: AttentionItem; id: string; open: boolean; api: CardApi }) {
   const ctx = item.context ?? {};
   const ref = ctx.ref || item.source.id;
-  const facts: [string, string][] = [['Reference', ref], ...(ctx.facts ?? [])];
+  const facts: [string, string][] = [...(ctx.facts ?? []), ['Reference', ref]];
   const related = ctx.related ?? [];
+  const ex = ctx.explain;
   return (
     <div className={`more${open ? ' open' : ''}`} id={id} role="region" aria-label={`More context: ${item.title}`}>
       <div className="more-in">
         <div className="moregrid">
+          {ex && (
+            <dl className="explain">
+              <dt>What this is</dt><dd>{ex.what}</dd>
+              <dt>Why you're seeing it</dt><dd>{ex.why}</dd>
+              <dt>If you act</dt><dd>{ex.act}</dd>
+              <dt>Where it came from</dt><dd>{ex.from}</dd>
+            </dl>
+          )}
           {ctx.quote && ctx.quote.text && (
             <blockquote className="quote more-quote">
               <cite>{ctx.quote.by}</cite>
               <p>{ctx.quote.text}</p>
             </blockquote>
           )}
-          <div>
-            <div className="h6">Details</div>
-            <dl className="facts">
-              {facts.map(([k, v], i) => (
-                <FactRow key={i} label={k} value={v} />
-              ))}
-
-            </dl>
-          </div>
           <div>
             <div className="h6">Related <span>{related.length}</span></div>
             {related.length === 0 ? (
@@ -443,6 +443,13 @@ function MoreContext({ item, id, open, api }: { item: AttentionItem; id: string;
               </ul>
             )}
           </div>
+          <details className="techbox">
+            <summary tabIndex={open ? 0 : -1}>Details</summary>
+            <dl className="facts">
+              {facts.map(([k, v], i) => (
+                <FactRow key={i} label={k} value={v} />
+              ))}
+            </dl>
           <div className="rankbox">
             <div className="h6">Why it ranks here</div>
             <ol className="rank">
@@ -459,6 +466,7 @@ function MoreContext({ item, id, open, api }: { item: AttentionItem; id: string;
             </ol>
             <p className="foot">Fixed rules, in this order. No learned weighting.</p>
           </div>
+          </details>
         </div>
       </div>
     </div>

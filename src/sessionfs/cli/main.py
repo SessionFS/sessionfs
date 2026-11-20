@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import typer
 
+from sessionfs.features import register_cli
+
 app = typer.Typer(
     name="sfs",
     help="SessionFS — Portable AI coding sessions.",
@@ -91,6 +93,7 @@ from sessionfs.cli.cmd_policy import policy_app
 from sessionfs.cli.cmd_resident import resident_app
 from sessionfs.cli.cmd_helper import helper_app
 from sessionfs.cli.cmd_loop import loop_app
+from sessionfs.cli.cmd_review import review_app
 from sessionfs.cli.cmd_workflow import workflow_app
 from sessionfs.cli.cmd_eval import artifact_app, eval_app
 from sessionfs.cli.cmd_release import release_app
@@ -146,6 +149,9 @@ app.add_typer(helper_app, name="helper")
 # Register the review-loop watch + merge-readiness commands (Review Loop B2)
 app.add_typer(loop_app, name="loop")
 
+# Register the personal auto-reviewer commands (Auto-reviewer P1)
+app.add_typer(review_app, name="review")
+
 # Register the record-only workflow template commands (GitHub #120)
 app.add_typer(workflow_app, name="workflow")
 
@@ -192,6 +198,9 @@ app.command("delete")(handle_errors(delete_session_cmd))
 app.command("attention")(handle_errors(attention_cmd))
 app.command("trash")(handle_errors(trash_cmd))
 app.command("restore")(handle_errors(restore_cmd))
+
+# Enterprise extension seam: no-op unless sessionfs_ee is installed.
+register_cli(app)
 
 
 def cli_main() -> None:

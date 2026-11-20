@@ -95,6 +95,20 @@ describe('For You page', { timeout: 30_000 }, () => {
     expect(await axe(container)).toHaveNoViolations();
   }, 240_000);
 
+  it('More context leads with a plain explanation, details tucked away', async () => {
+    renderPage();
+    const card = (await screen.findByRole('link', { name: /Share list shows/ })).closest('article')!;
+    fireEvent.click(within(card).getByRole('button', { name: /More context/ }));
+    const region = within(card).getByRole('region', { name: /More context/ });
+    expect(within(region).getByText('Why you\'re seeing it')).toBeInTheDocument();
+    expect(within(region).getByText('This ticket is assigned to you.')).toBeInTheDocument();
+    // The record id and ranking table sit behind the closed Details toggle.
+    const details = region.querySelector('details.techbox')!;
+    expect(details).not.toBeNull();
+    expect(details.hasAttribute('open')).toBe(false);
+    expect(details).toContainElement(within(region).getByText('Why it ranks here'));
+  });
+
   it('More context opens details, related cards and why it ranks here', async () => {
     renderPage();
     const card = (await screen.findByRole('link', { name: /Share list shows/ })).closest('article')!;

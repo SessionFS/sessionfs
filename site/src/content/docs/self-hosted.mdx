@@ -16,6 +16,20 @@ SessionFS can be deployed to any Kubernetes cluster using the official Helm char
 - **PostgreSQL** -- Built-in or external database
 - **Blob Storage** -- Local PVC, Amazon S3, or Google Cloud Storage
 
+## Editions
+
+SessionFS comes in two editions (v0.33.0). The Helm `edition` value (`SFS_EDITION` on the API and MCP server) chooses which one runs.
+
+| | Community | Enterprise |
+|---|---|---|
+| Licence | Open source, Apache-2.0 (0.32.x and earlier were MIT) | Commercial licence |
+| Licence key | Not needed | Your licence key, for self-hosted installs |
+| Plans | Every account gets the Pro features; Team features (such as review loops) and Enterprise features (such as the session helper) are off | Each account keeps its own plan |
+| Review runners | One active runner per installation | As many as the licence allows |
+| Who runs it | Self-hosted, built from the public source | The hosted cloud and licensed self-hosted installs |
+
+Leave `edition` empty and the chart chooses for you: `enterprise` when `license.key` is set, otherwise `community`. Set it to `community` or `enterprise` to choose explicitly; any other value stops the render. Platform admins have Enterprise features in both editions. Outside Helm, an unset `SFS_EDITION` means `enterprise`, so set `community` yourself when you run the containers without a licence key. See [Environment Variables](/environment/).
+
 ## Prerequisites
 
 - Kubernetes 1.26 or later
@@ -395,6 +409,8 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 
 **Upgrading to v0.32.0** runs migration 138 (`deferred_jobs`; additive). Work the API used to start after sending a response (merge check rechecks, knowledge extraction after a push, Jira delivery, GitHub pull request webhook follow-ups and GitLab merge request comments) is now recorded durably and finished by the existing sweeps if the server restarts, so schedule the GitHub webhook + uploads sweep (every 5 minutes), the Jira sync sweep and the KB compile sweep; the chart's new opt-in `api.githubWebhookSweep` CronJob covers the first. `SFS_POST_RESPONSE_TASKS=off` leaves that work entirely to the sweeps (see [Environment Variables](/environment/)). The API now trusts `X-Forwarded-For` only from the proxies in `SFS_TRUSTED_PROXIES` (Helm `api.trustedProxies`, default `[private]`); without it every request counts as coming from the direct peer. See [Client IP behind a proxy](#client-ip-behind-a-proxy). Auditing a large session now runs inside the request; raise your proxy timeouts as described in [Session audit time limit](#session-audit-time-limit). The chart also adds opt-in CronJobs for skills rescan, catalog regenerate, marketplace freshness and publisher re-check (see [Scheduled sweeps](#scheduled-sweeps)).
 
+**Upgrading to v0.33.0** runs migration 139 (review requests and review runners; additive) and introduces [editions](#editions). A chart upgrade with `license.key` set runs as `enterprise` and nothing changes. Without a licence key it now runs as `community`: every account gets the Pro features and Team and Enterprise features (review loops, the session helper, approvals and the rest) switch off, so set your licence key before upgrading if you rely on them. If anyone enrols a review runner, schedule the review-requests sweep (see [Scheduled sweeps](#scheduled-sweeps)). The source is licensed under Apache-2.0 from this release.
+
 **Upgrading to v0.29.14** runs migrations 131 (`artifacts`, `artifact_edges`, `artifact_tags`), 132 (`eval_suites`, `eval_cases`, `artifact_family_requirements`) and 133 (`eval_runs`, `eval_case_results`, `agent_runs.eval_run_id` and the `grader` run role); all are additive. API keys gain the `evals:read`, `evals:write`, `artifacts:read` and `artifacts:write` scopes. To clear eval outputs past their retention (180 days by default), call `POST /api/v1/admin/sweeps/eval-outputs` daily with a `platform_sweeps:run` key, or enable the chart's opt-in `api.evalOutputs` CronJob. A project holding evaluation or artifact data can't be merged yet.
 
 **Upgrading to v0.29.13** runs migration 130 (the `external_contacts` and `external_contact_aliases` tables, `meeting_participants.contact_id` with the `contact` resolution, and `tickets.assigned_contact_id`); it is additive, and a downgrade turns contact-resolved participants back into unresolved ones. API keys gain the `contacts:read` and `contacts:write` scopes. To sweep old contacts, set the org's contact retention and call `POST /api/v1/admin/sweeps/contact-retention` with a `platform_sweeps:run` key; it does nothing for orgs that leave retention off.
@@ -692,6 +708,7 @@ Since v0.28.0 this is visible up front: minting or rotating such a key returns a
 | Meeting retention | `POST /api/v1/admin/sweeps/meeting-retention` | Deletes stored meeting transcripts older than the org's `meeting_retention_days` (default 180) and meetings deleted more than 30 days ago, together with their participants and action items (v0.29.0). See [Meetings](/meetings/) |
 | For You hides | `POST /api/v1/admin/sweeps/attention-hides` | Deletes For You hides and snoozes older than 90 days in bounded batches (`batch_size`, default 1000, max 5000); idempotent, run it daily (v0.29.8). See [For You](/for-you/) |
 | Idempotency keys | `POST /api/v1/admin/sweeps/idempotency-keys` | Deletes stored `Idempotency-Key` responses older than 24 hours in bounded batches (`batch_size`, default 1000, max 5000); idempotent, run it hourly. See [Idempotent requests](/api/#idempotent-requests) |
+| Review requests | `POST /api/v1/admin/sweeps/review-requests` | Puts a claimed review request whose runner lease has lapsed back in the queue so a crashed runner's work is picked up again; after three attempts the request is marked failed (`expired`). Idempotent; run it every few minutes if anyone enrols a review runner (v0.33.0). See [`sfs review`](/cli/#sfs-review) |
 | Confluence publish | `POST /api/v1/admin/sweeps/confluence-publish` | Republishes opted-in wiki pages and, where the mapping allows it, the context document; unchanged pages are skipped and pages edited in Confluence are never overwritten (v0.26.0). See [Confluence Cloud](/integrations/confluence/) |
 | GitHub webhook + uploads | `POST /api/v1/admin/github-webhook-deliveries/sweep` | Retries failed GitHub App webhook deliveries, republishes PR comments that fell behind, prunes stored deliveries (30 days), deletes spent GitHub claim attempts, and aborts expired multipart session uploads with their staged parts. A service key may only set `retry_limit` |
 | Marketplace freshness | `POST /api/v1/admin/marketplace/freshness/sweep` | Recomputes stale / unmaintained flags, last-updated dates and ranking inputs, and prunes install-count dedupe rows older than 30 days |

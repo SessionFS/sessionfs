@@ -77,7 +77,7 @@ jobs:
           echo "install.sh files are in sync."
 
   dashboard:
-    name: Dashboard palette
+    name: Dashboard palette and edition
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -87,6 +87,12 @@ jobs:
       - name: Check for hard-coded colours
         working-directory: dashboard
         run: npm run check:palette
+      - name: Install dashboard dependencies
+        working-directory: dashboard
+        run: npm ci
+      - name: Community bundle carries no Enterprise code
+        working-directory: dashboard
+        run: npm run check:edition
 
   security:
     name: Dependency Audit

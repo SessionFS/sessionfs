@@ -46,6 +46,12 @@ export const fyItems: AttentionItem[] = [
     link: `/projects/${FY_PROJECT}?tab=work&sub=loop&story=tk_5d2a48eed3ab4446`,
     context: {
       source_label: 'Review loop', ref: 'tk_5d2a48eed3ab4446', project_name: 'Acme Widgets', harm: 'harmful',
+      explain: {
+        what: '“Share list shows the creator’s email” has 1 harmful review finding open on feat/rl-0294.',
+        why: 'This ticket is assigned to you.',
+        act: 'Fix the finding and push; the next review round can clear it.',
+        from: 'Review loop for ‘Share list’ in Acme Widgets.',
+      },
       facts: [['Branch', 'feat/rl-0294'], ['Head commit', 'a71c09e'], ['Round', '4'], ['Harmful open', '1']],
       people: [{ name: 'You', role: 'assignee', agent: false, you: true }],
       related: [{ item_key: 'fy_ticket1', title: 'Rotated service keys keep the original member’s identity', ref: 'tk_e540d17057a84d14', group: 'waiting' }],

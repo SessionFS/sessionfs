@@ -73,6 +73,7 @@ class AttentionCounts(BaseModel):
 class AttentionSection(BaseModel):
     count: int
     error: str | None = None
+    truncated: bool = False
 
 
 class ChyronEntry(BaseModel):

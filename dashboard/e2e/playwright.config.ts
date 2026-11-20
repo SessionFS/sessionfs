@@ -33,5 +33,7 @@ export default defineConfig({
     url: `http://127.0.0.1:${PORT}`,
     reuseExistingServer: true,
     timeout: 60_000,
+    // A develop checkout has src/ee/ and vite refuses to guess the edition.
+    env: { VITE_SFS_EDITION: process.env.VITE_SFS_EDITION || 'community' },
   },
 });

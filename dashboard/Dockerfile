@@ -7,6 +7,9 @@ ARG VITE_API_URL=/api
 ENV VITE_API_URL=$VITE_API_URL
 ARG SFS_VERSION=dev
 ENV SFS_VERSION=$SFS_VERSION
+# Required when src/ee/ is in the build context (see vite.config.ts).
+ARG VITE_SFS_EDITION
+ENV VITE_SFS_EDITION=${VITE_SFS_EDITION}
 RUN npm run build
 
 FROM nginx:alpine

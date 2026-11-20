@@ -251,7 +251,9 @@ async def test_feed_lists_every_source_and_ranks_bands(client: AsyncClient, db_s
     direct = await _ticket(db_session, p, me, assigned_user_id=me.id, priority="high",
                            due=NOW.date() - timedelta(days=1))
     via_persona = await _ticket(db_session, op, other, assigned_to="Atlas")
-    await _ticket(db_session, p, me, assigned_user_id=other.id)  # not mine
+    # Created by me, waiting on bob: a Worth a second look card (CEO
+    # 2026-11-18), never one of my own Waiting on you tickets.
+    delegated = await _ticket(db_session, p, me, assigned_user_id=other.id)
     await _ticket(db_session, p, me, assigned_user_id=me.id, status="done")  # not actionable
     await _reminder(db_session, me, due=NOW - timedelta(hours=1))
     await _reminder(db_session, me, due=NOW + timedelta(days=5), title="later")  # coming up
@@ -264,8 +266,15 @@ async def test_feed_lists_every_source_and_ranks_bands(client: AsyncClient, db_s
     kinds = _kinds(body)
     assert kinds[0] == "reminder"
     assert set(kinds) == {"reminder", "ticket", "meeting_action", "knowledge_changes", "proof"}
-    tickets = [i for i in body["items"] if i["kind"] == "ticket"]
+    tickets = [
+        i for i in body["items"] if i["kind"] == "ticket" and i["involvement"] != "owner"
+    ]
     assert {i["source"]["id"] for i in tickets} == {direct.id, via_persona.id}
+    waiting_on_others = [
+        i for i in body["items"] if i["kind"] == "ticket" and i["involvement"] == "owner"
+    ]
+    assert [i["source"]["id"] for i in waiting_on_others] == [delegated.id]
+    assert waiting_on_others[0]["group"] == "second"
     # The overdue high-priority direct ticket ranks before the persona one.
     assert tickets[0]["source"]["id"] == direct.id
     assert "Assigned to you" in tickets[0]["why"] and "overdue" in tickets[0]["why"]
@@ -273,20 +282,22 @@ async def test_feed_lists_every_source_and_ranks_bands(client: AsyncClient, db_s
     assert tickets[0]["link"].endswith(f"ticket={direct.id}")
     assert [i["band"] for i in body["items"]][-2:] == ["lately", "lately"]
     assert body["counts"] == {
-        "now": 1, "your_turn": 3, "upcoming": 1, "lately": 2, "total": 7, "actionable": 3,
+        "now": 1, "your_turn": 3, "upcoming": 2, "lately": 2, "total": 8, "actionable": 3,
     }
-    assert body["sections"]["tickets"] == {"count": 2, "error": None}
-    assert body["sections"]["approvals"] == {"count": 0, "error": None}
+    # Two of my tickets plus the one I created that waits on bob; the badge
+    # (actionable) is unchanged by it.
+    assert body["sections"]["tickets"] == {"count": 3, "error": None, "truncated": False}
+    assert body["sections"]["approvals"] == {"count": 0, "error": None, "truncated": False}
     assert all(i["item_key"].startswith("fy_") and direct.id not in i["item_key"]
                for i in body["items"])
 
     only_now = await _feed(client, key, band="now")
     assert _kinds(only_now) == ["reminder"]
-    assert only_now["counts"]["total"] == 7
+    assert only_now["counts"]["total"] == 8
 
     count = await client.get("/api/v1/me/for-you/count", headers=_h(key))
     assert count.json() == {
-        "now": 1, "your_turn": 3, "upcoming": 1, "lately": 2, "total": 7, "actionable": 3,
+        "now": 1, "your_turn": 3, "upcoming": 2, "lately": 2, "total": 8, "actionable": 3,
     }
 
 
@@ -462,8 +473,8 @@ async def test_slow_or_broken_provider_is_a_section_error(
     # cancelling one mid-query would invalidate the shared test connection.
     monkeypatch.setattr(svc, "PROVIDER_TIMEOUT_S", 1.0)
     body = await _feed(client, key)
-    assert body["sections"]["knowledge_changes"] == {"count": 0, "error": "couldn't load"}
-    assert body["sections"]["proof"] == {"count": 0, "error": "couldn't load"}
+    assert body["sections"]["knowledge_changes"] == {"count": 0, "error": "couldn't load", "truncated": False}
+    assert body["sections"]["proof"] == {"count": 0, "error": "couldn't load", "truncated": False}
     assert _kinds(body) == ["ticket"]
 
 
@@ -635,8 +646,11 @@ async def test_no_n_plus_one_with_every_provider_active(db_engine, db_session: A
     finally:
         event.remove(db_engine.sync_engine, "before_cursor_execute", _capture)
     kinds = {i.kind for i in f3.items}
+    # Proposed checklist items are anyone's to accept, so they no longer
+    # appear in For You (see provide_loop_needs_you); the loop feed only
+    # keeps ready/needs-human children the caller started or is assigned to.
     assert {"ticket", "reminder", "meeting_action", "knowledge_changes", "proof",
-            "loop_harmful_findings", "loop_checklist"} <= kinds
+            "loop_harmful_findings"} <= kinds
     assert len(f3.items) > len(f1.items)
     # Every provider is grouped: 3x the projects and items, same statements.
     assert n1 == n3, (n1, n3)

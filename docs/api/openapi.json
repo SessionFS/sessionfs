@@ -2543,6 +2543,11 @@
               }
             ],
             "title": "Error"
+          },
+          "truncated": {
+            "default": false,
+            "title": "Truncated",
+            "type": "boolean"
           }
         },
         "required": [
@@ -3911,6 +3916,20 @@
           "tool"
         ],
         "title": "ClaimRequest",
+        "type": "object"
+      },
+      "ClaimReviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "runner_id": {
+            "title": "Runner Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "runner_id"
+        ],
+        "title": "ClaimReviewRequest",
         "type": "object"
       },
       "CohortBody": {
@@ -5542,6 +5561,121 @@
         "title": "CreateProviderRequest",
         "type": "object"
       },
+      "CreateReviewRequest": {
+        "additionalProperties": false,
+        "description": "Create a draft review. Either a target (repo/pr/head) or a ticket that\nhas a linked PR supplies the target.",
+        "properties": {
+          "base_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Base Sha"
+          },
+          "budget_seconds": {
+            "anyOf": [
+              {
+                "maximum": 86400.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Seconds"
+          },
+          "budget_tokens": {
+            "anyOf": [
+              {
+                "maximum": 2000000.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Budget Tokens"
+          },
+          "head_sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Head Sha"
+          },
+          "mode": {
+            "const": "draft_for_me",
+            "default": "draft_for_me",
+            "title": "Mode",
+            "type": "string"
+          },
+          "pr_number": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pr Number"
+          },
+          "profile": {
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Profile",
+            "type": "string"
+          },
+          "provider": {
+            "default": "github",
+            "enum": [
+              "github",
+              "gitlab"
+            ],
+            "title": "Provider",
+            "type": "string"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Repo"
+          },
+          "ticket_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ticket Id"
+          }
+        },
+        "required": [
+          "profile"
+        ],
+        "title": "CreateReviewRequest",
+        "type": "object"
+      },
       "CreateShareLinkRequest": {
         "properties": {
           "expires_in_hours": {
@@ -6203,6 +6337,41 @@
           "enforced"
         ],
         "title": "EnforcementToggleRequest",
+        "type": "object"
+      },
+      "EnrolRunnerRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "default": "local",
+            "enum": [
+              "local",
+              "ci"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "project_ids": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Project Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "project_ids"
+        ],
+        "title": "EnrolRunnerRequest",
         "type": "object"
       },
       "EvidenceSnippet": {
@@ -8193,6 +8362,25 @@
           "total_compilations"
         ],
         "title": "HealthResponse",
+        "type": "object"
+      },
+      "HeartbeatReviewRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "lease_epoch": {
+            "title": "Lease Epoch",
+            "type": "integer"
+          },
+          "runner_id": {
+            "title": "Runner Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "runner_id",
+          "lease_epoch"
+        ],
+        "title": "HeartbeatReviewRequest",
         "type": "object"
       },
       "HelmValidateRequest": {
@@ -27027,6 +27215,54 @@
         ]
       }
     },
+    "/api/v1/admin/sweeps/review-requests": {
+      "post": {
+        "description": "Expire claimed review requests whose lease has lapsed (P1a).\n\nA claimed request past ``lease_expires_at`` goes back to ``queued`` so a\ncrashed runner's work becomes visible again, unless it already used three\nattempts (tracked by ``lease_epoch``), in which case it is marked\n``failed`` with ``error='expired'``. Idempotent; safe to run repeatedly.\nAccepts a platform-admin user key or a ``platform_sweeps:run`` service key.",
+        "operationId": "sweep_review_requests_admin_api_v1_admin_sweeps_review_requests_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "anyOf": [
+                  {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ],
+                "title": "Body"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sweep Review Requests Admin",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/api/v1/admin/sweeps/ticket-notifications": {
       "post": {
         "description": "Email users about watched tickets that changed (ticket watchers).\n\nAccepts a platform-admin user key or a ``platform_sweeps:run`` service\nkey (the scheduled job). Selects unread, un-emailed notifications older\nthan 10 minutes and sends each user ONE digest email. Access is re-checked\nper row against the ticket's current project, so a user who lost access\nsince the notification was written is never emailed its content. Per-user\n``ticket_email`` (off | your_turn | all, default your_turn) gates delivery:\n``off`` never emails, ``your_turn`` only emails when at least one pending\nnotification is a your_turn, ``all`` emails every batch. Recipients are\nmasked in logs. Idempotent via ``emailed_at IS NULL`` rowcount guards.",
@@ -32861,6 +33097,238 @@
         "summary": "Snooze Reminder",
         "tags": [
           "reminders"
+        ]
+      }
+    },
+    "/api/v1/me/review-requests": {
+      "get": {
+        "description": "My review requests, newest first, keyset-paged on (created_at, id).\n\nRows in projects the requester can no longer read are hidden — losing\nproject access revokes access to stored drafts.",
+        "operationId": "list_review_requests_api_v1_me_review_requests_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before"
+            }
+          },
+          {
+            "in": "query",
+            "name": "before_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Before Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Review Requests",
+        "tags": [
+          "review-requests"
+        ]
+      }
+    },
+    "/api/v1/me/review-runners": {
+      "get": {
+        "description": "All of my runners, newest first.",
+        "operationId": "list_my_runners_api_v1_me_review_runners_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List My Runners",
+        "tags": [
+          "review-runners"
+        ]
+      },
+      "post": {
+        "description": "Enrol my runner. Idempotent: an existing active runner is returned.",
+        "operationId": "enrol_runner_api_v1_me_review_runners_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EnrolRunnerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Enrol Runner",
+        "tags": [
+          "review-runners"
+        ]
+      }
+    },
+    "/api/v1/me/review-runners/{runner_id}/next": {
+      "get": {
+        "description": "The owner's oldest claimable request within this runner's projects.\n\nPoll with ``If-None-Match`` — no new work answers 304. \"Claimable\" is\n``queued`` or a ``claimed`` row whose lease has expired (a crashed\nrunner's work becomes visible again). ``last_seen_at`` is refreshed at\nmost once a minute.",
+        "operationId": "next_review_request_api_v1_me_review_runners__runner_id__next_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runner_id",
+            "required": true,
+            "schema": {
+              "title": "Runner Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "If-None-Match"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Next Review Request",
+        "tags": [
+          "review-runners"
+        ]
+      }
+    },
+    "/api/v1/me/review-runners/{runner_id}/retire": {
+      "post": {
+        "description": "Retire an active runner so it stops polling (204 when already retired).",
+        "operationId": "retire_runner_api_v1_me_review_runners__runner_id__retire_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runner_id",
+            "required": true,
+            "schema": {
+              "title": "Runner Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Retire Runner",
+        "tags": [
+          "review-runners"
         ]
       }
     },
@@ -51303,6 +51771,57 @@
         ]
       }
     },
+    "/api/v1/projects/{project_id}/review-requests": {
+      "post": {
+        "description": "Create (or reuse) a personal review request.\n\nThe idempotency key is ``(project_id, requester_user_id, provider, repo,\nhead_sha, profile, instructions_version, mode, COALESCE(pr_number, 0))``:\nrequesting the same target twice returns the same live row, and two\ndistinct PRs sharing a head sha are distinct targets. A new head for the\nsame (provider, repo, pr, profile) supersedes older ``queued``/``claimed``\nrows atomically.",
+        "operationId": "create_review_request_api_v1_projects__project_id__review_requests_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Review Request",
+        "tags": [
+          "review-requests"
+        ]
+      }
+    },
     "/api/v1/projects/{project_id}/rules": {
       "get": {
         "description": "Fetch canonical rules for a project. Creates a default row on first read.",
@@ -55780,6 +56299,523 @@
         "summary": "Get Retrieval Audit Context Events",
         "tags": [
           "retrieval-audit"
+        ]
+      }
+    },
+    "/api/v1/review-requests/{request_id}": {
+      "get": {
+        "operationId": "get_review_request_api_v1_review_requests__request_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Review Request",
+        "tags": [
+          "review-requests"
+        ]
+      }
+    },
+    "/api/v1/review-requests/{request_id}/claim": {
+      "post": {
+        "description": "Atomically claim a queued (or expired-lease) request for a runner.\n\nThe guarded UPDATE returns rowcount 1 only when the row is still pending\nand unleased; a concurrent claim (or a finish) leaves rowcount 0 → 409.",
+        "operationId": "claim_review_request_api_v1_review_requests__request_id__claim_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClaimReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Claim Review Request",
+        "tags": [
+          "review-requests"
+        ]
+      }
+    },
+    "/api/v1/review-requests/{request_id}/finish": {
+      "post": {
+        "description": "Finish a claimed request with findings and usage.\n\nFenced on (runner, lease_epoch, head_sha, expiry): a wrong head is a 409\n``head_mismatch``; a stale epoch, wrong runner or expired lease is a 409\n``lease_superseded``. Either way nothing is stored.",
+        "operationId": "finish_review_request_api_v1_review_requests__request_id__finish_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": false,
+                "properties": {
+                  "cache_read_tokens": {
+                    "anyOf": [
+                      {
+                        "maximum": 1000000000000,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Cache Read Tokens"
+                  },
+                  "cache_write_tokens": {
+                    "anyOf": [
+                      {
+                        "maximum": 1000000000000,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Cache Write Tokens"
+                  },
+                  "cost_basis": {
+                    "anyOf": [
+                      {
+                        "enum": [
+                          "reported",
+                          "estimated",
+                          "plan",
+                          "unknown"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Cost Basis"
+                  },
+                  "cost_usd": {
+                    "anyOf": [
+                      {
+                        "maximum": 999999,
+                        "minimum": 0,
+                        "type": "number"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Cost Usd"
+                  },
+                  "coverage": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": false,
+                        "properties": {
+                          "incomplete": {
+                            "default": false,
+                            "title": "Incomplete",
+                            "type": "boolean"
+                          },
+                          "reason": {
+                            "anyOf": [
+                              {
+                                "maxLength": 500,
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "title": "Reason"
+                          },
+                          "reviewed_files": {
+                            "items": {
+                              "maxLength": 512,
+                              "minLength": 1,
+                              "type": "string"
+                            },
+                            "maxItems": 2000,
+                            "title": "Reviewed Files",
+                            "type": "array"
+                          },
+                          "skipped_files": {
+                            "items": {
+                              "additionalProperties": false,
+                              "description": "A file the reviewer chose to skip, with a bounded reason.",
+                              "properties": {
+                                "path": {
+                                  "maxLength": 512,
+                                  "minLength": 1,
+                                  "title": "Path",
+                                  "type": "string"
+                                },
+                                "reason": {
+                                  "maxLength": 200,
+                                  "minLength": 1,
+                                  "title": "Reason",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "path",
+                                "reason"
+                              ],
+                              "title": "SkippedFile",
+                              "type": "object"
+                            },
+                            "maxItems": 2000,
+                            "title": "Skipped Files",
+                            "type": "array"
+                          }
+                        },
+                        "title": "ReviewCoverage",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "error": {
+                    "anyOf": [
+                      {
+                        "maxLength": 200,
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Error"
+                  },
+                  "findings": {
+                    "items": {
+                      "additionalProperties": false,
+                      "description": "One finding. ``class`` is an optional slug; ``message`` is DLP-scanned.",
+                      "properties": {
+                        "class": {
+                          "anyOf": [
+                            {
+                              "maxLength": 64,
+                              "type": "string"
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ],
+                          "title": "Class"
+                        },
+                        "line": {
+                          "minimum": 1,
+                          "title": "Line",
+                          "type": "integer"
+                        },
+                        "message": {
+                          "maxLength": 2000,
+                          "minLength": 1,
+                          "title": "Message",
+                          "type": "string"
+                        },
+                        "path": {
+                          "maxLength": 512,
+                          "minLength": 1,
+                          "title": "Path",
+                          "type": "string"
+                        },
+                        "severity": {
+                          "enum": [
+                            "critical",
+                            "high",
+                            "medium",
+                            "low",
+                            "info"
+                          ],
+                          "title": "Severity",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "line",
+                        "severity",
+                        "message"
+                      ],
+                      "title": "ReviewFindingIn",
+                      "type": "object"
+                    },
+                    "title": "Findings",
+                    "type": "array"
+                  },
+                  "head_sha": {
+                    "title": "Head Sha",
+                    "type": "string"
+                  },
+                  "input_tokens": {
+                    "anyOf": [
+                      {
+                        "maximum": 1000000000000,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Input Tokens"
+                  },
+                  "lease_epoch": {
+                    "title": "Lease Epoch",
+                    "type": "integer"
+                  },
+                  "output_tokens": {
+                    "anyOf": [
+                      {
+                        "maximum": 1000000000000,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "title": "Output Tokens"
+                  },
+                  "runner_id": {
+                    "title": "Runner Id",
+                    "type": "string"
+                  },
+                  "verdict": {
+                    "enum": [
+                      "clean",
+                      "findings",
+                      "incomplete"
+                    ],
+                    "title": "Verdict",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "runner_id",
+                  "lease_epoch",
+                  "head_sha",
+                  "verdict"
+                ],
+                "title": "FinishReviewRequest",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finish Review Request",
+        "tags": [
+          "review-requests"
+        ]
+      }
+    },
+    "/api/v1/review-requests/{request_id}/heartbeat": {
+      "post": {
+        "description": "Extend the lease of a claim the caller's runner holds.",
+        "operationId": "heartbeat_review_request_api_v1_review_requests__request_id__heartbeat_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HeartbeatReviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Heartbeat Review Request",
+        "tags": [
+          "review-requests"
+        ]
+      }
+    },
+    "/api/v1/review-requests/{request_id}/packet": {
+      "get": {
+        "description": "The review packet, fenced on the caller's runner and lease.\n\n``paths`` is a comma-separated list of changed paths (capped at 500);\ncontext sections and KB claims are ranked by overlap with those paths.",
+        "operationId": "get_review_packet_api_v1_review_requests__request_id__packet_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "runner_id",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "title": "Runner Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "lease_epoch",
+            "required": true,
+            "schema": {
+              "minimum": 1,
+              "title": "Lease Epoch",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "paths",
+            "required": false,
+            "schema": {
+              "default": "",
+              "title": "Paths",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Review Packet",
+        "tags": [
+          "review-requests"
         ]
       }
     },

@@ -15,7 +15,7 @@ import logging
 import re
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import quote
 
 from mcp.server import Server
@@ -34,6 +34,7 @@ from sessionfs.server.schemas.agent_feedback import (
 from sessionfs.skills.models import SUPPORTED_TOOLS as SUPPORTED_SKILL_TOOLS
 from sessionfs.skills.models import validate_device_id
 from sessionfs.store.local import LocalStore
+from sessionfs.features import register_mcp_tools
 
 from sessionfs.mcp.path_safety import _path_segment, _strict_repository_identifier
 
@@ -4269,12 +4270,101 @@ _TOOLS = [
             "required": ["contact_id"],
         },
     ),
+    Tool(
+        name="request_review",
+        description=(
+            "Ask your personal auto-reviewer to draft a review of one pull "
+            "request / merge request. Creates (or reuses) a draft_for_me "
+            "review request; a new head_sha supersedes any still-pending "
+            "request for the same repo, PR and profile. The requester's own "
+            "runner then polls and posts the findings. Give a target "
+            "(repo + pr_number + head_sha) or a ticket_id with a linked PR. "
+            "Provide `project_id` directly, or a `git_remote` to resolve the "
+            "project from the current repo.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs review request` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "project_id": {"type": "string", "description": "Project id (proj_...). Required unless git_remote resolves one."},
+                "ticket_id": {"type": "string", "description": "Linked ticket id (tk_...); when given without a target, the target comes from the ticket's newest linked PR."},
+                "provider": {"type": "string", "enum": ["github", "gitlab"], "description": "Default github."},
+                "repo": {"type": "string", "description": "Repository slug (owner/repo)."},
+                "pr_number": {"type": "integer", "description": "Pull request / merge request number."},
+                "head_sha": {"type": "string", "description": "Full 40- or 64-char head commit SHA."},
+                "base_sha": {"type": "string", "description": "Optional full base commit SHA."},
+                "profile": {"type": "string", "description": "Reviewer profile: a persona name or 'default' (default)."},
+                "budget_tokens": {"type": "integer", "description": "Optional token budget (default 200000)."},
+                "budget_seconds": {"type": "integer", "description": "Optional time budget in seconds (default 1800)."},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": [],
+        },
+    ),
+    Tool(
+        name="get_review_request",
+        description=(
+            "Get one of your review requests by id, including the draft "
+            "findings and usage once finished. Read-only; scoped to requests "
+            "the authenticated user created.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs review show` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "request_id": {"type": "string", "description": "Review request id (rvq_...)."},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+            "required": ["request_id"],
+        },
+    ),
+    Tool(
+        name="list_my_review_requests",
+        description=(
+            "List your review requests, newest first, keyset-paged. Read-only; "
+            "scoped to the authenticated user's own requests.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs review list` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "description": "Page size 1-100 (default 50)."},
+                "before": {"type": "string", "description": "Keyset cursor (ISO-8601 datetime)."},
+                "before_id": {"type": "string", "description": "Keyset cursor id."},
+                "git_remote": {"type": "string", "description": _GIT_REMOTE_DESCRIPTION},
+            },
+        },
+    ),
 ]
+
+
+# Enterprise extension seam: tools registered by sessionfs_ee via the
+# ``register_mcp_tools`` hook. Kept separate from ``_TOOLS`` so the Community
+# tool count stays unchanged when the Enterprise package is absent.
+_EXTRA_TOOLS: list[Tool] = []
+_EXTRA_HANDLERS: dict[str, Callable[..., Any]] = {}
+
+
+def add_tool(tool: Tool, handler: Callable[..., Any]) -> None:
+    """Register an Enterprise-provided MCP tool and its dispatch handler.
+
+    Refuses a name that collides with a Community tool or an already
+    registered Enterprise tool: ``call_tool`` dispatches by name, so a silent
+    overwrite here would let an Enterprise tool shadow a Community one (or a
+    second Enterprise tool shadow the first) without anyone noticing.
+    """
+    if tool.name in _EXTRA_HANDLERS or any(t.name == tool.name for t in _TOOLS):
+        raise ValueError(f"MCP tool name already registered: {tool.name!r}")
+    _EXTRA_TOOLS.append(tool)
+    _EXTRA_HANDLERS[tool.name] = handler
 
 
 @app.list_tools()
 async def list_tools() -> list[Tool]:
-    return _TOOLS
+    return [*_TOOLS, *_EXTRA_TOOLS]
 
 
 def _emit_first_magic() -> None:
@@ -4427,6 +4517,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_create_external_contact(arguments)
         elif name == "update_external_contact":
             result = await _handle_update_external_contact(arguments)
+        elif name == "request_review":
+            result = await _handle_request_review(arguments)
+        elif name == "get_review_request":
+            result = await _handle_get_review_request(arguments)
+        elif name == "list_my_review_requests":
+            result = await _handle_list_my_review_requests(arguments)
         elif name == "start_ticket":
             result = await _handle_start_ticket(arguments)
         elif name == "create_ticket":
@@ -4587,6 +4683,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_compile_group_knowledge(arguments)
         elif name == "ask_group":
             result = await _handle_ask_group(arguments)
+        elif name in _EXTRA_HANDLERS:
+            result = await _EXTRA_HANDLERS[name](arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
     except Exception as exc:
@@ -5253,6 +5351,121 @@ async def _resolve_project_id(git_remote: str = "") -> tuple[str, str, str]:
 
     project_id = resp.json().get("id", "")
     return config.sync.api_url.rstrip("/"), config.sync.api_key, project_id
+
+
+def _api_config() -> tuple[str, str]:
+    """Return (api_url, api_key) for the authenticated user (no project needed).
+
+    Used by the top-level, user-scoped review-request endpoints, which resolve
+    the work boundary from the caller's own key rather than a project path."""
+    config = load_config()
+    if not config.sync.api_key:
+        raise Exception("Not authenticated. Run 'sfs auth login' first.")
+    return config.sync.api_url.rstrip("/"), config.sync.api_key
+
+
+async def _handle_request_review(args: dict) -> dict:
+    """Wrap POST /api/v1/projects/{id}/review-requests (Auto-reviewer P1)."""
+    repo = str(args.get("repo", "")).strip()
+    pr_number = args.get("pr_number")
+    head_sha = str(args.get("head_sha", "")).strip()
+    ticket_id = str(args.get("ticket_id", "")).strip()
+    has_target = bool(repo and pr_number is not None and head_sha)
+
+    if has_target:
+        if isinstance(pr_number, bool) or not isinstance(pr_number, int) or pr_number < 1:
+            return {"error": "pr_number must be a positive integer"}
+    elif not ticket_id:
+        return {
+            "error": "give repo + pr_number + head_sha, or a ticket_id with a linked PR"
+        }
+
+    profile = str(args.get("profile", "")).strip() or "default"
+
+    project_id = str(args.get("project_id", "")).strip()
+    try:
+        if project_id:
+            api_url, api_key = _api_config()
+        else:
+            api_url, api_key, project_id = await _resolve_project_id(
+                args.get("git_remote", "")
+            )
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    body: dict[str, Any] = {"profile": profile}
+    if ticket_id:
+        body["ticket_id"] = ticket_id
+    if has_target:
+        body["provider"] = str(args.get("provider", "github")).strip() or "github"
+        body["repo"] = repo
+        body["pr_number"] = pr_number
+        body["head_sha"] = head_sha
+        if isinstance(args.get("base_sha"), str) and args["base_sha"].strip():
+            body["base_sha"] = args["base_sha"].strip()
+    for key in ("budget_tokens", "budget_seconds"):
+        val = args.get(key)
+        if isinstance(val, int) and not isinstance(val, bool):
+            body[key] = val
+
+    async with idempotent_async_client(timeout=30) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/projects/{_path_segment(project_id)}/review-requests",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_get_review_request(args: dict) -> dict:
+    """Wrap GET /api/v1/review-requests/{id} (Auto-reviewer P1)."""
+    request_id = str(args.get("request_id", "")).strip()
+    if not request_id:
+        return {"error": "request_id is required"}
+    try:
+        api_url, api_key = _api_config()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    async with idempotent_async_client(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/review-requests/{_path_segment(request_id)}",
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code == 404:
+        return {"error": f"Review request '{request_id}' not found"}
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+async def _handle_list_my_review_requests(args: dict) -> dict:
+    """Wrap GET /api/v1/me/review-requests (Auto-reviewer P1)."""
+    try:
+        api_url, api_key = _api_config()
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    params: dict[str, Any] = {}
+    limit = args.get("limit")
+    if isinstance(limit, int) and not isinstance(limit, bool):
+        params["limit"] = max(1, min(limit, 100))
+    if isinstance(args.get("before"), str) and args["before"].strip():
+        params["before"] = args["before"].strip()
+    if isinstance(args.get("before_id"), str) and args["before_id"].strip():
+        params["before_id"] = args["before_id"].strip()
+
+    async with idempotent_async_client(timeout=15) as client:
+        resp = await client.get(
+            f"{api_url}/api/v1/me/review-requests",
+            headers={"Authorization": f"Bearer {api_key}"},
+            params=params or None,
+        )
+    if resp.status_code >= 400:
+        return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
 
 
 async def _handle_add_knowledge(args: dict) -> str:
@@ -11012,3 +11225,9 @@ async def serve() -> None:
             await app.run(read_stream, write_stream, app.create_initialization_options())
     finally:
         stop_background_reindex()
+
+
+# Enterprise extension seam: register any sessionfs_ee MCP tools once the
+# module (and its ``_TOOLS`` / dispatch table) is fully assembled. No-op when
+# the Enterprise package is absent.
+register_mcp_tools(app)

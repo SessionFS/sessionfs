@@ -37,7 +37,9 @@ SessionFS can post a **"SessionFS review loop"** check run on a pull request.
 The check run is green (`success`) only when the ticket's review loop has a
 trusted `VERIFIED-CLEAN` verdict bound to the exact head commit, the reviewer
 is not the implementer, and there are no open harmful findings. Otherwise it
-posts `action_required` or `neutral`, with the reasons in the summary.
+posts `action_required`, with the reasons in the summary. Make the check
+required in your branch protection and GitHub blocks the merge until the
+commit is ready.
 
 To use it:
 

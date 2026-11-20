@@ -292,7 +292,12 @@ async def _flows_and_people(ctx: att._Ctx) -> tuple[list[Flow], dict[str, dict[s
                 run_at >= since,
             )
             .group_by(AgentRun.project_id, AgentRun.persona_name, AgentRun.role)
-            .order_by(func.max(run_at).desc())
+            .order_by(
+                func.max(run_at).desc(),
+                AgentRun.project_id,
+                AgentRun.persona_name,
+                AgentRun.role,
+            )
             .limit(COLLAB_ROW_CAP)
         )
     ).all()
@@ -311,7 +316,12 @@ async def _flows_and_people(ctx: att._Ctx) -> tuple[list[Flow], dict[str, dict[s
                 TicketComment.author_user_id != ctx.user_id,
             )
             .group_by(Ticket.project_id, TicketComment.author_user_id, TicketComment.author_persona)
-            .order_by(func.max(TicketComment.created_at).desc())
+            .order_by(
+                func.max(TicketComment.created_at).desc(),
+                Ticket.project_id,
+                TicketComment.author_user_id,
+                TicketComment.author_persona,
+            )
             .limit(COLLAB_ROW_CAP)
         )
     ).all()

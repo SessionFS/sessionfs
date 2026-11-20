@@ -2438,6 +2438,35 @@ async def _digest_recipients(
     return [(u.email, m.user_id) for m, u in rows]
 
 
+@router.post("/sweeps/review-requests")
+async def sweep_review_requests_admin(
+    body: dict | None = None,
+    auth: AuthContext = Depends(require_platform_sweeper()),
+    db: AsyncSession = Depends(get_db),
+):
+    """Expire claimed review requests whose lease has lapsed (P1a).
+
+    A claimed request past ``lease_expires_at`` goes back to ``queued`` so a
+    crashed runner's work becomes visible again, unless it already used three
+    attempts (tracked by ``lease_epoch``), in which case it is marked
+    ``failed`` with ``error='expired'``. Idempotent; safe to run repeatedly.
+    Accepts a platform-admin user key or a ``platform_sweeps:run`` service key.
+    """
+    from sessionfs.server.routes.review_requests import sweep_review_requests
+
+    result = await sweep_review_requests(db)
+    await _log_action(
+        db,
+        auth.user.id,
+        "review_requests_sweep",
+        "review_request",
+        "bulk",
+        {**sweep_actor_details(auth), **result},
+    )
+    await db.commit()
+    return result
+
+
 @router.post("/sweeps/kb-compile")
 async def sweep_kb_compile(
     request: Request,

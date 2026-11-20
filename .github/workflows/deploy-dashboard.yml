@@ -21,6 +21,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      # A dashboard push can arrive from any ref, so refuse to deploy unless
+      # the checked-out commit is reachable from origin/main and the source
+      # tree carries no Enterprise dashboard code. Fail closed before any
+      # dependency install or build.
+      - name: Verify the commit is on main and Community-only
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "refusing deploy: $(git rev-parse --short HEAD) is not reachable from origin/main" >&2
+            exit 1
+          fi
+          if [ -n "$(git ls-files -- 'dashboard/src/ee/')" ]; then
+            echo "refusing deploy: Enterprise dashboard paths present in the source tree" >&2
+            exit 1
+          fi
+          echo "deploy commit verified: $(git rev-parse --short HEAD)"
 
       - uses: actions/setup-node@v4
         with:
@@ -37,6 +57,9 @@ jobs:
         run: npm run build
         env:
           VITE_API_URL: https://api.sessionfs.dev
+
+      - name: Check public artifacts are Community-only
+        run: python3 .github/scripts/check_public_artifacts.py dashboard/dist
 
       - name: Install Vercel CLI
         run: npm install -g vercel

@@ -7,6 +7,7 @@ import Layout from './components/Layout';
 import { BackgroundTasksProvider } from './components/BackgroundTasks';
 import { ToastProvider } from './components/Toast';
 import { HelperProvider } from './helper/HelperProvider';
+import { enterpriseRoute } from './ee';
 
 // Lazy-loaded page components for code splitting
 const LoginPage = React.lazy(() => import('./auth/LoginPage'));
@@ -127,6 +128,7 @@ export default function App() {
                   </AdminRoute>
                 }
               />
+              {enterpriseRoute}
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

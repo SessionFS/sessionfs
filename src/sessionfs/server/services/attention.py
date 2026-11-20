@@ -53,8 +53,10 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy import and_, case, delete, func, inspect, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from sessionfs.server.auth.project_access import (
+    editable_project_ids_subquery,
     list_accessible_projects,
     project_session_clause,
     user_can_access_project,
@@ -73,6 +75,7 @@ from sessionfs.server.db.models import (
     ProjectGroup,
     ProjectGroupAccess,
     Reminder,
+    ReviewRequest,
     Session,
     Ticket,
     TicketComment,
@@ -80,7 +83,13 @@ from sessionfs.server.db.models import (
     User,
 )
 from sessionfs.server.roles import ADMIN_ROLES
-from sessionfs.server.tier_gate import resolve_project_plan_tiers
+from sessionfs.server.services.attention_explain import explain
+from sessionfs.features import register_providers
+from sessionfs.server.tier_gate import (
+    get_effective_tier,
+    project_ids_with_feature,
+    resolve_project_plan_tiers,
+)
 from sessionfs.server.tiers import Tier, get_features_for_tier
 
 logger = logging.getLogger("sessionfs.attention")
@@ -114,6 +123,8 @@ _PRIORITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 ITEM_LIMIT = 100
 # Safety bound on rows any one provider reads; the counts are exact below it.
 PROVIDER_ROW_CAP = 1000
+# Loop children share the row cap, kept separate so a test can shrink it.
+LOOP_ROW_CAP = PROVIDER_ROW_CAP
 # Per-provider time limit (seconds). Module-level so tests can shrink it.
 PROVIDER_TIMEOUT_S = 2.0
 SECTION_ERROR = "couldn't load"
@@ -281,6 +292,7 @@ KIND_CODES: dict[str, tuple[str, str]] = {
     "handoff": ("ho", "handoffs"),
     "knowledge_changes": ("kc", "knowledge_changes"),
     "proof": ("pf", "proof"),
+    "review_draft": ("rd", "review_drafts"),
 }
 _CODE_PROVIDER = {code: prov for code, prov in KIND_CODES.values()}
 
@@ -554,6 +566,13 @@ async def provide_tickets(ctx: _Ctx) -> tuple[list[Item], int]:
                 (r.created_by_persona, "persona, created it", True, False),
             ),
             "ticket": {"id": r.id, "project_id": r.project_id, "status": r.status},
+            "explain": explain(
+                "ticket",
+                title=r.title,
+                project_name=ctx.projects[r.project_id].name,
+                basis="assigned" if direct else "persona",
+                persona_name=r.assigned_to if not direct else None,
+            ),
         }
         description = _cap(r.description, QUOTE_MAX) if r.description else ""
         if description:
@@ -586,93 +605,336 @@ async def provide_tickets(ctx: _Ctx) -> tuple[list[Item], int]:
                 context=context,
             )
         )
+    items.extend(await _delegated_ticket_items(ctx, pids, by_project))
     return items, len(items)
 
 
-_LOOP_KIND = {
-    "ready": "loop_ready",
-    "needs_human": "loop_needs_human",
-    "proposed_checklist": "loop_checklist",
-}
-
-
-async def provide_loop_needs_you(ctx: _Ctx) -> tuple[list[Item], int]:
-    """The Review Loop "Needs you" feed (``services.loop_needs_you``,
-    unchanged), limited to the scope's projects."""
-    from sessionfs.server.services.loop_needs_you import needs_you
-
-    result = await needs_you(ctx.db, user_id=ctx.user_id)
-    items: list[Item] = []
-    raw = result["items"]
-    for idx, it in enumerate(raw):
-        pid = it["project_id"]
-        if pid not in ctx.projects:
-            continue
-        kind = _LOOP_KIND.get(it["kind"])
-        if kind is None:
-            continue
-        if kind == "loop_checklist":
-            source_type, source_id = "checklist_item", it["checklist_item_id"]
-            link = _project_link(pid, tab="work", sub="loop")
-            title = _cap(it["title"])
+async def _delegated_ticket_items(
+    ctx: _Ctx, pids: list[str], by_project: dict[str, set[str]]
+) -> list[Item]:
+    """Tickets the caller created that are waiting on someone else (CEO
+    2026-11-18: "you started it"). They sit in Worth a second look, never in
+    the badge: the next move is someone else's."""
+    rows = (
+        await ctx.db.execute(
+            select(
+                Ticket.id,
+                Ticket.project_id,
+                Ticket.title,
+                Ticket.status,
+                Ticket.priority,
+                Ticket.due_date,
+                Ticket.assigned_to,
+                Ticket.assigned_user_id,
+                Ticket.assigned_contact_id,
+                Ticket.updated_at,
+            )
+            .where(
+                Ticket.project_id.in_(pids),
+                Ticket.status.in_(ACTIONABLE_TICKET_STATUSES),
+                Ticket.created_by_user_id == ctx.user_id,
+                or_(
+                    Ticket.assigned_user_id.is_not(None),
+                    Ticket.assigned_to.is_not(None),
+                    Ticket.assigned_contact_id.is_not(None),
+                ),
+                # Tickets that are also the caller's own work are already
+                # cards in Waiting on you.
+                ~_my_ticket_clause(by_project, ctx.user_id),
+            )
+            .order_by(Ticket.updated_at.desc(), Ticket.id)
+            .limit(PROVIDER_ROW_CAP)
+        )
+    ).all()
+    if not rows:
+        return []
+    names = await _user_names(ctx, sorted({r.assigned_user_id for r in rows if r.assigned_user_id}))
+    out: list[Item] = []
+    for r in rows:
+        if r.assigned_user_id:
+            waiting_on = names.get(r.assigned_user_id, "a teammate")
+        elif r.assigned_to:
+            waiting_on = _cap(r.assigned_to, 50)
         else:
-            source_type, source_id = "ticket", it["ticket_id"]
-            link = _project_link(pid, tab="work", sub="loop", story=it["ticket_id"])
-            title = f"{it['title']}: {_cap(it.get('ticket_title'), 150)}"
+            waiting_on = "an external contact"
+        due_text, overdue = _due_phrase(r.due_date, ctx.today)
+        parts = [f"You created it · waiting on {waiting_on}"]
+        if due_text:
+            parts.append(due_text)
+        if r.status == "blocked":
+            parts.append("blocked")
+        project_name = ctx.projects[r.project_id].name
+        out.append(
+            Item(
+                kind="ticket",
+                source_type="ticket",
+                source_id=r.id,
+                band="upcoming",
+                involvement="owner",
+                title=_cap(r.title),
+                why=" · ".join(parts),
+                link=_project_link(r.project_id, tab="work", sub="tickets", ticket=r.id),
+                version_key=f"delegated|{r.status}|{_iso(r.updated_at)}",
+                occurred_at=r.updated_at,
+                due_at=_date_at(r.due_date) if r.due_date else None,
+                overdue=overdue,
+                priority=r.priority,
+                project_id=r.project_id,
+                actions=["open", "snooze", "hide"],
+                group="second",
+                context={
+                    "source_label": "Ticket",
+                    "ref": r.id,
+                    "project_name": _cap(project_name, 80),
+                    "facts": [["Status", r.status.replace("_", " ")], ["Waiting on", waiting_on]],
+                    "people": _people(("You", "created it", False, True)),
+                    "ticket": {"id": r.id, "project_id": r.project_id, "status": r.status},
+                    "explain": explain(
+                        "ticket_delegated",
+                        title=r.title,
+                        project_name=project_name,
+                        basis="created",
+                        waiting_on=waiting_on,
+                    ),
+                },
+            )
+        )
+    return out
+
+
+async def provide_loop_needs_you(ctx: _Ctx) -> tuple[list[Item], int, bool]:
+    """The Review Loop "Needs you" feed: merge-ready and needs-human children
+    the caller owns.
+
+    Loop children are queried directly (not narrowed from the org-wide
+    ``services.loop_needs_you.needs_you`` inbox), so a caller's own cards can
+    never be crowded out by teammates' loops. A child is the caller's when
+    they started its loop, it is assigned to them directly, or it is assigned
+    to a persona that represents them in the project. Proposed checklist
+    items are anyone's to pick up, so they never appear. ``total`` is always
+    the number of cards actually emitted (a non-actionable child never counts,
+    and a child that hit several limits emits several cards); when the row cap
+    was hit the section is marked ``truncated`` rather than inventing a count.
+    """
+    from sessionfs.server.services.loop_needs_you import (
+        _READY_REASON,
+        _READY_TITLE,
+        _needs_human_title,
+    )
+    from sessionfs.server.services.loops import load_loops
+
+    # The same predicate the loop routes enforce (check_project_feature): the
+    # project's plan, or a per-feature grandfather plus the caller's plan.
+    # Batched, never a per-project loop — and unlike ``feature_project_ids``
+    # it does not drop grandfathered projects.
+    user = await ctx.db.get(User, ctx.user_id)
+    caller_tier = await get_effective_tier(user, ctx.db) if user is not None else None
+    pids = sorted(
+        await project_ids_with_feature(
+            list(ctx.projects.values()), "review_loop", ctx.db, caller_tier=caller_tier
+        )
+    )
+    if not pids:
+        return [], 0, False
+    by_project, _ = await ctx.personas()
+    by_project = {p: n for p, n in by_project.items() if p in set(pids)}
+    LoopParent = aliased(Ticket)
+
+    owning = or_(
+        Ticket.created_by_user_id == ctx.user_id,
+        _my_ticket_clause(by_project, ctx.user_id),
+    )
+    # Only children of review loops: the parent check runs in SQL so other
+    # issues' children can never use up the row cap or inflate the total.
+    loop_parent_ids = (
+        select(LoopParent.id)
+        .where(LoopParent.project_id.in_(pids), LoopParent.loop_config.is_not(None))
+        .scalar_subquery()
+    )
+    child_filter = (
+        Ticket.project_id.in_(pids),
+        Ticket.parent_ticket_id.in_(loop_parent_ids),
+        Ticket.status.not_in(("done", "cancelled")),
+        owning,
+    )
+    children = list(
+        (
+            await ctx.db.execute(
+                select(Ticket)
+                .where(*child_filter)
+                .order_by(Ticket.updated_at.desc(), Ticket.id.desc())
+                .limit(LOOP_ROW_CAP + 1)
+            )
+        ).scalars()
+    )
+    capped = len(children) > LOOP_ROW_CAP
+    children = children[:LOOP_ROW_CAP]
+    if not children:
+        return [], 0, False
+
+    parents = list(
+        (
+            await ctx.db.execute(
+                select(Ticket)
+                .where(
+                    Ticket.id.in_(sorted({c.parent_ticket_id for c in children})),
+                    Ticket.loop_config.is_not(None),
+                )
+                # Deterministic order: it sets each card's tiebreak, so the
+                # feed body and its ETag stay identical between polls.
+                .order_by(Ticket.created_at.desc(), Ticket.id.desc())
+            )
+        ).scalars()
+    )
+    if not parents:
+        return [], 0, False
+    parent_project = {p.id: p.project_id for p in parents}
+    parent_title = {p.id: p.title for p in parents}
+    editable_ids = set(
+        (
+            await ctx.db.execute(await editable_project_ids_subquery(ctx.db, ctx.user_id))
+        ).scalars().all()
+    )
+    child_by_id = {c.id: c for c in children}
+
+    items: list[Item] = []
+    tiebreak = 0
+
+    def make_item(
+        *,
+        tiebreak: int,
+        cid: str,
+        kind: str,
+        headline: str,
+        reason: str,
+        pid: str,
+        project_name: str,
+        loop_title: str,
+        loop: dict[str, Any],
+        child_title: str | None,
+        basis: str,
+        persona_name: str | None,
+        can_act: bool,
+    ) -> Item:
         actions = ["open", "snooze", "hide"]
         loop_ctx: dict[str, Any] | None = None
+        source_id = cid
         if kind == "loop_needs_human":
-            # One child can need a human for several reasons; one card each.
-            source_id = f"{source_id}#{it['reason']}"
-            reason = str(it["reason"])
+            source_id = f"{cid}#{reason}"
             limit = (
                 "tokens" if reason.startswith("token budget hit")
                 else "rounds" if reason.startswith("round cap hit")
                 else None
             )
-            if limit is not None and it.get("can_act") and it.get("loop_id"):
-                # "Raise limit": PATCH /projects/{p}/loops/{loop} (editors).
+            # "Raise limit" (PATCH /projects/{p}/loops/{loop}) is an editor
+            # action, so a user key needs editor standing; a service key also
+            # needs the loops:write scope its write call would require.
+            can_raise = can_act and (
+                not ctx.scope.is_service or "loops:write" in ctx.scope.scopes
+            )
+            if limit is not None and can_raise and loop["id"]:
                 actions = ["raise", "open", "snooze", "hide"]
                 loop_ctx = {
-                    "id": it["loop_id"],
+                    "id": loop["id"],
                     "project_id": pid,
-                    "ticket_id": it.get("ticket_id"),
+                    "ticket_id": cid,
                     "limit": limit,
                 }
-        items.append(
-            Item(
-                kind=kind,
-                source_type=source_type,
-                source_id=source_id,
-                band="your_turn",
-                involvement="editor" if it.get("can_act") else "watcher",
-                title=title,
-                why=f"{it['reason']} · {_cap(it.get('project_name'), 80)}",
-                link=link,
-                version_key=f"{it['kind']}|{it['reason']}",
-                # needs_you is newest first; keep that order (sort only).
-                tiebreak=idx,
-                project_id=pid,
-                actions=actions,
-                context={
-                    **({"loop": loop_ctx} if loop_ctx else {}),
-                    "source_label": "Review loop",
-                    "ref": it.get("ticket_id") or it.get("checklist_item_id"),
-                    "project_name": _cap(it.get("project_name") or ctx.projects[pid].name, 80),
-                    "facts": [
-                        ["Reason", _cap(it["reason"], 120)],
-                        ["Project", _cap(it.get("project_name") or ctx.projects[pid].name, 80)],
-                    ],
-                    "people": _people(("You", "can act" if it.get("can_act") else "watching", False, True)),
-                },
-            )
+        return Item(
+            kind=kind,
+            source_type="ticket",
+            source_id=source_id,
+            band="your_turn",
+            involvement="editor" if can_act else "watcher",
+            title=f"{headline}: {_cap(child_title, 150)}",
+            why=f"{reason} · {project_name}",
+            link=_project_link(pid, tab="work", sub="loop", story=cid),
+            version_key=f"{kind}|{reason}",
+            tiebreak=tiebreak,
+            project_id=pid,
+            actions=actions,
+            context={
+                **({"loop": loop_ctx} if loop_ctx else {}),
+                "source_label": "Review loop",
+                "ref": cid,
+                "project_name": project_name,
+                "facts": [
+                    ["Reason", _cap(reason, 120)],
+                    ["Project", project_name],
+                ],
+                "people": _people(
+                    ("You", "can act" if can_act else "watching", False, True)
+                ),
+                "explain": explain(
+                    kind,
+                    loop_title=loop_title,
+                    child_title=child_title,
+                    basis=basis,
+                    persona_name=persona_name,
+                    reason=reason,
+                ),
+            },
         )
-    # needs_you caps its items at 100 but counts every one. A service key's
-    # scope can only narrow, so only add the uncounted tail for user keys.
-    total = len(items)
-    if not ctx.scope.is_service:
-        total += max(0, int(result["counts"]["total"]) - len(raw))
-    return items, total
+
+    for loop in await load_loops(ctx.db, loop_tickets=parents, show_dollars=False):
+        pid = parent_project[loop["id"]]
+        project_name = _cap(ctx.projects[pid].name, 80)
+        loop_title = parent_title[loop["id"]]
+        can_act = pid in editable_ids
+        for child in loop["children"]:
+            cid = child["ticket_id"]
+            ticket = child_by_id.get(cid)
+            if ticket is None:
+                continue
+            basis = "starter" if ticket.created_by_user_id == ctx.user_id else "assigned"
+            persona_name = None
+            if basis != "starter" and ticket.assigned_user_id != ctx.user_id:
+                persona_name = ticket.assigned_to
+                if persona_name:
+                    basis = "persona"
+            child_title = child.get("title")
+
+            if child["ready"]:
+                items.append(
+                    make_item(
+                        tiebreak=tiebreak,
+                        cid=cid,
+                        kind="loop_ready",
+                        headline=_READY_TITLE,
+                        reason=_READY_REASON,
+                        pid=pid,
+                        project_name=project_name,
+                        loop_title=loop_title,
+                        loop=loop,
+                        child_title=child_title,
+                        basis=basis,
+                        persona_name=persona_name,
+                        can_act=can_act,
+                    )
+                )
+                tiebreak += 1
+            if child["needs_human"]:
+                for reason in child["needs_human"].split("; "):
+                    items.append(
+                        make_item(
+                            tiebreak=tiebreak,
+                            cid=cid,
+                            kind="loop_needs_human",
+                            headline=_needs_human_title(reason),
+                            reason=reason,
+                            pid=pid,
+                            project_name=project_name,
+                            loop_title=loop_title,
+                            loop=loop,
+                            child_title=child_title,
+                            basis=basis,
+                            persona_name=persona_name,
+                            can_act=can_act,
+                        )
+                    )
+                    tiebreak += 1
+
+    return items, len(items), capped
 
 
 async def provide_harmful_findings(ctx: _Ctx) -> tuple[list[Item], int]:
@@ -688,7 +950,12 @@ async def provide_harmful_findings(ctx: _Ctx) -> tuple[list[Item], int]:
     by_project = {p: n for p, n in by_project.items() if p in set(pids)}
     mine = (
         await ctx.db.execute(
-            select(Ticket.id, Ticket.parent_ticket_id)
+            select(
+                Ticket.id,
+                Ticket.parent_ticket_id,
+                Ticket.assigned_user_id,
+                Ticket.assigned_to,
+            )
             .where(
                 Ticket.project_id.in_(pids),
                 Ticket.parent_ticket_id.is_not(None),
@@ -701,6 +968,7 @@ async def provide_harmful_findings(ctx: _Ctx) -> tuple[list[Item], int]:
     if not mine:
         return [], 0
     my_children = {r.id for r in mine}
+    child_owner = {r.id: (r.assigned_user_id, r.assigned_to) for r in mine}
     parents = list(
         (
             await ctx.db.execute(
@@ -721,6 +989,9 @@ async def provide_harmful_findings(ctx: _Ctx) -> tuple[list[Item], int]:
             n = int(child.get("harmful_open") or 0)
             if child["ticket_id"] not in my_children or n <= 0:
                 continue
+            assigned_user, assigned_to = child_owner[child["ticket_id"]]
+            basis = "assigned" if assigned_user == ctx.user_id else "persona"
+            persona_name = assigned_to if assigned_user != ctx.user_id else None
             branch = child.get("branch")
             why = f"{n} harmful open finding{'s' if n != 1 else ''}"
             if branch:
@@ -757,6 +1028,15 @@ async def provide_harmful_findings(ctx: _Ctx) -> tuple[list[Item], int]:
                             if f
                         ],
                         "people": _people(("You", "assignee", False, True)),
+                        "explain": explain(
+                            "loop_harmful_findings",
+                            loop_title=loop["title"],
+                            child_title=child.get("title"),
+                            harmful=n,
+                            branch=branch,
+                            basis=basis,
+                            persona_name=persona_name,
+                        ),
                     },
                 )
             )
@@ -1096,13 +1376,26 @@ async def provide_conversation_actions(ctx: _Ctx) -> tuple[list[Item], int]:
                 (_cap(speaker, 40) if speaker else None, "said it", False, False),
                 ("You", "suggested owner" if owned else "took part", False, True),
             ),
+            "explain": explain(
+                f"{label}_action" if owned else f"{label}_suggestion",
+                meeting_title=meeting_title,
+                meeting_date=(
+                    mt.date().isoformat() if (mt := _aware(r.meeting_at)) is not None else None
+                ),
+                cited=cited,
+                basis=("persona" if not mine_direct else "assigned") if owned else None,
+                persona_name=r.persona_name if owned and not mine_direct else None,
+            ),
         }
         items.append(
             Item(
                 kind=f"{label}_action" if owned else f"{label}_suggestion",
                 source_type=f"{label}_item",
                 source_id=r.id,
-                band="your_turn",
+                # A named owner is your turn; an unowned item in a meeting you
+                # attended is awareness, so it sits in "lately" and never
+                # counts toward the badge.
+                band="your_turn" if owned else "lately",
                 involvement=involvement,
                 title=_cap(r.description),
                 why=" · ".join(parts),
@@ -1113,7 +1406,7 @@ async def provide_conversation_actions(ctx: _Ctx) -> tuple[list[Item], int]:
                 overdue=overdue,
                 project_id=r.project_id,
                 actions=["promote", "remind", "dismiss"],
-                group="meetings",
+                group="meetings" if owned else "lately",
                 context=context,
             )
         )
@@ -1213,6 +1506,15 @@ async def provide_reminders(ctx: _Ctx) -> tuple[list[Item], int]:
                 (creator_names.get(r.created_by_user_id) if from_other else None, "set it for you", False, False),
             ),
             "reminder": {"id": r.id, "timezone": r.timezone},
+            "explain": explain(
+                "reminder",
+                title=r.title,
+                reminder_due=(
+                    "coming up" if upcoming else ("overdue" if overdue else "due today")
+                ),
+                from_other=from_other,
+                setter=creator_names.get(r.created_by_user_id) if from_other else None,
+            ),
         }
         items.append(
             Item(
@@ -1289,6 +1591,7 @@ async def provide_questions(ctx: _Ctx) -> tuple[list[Item], int]:
                 Ticket.project_id,
                 Ticket.title,
                 Ticket.assigned_user_id,
+                Ticket.assigned_to,
             )
             .join(Ticket, Ticket.id == TicketComment.ticket_id)
             .where(
@@ -1335,6 +1638,56 @@ async def provide_questions(ctx: _Ctx) -> tuple[list[Item], int]:
         if me_row.email:
             handles.add(me_row.email.split("@", 1)[0].lower())
     names = await _user_names(ctx, sorted({r.author_user_id for r in rows}))
+    # Persona -> represented person for the tickets' assignees, resolved with
+    # project-over-org precedence (the same rule ``list_effective_personas``
+    # uses), so a "?" from the person a persona represents counts as the
+    # assignee asking. Batched, never a per-ticket query.
+    persona_names = {r.assigned_to.lower() for r in rows if r.assigned_to}
+    represented: dict[tuple[str, str], str] = {}
+    if persona_names:
+        org_ids = sorted({o for p in pids if (o := ctx.projects[p].org_id)})
+        conds = [AgentPersona.project_id.in_(list(pids))]
+        if org_ids:
+            conds.append(AgentPersona.org_id.in_(org_ids))
+        org_level: dict[tuple[str, str], str] = {}
+        for p_id, o_id, name, uid in (
+            await ctx.db.execute(
+                select(
+                    AgentPersona.project_id,
+                    AgentPersona.org_id,
+                    AgentPersona.name,
+                    AgentPersona.represented_user_id,
+                ).where(
+                    or_(*conds),
+                    AgentPersona.is_active.is_(True),
+                    func.lower(AgentPersona.name).in_(sorted(persona_names)),
+                )
+            )
+        ).all():
+            if p_id:
+                represented[(p_id, name.lower())] = uid or ""
+            elif o_id and uid:
+                org_level[(o_id, name.lower())] = uid
+        for p in pids:
+            org = ctx.projects[p].org_id
+            for (o_id, lname), uid in org_level.items():
+                if o_id == org:
+                    represented.setdefault((p, lname), uid)
+
+    def _assigned_to_me(project_id: str, assigned_user_id: str | None, assigned_to: str | None) -> bool:
+        if assigned_user_id == ctx.user_id:
+            return True
+        names = by_project.get(project_id, set())
+        return bool(names) and (assigned_to or "").lower() in names
+
+    def _commenter_is_assignee(
+        project_id: str, assigned_user_id: str | None, assigned_to: str | None, author_user_id: str
+    ) -> bool:
+        if assigned_user_id is not None and author_user_id == assigned_user_id:
+            return True
+        lname = (assigned_to or "").lower()
+        return bool(lname) and represented.get((project_id, lname)) == author_user_id
+
     seen: set[str] = set()
     items: list[Item] = []
     for r in rows:
@@ -1342,6 +1695,14 @@ async def provide_questions(ctx: _Ctx) -> tuple[list[Item], int]:
             continue
         mentioned = _mentions(r.content or "", handles)
         asks = "?" in (r.content or "")
+        if not _assigned_to_me(r.project_id, r.assigned_user_id, r.assigned_to):
+            # A ticket the caller created but someone else owns: a bare "?" is
+            # theirs only when the assignee asked it (directly or via a persona
+            # that represents the assignee) or it @mentions them.
+            asks = asks and (
+                mentioned
+                or _commenter_is_assignee(r.project_id, r.assigned_user_id, r.assigned_to, r.author_user_id)
+            )
         if not (mentioned or asks):
             continue
         last_mine = _aware(answered.get(r.ticket_id))
@@ -1378,6 +1739,12 @@ async def provide_questions(ctx: _Ctx) -> tuple[list[Item], int]:
                         "ticket_id": r.ticket_id,
                         "to": who,
                     },
+                    "explain": explain(
+                        "ticket_question",
+                        title=r.title,
+                        mentioned=mentioned,
+                        asker=who,
+                    ),
                 },
             )
         )
@@ -1434,6 +1801,11 @@ async def provide_handoffs(ctx: _Ctx) -> tuple[list[Item], int]:
                 if f
             ],
             "people": _people((sender, "sent it", False, False)),
+            "explain": explain(
+                "handoff",
+                sender=sender,
+                session_title=h.snapshot_title,
+            ),
         }
         if h.message:
             context["quote"] = {"by": f"{sender} · handoff note", "text": _cap(h.message, QUOTE_MAX)}
@@ -1593,6 +1965,12 @@ async def provide_approvals(ctx: _Ctx) -> tuple[list[Item], int] | None:
                 "blocking": blocking,
             },
             "people": _people(("You", "approver", False, True)),
+            "explain": explain(
+                "approval",
+                policy_name=policy_name,
+                target_title=target_title,
+                blocking=blocking,
+            ),
         }
         items.append(
             Item(
@@ -1737,6 +2115,11 @@ async def provide_knowledge_changes(ctx: _Ctx) -> tuple[list[Item], int]:
                             for e in entries.get(r.project_id, [])
                             if e.get("by")
                         )
+                    ),
+                    "explain": explain(
+                        "knowledge_changes",
+                        project_name=name,
+                        count=n,
                     ),
                 },
             )
@@ -1913,12 +2296,127 @@ async def provide_proof(ctx: _Ctx) -> tuple[list[Item], int]:
                 ["Accepted changes", str(accepted)],
                 ["Harmful caught", str(caught)],
             ],
+            "explain": explain("proof"),
         },
     )
     return [item], 1
 
 
-Provider = Callable[[_Ctx], Awaitable["tuple[list[Item], int] | None"]]
+async def provide_review_drafts(ctx: _Ctx) -> tuple[list[Item], int]:
+    """The caller's completed ``draft_for_me`` review requests — a draft is
+    ready to read. Purely personal work (every row is the caller's own
+    request), so it sits in Your turn."""
+    pids = await ctx.feature_project_ids("review_requests")
+    if not pids:
+        return [], 0
+    rows = (
+        await ctx.db.execute(
+            select(ReviewRequest)
+            .where(
+                ReviewRequest.requester_user_id == ctx.user_id,
+                ReviewRequest.project_id.in_(pids),
+                ReviewRequest.status.in_(("done", "failed")),
+            )
+            .order_by(ReviewRequest.completed_at.desc(), ReviewRequest.id.desc())
+            .limit(PROVIDER_ROW_CAP)
+        )
+    ).scalars().all()
+
+    # Ticket titles, fetched once for the target label ("<ticket or PR>").
+    ticket_ids = sorted({r.ticket_id for r in rows if r.ticket_id})
+    ticket_titles: dict[str, str] = {}
+    if ticket_ids:
+        ticket_titles = {
+            t.id: t.title
+            for t in (
+                await ctx.db.execute(
+                    # Only tickets in a project this feed can read.
+                    select(Ticket).where(
+                        Ticket.id.in_(ticket_ids), Ticket.project_id.in_(pids)
+                    )
+                )
+            ).scalars().all()
+        }
+
+    items: list[Item] = []
+    for r in rows:
+        project = ctx.projects.get(r.project_id)
+        project_name = _cap(project.name, 80) if project else r.project_id
+        target_label = ticket_titles.get(r.ticket_id) or f"{r.repo}#{r.pr_number}"
+        incomplete = r.verdict == "incomplete" or r.status == "failed"
+
+        high = 0
+        if r.findings:
+            try:
+                high = sum(
+                    1
+                    for f in json.loads(r.findings)
+                    if isinstance(f, dict) and f.get("severity") in ("critical", "high")
+                )
+            except (TypeError, ValueError):
+                high = 0
+
+        if incomplete:
+            title = f"Your review of ‘{_cap(target_label, 120)}’ is incomplete"
+            why = f"The review could not finish · {r.repo}#{r.pr_number}"
+        else:
+            title = f"Your review of ‘{_cap(target_label, 120)}’ is ready"
+            why = (
+                f"{r.findings_count} finding"
+                f"{'s' if r.findings_count != 1 else ''} "
+                f"({high} high) · {r.repo}#{r.pr_number}"
+            )
+
+        facts = [
+            ["Verdict", (r.verdict or "—").replace("_", " ")],
+            ["Findings", str(r.findings_count)],
+            ["Target", f"{r.repo}#{r.pr_number}"],
+        ]
+        items.append(
+            Item(
+                kind="review_draft",
+                source_type="review_request",
+                source_id=r.id,
+                band="your_turn",
+                involvement="owner",
+                title=title,
+                why=why,
+                link=f"/review-requests/{r.id}",
+                version_key=f"{r.status}|{r.verdict}|{_iso(r.completed_at)}",
+                occurred_at=r.completed_at or r.updated_at,
+                project_id=r.project_id,
+                actions=["open", "hide"],
+                group="waiting",
+                context={
+                    "source_label": "Review draft",
+                    "ref": r.id,
+                    "project_name": project_name,
+                    "facts": facts,
+                    "review": {
+                        "id": r.id,
+                        "project_id": r.project_id,
+                        "verdict": r.verdict,
+                        "findings_count": r.findings_count,
+                        "head_sha": r.head_sha,
+                    },
+                    "explain": explain(
+                        "review_draft",
+                        title=target_label,
+                        project_name=project_name,
+                    ),
+                },
+            )
+        )
+    return items, len(items)
+
+
+# A provider returns ``(items, total)``; ``provide_loop_needs_you`` adds a
+# third ``truncated`` flag so the section can say its row cap was hit without
+# inventing a count it did not compute.
+Provider = Callable[
+    [_Ctx],
+    Awaitable["tuple[list[Item], int] | tuple[list[Item], int, bool] | None"],
+]
 
 # Order is the section order in the response.
 PROVIDERS: list[tuple[str, Provider]] = [
@@ -1932,6 +2430,7 @@ PROVIDERS: list[tuple[str, Provider]] = [
     ("handoffs", provide_handoffs),
     ("knowledge_changes", provide_knowledge_changes),
     ("proof", provide_proof),
+    ("review_drafts", provide_review_drafts),
 ]
 
 
@@ -1957,6 +2456,9 @@ PROVIDER_SCOPES: dict[str, str] = {
     "conversation_actions": "meetings:read",
     "knowledge_changes": "knowledge:read",
     "approvals": "approvals:read",
+    # No such scope exists — P1 drafts are personal (user keys only), so a
+    # service key can never satisfy it and never sees this section.
+    "review_drafts": "review_requests:read",
 }
 
 
@@ -2049,7 +2551,7 @@ async def build_feed(
     unlisted: dict[str, int] = {}
     from sessionfs.server.services import attention_collab
 
-    jobs: list[tuple[str, Any]] = [(n, f) for n, f in PROVIDERS if _scope_allows(scope, n)]
+    jobs: list[tuple[str, Any]] = [(n, f) for n, f in [*PROVIDERS, *register_providers("attention")] if _scope_allows(scope, n)]
     if collaboration:
         jobs.append(("collaboration", attention_collab.provide_collaboration))
     results = await _run_all(ctx, jobs)
@@ -2067,11 +2569,14 @@ async def build_feed(
         if error is not None:
             sections[name] = {"count": 0, "error": error}
             continue
-        got, total = result
+        got, total = result[0], result[1]
+        truncated = result[2] if len(result) == 3 else False
         for it in got:
             it.section = name
         items.extend(got)
         sections[name] = {"count": 0, "error": None}
+        if truncated:
+            sections[name]["truncated"] = True
         unlisted[name] = max(0, total - len(got))
 
     hidden: set[str] = set()
@@ -2216,7 +2721,7 @@ async def raw_items(
     ``only`` runs just the provider that owns a key."""
     now = datetime.now(timezone.utc)
     ctx = await _prepared_ctx(db, scope, now)
-    jobs = [(n, f) for n, f in PROVIDERS if (only is None or n == only) and _scope_allows(scope, n)]
+    jobs = [(n, f) for n, f in [*PROVIDERS, *register_providers("attention")] if (only is None or n == only) and _scope_allows(scope, n)]
     out: list[Item] = []
     for _name, (result, error) in (await _run_all(ctx, jobs)).items():
         if error is None and result is not None:

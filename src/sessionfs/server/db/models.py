@@ -7279,6 +7279,188 @@ class TicketPrLink(Base):
     )
 
 
+class ReviewRunner(Base):
+    """A customer-controlled process that pulls review work over HTTP (P1a).
+
+    P1 runners authenticate with their owner's own user API key and serve only
+    that owner's ``draft_for_me`` requests, so ``owner_user_id`` is both the
+    identity and the work boundary. The partial unique index on
+    ``owner_user_id`` where ``status = 'active'`` enforces one active runner
+    per owner; the Community edition caps the whole installation at one via a
+    route check. ``project_ids`` (a JSON list) bounds the runner's ``next``
+    candidates to the projects its owner listed at enrolment.
+    """
+
+    __tablename__ = "review_runners"
+    __table_args__ = (
+        Index("idx_review_runners_owner", "owner_user_id"),
+        Index(
+            "uq_review_runners_owner_active",
+            "owner_user_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+        CheckConstraint(
+            "kind IN ('local', 'ci')", name="ck_review_runners_kind"
+        ),
+        CheckConstraint(
+            "status IN ('active', 'retired')", name="ck_review_runners_status"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # rnr_<hex>
+    owner_user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="local", server_default="local"
+    )
+    project_ids: Mapped[str] = mapped_column(Text, nullable=False)  # JSON list
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active", server_default="active"
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    retired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+
+class ReviewRequest(Base):
+    """A stored "review this target for me" record (P1a, tk_9078a0e3feaa4e8a).
+
+    One live row per ``(project_id, requester_user_id, provider, repo, head_sha,
+    profile, instructions_version, mode, COALESCE(pr_number, 0))`` — the
+    idempotency key (a partial unique index that excludes superseded rows).
+    The target is a provider repo + optional PR/MR number + exact head sha,
+    with an optional ticket. ``profile`` is a persona name or ``default``;
+    ``mode`` is kept for the later ``org_reviewer`` path but P1 accepts only
+    ``draft_for_me``. Findings, coverage and the packet manifest are
+    JSON-as-Text; code bytes never reach SessionFS, so only metadata and
+    DLP-scanned finding text is stored here. The reviewer persona content is
+    pinned at create time in ``instructions_snapshot`` (with a sha256 in
+    ``instructions_sha256``) so the packet serves the exact instructions the
+    request was created against. The lease fields reuse the work-queue claim
+    shape: an atomic rowcount-1 UPDATE on ``status``/``lease_epoch`` fences a
+    stale finish.
+    """
+
+    __tablename__ = "review_requests"
+    __table_args__ = (
+        Index("idx_review_requests_requester", "requester_user_id"),
+        Index("idx_review_requests_project_status", "project_id", "status"),
+        Index("idx_review_requests_claim", "status", "lease_expires_at"),
+        Index(
+            "uq_review_requests_idempotent",
+            "project_id",
+            "requester_user_id",
+            "provider",
+            "repo",
+            "head_sha",
+            "profile",
+            "instructions_version",
+            "mode",
+            text("COALESCE(pr_number, 0)"),
+            unique=True,
+            postgresql_where=text("status <> 'superseded'"),
+            sqlite_where=text("status <> 'superseded'"),
+        ),
+        CheckConstraint(
+            "provider IN ('github', 'gitlab')",
+            name="ck_review_requests_provider",
+        ),
+        CheckConstraint(
+            "mode IN ('draft_for_me', 'org_reviewer')",
+            name="ck_review_requests_mode",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'claimed', 'done', 'failed', "
+            "'expired', 'superseded')",
+            name="ck_review_requests_status",
+        ),
+        CheckConstraint(
+            "verdict IS NULL OR verdict IN ('clean', 'findings', 'incomplete')",
+            name="ck_review_requests_verdict",
+        ),
+        CheckConstraint(
+            "cost_basis IS NULL OR cost_basis IN "
+            "('reported', 'estimated', 'plan', 'unknown')",
+            name="ck_review_requests_cost_basis",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # rvq_<hex>
+    project_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    requester_user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ticket_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider: Mapped[str] = mapped_column(String(20), nullable=False)
+    repo: Mapped[str] = mapped_column(String(200), nullable=False)
+    pr_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    head_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    base_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    profile: Mapped[str] = mapped_column(String(50), nullable=False)
+    instructions_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    instructions_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    instructions_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    mode: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="draft_for_me", server_default="draft_for_me"
+    )
+    budget_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    budget_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="queued", server_default="queued"
+    )
+    lease_epoch: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    lease_runner_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    superseded_by_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    verdict: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    findings: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+    findings_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    coverage: Mapped[str | None] = mapped_column(Text, nullable=True)
+    packet_manifest: Mapped[str | None] = mapped_column(Text, nullable=True)
+    input_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cache_read_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cache_write_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6), nullable=True)
+    cost_basis: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    error: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
 class MergeCheckPost(Base):
     """Ordering state for the merge check of one commit (migration 137).
 

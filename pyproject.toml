@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "sessionfs"
-version = "0.32.0"
+version = "0.33.0"
 description = "Capture, sync, and resume AI coding sessions across 10 tools — Claude Code, Codex, Gemini, Copilot, Cursor, Amp, Cline, Roo Code, Kilo Code, and Antigravity."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -122,7 +122,7 @@ sfs = "sessionfs.cli.main:cli_main"
 sfsd = "sessionfs.daemon.main:cli_main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/sessionfs", "ee/sessionfs_ee"]
+packages = ["src/sessionfs"]
 
 [tool.hatch.build]
 include = [
@@ -131,8 +131,15 @@ include = [
     "src/sessionfs/spec/examples/**/*",
     "src/sessionfs/skills/data/*.txt",
     "src/sessionfs/server/helper/docs_index.json",
-    "ee/sessionfs_ee/**/*.py",
 ]
+# Enterprise code ships in the private package only; keep it out of every
+# public artifact. The wheel is already restricted to src/sessionfs above;
+# this stops the sdist (which otherwise follows the VCS tree) from carrying
+# ee/ to public main and PyPI.
+exclude = ["ee/"]
+
+[tool.hatch.build.targets.sdist]
+exclude = ["ee/"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

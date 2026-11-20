@@ -3208,6 +3208,47 @@ sfs agent feedback summary [--persona NAME] [--since ISO] [--format text|json]
 
 ---
 
+## `sfs review` (v0.33.0)
+
+Ask your personal reviewer for a draft review of a pull request or merge request at an exact commit. A runner you enrol serves the request on your own machine with your own model key; SessionFS stores only the request and the DLP-scanned findings and never receives code. The runner program itself ships in a later release; until then a runner talks to the API under `/api/v1/me/review-runners` directly. Community installations allow one active runner.
+
+The project comes from `--project`, or from the current repository's `origin` remote.
+
+### `sfs review request`
+
+Create (or reuse) a review request. Give either `--ticket` for a ticket with a linked PR, or a target (`--repo` + `--pr` + `--head-sha`). Requesting the same head commit again returns the existing request; a new commit replaces a pending request for the same PR and profile.
+
+| Option | Description |
+|--------|-------------|
+| `--ticket TEXT` | Ticket id (`tk_…`) with a linked PR |
+| `--repo`, `-r TEXT` | Repository slug (`owner/repo`) |
+| `--pr INTEGER` | Pull request / merge request number |
+| `--head-sha TEXT` | Full 40- or 64-character head commit SHA |
+| `--profile TEXT` | Reviewer profile: a persona name or `default` (default `default`) |
+| `--provider TEXT` | `github` or `gitlab` (default `github`) |
+| `--base-sha TEXT` | Full base commit SHA |
+| `--project TEXT` | Project id (`proj_…`) or git remote |
+| `--budget-tokens INTEGER` | Token budget (at most 2,000,000) |
+| `--budget-seconds INTEGER` | Time budget in seconds (at most 86400) |
+
+```bash
+sfs review request --repo acme/api --pr 42 --head-sha 3f2c…  # full 40-char sha
+```
+
+### `sfs review list`
+
+List your review requests, newest first.
+
+| Option | Description |
+|--------|-------------|
+| `--limit INTEGER` | Rows per page, at most 100 (default 20) |
+| `--before TEXT` | Keyset cursor (ISO-8601 datetime) |
+| `--before-id TEXT` | Keyset cursor id |
+
+### `sfs review show <request_id>`
+
+Show one review request (`rvq_…`), including its draft findings.
+
 ## `sfs loop`
 
 Start and steer a [review loop](https://sessionfs.dev/review-loop/), read its reports, keep the project checklist and check merge readiness. Tier: **Team+** (the checklist and `sfs loop ready` are on every plan). Commands use the project of the current repository.

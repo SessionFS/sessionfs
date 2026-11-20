@@ -1938,6 +1938,34 @@ Only runs with a `reported` or `estimated` cost basis add dollars; `plan` and `u
 
 ---
 
+## `sfs review`
+
+Ask your personal reviewer for a draft review of a pull request or merge request at an exact commit. A runner you enrol serves the request on your own machine with your own model key; SessionFS stores only the request and the DLP-scanned findings, never receives code and never runs a review itself. The runner program ships in a later release; until then a runner talks to the API under `/api/v1/me/review-runners` directly. Community installations allow one active runner. From v0.33.0.
+
+The project comes from `--project`, or from the current repository's `origin` remote.
+
+| Command | Description |
+|---------|-------------|
+| `sfs review request (--ticket TICKET_ID \| --repo OWNER/REPO --pr N --head-sha SHA) [--profile NAME] [--provider github\|gitlab] [--base-sha SHA] [--project ID_OR_REMOTE] [--budget-tokens N] [--budget-seconds N]` | Create (or reuse) a review request. `--ticket` takes the target from the ticket's linked PR. Requesting the same head commit again returns the existing request; a new commit replaces a pending request for the same PR and profile |
+| `sfs review list [--limit N] [--before ISO] [--before-id ID]` | Your review requests, newest first (at most 100 per page, default 20) |
+| `sfs review show REQUEST_ID` | One request (`rvq_…`), including its draft findings |
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `--head-sha` | string | Full 40- or 64-character head commit SHA |
+| `--profile` | string | Reviewer profile: a persona name or `default` (default `default`) |
+| `--budget-tokens` | integer | Token budget, at most 2,000,000 |
+| `--budget-seconds` | integer | Time budget in seconds, at most 86400 |
+
+```bash
+sfs review request --repo acme/api --pr 42 --head-sha 3f2c…  # full 40-char sha
+sfs review show rvq_…
+```
+
+MCP: `request_review`, `get_review_request`, `list_my_review_requests`.
+
+---
+
 ## `sfs loop`
 
 Start, watch and budget a [worker review loop](/review-loop/), run its workers and record its review rounds, read its reports, keep its checklist, check merge readiness and share a ticket's story. Tier: **Team+** (the checklist and `sfs loop ready` are on every plan). From v0.29.2.
