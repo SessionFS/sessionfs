@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.2] - 2026-11-22
+
+**The dashboard image picks up Alpine security fixes released after its base image was built.** No migrations. No new MCP tools.
+
+### Fixed
+- Dashboard container image: runs `apk upgrade` on the `nginx:alpine` base, so fixed Alpine packages (here libxml2 2.13.9-r3, a HIGH CVE) are included instead of waiting for a new upstream base image.
+
 ## [0.33.1] - 2026-11-22
 
 **The hosted service is no longer deployed from public workflows, `/health` says which edition is serving, and the GitHub settings explain a missing install button.** No migrations. No new MCP tools.

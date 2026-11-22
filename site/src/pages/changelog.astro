@@ -17,6 +17,24 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.33.2 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-sm px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.33.2</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">November 22, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-semibold px-2.5 py-0.5 rounded-sm bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="text-xl font-semibold mb-4">Dashboard image security update</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Fixed:</strong> the dashboard container image now applies Alpine package updates on top of its <span class="font-mono text-accent text-sm">nginx:alpine</span> base, so security fixes released after the base image was built are included. This release picks up libxml2 2.13.9-r3, which fixes a HIGH CVE. See <a href="/self-hosted/#container-images" class="text-brand hover:underline">Self-Hosted</a>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="min-w-0 [overflow-wrap:anywhere]"><span class="text-muted-dim">No migrations (still 001&ndash;139), no new settings and no API changes. 13410 backend tests + 2410 dashboard UI tests passing. 148 MCP tools (unchanged).</span></span></li>
+        </ul>
+      </article>
+
+      <div class="divider"></div>
+
       <!-- v0.33.1 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +42,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.33.1</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">November 22, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-semibold px-2.5 py-0.5 rounded-sm bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="text-xl font-semibold mb-4">Health reports the edition, release-only image tags, and clearer GitHub setup</h2>
         <ul class="space-y-2 text-base text-muted">

@@ -13,6 +13,8 @@ ENV VITE_SFS_EDITION=${VITE_SFS_EDITION}
 RUN npm run build
 
 FROM nginx:alpine
+# Pick up Alpine security fixes released after the base image was built.
+RUN apk upgrade --no-cache
 # Create cache directories with correct permissions for non-root
 RUN mkdir -p /var/cache/nginx/client_temp \
     /var/cache/nginx/proxy_temp \
