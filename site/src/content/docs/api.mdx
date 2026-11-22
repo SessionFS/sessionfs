@@ -489,7 +489,7 @@ All package versions are immutable and addressed by `content_hash`. Visibility f
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| GET | `/health` | None | Health check |
+| GET | `/health` | None | Health check: `{"status":"healthy","version":"…","service":"sessionfs-api","edition":"community","ee_loaded":false}`. `edition` is `community` or `enterprise`; `ee_loaded` says whether the Enterprise package actually loaded in this process (v0.33.1). Also served at `/api/v1/health` |
 | GET | `/health/ready` | None | Readiness: `200 {"status":"ready","schema":"current"}` (or `"ahead"`) once the database schema is migrated for the running version, else `503 {"status":"not_ready","schema":"behind"}` (or `"missing"` / `"unknown"`) (used by the Helm readiness probe) |
 
 ## OpenAPI

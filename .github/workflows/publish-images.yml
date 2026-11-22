@@ -10,10 +10,6 @@ on:
         description: "Git ref to build from (tag or branch)"
         required: false
         default: "main"
-      version:
-        description: "Image version tag (defaults to the ref without its leading v)"
-        required: false
-        default: ""
 
 env:
   REGISTRY: ghcr.io
@@ -21,8 +17,9 @@ env:
   # Unified ref: workflow_run uses the triggering branch/tag;
   # workflow_dispatch uses the explicit input (default: main).
   BUILD_REF: ${{ github.event.workflow_run.head_branch || github.event.inputs.ref || 'main' }}
-  # Lets a dispatch rebuild a released version from a later ref.
-  BUILD_VERSION: ${{ github.event.inputs.version }}
+  # No version override: an image's version tag is always the exact ref it
+  # was built from (vX.Y.Z -> X.Y.Z), so a release tag can't be rebuilt from
+  # a later commit.
   # The triggering ref, read in shell steps from the environment (never
   # substituted into a script) so a ref name can't inject shell syntax.
   RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
@@ -92,13 +89,21 @@ jobs:
 
       - name: Get version
         id: version
+        # A release version tag only for a real vX.Y.Z tag at this exact
+        # commit; anything else (a branch, even one named like a version)
+        # gets dev-<sha>. The ref is read from the environment, never
+        # substituted into the script.
         run: |
-          REF="${{ env.BUILD_REF }}"
-          VERSION="${BUILD_VERSION:-${REF#v}}"
-          if [ -n "$BUILD_VERSION" ] && ! printf '%s' "$BUILD_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "version input must look like 1.2.3" >&2; exit 1
+          set -euo pipefail
+          if printf '%s' "$BUILD_REF" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+             && git rev-parse -q --verify "refs/tags/${BUILD_REF}^{commit}" >/dev/null \
+             && [ "$(git rev-parse "refs/tags/${BUILD_REF}^{commit}")" = "$(git rev-parse HEAD)" ]; then
+            VERSION="${BUILD_REF#v}"; RELEASE=true
+          else
+            VERSION="dev-$(git rev-parse --short=12 HEAD)"; RELEASE=false
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -142,7 +147,7 @@ jobs:
           push: true
           tags: |
             ${{ env.IMAGE_PREFIX }}/sessionfs-api:${{ steps.version.outputs.version }}
-            ${{ env.IMAGE_PREFIX }}/sessionfs-api:latest
+            ${{ steps.version.outputs.release == 'true' && format('{0}/sessionfs-api:latest', env.IMAGE_PREFIX) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
@@ -214,13 +219,21 @@ jobs:
 
       - name: Get version
         id: version
+        # A release version tag only for a real vX.Y.Z tag at this exact
+        # commit; anything else (a branch, even one named like a version)
+        # gets dev-<sha>. The ref is read from the environment, never
+        # substituted into the script.
         run: |
-          REF="${{ env.BUILD_REF }}"
-          VERSION="${BUILD_VERSION:-${REF#v}}"
-          if [ -n "$BUILD_VERSION" ] && ! printf '%s' "$BUILD_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "version input must look like 1.2.3" >&2; exit 1
+          set -euo pipefail
+          if printf '%s' "$BUILD_REF" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+             && git rev-parse -q --verify "refs/tags/${BUILD_REF}^{commit}" >/dev/null \
+             && [ "$(git rev-parse "refs/tags/${BUILD_REF}^{commit}")" = "$(git rev-parse HEAD)" ]; then
+            VERSION="${BUILD_REF#v}"; RELEASE=true
+          else
+            VERSION="dev-$(git rev-parse --short=12 HEAD)"; RELEASE=false
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -258,7 +271,7 @@ jobs:
           push: true
           tags: |
             ${{ env.IMAGE_PREFIX }}/sessionfs-mcp:${{ steps.version.outputs.version }}
-            ${{ env.IMAGE_PREFIX }}/sessionfs-mcp:latest
+            ${{ steps.version.outputs.release == 'true' && format('{0}/sessionfs-mcp:latest', env.IMAGE_PREFIX) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64
@@ -330,13 +343,21 @@ jobs:
 
       - name: Get version
         id: version
+        # A release version tag only for a real vX.Y.Z tag at this exact
+        # commit; anything else (a branch, even one named like a version)
+        # gets dev-<sha>. The ref is read from the environment, never
+        # substituted into the script.
         run: |
-          REF="${{ env.BUILD_REF }}"
-          VERSION="${BUILD_VERSION:-${REF#v}}"
-          if [ -n "$BUILD_VERSION" ] && ! printf '%s' "$BUILD_VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "version input must look like 1.2.3" >&2; exit 1
+          set -euo pipefail
+          if printf '%s' "$BUILD_REF" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+             && git rev-parse -q --verify "refs/tags/${BUILD_REF}^{commit}" >/dev/null \
+             && [ "$(git rev-parse "refs/tags/${BUILD_REF}^{commit}")" = "$(git rev-parse HEAD)" ]; then
+            VERSION="${BUILD_REF#v}"; RELEASE=true
+          else
+            VERSION="dev-$(git rev-parse --short=12 HEAD)"; RELEASE=false
           fi
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "release=${RELEASE}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -377,7 +398,7 @@ jobs:
             SFS_VERSION=${{ steps.version.outputs.version }}
           tags: |
             ${{ env.IMAGE_PREFIX }}/sessionfs-dashboard:${{ steps.version.outputs.version }}
-            ${{ env.IMAGE_PREFIX }}/sessionfs-dashboard:latest
+            ${{ steps.version.outputs.release == 'true' && format('{0}/sessionfs-dashboard:latest', env.IMAGE_PREFIX) || '' }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           platforms: linux/amd64,linux/arm64

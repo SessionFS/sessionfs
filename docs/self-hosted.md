@@ -1162,15 +1162,15 @@ GitLab MR comments include the same AI session context as GitHub PR comments, in
 
 ## CI/CD Pipelines
 
-The following GitHub Actions pipelines handle deployment:
+The public repository's GitHub Actions pipelines build and publish what self-hosted installs use:
 
-| Workflow | Trigger | Target |
+| Workflow | Trigger | Output |
 |----------|---------|--------|
-| Deploy API | Push to main (server code changes) | Cloud Run |
-| Deploy MCP Server | Manual (`workflow_dispatch`) while the hosted MCP is parked | Cloud Run |
-| Deploy Dashboard | Push to main (`dashboard/` changes) | Vercel |
-| Deploy Site | Push to main (`site/` changes) | Vercel |
-| Publish Container Images | After Release workflow | GHCR |
+| CI | Every push and pull request | Tests, lint, type checks |
+| Release | A `vX.Y.Z` tag | PyPI package, GitHub release |
+| Publish Container Images | After the Release workflow | Community API, MCP and dashboard images on GHCR |
+
+None of them deploys the hosted SessionFS service; hosted releases are promoted separately.
 
 ## Environment Variables
 

@@ -39,6 +39,14 @@ function reverifyCopy(gh: GitHubInstallationResponse): string {
   return `GitHub did not confirm that you own this account or administer the organization when you linked it. ${base} Sign in to GitHub again and SessionFS will recheck your owner/admin status (for organizations this needs the app's Members permission to be approved).`;
 }
 
+/**
+ * Shown when the server can link an installation but has no App name
+ * (SFS_GITHUB_APP_SLUG), so it cannot send people to GitHub to install it.
+ */
+const INSTALL_UNAVAILABLE_MESSAGE =
+  "Installing the GitHub App from here isn't set up on this server. Install it on GitHub first, then use " +
+  'Connect GitHub to link it. Administrators enable the install button with SFS_GITHUB_APP_SLUG.';
+
 export function GitHubIntegrationSection() {
   const { auth } = useAuth();
   const queryClient = useQueryClient();
@@ -293,6 +301,9 @@ export function GitHubIntegrationSection() {
               >
                 {installAvailable ? 'Link existing installation' : 'Connect GitHub'}
               </Button>
+              {!installAvailable && (
+                <p className="text-xs text-text-tertiary basis-full">{INSTALL_UNAVAILABLE_MESSAGE}</p>
+              )}
             </div>
           ) : (
             <p className="text-sm text-text-tertiary">

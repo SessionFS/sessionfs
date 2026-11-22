@@ -17,6 +17,28 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.33.1 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-sm px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.33.1</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">November 22, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-semibold px-2.5 py-0.5 rounded-sm bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="text-xl font-semibold mb-4">Health reports the edition, release-only image tags, and clearer GitHub setup</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Health shows which edition is serving.</strong> <span class="font-mono text-accent text-sm">/health</span> and <span class="font-mono text-accent text-sm">/api/v1/health</span> now return <span class="font-mono text-accent text-sm">edition</span> (<span class="font-mono text-accent text-sm">community</span> or <span class="font-mono text-accent text-sm">enterprise</span>) and <span class="font-mono text-accent text-sm">ee_loaded</span> (whether the Enterprise package actually loaded in this process) alongside status, version and service, so a deploy check or a monitor can tell which build is running. See <a href="/api/" class="text-brand hover:underline">API Reference</a>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>GitHub settings explain a missing install button.</strong> When the server can link an installation but has no GitHub App name configured (<span class="font-mono text-accent text-sm">SFS_GITHUB_APP_SLUG</span>), the Not connected view now says why there is no install button and how to link an App you installed on GitHub. See <a href="/git-integration/" class="text-brand hover:underline">Git Integration</a>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Changed: container image tags mean exact releases.</strong> The published <span class="font-mono text-accent text-sm">sessionfs-api</span> and <span class="font-mono text-accent text-sm">sessionfs-mcp</span> images get a version tag (and <span class="font-mono text-accent text-sm">latest</span>) only when built from a real <span class="font-mono text-accent text-sm">vX.Y.Z</span> release tag at that exact commit; every other build is tagged <span class="font-mono text-accent text-sm">dev-&lt;commit&gt;</span>, and the manual version override is gone. Pin a version tag and you get exactly that public release. See <a href="/self-hosted/#container-images" class="text-brand hover:underline">Self-Hosted</a>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Changed:</strong> the public repository&rsquo;s workflows no longer deploy a hosted service. What runs there is CI, Release (the PyPI package and the GitHub release) and Publish Container Images, all unchanged for self-hosted installs.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Fixed:</strong> the Git integration docs listed the Release event for the GitHub App. The App needs the Checks permission and the Pull request event only: GitHub offers the Release event only to apps that can read repository contents, and SessionFS never asks for your code. Release events come in through the per-org delivery webhooks. See <a href="/git-integration/#delivery-webhooks" class="text-brand hover:underline">Git Integration</a>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="min-w-0 [overflow-wrap:anywhere]"><span class="text-muted-dim">No migrations (still 001&ndash;139) and no new settings. 13410 backend tests + 2410 dashboard UI tests passing. 148 MCP tools (unchanged).</span></span></li>
+        </ul>
+      </article>
+
+      <div class="divider"></div>
+
       <!-- v0.33.0 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +46,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.33.0</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">November 19, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-semibold px-2.5 py-0.5 rounded-sm bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="text-xl font-semibold mb-4">Two editions, a For You that&rsquo;s about you, and review requests</h2>
         <ul class="space-y-2 text-base text-muted">

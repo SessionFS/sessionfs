@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sys
+
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
@@ -19,8 +21,22 @@ async def health():
     hit directly) and /api/v1/health (the path the AWS ALB / nginx ingress
     rewrites incoming probes to). Both routes intentionally serve the
     identical payload so external monitoring can use either.
+
+    ``edition`` is the configured product edition and ``ee_loaded`` says
+    whether the Enterprise package actually registered in this process, so a
+    deploy can prove which build is serving (an Enterprise edition setting
+    with no Enterprise package reports ``ee_loaded: false``).
     """
-    return {"status": "healthy", "version": __version__, "service": "sessionfs-api"}
+    from sessionfs import features
+    from sessionfs.server.tier_gate import get_edition
+
+    return {
+        "status": "healthy",
+        "version": __version__,
+        "service": "sessionfs-api",
+        "edition": get_edition(),
+        "ee_loaded": bool(features._loaded and "sessionfs_ee" in sys.modules),
+    }
 
 
 # Set once this process has seen the schema at (or ahead of) its head.

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.1] - 2026-11-22
+
+**The hosted service is no longer deployed from public workflows, `/health` says which edition is serving, and the GitHub settings explain a missing install button.** No migrations. No new MCP tools.
+
+### Added
+- `/health` and `/api/v1/health` report `edition` (`community` or `enterprise`) and `ee_loaded` (whether the Enterprise package actually loaded in this process), so a deploy or a monitor can tell which build is serving.
+- GitHub settings: when the server can link an installation but has no App name (`SFS_GITHUB_APP_SLUG`), the Not connected view says why there is no install button and how to link an App installed on GitHub.
+
+### Changed
+- The public repository no longer deploys anything to the hosted service. The Deploy API, Deploy MCP Server, Deploy Dashboard and Deploy Site workflows are removed; CI, Release and Publish Container Images are unchanged for self-hosted installs.
+- Publish Container Images: an image gets a release version tag (and `latest`) only when it is built from a real `vX.Y.Z` tag at that exact commit. Every other build is tagged `dev-<commit>`, and the manual version override is gone, so a version tag always means the exact public release.
+
+### Fixed
+- Git integration docs: the GitHub App needs the Checks permission and the Pull request event only. The Release event is no longer listed: GitHub offers it only to apps that can read repository contents, and SessionFS never asks for your code. Release events come in through the per-org delivery webhooks.
+
 ## [0.33.0] - 2026-11-19
 
 **SessionFS now comes in two editions. Community is open source under Apache-2.0 and runs with no licence key; Enterprise is the hosted cloud and licensed self-hosted installs. For You shows what involves you and says why, the merge check no longer lets an unreviewed commit pass, and the first piece of the auto-reviewer lands: review requests served by a runner on your own machine.** One migration (139). Three new MCP tools (148).

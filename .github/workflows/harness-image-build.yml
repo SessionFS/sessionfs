@@ -50,7 +50,7 @@ env:
   REGION: us-central1
   REGISTRY_PATH: us-central1-docker.pkg.dev/sessionfs-prod/sessionfs-harness
   WIF_PROVIDER: projects/391749893806/locations/global/workloadIdentityPools/github/providers/github-actions
-  SERVICE_ACCOUNT: deployer@sessionfs-prod.iam.gserviceaccount.com
+  SERVICE_ACCOUNT: harness-publisher@sessionfs-prod.iam.gserviceaccount.com
 
 jobs:
   image:

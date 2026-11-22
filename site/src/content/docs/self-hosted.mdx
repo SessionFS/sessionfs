@@ -48,6 +48,7 @@ Both `sessionfs-api` and `sessionfs-mcp` Docker images:
 - Run as **non-root user** (UID 10001, dedicated `sessionfs` system user)
 - Ship with no shell or package manager for the runtime user
 - Are scanned on every release via `trivy` (CRITICAL/HIGH findings block the pipeline)
+- Are published to `ghcr.io/sessionfs/` with a version tag (for example `0.33.1`) and `latest` only when built from the matching `vX.Y.Z` release tag at that exact commit; every other build is tagged `dev-<commit>`. Pin a version tag to run exactly that public release (v0.33.1)
 
 ### Kubernetes SecurityContext
 
@@ -411,6 +412,8 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 
 **Upgrading to v0.33.0** runs migration 139 (review requests and review runners; additive) and introduces [editions](#editions). A chart upgrade with `license.key` set runs as `enterprise` and nothing changes. Without a licence key it now runs as `community`: every account gets the Pro features and Team and Enterprise features (review loops, the session helper, approvals and the rest) switch off, so set your licence key before upgrading if you rely on them. If anyone enrols a review runner, schedule the review-requests sweep (see [Scheduled sweeps](#scheduled-sweeps)). The source is licensed under Apache-2.0 from this release.
 
+**Upgrading to v0.33.1** needs no migration and no new settings. `/health` now also reports `edition` and `ee_loaded`, so a post-upgrade check can confirm the edition you meant to run is the one serving. Container images built outside a release tag are now tagged `dev-<commit>` instead of a version (see [Container images](#container-images)).
+
 **Upgrading to v0.29.14** runs migrations 131 (`artifacts`, `artifact_edges`, `artifact_tags`), 132 (`eval_suites`, `eval_cases`, `artifact_family_requirements`) and 133 (`eval_runs`, `eval_case_results`, `agent_runs.eval_run_id` and the `grader` run role); all are additive. API keys gain the `evals:read`, `evals:write`, `artifacts:read` and `artifacts:write` scopes. To clear eval outputs past their retention (180 days by default), call `POST /api/v1/admin/sweeps/eval-outputs` daily with a `platform_sweeps:run` key, or enable the chart's opt-in `api.evalOutputs` CronJob. A project holding evaluation or artifact data can't be merged yet.
 
 **Upgrading to v0.29.13** runs migration 130 (the `external_contacts` and `external_contact_aliases` tables, `meeting_participants.contact_id` with the `contact` resolution, and `tickets.assigned_contact_id`); it is additive, and a downgrade turns contact-resolved participants back into unresolved ones. API keys gain the `contacts:read` and `contacts:write` scopes. To sweep old contacts, set the org's contact retention and call `POST /api/v1/admin/sweeps/contact-retention` with a `platform_sweeps:run` key; it does nothing for orgs that leave retention off.
@@ -433,7 +436,7 @@ Database migrations run automatically as a Helm pre-upgrade hook.
 
 **Upgrading to v0.29.4** runs migrations 117 and 118 (direct release–ticket links, and the link from a rotated service key to the key it replaced); both are additive. No new settings are needed.
 
-**Upgrading to v0.29.3** runs migrations 113 to 116 (the review round on agent runs, pull requests, releases, gates and deployments, share links, and per-org delivery webhooks); all are additive. For the GitHub merge check, grant the GitHub App the Checks permission and subscribe it to the Pull request and Release events; without the permission SessionFS comments on the pull request instead. Register each org's delivery webhooks with `sfs org delivery-webhook rotate`. No new settings are needed.
+**Upgrading to v0.29.3** runs migrations 113 to 116 (the review round on agent runs, pull requests, releases, gates and deployments, share links, and per-org delivery webhooks); all are additive. For the GitHub merge check, grant the GitHub App the Checks permission and subscribe it to the Pull request event (release events come through the delivery webhooks); without the permission SessionFS comments on the pull request instead. Register each org's delivery webhooks with `sfs org delivery-webhook rotate`. No new settings are needed.
 
 ## Troubleshooting
 
@@ -497,7 +500,7 @@ Key endpoints:
 | `GET /api/v1/auth/me` | Current user profile |
 | `GET /api/v1/sessions` | List sessions |
 | `POST /api/v1/sessions/{id}/audit` | Run LLM Judge |
-| `GET /health` | Health check |
+| `GET /health` | Health check; reports `status`, `version`, `service`, `edition` and `ee_loaded` (v0.33.1) |
 
 ## Git Registry Polling
 

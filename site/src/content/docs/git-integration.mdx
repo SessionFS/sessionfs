@@ -44,9 +44,12 @@ commit is ready.
 To use it:
 
 1. Grant the app the **Checks: Read & Write** permission and subscribe to the
-   **Pull request** and **Release** webhook events. Existing installs must
-   approve the new permission when GitHub asks (organization owners see it
-   under **Settings → GitHub Apps**).
+   **Pull request** webhook event. Existing installs must approve the new
+   permission when GitHub asks (organization owners see it under
+   **Settings → GitHub Apps**). The app does not need the **Release** event:
+   GitHub only offers it to apps that can read repository contents, and
+   SessionFS never asks for your code. Release events come in through the
+   [delivery webhooks](#delivery-webhooks) instead.
 2. In the repository's branch protection, tick **Require status checks to pass
    before merging** and add **"SessionFS review loop"**.
 3. A new commit gets its own check run, so the gate re-evaluates on every push.

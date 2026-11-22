@@ -163,6 +163,21 @@ describe('GitHubIntegrationSection', () => {
     expect(screen.queryByRole('button', { name: /connect github/i })).not.toBeInTheDocument();
   });
 
+  it('explains why there is no install button when the server has no App name', async () => {
+    mockGetGitHubInstallation.mockResolvedValue({ ...NOT_CONNECTED, install_available: false });
+    renderSection();
+    expect(await screen.findByText(/isn't set up on this server/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /connect github/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /link existing installation/i })).not.toBeInTheDocument();
+  });
+
+  it('shows no install explanation when the install flow is available', async () => {
+    mockGetGitHubInstallation.mockResolvedValue(NOT_CONNECTED);
+    renderSection();
+    await screen.findByRole('button', { name: /link existing installation/i });
+    expect(screen.queryByText(/isn't set up on this server/i)).not.toBeInTheDocument();
+  });
+
   it('shows a verified connected state with the account and GitHub login', async () => {
     mockGetGitHubInstallation.mockResolvedValue({
       account_login: 'acme-inc',

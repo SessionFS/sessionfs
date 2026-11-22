@@ -30017,7 +30017,7 @@
     },
     "/api/v1/health": {
       "get": {
-        "description": "Health check.\n\nExposed at both /health (the canonical path that pods inside the cluster\nhit directly) and /api/v1/health (the path the AWS ALB / nginx ingress\nrewrites incoming probes to). Both routes intentionally serve the\nidentical payload so external monitoring can use either.",
+        "description": "Health check.\n\nExposed at both /health (the canonical path that pods inside the cluster\nhit directly) and /api/v1/health (the path the AWS ALB / nginx ingress\nrewrites incoming probes to). Both routes intentionally serve the\nidentical payload so external monitoring can use either.\n\n``edition`` is the configured product edition and ``ee_loaded`` says\nwhether the Enterprise package actually registered in this process, so a\ndeploy can prove which build is serving (an Enterprise edition setting\nwith no Enterprise package reports ``ee_loaded: false``).",
         "operationId": "health_api_v1_health_get",
         "responses": {
           "200": {
@@ -60911,7 +60911,7 @@
     },
     "/health": {
       "get": {
-        "description": "Health check.\n\nExposed at both /health (the canonical path that pods inside the cluster\nhit directly) and /api/v1/health (the path the AWS ALB / nginx ingress\nrewrites incoming probes to). Both routes intentionally serve the\nidentical payload so external monitoring can use either.",
+        "description": "Health check.\n\nExposed at both /health (the canonical path that pods inside the cluster\nhit directly) and /api/v1/health (the path the AWS ALB / nginx ingress\nrewrites incoming probes to). Both routes intentionally serve the\nidentical payload so external monitoring can use either.\n\n``edition`` is the configured product edition and ``ee_loaded`` says\nwhether the Enterprise package actually registered in this process, so a\ndeploy can prove which build is serving (an Enterprise edition setting\nwith no Enterprise package reports ``ee_loaded: false``).",
         "operationId": "health_health_get",
         "responses": {
           "200": {

@@ -7,6 +7,7 @@ has no ``.release/`` directory.
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 from pathlib import Path
 
@@ -177,3 +178,19 @@ def test_remote_refused_when_insteadof_rewrites_to_public(repo):
          "https://github.com/SessionFS/sessionfs-enterprise.git")
     problems = snap.remote_problems(repo=path, gh_private=lambda: True)
     assert any("push URL is" in p for p in problems)
+
+
+def test_record_lands_in_the_common_git_dir(repo):
+    path, public_rev, develop_rev = repo
+    out = snap.write_record("1.2.3", {"snapshot_sha": develop_rev}, repo=path)
+    assert out == path / ".git" / "sfs-enterprise" / "1.2.3" / "snapshot.json"
+    assert json.loads(out.read_text()) == {"snapshot_sha": develop_rev}
+
+
+def test_push_as_app_only_ever_targets_the_private_repo(repo, monkeypatch):
+    path, _, develop_rev = repo
+    app = snap._load("release_app")
+    env = app.git_push_env("ghs_topsecret")
+    monkeypatch.setattr(snap, "PUSH_URL", str(path / "elsewhere.git"))
+    with pytest.raises(SystemExit, match="refusing to push the App token"):
+        snap.push_as_app([f"{develop_rev}:refs/heads/enterprise"], repo=path, env=env)
