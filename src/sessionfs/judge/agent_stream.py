@@ -33,8 +33,9 @@ Stream events (each turn, in order)
 
 ``run_agent`` additionally emits :class:`ToolResultEvent` after each tool it
 runs (or rejects) and exactly one final :class:`Done` whose ``stop_reason`` is
-``"stop"``, ``"max_tokens"``, ``"max_steps"``, ``"token_budget"`` or
-``"deadline"``.
+``"stop"``, ``"max_tokens"``, ``"max_steps"``, ``"token_budget"``,
+``"deadline"``, ``"tool_call_cap"``, ``"tool_failures"`` or
+``"input_token_cap"``.
 
 If the model emits tool-call arguments that are not valid JSON, the turn emits a
 :class:`ToolCallEvent` whose :class:`ToolCall` carries ``arguments={}`` and
@@ -52,6 +53,12 @@ turns). Tool calls beyond ``max_tool_calls_per_turn`` in a turn receive an
 ``is_error`` result rather than running. When it stops for a limit it yields a
 final ``Done`` (``"max_steps"``, ``"token_budget"``, ``"max_tokens"`` or
 ``"deadline"``) and never runs another tool.
+
+Optional per-question limits: ``max_tool_calls`` (tool calls across every
+step), ``max_consecutive_failures`` (tool results in a row that failed) and
+``max_input_tokens`` (input tokens summed over every model step; a step whose
+provider reports no usage is counted by a conservative size estimate). Calls
+a limit stops get a ``not_run`` placeholder result.
 """
 
 from __future__ import annotations
@@ -119,6 +126,9 @@ class ToolResult:
     tool_call_id: str
     content: str
     is_error: bool = False
+    # Set on the placeholder result a call gets when a loop limit stopped it
+    # before it ran (it never reached the tool, so it is not a tool failure).
+    not_run: bool = False
 
 
 @dataclass(frozen=True)
@@ -1277,6 +1287,20 @@ async def _synthesize(
         logger.warning("Final synthesis call failed (%s)", exc.status)
 
 
+def _estimate_input_tokens(system: str, conversation: list[Message]) -> int:
+    """A conservative input-token estimate for one model request.
+
+    Used only when a provider reports no usage: about three characters per
+    token over the system prompt and the serialised conversation, which
+    over-counts for English text (so a limit trips early, never late).
+    """
+    try:
+        size = len(json.dumps(conversation, default=str, ensure_ascii=False))
+    except (TypeError, ValueError):
+        size = sum(len(str(m.get("content") or "")) for m in conversation)
+    return (len(system) + size) // 3 + 1
+
+
 async def run_agent(
     *,
     model: str,
@@ -1297,21 +1321,27 @@ async def run_agent(
     top_p: float | None = None,
     reasoning_effort_value: str | None = None,
     final_synthesis: str | None = None,
+    max_tool_calls: int | None = None,
+    max_consecutive_failures: int | None = None,
+    max_input_tokens: int | None = None,
 ) -> AsyncIterator[AgentEvent]:
     """Run the agent loop: stream turns and execute requested tools until it stops.
 
-    ``final_synthesis``: when the step limit is reached while the model still
-    wants tools, make one last call with NO tools, the conversation flattened
-    to plain text (so no provider sees tool blocks without tool definitions)
-    and this instruction appended, so the turn ends with an answer built from
-    what was collected.  A failed synthesis call ends the loop quietly (the
-    caller decides what to say).
+    ``final_synthesis``: when the step limit, the tool-call limit or the
+    consecutive-failure limit is reached while the model still wants tools,
+    make one last call with NO tools, the conversation flattened to plain text
+    (so no provider sees tool blocks without tool definitions) and this
+    instruction appended, so the turn ends with an answer built from what was
+    collected.  A failed synthesis call ends the loop quietly (the caller
+    decides what to say).  The input-token limit skips it: another request
+    would go past the limit.
 
     Yields each turn's text, tool-call and usage events, a :class:`ToolResultEvent`
     after each tool, and exactly one final :class:`Done`. Hard limits fail closed:
     a tool is never run once ``max_steps``, ``max_total_tokens``,
-    ``max_tool_calls_per_turn`` or ``deadline_seconds`` (checked inside each turn
-    and around each tool, not just between turns) has been reached. Tool exceptions
+    ``max_tool_calls_per_turn``, ``max_tool_calls``, ``max_consecutive_failures``,
+    ``max_input_tokens`` or ``deadline_seconds`` (checked inside each turn and
+    around each tool, not just between turns) has been reached. Tool exceptions
     and invalid tool arguments become an ``is_error`` :class:`ToolResult` with a
     generic message (arguments are never logged).
     """
@@ -1321,27 +1351,50 @@ async def run_agent(
     conversation = [dict(m) for m in messages]
     total_tokens = 0
     steps = 0
+    # Per-question limits.
+    calls_run = 0
+    failures_in_a_row = 0
+    input_total = 0
+    last_step_input = 0
+    # Estimated tokens the tool results added since the last model step.
+    added_since_step = 0
+
+    async def _synthesis() -> AsyncIterator[AgentEvent]:
+        if final_synthesis and loop.time() < deadline:
+            async for event in _synthesize(
+                model=model,
+                system=system,
+                conversation=conversation,
+                instruction=final_synthesis,
+                api_key=api_key,
+                provider=provider,
+                base_url=base_url,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
+                top_p=top_p,
+                reasoning_effort_value=reasoning_effort_value,
+                deadline=deadline,
+            ):
+                yield event
+
+    def _not_run(call: ToolCall, text: str) -> ToolResult:
+        return ToolResult(call.id, text, is_error=True, not_run=True)
 
     while True:
         if steps >= max_steps:
-            if final_synthesis and loop.time() < deadline:
-                async for event in _synthesize(
-                    model=model,
-                    system=system,
-                    conversation=conversation,
-                    instruction=final_synthesis,
-                    api_key=api_key,
-                    provider=provider,
-                    base_url=base_url,
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                    timeout=timeout,
-                    top_p=top_p,
-                    reasoning_effort_value=reasoning_effort_value,
-                    deadline=deadline,
-                ):
-                    yield event
+            async for event in _synthesis():
+                yield event
             yield Done("max_steps")
+            return
+        if (
+            max_input_tokens is not None
+            and steps > 0
+            and input_total + last_step_input + added_since_step > max_input_tokens
+        ):
+            # The next request would carry at least the last one's input plus
+            # the new tool results: it would go past the ceiling.
+            yield Done("input_token_cap")
             return
         steps += 1
 
@@ -1349,6 +1402,10 @@ async def run_agent(
         tool_calls: list[ToolCall] = []
         turn_stop_reason: str | None = None
         turn_reasoning: str = ""
+        step_input = 0
+        step_estimate = (
+            _estimate_input_tokens(system, conversation) if max_input_tokens is not None else 0
+        )
 
         async for event in _bounded_stream(
             stream_chat(
@@ -1378,6 +1435,14 @@ async def run_agent(
                 tool_calls.append(event.tool_call)
             elif isinstance(event, Usage):
                 total_tokens += event.input_tokens + event.output_tokens
+                step_input += max(0, event.input_tokens)
+
+        # No reported input usage: count the conservative estimate instead.
+        if step_input <= 0:
+            step_input = step_estimate
+        input_total += step_input
+        last_step_input = step_input
+        added_since_step = 0
 
         conversation.append(
             assistant_message("".join(text_parts), tool_calls, reasoning_content=turn_reasoning)
@@ -1395,40 +1460,71 @@ async def run_agent(
         if total_tokens >= max_total_tokens:
             yield Done("token_budget")
             return
+        if max_input_tokens is not None and input_total + last_step_input > max_input_tokens:
+            # Running these tools would only feed a request past the ceiling.
+            yield Done("input_token_cap")
+            return
 
-        for call in tool_calls[:max_tool_calls_per_turn]:
-            if call.invalid_arguments:
-                result = ToolResult(call.id, "Arguments were not valid JSON.", is_error=True)
+        limit_hit: str | None = None
+        for index, call in enumerate(tool_calls):
+            if index >= max_tool_calls_per_turn:
+                # Tool calls beyond the per-turn cap never run but still get a
+                # result so the conversation stays valid for the provider.
+                result = _not_run(
+                    call,
+                    f"Too many tool calls in one turn; at most {max_tool_calls_per_turn} are run.",
+                )
+                yield ToolResultEvent(call, result)
+                conversation.append(tool_result_message(result))
+                continue
+            if limit_hit is None and max_tool_calls is not None and calls_run >= max_tool_calls:
+                limit_hit = "tool_call_cap"
+            if limit_hit is not None:
+                result = _not_run(
+                    call,
+                    "Not run: the tool-call limit for this question was reached."
+                    if limit_hit == "tool_call_cap"
+                    else "Not run: too many tool calls failed in a row.",
+                )
                 yield ToolResultEvent(call, result)
                 conversation.append(tool_result_message(result))
                 continue
 
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                yield Done("deadline")
-                return
-            try:
-                result = await asyncio.wait_for(execute_tool(call), timeout=remaining)
-            except asyncio.TimeoutError:
-                yield Done("deadline")
-                return
-            except Exception as exc:  # noqa: BLE001 - fail closed, keep the loop alive
-                logger.warning(
-                    "Tool %r (%s) raised %s", call.name, call.id, type(exc).__name__
-                )
-                result = ToolResult(
-                    tool_call_id=call.id, content=_TOOL_ERROR_MESSAGE, is_error=True
-                )
+            calls_run += 1
+            if call.invalid_arguments:
+                result = ToolResult(call.id, "Arguments were not valid JSON.", is_error=True)
+            else:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    yield Done("deadline")
+                    return
+                try:
+                    result = await asyncio.wait_for(execute_tool(call), timeout=remaining)
+                except asyncio.TimeoutError:
+                    yield Done("deadline")
+                    return
+                except Exception as exc:  # noqa: BLE001 - fail closed, keep the loop alive
+                    logger.warning(
+                        "Tool %r (%s) raised %s", call.name, call.id, type(exc).__name__
+                    )
+                    result = ToolResult(
+                        tool_call_id=call.id, content=_TOOL_ERROR_MESSAGE, is_error=True
+                    )
             yield ToolResultEvent(call, result)
             conversation.append(tool_result_message(result))
+            added_since_step += len(result.content or "") // 3 + 1
+            if result.is_error:
+                failures_in_a_row += 1
+                if (
+                    max_consecutive_failures is not None
+                    and failures_in_a_row >= max_consecutive_failures
+                ):
+                    limit_hit = "tool_failures"
+            else:
+                failures_in_a_row = 0
 
-        # Tool calls beyond the per-turn cap never run but still get a result so
-        # the conversation stays valid for the provider.
-        for call in tool_calls[max_tool_calls_per_turn:]:
-            result = ToolResult(
-                call.id,
-                f"Too many tool calls in one turn; at most {max_tool_calls_per_turn} are run.",
-                is_error=True,
-            )
-            yield ToolResultEvent(call, result)
-            conversation.append(tool_result_message(result))
+        if limit_hit is not None:
+            async for event in _synthesis():
+                yield event
+            yield Done(limit_hit)
+            return

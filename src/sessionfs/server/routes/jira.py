@@ -31,6 +31,7 @@ from sqlalchemy import case, delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sessionfs.server.api_contract import StrictRequestModel
 from sessionfs.server.auth.dependencies import (
     AuthContext,
     get_current_user,
@@ -79,7 +80,7 @@ from sessionfs.server.integrations.trackers.jira import (
     sessionfs_label,
     validate_site_url,
 )
-from sessionfs.server.services import jira_sync
+from sessionfs.server.services import jira_search, jira_sync
 from sessionfs.server.services.jira_links import (
     JiraLinkError,
     _assert_issue_not_linked_elsewhere,
@@ -1689,6 +1690,165 @@ async def list_jira_issue_types(
         raise HTTPException(502, {"error": "jira_upstream_error", "message": str(exc)}) from exc
     finally:
         await client.aclose()
+
+
+# ── Search (GitHub #144) ──
+
+
+class JiraSearchRequest(StrictRequestModel):
+    jql: str = Field("", max_length=jira_search.JQL_MAX_CHARS)
+    max_results: int = Field(
+        jira_search.DEFAULT_MAX_RESULTS, ge=1, le=jira_search.MAX_MAX_RESULTS
+    )
+    fields: list[str] | None = Field(None, max_length=len(jira_search.ALLOWED_FIELDS))
+
+
+def _search_upgrade_required(plan_value: str) -> HTTPException:
+    required = get_minimum_tier_for_feature("jira_integration")
+    return HTTPException(
+        status_code=403,
+        detail={
+            "error": "upgrade_required",
+            "feature": "jira_integration",
+            "plan_scope": "org",
+            "current_tier": plan_value,
+            "required_tier": required,
+            "upgrade_url": "https://sessionfs.dev/pricing",
+            "message": f"This feature requires the org's plan to be {required} or above.",
+        },
+    )
+
+
+@org_router.post("/{org_id}/integrations/jira/search")
+async def search_jira_issues(
+    org_id: str,
+    body: JiraSearchRequest,
+    auth: AuthContext = Depends(require_scope("jira:read")),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Search Jira with JQL through the org's connection (read-only).
+
+    Any active org member may search (service keys need ``jira:read`` and
+    must belong to the org). Results only come from Jira projects mapped to
+    SessionFS projects the caller can read (a service key: its minter, within
+    its project allowlist): the JQL is wrapped as
+    ``project in (<allowed>) AND (<jql>)`` and every issue is re-checked
+    against the allowed set. No allowed projects is an empty result with a
+    ``reason``, not an error.
+    """
+    user = auth.user
+    org = await db.get(Organization, org_id)
+    if org is None:
+        raise HTTPException(404, _ORG_NOT_FOUND)
+    if auth.key_kind == "service":
+        # A service key is bound to one org, and reads through it only while
+        # its minter is still an active member of that org.
+        if auth.org_id != org_id or not await jira_search.is_active_member(
+            db, org_id, user.id
+        ):
+            raise HTTPException(404, _ORG_NOT_FOUND)
+        actor_role = "service_key"
+    else:
+        role = (
+            await db.execute(
+                select(OrgMember.role)
+                .join(User, User.id == OrgMember.user_id)
+                .where(
+                    OrgMember.org_id == org_id,
+                    OrgMember.user_id == user.id,
+                    User.is_active.is_(True),
+                )
+            )
+        ).scalars().first()
+        if role is None:
+            raise HTTPException(404, _ORG_NOT_FOUND)
+        actor_role = role
+
+    plan = await resolve_org_plan_tier(org_id, db)
+    if "jira_integration" not in get_features_for_tier(plan):
+        raise _search_upgrade_required(plan.value)
+
+    try:
+        where, order_by = jira_search.split_jql(body.jql)
+        fields = jira_search.normalize_fields(body.fields)
+    except jira_search.JqlError as exc:
+        raise HTTPException(
+            422, {"error": exc.code, "code": exc.code, "message": exc.message}
+        ) from exc
+
+    conn = await jira_search.enabled_connection(db, org_id)
+    if conn is None:
+        raise HTTPException(
+            404,
+            {
+                "error": "jira_not_connected",
+                "code": "jira_not_connected",
+                "message": "This organization has no enabled Jira connection.",
+            },
+        )
+
+    project_ids_by_key = await jira_search.allowed_project_keys(
+        db,
+        org_id=org_id,
+        user_id=user.id,
+        service_project_ids=auth.project_ids if auth.key_kind == "service" else None,
+    )
+    dlp_policy = await jira_search.caller_dlp_policy(db, user.id, org_id)
+    max_results = jira_search.clamp_max_results(body.max_results)
+
+    def _audit(outcome: jira_search.SearchOutcome | None, result: str) -> None:
+        db.add(
+            jira_search.audit_event(
+                org=org,
+                actor=user,
+                actor_role=actor_role,
+                jql=body.jql,
+                dlp_policy=dlp_policy,
+                max_results=max_results,
+                fields=fields,
+                outcome=outcome,
+                result=result,
+                service_key_id=auth.service_key_id,
+            )
+        )
+
+    try:
+        outcome = await jira_search.run_search(
+            conn=conn,
+            org_id=org_id,
+            project_ids_by_key=project_ids_by_key,
+            where=where,
+            order_by=order_by,
+            max_results=max_results,
+            fields=fields,
+            dlp_policy=dlp_policy,
+        )
+    except jira_search.SearchError as exc:
+        if exc.status != 429:
+            _audit(None, exc.code)
+            await db.commit()
+        headers = {"Retry-After": "60"} if exc.status == 429 else None
+        raise HTTPException(exc.status, exc.detail(), headers=headers) from exc
+
+    _audit(outcome, outcome.reason or "ok")
+    await db.commit()
+    response: dict = {
+        "issues": [
+            {**issue, "project_ids": outcome.project_ids_by_key.get(issue["project_key"], [])}
+            for issue in outcome.issues
+        ],
+        "count": len(outcome.issues),
+        "has_more": outcome.has_more,
+        "max_results": max_results,
+        "fields": fields,
+        "allowed_jira_projects": outcome.allowed_keys,
+        "effective_jql": outcome.effective_jql,
+        "cached": outcome.cached,
+        "reason": outcome.reason,
+    }
+    if outcome.reason == jira_search.NO_ALLOWED_PROJECTS_REASON:
+        response["message"] = jira_search.NO_ALLOWED_PROJECTS_MESSAGE
+    return response
 
 
 # ── Mappings ──

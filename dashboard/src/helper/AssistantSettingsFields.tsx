@@ -15,6 +15,7 @@ import {
   REASONING_LABELS,
   DEFAULT_GROUNDING,
   GROUNDING_LABELS,
+  LIMIT_FIELDS,
   STYLE_LABELS,
   charCount,
   describeSettings,
@@ -275,6 +276,70 @@ export function ModelSettingsFields({ draft, errors, resets, onChange, onReset, 
           disabled={disabled}
         />
       </div>
+    </div>
+  );
+}
+
+// ── Per-question limits ──
+
+/** Title and hint of each per-question limit field. */
+export const LIMIT_COPY: Record<
+  (typeof LIMIT_FIELDS)[number]['key'],
+  { title: string; hint: string; ceilingTitle: string }
+> = {
+  max_tool_calls: {
+    title: 'Max tool calls per question',
+    hint: 'Tool calls one question may run across every round.',
+    ceilingTitle: 'Tool call ceiling',
+  },
+  max_consecutive_tool_failures: {
+    title: 'Stop after failed tool calls',
+    hint: 'The question stops after this many tool calls fail in a row.',
+    ceilingTitle: 'Failed tool call ceiling',
+  },
+  max_input_tokens: {
+    title: 'Max input tokens per question',
+    hint: 'Input tokens summed over every model call of one question.',
+    ceilingTitle: 'Input token ceiling',
+  },
+};
+
+/**
+ * The per-question limits. When a question reaches one, it stops and the
+ * answer says which limit it reached.
+ */
+export function LimitFields({ draft, errors, resets, onChange, onReset, disabled, idPrefix }: ModelSettingsFieldsProps) {
+  return (
+    <div className="grid gap-x-5 gap-y-4 sm:grid-cols-2">
+      {LIMIT_FIELDS.map(({ key, bounds }) => {
+        const copy = LIMIT_COPY[key];
+        const fallback = DEFAULTS[key] as number;
+        return (
+          <div key={key} className="flex flex-col gap-1">
+            <Input
+              id={`${idPrefix}-${key.replace(/_/g, '-')}`}
+              title={copy.title}
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              value={draft[key]}
+              onChange={(e) => onChange({ [key]: e.target.value })}
+              hint={`${copy.hint} ${bounds.min.toLocaleString()}–${bounds.max.toLocaleString()}. Default ${fallback.toLocaleString()}.`}
+              error={errors[key]}
+              disabled={disabled}
+            />
+            <ResetButton
+              field={key}
+              label={copy.title}
+              draftValue={draft[key]}
+              defaultValue={fallback.toLocaleString()}
+              pending={resets.has(key)}
+              onReset={onReset}
+              disabled={disabled}
+            />
+          </div>
+        );
+      })}
     </div>
   );
 }

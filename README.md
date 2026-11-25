@@ -167,7 +167,7 @@ SessionFS converts between native formats automatically — message roles, tool 
 | `sfs auth use\|profiles\|whoami` | Switch between named account profiles |
 | `sfs auth keys list\|create\|revoke` | Manage your personal API keys |
 | `sfs config show\|set\|default-org` | Manage configuration and your default organization |
-| `sfs mcp serve` | Start MCP server (148 tools) for AI tool integration |
+| `sfs mcp serve` | Start MCP server (149 tools) for AI tool integration |
 | `sfs mcp install\|uninstall --for TOOL` | Add or remove the MCP registration for any of the 10 supported tools |
 | `sfs mcp index` | Rebuild the local full-text search index |
 | `sfs init` | Interactive setup wizard — auto-detects tools, optional sync |
@@ -282,6 +282,8 @@ Sessions are stored as `.sfs` directories:
 All file paths are relative to workspace root. Sessions are append-only — conflict resolution appends both sides rather than merging.
 
 ## Status
+
+**v0.33.3 — Public Beta.** 13486 backend tests + 2424 dashboard tests passing. Database migrations 001–139 (067 and 068 unused). 149 MCP tools. Large session uploads no longer run the server out of memory (the DLP scan streams the archive), the session helper stops a question at 25 tool calls, 3 failures in a row or 150k input tokens and says why, and the helper, MCP agents and `sfs org jira search` can search Jira, limited to projects you can read.
 
 **v0.33.2 — Public Beta.** 13410 backend tests + 2410 dashboard tests passing. Database migrations 001–139 (067 and 068 unused). 148 MCP tools. The dashboard container image now applies Alpine security updates on top of its base image. Since 0.33.1 the hosted service is no longer deployed from public workflows, a release image tag always means the exact public release, and `/health` reports `edition` and `ee_loaded`.
 
@@ -433,7 +435,7 @@ All file paths are relative to workspace root. Sessions are append-only — conf
 
 ### MCP and dashboard
 
-- **MCP server** (local, stdio) with 148 tools — sessions, knowledge read and write, rules, personas, tickets, external contacts, evaluations and model/dataset lineage, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), meetings and chat threads, reminders, read-only approvals, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
+- **MCP server** (local, stdio) with 149 tools — sessions, knowledge read and write, rules, personas, tickets, Jira issue search, external contacts, evaluations and model/dataset lineage, agent runs and feedback, work queues, handoffs, project groups (manage groups, search their knowledge, compile and read a group overview), meetings and chat threads, reminders, read-only approvals, and marketplace tools (search, inspect, diff versions, preview and load approved instruction-only skills, request installs) that never write files or enable executable content. The full list is in the [CLI Reference](docs/cli-reference.md#sfs-mcp-serve)
 - **`sfs mcp install --for <tool>`** for all 10 tools (stale registration repair, malformed config handling)
 - **Web dashboard** with light/dark mode, resume-first layout, date-grouped sessions, lineage grouping, command palette (Cmd+K), mobile nav, accessibility (focus trapping, ARIA live regions), product identity
 - **`/help` page** — MCP-first guidance, 10-tool installer with live terminal + copy button, agent prompt examples, curated CLI quick-reference

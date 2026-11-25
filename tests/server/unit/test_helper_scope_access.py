@@ -161,6 +161,7 @@ def _tool_calls(a: dict, b: dict) -> dict[str, list[dict]]:
         "list_tickets": [{}, {"project_id": bp}, {"assigned_to_me": True}],
         "get_ticket": [{"ticket_id": b["ticket"].id}],
         "get_jira_issue": [{"ticket_id": b["ticket"].id}],
+        "search_jira_issues": [{"jql": ""}, {"jql": "project = BRAVO"}],
         "list_wiki_pages": [{"project_id": bp}],
         "get_wiki_page": [{"project_id": bp, "slug": b["page"].slug}],
         "list_agent_runs": [{"project_id": bp}],

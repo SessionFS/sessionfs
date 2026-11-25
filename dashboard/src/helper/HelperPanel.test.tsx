@@ -1498,3 +1498,64 @@ describe('HelperPanel — rename', { timeout: 30_000 }, () => {
     expect(addToastMock).toHaveBeenCalledWith('error', expect.stringMatching(/Couldn't rename the conversation: boom/));
   });
 });
+
+describe('HelperPanel — early stops (GitHub #143)', () => {
+  it('shows why a turn stopped and Try again re-asks the question', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        okResponse([
+          ['conversation', { conversation_id: 'conv_cap' }],
+          ['text', { delta: 'Partial findings. Stopped early: this question reached its limit of 25 tool calls (25 ran).' }],
+          ['done', { stop_reason: 'tool_call_cap', input_tokens: 10, output_tokens: 5, key_source: 'user' }],
+        ]),
+      )
+      .mockResolvedValueOnce(okResponse([['text', { delta: 'Second try worked.' }], DONE]));
+    renderPanel();
+    const user = userEvent.setup();
+    await ask(user, 'Which sessions touched billing?');
+
+    expect(await screen.findByText('Stopped early: this question reached its tool call limit.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    await screen.findByText('Second try worked.');
+    expect(sentBody(1)).toMatchObject({
+      message: 'Which sessions touched billing?',
+      conversation_id: 'conv_cap',
+      retry: true,
+    });
+  });
+
+  it('shows no stop line for a normal answer', async () => {
+    fetchMock.mockResolvedValue(okResponse([['text', { delta: 'All good.' }], DONE]));
+    renderPanel();
+    const user = userEvent.setup();
+    await ask(user, 'hi');
+    await screen.findByText('All good.');
+    expect(screen.queryByText(/Stopped early/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the stop reason and Try again on a reopened thread', async () => {
+    setConversations([{ id: 'c9', title: 'Capped thread' }]);
+    getHelperConversationMock.mockResolvedValue({
+      id: 'c9',
+      org_id: null,
+      title: 'Capped thread',
+      created_at: '',
+      updated_at: '',
+      scope: null,
+      messages: [
+        { id: 'm1', role: 'user', content: 'What broke?' },
+        { id: 'm2', role: 'assistant', content: 'Stopped early: 3 tool calls failed in a row.', stop_reason: 'tool_failures' },
+      ],
+    });
+    fetchMock.mockResolvedValue(okResponse([['text', { delta: 'Found it.' }], DONE]));
+    renderPanel();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: /Capped thread/ }));
+
+    expect(await screen.findByText('Stopped early: several tool calls failed in a row.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    await screen.findByText('Found it.');
+    expect(sentBody(0)).toMatchObject({ message: 'What broke?', conversation_id: 'c9', retry: true });
+  });
+});

@@ -285,12 +285,19 @@ export interface HelperModelSettings {
   answer_style: HelperAnswerStyle;
   /** Missing from older servers (the form then shows the default). */
   grounding?: HelperGroundingMode;
+  /** Per-question limits; missing from servers before 0.33.3. */
+  max_tool_calls?: number;
+  max_consecutive_tool_failures?: number;
+  max_input_tokens?: number;
 }
 
 export interface OrgHelperModelSettings extends HelperModelSettings {
   /** Caps on the org-key path; null = no ceiling. */
   ceiling_max_output_tokens: number | null;
   ceiling_max_tool_steps: number | null;
+  ceiling_max_tool_calls?: number | null;
+  ceiling_max_consecutive_tool_failures?: number | null;
+  ceiling_max_input_tokens?: number | null;
 }
 
 /** A partial settings update: omitted keys keep their value, null resets/clears. */
@@ -465,6 +472,8 @@ export interface HelperMessage {
   input_tokens: number;
   output_tokens: number;
   usage?: { input_tokens: number; output_tokens: number };
+  /** Answers only: how the turn ended (`stop`, `tool_call_cap`, …); missing on older servers. */
+  stop_reason?: string | null;
   created_at: string;
 }
 

@@ -172,7 +172,7 @@ def test_grounding_setting_merges_and_resets():
 
 
 def test_prompt_v23_has_evidence_rules_only_when_strict():
-    assert helper_routes._HELPER_SYSTEM_PROMPT_VERSION == "v23"
+    assert helper_routes._HELPER_SYSTEM_PROMPT_VERSION == "v24"
     from sessionfs.server.helper.context import HelperScope
 
     on = helper_routes._system_prompt(HelperScope(), grounding="strict")

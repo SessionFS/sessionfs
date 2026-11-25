@@ -144,7 +144,7 @@ def test_static_site_needs_its_assets_and_the_spa_fallback(tmp_path):
 
 
 class Prod:
-    def __init__(self, healthy=True, fail_job=None):
+    def __init__(self, healthy=True, fail_job=None, ready=True, platform=None):
         self.traffic = [{"revisionName": "api-1", "percent": 100}]
         self.revisions = {"api-1": OLD_API.replace(":latest", "@sha256:" + "0" * 64)}
         self.created = "api-1"
@@ -153,6 +153,9 @@ class Prod:
         self.dash = "https://dash-old.vercel.app"
         self.healthy = healthy
         self.fail_job = fail_job
+        self.ready = ready
+        # When set, Cloud Run records this platform's manifest of the index.
+        self.platform = platform
         self.calls: list[list[str]] = []
         self.version = "1.2.2"
 
@@ -165,14 +168,20 @@ class Prod:
         self.calls.append(cmd)
         a = [c for c in cmd[1:] if not c.startswith(("--project=", "--region="))]
         if cmd[0] == "gcloud" and a[:3] == ["run", "services", "describe"]:
-            return json.dumps({"status": {"latestReadyRevisionName": self.created,
+            # Like Cloud Run: a --no-traffic revision is retired at once, so
+            # latestReadyRevisionName stays on the serving revision.
+            return json.dumps({"status": {"latestReadyRevisionName":
+                                          self.traffic[0]["revisionName"],
                                           "latestCreatedRevisionName": self.created,
                                           "traffic": self.traffic},
                                "spec": {"template": {"spec": {"containers": [
                                    {"image": self.revisions[self.created]}]}}}})
         if cmd[0] == "gcloud" and a[:3] == ["run", "services", "update"]:
             n = f"api-{len(self.revisions) + 1}"
-            self.revisions[n] = a[4].split("=", 1)[1]
+            image = a[4].split("=", 1)[1]
+            if self.platform and image == NEW_API:
+                image = f"{ph.REGISTRY}/sessionfs-ee-api@{CHILD[self.platform]}"
+            self.revisions[n] = image
             self.created = n
             return ""
         if cmd[0] == "gcloud" and a[:3] == ["run", "services", "update-traffic"] \
@@ -185,7 +194,10 @@ class Prod:
                             for r in a[4].split("=", 1)[1].split(",")]
             return ""
         if cmd[0] == "gcloud" and a[:3] == ["run", "revisions", "describe"]:
-            return json.dumps({"spec": {"containers": [{"image": self.revisions[a[3]]}]}})
+            ready = self.ready or a[3] == "api-1"
+            return json.dumps({"spec": {"containers": [{"image": self.revisions[a[3]]}]},
+                               "status": {"conditions": [
+                                   {"type": "Ready", "status": "True" if ready else "False"}]}})
         if cmd[0] == "gcloud" and a[:3] == ["run", "jobs", "list"]:
             return json.dumps([_job(n, i) for n, i in self.jobs.items()])
         if cmd[0] == "gcloud" and a[:3] == ["run", "jobs", "update"]:
@@ -211,6 +223,11 @@ class Prod:
                                 "status": "completed", "conclusion": "success"}])
         raise AssertionError(f"unexpected command {cmd}")
 
+    def manifest(self, ref):
+        assert ref == NEW_API
+        return {"manifests": [{"digest": d, "platform": {"os": "linux", "architecture": arch}}
+                              for arch, d in CHILD.items() if arch != "riscv64"]}
+
 
 @pytest.fixture()
 def prod(monkeypatch, tmp_path):
@@ -224,7 +241,7 @@ def prod(monkeypatch, tmp_path):
 
 def _run(prod_state, *extra):
     ctx_kwargs = {"runner": prod_state.runner, "http": prod_state.health, "sleep": lambda s: None,
-                  "fetch": lambda url: None}
+                  "fetch": lambda url: None, "manifest": prod_state.manifest}
     real = ph.Ctx
 
     def make(**kw):
@@ -238,6 +255,24 @@ def _run(prod_state, *extra):
 
 
 NEW_API = f"{ph.REGISTRY}/sessionfs-ee-api@{D['api']}"
+CHILD = {"amd64": "sha256:" + "a" * 64, "arm64": "sha256:" + "b" * 64,
+         "riscv64": "sha256:" + "c" * 64}
+
+
+def test_revision_may_run_the_amd64_manifest_of_the_release_index(prod):
+    # Regression (0.33.2): Cloud Run records the platform manifest it resolved
+    # from the multi-arch index, never the index digest itself.
+    p = Prod(platform="amd64")
+    assert _run(p) == 0
+    assert p.traffic == [{"revisionName": "api-2", "percent": 100}]
+
+
+@pytest.mark.parametrize("platform", ["arm64", "riscv64"])
+def test_revision_running_another_manifest_is_refused(prod, platform):
+    p = Prod(platform=platform)
+    with pytest.raises(SystemExit, match="does not run"):
+        _run(p)
+    assert p.traffic == [{"revisionName": "api-1", "percent": 100}]
 
 
 def test_full_promotion_moves_api_and_every_job(prod):
@@ -259,6 +294,19 @@ def test_unhealthy_api_restores_traffic_and_the_migrate_job(prod):
         _run(p)
     assert p.traffic == [{"revisionName": "api-1", "percent": 100}]
     assert "@sha256:" in p.jobs["sessionfs-migrate"] and p.jobs["sessionfs-migrate"] != NEW_API
+    assert json.loads((prod / "failed.json").read_text())["restore_errors"] == []
+
+
+def test_a_new_revision_is_judged_by_its_own_ready_condition(prod):
+    # Regression (0.33.2): the service's latestReadyRevisionName stays on the
+    # serving revision after a --no-traffic deploy, so a healthy candidate was
+    # refused. Readiness now comes from the revision; a not-Ready one is still
+    # refused and the service template goes back to the baseline image.
+    p = Prod(ready=False)
+    with pytest.raises(SystemExit, match="is not Ready"):
+        _run(p)
+    assert p.traffic == [{"revisionName": "api-1", "percent": 100}]
+    assert p.revisions[p.created] == p.revisions["api-1"]
     assert json.loads((prod / "failed.json").read_text())["restore_errors"] == []
 
 

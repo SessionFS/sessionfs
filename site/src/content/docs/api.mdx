@@ -103,6 +103,7 @@ Available scopes (the `*` wildcard is reserved for legacy user/admin keys; servi
 | `handoffs:read`, `handoffs:write` | ✅ live (v0.10.10) | Handoff create/claim/revoke/decline + comments + events |
 | `agent_runs:write` | ✅ live (v0.10.10) | `POST /agent-runs`, `POST /agent-runs/{id}/complete`, `POST /agent-runs/{id}/usage` |
 | `tickets:read`, `tickets:write` | ✅ live (v0.10.18) | Ticket list/get/comments/review-state/readiness + start/complete/comment |
+| `jira:read` | ✅ live (v0.33.3) | `POST /api/v1/orgs/{org_id}/integrations/jira/search` (the key's own org only, while its creator is a member; limited to Jira projects mapped to allowlisted projects the creator can read; see [Jira search](/integrations/jira/#search-jira)) |
 | `meetings:read`, `meetings:write` | ✅ live (v0.29.0) | Stored meeting transcripts: upload/list/get/delete + participant resolution (see [Meetings](/meetings/)) |
 | `knowledge:read`, `knowledge:write` | ✅ live (v0.10.19; project context + wiki since v0.29.1) | Knowledge entries: `GET /entries`, `GET /entries/{id}`, `POST /entries/add`, `PUT /entries/{id}` (dismiss/update/refresh/promote/supersede). Project context (`knowledge:read`): `GET /projects/{id}`, `GET /projects/{id}/context/sections/{slug}`. Wiki (`knowledge:read`): list/get pages, page history and backlinks; (`knowledge:write`): `PUT /projects/{id}/pages/{slug}` — writes record `actor_type="service_key"` + `service_key_id`/`service_key_name` |
 | `personas:read`, `personas:write` | ✅ live (v0.10.20) | Persona list/get + create/update/delete |

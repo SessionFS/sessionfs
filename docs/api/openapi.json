@@ -8578,7 +8578,7 @@
       },
       "HelperSettingsPatch": {
         "additionalProperties": false,
-        "description": "A partial settings update: omitted keys keep their stored value.\n\nAn explicit ``null`` resets a key: ``max_output_tokens``,\n``max_tool_steps``, ``answer_style`` and ``grounding`` go back to their defaults; for\n``temperature``, ``top_p`` and ``reasoning_effort`` ``null`` is itself the\nvalue (provider default / not sent).",
+        "description": "A partial settings update: omitted keys keep their stored value.\n\nAn explicit ``null`` resets a key: ``max_output_tokens``,\n``max_tool_steps``, ``answer_style``, ``grounding`` and the per-question\nlimits go back to their defaults; for\n``temperature``, ``top_p`` and ``reasoning_effort`` ``null`` is itself the\nvalue (provider default / not sent).",
         "properties": {
           "answer_style": {
             "anyOf": [
@@ -8610,6 +8610,32 @@
             ],
             "title": "Grounding"
           },
+          "max_consecutive_tool_failures": {
+            "anyOf": [
+              {
+                "maximum": 10.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Consecutive Tool Failures"
+          },
+          "max_input_tokens": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": 10000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Input Tokens"
+          },
           "max_output_tokens": {
             "anyOf": [
               {
@@ -8622,6 +8648,19 @@
               }
             ],
             "title": "Max Output Tokens"
+          },
+          "max_tool_calls": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Tool Calls"
           },
           "max_tool_steps": {
             "anyOf": [
@@ -9405,6 +9444,41 @@
           }
         },
         "title": "JiraPullBody",
+        "type": "object"
+      },
+      "JiraSearchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "fields": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 13,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fields"
+          },
+          "jql": {
+            "default": "",
+            "maxLength": 2000,
+            "title": "Jql",
+            "type": "string"
+          },
+          "max_results": {
+            "default": 20,
+            "maximum": 50.0,
+            "minimum": 1.0,
+            "title": "Max Results",
+            "type": "integer"
+          }
+        },
+        "title": "JiraSearchRequest",
         "type": "object"
       },
       "JiraSection": {
@@ -12290,6 +12364,32 @@
             ],
             "title": "Answer Style"
           },
+          "ceiling_max_consecutive_tool_failures": {
+            "anyOf": [
+              {
+                "maximum": 10.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ceiling Max Consecutive Tool Failures"
+          },
+          "ceiling_max_input_tokens": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": 10000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ceiling Max Input Tokens"
+          },
           "ceiling_max_output_tokens": {
             "anyOf": [
               {
@@ -12302,6 +12402,19 @@
               }
             ],
             "title": "Ceiling Max Output Tokens"
+          },
+          "ceiling_max_tool_calls": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ceiling Max Tool Calls"
           },
           "ceiling_max_tool_steps": {
             "anyOf": [
@@ -12331,6 +12444,32 @@
             ],
             "title": "Grounding"
           },
+          "max_consecutive_tool_failures": {
+            "anyOf": [
+              {
+                "maximum": 10.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Consecutive Tool Failures"
+          },
+          "max_input_tokens": {
+            "anyOf": [
+              {
+                "maximum": 1000000.0,
+                "minimum": 10000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Input Tokens"
+          },
           "max_output_tokens": {
             "anyOf": [
               {
@@ -12343,6 +12482,19 @@
               }
             ],
             "title": "Max Output Tokens"
+          },
+          "max_tool_calls": {
+            "anyOf": [
+              {
+                "maximum": 100.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Tool Calls"
           },
           "max_tool_steps": {
             "anyOf": [
@@ -38564,6 +38716,61 @@
           }
         },
         "summary": "List Jira Issue Types",
+        "tags": [
+          "jira"
+        ]
+      }
+    },
+    "/api/v1/orgs/{org_id}/integrations/jira/search": {
+      "post": {
+        "description": "Search Jira with JQL through the org's connection (read-only).\n\nAny active org member may search (service keys need ``jira:read`` and\nmust belong to the org). Results only come from Jira projects mapped to\nSessionFS projects the caller can read (a service key: its minter, within\nits project allowlist): the JQL is wrapped as\n``project in (<allowed>) AND (<jql>)`` and every issue is re-checked\nagainst the allowed set. No allowed projects is an empty result with a\n``reason``, not an error.",
+        "operationId": "search_jira_issues_api_v1_orgs__org_id__integrations_jira_search_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "title": "Org Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/JiraSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Search Jira Issues Api V1 Orgs  Org Id  Integrations Jira Search Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Search Jira Issues",
         "tags": [
           "jira"
         ]

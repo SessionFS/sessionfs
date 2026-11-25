@@ -102,6 +102,24 @@ Once connected, the Jira row on the Integrations tab shows the site and a one-li
 
 The **Connection** section is a read-only summary (site, account, last four characters of the token, verified date, default template). **Edit connection** opens the form, which always asks for the API token again so it can be re-encrypted.
 
+## Search Jira
+
+Any member of the org can search Jira with JQL (v0.33.3, GitHub #144): from the API, the `search_jira_issues` MCP tool, `sfs org jira search`, or by asking the session helper ("list the active Jira tickets Kelvin is working on").
+
+```bash
+sfs org jira search 'assignee = "Kelvin" AND statusCategory != Done ORDER BY updated DESC'
+```
+
+**What you can see.** A search only ever covers the Jira projects that are mapped to SessionFS projects you can read. SessionFS adds that filter itself, wrapping your query as `project in (<those projects>) AND (<your JQL>)`, and then checks every issue Jira returns against the same list, dropping anything outside it. If none of the org's mappings belong to a project you can read, the search returns no issues with `reason: "no_mapped_projects"` instead of an error. In the session helper the conversation's scope narrows it further: a project-scoped conversation only searches that project's Jira project.
+
+**Query rules.** The JQL can be up to 2,000 characters. Quotes and parentheses must balance, a backslash may only appear inside a quoted value, and `ORDER BY` is only accepted once, at the end of the query, followed by plain field names with optional `ASC` or `DESC`. A query that breaks these rules is refused with `422 invalid_jql` before anything is sent to Jira. A query Jira itself rejects returns `422 jira_query_rejected` with a generic message (Jira's own message is not passed on because it can reveal whether a project outside your list exists).
+
+**Results.** Up to `max_results` issues (default 20, max 50) with the key, a link, the Jira project key, the SessionFS projects mapped to it and the fields you ask for (default: summary, status, assignee, priority, issue type, last update). People appear by display name only. Summaries, descriptions, labels and names are redacted under the strictest DLP policy of your organizations, and descriptions are cut to 2,000 characters.
+
+**Limits and audit.** Each org can make 30 Jira searches a minute per API server (`429 jira_search_rate_limited` with `Retry-After: 60` past that). The same search within 60 seconds is answered from a short cache without calling Jira. Every search is written to the org audit log as `jira_search` with the JQL (redacted), the result count and the issue keys, never issue content; helper searches are recorded in the helper's retrieval audit instead.
+
+Service keys need the `jira:read` scope. They search only their own org, only while the person who created them is still a member, and only the projects on their allowlist.
+
 ## Two-way sync
 
 Two-way sync is off by default. An org owner or admin turns it on under
@@ -327,6 +345,7 @@ Every reworded paragraph has to cite a real part of the ticket (a description li
 - Site URLs must be `https://<name>.atlassian.net`. Redirects aren't followed, requests time out after 20 seconds, and responses are capped at 2 MiB.
 - Ticket text is redacted for secrets before any of it reaches a model, even when the org has no DLP policy.
 - Org routes check membership and the org's plan; ticket routes check the project's org and use the existing `tickets:read` / `tickets:write` scopes.
+- Search results are limited to Jira projects mapped to SessionFS projects the caller can read, enforced both in the query and on every returned issue.
 - If the org reconnects to a different Jira site, existing links are reported as stale (`409 jira_link_stale`) and must be unlinked before publishing again.
 
 ## API
@@ -337,6 +356,7 @@ Every reworded paragraph has to cite a real part of the ticket (a description li
 | GET | `/api/v1/orgs/{org_id}/integrations/jira/projects` | Jira projects (`?q=` to search, `?limit=` up to 100) |
 | GET / PUT / DELETE | `/api/v1/orgs/{org_id}/integrations/jira/mappings[/{project_id}]` | Read, save or remove mappings |
 | GET | `/api/v1/orgs/{org_id}/integrations/jira/health` | Unmapped projects, failures, stale links |
+| POST | `/api/v1/orgs/{org_id}/integrations/jira/search` | Search issues with JQL in the Jira projects mapped to projects you can read (any member; `jira:read` for service keys). Body: `jql`, `max_results` (≤ 50), `fields` |
 | PATCH | `/api/v1/orgs/{org_id}/integrations/jira/sync` | Change two-way sync settings and the sprint/epic-link field overrides (merge; no token needed) |
 | POST | `/api/v1/orgs/{org_id}/integrations/jira/webhook-secret` | Generate/rotate the inbound webhook secret (returned once; stored encrypted, only the last 4 characters are shown again) |
 | GET | `/api/v1/orgs/{org_id}/integrations/jira/sync-events` | Recent two-way sync events (admin). `?direction=inbound\|outbound`, `?limit=` up to 200 |

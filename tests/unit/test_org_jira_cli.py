@@ -226,3 +226,45 @@ def test_templates_show_escapes_rich_markup_in_template_text(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "[red]Design[/red]" in result.output
     assert "[bold]H[/bold]" in result.output
+
+
+def test_jira_search_posts_jql_and_renders_issues(monkeypatch):
+    seen: list = []
+    monkeypatch.setattr(
+        "sessionfs.cli.cmd_org._load_api_config", lambda: ("http://api.test", "k")
+    )
+    monkeypatch.setattr("sessionfs.cli.cmd_org._org_id", lambda api_url, api_key: "org_x")
+
+    async def _fake_api(method, path, api_url, api_key, json_data=None, extra_headers=None, params=None):
+        seen.append((method, path, json_data))
+        return (
+            200,
+            {
+                "issues": [
+                    {
+                        "key": "ACME-1",
+                        "status": "In Progress",
+                        "assignee": "Kelvin",
+                        "summary": "[red]Fix[/red] login",
+                    }
+                ],
+                "allowed_jira_projects": ["ACME"],
+                "has_more": False,
+                "reason": None,
+            },
+            {},
+        )
+
+    monkeypatch.setattr("sessionfs.cli.cmd_org._api_request", _fake_api)
+    result = runner.invoke(
+        org_app, ["jira", "search", "assignee = Kelvin", "-n", "5", "--fields", "summary,status"]
+    )
+    assert result.exit_code == 0, result.output
+    assert seen == [
+        (
+            "POST",
+            "/api/v1/orgs/org_x/integrations/jira/search",
+            {"jql": "assignee = Kelvin", "max_results": 5, "fields": ["summary", "status"]},
+        )
+    ]
+    assert "ACME-1" in result.output and "[red]Fix[/red] login" in result.output

@@ -1859,6 +1859,7 @@ Manage the org's Jira Cloud integration (admin only). Requires the org's plan to
 sfs org jira connect --site-url https://acme.atlassian.net --email jira@acme.com --template agile
 sfs org jira mappings
 sfs org jira health
+sfs org jira search 'assignee = "Kelvin" ORDER BY updated DESC'   # any org member
 sfs org jira templates list
 sfs org jira templates show design-lite
 sfs org jira templates show design-lite --versions
@@ -1869,6 +1870,7 @@ sfs org jira templates show design-lite --versions
 | `connect` | Validate the Jira Cloud credentials (`GET /rest/api/3/myself`) and upsert the org connection. `--api-token` is prompted for (hidden) when omitted. `--template` is required and one of `agile`, `compliance`, `sre`, `bug`, `design`. |
 | `mappings` | List project → Jira project mappings (key, issue type, template override, done status). Mappings are created/updated via the API, not this CLI. |
 | `health` | Show unmapped project count, push-failure count, and links whose status hasn't been checked in 7+ days. |
+| `search [JQL]` | Search Jira issues with JQL (any org member, not only admins). Only the Jira projects mapped to SessionFS projects you can read are searched. `--max-results` (1–50, default 20), `--fields summary,status,…`, `--json` for the raw response. |
 | `templates list` | List Jira issue templates: the built-ins plus the org's custom templates, with their slug, name, kind, version and archive status. |
 | `templates show <slug>` | Show one template's name, description and sections (heading, mode, source fields, rewrite guidance). `--versions` also lists a custom template's version history. |
 

@@ -310,6 +310,7 @@ def test_tool_specs_exposes_read_and_proposal_tools():
         "list_tickets",
         "get_ticket",
         "get_jira_issue",
+        "search_jira_issues",
         "list_wiki_pages",
         "get_wiki_page",
         "list_agent_runs",

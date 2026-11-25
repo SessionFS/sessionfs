@@ -360,8 +360,11 @@ export default function HelperPanel({
       // outcome, written for the model) are not shown.
       let pendingActions: TurnAction[] = [];
       let lastAssistant: Turn | null = null;
+      // The question each answer is for, so Try again works on a reopened thread.
+      let lastQuestion: string | undefined;
       for (const m of conv.messages) {
         if (m.role === 'user') {
+          lastQuestion = m.content;
           loaded.push({ id: nextId(), role: 'user', content: m.content, toolSteps: [], citations: [] });
           pendingSteps = [];
           pendingActions = [];
@@ -377,6 +380,8 @@ export default function HelperPanel({
             status: 'done',
             actions: pendingActions.length ? pendingActions : undefined,
             usage: usageFrom(m),
+            question: lastQuestion,
+            stopReason: m.stop_reason ?? null,
           };
           pendingSteps = [];
           pendingActions = [];
@@ -596,8 +601,10 @@ export default function HelperPanel({
           patchAssistant((t) => ({ ...t, error: streamError(e.code, e.message) }));
         } else if (ev.event === 'done') {
           gotDone = true;
-          const usage = usageFrom(JSON.parse(ev.data) as Parameters<typeof usageFrom>[0]);
-          if (usage) patchAssistant((t) => ({ ...t, usage }));
+          const data = JSON.parse(ev.data) as Parameters<typeof usageFrom>[0] & { stop_reason?: unknown };
+          const usage = usageFrom(data);
+          const stopReason = typeof data.stop_reason === 'string' ? data.stop_reason : null;
+          patchAssistant((t) => ({ ...t, ...(usage ? { usage } : {}), stopReason }));
         }
       } catch {
         // A malformed frame should never surface — ignore it and keep the rest.

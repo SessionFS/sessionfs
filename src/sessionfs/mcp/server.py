@@ -4172,6 +4172,48 @@ _TOOLS = [
         },
     ),
     Tool(
+        name="search_jira_issues",
+        description=(
+            "Search Jira issues with JQL through the org's Jira connection "
+            "(read-only). Only Jira projects mapped to SessionFS projects you "
+            "can read are searched: the server wraps your JQL as "
+            "`project in (<allowed>) AND (<jql>)` and re-checks every issue, "
+            "so you never see issues from other Jira projects. A trailing "
+            "top-level ORDER BY is allowed. Example: jql='assignee = "
+            "\"Kelvin\" AND statusCategory != Done ORDER BY updated DESC'. "
+            "Results carry key, url, project_key, the SessionFS project_ids "
+            "mapped to that Jira project and the requested fields (summary, "
+            "status, assignee, reporter, priority, issue_type, labels, "
+            "components, created, updated, due_date, resolution, description; "
+            "default summary, status, assignee, priority, issue_type, updated). "
+            "Without org_id the default org is used. Enterprise plan; service "
+            "keys need jira:read.\n\n"
+            "IMPORTANT: Always use this MCP tool instead of running "
+            "`sfs org jira search` or any other sfs CLI command."
+        ),
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "jql": {"type": "string", "description": "JQL query (max 2000 chars). Empty = every issue in the allowed projects."},
+                "max_results": {"type": "integer", "minimum": 1, "maximum": 50, "description": "Default 20, max 50."},
+                "fields": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": [
+                            "summary", "status", "assignee", "reporter", "priority",
+                            "issue_type", "labels", "components", "created",
+                            "updated", "due_date", "resolution", "description",
+                        ],
+                    },
+                    "description": "Fields to return (optional).",
+                },
+                "org_id": {"type": "string", "description": "Org id (org_...). Optional."},
+            },
+            "required": ["jql"],
+        },
+    ),
+    Tool(
         name="list_external_contacts",
         description=(
             "List an org's external contacts: people the org attributes work "
@@ -4509,6 +4551,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_get_approval_request(arguments)
         elif name == "list_approval_policies":
             result = await _handle_list_approval_policies(arguments)
+        elif name == "search_jira_issues":
+            result = await _handle_search_jira_issues(arguments)
         elif name == "list_external_contacts":
             result = await _handle_list_external_contacts(arguments)
         elif name == "get_external_contact":
@@ -10193,6 +10237,43 @@ async def _handle_list_approval_policies(args: dict) -> dict:
         return {"error": "Organization not found"}
     if resp.status_code >= 400:
         return {"error": f"API error {resp.status_code}: {resp.text}"}
+    return resp.json()
+
+
+# ── Jira search (GitHub #144) ──
+
+
+async def _handle_search_jira_issues(args: dict) -> dict:
+    """Wrap POST /api/v1/orgs/{org}/integrations/jira/search (read only)."""
+    jql = args.get("jql", "")
+    if jql is None:
+        jql = ""
+    if not isinstance(jql, str):
+        return {"error": "jql must be a string"}
+    body: dict[str, Any] = {"jql": jql}
+    max_results = args.get("max_results")
+    if max_results is not None:
+        if isinstance(max_results, bool) or not isinstance(max_results, int):
+            return {"error": "max_results must be an integer"}
+        body["max_results"] = max(1, min(50, max_results))
+    fields = args.get("fields")
+    if fields is not None:
+        if not isinstance(fields, list) or not all(isinstance(f, str) for f in fields):
+            return {"error": "fields must be a list of strings"}
+        body["fields"] = fields
+    try:
+        api_url, api_key, org_id = await _group_config(args)
+    except Exception as exc:
+        return {"error": str(exc)}
+    # The server leaves this read-only route out of Idempotency-Key handling.
+    async with idempotent_async_client(timeout=45) as client:
+        resp = await client.post(
+            f"{api_url}/api/v1/orgs/{_path_segment(org_id)}/integrations/jira/search",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=body,
+        )
+    if resp.status_code >= 400:
+        return {"error": _helper_error_message(resp)}
     return resp.json()
 
 

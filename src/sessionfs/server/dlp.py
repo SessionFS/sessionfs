@@ -15,6 +15,8 @@ import json
 import logging
 import re
 import tarfile
+from collections.abc import Callable, Iterator
+from typing import IO
 
 from sessionfs.server.db.models import Organization
 from sessionfs.security.secrets import (
@@ -22,9 +24,11 @@ from sessionfs.security.secrets import (
     PHI_PATTERNS,
     SECRET_PATTERNS,
     ALLOWLIST,
+    compile_custom_patterns,
     line_starts,
     scan_dlp as scan_dlp_full,
     scan_dlp_builtin,
+    scan_dlp_compiled,
 )
 
 logger = logging.getLogger("sessionfs.api")
@@ -442,37 +446,66 @@ def _marker_re(
     return _marker_re_for(tuple(sorted(labels)))
 
 
+class _StripMap:
+    """Where the kept characters of a stripped text came from.
+
+    One entry per run of consecutive kept characters: the run's start in the
+    stripped text and in the original. Two ints per run instead of one per
+    character, which on a large re-pushed session that already carries
+    markers was tens of bytes per character of the whole text.
+    """
+
+    __slots__ = ("stripped_starts", "original_starts")
+
+    def __init__(self) -> None:
+        self.stripped_starts: list[int] = []
+        self.original_starts: list[int] = []
+
+    def add_run(self, stripped_start: int, original_start: int) -> None:
+        self.stripped_starts.append(stripped_start)
+        self.original_starts.append(original_start)
+
+    def original(self, pos: int) -> int:
+        """Index in the original text of stripped character ``pos``."""
+        run = bisect.bisect_right(self.stripped_starts, pos) - 1
+        return self.original_starts[run] + pos - self.stripped_starts[run]
+
+
 def _strip_markers(
     text: str, custom_patterns: list[dict] | None, trusted_labels: tuple[str, ...] = ()
-) -> tuple[str, list[int] | None]:
+) -> tuple[str, _StripMap | None]:
     """``text`` with genuine markers removed, plus a map back to ``text``.
 
-    ``offsets[i]`` is the index in ``text`` of kept character ``i`` (None when
-    nothing was removed). Markers are removed rather than replaced: any
-    stand-in character could close or split the surrounding value and hide a
-    secret written right next to a marker.
+    The map gives, for each kept character, its index in ``text`` (None when
+    nothing was removed; see ``_to_original``). Markers are removed rather
+    than replaced: any stand-in character could close or split the
+    surrounding value and hide a secret written right next to a marker.
     """
     if "[REDACTED:" not in text:
         return text, None
     pieces: list[str] = []
-    offsets: list[int] = []
+    runs = _StripMap()
+    size = 0
     pos = 0
     for m in _marker_re(custom_patterns, trusted_labels).finditer(text):
-        pieces.append(text[pos:m.start()])
-        offsets.extend(range(pos, m.start()))
+        if m.start() > pos:
+            pieces.append(text[pos:m.start()])
+            runs.add_run(size, pos)
+            size += m.start() - pos
         pos = m.end()
     if pos == 0:
         return text, None
-    pieces.append(text[pos:])
-    offsets.extend(range(pos, len(text)))
-    return "".join(pieces), offsets
+    if pos < len(text):
+        pieces.append(text[pos:])
+        runs.add_run(size, pos)
+    return "".join(pieces), runs
 
 
-def _to_original(offsets: list[int] | None, start: int, end: int) -> tuple[int, int]:
+def _to_original(offsets: _StripMap | None, start: int, end: int) -> tuple[int, int]:
     """Map a non-empty ``[start, end)`` span in stripped text back to ``text``."""
     if offsets is None:
         return start, end
-    return offsets[start], offsets[end - 1] + 1
+    return offsets.original(start), offsets.original(end - 1) + 1
 
 
 def dedupe_findings(findings: list[DLPFinding]) -> list[DLPFinding]:
@@ -720,6 +753,41 @@ def _pair_finding(
     return None
 
 
+def _walk_decoded(obj: object, depth: int, parts: list[str]) -> None:
+    """Append every key, string and number of ``obj`` to ``parts`` (see
+    ``decoded_json_text``)."""
+    if depth > MAX_JSON_DEPTH:
+        raise DlpUninspectableError("JSON is nested too deeply to scan")
+    if isinstance(obj, str):
+        parts.append(obj)
+    elif _is_number(obj):
+        parts.append(_number_text(obj))
+    elif isinstance(obj, list):
+        for item in obj:
+            _walk_decoded(item, depth + 1, parts)
+    elif isinstance(obj, dict):
+        for key, value in obj.items():
+            if isinstance(key, str):
+                parts.append(key)
+                if _is_scalar(value):
+                    value_text = value if isinstance(value, str) else _number_text(value)
+                    parts.append(_pair_text(key, value_text)[0])
+            _walk_decoded(value, depth + 1, parts)
+
+
+def _decoded_line_parts(line: str, parts: list[str], *, strict: bool) -> None:
+    """``decoded_json_text``'s output for one line of a JSONL document."""
+    if not line.strip():
+        return
+    try:
+        _walk_decoded(_loads_for_dlp(line), 0, parts)
+    except json.JSONDecodeError as exc:
+        if strict:
+            raise DlpUninspectableError("unreadable JSON line") from exc
+        # Still scan what it says, with string escapes undone.
+        parts.append(_best_effort_unescape(line))
+
+
 def decoded_json_text(text: str, *, strict: bool = False) -> str:
     """Every key, string and number inside a JSON or JSONL document, decoded.
 
@@ -736,43 +804,15 @@ def decoded_json_text(text: str, *, strict: bool = False) -> str:
     too (used where a lenient reader would otherwise drop it silently).
     """
     parts: list[str] = []
-
-    def walk(obj: object, depth: int) -> None:
-        if depth > MAX_JSON_DEPTH:
-            raise DlpUninspectableError("JSON is nested too deeply to scan")
-        if isinstance(obj, str):
-            parts.append(obj)
-        elif _is_number(obj):
-            parts.append(_number_text(obj))
-        elif isinstance(obj, list):
-            for item in obj:
-                walk(item, depth + 1)
-        elif isinstance(obj, dict):
-            for key, value in obj.items():
-                if isinstance(key, str):
-                    parts.append(key)
-                    if _is_scalar(value):
-                        value_text = value if isinstance(value, str) else _number_text(value)
-                        parts.append(_pair_text(key, value_text)[0])
-                walk(value, depth + 1)
-
     try:
         document = _loads_for_dlp(text)
     except json.JSONDecodeError:
-        document = None
+        pass
     else:
-        walk(document, 0)
+        _walk_decoded(document, 0, parts)
         return "\n".join(parts)
     for line in text.split("\n"):
-        if not line.strip():
-            continue
-        try:
-            walk(_loads_for_dlp(line), 0)
-        except json.JSONDecodeError as exc:
-            if strict:
-                raise DlpUninspectableError("unreadable JSON line") from exc
-            # Still scan what it says, with string escapes undone.
-            parts.append(_best_effort_unescape(line))
+        _decoded_line_parts(line, parts, strict=strict)
     return "\n".join(parts)
 
 
@@ -1441,12 +1481,350 @@ def redact_and_repack(
     # Phase 3: repack
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-        for name, data in sorted(members_data.items()):
+        for name in sorted(members_data):
+            # Drop each member once written: the decompressed members and
+            # the new archive are not all held at the same time.
+            data = members_data.pop(name)
             info = tarfile.TarInfo(name=name)
             info.size = len(data)
             tar.addfile(info, io.BytesIO(data))
+            del data
 
     return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Archive scan (sync push)
+# ---------------------------------------------------------------------------
+#
+# A pushed archive used to be scanned as one text: every .json/.jsonl member
+# raw, then its decoded_json_text(), all joined with "\n", markers masked,
+# then scan_dlp(). On a large session that kept about ten copies of the
+# whole decompressed archive alive at once and ran the API out of memory.
+#
+# scan_archive_for_dlp() produces the same findings, in the same order and
+# with the same line numbers, while holding one bounded batch of lines:
+#
+# * scan_dlp matches every pattern within one line (str.splitlines()), so
+#   the joined text can be cut right after any "\n" and scanned piece by
+#   piece; each piece's line numbers are offset by the lines before it. A
+#   cut after "\n" is a line boundary for splitlines (a "\r\n" pair stays
+#   in one piece). No pattern spans lines, so nothing needs to overlap
+#   between pieces.
+# * Redaction markers never contain a line break, so masking each piece is
+#   masking the joined text; lines are counted after masking, as before.
+# * Members are read in byte blocks cut right after b"\n". The UTF-8
+#   decoder (errors="replace") never takes a newline byte into a multi-byte
+#   or invalid sequence, so decoding block by block is decoding the whole.
+# * decoded_json_text() first tries the whole member as one JSON document,
+#   then falls back to one line at a time. _line_mode_is_exact() decides
+#   from the first non-blank line whether the line-by-line result is the
+#   same; when it can't tell (a document spread over several lines, such as
+#   an indented .json file), that member is decoded whole as before.
+# * The last part of the joined text has no "\n" after it, so each member's
+#   decoded part is closed only once it is known whether another member
+#   follows.
+# * Read errors and uninspectable members fail closed exactly as before
+#   (same member names, same order, "archive" for a read error).
+
+
+class _ScannerFailed(Exception):
+    """Carries an exception raised by the scanner itself past the archive
+    read-error handler (which must only catch read and decode errors)."""
+
+
+# Bytes read from a member at a time.
+_READ_CHUNK_BYTES = 1024 * 1024
+
+# The JSON whitespace json.loads skips before a value.
+_JSON_WS = re.compile(r"[ \t\n\r]*")
+# The parser _loads_for_dlp uses (json.loads with these hooks).
+_DLP_JSON_DECODER = json.JSONDecoder(
+    object_pairs_hook=_reject_duplicate_keys,
+    parse_float=_JsonNumber,
+    parse_int=_JsonNumber,
+    parse_constant=_JsonNumber,
+)
+
+
+def iter_text_blocks(f: IO[bytes]) -> Iterator[str]:
+    """A member's text, decoded as ``f.read().decode("utf-8", "replace")``
+    would, in blocks that end with "\\n" (except possibly the last)."""
+    pending: list[bytes] = []
+    while True:
+        chunk = f.read(_READ_CHUNK_BYTES)
+        if not chunk:
+            break
+        cut = chunk.rfind(b"\n")
+        if cut == -1:
+            pending.append(chunk)
+            continue
+        pending.append(chunk[: cut + 1])
+        yield b"".join(pending).decode("utf-8", errors="replace")
+        rest = chunk[cut + 1 :]
+        pending = [rest] if rest else []
+    if pending:
+        yield b"".join(pending).decode("utf-8", errors="replace")
+
+
+def _line_mode_is_exact(line: str) -> bool:
+    """Whether decoding a member line by line gives ``decoded_json_text()``
+    of the whole member, judged from its first line holding anything other
+    than JSON whitespace.
+
+    ``decoded_json_text`` parses the whole text as one document first; that
+    parse reads the first value, which starts on this line. If the value
+    ends on this line, the whole text is either that one value plus
+    whitespace (line by line yields the same parts: the other lines are
+    blank) or not a single document (the whole-text path itself goes line
+    by line). If parsing fails before the end of this line, the whole-text
+    parse fails at the same place and also goes line by line (a string can't
+    run past a line break); failing for depth or a repeated key fails this
+    line the same way. Only a value still open at the end of the line may
+    continue on the next one: then the member must be decoded whole.
+    """
+    start = _JSON_WS.match(line)
+    try:
+        _DLP_JSON_DECODER.raw_decode(line, start.end() if start else 0)
+    except json.JSONDecodeError as exc:
+        return exc.pos < len(line)
+    except (RecursionError, ValueError, OverflowError):
+        # DlpUninspectableError (a ValueError) included.
+        return True
+    return True
+
+
+class _MemberDecoder:
+    """``decoded_json_text()`` of one member, fed block by block.
+
+    The output (parts joined by "\\n") goes to ``emit`` piece by piece.
+    Raises ``DlpUninspectableError`` exactly when ``decoded_json_text``
+    would (possibly before the whole member was fed).
+    """
+
+    def __init__(self, emit: Callable[[str], None]) -> None:
+        self._emit = emit
+        self._mode: str | None = None  # None until decided, "lines" or "whole"
+        self._held: list[str] = []
+        self._carry = ""
+        self._emitted_any = False
+
+    def _emit_parts(self, parts: list[str]) -> None:
+        for part in parts:
+            if self._emitted_any:
+                self._emit("\n")
+            self._emitted_any = True
+            self._emit(part)
+
+    def _lines(self, text: str) -> None:
+        pieces = (self._carry + text).split("\n")
+        self._carry = pieces.pop()
+        for line in pieces:
+            parts: list[str] = []
+            _decoded_line_parts(line, parts, strict=False)
+            self._emit_parts(parts)
+
+    def feed(self, block: str) -> None:
+        if self._mode == "lines":
+            self._lines(block)
+            return
+        self._held.append(block)
+        if self._mode == "whole":
+            return
+        # Everything held before this block is JSON whitespace, so the first
+        # value starts in this block. (Should a line ever span blocks, the
+        # piece seen here is its tail after whitespace, which gives the same
+        # decision: see _line_mode_is_exact.)
+        for line in block.split("\n"):
+            if _JSON_WS.fullmatch(line):
+                continue
+            self._mode = "lines" if _line_mode_is_exact(line) else "whole"
+            break
+        if self._mode == "lines":
+            held_text = "".join(self._held)
+            self._held = []
+            self._lines(held_text)
+
+    def close(self) -> None:
+        if self._mode == "lines":
+            parts: list[str] = []
+            _decoded_line_parts(self._carry, parts, strict=False)
+            self._carry = ""
+            self._emit_parts(parts)
+            return
+        text = "".join(self._held)
+        self._held = []
+        decoded = decoded_json_text(text)
+        del text
+        if decoded:
+            self._emit(decoded)
+
+
+class _BatchScanner:
+    """Scans one part of the joined scan text in batches cut after "\\n".
+
+    ``findings`` carry line numbers relative to the start of the part;
+    ``lines`` counts the lines scanned so far.
+    """
+
+    def __init__(
+        self, scan: Callable[[str], tuple[list[DLPFinding], int]], batch_chars: int
+    ) -> None:
+        self._scan = scan
+        self._batch_chars = batch_chars
+        self._pending: list[str] = []
+        self._size = 0
+        self.lines = 0
+        self.findings: list[DLPFinding] = []
+
+    def write(self, text: str) -> None:
+        if not text:
+            return
+        cut = text.rfind("\n")
+        if cut == -1 or self._size + cut + 1 < self._batch_chars:
+            self._pending.append(text)
+            self._size += len(text)
+            return
+        self._pending.append(text[: cut + 1])
+        batch = "".join(self._pending)
+        rest = text[cut + 1 :]
+        self._pending = [rest] if rest else []
+        self._size = len(rest)
+        self._flush(batch)
+
+    def close(self, *, separator: bool) -> None:
+        """Scan what is left. ``separator``: the joined text continues with
+        the "\\n" that separates this part from the next one."""
+        if separator:
+            self.write("\n")
+        if self._pending:
+            batch = "".join(self._pending)
+            self._pending = []
+            self._size = 0
+            self._flush(batch)
+
+    def _flush(self, batch: str) -> None:
+        found, lines = self._scan(batch)
+        for finding in found:
+            finding.line_number += self.lines
+        self.findings.extend(found)
+        self.lines += lines
+
+
+@dataclasses.dataclass
+class ArchiveScan:
+    """Result of ``scan_archive_for_dlp``."""
+
+    findings: list[DLPFinding]
+    uninspectable: list[str]
+    read_error: Exception | None = None
+
+
+def scan_archive_for_dlp(
+    data: bytes,
+    *,
+    categories: list[str] | None,
+    custom_patterns: list[dict] | None,
+    allowlist: list[str] | None,
+    batch_chars: int = _GATE_BATCH_CHARS,
+) -> ArchiveScan:
+    """DLP-scan every .json/.jsonl member of a pushed tar.gz archive.
+
+    Same findings as one ``scan_dlp`` of ``"\\n".join([raw_1, decoded_1,
+    raw_2, ...])`` with genuine markers masked (``mask_redaction_markers``),
+    deduped, without ever building that text (see the comment above).
+    ``uninspectable`` lists the members ``decoded_json_text`` refuses, then
+    "archive" if the archive could not be read to the end (``read_error``);
+    when it is non-empty the caller must refuse the push and ``findings`` is
+    empty.
+    """
+    if categories is None:
+        categories = ["secrets", "phi"]
+    scan_categories = categories
+    compiled = compile_custom_patterns(custom_patterns)
+    uninspectable: list[str] = []
+
+    def scan(text: str) -> tuple[list[DLPFinding], int]:
+        if uninspectable:
+            # The push will be refused: skip the work.
+            return [], 0
+        try:
+            masked = mask_redaction_markers(text, custom_patterns)
+            found = scan_dlp_compiled(
+                masked,
+                categories=scan_categories,
+                compiled_custom=compiled,
+                allowlist=allowlist,
+            )
+            return found, len(masked.splitlines())
+        except Exception as exc:
+            raise _ScannerFailed() from exc
+
+    findings: list[DLPFinding] = []
+    base = 0  # lines of the joined text before the next part
+
+    def close(part: _BatchScanner, *, separator: bool) -> None:
+        nonlocal base
+        part.close(separator=separator)
+        for finding in part.findings:
+            finding.line_number += base
+        findings.extend(part.findings)
+        base += part.lines
+
+    read_error: Exception | None = None
+    # The previous member's decoded part: whether a "\n" follows it in the
+    # joined text depends on whether another member comes after it.
+    open_part: _BatchScanner | None = None
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
+            for member in tar.getmembers():
+                if not member.name.endswith((".json", ".jsonl")):
+                    continue
+                f = tar.extractfile(member)
+                if not f:
+                    continue
+                if open_part is not None:
+                    close(open_part, separator=True)
+                    open_part = None
+                raw = _BatchScanner(scan, batch_chars)
+                decoded = _BatchScanner(scan, batch_chars)
+                decoder = _MemberDecoder(decoded.write)
+                refused = False
+                for block in iter_text_blocks(f):
+                    raw.write(block)
+                    if not refused:
+                        try:
+                            decoder.feed(block)
+                        except DlpUninspectableError:
+                            refused = True
+                if not refused:
+                    try:
+                        decoder.close()
+                    except DlpUninspectableError:
+                        refused = True
+                close(raw, separator=True)
+                if refused:
+                    # Listed once the member was read to the end, as when a
+                    # member was read whole before it was decoded.
+                    uninspectable.append(member.name)
+                else:
+                    open_part = decoded
+    except _ScannerFailed as exc:
+        cause = exc.__cause__
+        assert cause is not None
+        raise cause
+    except Exception as exc:
+        # Fail closed: an error part-way through the archive must not leave
+        # the remaining members unscanned.
+        read_error = exc
+        uninspectable.append("archive")
+    if uninspectable:
+        return ArchiveScan(findings=[], uninspectable=uninspectable, read_error=read_error)
+    if open_part is not None:
+        close(open_part, separator=False)
+    return ArchiveScan(
+        findings=dedupe_findings(findings), uninspectable=[], read_error=None
+    )
 
 
 # ---------------------------------------------------------------------------

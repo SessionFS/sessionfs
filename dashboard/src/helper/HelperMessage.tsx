@@ -21,6 +21,8 @@ import {
   describeToolStep,
   remarkRefs,
   processCitations,
+  stopReasonRetryable,
+  stopReasonText,
   type HelperError,
   type Source,
   type TokenUsage,
@@ -680,6 +682,23 @@ export function UsageLine({ usage }: { usage: TokenUsage }) {
   );
 }
 
+/** The short line under an answer that stopped early, with Try again. */
+export function StopReasonLine({ reason, onRetry }: { reason?: string | null; onRetry?: () => void }) {
+  const text = stopReasonText(reason);
+  if (!text) return null;
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1">
+      <p className="text-xs text-text-tertiary">{text}</p>
+      {onRetry && stopReasonRetryable(reason) && (
+        <Button size="sm" variant="ghost" onClick={onRetry}>
+          <RetryIcon size={14} />
+          Try again
+        </Button>
+      )}
+    </div>
+  );
+}
+
 export function AssistantMessage({
   turn,
   actions,
@@ -750,6 +769,8 @@ export function AssistantMessage({
           {turn.status === 'done' && turn.usage && <UsageLine usage={turn.usage} />}
         </div>
       )}
+
+      {turn.status === 'done' && !turn.error && <StopReasonLine reason={turn.stopReason} onRetry={actions.onRetry} />}
     </div>
   );
 }

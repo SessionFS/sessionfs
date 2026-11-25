@@ -139,6 +139,10 @@ EXCLUDED_TEMPLATES: frozenset[str] = frozenset(
         "/api/v1/sessions/{session_id}/share",
         "/api/v1/settings/github/oauth/start",
         "/api/v1/settings/github/oauth/choose",
+        # A read-only search (POST only to keep JQL out of URLs): nothing to
+        # repeat safely, and its response is Jira issue content that must not
+        # be stored for a day.
+        "/api/v1/orgs/{org_id}/integrations/jira/search",
     }
 )
 

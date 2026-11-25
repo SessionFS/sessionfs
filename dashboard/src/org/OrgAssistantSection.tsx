@@ -19,11 +19,13 @@ import {
   BudgetPercent,
   EffectiveSettingsList,
   InstructionsField,
+  LIMIT_COPY,
+  LimitFields,
   ModelSettingsFields,
   SubsectionHeading,
   UsageTotals,
 } from '../helper/AssistantSettingsFields';
-import { LIMITS, fieldErrorsFrom, type Original } from '../helper/assistantSettings';
+import { LIMITS, LIMIT_FIELDS, fieldErrorsFrom, type Original } from '../helper/assistantSettings';
 import { compactTokens } from '../helper/format';
 import { useAssistantForm } from '../helper/useAssistantForm';
 import { useOrgHelperSettings, useSaveOrgHelperSettings } from '../helper/useHelperSettings';
@@ -207,6 +209,24 @@ function AdminView({ orgId, data }: { orgId: string; data: OrgHelperSettings }) 
       </div>
 
       <div>
+        <SubsectionHeading
+          level={3}
+          description="For every question on the org key. When a question reaches one, it stops and the answer says which limit it reached."
+        >
+          Limits per question
+        </SubsectionHeading>
+        <LimitFields
+          idPrefix="org-assistant"
+          draft={draft}
+          errors={errors}
+          resets={form.resets}
+          onChange={form.change}
+          onReset={form.resetField}
+          disabled={disabled}
+        />
+      </div>
+
+      <div>
         <SubsectionHeading level={3} description="Caps for members using the org key. Leave empty for no ceiling.">
           Ceilings and budget
         </SubsectionHeading>
@@ -237,6 +257,22 @@ function AdminView({ orgId, data }: { orgId: string; data: OrgHelperSettings }) 
             error={errors.ceiling_max_tool_steps}
             disabled={disabled}
           />
+          {LIMIT_FIELDS.map(({ key, ceiling, bounds }) => (
+            <Input
+              key={ceiling}
+              id={`org-assistant-${ceiling.replace(/_/g, '-')}`}
+              title={LIMIT_COPY[key].ceilingTitle}
+              type="text"
+              inputMode="numeric"
+              autoComplete="off"
+              value={draft[ceiling]}
+              placeholder="No ceiling"
+              onChange={(e) => form.change({ [ceiling]: e.target.value })}
+              hint={`${bounds.min.toLocaleString()}–${bounds.max.toLocaleString()}. Caps ${LIMIT_COPY[key].title.toLowerCase()} above.`}
+              error={errors[ceiling]}
+              disabled={disabled}
+            />
+          ))}
           <Input
             id="org-assistant-budget"
             title="Monthly token budget"

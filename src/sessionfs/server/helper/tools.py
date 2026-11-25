@@ -117,7 +117,7 @@ from sessionfs.server.helper.excerpts import (
 )
 from sessionfs.server.helper.redaction import RedactionError, redact
 from sessionfs.server.integrations.trackers.base import TrackerError
-from sessionfs.server.services import jira_sync
+from sessionfs.server.services import jira_search, jira_sync
 from sessionfs.server.services.ticket_events import decode_event_value
 from sessionfs.server.services.jira_links import JiraLinkError, normalize_link_issue_key
 from sessionfs.server.services.session_archive import extract_archive
@@ -5087,6 +5087,126 @@ async def _get_jira_issue(ctx: HelperContext, args: dict[str, Any]) -> ToolOutpu
     )
 
 
+async def _search_jira_scope_project_ids(ctx: HelperContext) -> set[str] | None:
+    """The conversation scope's project ids (None = unscoped: the whole org)."""
+    if ctx.scope.project_id is not None:
+        return {ctx.scope.project_id}
+    if ctx.scope.group_id is not None:
+        return await group_effective_project_ids(ctx.db, ctx.user.id, ctx.scope.group_id)
+    if ctx.scope.session_ids:
+        return await _scoped_session_project_ids(ctx)
+    return None
+
+
+async def _search_jira_issues(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
+    """Search Jira with JQL (read-only), limited to the Jira projects mapped to
+    SessionFS projects the caller can read inside this conversation's scope.
+
+    Same rules as ``POST /orgs/{org}/integrations/jira/search``: active org
+    member, the org's ``jira_integration`` plan, an enabled connection, the
+    JQL wrapped in the allowed project set and every issue re-checked against
+    it. The retrieval-audit event records the (redacted) JQL and the keys."""
+    jql = _optional_str(args, "jql") or ""
+    max_results = _capped_int(
+        args,
+        "max_results",
+        jira_search.DEFAULT_MAX_RESULTS,
+        1,
+        jira_search.MAX_MAX_RESULTS,
+    )
+    raw_fields = args.get("fields")
+    try:
+        where, order_by = jira_search.split_jql(jql)
+        fields = jira_search.normalize_fields(raw_fields)
+    except jira_search.JqlError as exc:
+        raise ToolArgumentError(exc.message) from exc
+
+    org_id = ctx.org_id or org_boundary_of(ctx.scope)
+    if not org_id:
+        return ToolOutput(
+            "Jira search needs an organization: this conversation is not "
+            "scoped to an organization's projects.",
+            refs=_refs(),
+        )
+    if not await jira_search.is_active_member(ctx.db, org_id, ctx.user.id):
+        return ToolOutput(
+            "Only members of this organization can search its Jira.", refs=_refs()
+        )
+    plan = await resolve_org_plan_tier(org_id, ctx.db)
+    if FEATURE_JIRA not in get_features_for_tier(plan):
+        return ToolOutput(
+            "Jira integration is not available on this organization's plan.",
+            refs=_refs(),
+        )
+    conn = await jira_search.enabled_connection(ctx.db, org_id)
+    if conn is None:
+        return ToolOutput("This organization has no enabled Jira connection.", refs=_refs())
+
+    scope_ids = await _search_jira_scope_project_ids(ctx)
+    by_key = await jira_search.allowed_project_keys(
+        ctx.db, org_id=org_id, user_id=ctx.user.id, restrict_project_ids=scope_ids
+    )
+    try:
+        outcome = await jira_search.run_search(
+            conn=conn,
+            org_id=org_id,
+            project_ids_by_key=by_key,
+            where=where,
+            order_by=order_by,
+            max_results=max_results,
+            fields=fields,
+            dlp_policy=ctx.dlp_policy,
+        )
+    except jira_search.SearchError as exc:
+        return ToolOutput(f"Jira search failed: {exc.message}", refs=_refs())
+
+    if outcome.reason == jira_search.NO_ALLOWED_PROJECTS_REASON:
+        return ToolOutput(
+            "No Jira projects to search: none of this organization's Jira "
+            "mappings belong to a SessionFS project the caller can read inside "
+            "this conversation's scope.",
+            refs=_refs(),
+        )
+
+    lines = [
+        "Searched only these Jira projects (mapped to SessionFS projects the "
+        f"caller can read in this scope): {', '.join(outcome.allowed_keys)}.",
+        f"query: {outcome.effective_jql}",
+    ]
+    if not outcome.issues:
+        lines.append("No matching Jira issues.")
+    for issue in outcome.issues:
+        parts = [f"- Jira {issue['key']} {issue['url']}"]
+        for name in fields:
+            if name in ("summary", "description"):
+                continue
+            value = issue.get(name)
+            if isinstance(value, list):
+                value = ", ".join(_clean_meta(v) for v in value) if value else None
+            if name in ("assignee", "reporter"):
+                value = _clean_meta(value) if value else "unassigned" if name == "assignee" else None
+            if value:
+                parts.append(f"{name}: {_neutralise_meeting_text(str(value))}")
+        lines.append(" | ".join(parts))
+        # Summary and description are remote Jira text: data, never markers.
+        if "summary" in issue:
+            summary = _neutralise_meeting_text(issue.get("summary") or "(no summary)")
+            lines.append(f"  summary: {summary}")
+        if issue.get("description"):
+            lines.append(f"  description: {_neutralise_meeting_text(issue['description'])}")
+    returned = len(outcome.issues)
+    lines.append(
+        _completeness_note(returned, None if outcome.has_more else returned, noun="issues")
+    )
+    return ToolOutput(
+        "\n".join(lines),
+        refs=_refs(
+            project_ids=sorted({pid for ids in by_key.values() for pid in ids}),
+            jira_issue_keys=[i["key"] for i in outcome.issues],
+        ),
+    )
+
+
 async def _list_wiki_pages(ctx: HelperContext, args: dict[str, Any]) -> ToolOutput:
     project_id = _require_str(args, "project_id")
     project = await _accessible_project(ctx, project_id)
@@ -6430,6 +6550,38 @@ TOOLS: dict[str, HelperTool] = {
             handler=_get_jira_issue,
         ),
         HelperTool(
+            name="search_jira_issues",
+            description=(
+                "Search Jira issues with JQL (read-only), e.g. "
+                "'assignee = \"Kelvin\" AND statusCategory != Done ORDER BY "
+                "updated DESC'. Only Jira projects mapped to SessionFS projects "
+                "the caller can read inside this conversation's scope are "
+                "searched; the query is wrapped in that project set "
+                "automatically, so never add your own project filter to get "
+                "around it. Returns key, link and the requested fields "
+                "(default: summary, status, assignee, priority, issue_type, "
+                "updated). A top-level trailing ORDER BY is allowed."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "jql": {"type": "string", "maxLength": jira_search.JQL_MAX_CHARS},
+                    "max_results": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": jira_search.MAX_MAX_RESULTS,
+                    },
+                    "fields": {
+                        "type": "array",
+                        "items": {"type": "string", "enum": list(jira_search.ALLOWED_FIELDS)},
+                    },
+                },
+                "required": ["jql"],
+                "additionalProperties": False,
+            },
+            handler=_search_jira_issues,
+        ),
+        HelperTool(
             name="list_wiki_pages",
             description="List a project's wiki pages (title + updated date).",
             input_schema={
@@ -6999,6 +7151,13 @@ async def execute(
     """
     tool = TOOLS.get(call.name)
     safe_args = sanitize_arguments(call.arguments or {})
+    if call.name == "search_jira_issues" and isinstance(safe_args.get("jql"), str):
+        # The JQL is stored in the retrieval audit, so it is DLP-redacted
+        # first (it can carry text the caller pasted).
+        try:
+            safe_args["jql"] = redact(safe_args["jql"], ctx.dlp_policy)
+        except RedactionError:
+            safe_args["jql"] = "[REDACTED:dlp_unavailable]"
 
     if tool is None:
         await _record_or_log(ctx, call.name, safe_args, {})

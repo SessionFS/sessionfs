@@ -18,7 +18,7 @@ import time
 import uuid
 from collections import OrderedDict, defaultdict
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import IO, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
@@ -567,7 +567,7 @@ def _extract_manifest_metadata(data: bytes) -> dict:
     redacts secrets) using the shared title_utils module.
     Returns empty defaults if manifest is missing or unparseable.
     """
-    from sessionfs.utils.title_utils import extract_smart_title
+    from sessionfs.utils.title_utils import extract_smart_title, message_ends_title_search
 
     defaults = {
         "title": None,
@@ -592,7 +592,12 @@ def _extract_manifest_metadata(data: bytes) -> dict:
     }
     try:
         manifest = None
-        messages: list[dict] = []
+        # Only the first message the title search would stop at matters
+        # (see message_ends_title_search), so messages are not kept: on a
+        # large session the parsed list took several times the archive's
+        # size. Every line is still parsed, since one that isn't JSON makes
+        # the whole extraction fall back to the defaults, as it always has.
+        title_messages: list[dict] = []
 
         with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tar:
             for member in tar.getmembers():
@@ -606,7 +611,9 @@ def _extract_manifest_metadata(data: bytes) -> dict:
                         for line in f:
                             line = line.strip()
                             if line:
-                                messages.append(json.loads(line))
+                                msg = json.loads(line)
+                                if not title_messages and message_ends_title_search(msg):
+                                    title_messages.append(msg)
 
         if manifest is None:
             return defaults
@@ -619,7 +626,7 @@ def _extract_manifest_metadata(data: bytes) -> dict:
         msg_count = stats.get("message_count", 0)
 
         defaults["title"] = extract_smart_title(
-            messages=messages or None,
+            messages=title_messages or None,
             raw_title=raw_title,
             message_count=msg_count,
         )
@@ -1912,45 +1919,33 @@ def _prepare_sync_archive(
     dlp_scan_results = None
     if dlp_policy:
         from sessionfs.server.dlp import (
-            DlpUninspectableError,
             custom_marker_labels,
-            dedupe_findings,
-            decoded_json_text,
-            mask_redaction_markers,
             redact_and_repack,
+            scan_archive_for_dlp,
         )
 
-        from sessionfs.security.secrets import scan_dlp
-
         with timer.phase("dlp_scan"):
-            import io as _io
-            import tarfile as _tarfile
-            scan_text_parts: list[str] = []
-            uninspectable: list[str] = []
-            try:
-                with _tarfile.open(fileobj=_io.BytesIO(data), mode="r:gz") as _tar:
-                    for _member in _tar.getmembers():
-                        if not _member.name.endswith((".json", ".jsonl")):
-                            continue
-                        _f = _tar.extractfile(_member)
-                        if not _f:
-                            continue
-                        _raw = _f.read().decode("utf-8", errors="replace")
-                        scan_text_parts.append(_raw)
-                        # Also scan the decoded keys/strings: inside
-                        # serialized JSON, quoted secrets are hidden
-                        # behind escaped quotes the patterns can't see.
-                        try:
-                            scan_text_parts.append(decoded_json_text(_raw))
-                        except DlpUninspectableError:
-                            uninspectable.append(_member.name)
-            except Exception as scan_exc:
+            # Every .json/.jsonl member is scanned raw and decoded (inside
+            # serialized JSON, quoted secrets are hidden behind escaped
+            # quotes the patterns can't see), genuine redaction markers from
+            # an earlier redact masked (password = "[REDACTED:…]" would
+            # otherwise re-match). Streamed in bounded batches: building the
+            # whole scan text at once ran large pushes out of memory.
+            scan = scan_archive_for_dlp(
+                data,
+                categories=dlp_policy.get("categories", ["secrets"]),
+                custom_patterns=dlp_policy.get("custom_patterns"),
+                allowlist=dlp_policy.get("allowlist"),
+            )
+            uninspectable = scan.uninspectable
+            if scan.read_error is not None:
                 # Fail closed: an error part-way through the archive must
                 # not leave the remaining members unscanned.
                 logger.warning(
-                    "DLP could not read archive for session %s: %s", session_id, scan_exc
+                    "DLP could not read archive for session %s: %s",
+                    session_id,
+                    scan.read_error,
                 )
-                uninspectable.append("archive")
             if uninspectable:
                 # Fail closed: content DLP cannot fully read must not be
                 # stored as if it were clean. Permanent 400, not a retry.
@@ -1967,20 +1962,8 @@ def _prepare_sync_archive(
                         "files": uninspectable,
                     },
                 )
-            # Genuine redaction markers from an earlier redact are not new
-            # findings (password = "[REDACTED:…]" would otherwise re-match).
-            full_scan_text = mask_redaction_markers(
-                "\n".join(scan_text_parts), dlp_policy.get("custom_patterns")
-            )
-
-            findings = dedupe_findings(
-                scan_dlp(
-                    full_scan_text,
-                    categories=dlp_policy.get("categories", ["secrets"]),
-                    custom_patterns=dlp_policy.get("custom_patterns"),
-                    allowlist=dlp_policy.get("allowlist"),
-                )
-            )
+            findings = scan.findings
+            del scan
         mode = dlp_policy.get("mode", "warn")
         timer.facts["dlp_findings"] = len(findings)
         for f in findings:
@@ -2976,11 +2959,44 @@ def _extract_messages_list(data: bytes) -> list[dict]:
                 if member.name.endswith("messages.jsonl"):
                     f = tar.extractfile(member)
                     if f:
-                        text = f.read().decode("utf-8", errors="replace")
-                        return [json.loads(line) for line in text.strip().split("\n") if line.strip()]
+                        return _parse_message_lines(f)
     except Exception:
         pass
     return []
+
+
+def _parse_message_lines(f: IO[bytes]) -> list[dict]:
+    """``[json.loads(line) for line in text.strip().split("\\n") if
+    line.strip()]`` for the member's text, read line by line instead of
+    holding the text and its copies (stripped, split) at once."""
+    from sessionfs.server.dlp import iter_text_blocks
+
+    messages: list[dict] = []
+    held: str | None = None  # last non-blank line, parsed once the next arrives
+    carry = ""
+    for block in iter_text_blocks(f):
+        pieces = (carry + block).split("\n")
+        carry = pieces.pop()
+        for line in pieces:
+            if not line.strip():
+                continue
+            if held is not None:
+                messages.append(json.loads(held))
+            else:
+                # The whole-text strip() removes the first line's leading
+                # whitespace...
+                line = line.lstrip()
+            held = line
+    if carry.strip():
+        if held is not None:
+            messages.append(json.loads(held))
+        else:
+            carry = carry.lstrip()
+        held = carry
+    if held is not None:
+        # ...and the last line's trailing whitespace.
+        messages.append(json.loads(held.rstrip()))
+    return messages
 
 
 def _extract_manifest_dict(data: bytes) -> dict:

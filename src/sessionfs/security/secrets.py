@@ -631,15 +631,27 @@ def scan_dlp(
     """
     if categories is None:
         categories = ["secrets", "phi"]
+    return scan_dlp_compiled(
+        text,
+        categories=categories,
+        compiled_custom=compile_custom_patterns(custom_patterns),
+        allowlist=allowlist,
+    )
 
-    findings: list[DLPFinding] = []
-    lines = text.splitlines()
 
-    # Pre-compile custom patterns once.  A stored pattern with a bad regex is
-    # skipped (logged), never fatal: an org policy saved before stricter
-    # validation must not take down every subsequent scan.  (Never log the
-    # regex itself — it may be a near-secret literal.)
-    compiled_custom: list[tuple[str, re.Pattern[str], str, str]] = []
+# (name, compiled regex, category, severity) for one usable custom pattern.
+CompiledCustom = tuple[str, re.Pattern[str], str, str]
+
+
+def compile_custom_patterns(custom_patterns: list[dict] | None) -> list[CompiledCustom]:
+    """The usable custom patterns of an org policy, compiled, in order.
+
+    A stored pattern with a bad regex is skipped (logged), never fatal: an
+    org policy saved before stricter validation must not take down every
+    subsequent scan. (Never log the regex itself — it may be a near-secret
+    literal.) Callers scanning one text in several pieces compile once.
+    """
+    compiled_custom: list[CompiledCustom] = []
     if custom_patterns:
         malformed = 0
         for cp in custom_patterns:
@@ -667,6 +679,24 @@ def scan_dlp(
                 "Skipping %d malformed custom DLP pattern(s) (non-dict entry, missing name or non-string regex)",
                 malformed,
             )
+    return compiled_custom
+
+
+def scan_dlp_compiled(
+    text: str,
+    *,
+    categories: list[str],
+    compiled_custom: list[CompiledCustom],
+    allowlist: list[str] | None = None,
+) -> list[DLPFinding]:
+    """:func:`scan_dlp` with the custom patterns already compiled.
+
+    Every pattern is matched within one line (``text.splitlines()``), so
+    scanning a text in pieces split after a newline finds exactly what one
+    scan of the whole text finds, with line numbers relative to each piece.
+    """
+    findings: list[DLPFinding] = []
+    lines = text.splitlines()
 
     plan = _ScanPlan(text, lines)
     secret_entries = plan.plan(SECRET_PATTERNS.items()) if "secrets" in categories else []

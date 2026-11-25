@@ -1034,6 +1034,38 @@ class JiraClient:
             )
         return None
 
+    async def search_issues(
+        self, jql: str, fields: list[str], max_results: int
+    ) -> tuple[list[dict], bool]:
+        """Run a JQL search and return ``(raw issue objects, is_last)``.
+
+        The caller builds and validates the JQL (``services.jira_search`` wraps
+        it in the caller's allowed project set); this only sends it. POST keeps
+        the query out of URLs and access logs. The response shape is checked:
+        anything but a list of ``issues`` is a sanitized ``TrackerError``.
+        ``is_last`` is Jira's own flag when it sends one, else whether fewer
+        issues came back than were asked for.
+        """
+        data = await self._request(
+            "POST",
+            "/rest/api/3/search/jql",
+            json_body={
+                "jql": jql,
+                "fields": list(fields),
+                "maxResults": int(max_results),
+            },
+        )
+        issues = data.get("issues")
+        if not isinstance(issues, list):
+            raise TrackerError(
+                self._sanitize("Jira returned an unexpected search response shape")
+            )
+        raw = [item for item in issues if isinstance(item, dict)]
+        is_last = data.get("isLast")
+        if not isinstance(is_last, bool):
+            is_last = len(issues) < max_results
+        return raw, is_last
+
     async def update_issue(
         self,
         issue_key: str,

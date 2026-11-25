@@ -90,7 +90,7 @@ def test_no_ee_mcp_tool_count_unchanged(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(mcp_server, "_EXTRA_HANDLERS", {})
     mcp_server.register_mcp_tools(mcp_server.app)
 
-    assert len(mcp_server._TOOLS) == 148
+    assert len(mcp_server._TOOLS) == 149
     assert mcp_server._EXTRA_TOOLS == []
     assert mcp_server._EXTRA_HANDLERS == {}
 

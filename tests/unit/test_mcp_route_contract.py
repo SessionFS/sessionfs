@@ -104,6 +104,7 @@ MCP_WRITE_ROUTES: dict[str, list[tuple[str, str]]] = {
     "resolve_ticket": [("POST", f"{T}/accept")],
     "revoke_handoff": [("POST", "/api/v1/handoffs/{handoff_id}/revoke")],
     "run_work_queue_step": [("POST", f"{P}/work-queues/{{queue_id}}/step")],
+    "search_jira_issues": [("POST", "/api/v1/orgs/{org_id}/integrations/jira/search")],
     "set_work_queue_status": [("POST", f"{P}/work-queues/{{queue_id}}/status")],
     "start_review_loop": [("POST", f"{P}/loops")],
     "start_ticket": [("POST", f"{T}/start")],

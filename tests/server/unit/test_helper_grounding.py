@@ -481,7 +481,7 @@ def test_failed_tool_row_stores_error_mark_not_refs():
 
 
 def test_prompt_version_bumped_and_rules_present():
-    assert helper_routes._HELPER_SYSTEM_PROMPT_VERSION == "v23"
+    assert helper_routes._HELPER_SYSTEM_PROMPT_VERSION == "v24"
     prompt = helper_routes._HELPER_SYSTEM_PROMPT
     assert "<earlier-reply>" in prompt
     assert "status field or a dated record" in prompt
@@ -576,7 +576,12 @@ async def test_turn_with_no_text_gets_server_answer_and_uncited_note(
         json={"message": "list", "stream": False},
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["answer"] == helper_routes._UNFINISHED_ANSWER
+    # No answer text: the specific stop reason replaces the generic
+    # "couldn't finish" message (GitHub #143).
+    body = resp.json()
+    assert body["answer"].startswith("Stopped early: this question used all 8 tool rounds.")
+    assert body["stop_reason"] == "max_steps"
+    assert body["stop_message"] == body["answer"]
     assert session.id  # the tool saw it
 
     async def uncited(*, execute_tool, **kwargs):

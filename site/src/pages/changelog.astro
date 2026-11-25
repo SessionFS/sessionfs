@@ -17,6 +17,27 @@ import BaseLayout from '../layouts/BaseLayout.astro';
   <section class="relative py-16 sm:py-20 px-5">
     <div class="max-w-3xl mx-auto space-y-0">
 
+      <!-- v0.33.3 -->
+      <article class="fade-up pb-12 pt-10">
+        <div class="flex items-center gap-3 mb-4">
+          <span class="inline-flex items-center gap-1.5 bg-surface border border-brand/30 rounded-sm px-4 py-1.5 font-mono text-sm">
+            <span class="text-brand font-semibold">v0.33.3</span>
+          </span>
+          <span class="text-sm text-muted-dim font-mono">November 24, 2026</span>
+          <span class="ml-auto inline-block text-[11px] font-semibold px-2.5 py-0.5 rounded-sm bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
+        </div>
+        <h2 class="text-xl font-semibold mb-4">Jira search, helper limits per question, and lighter large uploads</h2>
+        <ul class="space-y-2 text-base text-muted">
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Search Jira from anywhere.</strong> Find Jira issues with JQL from the API (<span class="font-mono text-accent text-sm">POST /api/v1/orgs/&#123;org_id&#125;/integrations/jira/search</span>), the new <span class="font-mono text-accent text-sm">search_jira_issues</span> MCP tool, <span class="font-mono text-accent text-sm">sfs org jira search</span>, or by asking the session helper (&ldquo;what is Kelvin working on in Jira?&rdquo;). A search only covers the Jira projects mapped to SessionFS projects you can read: SessionFS wraps and checks your JQL, then drops any issue outside those projects. Each org can run 30 searches a minute, the same search within 60 seconds is answered from a short cache, and every search is written to the org audit log with its JQL redacted. Service keys need the new <span class="font-mono text-accent text-sm">jira:read</span> scope. See <a href="/integrations/jira/#search-jira" class="text-brand hover:underline">Jira</a>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Session helper limits per question.</strong> Each question now stops at 25 tool calls, after 3 tool failures in a row, or at 150,000 input tokens, and the answer says which limit it reached. Orgs can change the limits in helper settings (<span class="font-mono text-accent text-sm">max_tool_calls</span>, <span class="font-mono text-accent text-sm">max_consecutive_tool_failures</span>, <span class="font-mono text-accent text-sm">max_input_tokens</span>), and the API reports why a question stopped (<span class="font-mono text-accent text-sm">tool_call_cap</span>, <span class="font-mono text-accent text-sm">tool_failures</span>, <span class="font-mono text-accent text-sm">input_token_cap</span>, <span class="font-mono text-accent text-sm">missing_capability</span>). See <a href="/session-helper/" class="text-brand hover:underline">Session Helper</a>.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Changed:</strong> &ldquo;Try again&rdquo; after a failed question now keeps the conversation&rsquo;s earlier messages, so the helper picks up where it left off.</span></li>
+          <li class="flex items-start gap-2"><span class="text-accent mt-0.5 shrink-0">&#10003;</span><span class="min-w-0 [overflow-wrap:anywhere]"><strong>Fixed:</strong> uploading a very large session could run the API server out of memory. The DLP scan on sync now reads the archive in batches of lines instead of joining all of its text at once: a 45 MB session that peaked at about 7.5 GB now peaks at about 136 MB and scans about 2.5 times faster, with the same findings. Sessions that were redacted before no longer build a per-character offset map.</span></li>
+          <li class="flex items-start gap-2"><span class="text-muted-dim mt-0.5 shrink-0">&#9679;</span><span class="min-w-0 [overflow-wrap:anywhere]"><span class="text-muted-dim">No migrations (still 001&ndash;139). 13486 backend tests + 2424 dashboard UI tests passing. 149 MCP tools (+1).</span></span></li>
+        </ul>
+      </article>
+
+      <div class="divider"></div>
+
       <!-- v0.33.2 -->
       <article class="fade-up pb-12 pt-10">
         <div class="flex items-center gap-3 mb-4">
@@ -24,7 +45,6 @@ import BaseLayout from '../layouts/BaseLayout.astro';
             <span class="text-brand font-semibold">v0.33.2</span>
           </span>
           <span class="text-sm text-muted-dim font-mono">November 22, 2026</span>
-          <span class="ml-auto inline-block text-[11px] font-semibold px-2.5 py-0.5 rounded-sm bg-accent/10 text-accent uppercase tracking-wide">Latest</span>
         </div>
         <h2 class="text-xl font-semibold mb-4">Dashboard image security update</h2>
         <ul class="space-y-2 text-base text-muted">

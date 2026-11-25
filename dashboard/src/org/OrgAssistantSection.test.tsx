@@ -103,6 +103,21 @@ describe('OrgAssistantSection — admin', () => {
     expect(mutate.mock.calls[0][0]).toEqual({ settings: { max_tool_steps: 5 }, monthly_token_budget: null });
   });
 
+  it('saves per-question limits and their ceilings (GitHub #143)', async () => {
+    const user = userEvent.setup();
+    render(<OrgAssistantSection orgId="org_1" />);
+    expect(field('Tool call ceiling')).toHaveValue('');
+    await user.clear(field('Stop after failed tool calls'));
+    await user.type(field('Stop after failed tool calls'), '5');
+    await user.type(field('Tool call ceiling'), '30');
+    await user.clear(field('Monthly token budget'));
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(mutate.mock.calls[0][0]).toEqual({
+      settings: { max_consecutive_tool_failures: 5, ceiling_max_tool_calls: 30 },
+      monthly_token_budget: null,
+    });
+  });
+
   it('"Reset to default" sends an explicit null for that field', async () => {
     const user = userEvent.setup();
     render(<OrgAssistantSection orgId="org_1" />);

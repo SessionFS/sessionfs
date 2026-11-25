@@ -87,7 +87,10 @@ export function useAssistantForm(
           field === 'max_output_tokens' ||
           field === 'max_tool_steps' ||
           field === 'answer_style' ||
-          field === 'grounding'
+          field === 'grounding' ||
+          field === 'max_tool_calls' ||
+          field === 'max_consecutive_tool_failures' ||
+          field === 'max_input_tokens'
         ) {
           setResets((prev) => {
             if (!prev.has(field)) return prev;

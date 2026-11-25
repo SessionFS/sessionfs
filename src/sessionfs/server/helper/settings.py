@@ -6,9 +6,9 @@ touches it. ``settings`` is JSON-as-Text holding only the keys the owner set
 explicitly; ``effective_settings`` always returns a fully-resolved
 ``HelperModelSettings`` (defaults for anything unset).
 
-The org row additionally carries two ceilings (``ceiling_max_output_tokens`` /
-``ceiling_max_tool_steps``) that cap the org's own settings on the org-key
-path. A caller's personal key is governed solely by their own settings. The
+The org row additionally carries ceilings (``ceiling_max_output_tokens``,
+``ceiling_max_tool_steps`` and one per per-question limit) that cap the org's
+own settings on the org-key path. A caller's personal key is governed solely by their own settings. The
 validation bounds below are the absolute hard caps and apply on every path.
 
 Instructions: which blocks apply to a turn is decided by
@@ -38,12 +38,29 @@ from sessionfs.server.helper.keys import ResolvedLLM
 _HARD_MAX_OUTPUT_TOKENS = 32_000
 _HARD_MAX_TOOL_STEPS = 20
 
+# Per-question limits (GitHub #143).  ``max_tool_steps`` counts model ROUNDS,
+# each of which may run several tool calls in parallel (8 rounds x 8 calls
+# allowed 64 calls in one question), so the total number of tool calls is
+# capped separately.
+_HARD_MAX_TOOL_CALLS = 100
+_HARD_MAX_TOOL_FAILURES = 10
+_MIN_INPUT_TOKENS = 10_000
+_HARD_MAX_INPUT_TOKENS = 1_000_000
+DEFAULT_MAX_TOOL_CALLS = 25
+DEFAULT_MAX_CONSECUTIVE_TOOL_FAILURES = 3
+DEFAULT_MAX_INPUT_TOKENS = 150_000
+
 MAX_ORG_INSTRUCTIONS_CHARS = 4000
 MAX_PERSONAL_INSTRUCTIONS_CHARS = 2000
 
 # Strict ints: a JSON ``true`` is not a token count.
 OutputTokens = Annotated[int, Field(strict=True, ge=256, le=_HARD_MAX_OUTPUT_TOKENS)]
 ToolSteps = Annotated[int, Field(strict=True, ge=1, le=_HARD_MAX_TOOL_STEPS)]
+ToolCalls = Annotated[int, Field(strict=True, ge=1, le=_HARD_MAX_TOOL_CALLS)]
+ToolFailures = Annotated[int, Field(strict=True, ge=1, le=_HARD_MAX_TOOL_FAILURES)]
+InputTokens = Annotated[
+    int, Field(strict=True, ge=_MIN_INPUT_TOKENS, le=_HARD_MAX_INPUT_TOKENS)
+]
 Temperature = Annotated[float, Field(ge=0, le=2)]
 TopP = Annotated[float, Field(ge=0, le=1)]
 ReasoningEffort = Literal["off", "low", "medium", "high"]
@@ -53,7 +70,14 @@ AnswerStyle = Literal["concise", "detailed"]
 # marker-only checks.
 Grounding = Literal["strict", "off"]
 
-_CEILING_FIELDS = ("ceiling_max_output_tokens", "ceiling_max_tool_steps")
+# Each ceiling caps the setting named after it (``ceiling_<field>``).
+_CEILING_FIELDS = (
+    "ceiling_max_output_tokens",
+    "ceiling_max_tool_steps",
+    "ceiling_max_tool_calls",
+    "ceiling_max_consecutive_tool_failures",
+    "ceiling_max_input_tokens",
+)
 
 
 class HelperModelSettings(BaseModel):
@@ -63,6 +87,12 @@ class HelperModelSettings(BaseModel):
     provider pick". ``top_p`` / ``reasoning_effort`` default to ``None`` (not
     sent). ``max_tool_steps`` counts tool ROUNDS: the model can always answer
     after its last allowed round.
+
+    Per-question limits: ``max_tool_calls`` caps the tool calls one question
+    may run across every round, ``max_consecutive_tool_failures`` stops the
+    question after that many failed tool calls in a row, and
+    ``max_input_tokens`` caps the input tokens summed over every model call
+    of one question.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -74,6 +104,9 @@ class HelperModelSettings(BaseModel):
     reasoning_effort: ReasoningEffort | None = None
     answer_style: AnswerStyle = "concise"
     grounding: Grounding = "strict"
+    max_tool_calls: ToolCalls = DEFAULT_MAX_TOOL_CALLS
+    max_consecutive_tool_failures: ToolFailures = DEFAULT_MAX_CONSECUTIVE_TOOL_FAILURES
+    max_input_tokens: InputTokens = DEFAULT_MAX_INPUT_TOKENS
 
 
 class OrgHelperSettings(HelperModelSettings):
@@ -81,13 +114,17 @@ class OrgHelperSettings(HelperModelSettings):
 
     ceiling_max_output_tokens: OutputTokens | None = None
     ceiling_max_tool_steps: ToolSteps | None = None
+    ceiling_max_tool_calls: ToolCalls | None = None
+    ceiling_max_consecutive_tool_failures: ToolFailures | None = None
+    ceiling_max_input_tokens: InputTokens | None = None
 
 
 class HelperSettingsPatch(BaseModel):
     """A partial settings update: omitted keys keep their stored value.
 
     An explicit ``null`` resets a key: ``max_output_tokens``,
-    ``max_tool_steps``, ``answer_style`` and ``grounding`` go back to their defaults; for
+    ``max_tool_steps``, ``answer_style``, ``grounding`` and the per-question
+    limits go back to their defaults; for
     ``temperature``, ``top_p`` and ``reasoning_effort`` ``null`` is itself the
     value (provider default / not sent).
     """
@@ -101,6 +138,9 @@ class HelperSettingsPatch(BaseModel):
     reasoning_effort: ReasoningEffort | None = None
     answer_style: AnswerStyle | None = None
     grounding: Grounding | None = None
+    max_tool_calls: ToolCalls | None = None
+    max_consecutive_tool_failures: ToolFailures | None = None
+    max_input_tokens: InputTokens | None = None
 
 
 class OrgHelperSettingsPatch(HelperSettingsPatch):
@@ -108,6 +148,9 @@ class OrgHelperSettingsPatch(HelperSettingsPatch):
 
     ceiling_max_output_tokens: OutputTokens | None = None
     ceiling_max_tool_steps: ToolSteps | None = None
+    ceiling_max_tool_calls: ToolCalls | None = None
+    ceiling_max_consecutive_tool_failures: ToolFailures | None = None
+    ceiling_max_input_tokens: InputTokens | None = None
 
 
 # Keys whose ``None`` is a meaningful stored value (rather than "reset").
@@ -170,10 +213,11 @@ def user_settings_view(config: HelperConfig | None) -> HelperModelSettings:
 def org_effective(config: HelperConfig | None) -> HelperModelSettings:
     """Org settings capped by the org's own ceilings."""
     org = org_settings_view(config)
-    if org.ceiling_max_output_tokens is not None:
-        org.max_output_tokens = min(org.max_output_tokens, org.ceiling_max_output_tokens)
-    if org.ceiling_max_tool_steps is not None:
-        org.max_tool_steps = min(org.max_tool_steps, org.ceiling_max_tool_steps)
+    for ceiling_field in _CEILING_FIELDS:
+        ceiling = getattr(org, ceiling_field)
+        if ceiling is not None:
+            field = ceiling_field.removeprefix("ceiling_")
+            setattr(org, field, min(getattr(org, field), ceiling))
     return HelperModelSettings(**org.model_dump(exclude=set(_CEILING_FIELDS)))
 
 

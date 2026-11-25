@@ -13,6 +13,7 @@ import { useToast } from '../hooks/useToast';
 import { errorMessage } from '../utils/errorMessage';
 import {
   InstructionsField,
+  LimitFields,
   ModelSettingsFields,
   SubsectionHeading,
   UsageTotals,
@@ -153,6 +154,24 @@ function PersonalForm({ data, keySource }: { data: UserHelperSettings; keySource
       <div>
         <SubsectionHeading level={3} description="Used for your turns on your own model key.">Model settings</SubsectionHeading>
         <ModelSettingsFields
+          idPrefix="assistant"
+          draft={draft}
+          errors={errors}
+          resets={form.resets}
+          onChange={form.change}
+          onReset={form.resetField}
+          disabled={save.isPending}
+        />
+      </div>
+
+      <div>
+        <SubsectionHeading
+          level={3}
+          description="When a question reaches one of these, it stops and the answer says which limit it reached."
+        >
+          Limits per question
+        </SubsectionHeading>
+        <LimitFields
           idPrefix="assistant"
           draft={draft}
           errors={errors}

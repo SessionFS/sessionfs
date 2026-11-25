@@ -108,6 +108,7 @@ Beyond sessions and project knowledge, the helper reads the project's own work i
 - **Agent runs** — `list_agent_runs` / `get_agent_run`. CI review runs, with persona, status, severity and findings.
 - **Personas** — `list_personas`. The project's own personas and the org personas visible from it, with role and active state.
 - **Jira issues** — `get_jira_issue`. The Jira issue linked to a ticket: summary, status, assignee, priority, labels, components, last update and the latest comments, read through the org's Jira connection. It takes a ticket id, never a free-form Jira key, so it can only read an issue a ticket you can see already points at. Comments that came from Jira are marked as such on `get_ticket`.
+- **Jira search** — `search_jira_issues`. Finds Jira issues with JQL ("what is Kelvin working on in Jira?"), only in the Jira projects mapped to SessionFS projects you can read inside the conversation's scope. See [Search Jira](/integrations/jira/#search-jira).
 
 - **Meetings** — `search_meetings`, `list_recent_meetings`, `get_meeting`, `list_my_meeting_actions`. Stored [meeting transcripts](/meetings/): search titles and text, list the newest, read one as numbered lines (`L12| …`, at most 400 lines per call, with a range to read on) together with its participants and extracted action items and decisions, and list the pending action items owned by you or by a persona that represents you. The same tools read [chat threads](/chat/) (`kind` = `meeting`, `chat` or `all`, default `all`): a thread is shown as numbered messages (`M12| [time] author: text`), and `list_my_meeting_actions` lists your conversation actions from meetings and chat threads alike. Scope is a hard filter: a project-scoped question reads that project's meetings only; a group-scoped question reads the group's own meetings plus the meetings of its member projects you can read; a session-scoped question reads the meetings of the sessions' projects; an unscoped question reads every meeting you can read. Group meetings also need standing on the group and a plan with project groups. Transcript text is untrusted data: it is already DLP-redacted when stored, and the helper treats instructions inside it as text.
 - **What needs you** — `list_my_attention`. Your [For You](/for-you/) list (bands `now`, `your_turn`, `upcoming`, `lately`), the same items the dashboard, MCP and the CLI return. Ask "what needs my attention?". In a project or group conversation it keeps only items inside that scope.
@@ -177,10 +178,21 @@ Model settings live at two scopes — your own (`GET/PUT /api/v1/settings/helper
 | `reasoning_effort` | `off` · `low` · `medium` · `high` | unset |
 | `answer_style` | `concise` · `detailed` | `concise` |
 | `grounding` | `strict` · `off` | `strict` |
+| `max_tool_calls` | 1–100 (integer) | 25 |
+| `max_consecutive_tool_failures` | 1–10 (integer) | 3 |
+| `max_input_tokens` | 10000–1000000 (integer) | 150000 |
 
 `grounding: strict` asks the model to name the source of every factual sentence and marks the ones without a source (see [How answers show their sources](#how-answers-show-their-sources)); `off` keeps only the citation-marker checks. It adds no extra model call.
 
-`max_tool_steps` counts tool rounds: after its last allowed round the model always gets one more step to answer. On Anthropic, setting `top_p` drops `temperature`, since the API refuses both together.
+`max_tool_steps` counts tool rounds: after its last allowed round the model always gets one more step to answer. One round can run several tool calls at once, so the last three settings limit each question directly:
+
+- `max_tool_calls` is how many tool calls one question may run across all its rounds.
+- `max_consecutive_tool_failures` stops the question after that many tool calls fail in a row.
+- `max_input_tokens` caps the input tokens summed over every model call of one question. When a provider doesn't report token usage, the server counts a deliberately high estimate instead, so the limit stops early rather than late.
+
+When a question reaches a limit, the helper answers from what it already found (except for the input-token limit, where another model call would go past it) and the answer ends with a sentence saying which limit it reached: the number of tool calls, the tools that failed and a short error for each, or the input-token limit. The same sentence appears when the model asked for something no tool can do. Use **Try again** under the answer, or ask a follow-up: the earlier question stays in the conversation either way.
+
+On Anthropic, setting `top_p` drops `temperature`, since the API refuses both together.
 
 Settings are stored apart from the LLM keys: saving them never creates a key, and deleting or rotating a key never touches the settings, instructions or budget.
 
@@ -188,7 +200,7 @@ Settings are stored apart from the LLM keys: saving them never creates a key, an
 
 **Updating.** `PUT` merges: a field you leave out keeps its value and an explicit `null` clears it, and inside `settings` each key merges the same way. `{"monthly_token_budget": 2000}` changes only the budget; `{"instructions": "…"}` leaves the budget and settings alone. For `temperature`, `top_p`, `reasoning_effort` and the ceilings, `null` is itself the value (provider default, not sent, no ceiling).
 
-**Precedence.** A turn using **your own key** uses your personal settings, with defaults for anything unset. A turn using the **org key** uses the org's settings, which the org can additionally cap with two ceilings (`ceiling_max_output_tokens`, `ceiling_max_tool_steps`). Ceilings only apply on the org-key path; a personal-key turn is governed solely by your own settings. The range bounds above are absolute caps on every path, and `GET /api/v1/helper/status` reports the effective settings for the key a turn would use.
+**Precedence.** A turn using **your own key** uses your personal settings, with defaults for anything unset. A turn using the **org key** uses the org's settings, which the org can additionally cap with ceilings (`ceiling_max_output_tokens`, `ceiling_max_tool_steps`, `ceiling_max_tool_calls`, `ceiling_max_consecutive_tool_failures`, `ceiling_max_input_tokens`). Ceilings only apply on the org-key path; a personal-key turn is governed solely by your own settings. The range bounds above are absolute caps on every path, and `GET /api/v1/helper/status` reports the effective settings for the key a turn would use.
 
 **Custom instructions.** Org instructions allow up to 4000 characters, personal instructions up to 2000.
 
@@ -233,7 +245,7 @@ Request body for `POST /api/v1/helper/turns`:
 }
 ```
 
-`conversation_id` and `scope` are optional. `scope` takes at most one of `project_id`, `group_id` (v0.28.0) or `session_ids` (up to 100 ids); an unscoped question may instead pass `org_id` to choose which of your organizations it reads (see [One scope per conversation](#one-scope-per-conversation)). Set `"retry": true` when re-asking after a failed answer: if the thread's last question is still unanswered and identical, it is reused instead of being stored twice. When streaming, the events are `conversation` (always first), `text`, `tool_call`, `tool_result`, `citation`, `doc_citation`, `ticket_citation`, `wiki_citation`, `grounding`, `action_proposed`, `done` and `error`. `grounding` (sent before the citations when the answer used evidence numbers) carries the final answer `text`, `mode`, `unverified_count`, `sentences` and `evidence` (described below); clients should show its `text` in place of the streamed text. Every citation carries `kind` (`session`, `doc`, `ticket` or `wiki`); session, ticket and wiki citations also carry `at`, the source's last update as an ISO timestamp. A keep-alive comment is sent every 15 seconds. If the client disconnects, the model call is cancelled and the partial answer is kept.
+`conversation_id` and `scope` are optional. `scope` takes at most one of `project_id`, `group_id` (v0.28.0) or `session_ids` (up to 100 ids); an unscoped question may instead pass `org_id` to choose which of your organizations it reads (see [One scope per conversation](#one-scope-per-conversation)). Set `"retry": true` when re-asking after a failed answer: if the thread's last question is still unanswered and identical, it is reused instead of being stored twice. The retried question keeps the conversation's earlier messages (v0.33.3), so the helper answers with the same history as the first attempt. When streaming, the events are `conversation` (always first), `text`, `tool_call`, `tool_result`, `citation`, `doc_citation`, `ticket_citation`, `wiki_citation`, `grounding`, `action_proposed`, `done` and `error`. `grounding` (sent before the citations when the answer used evidence numbers) carries the final answer `text`, `mode`, `unverified_count`, `sentences` and `evidence` (described below); clients should show its `text` in place of the streamed text. Every citation carries `kind` (`session`, `doc`, `ticket` or `wiki`); session, ticket and wiki citations also carry `at`, the source's last update as an ISO timestamp. A keep-alive comment is sent every 15 seconds. If the client disconnects, the model call is cancelled and the partial answer is kept.
 
 With `"stream": false` the response is:
 
@@ -259,9 +271,12 @@ With `"stream": false` the response is:
   "tool_calls": [{ "id": "…", "name": "…", "args": {} }],
   "usage": { "input_tokens": 0, "output_tokens": 0 },
   "stop_reason": "stop",
+  "stop_message": null,
   "key_source": "user"
 }
 ```
+
+`stop_reason` says how the question ended: `stop` (a normal answer), `tool_call_cap`, `tool_failures`, `input_token_cap`, `missing_capability`, `max_steps` (every tool round used), `max_tokens` (the answer hit its output limit), `token_budget`, `deadline` (5 minutes), `error` or `client_disconnected`. `stop_message` is the sentence the server added to the end of the answer naming why it stopped early, or `null`. The streamed `done` event carries both fields, and answers in `GET /api/v1/helper/conversations/{id}` carry `stop_reason`.
 
 `grounding` is `null` when the setting is `off` or the model didn't use evidence numbers. `start`/`end` are offsets into `answer` in UTF-16 code units (JavaScript string positions); `flag` is the range of the " (not verified)" text. Conversation messages (`GET /api/v1/helper/conversations/{id}`) carry the same `grounding` object on answers.
 

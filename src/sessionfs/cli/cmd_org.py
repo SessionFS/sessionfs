@@ -846,6 +846,61 @@ def jira_health() -> None:
         console.print("[dim]No stale links.[/dim]")
 
 
+@org_jira_app.command("search")
+def jira_search_cmd(
+    jql: str = typer.Argument("", help="JQL, e.g. 'assignee = \"Kelvin\" ORDER BY updated DESC'"),
+    max_results: int = typer.Option(20, "--max-results", "-n", min=1, max=50),
+    fields: str | None = typer.Option(
+        None, "--fields", help="Comma-separated fields (summary,status,assignee,…)"
+    ),
+    json_out: bool = typer.Option(False, "--json", help="Print the raw response."),
+) -> None:
+    """Search Jira issues in the projects mapped to projects you can read."""
+    api_url, api_key = _load_api_config()
+    org_id = _org_id(api_url, api_key)
+    payload: dict = {"jql": jql, "max_results": max_results}
+    if fields:
+        payload["fields"] = [f.strip() for f in fields.split(",") if f.strip()]
+    s, body, _ = asyncio.run(
+        _api_request(
+            "POST",
+            f"/api/v1/orgs/{org_id}/integrations/jira/search",
+            api_url, api_key,
+            json_data=payload,
+        )
+    )
+    if s >= 400 or not isinstance(body, dict):
+        _jira_error(s, body)
+    if json_out:
+        console.print_json(data=body)
+        return
+    if body.get("reason"):
+        console.print(f"[dim]{escape(str(body.get('message') or body['reason']))}[/dim]")
+        return
+    allowed = ", ".join(body.get("allowed_jira_projects") or [])
+    console.print(f"[dim]Searched Jira projects: {escape(allowed)}[/dim]")
+    issues = body.get("issues") or []
+    if not issues:
+        console.print("[dim]No matching Jira issues.[/dim]")
+        return
+    table = Table()
+    table.add_column("Key", style="cyan")
+    table.add_column("Status")
+    table.add_column("Assignee")
+    table.add_column("Summary")
+    for issue in issues:
+        # Jira text is remote content: never let it be read as Rich markup.
+        table.add_row(
+            escape(str(issue.get("key") or "")),
+            escape(str(issue.get("status") or "—")),
+            escape(str(issue.get("assignee") or "—")),
+            escape(str(issue.get("summary") or "")),
+        )
+    console.print(table)
+    if body.get("has_more"):
+        console.print("[dim]More issues match; raise --max-results or narrow the JQL.[/dim]")
+
+
 # ── sfs org jira templates … ──
 
 

@@ -2289,6 +2289,7 @@ Connect the org's Jira Cloud site (org admins, v0.23.0). The API token is encryp
 | `sfs org jira connect --site-url https://NAME.atlassian.net --email EMAIL --template agile\|compliance\|sre\|bug [--api-token TOKEN]` | Check the credentials against Jira and save the connection; the token is prompted for (hidden) when omitted |
 | `sfs org jira mappings` | Project to Jira project mappings (key, issue type, template override, done status) |
 | `sfs org jira health` | Unmapped projects, failed updates, and links not checked in 7+ days |
+| `sfs org jira search [JQL] [--max-results N] [--fields a,b] [--json]` | Search Jira issues in the Jira projects mapped to SessionFS projects you can read (any org member; see [Search Jira](/integrations/jira/#search-jira)) |
 | `sfs org jira templates list` | Built-in and org-custom story templates (v0.26.0) |
 | `sfs org jira templates show SLUG [--versions]` | One template and its sections; `--versions` lists a custom template's version history (v0.26.0) |
 

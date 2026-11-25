@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.33.3] - 2026-11-24
+
+**Large session uploads no longer run the server out of memory, the session helper stops a question at clear limits and says why, and the helper, MCP agents and the CLI can search Jira.** No migrations. One new MCP tool (149).
+
+### Added
+- Jira issue search: MCP `search_jira_issues`, a session helper tool, `sfs org jira search` and `POST /api/v1/orgs/{org_id}/integrations/jira/search`. Results only come from Jira projects mapped to SessionFS projects you can read: your JQL is validated and wrapped in that project list, and returned issues are checked again by project key. A query Jira rejects returns a generic `jira_query_rejected`. New service-key scope `jira:read`. Searches are limited to 30 per org per minute, cached for 60 seconds, and recorded in the org audit log with secrets redacted from the JQL.
+- Session helper limits per question: 25 tool calls, 3 tool failures in a row, and 150k input tokens by default, configurable per org and per user within the org's ceilings (`max_tool_calls`, `max_consecutive_tool_failures`, `max_input_tokens`). When a limit stops a question the answer and the dashboard say which one (`tool_call_cap`, `tool_failures`, `input_token_cap`), and `missing_capability` when the helper has no tool for what was asked.
+
+### Fixed
+- Sync push: the DLP scan of an uploaded session now streams the archive in batches of whole lines instead of holding every message's text in memory at once. On a 45 MB session peak memory drops from about 7.5 GB to about 136 MB and the scan is about 2.5× faster, with exactly the same findings. Re-uploading a session that was already redacted no longer builds a per-character offset map.
+- Session helper: Try again after a failed question keeps the earlier conversation, and long conversations are trimmed by whole turns so a tool call is never separated from its result.
+
 ## [0.33.2] - 2026-11-22
 
 **The dashboard image picks up Alpine security fixes released after its base image was built.** No migrations. No new MCP tools.

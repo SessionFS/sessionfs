@@ -97,6 +97,31 @@ describe('AssistantSection', () => {
     expect(mutate.mock.calls[0][0]).toEqual({ instructions: 'Call me Alex.' });
   });
 
+  it('edits the per-question limits (GitHub #143)', async () => {
+    const user = userEvent.setup();
+    const { container } = renderSection();
+    // An older server sends no limits: the defaults show.
+    const calls = screen.getByRole('textbox', { name: 'Max tool calls per question' });
+    expect(calls).toHaveValue('25');
+    expect(screen.getByRole('textbox', { name: 'Stop after failed tool calls' })).toHaveValue('3');
+    const tokens = screen.getByRole('textbox', { name: 'Max input tokens per question' });
+    expect(tokens).toHaveValue('150000');
+    expect(await axe(container)).toHaveNoViolations();
+
+    await user.clear(calls);
+    await user.type(calls, '40');
+    await user.clear(tokens);
+    await user.type(tokens, '9');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(mutate).not.toHaveBeenCalled();
+    expect(tokens).toHaveAccessibleDescription(/Enter a number from 10,000 to 1,000,000/);
+
+    await user.clear(tokens);
+    await user.type(tokens, '200000');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+    expect(mutate.mock.calls[0][0]).toEqual({ settings: { max_tool_calls: 40, max_input_tokens: 200_000 } });
+  });
+
   it('says the org settings apply while turns use the org key', () => {
     statusHook.useHelperStatus.mockReturnValue({ data: { enabled: true, key_source: 'org' } });
     renderSection();

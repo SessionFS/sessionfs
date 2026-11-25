@@ -74,7 +74,8 @@
         { "name": "start_workflow", "desc": "Start a workflow loop from a template" },
         { "name": "get_workflow_plan", "desc": "Ready steps, gates and briefs for a workflow loop" },
         { "name": "watch_ticket", "desc": "Follow, mute or unfollow a ticket" },
-        { "name": "get_ticket_updates", "desc": "Changes on the tickets you follow since you last checked" }
+        { "name": "get_ticket_updates", "desc": "Changes on the tickets you follow since you last checked" },
+        { "name": "search_jira_issues", "desc": "Search Jira with JQL, limited to Jira projects mapped to projects you can read (Enterprise)" }
       ]
     },
     {

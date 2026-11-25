@@ -164,6 +164,37 @@ export interface Turn {
   usage?: TokenUsage;
   /** Assistant only: the per-sentence evidence map (the `grounding` event / stored row). */
   grounding?: HelperGrounding | null;
+  /** Assistant only: how the turn ended (the `done` event / stored row). */
+  stopReason?: string | null;
+}
+
+// ── Stop reasons ──
+
+/**
+ * A plain sentence for a turn that stopped early, or null for a normal end.
+ * The answer text itself carries the details (which tools failed, the limit
+ * reached); this is the short line under it.
+ */
+const STOP_REASON_TEXT: Record<string, string> = {
+  tool_call_cap: 'Stopped early: this question reached its tool call limit.',
+  tool_failures: 'Stopped early: several tool calls failed in a row.',
+  input_token_cap: 'Stopped early: this question reached its input token limit.',
+  max_steps: 'Stopped early: this question used every tool round.',
+  token_budget: 'Stopped early: this question used its token budget.',
+  deadline: 'Stopped early: this question ran out of time.',
+  max_tokens: 'The answer was cut off at its output limit.',
+  missing_capability: 'Part of this question needs something the helper has no tool for.',
+};
+
+/** Stop reasons where asking again can help. */
+const RETRYABLE_STOPS = new Set(['tool_call_cap', 'tool_failures', 'input_token_cap', 'max_steps', 'token_budget', 'deadline']);
+
+export function stopReasonText(reason: string | null | undefined): string | null {
+  return reason ? (STOP_REASON_TEXT[reason] ?? null) : null;
+}
+
+export function stopReasonRetryable(reason: string | null | undefined): boolean {
+  return !!reason && RETRYABLE_STOPS.has(reason);
 }
 
 // ── Token usage ──

@@ -517,6 +517,10 @@ def helper_status() -> None:
         console.print(f"    max_tool_steps:    {effective.get('max_tool_steps')}")
         console.print(f"    reasoning_effort:  {effective.get('reasoning_effort')}")
         console.print(f"    answer_style:      {effective.get('answer_style')}")
+        # Per-question limits (servers before 0.33.3 don't send them).
+        for field in ("max_tool_calls", "max_consecutive_tool_failures", "max_input_tokens"):
+            if field in effective:
+                console.print(f"    {field + ':':<31}{effective.get(field)}")
     if body.get("has_org_instructions"):
         console.print("  Org instructions: set")
     if body.get("has_personal_instructions"):

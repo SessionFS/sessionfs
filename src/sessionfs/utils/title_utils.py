@@ -87,25 +87,47 @@ def extract_smart_title(
     # Priority 2: first user message with natural language
     if messages:
         for msg in messages:
-            if msg.get("role") in ("system", "developer"):
-                continue
-            if msg.get("role") != "user":
-                continue
-            if msg.get("is_sidechain"):
-                continue
-
-            text = _extract_text(msg)
-            if not text:
-                continue
-
-            for line in _iter_usable_lines(text):
-                if is_usable_title(line):
-                    return _finalize(line, max_length)
+            title = _title_from_message(msg, max_length)
+            if title is not None:
+                return title
 
     # Fallback
     if message_count > 0:
         return f"Untitled session ({message_count} messages)"
     return "Untitled session"
+
+
+def _title_from_message(msg: dict[str, Any], max_length: int) -> str | None:
+    """The title one message gives (priority 2), or None to keep looking."""
+    if msg.get("role") in ("system", "developer"):
+        return None
+    if msg.get("role") != "user":
+        return None
+    if msg.get("is_sidechain"):
+        return None
+
+    text = _extract_text(msg)
+    if not text:
+        return None
+
+    for line in _iter_usable_lines(text):
+        if is_usable_title(line):
+            return _finalize(line, max_length)
+    return None
+
+
+def message_ends_title_search(msg: Any) -> bool:
+    """Whether ``extract_smart_title`` stops at ``msg`` when it reaches it:
+    the message gives a title, or reading it raises.
+
+    Each message is judged on its own, so a caller streaming messages can
+    keep only the first one this is true for and pass ``[that message]``:
+    the result is the same as passing every message.
+    """
+    try:
+        return _title_from_message(msg, 80) is not None
+    except Exception:
+        return True
 
 
 def is_usable_title(text: str) -> bool:

@@ -43,6 +43,10 @@ VALID_SCOPES = frozenset(
         # 0.29.8 — For You (tk_dc118ffd6e804a9a). The minter's attention feed,
         # limited to the key's org and project allowlist.
         "attention:read",
+        # GitHub #144 — Jira search through the org's connection. Read-only;
+        # results limited to Jira projects mapped to projects the minter can
+        # read, within the key's org and project allowlist.
+        "jira:read",
         "personas:read",
         "personas:write",
         "knowledge:read",

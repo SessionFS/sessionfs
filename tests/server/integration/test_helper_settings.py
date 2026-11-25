@@ -167,6 +167,10 @@ async def test_user_get_returns_defaults(client: AsyncClient, db_session: AsyncS
         "reasoning_effort": None,
         "answer_style": "concise",
         "grounding": "strict",
+        # Per-question limits (GitHub #143).
+        "max_tool_calls": 25,
+        "max_consecutive_tool_failures": 3,
+        "max_input_tokens": 150_000,
     }
     assert body["instructions"] is None
     assert body["effective_settings"] is None

@@ -33,7 +33,7 @@ sfs mcp install --for claude-code --skip-instructions
 
 ## Tools
 
-The MCP server exposes 148 tools in twenty-two categories: Session, Knowledge Read, Knowledge Write, Rules, Personas, Tickets, AgentRun, Agent Feedback, Review Checklist, Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Workflow Templates, Skills Marketplace, Project Groups (Team+), Meetings and chat, Reminders, Approvals (Enterprise), External contacts, For You, Review requests, and Evaluations and Lineage (Team+ for writes).
+The MCP server exposes 149 tools in twenty-three categories: Session, Knowledge Read, Knowledge Write, Rules, Personas, Tickets, Jira search (Enterprise), AgentRun, Agent Feedback, Review Checklist, Handoffs (Pro+ for direct, Team+ for team handoffs), Work Queues, Review Loops, Workflow Templates, Skills Marketplace, Project Groups (Team+), Meetings and chat, Reminders, Approvals (Enterprise), External contacts, For You, Review requests, and Evaluations and Lineage (Team+ for writes).
 
 **The `git_remote` parameter.** Project-scoped tools take an optional `git_remote` that picks the project. Pass a remote URL such as `github.com/org/repo`, or a local folder: a value starting with `/`, `~`, `./` or `../` (or `.` / `..`) is resolved through that repository's `origin` remote, git worktrees included. A folder that isn't a git repository with an `origin` returns an error rather than acting on another project. Omit `git_remote` to use the current workspace.
 
@@ -1130,6 +1130,14 @@ Read-only views of [approval policies](/approvals/) (Enterprise). Agents cannot 
 | `list_my_approvals` | Pending requests you could decide now (merges at one commit, KB entries waiting to become claims), newest first, with approvals so far |
 | `get_approval_request` | One request by id (`ar_…`): policy version and requirements, target and fingerprint (commit sha or content sha256), state and every decision |
 | `list_approval_policies` | An org's active policies (`org_id`, else your default org). Members see names and requirements; owners and admins also see filters |
+
+### Jira search
+
+Search Jira issues with JQL through the org's Jira connection (Enterprise; see [Jira search](/integrations/jira/#search-jira)). Read-only. Only Jira projects mapped to SessionFS projects you can read are searched: the server wraps your JQL as `project in (<allowed>) AND (<jql>)` and drops any issue outside that set. Service keys need `jira:read` and are limited to their org and project allowlist.
+
+| Tool | Purpose |
+|------|---------|
+| `search_jira_issues` | `jql` (required; empty means every issue in the allowed projects; a trailing top-level `ORDER BY` is allowed), `max_results` (default 20, max 50), `fields` (any of `summary`, `status`, `assignee`, `reporter`, `priority`, `issue_type`, `labels`, `components`, `created`, `updated`, `due_date`, `resolution`, `description`), `org_id` (else your default org). Returns `issues` (key, url, project_key, the SessionFS `project_ids` mapped to that Jira project, and the fields), `allowed_jira_projects`, `effective_jql`, `has_more`, `cached`, and `reason` when there is nothing you may search |
 
 ### External contacts
 

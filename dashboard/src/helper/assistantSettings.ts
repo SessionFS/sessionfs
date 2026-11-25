@@ -13,6 +13,9 @@ export const LIMITS = {
   temperature: { min: 0, max: 2 },
   topP: { min: 0, max: 1 },
   toolSteps: { min: 1, max: 20 },
+  toolCalls: { min: 1, max: 100 },
+  toolFailures: { min: 1, max: 10 },
+  inputTokens: { min: 10_000, max: 1_000_000 },
   orgInstructions: 4000,
   personalInstructions: 2000,
 } as const;
@@ -27,10 +30,32 @@ export const DEFAULTS: HelperModelSettings = {
   reasoning_effort: null,
   answer_style: 'concise',
   grounding: 'strict',
+  max_tool_calls: 25,
+  max_consecutive_tool_failures: 3,
+  max_input_tokens: 150_000,
 };
 
+/** The per-question limits, with their defaults filled in. */
+export type LimitKey = 'max_tool_calls' | 'max_consecutive_tool_failures' | 'max_input_tokens';
+
 /** Settings keys whose explicit null returns them to the default. */
-export type ResettableKey = 'max_output_tokens' | 'max_tool_steps' | 'answer_style' | 'grounding';
+export type ResettableKey = 'max_output_tokens' | 'max_tool_steps' | 'answer_style' | 'grounding' | LimitKey;
+
+/** Bounds of each per-question limit, and the ceiling field that caps it. */
+export const LIMIT_FIELDS: ReadonlyArray<{
+  key: LimitKey;
+  ceiling: 'ceiling_max_tool_calls' | 'ceiling_max_consecutive_tool_failures' | 'ceiling_max_input_tokens';
+  bounds: { min: number; max: number };
+}> = [
+  { key: 'max_tool_calls', ceiling: 'ceiling_max_tool_calls', bounds: LIMITS.toolCalls },
+  { key: 'max_consecutive_tool_failures', ceiling: 'ceiling_max_consecutive_tool_failures', bounds: LIMITS.toolFailures },
+  { key: 'max_input_tokens', ceiling: 'ceiling_max_input_tokens', bounds: LIMITS.inputTokens },
+];
+
+/** A limit's stored value, or its default on a server that doesn't send it. */
+export function limitValue(s: HelperModelSettings, key: LimitKey): number {
+  return s[key] ?? (DEFAULTS[key] as number);
+}
 
 export type FieldKey =
   | keyof OrgHelperModelSettings
@@ -51,14 +76,30 @@ export interface Draft {
   reasoning_effort: '' | 'off' | 'low' | 'medium' | 'high';
   answer_style: 'concise' | 'detailed';
   grounding: 'strict' | 'off';
+  max_tool_calls: string;
+  max_consecutive_tool_failures: string;
+  max_input_tokens: string;
   ceiling_max_output_tokens: string;
   ceiling_max_tool_steps: string;
+  ceiling_max_tool_calls: string;
+  ceiling_max_consecutive_tool_failures: string;
+  ceiling_max_input_tokens: string;
   monthly_token_budget: string;
   instructions: string;
 }
 
 export interface Original {
-  settings: HelperModelSettings & Partial<Pick<OrgHelperModelSettings, 'ceiling_max_output_tokens' | 'ceiling_max_tool_steps'>>;
+  settings: HelperModelSettings &
+    Partial<
+      Pick<
+        OrgHelperModelSettings,
+        | 'ceiling_max_output_tokens'
+        | 'ceiling_max_tool_steps'
+        | 'ceiling_max_tool_calls'
+        | 'ceiling_max_consecutive_tool_failures'
+        | 'ceiling_max_input_tokens'
+      >
+    >;
   instructions: string | null;
   monthly_token_budget?: number | null;
 }
@@ -77,8 +118,14 @@ export function draftFrom(o: Original): Draft {
     answer_style: s.answer_style,
     // Older servers don't send it: their behaviour is "strict" by default.
     grounding: s.grounding ?? DEFAULT_GROUNDING,
+    max_tool_calls: numStr(limitValue(s, 'max_tool_calls')),
+    max_consecutive_tool_failures: numStr(limitValue(s, 'max_consecutive_tool_failures')),
+    max_input_tokens: numStr(limitValue(s, 'max_input_tokens')),
     ceiling_max_output_tokens: numStr(s.ceiling_max_output_tokens),
     ceiling_max_tool_steps: numStr(s.ceiling_max_tool_steps),
+    ceiling_max_tool_calls: numStr(s.ceiling_max_tool_calls),
+    ceiling_max_consecutive_tool_failures: numStr(s.ceiling_max_consecutive_tool_failures),
+    ceiling_max_input_tokens: numStr(s.ceiling_max_input_tokens),
     monthly_token_budget: numStr(o.monthly_token_budget),
     instructions: o.instructions ?? '',
   };
@@ -168,6 +215,11 @@ export function buildPatch(
   if (resets.has('max_tool_steps')) settings.max_tool_steps = null;
   else take('max_tool_steps', parseInt_(draft.max_tool_steps, LIMITS.toolSteps.min, LIMITS.toolSteps.max, false), s.max_tool_steps);
 
+  for (const { key, bounds } of LIMIT_FIELDS) {
+    if (resets.has(key)) settings[key] = null;
+    else take(key, parseInt_(draft[key], bounds.min, bounds.max, false), limitValue(s, key));
+  }
+
   const effort = draft.reasoning_effort === '' ? null : draft.reasoning_effort;
   if (effort !== s.reasoning_effort) settings.reasoning_effort = effort;
 
@@ -190,6 +242,9 @@ export function buildPatch(
       parseInt_(draft.ceiling_max_tool_steps, LIMITS.toolSteps.min, LIMITS.toolSteps.max, true),
       s.ceiling_max_tool_steps ?? null,
     );
+    for (const { ceiling, bounds } of LIMIT_FIELDS) {
+      take(ceiling, parseInt_(draft[ceiling], bounds.min, bounds.max, true), s[ceiling] ?? null);
+    }
     const budget = parseBudget(draft.monthly_token_budget);
     if (!budget.ok) errors.monthly_token_budget = budget.error;
     else if (budget.value !== (original.monthly_token_budget ?? null)) body.monthly_token_budget = budget.value;
@@ -218,8 +273,14 @@ const FIELD_KEYS: readonly FieldKey[] = [
   'reasoning_effort',
   'answer_style',
   'grounding',
+  'max_tool_calls',
+  'max_consecutive_tool_failures',
+  'max_input_tokens',
   'ceiling_max_output_tokens',
   'ceiling_max_tool_steps',
+  'ceiling_max_tool_calls',
+  'ceiling_max_consecutive_tool_failures',
+  'ceiling_max_input_tokens',
   'monthly_token_budget',
   'instructions',
 ];
@@ -321,5 +382,8 @@ export function describeSettings(s: HelperModelSettings): Array<{ label: string;
       label: 'Sources',
       value: GROUNDING_LABELS[s.grounding ?? DEFAULT_GROUNDING] ?? String(s.grounding),
     },
+    { label: 'Max tool calls per question', value: String(limitValue(s, 'max_tool_calls')) },
+    { label: 'Stop after failed tool calls in a row', value: String(limitValue(s, 'max_consecutive_tool_failures')) },
+    { label: 'Max input tokens per question', value: limitValue(s, 'max_input_tokens').toLocaleString() },
   ];
 }
